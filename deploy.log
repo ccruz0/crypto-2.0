@@ -1,0 +1,107 @@
+=========================================
+AWS EC2 Deployment Script
+=========================================
+Step 1: Testing SSH connection...
+SSH connection successful
+Step 2: Installing Docker...
+Pseudo-terminal will not be allocated because stdin is not a terminal.
+Welcome to Ubuntu 24.04.3 LTS (GNU/Linux 6.14.0-1011-aws x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Thu Oct 23 06:05:47 UTC 2025
+
+  System load:  0.28              Processes:             114
+  Usage of /:   33.5% of 6.71GB   Users logged in:       0
+  Memory usage: 27%               IPv4 address for enX0: 172.31.31.131
+  Swap usage:   0%
+
+ * Ubuntu Pro delivers the most comprehensive open source security and
+   compliance features.
+
+   https://ubuntu.com/aws/pro
+
+Expanded Security Maintenance for Applications is not enabled.
+
+61 updates can be applied immediately.
+38 of these updates are standard security updates.
+To see these additional updates run: apt list --upgradable
+
+1 additional security update can be applied with ESM Apps.
+Learn more about enabling ESM Apps service at https://ubuntu.com/esm
+
+
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Hit:1 http://ap-southeast-1.ec2.archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://ap-southeast-1.ec2.archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:3 http://ap-southeast-1.ec2.archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:4 http://security.ubuntu.com/ubuntu noble-security InRelease
+Reading package lists...
+Building dependency tree...
+Reading state information...
+55 packages can be upgraded. Run 'apt list --upgradable' to see them.
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+docker.io is already the newest version (28.2.2-0ubuntu1~24.04.1).
+docker-compose is already the newest version (1.29.2-6ubuntu1).
+git is already the newest version (1:2.43.0-1ubuntu7.3).
+0 upgraded, 0 newly installed, 0 to remove and 55 not upgraded.
+Docker version 28.2.2, build 28.2.2-0ubuntu1~24.04.1
+Step 3: Copying project files...
+Warning: Identity file crypto not accessible: No such file or directory.
+ssh: connect to host 2.0.0.0 port 22: Operation timed out
+rsync(7260): error: unexpected end of file
+rsync(7260): error: io_read_nonblocking
+rsync(7260): error: io_read_buf
+rsync(7260): error: io_read_int
+rsync(7260): warning: child 7261 exited with status 255
+Step 4: Starting application...
+Pseudo-terminal will not be allocated because stdin is not a terminal.
+Welcome to Ubuntu 24.04.3 LTS (GNU/Linux 6.14.0-1011-aws x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Thu Oct 23 06:07:39 UTC 2025
+
+  System load:  0.09              Processes:             114
+  Usage of /:   33.5% of 6.71GB   Users logged in:       0
+  Memory usage: 26%               IPv4 address for enX0: 172.31.31.131
+  Swap usage:   0%
+
+ * Ubuntu Pro delivers the most comprehensive open source security and
+   compliance features.
+
+   https://ubuntu.com/aws/pro
+
+Expanded Security Maintenance for Applications is not enabled.
+
+61 updates can be applied immediately.
+38 of these updates are standard security updates.
+To see these additional updates run: apt list --upgradable
+
+1 additional security update can be applied with ESM Apps.
+Learn more about enabling ESM Apps service at https://ubuntu.com/esm
+
+
+-bash: line 1: cd: /home/ubuntu/automated-trading-platform: No such file or directory
+docker: unknown command: docker compose
+
+Run 'docker --help' for more information
+unknown shorthand flag: 'd' in -d
+
+Usage:  docker [OPTIONS] COMMAND [ARG...]
+
+Run 'docker --help' for more information
+Deployment Complete!
+Backend: http://54.254.150.31:8000
+Frontend: http://54.254.150.31:3000
