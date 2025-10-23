@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from typing import Dict, Optional
+import requests
 
 logger = logging.getLogger(__name__)
 
