@@ -1,1 +1,39 @@
 .env
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files with secrets
+.env
+
+# Credentials
+*.pem
+*key*.pem
+
+# Node modules
+node_modules/
+
+# Build artifacts
+.next/
+dist/
+build/
+
+# Logs
+*.log
+deploy.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
