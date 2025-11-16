@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "defaults": {
+    "timeframe": "4h",
+    "preset": "swing"
+  },
+  "presets": {
+    "swing":   { "RSI_PERIOD":14, "RSI_BUY":38, "RSI_SELL":68, "MA50":50, "EMA10":9, "MA10W":70, "ATR":14, "VOL":10 },
+    "intraday":{ "RSI_PERIOD":10, "RSI_BUY":42, "RSI_SELL":65, "MA50":25, "EMA10":7, "MA10W":30, "ATR":10, "VOL":20 },
+    "scalp":   { "RSI_PERIOD":7,  "RSI_BUY":45, "RSI_SELL":60, "MA50":20, "EMA10":5, "MA10W":15, "ATR":7,  "VOL":15 }
+  },
+  "coins": {
+    "BTC_USDT": { "preset": "swing" },
+    "ETH_USDT": { "preset": "intraday" },
+    "DOT_USDT": { "preset": "scalp", "overrides": { "RSI_BUY": 40 } }
+  }
+}

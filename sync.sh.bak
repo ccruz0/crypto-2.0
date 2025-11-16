@@ -1,0 +1,68 @@
+#!/bin/bash
+
+# Sync script for automated-trading-platform
+# Syncs changes from local to server every 30 seconds
+
+EC2_HOST="54.254.150.31"
+EC2_USER="ubuntu"
+KEY_FILE="crypto 2.0 key.pem"
+LOCAL_DIR="."
+REMOTE_DIR="~/automated-trading-platform"
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}Starting sync daemon...${NC}"
+echo -e "${YELLOW}Watching for changes in: ${LOCAL_DIR}${NC}"
+echo -e "${YELLOW}Target: ${EC2_USER}@${EC2_HOST}:${REMOTE_DIR}${NC}"
+echo -e "${YELLOW}Sync interval: 30 seconds${NC}"
+echo ""
+
+# Function to sync files
+sync_files() {
+    echo -e "${GREEN}[$(date +%H:%M:%S)] Syncing files...${NC}"
+    
+    # Sync backend files
+    rsync -avz --delete \
+        -e "ssh -i '$KEY_FILE' -o StrictHostKeyChecking=no" \
+        --exclude='.git' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='.venv' \
+        ./backend/ $EC2_USER@$EC2_HOST:$REMOTE_DIR/backend/
+    
+    # Sync frontend files
+    rsync -avz --delete \
+        -e "ssh -i '$KEY_FILE' -o StrictHostKeyChecking=no" \
+        --exclude='.git' \
+        --exclude='node_modules' \
+        --exclude='.next' \
+        --exclude='.venv' \
+        ./frontend/ $EC2_USER@$EC2_HOST:$REMOTE_DIR/frontend/
+    
+    # Restart services
+    echo -e "${GREEN}[$(date +%H:%M:%S)] Restarting services...${NC}"
+    ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST \
+        "cd $REMOTE_DIR && docker-compose restart backend frontend" > /dev/null 2>&1
+    
+    echo -e "${GREEN}[$(date +%H:%M:%S)] Sync complete!${NC}"
+    echo ""
+}
+
+# Initial sync
+sync_files
+
+# Watch for changes and sync every 30 seconds
+while true; do
+    sleep 30
+    sync_files
+done
+
+
+
+
+
+

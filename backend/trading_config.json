@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "defaults": {
+    "timeframe": "4h",
+    "preset": "swing"
+  },
+  "presets": {
+    "swing": {
+      "RSI_PERIOD": 14,
+      "RSI_BUY": 40,
+      "RSI_SELL": 70,
+      "MA50": 50,
+      "EMA10": 10,
+      "MA10W": 70,
+      "ATR": 14,
+      "VOL": 10
+    },
+    "intraday": {
+      "RSI_PERIOD": 10,
+      "RSI_BUY": 42,
+      "RSI_SELL": 65,
+      "MA50": 25,
+      "EMA10": 7,
+      "MA10W": 30,
+      "ATR": 10,
+      "VOL": 20
+    },
+    "scalp": {
+      "RSI_PERIOD": 7,
+      "RSI_BUY": 45,
+      "RSI_SELL": 60,
+      "MA50": 20,
+      "EMA10": 5,
+      "MA10W": 15,
+      "ATR": 7,
+      "VOL": 15
+    },
+    "swing-conservative": {
+      "RSI_PERIOD": 21,
+      "RSI_BUY": 38,
+      "RSI_SELL": 80,
+      "MA50": 100,
+      "EMA10": 20,
+      "MA10W": 200,
+      "ATR": 21,
+      "VOL": 5
+    },
+    "swing-aggressive": {
+      "RSI_PERIOD": 10,
+      "RSI_BUY": 30,
+      "RSI_SELL": 75,
+      "MA50": 30,
+      "EMA10": 5,
+      "MA10W": 50,
+      "ATR": 10,
+      "VOL": 20
+    },
+    "intraday-conservative": {
+      "RSI_PERIOD": 14,
+      "RSI_BUY": 35,
+      "RSI_SELL": 70,
+      "MA50": 50,
+      "EMA10": 10,
+      "MA10W": 100,
+      "ATR": 14,
+      "VOL": 10
+    },
+    "intraday-aggressive": {
+      "RSI_PERIOD": 7,
+      "RSI_BUY": 40,
+      "RSI_SELL": 65,
+      "MA50": 20,
+      "EMA10": 5,
+      "MA10W": 25,
+      "ATR": 7,
+      "VOL": 25
+    },
+    "scalp-conservative": {
+      "RSI_PERIOD": 10,
+      "RSI_BUY": 40,
+      "RSI_SELL": 65,
+      "MA50": 25,
+      "EMA10": 7,
+      "MA10W": 30,
+      "ATR": 10,
+      "VOL": 15
+    },
+    "scalp-aggressive": {
+      "RSI_PERIOD": 5,
+      "RSI_BUY": 45,
+      "RSI_SELL": 60,
+      "MA50": 15,
+      "EMA10": 3,
+      "MA10W": 10,
+      "ATR": 5,
+      "VOL": 30
+    }
+  },
+  "coins": {
+    "BTC_USDT": {
+      "preset": "swing"
+    },
+    "ETH_USDT": {
+      "preset": "intraday",
+      "overrides": {}
+    },
+    "DOT_USDT": {
+      "preset": "scalp",
+      "overrides": {
+        "RSI_BUY": 40
+      }
+    },
+    "BTC_USD": {
+      "preset": "scalp-conservative",
+      "overrides": {}
+    },
+    "BNB_USDT": {
+      "preset": "swing",
+      "overrides": {}
+    },
+    "SOL_USDT": {
+      "preset": "swing-conservative",
+      "overrides": {}
+    },
+    "ALGO_USDT": {
+      "preset": "swing",
+      "overrides": {}
+    },
+    "LINK_USDT": {
+      "preset": "scalp",
+      "overrides": {}
+    },
+    "ADA_USDT": {
+      "preset": "swing-conservative",
+      "overrides": {}
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Crypto.com Signer Proxy
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+EnvironmentFile=/etc/crypto.env
+Environment=CRYPTO_PROXY_TOKEN=CRYPTO_PROXY_SECURE_TOKEN_2024
+ExecStart=/home/ubuntu/automated-trading-platform/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 127.0.0.1 --port 9000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

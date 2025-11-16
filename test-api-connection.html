@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Connection Test</title>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <div id="result"></div>
+    
+    <script>
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                console.log('Testing API connection...');
+                
+                // Test health endpoint
+                const healthResponse = await fetch('http://localhost:8000/health');
+                const healthData = await healthResponse.json();
+                console.log('Health check:', healthData);
+                
+                // Test top-coins endpoint
+                const coinsResponse = await fetch('http://localhost:8000/api/market/top-coins-data');
+                const coinsData = await coinsResponse.json();
+                console.log('Top coins data:', coinsData);
+                
+                resultDiv.innerHTML = `
+                    <h2>✅ API Connection Successful!</h2>
+                    <p><strong>Health:</strong> ${healthData.status}</p>
+                    <p><strong>Coins Count:</strong> ${coinsData.count}</p>
+                    <p><strong>First Coin:</strong> ${coinsData.coins?.[0]?.instrument_name || 'None'}</p>
+                `;
+                
+            } catch (error) {
+                console.error('API connection failed:', error);
+                resultDiv.innerHTML = `
+                    <h2>❌ API Connection Failed!</h2>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                `;
+            }
+        }
+        
+        // Run test when page loads
+        testAPI();
+    </script>
+</body>
+</html>
+

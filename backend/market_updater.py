@@ -1,0 +1,717 @@
+"""
+Market Data Updater Worker
+This module runs as a separate process to update market data from external APIs.
+It respects rate limits (3s delay between coins) and saves results to shared storage.
+Now includes technical indicators: RSI, MA50, MA200, EMA10, ATR
+"""
+import asyncio
+import logging
+import sys
+import os
+import time
+import requests
+import numpy as np
+from typing import Dict, List, Optional
+
+# Add backend to path
+sys.path.insert(0, os.path.dirname(__file__))
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+FETCH_SYMBOL_LIMIT = 50  # Increased from 10 to 50 to process more symbols
+_non_custom_offset = 0
+
+# Default list of major cryptocurrencies that should always be tracked
+DEFAULT_TRACKED_SYMBOLS = [
+    "BTC_USDT", "BTC_USD", "ETH_USDT", "ETH_USD",
+    "DOGE_USDT", "ADA_USDT", "TON_USDT", "SOL_USDT",
+    "BNB_USDT", "XRP_USDT", "DOT_USDT", "LINK_USDT",
+    "MATIC_USDT", "AVAX_USDT", "ALGO_USDT", "UNI_USDT",
+    "ATOM_USDT", "ETC_USDT", "LTC_USDT", "BCH_USDT",
+    "XLM_USDT", "FIL_USDT", "TRX_USDT"
+]
+
+# Import after path setup
+from app.api.routes_market import (
+    _get_db_connection,
+    _fetch_custom_coins
+)
+from app.api.routes_signals import (
+    calculate_rsi,
+    calculate_atr,
+    calculate_ma,
+    calculate_ema,
+    calculate_volume_index
+)
+from simple_price_fetcher import price_fetcher, PriceResult
+from market_cache_storage import save_cache_to_storage
+
+# Import database models and session
+try:
+    from app.database import SessionLocal, Base, engine
+    from app.models.market_price import MarketPrice, MarketData
+    from sqlalchemy import func
+    # Create tables if they don't exist
+    Base.metadata.create_all(bind=engine)
+    DB_AVAILABLE = True
+except Exception as e:
+    logger.warning(f"Database not available, will only use JSON cache: {e}")
+    DB_AVAILABLE = False
+
+# Import signal_writer to sync watchlist to TradeSignal
+try:
+    from app.services.signal_writer import sync_watchlist_to_signals
+    SIGNAL_WRITER_AVAILABLE = True
+except Exception as e:
+    logger.warning(f"Signal writer not available: {e}")
+    SIGNAL_WRITER_AVAILABLE = False
+
+
+def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
+    """Fetch OHLCV data from Crypto.com API"""
+    try:
+        url = "https://api.crypto.com/v2/public/get-candlestick"
+        params = {
+            "instrument_name": symbol,
+            "timeframe": interval,
+            "count": limit
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        
+        if "result" in result and "data" in result["result"]:
+            data = result["result"]["data"]
+            # Convert to standardized format
+            ohlcv_data = []
+            for candle in data:
+                ohlcv_data.append({
+                    "t": candle.get("t", 0),  # timestamp
+                    "o": float(candle.get("o", 0)),  # open
+                    "h": float(candle.get("h", 0)),  # high
+                    "l": float(candle.get("l", 0)),  # low
+                    "c": float(candle.get("c", 0)),  # close
+                    "v": float(candle.get("v", 0))   # volume
+                })
+            logger.debug(f"Fetched {len(ohlcv_data)} candles for {symbol}")
+            return ohlcv_data
+    except Exception as e:
+        logger.warning(f"Error fetching OHLCV for {symbol}: {e}")
+        return None
+
+def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float) -> Dict[str, float]:
+    """Calculate all technical indicators from OHLCV data"""
+    if not ohlcv_data or len(ohlcv_data) < 50:
+        # Return default values if insufficient data
+        # Use current_price for all MAs if we have a valid price
+        fallback_ma = current_price if current_price > 0 else 0.0
+        return {
+            "rsi": 50.0,
+            "ma50": fallback_ma,
+            "ma200": fallback_ma,
+            "ema10": fallback_ma,
+            "ma10w": fallback_ma,  # Will be recalculated if we have more data later
+            "atr": current_price * 0.02 if current_price > 0 else 0.0,  # 2% default
+            "volume_24h": 0.0,
+            "avg_volume": 0.0,
+            "volume_ratio": 0.0
+        }
+    
+    # Extract price arrays
+    closes = [candle["c"] for candle in ohlcv_data]
+    highs = [candle["h"] for candle in ohlcv_data]
+    lows = [candle["l"] for candle in ohlcv_data]
+    volumes = [candle["v"] for candle in ohlcv_data]
+    
+    # Update last close with current price
+    if closes:
+        closes[-1] = current_price
+    
+    try:
+        # Calculate indicators
+        rsi = calculate_rsi(closes, period=14)
+        ma50 = calculate_ma(closes, period=50)
+        ma200 = calculate_ma(closes, period=200) if len(closes) >= 200 else calculate_ma(closes, period=min(200, len(closes)))
+        ema10 = calculate_ema(closes, period=10)
+        
+        # Calculate MA10w - use MA200 as fallback if not enough data for 70 periods
+        if len(closes) >= 70:
+            ma10w = calculate_ma(closes, period=70)  # Approximate 10-week MA (70 periods on 1h data)
+        elif len(closes) >= 50:
+            # Use MA50 if we have at least 50 periods
+            ma10w = calculate_ma(closes, period=min(70, len(closes)))
+        else:
+            # Use MA200 as approximation if we have it, otherwise use current price
+            ma10w = float(ma200) if ma200 > 0 else current_price
+        
+        atr = calculate_atr(highs, lows, closes, period=14)
+        
+        # Volume indicators
+        volume_index = calculate_volume_index(volumes, period=10)
+        volume_24h = sum(volumes[-24:]) if len(volumes) >= 24 else sum(volumes)
+        current_volume = volume_index.get("current_volume", volumes[-1] if volumes else 0)
+        
+        return {
+            "rsi": float(rsi),
+            "ma50": float(ma50),
+            "ma200": float(ma200),
+            "ema10": float(ema10),
+            "ma10w": float(ma10w),
+            "atr": float(atr),
+            "volume_24h": float(volume_24h),
+            "current_volume": float(current_volume),
+            "avg_volume": float(volume_index.get("average_volume", 0)),
+            "volume_ratio": float(volume_index.get("volume_ratio", 0))
+        }
+    except Exception as e:
+        logger.warning(f"Error calculating indicators: {e}")
+        # Return defaults on error - use MA200 or MA50 as fallback for MA10w if available
+        fallback_ma = current_price if current_price > 0 else 0.0
+        return {
+            "rsi": 50.0,
+            "ma50": fallback_ma,
+            "ma200": fallback_ma,
+            "ema10": fallback_ma,
+            "ma10w": fallback_ma,
+            "atr": current_price * 0.02 if current_price > 0 else 0.0,
+            "volume_24h": 0.0,
+            "current_volume": 0.0,
+            "avg_volume": 0.0,
+            "volume_ratio": 0.0
+        }
+
+
+async def update_market_data():
+    """Update market data from external APIs (slow operation with delays)
+    Now includes technical indicators calculation
+    """
+    start_time = time.time()
+    logger.info("Starting market data update with technical indicators")
+    
+    try:
+        # Get coins from PostgreSQL (MarketPrice) and custom coins from SQLite
+        logger.info("Fetching coins from database")
+        coins = []
+        custom_coins = []
+        
+        # Get custom coins from SQLite (non-critical, can fail gracefully)
+        try:
+            conn = _get_db_connection()
+            custom_coins = _fetch_custom_coins(conn)
+            logger.info(f"Fetched {len(custom_coins)} custom coins")
+            conn.close()
+        except Exception as custom_err:
+            logger.warning(f"Failed to fetch custom coins (non-critical): {custom_err}")
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        
+        # CRITICAL CHANGE: Get coins from watchlist_items (is_deleted=False) instead of just MarketPrice
+        # This ensures ALL non-deleted watchlist coins are updated, even if they don't have prices yet
+        if DB_AVAILABLE:
+            try:
+                db = SessionLocal()
+                from app.models.watchlist import WatchlistItem
+                
+                # Get all non-deleted watchlist items (this is the source of truth)
+                watchlist_items = db.query(WatchlistItem).filter(
+                    WatchlistItem.is_deleted == False
+                ).all()
+                
+                logger.info(f"Found {len(watchlist_items)} non-deleted watchlist items")
+                
+                # Get existing MarketPrice entries for reference
+                market_prices = db.query(MarketPrice).all()
+                market_price_map = {mp.symbol: mp for mp in market_prices}
+                
+                # Build coins list from watchlist_items (not just MarketPrice)
+                coins = []
+                existing_symbols_set = set()
+                
+                for idx, item in enumerate(watchlist_items):
+                    symbol = item.symbol
+                    existing_symbols_set.add(symbol)
+                    
+                    # Get MarketPrice data if available
+                    mp = market_price_map.get(symbol)
+                    
+                    # Parse symbol to get base and quote currency
+                    if "_" in symbol:
+                        base_currency = symbol.split("_")[0]
+                        quote_currency = symbol.split("_")[1]
+                    else:
+                        base_currency = symbol
+                        quote_currency = "USD"
+                    
+                    coins.append({
+                        "instrument_name": symbol,
+                        "base_currency": base_currency,
+                        "quote_currency": quote_currency,
+                        "volume_24h": float(mp.volume_24h) if mp and mp.volume_24h else 0.0,
+                        "rank": idx + 1,
+                        "updated_at": mp.updated_at.isoformat() if mp and mp.updated_at else None,
+                        "is_custom": True,  # All watchlist coins are user-tracked
+                    })
+                
+                # Add default tracked symbols that are missing from watchlist
+                # This ensures major coins are always tracked even if they're not in watchlist yet
+                missing_default_symbols = [s for s in DEFAULT_TRACKED_SYMBOLS if s not in existing_symbols_set]
+                if missing_default_symbols:
+                    logger.info(f"Adding {len(missing_default_symbols)} default tracked symbols that are missing from watchlist")
+                    for symbol in missing_default_symbols:
+                        base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+                        quote_currency = symbol.split("_")[1] if "_" in symbol else "USD"
+                        mp = market_price_map.get(symbol)
+                        coins.append({
+                            "instrument_name": symbol,
+                            "base_currency": base_currency,
+                            "quote_currency": quote_currency,
+                            "volume_24h": float(mp.volume_24h) if mp and mp.volume_24h else 0.0,
+                            "rank": len(coins) + 1,
+                            "updated_at": mp.updated_at.isoformat() if mp and mp.updated_at else None,
+                            "is_custom": False,
+                        })
+                
+                logger.info(f"Fetched {len(watchlist_items)} coins from watchlist, added {len(missing_default_symbols)} default symbols, total: {len(coins)}")
+                db.close()
+            except Exception as pg_error:
+                logger.error(f"PostgreSQL error: {pg_error}", exc_info=True)
+                # Fallback: use default symbols if database is unavailable
+                coins = [
+                    {
+                        "instrument_name": symbol,
+                        "base_currency": symbol.split("_")[0] if "_" in symbol else symbol,
+                        "quote_currency": symbol.split("_")[1] if "_" in symbol else "USD",
+                        "volume_24h": 0.0,
+                        "rank": idx + 1,
+                        "updated_at": None,
+                    }
+                    for idx, symbol in enumerate(DEFAULT_TRACKED_SYMBOLS)
+                ]
+                logger.warning(f"Using fallback default symbols list: {len(coins)} symbols")
+        else:
+            logger.warning("PostgreSQL not available, using default tracked symbols")
+            coins = [
+                {
+                    "instrument_name": symbol,
+                    "base_currency": symbol.split("_")[0] if "_" in symbol else symbol,
+                    "quote_currency": symbol.split("_")[1] if "_" in symbol else "USD",
+                    "volume_24h": 0.0,
+                    "rank": idx + 1,
+                    "updated_at": None,
+                }
+                for idx, symbol in enumerate(DEFAULT_TRACKED_SYMBOLS)
+            ]
+
+        # Merge coins into a single mapping to avoid duplicates
+        coin_map: Dict[str, Dict] = {}
+        for coin in coins:
+            instrument = coin["instrument_name"]
+            coin_map[instrument] = {
+                "rank": coin["rank"],
+                "instrument_name": instrument,
+                "base_currency": coin["base_currency"],
+                "quote_currency": coin["quote_currency"],
+                "volume_24h": coin.get("volume_24h", 0) or 0,
+                "updated_at": coin.get("updated_at"),
+                "is_custom": False,
+            }
+
+        next_rank = len(coin_map) + 1
+        for coin in custom_coins:
+            instrument = coin["instrument_name"]
+            if instrument in coin_map:
+                continue
+            coin_map[instrument] = {
+                "rank": next_rank,
+                "instrument_name": instrument,
+                "base_currency": coin["base_currency"],
+                "quote_currency": coin["quote_currency"],
+                "volume_24h": 0,
+                "updated_at": coin.get("created_at"),
+                "is_custom": True,
+            }
+            next_rank += 1
+
+        coins = list(coin_map.values())
+
+        # Load existing market prices/indicators from database for fallback values
+        existing_prices: Dict[str, float] = {}
+        existing_volumes: Dict[str, float] = {}
+        existing_indicators: Dict[str, Dict[str, float]] = {}
+        if DB_AVAILABLE:
+            try:
+                db = SessionLocal()
+                try:
+                    market_prices = db.query(MarketPrice).all()
+                    for mp in market_prices:
+                        existing_prices[mp.symbol] = mp.price or 0.0
+                        existing_volumes[mp.symbol] = mp.volume_24h or 0.0
+                    market_data_rows = db.query(MarketData).all()
+                    for md in market_data_rows:
+                        existing_indicators[md.symbol] = {
+                            "rsi": float(md.rsi) if md.rsi is not None else 50.0,
+                            "ma50": float(md.ma50) if md.ma50 is not None else float(md.price or 0.0),
+                            "ma200": float(md.ma200) if md.ma200 is not None else float(md.price or 0.0),
+                            "ema10": float(md.ema10) if md.ema10 is not None else float(md.price or 0.0),
+                            "ma10w": float(md.ma10w) if md.ma10w is not None else float(md.price or 0.0),
+                            "atr": float(md.atr) if md.atr is not None else float((md.price or 0.0) * 0.02),
+                            "volume_24h": float(md.volume_24h) if md.volume_24h is not None else 0.0,
+                            "avg_volume": float(md.avg_volume) if md.avg_volume is not None else 0.0,
+                            "volume_ratio": float(md.volume_ratio) if md.volume_ratio is not None else 0.0,
+                        }
+                finally:
+                    db.close()
+            except Exception as existing_err:
+                logger.warning(f"Failed to load existing market prices: {existing_err}")
+
+        # Get prices with simple fetcher - this is the slow part with external API calls
+        prices_map: Dict[str, float] = {}
+        volume_map: Dict[str, float] = {}
+        symbols = [coin["instrument_name"] for coin in coins]
+        
+        try:
+            logger.info(f"Starting price fetch for {len(symbols)} symbols (with 3s delay between each)")
+            max_symbols = FETCH_SYMBOL_LIMIT
+            if len(symbols) > max_symbols:
+                custom_symbols = [coin["instrument_name"] for coin in coins if coin.get("is_custom")]
+                non_custom_symbols = [s for s in symbols if s not in custom_symbols]
+                selected_symbols: List[str] = []
+
+                # Always include custom symbols first (up to the limit)
+                for s in custom_symbols:
+                    if len(selected_symbols) >= max_symbols:
+                        break
+                    selected_symbols.append(s)
+
+                # Rotate through non-custom symbols across runs
+                if non_custom_symbols:
+                    global _non_custom_offset
+                    remaining = max_symbols - len(selected_symbols)
+                    total_non_custom = len(non_custom_symbols)
+                    if remaining > 0:
+                        chosen = []
+                        idx = 0
+                        while len(chosen) < remaining and idx < total_non_custom:
+                            symbol_idx = (_non_custom_offset + idx) % total_non_custom
+                            candidate = non_custom_symbols[symbol_idx]
+                            if candidate not in selected_symbols:
+                                chosen.append(candidate)
+                            idx += 1
+                        selected_symbols.extend(chosen[:remaining])
+                        _non_custom_offset = (_non_custom_offset + len(chosen)) % total_non_custom
+
+                # Fallback: if still underfilled (unlikely), append remaining from original order
+                if len(selected_symbols) < max_symbols:
+                    for s in symbols:
+                        if len(selected_symbols) >= max_symbols:
+                            break
+                        if s not in selected_symbols:
+                            selected_symbols.append(s)
+
+                logger.warning(
+                    f"Too many symbols ({len(symbols)}), limiting to {max_symbols} for performance "
+                    f"(custom={len(custom_symbols)}, selected={len(selected_symbols)})"
+                )
+                logger.debug(f"Selected symbols for price fetch: {selected_symbols}")
+                symbols = selected_symbols
+            
+            # Start with existing prices/volumes to avoid zeroing out untouched coins
+            for coin in coins:
+                symbol = coin["instrument_name"]
+                prices_map[symbol] = existing_prices.get(symbol, coin.get("current_price") or 0.0)
+                volume_map[symbol] = existing_volumes.get(symbol, coin.get("volume_24h") or 0.0)
+            
+            indicators_map: Dict[str, Dict[str, float]] = {
+                symbol: data.copy() for symbol, data in existing_indicators.items()
+            }
+            
+            # Fetch prices sequentially with 3s delay between each coin
+            price_results: Dict[str, Optional["PriceResult"]] = {}
+            
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Fetch prices, OHLCV, and indicators one by one with 3s delay between each
+            for idx, symbol in enumerate(symbols):
+                try:
+                    logger.debug(f"Fetching price and indicators for {symbol} ({idx + 1}/{len(symbols)})")
+                    
+                    # Fetch price
+                    price_result = await loop.run_in_executor(
+                        None,
+                        price_fetcher.get_price,
+                        symbol
+                    )
+                    price_results[symbol] = price_result
+                    
+                    current_price = 0.0
+                    if price_result and price_result.success:
+                        current_price = price_result.price
+                        logger.debug(f"✅ Price for {symbol}: ${current_price} from {price_result.source}")
+                    else:
+                        logger.debug(f"⚠️ Failed to get price for {symbol}, using 0.0")
+                    
+                    # Fetch OHLCV data for indicators (if we got a price)
+                    indicators = {}
+                    if current_price > 0:
+                        try:
+                            ohlcv_data = fetch_ohlcv_data(symbol, interval="1h", limit=200)
+                            if ohlcv_data:
+                                indicators = calculate_technical_indicators(ohlcv_data, current_price)
+                                logger.debug(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}")
+                            else:
+                                logger.debug(f"⚠️ No OHLCV data for {symbol}, using defaults")
+                                # Use defaults
+                                indicators = calculate_technical_indicators([], current_price)
+                        except Exception as e:
+                            logger.warning(f"Error calculating indicators for {symbol}: {e}")
+                            indicators = calculate_technical_indicators([], current_price)
+                    else:
+                        # No price, use defaults
+                        indicators = calculate_technical_indicators([], 0.0)
+                    
+                    indicators_map[symbol] = indicators
+                    
+                    # Wait 3 seconds before next coin (except after the last one)
+                    if idx < len(symbols) - 1:
+                        await asyncio.sleep(3)
+                        
+                except Exception as e:
+                    logger.warning(f"Error fetching data for {symbol}: {e}")
+                    price_results[symbol] = None
+                    if symbol not in indicators_map:
+                        indicators_map[symbol] = calculate_technical_indicators([], prices_map.get(symbol, 0.0))
+            
+            logger.info(f"Finished price fetch for {len(symbols)} symbols, got {len(price_results)} results")
+            
+            # Process results (prices and indicators) - keep price_results for later use
+            for coin in coins:
+                symbol = coin["instrument_name"]
+                price_result = price_results.get(symbol)
+                indicators = indicators_map.get(symbol, {})
+                
+                if price_result and price_result.success:
+                    prices_map[symbol] = price_result.price
+                    # Use real volume from indicators if available
+                    volume_map[symbol] = indicators.get("volume_24h", price_result.price * 1000000)
+                else:
+                    if symbol not in prices_map:
+                        prices_map[symbol] = coin.get("current_price") or existing_prices.get(symbol, 0.0)
+                    if symbol not in volume_map:
+                        volume_map[symbol] = indicators.get("volume_24h", existing_volumes.get(symbol, 0.0))
+                    if symbol not in indicators_map:
+                        # Ensure indicators_map has an entry for later use
+                        indicators_map[symbol] = existing_indicators.get(symbol, calculate_technical_indicators([], prices_map[symbol]))
+            
+            # Keep price_results and indicators_map in scope for database saving
+            # They are now available for the database update section below
+                        
+        except Exception as e:
+            logger.error(f"Error in simple price fetching: {e}")
+            # Use 0.0 for all symbols on error
+            for coin in coins:
+                symbol = coin["instrument_name"]
+                if symbol not in prices_map:
+                    prices_map[symbol] = existing_prices.get(symbol, 0.0)
+                    volume_map[symbol] = existing_volumes.get(symbol, 0.0)
+            indicators_map = existing_indicators.copy()
+        
+        # Enrich coins with prices, volumes, and technical indicators
+        enriched_coins = []
+        for coin in coins:
+            instrument = coin["instrument_name"]
+            updated_at = coin.get("updated_at")
+            if updated_at and not isinstance(updated_at, str):
+                updated_at = str(updated_at)
+            
+            # Get indicators for this coin
+            indicators = indicators_map.get(instrument, existing_indicators.get(instrument, {}))
+            current_price = float(prices_map.get(instrument, 0))
+            
+            # Ensure MA10w has a valid value - use MA200 or MA50 as fallback if needed
+            ma10w = indicators.get("ma10w")
+            if not ma10w or ma10w == 0:
+                # Try to use MA200 as fallback
+                ma200 = indicators.get("ma200")
+                if ma200 and ma200 > 0:
+                    ma10w = ma200
+                else:
+                    # Try MA50 as fallback
+                    ma50 = indicators.get("ma50")
+                    if ma50 and ma50 > 0:
+                        ma10w = ma50
+                    else:
+                        # Last resort: use current price
+                        ma10w = current_price if current_price > 0 else 0.0
+            
+            enriched_coin = {
+                "rank": int(coin.get("rank", 0)) if coin.get("rank") else 0,
+                "instrument_name": str(instrument),
+                "base_currency": str(coin.get("base_currency", "")),
+                "quote_currency": str(coin.get("quote_currency", "")),
+                "current_price": current_price,
+                "volume_24h": float(volume_map.get(instrument, coin.get("volume_24h") or 0)),
+                "updated_at": str(updated_at) if updated_at else None,
+                "is_custom": bool(coin.get("is_custom", False)),
+                # Technical indicators
+                "rsi": float(indicators.get("rsi", 50.0)),
+                "ma50": float(indicators.get("ma50", current_price)),
+                "ma200": float(indicators.get("ma200", current_price)),
+                "ema10": float(indicators.get("ema10", current_price)),
+                "ma10w": float(ma10w),
+                "atr": float(indicators.get("atr", current_price * 0.02 if current_price > 0 else 0.0)),
+                "current_volume": float(indicators.get("current_volume", 0)),
+                "avg_volume": float(indicators.get("avg_volume", 0)),
+                "volume_ratio": float(indicators.get("volume_ratio", 0)),
+            }
+            enriched_coins.append(enriched_coin)
+        
+        # Save to database if available
+        if DB_AVAILABLE:
+            try:
+                db = SessionLocal()
+                try:
+                    for coin in enriched_coins:
+                        symbol = coin["instrument_name"]
+                        price = coin["current_price"]
+                        source = "cache"  # Default source
+                        
+                        # Find source from price_results if available
+                        price_result = price_results.get(symbol)
+                        if price_result and price_result.success:
+                            source = price_result.source
+                        
+                        # Update or insert MarketPrice
+                        market_price = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+                        if market_price:
+                            market_price.price = price
+                            market_price.source = source
+                            market_price.volume_24h = coin.get("volume_24h")
+                            market_price.updated_at = func.now()
+                        else:
+                            market_price = MarketPrice(
+                                symbol=symbol,
+                                exchange="CRYPTO_COM",
+                                price=price,
+                                source=source,
+                                volume_24h=coin.get("volume_24h")
+                            )
+                            db.add(market_price)
+                        
+                        # Update or insert MarketData
+                        market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+                        if market_data:
+                            market_data.price = price
+                            market_data.rsi = coin.get("rsi")
+                            market_data.atr = coin.get("atr")
+                            market_data.ma50 = coin.get("ma50")
+                            market_data.ma200 = coin.get("ma200")
+                            market_data.ema10 = coin.get("ema10")
+                            market_data.ma10w = coin.get("ma10w")
+                            market_data.volume_24h = coin.get("volume_24h")
+                            market_data.current_volume = coin.get("current_volume")
+                            market_data.avg_volume = coin.get("avg_volume")
+                            market_data.volume_ratio = coin.get("volume_ratio")
+                            market_data.res_up = price * 1.02 if price > 0 else None
+                            market_data.res_down = price * 0.98 if price > 0 else None
+                            market_data.source = source
+                            market_data.updated_at = func.now()
+                        else:
+                            market_data = MarketData(
+                                symbol=symbol,
+                                exchange="CRYPTO_COM",
+                                price=price,
+                                rsi=coin.get("rsi"),
+                                atr=coin.get("atr"),
+                                ma50=coin.get("ma50"),
+                                ma200=coin.get("ma200"),
+                                ema10=coin.get("ema10"),
+                                ma10w=coin.get("ma10w"),
+                                volume_24h=coin.get("volume_24h"),
+                                current_volume=coin.get("current_volume"),
+                                avg_volume=coin.get("avg_volume"),
+                                volume_ratio=coin.get("volume_ratio"),
+                                res_up=price * 1.02 if price > 0 else None,
+                                res_down=price * 0.98 if price > 0 else None,
+                                source=source
+                            )
+                            db.add(market_data)
+                    
+                    db.commit()
+                    logger.info(f"✅ Saved {len(enriched_coins)} market prices and data to database")
+                    
+                    # Sync watchlist to TradeSignal after updating market data
+                    if SIGNAL_WRITER_AVAILABLE:
+                        try:
+                            logger.debug("Syncing watchlist to TradeSignal...")
+                            sync_watchlist_to_signals(db)
+                            logger.info("✅ Synced watchlist to TradeSignal")
+                        except Exception as sync_error:
+                            logger.warning(f"Error syncing watchlist to TradeSignal: {sync_error}")
+                except Exception as db_error:
+                    db.rollback()
+                    logger.error(f"Error saving to database: {db_error}", exc_info=True)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.warning(f"Database session error: {e}")
+        
+        # Save to shared storage (JSON cache - for backward compatibility)
+        cache_data = {
+            "coins": enriched_coins,
+            "count": len(enriched_coins),
+            "timestamp": time.time()
+        }
+        save_cache_to_storage(cache_data)
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✅ Updated market data cache, {len(enriched_coins)} items, took {elapsed:.2f} seconds")
+        
+    except Exception as e:
+        logger.error(f"Error updating market data: {e}", exc_info=True)
+        # Save empty cache on error
+        save_cache_to_storage({"coins": [], "count": 0})
+
+
+async def run_updater():
+    """Main updater loop - runs every 60 seconds"""
+    logger.info("Market data updater worker started")
+    logger.info("Update interval: 60 seconds")
+    
+    # Run initial update immediately
+    logger.info("Running initial update...")
+    await update_market_data()
+    
+    # Then update every 60 seconds
+    while True:
+        try:
+            await asyncio.sleep(60)
+            logger.info("Scheduled update: running update_market_data()")
+            await update_market_data()
+        except KeyboardInterrupt:
+            logger.info("Updater stopped by user")
+            break
+        except Exception as e:
+            logger.error(f"Error in updater loop: {e}", exc_info=True)
+            # Continue running even if one update fails
+            await asyncio.sleep(60)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_updater())
+    except KeyboardInterrupt:
+        logger.info("Updater process terminated")
+

@@ -1,0 +1,50 @@
+# FastAPI and ASGI server
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.13.3
+
+# Authentication and Security
+python-jose[cryptography]>=3.3.0,<4.0.0
+passlib[bcrypt]==1.7.4
+python-multipart>=0.0.9
+
+# Environment variables
+python-dotenv==1.0.1
+
+# HTTP client
+httpx==0.27.2
+# Note: aiohttp is constrained by alpaca-trade-api to 3.8.2 (security limitation)
+# aiohttp>=3.9.5  # Removed due to alpaca-trade-api 3.1.1 dependency conflict
+requests==2.32.3
+# Match alpaca-trade-api (<11) - must be <11 for compatibility
+websockets==10.4
+
+# Data validation
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Data analysis
+numpy==2.1.1
+pytz==2024.2
+
+# Trading APIs
+ccxt==4.2.65
+alpaca-trade-api==3.1.1
+
+# Background tasks
+celery==5.4.0
+redis==5.0.8
+
+# Testing (NOT installed in production Docker image)
+# pytest==7.4.3
+# pytest-asyncio==0.21.1
+# Note: httpx is installed above in HTTP client section
+
+# Development (NOT installed in production Docker image)
+# black==23.11.0
+# isort==5.12.0
+# flake8==6.1.0
+

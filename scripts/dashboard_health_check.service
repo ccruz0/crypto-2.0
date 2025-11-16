@@ -1,0 +1,19 @@
+[Unit]
+Description=Dashboard Health Check Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+Environment="API_URL=http://localhost:8002/api"
+Environment="TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+Environment="TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}"
+Environment="LOG_FILE=/home/ubuntu/automated-trading-platform/logs/dashboard_health_check.log"
+ExecStart=/home/ubuntu/automated-trading-platform/scripts/dashboard_health_check.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

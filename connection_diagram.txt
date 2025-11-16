@@ -1,0 +1,125 @@
+══════════════════════════════════════════════════════════════════════
+DESCRIPCIÓN DEL PROBLEMA - Crypto.com Exchange API v1
+══════════════════════════════════════════════════════════════════════
+
+ARQUITECTURA DE CONEXIÓN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Instancia AWS (175.41.189.249) → HTTPS → Crypto.com Exchange API v1
+                                 ↓
+                      (URL: https://api.crypto.com/exchange/v1)
+                      (Endpoint: private/get-account-summary)
+
+
+CONFIGURACIÓN ACTUAL:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+API Key: z3HWF8m292zJKABkzfXWvQ
+Secret: cxakp_oGDfb6D6JW396cYGz8FHmg
+Environment: Production (https://api.crypto.com/exchange/v1)
+Method: REST POST
+Content-Type: application/json
+
+
+IMPLEMENTACIÓN DE AUTENTICACIÓN:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Generación de nonce: int(time.time() * 1000)  # milisegundos
+2. Payload string: method + id + api_key + nonce + json.dumps(params)
+3. Firma HMAC-SHA256: hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+4. Request body JSON:
+   {
+     "id": nonce,
+     "method": "private/get-account-summary",
+     "api_key": api_key,
+     "sig": signature,
+     "nonce": nonce,
+     "params": {}
+   }
+
+
+REQUISITOS IMPLEMENTADOS (según recomendaciones del soporte):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ Usar endpoint Production REST API v1
+   URL: https://api.crypto.com/exchange/v1
+
+✅ API keys leídas con .strip() para eliminar espacios
+   api_key = os.getenv("CRYPTO_API_KEY", "").strip()
+   api_secret = os.getenv("CRYPTO_API_SECRET", "").strip()
+
+✅ Validación con assert statements
+   assert len(api_key) > 0, "API key no puede estar vacía"
+   assert len(api_secret) > 0, "API secret no puede estar vacía"
+
+✅ Verificación de que no haya newlines en las keys
+   assert "\n" not in api_key
+   assert "\n" not in api_secret
+
+✅ NTP sync activo en servidor
+   timedatectl status → "System clock synchronized: yes"
+
+✅ Header Content-Type: application/json
+
+✅ Formato de firma correcto
+   Payload: method + id + api_key + nonce + json.dumps(params, separators=(',',':'))
+
+
+EJEMPLO DE REQUEST ACTUAL:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+POST https://api.crypto.com/exchange/v1/private/get-account-summary
+Headers: {
+  "Content-Type": "application/json"
+}
+Body: {
+  "id": 1761457408407,
+  "method": "private/get-account-summary",
+  "api_key": "z3HWF8m292zJKABkzfXWvQ",
+  "sig": "8d9b757e3e748b67b3b8538f3d873f1618b4eec91bd32e0f95a18b66e4b1ea93",
+  "nonce": 1761457408407,
+  "params": {}
+}
+
+Payload para firma:
+private/get-account-summary1761457408407z3HWF8m292zJKABkzfXWvQ1761457408407{}
+
+
+RESPUESTA DEL SERVIDOR:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status Code: 401
+Body: {"code":40101,"message":"Authentication failure"}
+
+
+INFORMACIÓN ADICIONAL:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Sistema operativo: Ubuntu 24.04.3 LTS (AWS EC2)
+- Python: 3.12
+- Librería HTTP: requests 2.31.0
+- Time zone: UTC
+- Reloj del sistema sincronizado vía NTP
+- Instancia AWS: 175.41.189.249 (Singapur)
+- No usamos proxy ni UAT, solo producción
+- No usamos WebSocket para esta consulta
+
+
+PREGUNTAS PARA EL SOPORTE TÉCNICO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. ¿Las credenciales API_KEY/API_SECRET proporcionadas son válidas?
+2. ¿Hay alguna restricción de IP o firewall que pueda estar bloqueando nuestra instancia?
+3. ¿La API key tiene los permisos correctos para acceder a private/get-account-summary?
+4. ¿Existe algún límite de rate o throttling que podría estar causando 401?
+5. ¿El formato de la firma HMAC-SHA256 es correcto según nuestra implementación?
+
+
+TIMESTAMP DEBUG:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Timestamp usado: 1761457408407 (milisegundos Unix epoch)
+Fecha equivalente: Sun Oct 26, 2025 05:43:28 UTC
+Formato: int(time.time() * 1000)
+
+
+ERROR COMPLETO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Error Code: 40101
+Error Message: "Authentication failure"
+Request Method: POST
+Request URL: https://api.crypto.com/exchange/v1/private/get-account-summary
+Headers Sent: Content-Type: application/json
+Authentication: HMAC-SHA256 signature in JSON body
+

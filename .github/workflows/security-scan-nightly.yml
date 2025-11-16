@@ -1,0 +1,171 @@
+name: Security Scan (Nightly Report)
+
+on:
+  schedule:
+    - cron: "0 22 * * *" # 06:00 SGT (Asia/Singapore) ~ 22:00 UTC diario
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  nightly-trivy:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # nunca falla el pipeline
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-nightly-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-nightly-
+
+      # ---------- Build images (no push) ----------
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: false
+          tags: local/atp-frontend:nightly
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: local/atp-backend:nightly
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Build db image (optional)
+        if: hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/postgres
+          file: ./docker/postgres/Dockerfile
+          push: false
+          tags: local/atp-postgres:nightly
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      # ---------- Trivy scans (NO fail) ----------
+
+      - name: Trivy Scan (frontend image)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-frontend:nightly
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Trivy Scan (backend image)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-backend:nightly
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Trivy Scan (db image)
+        if: hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-postgres:nightly
+          format: sarif
+          output: trivy-db.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Trivy FS (repo)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          ignore-unfixed: true
+
+      # ---------- SARIF upload (Code Scanning) ----------
+
+      - name: Upload SARIF (frontend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+
+      - name: Upload SARIF (backend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+
+      - name: Upload SARIF (db)
+        if: always() && hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-db.sarif
+
+      - name: Upload SARIF (fs)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+
+      # ---------- Resumen y diff simple ----------
+
+      - name: Generate summary
+        run: |
+          echo "## Nightly Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          for f in trivy-frontend.sarif trivy-backend.sarif trivy-db.sarif trivy-fs.sarif; do
+            if [ -f "$f" ]; then
+              COUNT=$(jq '[.. | objects | select(has("ruleId"))] | length' "$f" 2>/dev/null || echo "0")
+              echo "- $f: $COUNT findings (HIGH/CRITICAL, ignore-unfixed)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Archive reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports-nightly-${{ github.run_id }}
+          path: |
+            trivy-frontend.sarif
+            trivy-backend.sarif
+            trivy-db.sarif
+            trivy-fs.sarif
+          if-no-files-found: ignore
+

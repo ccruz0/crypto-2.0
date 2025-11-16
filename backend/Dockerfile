@@ -34,6 +34,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UVICORN_WORKERS=1
 
 WORKDIR /app
+COPY . .
 
 # Crear usuario no root
 RUN useradd -m -u 10001 appuser
@@ -55,8 +56,8 @@ COPY . .
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import socket; s=socket.socket(); \
-  s.settimeout(3); s.connect(('127.0.0.1',8000)); print('ok')" || exit 1
+  s.settimeout(3); s.connect(('127.0.0.1',8002)); print('ok')" || exit 1
 
 USER appuser
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

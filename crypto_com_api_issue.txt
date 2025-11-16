@@ -1,0 +1,99 @@
+══════════════════════════════════════════════════════════════════════
+ISSUE DESCRIPTION - Crypto.com Exchange API v1
+══════════════════════════════════════════════════════════════════════
+
+CONNECTION ARCHITECTURE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AWS Instance (175.41.189.249) → HTTPS → Crypto.com Exchange API v1
+                                 ↓
+                      (URL: https://api.crypto.com/exchange/v1)
+                      (Endpoint: private/get-account-summary)
+
+
+CONFIGURATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+API Key: z3HWF8m292zJKABkzfXWvQ
+Secret: cxakp_oGDfb6D6JW396cYGz8FHmg
+Environment: Production (https://api.crypto.com/exchange/v1)
+Method: REST POST
+Content-Type: application/json
+
+
+OBSERVATION - TIMING ISSUE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: Connection works in the morning (Bali time) but fails after midday
+
+This suggests a possible time synchronization issue or rate limiting that 
+resets daily. However, all tests show the same 401 error regardless of time.
+
+Current server time (UTC): 2025-10-26 05:54:37
+Current server time (Bali): 2025-10-26 13:54:28 WITA
+Server location: AWS Singapore (ap-southeast-1)
+System clock synchronized: YES
+NTP service: ACTIVE
+
+
+IMPLEMENTATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Nonce: int(time.time() * 1000)  # milliseconds
+2. Payload: method + id + api_key + nonce + json.dumps(params)
+3. HMAC-SHA256 signature
+4. Request body JSON with signature
+
+
+REQUIREMENTS IMPLEMENTED:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ Production REST API v1 endpoint
+✅ API keys read with .strip()
+✅ Assert validation for keys
+✅ No newlines in keys
+✅ NTP sync active
+✅ Content-Type: application/json
+✅ Correct signature format
+
+
+REQUEST EXAMPLE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+POST https://api.crypto.com/exchange/v1/private/get-account-summary
+Body: {
+  "id": 1761458077294,
+  "method": "private/get-account-summary",
+  "api_key": "z3HWF8m292zJKABkzfXWvQ",
+  "sig": "<HMAC-SHA256 signature>",
+  "nonce": 1761458077294,
+  "params": {}
+}
+
+
+RESPONSE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: 401
+Error: {"code":40101,"message":"Authentication failure"}
+
+
+ENVIRONMENT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- OS: Ubuntu 24.04.3 LTS (AWS EC2 Singapore)
+- Python: 3.12
+- HTTP: requests 2.31.0
+- Timezone: UTC
+- NTP: Synchronized
+- No proxy or UAT
+
+
+QUESTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Are the API credentials valid?
+2. Any IP restrictions or firewalls?
+3. Does the API key have correct permissions?
+4. Is there rate limiting causing 401?
+5. Is the signature format correct?
+6. Is there a time-sensitive issue (works morning, fails afternoon)?
+
+
+ERROR:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Code: 40101
+Message: "Authentication failure"
+Method: POST
+URL: https://api.crypto.com/exchange/v1/private/get-account-summary

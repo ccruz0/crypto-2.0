@@ -1,0 +1,12 @@
+[Unit]
+Description=Dashboard Health Check Timer (every 20 minutes)
+Requires=dashboard_health_check.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=20min
+Unit=dashboard_health_check.service
+
+[Install]
+WantedBy=timers.target
+
