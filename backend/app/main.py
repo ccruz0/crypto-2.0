@@ -243,6 +243,11 @@ def test():
     """Simple test endpoint without dependencies"""
     return {"status": "ok", "message": "Backend is responding"}
 
+@app.get("/route_fix_test")
+def route_fix_test():
+    """Routing fix test endpoint - debug hanging paths"""
+    return {"status": "ok", "source": "route_fix_test"}
+
 @app.get("/ping_fast")
 def ping_fast():
     """Ultra-fast ping endpoint - minimal processing"""
