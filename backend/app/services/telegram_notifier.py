@@ -4,6 +4,7 @@ import requests
 from typing import Optional
 from datetime import datetime
 import pytz
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -11,12 +12,11 @@ class TelegramNotifier:
     """Telegram notification service for trading alerts"""
     
     def __init__(self):
-        # Use provided bot token and chat ID, or fall back to environment variables
-        # If env var is empty string, use default value
-        env_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        env_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        self.bot_token = env_bot_token if env_bot_token else "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY"
-        self.chat_id = env_chat_id if env_chat_id else "839853931"
+        # Environment-only configuration
+        bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
+        chat_id = (settings.TELEGRAM_CHAT_ID or "").strip()
+        self.bot_token = bot_token or None
+        self.chat_id = chat_id or None
         self.enabled = bool(self.bot_token and self.chat_id)
         
         # Timezone configuration - defaults to Asia/Makassar (Bali time UTC+8), can be overridden with TELEGRAM_TIMEZONE env var
@@ -29,12 +29,12 @@ class TelegramNotifier:
             logger.warning(f"Unknown timezone '{timezone_name}', falling back to Asia/Makassar")
             self.timezone = pytz.timezone("Asia/Makassar")
         
-        if self.enabled:
-            logger.info("Telegram Notifier initialized")
-            # Set bot commands menu on initialization
-            self.set_bot_commands()
-        else:
-            logger.warning("Telegram Notifier disabled - missing bot_token or chat_id")
+        if not self.enabled:
+            logger.warning("Telegram disabled: missing env vars")
+            return
+
+        logger.info("Telegram Notifier initialized")
+        self.set_bot_commands()
     
     def _format_timestamp(self) -> str:
         """Format current timestamp using configured timezone (Bali time)"""
@@ -43,6 +43,9 @@ class TelegramNotifier:
     
     def set_bot_commands(self) -> bool:
         """Set bot commands menu for Telegram - only /menu command to avoid cluttering"""
+        if not self.enabled:
+            logger.debug("Telegram disabled: skipping bot command configuration")
+            return False
         try:
             url = f"https://api.telegram.org/bot{self.bot_token}/setMyCommands"
             # User requested: remove all commands from list, only keep /menu
@@ -68,7 +71,7 @@ class TelegramNotifier:
     def send_message(self, message: str, reply_markup: Optional[dict] = None) -> bool:
         """Send a message to Telegram with optional inline keyboard"""
         if not self.enabled:
-            logger.debug("Telegram notifications disabled")
+            logger.debug("Telegram disabled: skipping send_message call")
             return False
         
         try:
@@ -113,7 +116,7 @@ class TelegramNotifier:
             ]
         """
         if not self.enabled:
-            logger.debug("Telegram notifications disabled")
+            logger.debug("Telegram disabled: skipping send_message_with_buttons call")
             return False
         
         try:

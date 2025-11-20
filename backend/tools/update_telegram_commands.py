@@ -13,10 +13,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get bot token from environment
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY"
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 
 def update_bot_commands():
     """Update bot commands to only show /menu"""
+    if not BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing. Cannot update commands.")
+        return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
         # Only keep essential command - remove most to keep menu clean

@@ -1,0 +1,6 @@
+version: 1
+remoteWorkspace:
+  host: hilovivo-aws
+  rootPath: /home/ubuntu/automated-trading-platform
+  dockerComposeFile: docker-compose.yml
+

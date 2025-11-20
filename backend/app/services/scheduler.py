@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from datetime import datetime, time, date
+import time
+from datetime import datetime, time as time_module, date
 import pytz
 from app.services.daily_summary import daily_summary_service
 from app.services.telegram_commands import process_telegram_commands
@@ -21,8 +22,8 @@ class TradingScheduler:
     
     def __init__(self):
         self.running = False
-        self.daily_summary_time = time(8, 0)  # 8:00 AM
-        self.sell_orders_report_time = time(7, 0)  # 7:00 AM
+        self.daily_summary_time = time_module(8, 0)  # 8:00 AM
+        self.sell_orders_report_time = time_module(7, 0)  # 7:00 AM
         self.last_sl_tp_check_date = None  # Track last SL/TP check date
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self._scheduler_task = None  # Track the running task to prevent duplicates
@@ -108,6 +109,27 @@ class TradingScheduler:
         except Exception as e:
             logger.error(f"[TG] Error checking commands: {e}", exc_info=True)
     
+    async def update_dashboard_snapshot(self):
+        """Update dashboard snapshot cache periodically (every 60 seconds)"""
+        try:
+            from app.services.dashboard_snapshot import update_dashboard_snapshot as run_snapshot_update
+            
+            if not hasattr(self, '_last_snapshot_update'):
+                self._last_snapshot_update = 0
+            
+            now = time.time()
+            if now - self._last_snapshot_update >= 60:  # Update every 60 seconds
+                logger.info("[SCHEDULER] 📸 Updating dashboard snapshot...")
+                # Run blocking snapshot update in separate thread to avoid blocking event loop
+                result = await asyncio.to_thread(run_snapshot_update)
+                if result.get("success"):
+                    self._last_snapshot_update = time.time()
+                    logger.info(f"[SCHEDULER] ✅ Dashboard snapshot updated in {result.get('duration_seconds', 0):.2f}s")
+                else:
+                    logger.warning(f"[SCHEDULER] ⚠️ Dashboard snapshot update failed: {result.get('error')}")
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Error updating dashboard snapshot: {e}", exc_info=True)
+    
     async def run_scheduler(self):
         """Main scheduler loop"""
         logger.info("[SCHEDULER] 🚀 run_scheduler() STARTED")
@@ -126,6 +148,8 @@ class TradingScheduler:
                 await self.check_daily_summary()
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
+                # Update dashboard snapshot periodically (every 60 seconds)
+                await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)
                 await self.check_telegram_commands()
                 # Short sleep to allow other tasks to run, but check commands immediately again

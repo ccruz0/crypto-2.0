@@ -49,6 +49,17 @@ This audit was conducted to fix the Dashboard so that it works smoothly end-to-e
    - Converted `get_monitoring_summary` from `def` to `async def`
    - Changed `get_dashboard_state(db)` call to `await get_dashboard_state(db)`
 
+4. **`backend/requirements.txt`**
+   - Added `gunicorn==21.2.0` dependency
+
+5. **`docker-compose.yml` (backend-aws service)**
+   - Replaced Uvicorn command with Gunicorn + Uvicorn workers:
+     ```yaml
+     command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120"
+     ```
+   - Reduced workers from 3 to 2
+   - Increased memory limit from 768M to 1G
+
 ### Nginx Configuration Changes
 
 Updated `/etc/nginx/sites-available/*`:
@@ -96,25 +107,39 @@ Updated `/etc/nginx/sites-available/*`:
 - Increased Nginx timeouts
 - Verified frontend snapshot-first implementation
 - Verified frontend timeouts are correctly configured
+- **Migrated from Uvicorn to Gunicorn + Uvicorn workers** (resolved socket binding issues)
+- **Identified endpoint-specific pattern**: Some endpoints work (`/`, `/test`), others hang (`/ping_fast`, `/health`)
 
 ### ⚠️ Remaining Issues
 
-**HTTP Connection Reset Issue:**
-- Requests to `/ping_fast` and `/api/dashboard/snapshot` are being rejected with "Connection reset by peer"
-- Issue occurs even with async conversion and increased timeouts
-- No logs indicate requests are reaching uvicorn handler
+**HTTP Connection Reset/Hang Issue:**
+- **Migrated from Uvicorn to Gunicorn + Uvicorn Workers** to fix socket binding issues
+- Gunicorn is starting correctly with 2 workers
+- Workers are booting successfully (`Application startup complete`)
+- **Pattern Discovered:**
+  - ✅ Endpoints that WORK: `/` (root), `/test`
+  - ❌ Endpoints that HANG: `/ping_fast`, `/health`, `/__ping`, `/api/health`
+- Requests connect to the server (TCP connection established) but workers don't process them
+- No access logs or handler execution logs for hanging endpoints
 - Possible causes:
-  - Uvicorn worker configuration issue
-  - Event loop blocking before request reaches handler
-  - Docker networking issue
-  - Middleware blocking requests
+  - Issue with specific endpoint definitions (logging, timing, dependencies)
+  - Router mounting order affecting certain endpoints
+  - Middleware or dependency injection blocking certain routes
+  - Gunicorn worker class configuration issue with specific FastAPI routes
 
-**Investigation Needed:**
-1. Verify uvicorn workers are actually processing requests
-2. Check if there's middleware blocking requests before handler
-3. Test if requests work from inside container vs. from host
-4. Verify Docker port mapping is correct
-5. Check for any blocking operations in startup event
+**Investigation Performed:**
+1. ✅ Verified Gunicorn workers are starting correctly
+2. ✅ Tested requests from inside container (same behavior)
+3. ✅ Verified Docker port mapping is correct
+4. ✅ Confirmed startup event is non-blocking
+5. ⚠️ **NEW**: Discovered endpoint-specific pattern (some work, others don't)
+
+**Gunicorn Migration Details:**
+- Replaced direct Uvicorn with `gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker`
+- Reduced workers from 3 to 2 to prevent OOM kills
+- Increased memory limit from 768M to 1G
+- Added worker timeout of 120s
+- Fixed access log flag (`--access-logfile -` instead of `--access-log`)
 
 ## Testing Recommendations
 
@@ -143,11 +168,16 @@ Updated `/etc/nginx/sites-available/*`:
 
 ## Next Steps
 
-1. **Debug HTTP Connection Issue:**
-   - Add logging to uvicorn startup to verify workers are ready
-   - Check for middleware blocking requests
-   - Test requests from inside container
-   - Verify Docker networking configuration
+1. **Debug Endpoint-Specific Hang Issue:**
+   - ✅ **Tested**: Simplified `/ping_fast` to match `/test` (removed timing/logging) - **Still hangs**
+   - ✅ **Tested**: Moved `/ping_fast` after routers (same position as `/test`) - **Still hangs**
+   - ⚠️ **Conclusion**: Problem is NOT with endpoint code or position
+   - **Next steps:**
+     - Investigate FastAPI route registration for `/ping_fast` vs `/test`
+     - Check if Gunicorn worker class has issues with specific route patterns
+     - Verify if there's a route conflict or override happening
+     - Test if creating a new endpoint with different name works
+     - Consider if FastAPI router order matters for Gunicorn worker processing
 
 2. **Performance Monitoring:**
    - Add timing logs to verify async operations are not blocking

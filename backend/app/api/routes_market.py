@@ -457,6 +457,14 @@ def get_top_coins():
             "timestamp": time.time()
         }
 
+    # Default fallback if external API returned unexpected payload
+    return {
+        "coins": [],
+        "count": 0,
+        "source": "empty",
+        "timestamp": time.time()
+    }
+
 @router.get("/market/top-coins/from-db")
 def get_top_coins_from_db():
     """Get top coins from local database"""

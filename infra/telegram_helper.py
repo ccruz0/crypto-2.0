@@ -20,16 +20,11 @@ def send_telegram_message(text: str) -> bool:
     Returns:
         True if message was sent successfully, False otherwise
     """
-    # Use the same environment variables as the main app
-    env_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    env_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    
-    # Fallback to defaults if env vars are empty (same as TelegramNotifier)
-    bot_token = env_bot_token if env_bot_token else "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY"
-    chat_id = env_chat_id if env_chat_id else "839853931"
+    bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
     
     if not bot_token or not chat_id:
-        logger.warning("Telegram notifications disabled - missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+        logger.warning("Telegram disabled: missing env vars")
         return False
     
     try:

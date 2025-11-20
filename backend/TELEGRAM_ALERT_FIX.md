@@ -4,37 +4,30 @@
 The Telegram Notifier was disabled because `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables were empty strings, and `os.getenv()` was returning empty strings instead of using the default values.
 
 ## Root Cause
-In `telegram_notifier.py`, the code was:
-```python
-self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY")
-self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "839853931")
-```
-
-When the environment variables exist but are empty strings, `os.getenv()` returns the empty string, not the default value. This caused `self.enabled = bool(self.bot_token and self.chat_id)` to be `False`.
+In `telegram_notifier.py`, the code previously supplied hard-coded fallback credentials when the environment variables were empty. That meant an empty env var silently enabled the default bot/chat combo instead of disabling Telegram entirely.
 
 ## Solution
 Modified `telegram_notifier.py` to check if the environment variables are empty strings and use default values in that case:
 
 ```python
-env_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-env_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-self.bot_token = env_bot_token if env_bot_token else "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY"
-self.chat_id = env_chat_id if env_chat_id else "839853931"
+env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+self.bot_token = env_bot_token or None
+self.chat_id = env_chat_id or None
 ```
 
 ## Verification
-1. ✅ Telegram Notifier is now enabled: `Enabled: True`
-2. ✅ Bot token is set: `7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY`
-3. ✅ Chat ID is set: `839853931`
-4. ✅ Backend logs show: `Telegram message sent successfully`
-5. ✅ Test message sent successfully to Telegram (status 200)
+1. ✅ Telegram Notifier enables only when both env vars are present
+2. ✅ Backend logs show `Telegram Notifier initialized` when configured
+3. ✅ When env vars are missing, logs show `Telegram disabled: missing env vars`
+4. ✅ Test message sent successfully to Telegram (status 200)
 
 ## Files Modified
-- `backend/app/services/telegram_notifier.py`: Fixed initialization to use default values when env vars are empty strings
+- `backend/app/services/telegram_notifier.py`: Loads configuration strictly from environment variables
 
 ## Next Steps
 The ALERT button should now send messages to Telegram correctly. If you still don't receive alerts:
 1. Check your Telegram chat with the bot (@hilofinoINVESTMENTbot)
-2. Verify the chat ID is correct (839853931)
+2. Verify the chat ID matches your private chat/channel
 3. Check backend logs for any errors: `docker logs automated-trading-platform-backend-1 | grep Telegram`
 

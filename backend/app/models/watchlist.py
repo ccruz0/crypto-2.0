@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON, UniqueConstraint, text
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -8,7 +8,12 @@ class WatchlistItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
-    is_deleted = Column(Boolean, default=False, nullable=False)  # Soft delete flag - only deleted entries are hidden
+    is_deleted = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default=text("0")
+    )  # Soft delete flag - only deleted entries are hidden
     
     # Unique constraint to prevent duplicates: one watchlist entry per (symbol, exchange) combination
     __table_args__ = (

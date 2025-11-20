@@ -6,13 +6,16 @@ import json
 import logging
 import requests
 import uuid
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Dict, List, Optional
 
 from .crypto_com_constants import REST_BASE, CONTENT_TYPE_JSON
 from app.core.failover_config import (
     CRYPTO_REST_BASE, CRYPTO_TIMEOUT, CRYPTO_RETRIES,
     TRADEBOT_BASE, FAILOVER_ENABLED
 )
+from app.schemas.orders import UnifiedOpenOrder
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +423,7 @@ class CryptoComTradeClient:
             # NO SIMULATED DATA - Re-raise error
             raise
     
-    def get_open_orders(self) -> dict:
+    def get_open_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get all open/pending orders"""
         if not self.live_trading:
             logger.info("DRY_RUN: get_open_orders - returning simulated data")
@@ -442,12 +445,15 @@ class CryptoComTradeClient:
                 ]
             }
         
+        method = "private/get-open-orders"
+        params = {
+            "page": page,
+            "page_size": page_size
+        }
+        
         # Use proxy if enabled
         if self.use_proxy:
             logger.info("Using PROXY to get open orders")
-            method = "private/get-open-orders"
-            params = {}
-            
             try:
                 result = self._call_proxy(method, params)
                 
@@ -500,8 +506,6 @@ class CryptoComTradeClient:
                 "orders": []
             }
         
-        method = "private/get-open-orders"
-        params = {}
         payload = self.sign_request(method, params)
         
         logger.info(f"Live: Calling {method}")
@@ -536,6 +540,252 @@ class CryptoComTradeClient:
         except Exception as e:
             logger.error(f"Error getting open orders: {e}")
             return {"orders": []}
+
+    def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
+        """Get trigger-based (TP/SL) open orders."""
+        if not self.live_trading:
+            logger.info("DRY_RUN: get_trigger_orders - returning simulated data")
+            return {"data": []}
+
+        method = "private/get-trigger-orders"
+        params = {
+            "page": page,
+            "page_size": page_size
+        }
+
+        if self.use_proxy:
+            logger.info("Using PROXY to get trigger orders")
+            try:
+                result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("code") in [40101, 40103]:
+                    logger.warning(f"Proxy authentication error while fetching trigger orders: {result.get('message')}")
+                    return {"data": []}
+
+                if isinstance(result, dict) and "result" in result and "data" in result["result"]:
+                    data = result["result"]["data"]
+                    logger.info(f"Successfully retrieved {len(data) if isinstance(data, list) else 0} trigger orders via proxy")
+                    return {"data": data if isinstance(data, list) else []}
+
+                logger.warning(f"Unexpected proxy response for trigger orders: {result}")
+                return {"data": []}
+            except requests.exceptions.RequestException as exc:
+                logger.error(f"Proxy trigger orders error: {exc}")
+                return {"data": []}
+
+        if not self.api_key or not self.api_secret:
+            logger.warning("API credentials not configured. Returning empty trigger orders.")
+            return {"data": []}
+
+        payload = self.sign_request(method, params)
+        try:
+            url = f"{self.base_url}/{method}"
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+            )
+            if response.status_code == 401:
+                error_data = response.json()
+                logger.error(f"Authentication failed for trigger orders: {error_data}")
+                return {"data": []}
+
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("result", {}).get("data", [])
+            logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from Crypto.com")
+            return {"data": data if isinstance(data, list) else []}
+        except requests.exceptions.RequestException as exc:
+            logger.error(f"Network error getting trigger orders: {exc}")
+            return {"data": []}
+        except Exception as exc:
+            logger.error(f"Error getting trigger orders: {exc}")
+            return {"data": []}
+
+    def _map_incoming_order(self, raw: dict, is_trigger: bool) -> UnifiedOpenOrder:
+        """
+        Normalize a raw order payload (standard or trigger) into UnifiedOpenOrder.
+        """
+
+        def _optional_decimal(value):
+            if value in (None, ""):
+                return None
+            if isinstance(value, Decimal):
+                return value
+            try:
+                value_str = str(value).strip()
+                if not value_str:
+                    return None
+                return Decimal(value_str)
+            except (InvalidOperation, ValueError, TypeError):
+                return None
+
+        symbol = (raw.get("instrument_name") or raw.get("symbol") or "").upper()
+        side = (raw.get("side") or "BUY").upper()
+        order_type = raw.get("order_type") or raw.get("type") or ("TAKE_PROFIT_LIMIT" if is_trigger else "LIMIT")
+
+        quantity_value = raw.get("quantity") or raw.get("order_quantity") or raw.get("qty") or raw.get("size") or 0
+        try:
+            quantity = Decimal(str(quantity_value))
+        except (InvalidOperation, ValueError, TypeError):
+            quantity = Decimal("0")
+
+        price = _optional_decimal(
+            raw.get("limit_price")
+            or raw.get("price")
+            or raw.get("ref_price")
+            or raw.get("reference_price")
+        )
+        trigger_price = _optional_decimal(
+            raw.get("trigger_price")
+            or raw.get("stop_price")
+            or raw.get("trigger_price_value")
+        )
+
+        timestamp = raw.get("create_time") or raw.get("order_time") or raw.get("created_at")
+        created_at = None
+        if timestamp is not None:
+            try:
+                if isinstance(timestamp, str):
+                    timestamp = int(float(timestamp))
+                if isinstance(timestamp, (int, float)):
+                    ts = timestamp / 1000 if timestamp > 1_000_000_000_000 else timestamp
+                    created_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+            except Exception:
+                created_at = None
+
+        status = (raw.get("status") or raw.get("order_status") or "NEW").upper()
+        order_id = str(
+            raw.get("order_id")
+            or raw.get("id")
+            or raw.get("orderId")
+            or raw.get("client_oid")
+            or raw.get("clientOrderId")
+            or uuid.uuid4()
+        )
+        client_oid = raw.get("client_oid") or raw.get("clientOrderId")
+
+        return UnifiedOpenOrder(
+            symbol=symbol,
+            side=side,
+            type=order_type,
+            quantity=quantity,
+            price=price,
+            trigger_price=trigger_price,
+            status=status,
+            is_trigger=is_trigger,
+            order_id=order_id,
+            client_oid=client_oid,
+            created_at=created_at,
+            raw=raw,
+        )
+
+    def get_all_unified_orders(self) -> List[UnifiedOpenOrder]:
+        """
+        Fetch open orders (standard + trigger) and normalize them into a single list.
+        """
+        combined: List[UnifiedOpenOrder] = []
+        seen_ids = set()
+        stats = {"normal": 0, "trigger": 0}
+
+        def _extract_orders(response: Optional[dict]) -> List[dict]:
+            if not response:
+                return []
+            if isinstance(response.get("data"), list):
+                return response["data"]
+            if isinstance(response.get("orders"), list):
+                return response["orders"]
+            return []
+
+        def _append_orders(raw_orders: List[dict], is_trigger: bool):
+            for raw in raw_orders:
+                try:
+                    mapped = self._map_incoming_order(raw, is_trigger=is_trigger)
+                except Exception as exc:
+                    logger.warning(f"Failed to normalize order payload: {exc}")
+                    continue
+                if mapped.order_id in seen_ids:
+                    continue
+                seen_ids.add(mapped.order_id)
+                combined.append(mapped)
+                stats["trigger" if is_trigger else "normal"] += 1
+
+        page = 0
+        page_size = 200
+        while True:
+            response = self.get_open_orders(page=page, page_size=page_size)
+            raw_orders = _extract_orders(response)
+            if not raw_orders:
+                break
+            _append_orders(raw_orders, is_trigger=False)
+            if len(raw_orders) < page_size:
+                break
+            page += 1
+
+        page = 0
+        try:
+            while True:
+                response = self.get_trigger_orders(page=page, page_size=page_size)
+                raw_orders = _extract_orders(response)
+                if not raw_orders:
+                    break
+                _append_orders(raw_orders, is_trigger=True)
+                if len(raw_orders) < page_size:
+                    break
+                page += 1
+        except Exception as exc:
+            logger.error(f"Trigger orders fetch failed, continuing with standard orders only: {exc}")
+
+        logger.info(
+            f"Unified open orders fetched: normal={stats['normal']}, trigger={stats['trigger']}, total={len(combined)}"
+        )
+        return combined
+    
+    def get_trigger_orders(self) -> dict:
+        """Get trigger (conditional TP/SL) orders."""
+        if not self.live_trading:
+            logger.info("DRY_RUN: get_trigger_orders - returning empty data")
+            return {"data": []}
+        
+        method = "private/get-trigger-orders"
+        params = {}
+        
+        if self.use_proxy:
+            logger.info("Using PROXY to get trigger orders")
+            try:
+                result = self._call_proxy(method, params)
+                if isinstance(result, dict) and "result" in result and "data" in result["result"]:
+                    data = result["result"]["data"]
+                    logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders via proxy")
+                    return {"data": data if isinstance(data, list) else []}
+                if isinstance(result, dict) and result.get("code") in [40101, 40103]:
+                    logger.warning(f"Proxy trigger orders auth error: {result.get('message')}")
+                else:
+                    logger.warning(f"Unexpected proxy trigger orders response: {result}")
+            except requests.exceptions.RequestException as proxy_err:
+                logger.warning(f"Proxy error fetching trigger orders: {proxy_err}")
+        
+        if not self.api_key or not self.api_secret:
+            logger.warning("API credentials not configured. Returning empty trigger orders.")
+            return {"data": []}
+        
+        payload = self.sign_request(method, params)
+        try:
+            url = f"{self.base_url}/{method}"
+            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            if response.status_code == 401:
+                logger.error(f"Trigger orders auth failed: {response.text}")
+                return {"data": []}
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("result", {}).get("data", [])
+            logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from API")
+            return {"data": data if isinstance(data, list) else []}
+        except requests.exceptions.RequestException as http_err:
+            logger.error(f"Network error getting trigger orders: {http_err}")
+        except Exception as exc:
+            logger.error(f"Error getting trigger orders: {exc}")
+        return {"data": []}
     
     def get_order_history(self, page_size: int = 200, start_time: int = None, end_time: int = None, page: int = 0) -> dict:
         """Get order history (executed orders)"""

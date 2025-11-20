@@ -14,6 +14,14 @@ from app.models.exchange_balance import ExchangeBalance
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
+from app.services.open_orders import merge_orders
+from app.services.open_orders_cache import store_unified_open_orders
+from app.services.open_orders import merge_orders
+from app.services.open_orders_cache import store_unified_open_orders
+from app.services.open_orders import merge_orders
+from app.services.open_orders_cache import store_unified_open_orders
+from app.schemas.orders import UnifiedOpenOrder
+from app.services.open_orders_cache import update_open_orders_cache
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +34,7 @@ class ExchangeSyncService:
         self.sync_interval = 5  # seconds
         self.last_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
+        self.latest_unified_open_orders: List[UnifiedOpenOrder] = []
     
     def _purge_stale_processed_orders(self):
         """Remove processed order IDs older than 10 minutes"""
@@ -232,12 +241,22 @@ class ExchangeSyncService:
         """Sync open orders from Crypto.com"""
         try:
             response = trade_client.get_open_orders()
+            trigger_response = trade_client.get_trigger_orders()
             
-            if not response or 'data' not in response:
+            if not response or "data" not in response:
                 logger.warning("No open orders data received from Crypto.com")
-                return
+                orders = []
+            else:
+                orders = response.get("data", [])
+
+            trigger_orders = trigger_response.get("data", []) if trigger_response else []
+
+            unified_orders = merge_orders(orders, trigger_orders)
+            update_open_orders_cache(unified_orders)
             
-            orders = response.get('data', [])
+            if not response or "data" not in response:
+                # Keep legacy behavior: skip DB update when API failed
+                return
             
             # Mark orders not in response as cancelled/closed
             if orders:

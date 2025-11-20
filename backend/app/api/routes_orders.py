@@ -524,12 +524,14 @@ def get_open_orders(
         # Open orders can be created days/weeks ago and still be active
         open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
         
-        # Query ALL open orders (no date filter), sorted by creation time (newest first)
+        # RESTORED v4.0: Query ALL open orders (no date filter), sorted by creation time (newest first)
+        # Use COALESCE to handle NULL exchange_create_time (fallback to created_at)
+        # This ensures ALL open orders are returned, even if exchange_create_time is NULL
         orders_query = db.query(ExchangeOrder).filter(
             ExchangeOrder.status.in_(open_statuses)
         )
         
-        # Sort by creation time (newest first) - use COALESCE to handle None values
+        # Sort by creation time (newest first) - use COALESCE to handle None values (v4.0 behavior)
         orders = orders_query.order_by(
             func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
         ).limit(500).all()
@@ -629,10 +631,13 @@ def get_order_history(
         
         logger.info(f"get_order_history called - fetching from database (limit={limit}, offset={offset})")
         
-        # Get executed orders: FILLED, CANCELLED, REJECTED, EXPIRED
+        # RESTORED v4.0: Get executed orders: FILLED, CANCELLED, REJECTED, EXPIRED
+        # Use COALESCE to handle NULL exchange_update_time (fallback to updated_at)
+        # This ensures ALL executed orders are returned, even if exchange_update_time is NULL
         executed_statuses = [OrderStatusEnum.FILLED, OrderStatusEnum.CANCELLED, OrderStatusEnum.REJECTED, OrderStatusEnum.EXPIRED]
+        from sqlalchemy import func
         query = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).order_by(
-            ExchangeOrder.exchange_update_time.desc()
+            func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()
         )
             
         # Optimize total count query - only do it for first page to avoid timeout

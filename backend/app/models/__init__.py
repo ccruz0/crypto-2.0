@@ -4,6 +4,7 @@ from app.models.exchange_balance import ExchangeBalance
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.market_price import MarketPrice, MarketData
 from app.models.trading_settings import TradingSettings
+from app.models.dashboard_cache import DashboardCache
 
 __all__ = [
     "WatchlistItem",
@@ -18,5 +19,6 @@ __all__ = [
     "MarketPrice",
     "MarketData",
     "TradingSettings",
+    "DashboardCache",
 ]
 

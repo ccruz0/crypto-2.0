@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     CRYPTO_PROXY_URL: Optional[str] = None
     CRYPTO_PROXY_TOKEN: Optional[str] = None
     LIVE_TRADING: Optional[str] = None
+
+    # Telegram
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_CHAT_ID: Optional[str] = None
     
     class Config:
         env_file = ".env"

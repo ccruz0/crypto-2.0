@@ -16,11 +16,15 @@ from app.models.watchlist import WatchlistItem
 logger = logging.getLogger(__name__)
 
 # Constants
-# Use environment variables, but fallback to hardcoded values if empty
-_env_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-AUTH_CHAT_ID = _env_chat_id if _env_chat_id else "839853931"
-_env_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-BOT_TOKEN = _env_bot_token if _env_bot_token else "7401938912:AAEnct4H1QOsxMJz5a6Nr1QlfzYso53caTY"
+# Use environment variables only (no repo defaults)
+_env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+_env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+AUTH_CHAT_ID = _env_chat_id or None
+BOT_TOKEN = _env_bot_token or None
+TELEGRAM_ENABLED = bool(BOT_TOKEN and AUTH_CHAT_ID)
+if not TELEGRAM_ENABLED:
+    logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
+
 API_BASE_URL = (
     os.getenv("API_BASE_URL")
     or os.getenv("AWS_BACKEND_URL")
@@ -38,6 +42,9 @@ def _build_keyboard(rows: List[List[Dict[str, str]]]) -> Dict[str, List[List[Dic
 
 def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
     """Send a message with inline keyboard."""
+    if not TELEGRAM_ENABLED:
+        logger.debug("Telegram disabled: skipping menu message")
+        return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
@@ -56,6 +63,8 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
 
 def _edit_menu_message(chat_id: str, message_id: int, text: str, keyboard: Dict) -> bool:
     """Edit an existing message to display another menu."""
+    if not TELEGRAM_ENABLED:
+        return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
         payload = {
@@ -79,6 +88,9 @@ def _edit_menu_message(chat_id: str, message_id: int, text: str, keyboard: Dict)
 
 def setup_bot_commands():
     """Setup Telegram bot commands menu"""
+    if not TELEGRAM_ENABLED:
+        logger.debug("Telegram disabled: skipping setup_bot_commands")
+        return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands"
         
@@ -121,6 +133,8 @@ def setup_bot_commands():
 
 def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
     """Get updates from Telegram API using long polling"""
+    if not TELEGRAM_ENABLED:
+        return []
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
         params = {}
@@ -156,6 +170,9 @@ def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
 
 def send_command_response(chat_id: str, message: str) -> bool:
     """Send response message to Telegram"""
+    if not TELEGRAM_ENABLED:
+        logger.debug("Telegram disabled: skipping command response")
+        return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {

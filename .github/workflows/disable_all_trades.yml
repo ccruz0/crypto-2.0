@@ -1,0 +1,98 @@
+name: Disable all trades (Trade=NO)
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'API base URL (default: https://dashboard.hilovivo.com/api)'
+        required: false
+        default: 'https://dashboard.hilovivo.com/api'
+      api_key:
+        description: 'x-api-key (leave empty to use repository secret API_KEY)'
+        required: false
+        default: ''
+
+jobs:
+  disable-trades:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up environment
+        id: setup
+        run: |
+          set -euo pipefail
+          API_URL="${{ github.event.inputs.api_url }}"
+          if [ -z "$API_URL" ]; then
+            API_URL="${{ secrets.API_URL || 'https://dashboard.hilovivo.com/api' }}"
+          fi
+          API_KEY_IN="${{ github.event.inputs.api_key }}"
+          if [ -z "$API_KEY_IN" ]; then
+            API_KEY_IN="${{ secrets.API_KEY }}"
+          fi
+          if [ -z "$API_KEY_IN" ]; then
+            echo "API_KEY is required (set secrets.API_KEY or provide input api_key)" >&2
+            exit 1
+          fi
+          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
+          echo "api_key=$API_KEY_IN" >> $GITHUB_OUTPUT
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Show current Trade flags (before)
+        env:
+          API_URL: ${{ steps.setup.outputs.api_url }}
+          API_KEY: ${{ steps.setup.outputs.api_key }}
+        run: |
+          set -euo pipefail
+          echo "API_URL=$API_URL"
+          echo "Fetching current dashboard..."
+          curl -sk -H "x-api-key: $API_KEY" "$API_URL/dashboard" \
+            | jq -r '.[] | "\(.id)\t\(.symbol)\ttrade_enabled=\(.trade_enabled)"' | sort || true
+
+      - name: Disable Trade for all items
+        env:
+          API_URL: ${{ steps.setup.outputs.api_url }}
+          API_KEY: ${{ steps.setup.outputs.api_key }}
+        run: |
+          set -euo pipefail
+          echo "Disabling Trade=NO for all items..."
+          items=$(curl -sk -H "x-api-key: $API_KEY" "$API_URL/dashboard" | jq -r '.[].id')
+          changed=0
+          total=0
+          for id in $items; do
+            total=$((total+1))
+            # PUT update (trade_enabled=false)
+            resp=$(curl -sk -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+              -X PUT "$API_URL/dashboard/$id" \
+              -d '{"trade_enabled": false}')
+            ok=$(echo "$resp" | jq -r '.id? // empty' || true)
+            if [ -n "$ok" ]; then
+              changed=$((changed+1))
+            else
+              echo "WARN: Could not update id=$id. Response: $resp" >&2
+            fi
+            # small delay to avoid rate limiting
+            sleep 0.1
+          done
+          echo "Changed: $changed / $total"
+
+      - name: Verify Trade flags (after)
+        env:
+          API_URL: ${{ steps.setup.outputs.api_url }}
+          API_KEY: ${{ steps.setup.outputs.api_key }}
+        run: |
+          set -euo pipefail
+          echo "Verifying all items have trade_enabled=false..."
+          curl -sk -H "x-api-key: $API_KEY" "$API_URL/dashboard" \
+            | jq -r '.[] | "\(.symbol)\ttrade_enabled=\(.trade_enabled)"' | sort
+          still_true=$(curl -sk -H "x-api-key: $API_KEY" "$API_URL/dashboard" | jq '[ .[] | select(.trade_enabled==true) ] | length')
+          echo "Items still in Trade=YES: $still_true"
+          if [ "$still_true" -gt 0 ]; then
+            echo "::warning::Some items remain in Trade=YES ($still_true). You may rerun the job or investigate specific IDs."
+          fi
+
+
+

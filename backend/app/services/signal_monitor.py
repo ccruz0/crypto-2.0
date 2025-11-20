@@ -49,6 +49,14 @@ class SignalMonitorService:
         self.margin_error_609_locks: Dict[str, float] = {}  # Track symbols with error 609: {symbol: timestamp}
         self.MARGIN_ERROR_609_LOCK_MINUTES = 30  # Bloquear por 30 minutos después de error 609
     
+    @staticmethod
+    def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
+        """
+        Determine if we should block based on per-symbol open positions.
+        The global count is informational only and never blocks orders.
+        """
+        return per_symbol_open >= max_per_symbol
+    
     def _count_total_open_buy_orders(self, db: Session) -> int:
         """
         Count total open LONG exposure across ALL symbols using the unified
@@ -301,34 +309,37 @@ class SignalMonitorService:
                 logger.warning(f"Failed to compute base exposure (first check) for {symbol}: {_e}")
                 base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
                 base_open = total_open_buy_orders
-            MAX_TOTAL_OPEN_ORDERS = 3  # Máximo de órdenes abiertas
+            MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
             
             logger.info(
-                f"🔍 SEGURIDAD 1/2 para {symbol}: Global={total_open_buy_orders}/{MAX_TOTAL_OPEN_ORDERS}, "
-                f"{base_symbol}={base_open}/{MAX_TOTAL_OPEN_ORDERS}"
+                f"🔍 SEGURIDAD 1/2 para {symbol}: Global={total_open_buy_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
+                f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
             )
-            if total_open_buy_orders >= MAX_TOTAL_OPEN_ORDERS or base_open >= MAX_TOTAL_OPEN_ORDERS:
+            if self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=total_open_buy_orders):
                 logger.warning(
-                    f"🚫 SEGURIDAD 1/2: {symbol} - Bloqueado por límites. "
-                    f"Global={total_open_buy_orders}/{MAX_TOTAL_OPEN_ORDERS}, "
-                    f"{base_symbol}={base_open}/{MAX_TOTAL_OPEN_ORDERS}. "
-                    f"No se procesará ninguna nueva orden de compra hasta que se cierren órdenes existentes."
+                    f"🚫 SEGURIDAD: {symbol} - Bloqueado por límite de símbolo. "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders}). "
+                    f"No se procesará ninguna nueva orden de compra hasta que se libere este símbolo."
                 )
                 # Enviar notificación a Telegram para alertar al usuario
                 try:
                     telegram_notifier.send_message(
                         f"🛡️ <b>PROTECCIÓN ACTIVADA</b>\n\n"
                         f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
-                        f"🚫 <b>BLOQUEADA</b> por límite de seguridad\n\n"
-                        f"📈 Global: <b>{total_open_buy_orders}/{MAX_TOTAL_OPEN_ORDERS}</b> | "
-                        f"{base_symbol}: <b>{base_open}/{MAX_TOTAL_OPEN_ORDERS}</b>\n"
+                        f"🚫 <b>BLOQUEADA</b> por límite de símbolo\n\n"
+                        f"📈 {base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
+                        f"(global={total_open_buy_orders})\n"
                         f"⚠️ No se crearán nuevas órdenes hasta que se cierren órdenes existentes."
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram security notification: {e}")
                 return  # Salir temprano - no procesar esta señal
             else:
-                logger.debug(f"✅ SEGURIDAD 1/2: {symbol} - Verificación pasada. Global={total_open_buy_orders}/{MAX_TOTAL_OPEN_ORDERS}, {base_symbol}={base_open}/{MAX_TOTAL_OPEN_ORDERS}")
+                logger.debug(
+                    f"✅ SEGURIDAD 1/2: {symbol} - Verificación pasada. "
+                    f"Global={total_open_buy_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
+                )
         except Exception as e:
             logger.error(f"Error en primera verificación de seguridad para {symbol}: {e}", exc_info=True)
             # En caso de error, ser conservador y bloquear
@@ -762,21 +773,20 @@ class SignalMonitorService:
                     logger.warning(f"Failed to compute base exposure for {symbol}: {_e}")
                     base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
                     base_open = final_total_open_orders  # fallback worst-case
-                MAX_TOTAL_OPEN_ORDERS = 3
+                MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
                 
                 # Log detallado para debugging
                 logger.info(
                     f"🔍 VERIFICACIÓN FINAL para {symbol}: "
-                    f"Global={final_total_open_orders}/{MAX_TOTAL_OPEN_ORDERS}, "
-                    f"{base_symbol}={base_open}/{MAX_TOTAL_OPEN_ORDERS}, "
-                    f"bloquear={final_total_open_orders >= MAX_TOTAL_OPEN_ORDERS or base_open >= MAX_TOTAL_OPEN_ORDERS}"
+                    f"Global={final_total_open_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
+                    f"bloquear={self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders)}"
                 )
                 
-                if final_total_open_orders >= MAX_TOTAL_OPEN_ORDERS or base_open >= MAX_TOTAL_OPEN_ORDERS:
+                if self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders):
                     logger.warning(
-                        f"🚫 BLOQUEO FINAL: {symbol} - No se enviará alerta BUY por límites. "
-                        f"Global={final_total_open_orders}/{MAX_TOTAL_OPEN_ORDERS}, "
-                        f"{base_symbol}={base_open}/{MAX_TOTAL_OPEN_ORDERS}. "
+                        f"🚫 BLOQUEO FINAL: {symbol} - No se enviará alerta BUY por límite de símbolo. "
+                        f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={final_total_open_orders}). "
                         f"La señal fue detectada pero está bloqueada por seguridad."
                     )
                     # Enviar notificación de bloqueo en lugar de la alerta BUY
@@ -784,9 +794,9 @@ class SignalMonitorService:
                         telegram_notifier.send_message(
                             f"🛡️ <b>PROTECCIÓN ACTIVADA</b>\n\n"
                             f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
-                            f"🚫 <b>ALERTA BLOQUEADA</b> por límite de seguridad\n\n"
-                            f"📈 Global: <b>{final_total_open_orders}/{MAX_TOTAL_OPEN_ORDERS}</b> | "
-                            f"{base_symbol}: <b>{base_open}/{MAX_TOTAL_OPEN_ORDERS}</b>\n"
+                            f"🚫 <b>ALERTA BLOQUEADA</b> por límite de símbolo\n\n"
+                            f"{base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
+                            f"(global={final_total_open_orders})\n"
                             f"💵 Precio detectado: ${current_price:,.4f}\n"
                             f"⚠️ No se enviará alerta ni se creará orden hasta que se cierren órdenes existentes."
                         )
@@ -801,7 +811,7 @@ class SignalMonitorService:
                 else:
                     logger.info(
                         f"✅ VERIFICACIÓN FINAL PASADA para {symbol}: "
-                        f"{final_total_open_orders} < {MAX_TOTAL_OPEN_ORDERS} órdenes abiertas. "
+                        f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
                         f"Procediendo con alerta BUY."
                     )
                 
@@ -1049,12 +1059,20 @@ class SignalMonitorService:
         # Esto previene race conditions donde múltiples señales se procesan simultáneamente
         try:
             total_open_buy_orders_final = self._count_total_open_buy_orders(db)
-            MAX_TOTAL_OPEN_ORDERS = 3  # Máximo de órdenes abiertas en total
+            try:
+                from app.services.order_position_service import count_open_positions_for_symbol
+                base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
+                base_open = count_open_positions_for_symbol(db, base_symbol)
+            except Exception as _e:
+                logger.warning(f"Failed to compute base exposure (segunda verificación) para {symbol}: {_e}")
+                base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
+                base_open = total_open_buy_orders_final
+            MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
             
-            if total_open_buy_orders_final >= MAX_TOTAL_OPEN_ORDERS:
+            if self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=total_open_buy_orders_final):
                 logger.error(
-                    f"🚫 SEGURIDAD 2/2: {symbol} - BLOQUEADO en verificación final. "
-                    f"Total órdenes abiertas: {total_open_buy_orders_final}/{MAX_TOTAL_OPEN_ORDERS}. "
+                    f"🚫 SEGURIDAD 2/2: {symbol} - BLOQUEADO en verificación final por límite de símbolo. "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders_final}). "
                     f"Orden cancelada justo antes de ejecutar (posible race condition detectada)."
                 )
                 # Enviar notificación crítica a Telegram
@@ -1063,14 +1081,18 @@ class SignalMonitorService:
                         f"🚨 <b>PROTECCIÓN CRÍTICA ACTIVADA</b>\n\n"
                         f"📊 Orden de compra para <b>{symbol}</b> fue <b>CANCELADA</b>\n"
                         f"🛡️ Verificación final de seguridad activada\n\n"
-                        f"📈 Órdenes abiertas: <b>{total_open_buy_orders_final}/{MAX_TOTAL_OPEN_ORDERS}</b>\n"
+                        f"{base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
+                        f"(global={total_open_buy_orders_final})\n"
                         f"⚠️ La orden fue bloqueada justo antes de ejecutarse para prevenir sobre-exposición."
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram critical security notification: {e}")
                 return None  # Cancelar orden
             else:
-                logger.info(f"✅ SEGURIDAD 2/2: {symbol} - Verificación final pasada. Total órdenes abiertas: {total_open_buy_orders_final}/{MAX_TOTAL_OPEN_ORDERS}")
+                logger.info(
+                    f"✅ SEGURIDAD 2/2: {symbol} - Verificación final pasada. "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders_final})"
+                )
         except Exception as e:
             logger.error(f"Error en segunda verificación de seguridad para {symbol}: {e}", exc_info=True)
             # En caso de error, ser conservador y cancelar la orden

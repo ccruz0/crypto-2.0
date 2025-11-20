@@ -288,23 +288,30 @@ def get_signals(
     import time as time_module
     start_time = time_module.time()
     MAX_TIME_BUDGET_S = 2.0  # Hard cap to keep the endpoint responsive under load
+    
+    logger.info(f"🔍 [SIGNALS] Starting request for {symbol} (exchange: {exchange})")
     try:
         # Try to get data from database first (fast, < 100ms)
         # This avoids external API calls completely
         # OPTIMIZED: Fast query with limit to avoid full table scan
         db_data_used = False
+        db_start = time_module.time()
         try:
             if DB_AVAILABLE:
                 from app.models.market_price import MarketData
                 
+                logger.debug(f"🔍 [SIGNALS] {symbol}: Attempting database lookup")
                 # OPTIMIZED: Use limit(1) to avoid full table scan
                 db_gen = get_db()
                 db = next(db_gen)
                 try:
                     # Fast query: filter by symbol and limit to 1 result
+                    db_query_start = time_module.time()
                     market_data = db.query(MarketData).filter(
                         MarketData.symbol == symbol
                     ).limit(1).first()
+                    db_query_elapsed = time_module.time() - db_query_start
+                    logger.debug(f"🔍 [SIGNALS] {symbol}: Database query took {db_query_elapsed:.3f}s")
                     
                     if market_data and market_data.price and market_data.price > 0:
                         # Use data from database
@@ -323,10 +330,16 @@ def get_signals(
                         # Try to refresh volume only if we still have time budget left
                         # This prevents long external calls from blocking the endpoint
                         try:
-                            if (time_module.time() - start_time) < (MAX_TIME_BUDGET_S * 0.5):
+                            time_remaining = MAX_TIME_BUDGET_S - (time_module.time() - start_time)
+                            if time_remaining > (MAX_TIME_BUDGET_S * 0.5):
+                                logger.debug(f"🔍 [SIGNALS] {symbol}: Attempting fresh volume fetch (time remaining: {time_remaining:.3f}s)")
+                                volume_fetch_start = time_module.time()
                                 from market_updater import fetch_ohlcv_data
                                 # calculate_volume_index is already defined in this file
                                 ohlcv_data = fetch_ohlcv_data(symbol, "1h", limit=11)  # Get 11 periods (need 10+1 for calculation)
+                                volume_fetch_elapsed = time_module.time() - volume_fetch_start
+                                logger.debug(f"🔍 [SIGNALS] {symbol}: Volume fetch took {volume_fetch_elapsed:.3f}s")
+                                
                                 if ohlcv_data and len(ohlcv_data) > 0:
                                     volumes = [candle.get("v", 0) for candle in ohlcv_data if candle.get("v", 0) > 0]
                                     if len(volumes) >= 11:
@@ -341,9 +354,13 @@ def get_signals(
                                         if fresh_avg_volume and fresh_avg_volume > 0:
                                             avg_volume = fresh_avg_volume
                                         
-                                        logger.debug(f"Fresh volume data for {symbol}: current={current_volume}, avg={avg_volume}")
+                                        logger.debug(f"🔍 [SIGNALS] {symbol}: Fresh volume data: current={current_volume}, avg={avg_volume}")
+                                else:
+                                    logger.debug(f"🔍 [SIGNALS] {symbol}: No OHLCV data returned from fetch_ohlcv_data")
+                            else:
+                                logger.debug(f"🔍 [SIGNALS] {symbol}: Skipping volume fetch (time budget too low: {time_remaining:.3f}s)")
                         except Exception as vol_err:
-                            logger.debug(f"Could not fetch fresh volume for {symbol}: {vol_err}")
+                            logger.warning(f"🔍 [SIGNALS] {symbol}: Could not fetch fresh volume: {vol_err}", exc_info=True)
                         
                         # Calculate volume_ratio - always recalculate from current values to ensure accuracy
                         if current_volume is not None and current_volume > 0 and avg_volume and avg_volume > 0:
@@ -362,15 +379,19 @@ def get_signals(
                         res_up = market_data.res_up if market_data.res_up is not None and market_data.res_up > 0 else (current_price * 1.02)
                         res_down = market_data.res_down if market_data.res_down is not None and market_data.res_down > 0 else (current_price * 0.98)
                         db_data_used = True
-                        logger.debug(f"✅ Got market data for {symbol} from database")
+                        db_elapsed = time_module.time() - db_start
+                        logger.info(f"✅ [SIGNALS] {symbol}: Got market data from database in {db_elapsed:.3f}s")
                 finally:
                     db.close()
         except Exception as db_err:
-            logger.debug(f"Database read failed, using price fetcher: {db_err}")
+            db_elapsed = time_module.time() - db_start
+            logger.warning(f"⚠️ [SIGNALS] {symbol}: Database read failed after {db_elapsed:.3f}s: {db_err}", exc_info=True)
         
         # Fallback to price fetcher if database didn't have data
         # OPTIMIZED: Fast fallback with default values if price fetch fails
         if not db_data_used:
+            logger.info(f"🔍 [SIGNALS] {symbol}: Database data not available, using price fetcher fallback")
+            price_fetch_start = time_module.time()
             # Use simple_price_fetcher as fallback
             import sys
             import os
@@ -380,17 +401,22 @@ def get_signals(
             try:
                 # OPTIMIZED: Try to get price, but don't block if it fails
                 # Use a quick timeout by catching exceptions early
+                logger.debug(f"🔍 [SIGNALS] {symbol}: Calling price_fetcher.get_price()")
                 price_result = price_fetcher.get_price(symbol)
+                price_fetch_elapsed = time_module.time() - price_fetch_start
+                logger.debug(f"🔍 [SIGNALS] {symbol}: price_fetcher.get_price() took {price_fetch_elapsed:.3f}s")
+                
                 if price_result and price_result.success:
                     current_price = price_result.price
                     source = price_result.source
+                    logger.info(f"✅ [SIGNALS] {symbol}: Got price from {source}: ${current_price}")
                 else:
-                    logger.debug(f"Price fetch returned no data for {symbol}, using default")
+                    logger.warning(f"⚠️ [SIGNALS] {symbol}: Price fetch returned no data, using default")
                     current_price = 1.0
                     source = 'fallback'
             except Exception as e:
-                # OPTIMIZED: Don't log warnings for expected failures, just use defaults
-                logger.debug(f"Price fetch failed for {symbol}: {e}, using default")
+                price_fetch_elapsed = time_module.time() - price_fetch_start
+                logger.error(f"❌ [SIGNALS] {symbol}: Price fetch failed after {price_fetch_elapsed:.3f}s: {e}", exc_info=True)
                 current_price = 1.0
                 source = 'error_fallback'
             
@@ -546,10 +572,12 @@ def get_signals(
         # The endpoint should only calculate and return signals quickly
         
         elapsed_time = time_module.time() - start_time
-        logger.info(f"✅ Signals calculated in {elapsed_time:.2f}s for {symbol} (source: {source})")
+        logger.info(f"✅ [SIGNALS] {symbol}: Signals calculated in {elapsed_time:.3f}s (source: {source}, db_data_used: {db_data_used})")
         
         if elapsed_time > 2.0:
-            logger.warning(f"⚠️ Signals calculation took {elapsed_time:.2f}s for {symbol} - this is slow! Should be < 1 second")
+            logger.warning(f"⚠️ [SIGNALS] {symbol}: Signals calculation took {elapsed_time:.3f}s - this is slow! Should be < 1 second")
+        elif elapsed_time > 15.0:
+            logger.error(f"❌ [SIGNALS] {symbol}: Signals calculation took {elapsed_time:.3f}s - TIMEOUT! Frontend timeout is 15s")
         
         # Convert all numeric values to Python native types for JSON serialization
         # Ensure res_up and res_down are valid floats (never None)
@@ -595,7 +623,7 @@ def get_signals(
         raise
     except Exception as e:
         elapsed_time = time_module.time() - start_time
-        logger.error(f"❌ Error calculating signals for {symbol} after {elapsed_time:.2f}s: {e}", exc_info=True)
+        logger.error(f"❌ [SIGNALS] {symbol}: Error calculating signals after {elapsed_time:.3f}s: {e}", exc_info=True)
         # Instead of raising HTTPException, return a fallback response with default values
         # This ensures the frontend always gets valid data (prevents timeouts)
         try:

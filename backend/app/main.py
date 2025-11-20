@@ -90,11 +90,6 @@ app = FastAPI(
 # TEMPORARILY DISABLED: Testing if this middleware is causing HTTP request hangs
 # app.add_middleware(TimingMiddleware)
 
-@app.get("/ping_fast")
-def ping_fast():
-    """Ultra-fast ping endpoint - minimal processing"""
-    return {"status": "ok", "source": "ping_fast"}
-
 # CORS middleware - ALWAYS enabled for browser requests (required for frontend)
 # This must be added BEFORE routers to handle OPTIONS preflight requests
 # TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
@@ -247,6 +242,11 @@ def __ping():
 def test():
     """Simple test endpoint without dependencies"""
     return {"status": "ok", "message": "Backend is responding"}
+
+@app.get("/ping_fast")
+def ping_fast():
+    """Ultra-fast ping endpoint - minimal processing"""
+    return {"status": "ok", "source": "ping_fast"}
 
 @app.get("/")
 def root():
