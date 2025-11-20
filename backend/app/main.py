@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
+ TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
 # from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.environment import get_cors_origins, get_environment, is_local, is_aws
@@ -92,12 +92,8 @@ app = FastAPI(
 
 @app.get("/ping_fast")
 def ping_fast():
-    t0 = time.perf_counter()
-    result = {"status": "ok", "source": "ping_fast"}
-    t1 = time.perf_counter()
-    elapsed_ms = (t1 - t0) * 1000
-    logger.info(f"PERF: /ping_fast handler executed in {elapsed_ms:.2f}ms")
-    return result
+    """Ultra-fast ping endpoint - minimal processing"""
+    return {"status": "ok", "source": "ping_fast"}
 
 # CORS middleware - ALWAYS enabled for browser requests (required for frontend)
 # This must be added BEFORE routers to handle OPTIONS preflight requests
