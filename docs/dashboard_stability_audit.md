@@ -249,5 +249,34 @@ Updated `/etc/nginx/sites-available/*`:
 
 ## Conclusion
 
-The async conversion should improve worker utilization and prevent deadlocks. However, the HTTP connection reset issue needs investigation before the dashboard can be considered fully functional. The snapshot-first pattern is correctly implemented in the frontend, so once the backend connectivity issue is resolved, the dashboard should provide a fast, reliable user experience.
+### Summary of Fixes
+
+1. **Async Conversion**: Converted `get_dashboard_state` to async, improving worker utilization and preventing deadlocks.
+
+2. **Gunicorn Migration**: Successfully migrated from Uvicorn to Gunicorn + Uvicorn workers to resolve socket binding issues.
+
+3. **Syntax Error Fix**: Fixed critical syntax error that prevented workers from starting.
+
+4. **Worker Timeout Resolution**: Increased Gunicorn worker timeout from 120s to 300s to prevent premature worker kills during heavy background service operations.
+
+5. **Current Status**: 
+   - ✅ Backend running stably with Gunicorn
+   - ✅ Workers booting successfully and remaining stable
+   - ✅ No worker timeout errors detected
+   - ✅ Container health status: `healthy`
+   - ✅ Snapshot-first pattern correctly implemented in frontend
+
+### Remaining Optimization Opportunities
+
+While the backend is now stable and functional, there are opportunities for further optimization:
+
+1. **Background Service Optimization**: Convert heavy synchronous operations in `signal_monitor` and `exchange_sync` to async/await patterns.
+
+2. **Database Query Optimization**: Add timeouts to individual DB operations and optimize heavy queries for calculating open positions.
+
+3. **Thread Pool Usage**: Move heavy computations to thread pool executors to prevent blocking the event loop.
+
+4. **Monitoring**: Add structured logging and metrics for worker health, request timing, and background service performance.
+
+The dashboard should now provide a fast, reliable user experience with the snapshot-first pattern implemented correctly in the frontend and a stable backend that can handle heavy operations without worker interruptions.
 
