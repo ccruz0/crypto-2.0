@@ -167,7 +167,7 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
-    command: sh -c "sleep 10 && gunicorn app.main:app -w 3 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile -"
+    command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile -"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
@@ -179,7 +179,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: "768M"
+          memory: "1G"
     depends_on:
       gluetun:
         condition: service_healthy
