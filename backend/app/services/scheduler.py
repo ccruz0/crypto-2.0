@@ -28,8 +28,8 @@ class TradingScheduler:
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self._scheduler_task = None  # Track the running task to prevent duplicates
     
-    async def check_daily_summary(self):
-        """Check if it's time to send daily summary"""
+    def check_daily_summary_sync(self):
+        """Check if it's time to send daily summary - synchronous worker"""
         now = datetime.now().time()
         
         # Check if it's 8:00 AM (with 1 minute tolerance)
@@ -38,12 +38,23 @@ class TradingScheduler:
             
             logger.info("Sending daily summary...")
             daily_summary_service.send_daily_summary()
+    
+    async def check_daily_summary(self):
+        """Check if it's time to send daily summary - async wrapper"""
+        now = datetime.now().time()
+        
+        # Check if it's 8:00 AM (with 1 minute tolerance)
+        if (self.daily_summary_time.hour == now.hour and 
+            abs(self.daily_summary_time.minute - now.minute) <= 1):
+            
+            # Run blocking call in thread pool
+            await asyncio.to_thread(self.check_daily_summary_sync)
             
             # Wait 2 minutes to avoid duplicate sends
             await asyncio.sleep(120)
     
-    async def check_sl_tp_positions(self):
-        """Check if it's time to check positions for SL/TP (8:00 AM daily)"""
+    def check_sl_tp_positions_sync(self):
+        """Check if it's time to check positions for SL/TP - synchronous worker"""
         now = datetime.now()
         today = now.date()
         
@@ -64,12 +75,25 @@ class TradingScheduler:
                     db.close()
             except Exception as e:
                 logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
+    
+    async def check_sl_tp_positions(self):
+        """Check if it's time to check positions for SL/TP - async wrapper"""
+        now = datetime.now()
+        today = now.date()
+        
+        # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't checked today
+        if (now.hour == 8 and 
+            abs(now.minute) <= 1 and 
+            self.last_sl_tp_check_date != today):
+            
+            # Run blocking DB/API calls in thread pool
+            await asyncio.to_thread(self.check_sl_tp_positions_sync)
             
             # Wait 2 minutes to avoid duplicate checks
             await asyncio.sleep(120)
     
-    async def check_sell_orders_report(self):
-        """Check if it's time to send sell orders report (7:00 AM Bali time daily)"""
+    def check_sell_orders_report_sync(self):
+        """Check if it's time to send sell orders report - synchronous worker"""
         # Get current time in Bali timezone
         now_bali = datetime.now(BALI_TZ)
         today_bali = now_bali.date()
@@ -91,12 +115,26 @@ class TradingScheduler:
                     db.close()
             except Exception as e:
                 logger.error(f"Error sending sell orders report: {e}", exc_info=True)
+    
+    async def check_sell_orders_report(self):
+        """Check if it's time to send sell orders report - async wrapper"""
+        # Get current time in Bali timezone
+        now_bali = datetime.now(BALI_TZ)
+        today_bali = now_bali.date()
+        
+        # Check if it's 7:00 AM Bali time (with 1 minute tolerance) and we haven't sent today
+        if (now_bali.hour == 7 and 
+            abs(now_bali.minute) <= 1 and 
+            self.last_sell_orders_report_date != today_bali):
+            
+            # Run blocking DB/API calls in thread pool
+            await asyncio.to_thread(self.check_sell_orders_report_sync)
             
             # Wait 2 minutes to avoid duplicate sends
             await asyncio.sleep(120)
     
-    async def check_telegram_commands(self):
-        """Check for pending Telegram commands"""
+    def check_telegram_commands_sync(self):
+        """Check for pending Telegram commands - synchronous worker"""
         try:
             logger.info("[SCHEDULER] 🔔 Checking Telegram commands...")
             # Get database session
@@ -108,6 +146,11 @@ class TradingScheduler:
             logger.debug("[SCHEDULER] Telegram commands check completed")
         except Exception as e:
             logger.error(f"[TG] Error checking commands: {e}", exc_info=True)
+    
+    async def check_telegram_commands(self):
+        """Check for pending Telegram commands - async wrapper"""
+        # Run blocking DB/API calls in thread pool
+        await asyncio.to_thread(self.check_telegram_commands_sync)
     
     async def update_dashboard_snapshot(self):
         """Update dashboard snapshot cache periodically (every 60 seconds)"""
