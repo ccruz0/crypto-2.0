@@ -212,42 +212,57 @@ class SignalMonitorService:
             "last_alert_price": price
         }
     
+    def _fetch_watchlist_items_sync(self, db: Session) -> list:
+        """Synchronous helper to fetch watchlist items from database
+        This function runs in a thread pool to avoid blocking the event loop
+        
+        Returns:
+            List of WatchlistItem objects with alert_enabled = True
+        """
+        # IMPORTANT: Refresh the session to ensure we get the latest alert_enabled values
+        # This prevents issues where alert_enabled was changed in the dashboard but the
+        # signal_monitor is using a stale database session
+        db.expire_all()
+        
+        # Get all watchlist items with alert_enabled = true (for alerts)
+        # Note: This includes coins that may have trade_enabled = false
+        # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted) for legacy DBs
+        try:
+            watchlist_items = db.query(WatchlistItem).filter(
+                WatchlistItem.alert_enabled == True
+            ).all()
+        except Exception as e:
+            logger.warning(f"Error querying alert_enabled items, falling back to trade_enabled: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            watchlist_items = db.query(WatchlistItem).filter(
+                WatchlistItem.trade_enabled == True
+            ).all()
+        
+        if not watchlist_items:
+            logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
+            return []
+        
+        logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
+        for item in watchlist_items:
+            # Refresh the item from database to get latest values (important for trade_amount_usd)
+            db.refresh(item)
+            logger.info(f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, trade_amount=${item.trade_amount_usd or 0}")
+        
+        return watchlist_items
+    
     async def monitor_signals(self, db: Session):
         """Monitor signals for all coins with alert_enabled = true (for alerts)
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
         try:
-            # IMPORTANT: Refresh the session to ensure we get the latest alert_enabled values
-            # This prevents issues where alert_enabled was changed in the dashboard but the
-            # signal_monitor is using a stale database session
-            db.expire_all()
-            
-            # Get all watchlist items with alert_enabled = true (for alerts)
-            # Note: This includes coins that may have trade_enabled = false
-            # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted) for legacy DBs
-            try:
-                watchlist_items = db.query(WatchlistItem).filter(
-                    WatchlistItem.alert_enabled == True
-                ).all()
-            except Exception as e:
-                logger.warning(f"Error querying alert_enabled items, falling back to trade_enabled: {e}")
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                watchlist_items = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True
-                ).all()
+            # Fetch watchlist items in a thread pool to avoid blocking the event loop
+            watchlist_items = await asyncio.to_thread(self._fetch_watchlist_items_sync, db)
             
             if not watchlist_items:
-                logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
                 return
-            
-            logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
-            for item in watchlist_items:
-                # Refresh the item from database to get latest values (important for trade_amount_usd)
-                db.refresh(item)
-                logger.info(f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, trade_amount=${item.trade_amount_usd or 0}")
             
             for item in watchlist_items:
                 try:
