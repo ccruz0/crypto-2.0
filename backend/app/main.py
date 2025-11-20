@@ -19,6 +19,7 @@ from app.api.routes_loans import router as loans_router
 from app.api.routes_control import router as control_router
 from app.routers.config import router as config_router
 from app.api.routes_debug import router as debug_router
+from app.api.routes_monitoring import router as monitoring_router
 import os
 import logging
 import time
@@ -64,9 +65,13 @@ class TimingMiddleware(BaseHTTPMiddleware):
 # Lazy import database to avoid connection failure on startup
 engine = None
 Base = None
+ensure_optional_columns = None
 if not DEBUG_DISABLE_DATABASE_IMPORT:
     try:
+        from app.database import engine, Base, ensure_optional_columns
+    except ImportError:
         from app.database import engine, Base
+        ensure_optional_columns = None
     except Exception as e:
         logger.warning(f"Database import failed: {e}. Running without database.")
 else:
@@ -81,7 +86,8 @@ app = FastAPI(
 )
 
 # Performance timing middleware - add FIRST to measure everything
-app.add_middleware(TimingMiddleware)
+# TEMPORARILY DISABLED: Testing if this middleware is causing HTTP request hangs
+# app.add_middleware(TimingMiddleware)
 
 @app.get("/ping_fast")
 def ping_fast():
@@ -110,6 +116,13 @@ logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 @app.on_event("startup")
 async def startup_event():
     """Startup event - must complete immediately to allow requests"""
+    # Set backend restart time for monitoring
+    try:
+        from app.api.routes_monitoring import set_backend_restart_time
+        set_backend_restart_time()
+    except Exception:
+        pass  # Ignore if monitoring module not available
+    
     if DEBUG_DISABLE_STARTUP_EVENT:
         logger.warning("PERF: Startup event DISABLED for performance testing")
         return
@@ -140,19 +153,28 @@ async def startup_event():
                 def init_db():
                     try:
                         Base.metadata.create_all(bind=engine)
-                        logger.info("Database tables initialized")
+                        if ensure_optional_columns:
+                            ensure_optional_columns(engine)
+                        logger.info("Database tables initialized (including optional columns)")
                     except Exception as e:
                         logger.warning(f"Database initialization failed: {e}")
                 loop = asyncio.get_event_loop()
-                loop.run_in_executor(None, init_db)
+                await loop.run_in_executor(None, init_db)
         
             # Services            
             if not DEBUG_DISABLE_TRADING_SCHEDULER:
                 try:
                     logger.info("🔧 Starting Trading scheduler...")
-                    # Use start() method which has protection against duplicates
-                    await trading_scheduler.start()
-                    logger.info("✅ Trading scheduler started")
+                    # Start scheduler in background without blocking - fire and forget
+                    # Use create_task to avoid blocking startup event
+                    async def start_scheduler():
+                        try:
+                            await trading_scheduler.start()
+                            logger.info("✅ Trading scheduler started")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to start trading scheduler: {e}", exc_info=True)
+                    asyncio.create_task(start_scheduler())
+                    logger.info("✅ Trading scheduler start() called (non-blocking)")
                 except Exception as e:
                     logger.error(f"❌ Failed to start trading scheduler: {e}", exc_info=True)
             else:
@@ -218,25 +240,7 @@ async def shutdown_event():
     except Exception as e:
         logger.error(f"Error stopping WebSocket: {e}")
 
-# Include routers
-app.include_router(account_router, prefix="/api", tags=["account"])
-app.include_router(internal_router, prefix="/api", tags=["internal"])
-app.include_router(orders_router, prefix="/api", tags=["orders"])
-app.include_router(instruments_router, prefix="/api", tags=["instruments"])
-app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
-app.include_router(engine_router, prefix="/api", tags=["engine"])
-app.include_router(market_router, prefix="/api", tags=["market"])
-app.include_router(signals_router, prefix="/api", tags=["signals"])
-app.include_router(summary_router, prefix="/api", tags=["summary"])
-app.include_router(manual_trade_router, prefix="/api", tags=["manual-trade"])
-app.include_router(test_router, prefix="/api", tags=["test"])
-app.include_router(crypto_router, prefix="/api", tags=["crypto"])
-app.include_router(import_router, prefix="/api", tags=["import"])
-app.include_router(loans_router, prefix="/api", tags=["loans"])
-app.include_router(control_router, prefix="/api", tags=["control"])
-app.include_router(config_router, tags=["config"])
-app.include_router(debug_router, prefix="/api", tags=["debug"])
-
+# Define simple endpoints BEFORE routers to ensure they're accessible
 @app.get("/__ping")
 def __ping():
     return {"ok": True}
@@ -275,3 +279,23 @@ def api_health():
     elapsed_ms = (t1 - t0) * 1000
     logger.info(f"PERF: /api/health handler executed in {elapsed_ms:.2f}ms")
     return result
+
+# Include routers AFTER simple endpoints
+app.include_router(account_router, prefix="/api", tags=["account"])
+app.include_router(internal_router, prefix="/api", tags=["internal"])
+app.include_router(orders_router, prefix="/api", tags=["orders"])
+app.include_router(instruments_router, prefix="/api", tags=["instruments"])
+app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
+app.include_router(engine_router, prefix="/api", tags=["engine"])
+app.include_router(market_router, prefix="/api", tags=["market"])
+app.include_router(signals_router, prefix="/api", tags=["signals"])
+app.include_router(summary_router, prefix="/api", tags=["summary"])
+app.include_router(manual_trade_router, prefix="/api", tags=["manual-trade"])
+app.include_router(test_router, prefix="/api", tags=["test"])
+app.include_router(crypto_router, prefix="/api", tags=["crypto"])
+app.include_router(import_router, prefix="/api", tags=["import"])
+app.include_router(loans_router, prefix="/api", tags=["loans"])
+app.include_router(control_router, prefix="/api", tags=["control"])
+app.include_router(monitoring_router, prefix="/api", tags=["monitoring"])
+app.include_router(config_router, tags=["config"])
+app.include_router(debug_router, prefix="/api", tags=["debug"])
