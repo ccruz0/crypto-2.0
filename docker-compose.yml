@@ -108,18 +108,7 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
-    command: >
-      sh -c "sleep 10 && python -m uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8002
-      --workers 1
-      --log-level info
-      --access-log
-      --timeout-keep-alive 30
-      --timeout-graceful-shutdown 10
-      --limit-concurrency 100
-      --backlog 2048
-      --loop asyncio"
+    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 1 --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10 --limit-concurrency 100 --backlog 2048"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
@@ -178,18 +167,7 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
-    command: >
-      sh -c "sleep 10 && python -m uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8002
-      --workers 2
-      --log-level info
-      --access-log
-      --timeout-keep-alive 30
-      --timeout-graceful-shutdown 10
-      --limit-concurrency 200
-      --backlog 2048
-      --loop asyncio"
+    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 1 --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10 --limit-concurrency 200 --backlog 2048"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
@@ -295,7 +273,7 @@ services:
       - .env.aws
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://175.41.189.249:8002/api
+      - NEXT_PUBLIC_API_URL=http://backend-aws:8002/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-aws}
     ports:
       - "3000:3000"
