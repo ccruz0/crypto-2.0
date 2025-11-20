@@ -131,8 +131,18 @@ Updated `/etc/nginx/sites-available/*`:
 1. ✅ Verified Gunicorn workers are starting correctly
 2. ✅ Tested requests from inside container (same behavior)
 3. ✅ Verified Docker port mapping is correct
-4. ✅ Confirmed startup event is non-blocking
-5. ⚠️ **NEW**: Discovered endpoint-specific pattern (some work, others don't)
+4. ✅ Confirmed startup event is non-blocking (completes in 0.19ms)
+5. ✅ **RESOLVED**: Fixed syntax error (missing `#` in comment) that prevented workers from starting
+6. ⚠️ **NEW**: Workers timing out after ~2 minutes during background service operations
+
+**Root Cause Analysis:**
+- Workers boot successfully (~28-29 seconds to complete startup)
+- Startup event completes quickly (0.19ms) - not blocking
+- HTTP requests ARE being processed (logs show "GET /test HTTP/1.1" 200)
+- Workers receive timeout (~120s) DURING background service operations:
+  - `signal_monitor` calculating open positions (logs show heavy DB queries)
+  - `exchange_sync` syncing balances and orders
+  - These services may be doing blocking operations that lock the event loop
 
 **Gunicorn Migration Details:**
 - Replaced direct Uvicorn with `gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker`
@@ -168,16 +178,18 @@ Updated `/etc/nginx/sites-available/*`:
 
 ## Next Steps
 
-1. **Debug Endpoint-Specific Hang Issue:**
-   - ✅ **Tested**: Simplified `/ping_fast` to match `/test` (removed timing/logging) - **Still hangs**
-   - ✅ **Tested**: Moved `/ping_fast` after routers (same position as `/test`) - **Still hangs**
-   - ⚠️ **Conclusion**: Problem is NOT with endpoint code or position
-   - **Next steps:**
-     - Investigate FastAPI route registration for `/ping_fast` vs `/test`
-     - Check if Gunicorn worker class has issues with specific route patterns
-     - Verify if there's a route conflict or override happening
-     - Test if creating a new endpoint with different name works
-     - Consider if FastAPI router order matters for Gunicorn worker processing
+1. **Worker Timeout Issue:**
+   - ✅ **RESOLVED**: Fixed syntax error that prevented workers from starting
+   - ✅ **Verified**: Endpoints `/test` and `/route_fix_test` work correctly
+   - ⚠️ **Current Issue**: Workers timing out during background service operations
+   - **Root Cause**: Background services (`signal_monitor`, `exchange_sync`) doing heavy blocking operations:
+     - Heavy database queries for calculating open positions
+     - Synchronous operations that block the event loop for >120s
+   - **Next Steps:**
+     - Optimize background services to use async/await for DB operations
+     - Move heavy computations to thread pool executors
+     - Increase Gunicorn timeout temporarily (but fix root cause in services)
+     - Consider disabling heavy background services during startup
 
 2. **Performance Monitoring:**
    - Add timing logs to verify async operations are not blocking
