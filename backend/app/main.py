@@ -1,5 +1,6 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
+# from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.environment import get_cors_origins, get_environment, is_local, is_aws
 from app.api.routes_account import router as account_router
@@ -100,17 +101,18 @@ def ping_fast():
 
 # CORS middleware - ALWAYS enabled for browser requests (required for frontend)
 # This must be added BEFORE routers to handle OPTIONS preflight requests
-cors_origins = get_cors_origins()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins if cors_origins != ["*"] else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods including OPTIONS
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600,  # Cache preflight requests for 1 hour
-    )
-logger.info(f"CORS middleware enabled with origins: {cors_origins}")
+# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
+# cors_origins = get_cors_origins()
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=cors_origins if cors_origins != ["*"] else ["*"],
+#     allow_credentials=True,
+#     allow_methods=["*"],  # Allow all methods including OPTIONS
+#     allow_headers=["*"],
+#     expose_headers=["*"],
+#     max_age=3600,  # Cache preflight requests for 1 hour
+#     )
+# logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 
 # Startup validation and database initialization
 @app.on_event("startup")
