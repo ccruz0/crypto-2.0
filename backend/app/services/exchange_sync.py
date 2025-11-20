@@ -56,7 +56,7 @@ class ExchangeSyncService:
         """Mark an order as processed with current timestamp"""
         self.processed_order_ids[order_id] = time.time()
     
-    async def sync_balances(self, db: Session):
+    def sync_balances(self, db: Session):
         """Sync account balances from Crypto.com"""
         try:
             # Use portfolio_cache to get REAL balances (not simulated)
@@ -237,7 +237,7 @@ class ExchangeSyncService:
             logger.error(f"Error syncing balances: {e}", exc_info=True)
             db.rollback()
     
-    async def sync_open_orders(self, db: Session):
+    def sync_open_orders(self, db: Session):
         """Sync open orders from Crypto.com"""
         try:
             response = trade_client.get_open_orders()
@@ -410,7 +410,7 @@ class ExchangeSyncService:
             logger.error(f"Error syncing open orders: {e}", exc_info=True)
             db.rollback()
     
-    async def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder'):
+    def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder'):
         """Cancel the sibling order in an OCO group when one is FILLED"""
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
@@ -1129,7 +1129,7 @@ class ExchangeSyncService:
         except Exception as e:
             logger.error(f"Error in _cancel_remaining_sl_tp for {symbol}: {e}", exc_info=True)
     
-    async def sync_order_history(self, db: Session, page_size: int = 200):
+    def sync_order_history(self, db: Session, page_size: int = 200):
         """Sync order history from Crypto.com - only adds new executed orders"""
         try:
             from app.services.telegram_notifier import telegram_notifier
@@ -1371,7 +1371,7 @@ class ExchangeSyncService:
                                 if existing.oco_group_id:
                                     try:
                                         logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
-                                        await self._cancel_oco_sibling(db, existing)
+                                        self._cancel_oco_sibling(db, existing)
                                     except Exception as oco_err:
                                         logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
                                 
@@ -1466,7 +1466,7 @@ class ExchangeSyncService:
                     if new_order.oco_group_id:
                         try:
                             logger.info(f"Attempting to cancel OCO sibling for new order {order_id} (group: {new_order.oco_group_id})")
-                            await self._cancel_oco_sibling(db, new_order)
+                            self._cancel_oco_sibling(db, new_order)
                         except Exception as oco_err:
                             logger.warning(f"Error canceling OCO sibling for new order {order_id}: {oco_err}")
                     
@@ -1603,15 +1603,19 @@ class ExchangeSyncService:
             except:
                 pass
     
+    def _run_sync_sync(self, db: Session):
+        """Run one sync cycle - synchronous worker that runs in thread pool"""
+        self.sync_balances(db)
+        self.sync_open_orders(db)
+        # Sync order history every cycle (every 5 seconds) to catch all new orders
+        # Increased page_size to 200 to get more historical orders
+        self.sync_order_history(db, page_size=200)
+    
     async def run_sync(self):
-        """Run one sync cycle - OPTIMIZED: reduced page_size to avoid blocking"""
+        """Run one sync cycle - async wrapper that delegates to thread pool"""
         db = SessionLocal()
         try:
-            await self.sync_balances(db)
-            await self.sync_open_orders(db)
-            # Sync order history every cycle (every 5 seconds) to catch all new orders
-            # Increased page_size to 200 to get more historical orders
-            await self.sync_order_history(db, page_size=200)
+            await asyncio.to_thread(self._run_sync_sync, db)
             self.last_sync = datetime.now(timezone.utc)
         finally:
             db.close()
