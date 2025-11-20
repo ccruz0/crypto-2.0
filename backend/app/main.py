@@ -1,5 +1,5 @@
 from fastapi import FastAPI
- TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
+# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
 # from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.environment import get_cors_origins, get_environment, is_local, is_aws
