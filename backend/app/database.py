@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
@@ -88,8 +88,71 @@ else:
 
 Base = declarative_base()
 
+
+def table_has_column(db_engine, table_name: str, column_name: str) -> bool:
+    """Return True if the given table contains the specified column."""
+    if db_engine is None or not table_name or not column_name:
+        return False
+    try:
+        inspector = inspect(db_engine)
+        columns = inspector.get_columns(table_name)
+        return any(col.get("name") == column_name for col in columns)
+    except Exception as inspect_err:
+        logger.warning(
+            "Unable to inspect table %s for column %s: %s",
+            table_name,
+            column_name,
+            inspect_err,
+        )
+        return False
+
+
+def ensure_optional_columns(db_engine=None):
+    """
+    Ensure optional columns exist in critical tables.
+    This guards against environments that haven't run the latest migrations.
+    """
+    engine_to_use = db_engine or engine
+    if engine_to_use is None:
+        logger.warning("Cannot ensure optional columns - engine is None")
+        return
+    
+    try:
+        from app.models.watchlist import WatchlistItem
+    except Exception as import_err:
+        logger.warning(f"Cannot load WatchlistItem model to verify optional columns: {import_err}")
+        return
+    
+    table_name = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
+        WatchlistItem, "__tablename__", "watchlist_items"
+    )
+    
+    optional_columns = [
+        ("is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("min_price_change_pct", "DOUBLE PRECISION"),
+    ]
+    
+    try:
+        with engine_to_use.begin() as conn:
+            for column_name, column_sql in optional_columns:
+                if table_has_column(engine_to_use, table_name, column_name):
+                    continue
+                stmt = text(
+                    f"ALTER TABLE {table_name} "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_sql}"
+                )
+                conn.execute(stmt)
+                logger.info("Added optional column %s.%s", table_name, column_name)
+    except Exception as ensure_err:
+        logger.warning(f"Could not ensure optional columns: {ensure_err}", exc_info=True)
+
 def get_db():
-    """Dependency for getting database session - non-blocking with graceful fallback"""
+    """Dependency for getting database session - non-blocking with graceful fallback
+    
+    CRITICAL: This function ensures database sessions are properly closed even if:
+    - The handler raises an exception
+    - The handler doesn't explicitly commit/rollback
+    """
     if SessionLocal is None:
         # Database not available - return None and let endpoints handle it
         yield None
@@ -100,16 +163,21 @@ def get_db():
         # Create session without blocking test
         db = SessionLocal()
         yield db
+        # Note: If handler completed successfully, it should have explicitly committed
+        # If not, db.close() in finally will rollback any uncommitted transactions
     except Exception as e:
         logger.error(f"Database session error: {e}", exc_info=True)
         if db:
             try:
+                # CRITICAL: Rollback on exception to release transaction locks
                 db.rollback()
-            except:
-                pass
+            except Exception as rollback_err:
+                logger.warning(f"Error rolling back database session: {rollback_err}")
         # Re-raise the exception instead of yielding None (which causes generator error)
         raise
     finally:
+        # CRITICAL: Always close the session to release the connection back to the pool
+        # This will automatically rollback any uncommitted transactions
         if db:
             try:
                 db.close()
