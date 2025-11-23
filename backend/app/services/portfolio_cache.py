@@ -340,25 +340,36 @@ def update_portfolio_cache(db: Session) -> Dict:
         
         # Update loans in database
         if loans_found:
-            logger.info(f"Syncing {len(loans_found)} loans to database...")
-            
-            # Deactivate all existing loans for currencies we have data for
-            currencies_with_loans = [loan["currency"] for loan in loans_found]
-            db.query(PortfolioLoan).filter(
-                PortfolioLoan.currency.in_(currencies_with_loans)
-            ).update({"is_active": False}, synchronize_session=False)
-            
-            # Add new loans
-            for loan_data in loans_found:
-                new_loan = PortfolioLoan(
-                    currency=loan_data["currency"],
-                    borrowed_amount=loan_data["borrowed_amount"],
-                    borrowed_usd_value=loan_data["borrowed_usd_value"],
-                    notes="Auto-synced from Crypto.com",
-                    is_active=True
-                )
-                db.add(new_loan)
-                logger.info(f"💰 Synced loan: {loan_data['currency']} ${loan_data['borrowed_usd_value']:.2f}")
+            try:
+                # Check if portfolio_loans table exists before using it
+                from sqlalchemy import inspect
+                inspector = inspect(db.bind)
+                tables = inspector.get_table_names()
+                
+                if 'portfolio_loans' in tables:
+                    logger.info(f"Syncing {len(loans_found)} loans to database...")
+                    
+                    # Deactivate all existing loans for currencies we have data for
+                    currencies_with_loans = [loan["currency"] for loan in loans_found]
+                    db.query(PortfolioLoan).filter(
+                        PortfolioLoan.currency.in_(currencies_with_loans)
+                    ).update({"is_active": False}, synchronize_session=False)
+                    
+                    # Add new loans
+                    for loan_data in loans_found:
+                        new_loan = PortfolioLoan(
+                            currency=loan_data["currency"],
+                            borrowed_amount=loan_data["borrowed_amount"],
+                            borrowed_usd_value=loan_data["borrowed_usd_value"],
+                            notes="Auto-synced from Crypto.com",
+                            is_active=True
+                        )
+                        db.add(new_loan)
+                        logger.info(f"💰 Synced loan: {loan_data['currency']} ${loan_data['borrowed_usd_value']:.2f}")
+                else:
+                    logger.debug("portfolio_loans table does not exist, skipping loans sync")
+            except Exception as loan_update_err:
+                logger.warning(f"Could not update loans: {loan_update_err}")
         else:
             logger.info("No loans found in account data")
         
@@ -448,11 +459,23 @@ def get_portfolio_summary(db: Session) -> Dict:
         from app.models.portfolio_loan import PortfolioLoan
         
         # Get balances with total_usd calculation in one query
-        balances_query = db.query(
-            PortfolioBalance.currency,
-            PortfolioBalance.balance,
-            PortfolioBalance.usd_value
-        ).order_by(PortfolioBalance.usd_value.desc()).all()
+        # Use DISTINCT ON to get only one balance per currency (most recent by id)
+        # Fallback to deduplication in Python if DISTINCT ON not supported
+        try:
+            balances_query = db.query(
+                PortfolioBalance.currency,
+                PortfolioBalance.balance,
+                PortfolioBalance.usd_value,
+                PortfolioBalance.id
+            ).order_by(PortfolioBalance.currency, PortfolioBalance.id.desc()).all()
+        except Exception:
+            # Fallback if DISTINCT ON not available
+            balances_query = db.query(
+                PortfolioBalance.currency,
+                PortfolioBalance.balance,
+                PortfolioBalance.usd_value,
+                PortfolioBalance.id
+            ).order_by(PortfolioBalance.usd_value.desc()).all()
         
         # Get total_usd using SQL aggregation (faster than Python sum)
         total_usd_result = db.query(func.sum(PortfolioBalance.usd_value)).scalar()
@@ -462,28 +485,50 @@ def get_portfolio_summary(db: Session) -> Dict:
         # IMPORTANT: Only subtract crypto loans, NOT USD loans
         # USD loans are part of available capital and should NOT reduce portfolio value
         # This matches how crypto.com calculates portfolio value
-        total_borrowed_result = db.query(func.sum(PortfolioLoan.borrowed_usd_value)).filter(
-            PortfolioLoan.is_active == True,
-            PortfolioLoan.currency != 'USD'  # Exclude USD loans from subtraction
-        ).scalar()
-        total_borrowed_usd = float(total_borrowed_result) if total_borrowed_result else 0.0
+        total_borrowed_usd = 0.0
+        try:
+            # Check if portfolio_loans table exists before querying
+            from sqlalchemy import inspect
+            inspector = inspect(db.bind)
+            tables = inspector.get_table_names()
+            if 'portfolio_loans' in tables:
+                total_borrowed_result = db.query(func.sum(PortfolioLoan.borrowed_usd_value)).filter(
+                    PortfolioLoan.is_active == True,
+                    PortfolioLoan.currency != 'USD'  # Exclude USD loans from subtraction
+                ).scalar()
+                total_borrowed_usd = float(total_borrowed_result) if total_borrowed_result else 0.0
+        except Exception as loan_err:
+            # Silently skip loans if table doesn't exist or query fails
+            logger.debug(f"Could not get loans data: {loan_err}")
+            pass
         
         # Calculate net portfolio value (assets - crypto loans only, USD loans are capital)
+        # IMPORTANT: Return BOTH total_assets_usd (gross) and total_usd (net) so frontend can display both
         total_usd = total_assets_usd - total_borrowed_usd
         
         # Get loan details for display
-        loans_query = db.query(PortfolioLoan).filter(
-            PortfolioLoan.is_active == True
-        ).all()
         loans = []
-        for loan in loans_query:
-            loans.append({
-                "currency": loan.currency,
-                "borrowed_amount": float(loan.borrowed_amount),
-                "borrowed_usd_value": float(loan.borrowed_usd_value),
-                "interest_rate": float(loan.interest_rate) if loan.interest_rate else None,
-                "notes": loan.notes
-            })
+        try:
+            # Check if portfolio_loans table exists before querying
+            from sqlalchemy import inspect
+            inspector = inspect(db.bind)
+            tables = inspector.get_table_names()
+            if 'portfolio_loans' in tables:
+                loans_query = db.query(PortfolioLoan).filter(
+                    PortfolioLoan.is_active == True
+                ).all()
+                for loan in loans_query:
+                    loans.append({
+                        "currency": loan.currency,
+                        "borrowed_amount": float(loan.borrowed_amount),
+                        "borrowed_usd_value": float(loan.borrowed_usd_value),
+                        "interest_rate": float(loan.interest_rate) if loan.interest_rate else None,
+                        "notes": loan.notes
+                    })
+        except Exception as loan_err:
+            # Silently skip loans if table doesn't exist or query fails
+            logger.debug(f"Could not get loans details: {loan_err}")
+            pass
         
         # Get last updated timestamp (separate query but fast)
         snapshot = db.query(PortfolioSnapshot).order_by(
@@ -491,12 +536,29 @@ def get_portfolio_summary(db: Session) -> Dict:
         ).first()
         last_updated = snapshot.created_at.timestamp() if snapshot else None
         
-        # Build balances list
+        # Build balances list - deduplicate by currency (keep most recent by id)
         balances = []
+        balances_by_currency = {}
+        
         for balance in balances_query:
+            currency = balance.currency
+            balance_id = getattr(balance, 'id', None) if hasattr(balance, 'id') else None
+            
+            # Keep only one balance per currency (prefer highest id = most recent)
+            if currency not in balances_by_currency:
+                balances_by_currency[currency] = balance
+            else:
+                # If we already have this currency, keep the one with higher id (more recent)
+                existing = balances_by_currency[currency]
+                existing_id = getattr(existing, 'id', None) if hasattr(existing, 'id') else None
+                if balance_id and existing_id and balance_id > existing_id:
+                    balances_by_currency[currency] = balance
+        
+        # Convert to list format
+        for currency, balance in balances_by_currency.items():
             usd_value = float(balance.usd_value) if balance.usd_value is not None else 0.0
             balances.append({
-                "currency": balance.currency,
+                "currency": currency,
                 "balance": float(balance.balance),
                 "usd_value": usd_value
             })

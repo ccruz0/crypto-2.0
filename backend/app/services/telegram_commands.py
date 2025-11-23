@@ -5,8 +5,9 @@ Handles incoming Telegram commands and responds with formatted messages
 """
 import os
 import logging
+import math
 import requests
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 import pytz
 from app.services.telegram_notifier import telegram_notifier
@@ -33,6 +34,10 @@ API_BASE_URL = (
 SERVICE_ENDPOINT = f"{API_BASE_URL.rstrip('/')}/api/services"
 SERVICE_NAMES = ["exchange_sync", "signal_monitor", "trading_scheduler"]
 LAST_UPDATE_ID = 0  # Global variable to track last processed update
+PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent duplicate processing
+WATCHLIST_PAGE_SIZE = 9
+MAX_SYMBOLS_PER_ROW = 3
+PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
 
 
 def _build_keyboard(rows: List[List[Dict[str, str]]]) -> Dict[str, List[List[Dict[str, str]]]]:
@@ -40,6 +45,213 @@ def _build_keyboard(rows: List[List[Dict[str, str]]]) -> Dict[str, List[List[Dic
     return {"inline_keyboard": rows}
 
 
+def _send_or_edit_menu(chat_id: str, text: str, keyboard: Dict, message_id: Optional[int] = None) -> bool:
+    """
+    Try to edit the existing message; fall back to sending a new one if edit fails.
+    This keeps chats tidy while still guaranteeing the user sees the latest menu.
+    """
+    if message_id and _edit_menu_message(chat_id, message_id, text, keyboard):
+        return True
+    return _send_menu_message(chat_id, text, keyboard)
+
+
+def _format_coin_status_icons(item: WatchlistItem) -> str:
+    """Compact status badges for watchlist buttons (tested separately)."""
+    alert_icon = "🔔" if getattr(item, "alert_enabled", False) else "🔕"
+    trade_icon = "🤖" if getattr(item, "trade_enabled", False) else "⛔"
+    margin_icon = "⚡" if getattr(item, "trade_on_margin", False) else "💤"
+    return f"{alert_icon}{trade_icon}{margin_icon}"
+
+
+def _format_coin_summary(item: WatchlistItem) -> str:
+    """Detailed summary block for a single coin."""
+    amount = getattr(item, "trade_amount_usd", None)
+    amount_text = f"${amount:,.2f}" if (isinstance(amount, (int, float)) and amount > 0) else "N/A"
+    min_pct = getattr(item, "min_price_change_pct", None)
+    min_pct_text = f"{min_pct:.2f}%" if isinstance(min_pct, (int, float)) else "Strategy default"
+    sl_mode = getattr(item, "sl_tp_mode", None) or "conservative"
+    sl_pct = getattr(item, "sl_percentage", None)
+    tp_pct = getattr(item, "tp_percentage", None)
+    sl_text = f"{sl_pct:.2f}%" if isinstance(sl_pct, (int, float)) else "Auto"
+    tp_text = f"{tp_pct:.2f}%" if isinstance(tp_pct, (int, float)) else "Auto"
+    return (
+        f"🔔 Alert: <b>{'ENABLED' if item.alert_enabled else 'DISABLED'}</b>\n"
+        f"🤖 Trade: <b>{'ENABLED' if item.trade_enabled else 'DISABLED'}</b>\n"
+        f"⚡ Margin: <b>{'ON' if item.trade_on_margin else 'OFF'}</b>\n"
+        f"💵 Amount USD: <b>{amount_text}</b>\n"
+        f"🎯 Risk Mode: <b>{sl_mode.title()}</b>\n"
+        f"📉 SL%: <b>{sl_text}</b> | 📈 TP%: <b>{tp_text}</b>\n"
+        f"📊 Min Price Change: <b>{min_pct_text}</b>"
+    )
+
+
+def _load_watchlist_items(db: Session) -> List[WatchlistItem]:
+    """Fetch non-deleted watchlist items ordered by symbol."""
+    return db.query(WatchlistItem).filter(
+        WatchlistItem.symbol.isnot(None),
+        WatchlistItem.symbol != "",
+        WatchlistItem.is_deleted == False  # noqa
+    ).order_by(WatchlistItem.symbol.asc()).all()
+
+
+def _get_watchlist_item(db: Session, symbol: str) -> Optional[WatchlistItem]:
+    """Return latest watchlist item for symbol."""
+    return (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.symbol == symbol, WatchlistItem.is_deleted == False)  # noqa
+        .order_by(WatchlistItem.created_at.desc())
+        .first()
+    )
+
+
+def _update_watchlist_fields(db: Session, symbol: str, updates: Dict[str, Any]) -> WatchlistItem:
+    """Apply partial updates to a watchlist item and persist them."""
+    item = _get_watchlist_item(db, symbol)
+    if not item:
+        raise ValueError(f"Symbol {symbol} not found")
+    for field, value in updates.items():
+        if hasattr(item, field):
+            setattr(item, field, value)
+        else:
+            logger.warning(f"[TG] Field {field} missing on WatchlistItem, skipping update for {symbol}")
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def _create_watchlist_symbol(db: Session, symbol: str) -> WatchlistItem:
+    """Create a new watchlist entry with safe defaults."""
+    normalized = symbol.upper()
+    existing = _get_watchlist_item(db, normalized)
+    if existing:
+        raise ValueError(f"{normalized} ya existe en la watchlist")
+    item = WatchlistItem(
+        symbol=normalized,
+        exchange="CRYPTO_COM",
+        alert_enabled=False,
+        trade_enabled=False,
+        trade_amount_usd=None,
+        trade_on_margin=False,
+        sl_tp_mode="conservative",
+        is_deleted=False,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def _delete_watchlist_symbol(db: Session, symbol: str) -> None:
+    """Soft delete symbol if column exists, fallback to hard delete."""
+    item = _get_watchlist_item(db, symbol)
+    if not item:
+        raise ValueError(f"{symbol} no existe")
+    if hasattr(item, "is_deleted"):
+        item.is_deleted = True
+        item.alert_enabled = False
+        item.trade_enabled = False
+        item.trade_on_margin = False
+    else:
+        db.delete(item)
+    db.commit()
+
+
+def _prompt_value_input(
+    chat_id: str,
+    prompt: str,
+    *,
+    symbol: Optional[str],
+    field: Optional[str],
+    action: str,
+    value_type: str = "float",
+    allow_clear: bool = True,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+) -> None:
+    """Store pending input metadata and prompt the user."""
+    PENDING_VALUE_INPUTS[chat_id] = {
+        "symbol": symbol,
+        "field": field,
+        "action": action,
+        "value_type": value_type,
+        "allow_clear": allow_clear,
+        "min_value": min_value,
+        "max_value": max_value,
+    }
+    footer = "\n\nEnvía el valor por chat. Escribe 'cancel' para salir."
+    keyboard = _build_keyboard([[{"text": "❌ Cancelar", "callback_data": "input:cancel"}]])
+    _send_menu_message(chat_id, prompt + footer, keyboard)
+
+
+def _parse_pending_value(state: Dict[str, Any], raw_value: str) -> Tuple[Optional[Any], str]:
+    """Validate and convert user text based on pending state. Returns (value, error)."""
+    value_type = state.get("value_type", "float")
+    allow_clear = state.get("allow_clear", True)
+    min_value = state.get("min_value")
+    max_value = state.get("max_value")
+    normalized = raw_value.strip()
+    if allow_clear and normalized.lower() in {"clear", "none", "null", "0"}:
+        return None, ""
+    try:
+        if value_type == "float":
+            val = float(normalized)
+        elif value_type == "int":
+            val = int(normalized)
+        elif value_type == "symbol":
+            val = normalized.upper()
+            if "_" not in val:
+                val = f"{val}_USDT"
+        else:  # string
+            val = normalized
+    except ValueError:
+        return None, "Valor inválido. Usa números (ej: 100.5)."
+    if isinstance(val, (int, float)):
+        if min_value is not None and val < min_value:
+            return None, f"El valor debe ser ≥ {min_value}"
+        if max_value is not None and val > max_value:
+            return None, f"El valor debe ser ≤ {max_value}"
+    return val, ""
+
+
+def _handle_pending_value_message(chat_id: str, text: str, db: Session) -> bool:
+    """If chat has a pending input request, process it and return True."""
+    state = PENDING_VALUE_INPUTS.get(chat_id)
+    if not state:
+        return False
+    if text.strip().lower() in {"cancel", "/cancel"}:
+        PENDING_VALUE_INPUTS.pop(chat_id, None)
+        send_command_response(chat_id, "❌ Entrada cancelada.")
+        symbol = state.get("symbol")
+        if symbol and db:
+            show_coin_menu(chat_id, symbol, db)
+        return True
+    value, error = _parse_pending_value(state, text)
+    if error:
+        send_command_response(chat_id, f"⚠️ {error}")
+        return True
+    try:
+        action = state.get("action")
+        symbol = state.get("symbol")
+        if action == "update_field" and symbol and state.get("field"):
+            updates = {state["field"]: value}
+            _update_watchlist_fields(db, symbol, updates)
+            send_command_response(chat_id, f"✅ Guardado para {symbol}")
+            show_coin_menu(chat_id, symbol, db)
+        elif action == "add_symbol" and isinstance(value, str):
+            new_item = _create_watchlist_symbol(db, value)
+            send_command_response(chat_id, f"✅ {new_item.symbol} agregado con Alert=NO / Trade=NO.")
+            show_coin_menu(chat_id, new_item.symbol, db)
+        elif action == "set_notes" and symbol:
+            _update_watchlist_fields(db, symbol, {"notes": value})
+            send_command_response(chat_id, f"📝 Notas actualizadas para {symbol}")
+            show_coin_menu(chat_id, symbol, db)
+        else:
+            send_command_response(chat_id, "⚠️ Acción no soportada.")
+        PENDING_VALUE_INPUTS.pop(chat_id, None)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to handle pending value: {e}", exc_info=True)
+        send_command_response(chat_id, f"❌ Error guardando valor: {e}")
+    return True
 def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
     """Send a message with inline keyboard."""
     if not TELEGRAM_ENABLED:
@@ -258,31 +470,182 @@ def send_help_message(chat_id: str) -> bool:
 def show_main_menu(chat_id: str, db: Session = None) -> bool:
     """Show main menu with buttons matching dashboard layout"""
     try:
-        text = "📋 <b>Main Menu</b>\n\nSelect an option:"
-        
+        text = "📋 <b>Main Menu</b>\n\nSelecciona una sección:"
         keyboard = _build_keyboard([
+            [{"text": "⚙️ Watchlist Control", "callback_data": "menu:watchlist"}],
             [
                 {"text": "💼 Portfolio", "callback_data": "cmd:portfolio"},
-            ],
-            [
-                {"text": "👀 Watchlist", "callback_data": "cmd:watchlist"},
-            ],
-            [
                 {"text": "📋 Open Orders", "callback_data": "cmd:open_orders"},
             ],
             [
-                {"text": "✅ Executed Orders", "callback_data": "cmd:executed_orders"},
+                {"text": "👀 Alerts", "callback_data": "cmd:alerts"},
+                {"text": "✅ Executed", "callback_data": "cmd:executed_orders"},
             ],
             [
+                {"text": "📊 Status", "callback_data": "cmd:status"},
                 {"text": "📝 Version", "callback_data": "cmd:version"},
             ],
+            [{"text": "❓ Help", "callback_data": "cmd:help"}],
         ])
-        
         return _send_menu_message(chat_id, text, keyboard)
     except Exception as e:
         logger.error(f"[TG][ERROR] Error showing main menu: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error showing menu: {str(e)}")
 
+
+def show_watchlist_menu(chat_id: str, db: Session, page: int = 1, message_id: Optional[int] = None) -> bool:
+    """Show paginated watchlist with per-symbol buttons."""
+    if not db:
+        return send_command_response(chat_id, "❌ Database not available")
+    try:
+        items = _load_watchlist_items(db)
+        if not items:
+            text = "👀 <b>Watchlist</b>\n\nNo hay monedas configuradas. Agrega una con el botón de abajo."
+            keyboard = _build_keyboard([
+                [{"text": "➕ Add Symbol", "callback_data": "watchlist:add"}],
+                [{"text": "🏠 Main", "callback_data": "menu:main"}],
+            ])
+            return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+        total_pages = max(1, math.ceil(len(items) / WATCHLIST_PAGE_SIZE))
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * WATCHLIST_PAGE_SIZE
+        subset = items[start:start + WATCHLIST_PAGE_SIZE]
+        rows: List[List[Dict[str, str]]] = []
+        for i in range(0, len(subset), MAX_SYMBOLS_PER_ROW):
+            chunk = subset[i:i + MAX_SYMBOLS_PER_ROW]
+            row = []
+            for item in chunk:
+                label = f"{(item.symbol or '').upper()} {_format_coin_status_icons(item)}"
+                row.append({
+                    "text": label[:64],
+                    "callback_data": f"wl:coin:{(item.symbol or '').upper()}"
+                })
+            rows.append(row)
+        nav_row: List[Dict[str, str]] = []
+        if page > 1:
+            nav_row.append({"text": "⬅️ Prev", "callback_data": f"watchlist:page:{page - 1}"})
+        nav_row.append({"text": f"📄 {page}/{total_pages}", "callback_data": "noop"})
+        if page < total_pages:
+            nav_row.append({"text": "Next ➡️", "callback_data": f"watchlist:page:{page + 1}"})
+        rows.append(nav_row)
+        rows.append([
+            {"text": "➕ Add Symbol", "callback_data": "watchlist:add"},
+            {"text": "🔄 Refresh", "callback_data": f"watchlist:page:{page}"},
+        ])
+        rows.append([{"text": "🏠 Main Menu", "callback_data": "menu:main"}])
+        text = "⚙️ <b>Watchlist Control</b>\n\nSelecciona un símbolo para ajustar sus parámetros."
+        return _send_or_edit_menu(chat_id, text, _build_keyboard(rows), message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing watchlist menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error mostrando watchlist: {e}")
+
+
+def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[int] = None) -> bool:
+    """Show detailed controls for a specific symbol."""
+    if not db:
+        return send_command_response(chat_id, "❌ Database not available")
+    try:
+        normalized = (symbol or "").upper()
+        item = _get_watchlist_item(db, normalized)
+        if not item:
+            return send_command_response(chat_id, f"❌ {normalized} no existe en la watchlist.")
+        text = f"⚙️ <b>{normalized} Settings</b>\n\n{_format_coin_summary(item)}"
+        rows = [
+            [
+                {"text": "🔔 Alert", "callback_data": f"wl:coin:{normalized}:toggle:alert"},
+                {"text": "🤖 Trade", "callback_data": f"wl:coin:{normalized}:toggle:trade"},
+                {"text": "⚡ Margin", "callback_data": f"wl:coin:{normalized}:toggle:margin"},
+            ],
+            [
+                {"text": "💵 Amount USD", "callback_data": f"wl:coin:{normalized}:set:amount"},
+                {"text": "🎯 Risk Mode", "callback_data": f"wl:coin:{normalized}:toggle:risk"},
+                {"text": "📊 Min %", "callback_data": f"wl:coin:{normalized}:set:min_pct"},
+            ],
+            [
+                {"text": "📉 SL%", "callback_data": f"wl:coin:{normalized}:set:sl_pct"},
+                {"text": "📈 TP%", "callback_data": f"wl:coin:{normalized}:set:tp_pct"},
+                {"text": "🧠 Preset", "callback_data": f"wl:coin:{normalized}:preset"},
+            ],
+            [
+                {"text": "📝 Notas", "callback_data": f"wl:coin:{normalized}:set:notes"},
+                {"text": "🗑️ Delete", "callback_data": f"wl:coin:{normalized}:delete"},
+            ],
+            [
+                {"text": "🔙 Back", "callback_data": "menu:watchlist"},
+                {"text": "🏠 Main", "callback_data": "menu:main"},
+            ],
+        ]
+        return _send_or_edit_menu(chat_id, text, _build_keyboard(rows), message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing coin menu for {symbol}: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error mostrando {symbol}: {e}")
+
+
+def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Session, message_id: Optional[int]) -> None:
+    """Generic toggle handler for alert/trade/margin/risk flags."""
+    try:
+        item = _get_watchlist_item(db, symbol)
+        if not item:
+            send_command_response(chat_id, f"❌ {symbol} no existe.")
+            return
+        if field == "sl_tp_mode":
+            current = (item.sl_tp_mode or "conservative").lower()
+            new_value = "aggressive" if current == "conservative" else "conservative"
+            updated = _update_watchlist_fields(db, symbol, {field: new_value})
+            status = new_value.title()
+            send_command_response(chat_id, f"🎯 Modo de riesgo para {symbol}: {status}")
+        else:
+            current = bool(getattr(item, field))
+            updated = _update_watchlist_fields(db, symbol, {field: not current})
+            status = "✅ ACTIVADO" if getattr(updated, field) else "❌ DESACTIVADO"
+            send_command_response(chat_id, f"{field.replace('_', ' ').title()} {status} para {symbol}")
+        show_coin_menu(chat_id, symbol, db, message_id=message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Toggle {field} for {symbol} failed: {e}", exc_info=True)
+        send_command_response(chat_id, f"❌ Error cambiando {field}: {e}")
+
+
+def _show_preset_selection_menu(chat_id: str, symbol: str) -> None:
+    """Display available strategy presets for a symbol."""
+    from app.services.config_loader import load_config
+
+    cfg = load_config()
+    presets = sorted(cfg.get("presets", {}).keys())
+    if not presets:
+        send_command_response(chat_id, "❌ No hay presets configurados en trading_config.")
+        return
+    coin_cfg = cfg.get("coins", {}).get(symbol, {})
+    current = coin_cfg.get("preset") or cfg.get("defaults", {}).get("preset", "swing")
+    rows: List[List[Dict[str, str]]] = []
+    for i in range(0, len(presets), 2):
+        chunk = presets[i:i + 2]
+        row = []
+        for preset in chunk:
+            display = preset
+            if preset == current:
+                display = f"✅ {preset}"
+            row.append({
+                "text": display[:64],
+                "callback_data": f"wl:coin:{symbol}:preset:set:{preset}"
+            })
+        rows.append(row)
+    rows.append([{"text": "🔙 Regresar", "callback_data": f"wl:coin:{symbol}"}])
+    text = f"🧠 <b>{symbol} - Presets</b>\n\nActual: <b>{current}</b>\nSelecciona un preset para actualizar trading_config."
+    _send_menu_message(chat_id, text, _build_keyboard(rows))
+
+
+def _apply_preset_change(chat_id: str, symbol: str, preset: str) -> None:
+    """Persist preset change inside trading_config."""
+    from app.services.config_loader import load_config, save_config
+
+    cfg = load_config()
+    if preset not in cfg.get("presets", {}):
+        send_command_response(chat_id, f"❌ Preset desconocido: {preset}")
+        return
+    cfg.setdefault("coins", {}).setdefault(symbol, {})
+    cfg["coins"][symbol]["preset"] = preset
+    save_config(cfg)
+    send_command_response(chat_id, f"🧠 {symbol} ahora usa preset <b>{preset}</b>")
 
 def send_status_message(chat_id: str, db: Session = None) -> bool:
     """Send bot status report"""
@@ -814,83 +1177,67 @@ def send_watchlist_message(chat_id: str, db: Session = None) -> bool:
         if not db:
             return send_command_response(chat_id, "❌ Database not available")
         
-        # Import config loader to get strategy names
         from app.services.config_loader import load_config
         
         config = load_config()
         coins_config = config.get("coins", {})
         
-        # Get coins with Trade=YES only
+        # Pull every visible watchlist entry, not only Trade=YES
         coins = db.query(WatchlistItem).filter(
-            WatchlistItem.trade_enabled == True,
-            WatchlistItem.symbol.isnot(None)
-        ).order_by(WatchlistItem.symbol).all()
-        
-        logger.info(f"[TG][WATCHLIST] Found {len(coins)} coins with Trade=YES")
-        for coin in coins:
-            logger.info(f"[TG][WATCHLIST] {coin.symbol}: trade_enabled={coin.trade_enabled}, trade_amount_usd={coin.trade_amount_usd}, price={coin.price}")
+            WatchlistItem.symbol.isnot(None),
+            WatchlistItem.symbol != "",
+            WatchlistItem.is_deleted == False  # noqa
+        ).order_by(WatchlistItem.symbol.asc()).all()
         
         if not coins:
-            message = """👀 <b>Watchlist</b>
-
-No coins with Trade=YES."""
-        else:
-            message = f"""👀 <b>Watchlist ({len(coins)} coins with Trade=YES)</b>"""
-            
-            for coin in coins:
-                symbol = coin.symbol or "N/A"
-                last_price = coin.price or 0
-                buy_target = coin.buy_target or "N/A"
-                
-                # Get strategy name in full format (e.g., "swing-conservative", "intradia-agresiva")
-                coin_config = coins_config.get(symbol, {})
-                preset = coin_config.get("preset", "swing")
-                
-                # Handle preset formats like "swing-conservative" or just "swing"
-                if "-" in preset:
-                    # Already includes risk mode (e.g., "swing-conservative")
-                    strategy_name = preset
-                else:
-                    # Get risk mode from watchlist item and combine
-                    risk_mode = coin.sl_tp_mode or "conservative"
-                    strategy_name = f"{preset}-{risk_mode}"
-                
-                # Status indicators
-                alert_status = "✅ Alert" if coin.alert_enabled else "❌ Alert"
-                margin_status = "✅ Margin" if coin.trade_on_margin else "❌ Margin"
-                
-                if isinstance(last_price, (int, float)) and last_price > 0:
-                    if last_price >= 100:
-                        price_str = f"${last_price:,.2f}"
-                    else:
-                        price_str = f"${last_price:,.4f}"
-                else:
-                    price_str = "N/A"
-                
-                if isinstance(buy_target, (int, float)) and buy_target > 0:
-                    if buy_target >= 100:
-                        target_str = f"${buy_target:,.2f}"
-                    else:
-                        target_str = f"${buy_target:,.4f}"
-                else:
-                    target_str = "N/A"
-                
-                # Add trade amount if available
-                amount_str = ""
-                if coin.trade_amount_usd:
-                    amount_str = f"${coin.trade_amount_usd:,.2f}"
-                else:
-                    amount_str = "N/A"
-                
-                message += f"""
-
-📊 <b>{symbol}</b>
-  📈 Strategy: <b>{strategy_name}</b>
-  {alert_status} | {margin_status}
-  💰 Price: {price_str} | Target: {target_str}
-  💵 Amount: {amount_str}"""
+            return send_command_response(chat_id, "👀 <b>Watchlist</b>\n\nNo hay monedas en la cartera.")
         
-        logger.info(f"[TG][CMD] /watchlist")
+        trade_enabled_coins = [c for c in coins if c.trade_enabled]
+        disabled_coins = [c for c in coins if not c.trade_enabled]
+        
+        def _format_entry(coin: WatchlistItem) -> str:
+            symbol = (coin.symbol or "N/A").upper()
+            last_price = coin.price or 0
+            buy_target = coin.buy_target
+            preset = coins_config.get(symbol, {}).get("preset", "swing")
+            if "-" not in preset:
+                preset = f"{preset}-{(coin.sl_tp_mode or 'conservative')}"
+            price_str = (
+                f"${last_price:,.2f}" if isinstance(last_price, (int, float)) and last_price >= 1
+                else (f"${last_price:,.4f}" if isinstance(last_price, (int, float)) and last_price > 0 else "N/A")
+            )
+            target_str = (
+                f"${buy_target:,.2f}" if isinstance(buy_target, (int, float)) and buy_target >= 1
+                else (f"${buy_target:,.4f}" if isinstance(buy_target, (int, float)) and buy_target and buy_target > 0 else "N/A")
+            )
+            amount_str = f"${coin.trade_amount_usd:,.2f}" if coin.trade_amount_usd else "N/A"
+            alert_icon = "🔔" if coin.alert_enabled else "🔕"
+            trade_icon = "🤖" if coin.trade_enabled else "⛔"
+            margin_icon = "⚡" if coin.trade_on_margin else "💤"
+            return (
+                f"\n📊 <b>{symbol}</b>\n"
+                f"  {alert_icon} | {trade_icon} | {margin_icon}\n"
+                f"  🎯 Estrategia: <b>{preset}</b>\n"
+                f"  💵 Amount: {amount_str}\n"
+                f"  💰 Precio: {price_str} | Objetivo: {target_str}"
+            )
+        
+        message = f"👀 <b>Watchlist Completa</b>\n\nTotal monedas: {len(coins)}"
+        if trade_enabled_coins:
+            message += f"\n\n✅ <b>Trade = YES ({len(trade_enabled_coins)})</b>"
+            for coin in trade_enabled_coins[:20]:
+                message += _format_entry(coin)
+            if len(trade_enabled_coins) > 20:
+                message += f"\n… y {len(trade_enabled_coins) - 20} más con Trade=YES"
+        if disabled_coins:
+            message += f"\n\n⚪ <b>Trade = NO ({len(disabled_coins)})</b>"
+            for coin in disabled_coins[:20]:
+                message += _format_entry(coin)
+            if len(disabled_coins) > 20:
+                message += f"\n… y {len(disabled_coins) - 20} más con Trade=NO"
+        
+        message += "\n\n💡 Usa el menú ⚙️ Watchlist Control para editar cualquier símbolo."
+        
         return send_command_response(chat_id, message)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build watchlist: {e}", exc_info=True)
@@ -1644,18 +1991,40 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
     if callback_query:
-        from_user = callback_query.get("from", {})
-        chat_id = str(from_user.get("id", ""))
-        callback_data = callback_query.get("data", "")
+        callback_query_id = callback_query.get("id")
         
-        # Only authorized user
-        if chat_id != AUTH_CHAT_ID:
-            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}")
+        # DEDUPLICATION: Check if this callback was already processed
+        # This prevents duplicate processing when multiple workers handle the same update
+        if callback_query_id and callback_query_id in PROCESSED_CALLBACK_IDS:
+            logger.debug(f"[TG] Skipping duplicate callback_query_id={callback_query_id}")
             return
         
-        # Answer callback query to remove loading state
-        callback_query_id = callback_query.get("id")
+        from_user = callback_query.get("from", {})
+        message = callback_query.get("message", {})
+        chat = message.get("chat", {})
+        # Get chat ID from the message (group/channel), not from the user who clicked
+        chat_id = str(chat.get("id", ""))
+        user_id = str(from_user.get("id", ""))
+        callback_data = callback_query.get("data", "")
+        message_id = message.get("message_id")
+        
+        # Only authorized chat (group/channel) or user
+        # For groups, check the chat ID; for private chats, check user ID
+        is_authorized = (chat_id == AUTH_CHAT_ID) or (user_id == AUTH_CHAT_ID)
+        if not is_authorized:
+            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}")
+            return
+        
+        # Mark this callback as processed BEFORE processing to prevent race conditions
         if callback_query_id:
+            PROCESSED_CALLBACK_IDS.add(callback_query_id)
+            # Clean up old callback IDs (keep only last 1000 to prevent memory leak)
+            if len(PROCESSED_CALLBACK_IDS) > 1000:
+                # Remove oldest 500 entries (simple cleanup)
+                old_ids = list(PROCESSED_CALLBACK_IDS)[:500]
+                PROCESSED_CALLBACK_IDS.difference_update(old_ids)
+            
+            # Answer callback query to remove loading state
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
                 requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
@@ -1665,7 +2034,118 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         # Process callback data
         logger.info(f"[TG] Processing callback_query: {callback_data} from chat_id={chat_id}")
         
-        if callback_data.startswith("analyze_"):
+        if callback_data == "noop":
+            return
+        elif callback_data == "menu:watchlist":
+            show_watchlist_menu(chat_id, db, page=1, message_id=message_id)
+        elif callback_data.startswith("watchlist:page:"):
+            try:
+                page = int(callback_data.split(":")[-1])
+            except ValueError:
+                page = 1
+            show_watchlist_menu(chat_id, db, page=page, message_id=message_id)
+        elif callback_data == "watchlist:add":
+            _prompt_value_input(
+                chat_id,
+                "➕ <b>Agregar símbolo</b>\n\nFormato: BASE_QUOTE (ej. BTC_USDT)",
+                symbol=None,
+                field=None,
+                action="add_symbol",
+                value_type="symbol",
+                allow_clear=False,
+            )
+        elif callback_data == "input:cancel":
+            if PENDING_VALUE_INPUTS.pop(chat_id, None):
+                send_command_response(chat_id, "❌ Entrada cancelada.")
+            return
+        elif callback_data.startswith("wl:coin:"):
+            parts = callback_data.split(":")
+            if len(parts) < 3:
+                return
+            symbol = parts[2]
+            if len(parts) == 3:
+                show_coin_menu(chat_id, symbol, db, message_id=message_id)
+                return
+            action = parts[3]
+            if action == "toggle" and len(parts) >= 5:
+                field_key = parts[4]
+                toggle_map = {
+                    "alert": "alert_enabled",
+                    "trade": "trade_enabled",
+                    "margin": "trade_on_margin",
+                    "risk": "sl_tp_mode",
+                }
+                target_field = toggle_map.get(field_key)
+                if target_field:
+                    _handle_watchlist_toggle(chat_id, symbol, target_field, db, message_id)
+            elif action == "set" and len(parts) >= 5:
+                field_key = parts[4]
+                if field_key == "amount":
+                    _prompt_value_input(
+                        chat_id,
+                        f"💵 <b>{symbol}</b>\nIngresa Amount USD.",
+                        symbol=symbol,
+                        field="trade_amount_usd",
+                        action="update_field",
+                        value_type="float",
+                        min_value=0.0,
+                    )
+                elif field_key == "min_pct":
+                    _prompt_value_input(
+                        chat_id,
+                        f"📊 <b>{symbol}</b>\nNuevo porcentaje mínimo (ej. 1.5).",
+                        symbol=symbol,
+                        field="min_price_change_pct",
+                        action="update_field",
+                        value_type="float",
+                        min_value=0.1,
+                    )
+                elif field_key == "sl_pct":
+                    _prompt_value_input(
+                        chat_id,
+                        f"📉 <b>{symbol}</b>\nIngresa SL% (ej. 5).",
+                        symbol=symbol,
+                        field="sl_percentage",
+                        action="update_field",
+                        value_type="float",
+                        min_value=0.1,
+                    )
+                elif field_key == "tp_pct":
+                    _prompt_value_input(
+                        chat_id,
+                        f"📈 <b>{symbol}</b>\nIngresa TP% (ej. 10).",
+                        symbol=symbol,
+                        field="tp_percentage",
+                        action="update_field",
+                        value_type="float",
+                        min_value=0.1,
+                    )
+                elif field_key == "notes":
+                    _prompt_value_input(
+                        chat_id,
+                        f"📝 <b>{symbol}</b>\nEscribe nuevas notas.",
+                        symbol=symbol,
+                        field="notes",
+                        action="set_notes",
+                        value_type="string",
+                    )
+            elif action == "preset":
+                if len(parts) >= 6 and parts[4] == "set":
+                    preset_value = parts[5]
+                    _apply_preset_change(chat_id, symbol, preset_value)
+                    show_coin_menu(chat_id, symbol, db, message_id=message_id)
+                else:
+                    _show_preset_selection_menu(chat_id, symbol)
+            elif action == "delete":
+                try:
+                    _delete_watchlist_symbol(db, symbol)
+                    send_command_response(chat_id, f"🗑️ {symbol} eliminado.")
+                    show_watchlist_menu(chat_id, db, page=1)
+                except Exception as err:
+                    logger.error(f"[TG][ERROR] delete {symbol}: {err}", exc_info=True)
+                    send_command_response(chat_id, f"❌ Error eliminando {symbol}: {err}")
+            return
+        elif callback_data.startswith("analyze_"):
             symbol = callback_data.replace("analyze_", "")
             send_analyze_message(chat_id, f"/analyze {symbol}", db)
         elif callback_data.startswith("create_sl_tp_"):
@@ -1731,6 +2211,11 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     
     # Parse command
     text = text.strip()
+
+    # If waiting for a manual input, process it first
+    if PENDING_VALUE_INPUTS.get(chat_id) and db:
+        if _handle_pending_value_message(chat_id, text, db):
+            return
     
     # Check if user is entering a value for a pending strategy setting
     # Try to parse as number - if successful, check if there's a pending strategy selection

@@ -14,14 +14,8 @@ from app.models.exchange_balance import ExchangeBalance
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
-from app.services.open_orders import merge_orders
-from app.services.open_orders_cache import store_unified_open_orders
-from app.services.open_orders import merge_orders
-from app.services.open_orders_cache import store_unified_open_orders
-from app.services.open_orders import merge_orders
-from app.services.open_orders_cache import store_unified_open_orders
-from app.schemas.orders import UnifiedOpenOrder
-from app.services.open_orders_cache import update_open_orders_cache
+from app.services.open_orders import merge_orders, UnifiedOpenOrder
+from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
 
 logger = logging.getLogger(__name__)
 
@@ -241,22 +235,24 @@ class ExchangeSyncService:
         """Sync open orders from Crypto.com"""
         try:
             response = trade_client.get_open_orders()
-            trigger_response = trade_client.get_trigger_orders()
+            # Call get_trigger_orders with default parameters (page=0, page_size=200)
+            trigger_response = trade_client.get_trigger_orders(page=0, page_size=200)
             
-            if not response or "data" not in response:
-                logger.warning("No open orders data received from Crypto.com")
-                orders = []
-            else:
-                orders = response.get("data", [])
-
+            # Check if API calls failed before processing
+            api_failed = (not response or "data" not in response)
+            
+            if api_failed:
+                logger.warning("No open orders data received from Crypto.com - preserving existing cache")
+                # Don't update cache with empty data - preserve last valid cached data
+                return
+            
+            orders = response.get("data", [])
             trigger_orders = trigger_response.get("data", []) if trigger_response else []
 
             unified_orders = merge_orders(orders, trigger_orders)
-            update_open_orders_cache(unified_orders)
-            
-            if not response or "data" not in response:
-                # Keep legacy behavior: skip DB update when API failed
-                return
+            # Only update cache if we have valid data
+            if unified_orders or orders or trigger_orders:
+                update_open_orders_cache(unified_orders)
             
             # Mark orders not in response as cancelled/closed
             if orders:
@@ -996,23 +992,119 @@ class ExchangeSyncService:
                 # If TP was executed, cancel SL
                 target_order_type = 'STOP_LIMIT'
             else:
-                return  # Not a SL/TP order
+                return 0  # Not a SL/TP order
+            
+            # Get executed order to find parent_order_id and order_role
+            executed_order = db.query(ExchangeOrder).filter(
+                ExchangeOrder.exchange_order_id == executed_order_id
+            ).first()
             
             # Find open SL/TP orders of the opposite type for the same symbol
-            # Look for orders created around the same time (within 5 minutes of the executed order)
-            # Include NEW status as well (orders can be in NEW state)
-            target_orders = db.query(ExchangeOrder).filter(
-                and_(
-                    ExchangeOrder.symbol == symbol,
-                    ExchangeOrder.order_type == target_order_type,
-                    ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PENDING]),
-                    ExchangeOrder.exchange_order_id != executed_order_id
-                )
-            ).all()
+            # Try multiple strategies to find the matching SL/TP order:
+            # 1. By parent_order_id (if both SL/TP share the same parent)
+            # 2. By order_role (STOP_LOSS/TAKE_PROFIT) if available
+            # 3. By symbol + order_type + similar creation time (fallback)
+            target_orders = []
+            
+            # Strategy 1: Find by parent_order_id (most reliable)
+            if executed_order and executed_order.parent_order_id:
+                target_orders = db.query(ExchangeOrder).filter(
+                    and_(
+                        ExchangeOrder.symbol == symbol,
+                        ExchangeOrder.parent_order_id == executed_order.parent_order_id,
+                        ExchangeOrder.order_type == target_order_type,
+                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                        ExchangeOrder.exchange_order_id != executed_order_id
+                    )
+                ).all()
+                if target_orders:
+                    logger.info(f"Found {len(target_orders)} {target_order_type} orders by parent_order_id {executed_order.parent_order_id}")
+            
+            # Strategy 2: Find by order_role if Strategy 1 didn't find anything
+            if not target_orders and executed_order:
+                # Determine target order_role based on executed order's order_role or order_type
+                if executed_order.order_role:
+                    if executed_order.order_role == "STOP_LOSS":
+                        target_role = "TAKE_PROFIT"
+                    elif executed_order.order_role == "TAKE_PROFIT":
+                        target_role = "STOP_LOSS"
+                    else:
+                        target_role = None
+                else:
+                    # Infer from order_type
+                    if executed_order_type.upper() == 'STOP_LIMIT':
+                        target_role = "TAKE_PROFIT"
+                    else:
+                        target_role = "STOP_LOSS"
+                
+                if target_role:
+                    target_orders = db.query(ExchangeOrder).filter(
+                        and_(
+                            ExchangeOrder.symbol == symbol,
+                            ExchangeOrder.order_role == target_role,
+                            ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.exchange_order_id != executed_order_id
+                        )
+                    ).all()
+                    if target_orders:
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by order_role {target_role}")
+            
+            # Strategy 3: Find by symbol + order_type + similar creation time (fallback)
+            if not target_orders and executed_order:
+                # Look for orders created around the same time (within 5 minutes of the executed order)
+                if executed_order.exchange_create_time:
+                    from datetime import timedelta
+                    time_window_start = executed_order.exchange_create_time - timedelta(minutes=5)
+                    time_window_end = executed_order.exchange_create_time + timedelta(minutes=5)
+                    
+                    target_orders = db.query(ExchangeOrder).filter(
+                        and_(
+                            ExchangeOrder.symbol == symbol,
+                            ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.exchange_order_id != executed_order_id,
+                            ExchangeOrder.exchange_create_time >= time_window_start,
+                            ExchangeOrder.exchange_create_time <= time_window_end
+                        )
+                    ).all()
+                    if target_orders:
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window")
+                elif executed_order.created_at:
+                    # Fallback to created_at if exchange_create_time is not available
+                    from datetime import timedelta
+                    time_window_start = executed_order.created_at - timedelta(minutes=5)
+                    time_window_end = executed_order.created_at + timedelta(minutes=5)
+                    
+                    target_orders = db.query(ExchangeOrder).filter(
+                        and_(
+                            ExchangeOrder.symbol == symbol,
+                            ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.exchange_order_id != executed_order_id,
+                            ExchangeOrder.created_at >= time_window_start,
+                            ExchangeOrder.created_at <= time_window_end
+                        )
+                    ).all()
+                    if target_orders:
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window (using created_at)")
+            
+            # Strategy 4: Final fallback - just find any open order of the target type for this symbol
+            if not target_orders:
+                target_orders = db.query(ExchangeOrder).filter(
+                    and_(
+                        ExchangeOrder.symbol == symbol,
+                        ExchangeOrder.order_type == target_order_type,
+                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                        ExchangeOrder.exchange_order_id != executed_order_id
+                    )
+                ).all()
+                if target_orders:
+                    logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type (fallback)")
             
             if not target_orders:
-                logger.debug(f"No open {target_order_type} orders found to cancel for {symbol}")
-                return
+                logger.debug(f"No open {target_order_type} orders found to cancel for {symbol} (tried parent_order_id, order_role, time window, and symbol+type)")
+                return 0
             
             # Cancel each remaining order
             from app.utils.live_trading import get_live_trading_status
@@ -1124,10 +1216,154 @@ class ExchangeSyncService:
                     logger.error(f"Error canceling {target_order_type} order {target_order.exchange_order_id}: {e}")
             
             db.commit()
-            logger.info(f"Cancelled {len(target_orders)} remaining {target_order_type} order(s) for {symbol}")
+            cancelled_count = len(target_orders)
+            logger.info(f"Cancelled {cancelled_count} remaining {target_order_type} order(s) for {symbol}")
+            return cancelled_count
             
         except Exception as e:
             logger.error(f"Error in _cancel_remaining_sl_tp for {symbol}: {e}", exc_info=True)
+            return 0
+    
+    def _notify_already_cancelled_sl_tp(self, db: Session, symbol: str, executed_order_type: str, executed_order_id: str):
+        """Notify when an SL/TP order was already cancelled by the exchange (OCO auto-cancellation)"""
+        try:
+            # Determine which order type we're looking for
+            if executed_order_type.upper() == 'STOP_LIMIT':
+                # If SL was executed, check for cancelled TP
+                target_order_type = 'TAKE_PROFIT_LIMIT'
+            elif executed_order_type.upper() == 'TAKE_PROFIT_LIMIT':
+                # If TP was executed, check for cancelled SL
+                target_order_type = 'STOP_LIMIT'
+            else:
+                return  # Not a SL/TP order
+            
+            # Get executed order to find parent_order_id and order_role
+            executed_order = db.query(ExchangeOrder).filter(
+                ExchangeOrder.exchange_order_id == executed_order_id
+            ).first()
+            
+            if not executed_order:
+                return
+            
+            # Find CANCELLED SL/TP orders of the opposite type for the same symbol
+            # Try multiple strategies similar to _cancel_remaining_sl_tp
+            target_orders = []
+            
+            # Strategy 1: Find by parent_order_id
+            if executed_order.parent_order_id:
+                target_orders = db.query(ExchangeOrder).filter(
+                    and_(
+                        ExchangeOrder.symbol == symbol,
+                        ExchangeOrder.parent_order_id == executed_order.parent_order_id,
+                        ExchangeOrder.order_type == target_order_type,
+                        ExchangeOrder.status == OrderStatusEnum.CANCELLED,
+                        ExchangeOrder.exchange_order_id != executed_order_id
+                    )
+                ).all()
+                if target_orders:
+                    logger.info(f"Found {len(target_orders)} already CANCELLED {target_order_type} orders by parent_order_id {executed_order.parent_order_id}")
+            
+            # Strategy 2: Find by order_role if Strategy 1 didn't find anything
+            if not target_orders and executed_order.order_role:
+                if executed_order.order_role == "STOP_LOSS":
+                    target_role = "TAKE_PROFIT"
+                elif executed_order.order_role == "TAKE_PROFIT":
+                    target_role = "STOP_LOSS"
+                else:
+                    target_role = None
+                
+                if target_role:
+                    target_orders = db.query(ExchangeOrder).filter(
+                        and_(
+                            ExchangeOrder.symbol == symbol,
+                            ExchangeOrder.order_role == target_role,
+                            ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.status == OrderStatusEnum.CANCELLED,
+                            ExchangeOrder.exchange_order_id != executed_order_id
+                        )
+                    ).all()
+                    if target_orders:
+                        logger.info(f"Found {len(target_orders)} already CANCELLED {target_order_type} orders by order_role {target_role}")
+            
+            if not target_orders:
+                logger.debug(f"No already CANCELLED {target_order_type} orders found for {symbol}")
+                return
+            
+            # Send notification for already cancelled orders
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                from datetime import timezone
+                
+                # Get executed order details
+                executed_price = executed_order.avg_price or executed_order.price or 0
+                executed_qty = executed_order.quantity or executed_order.cumulative_quantity or 0
+                executed_time = executed_order.exchange_update_time or executed_order.updated_at
+                executed_time_str = executed_time.strftime("%Y-%m-%d %H:%M:%S UTC") if executed_time else "N/A"
+                
+                # Get cancelled order details (use first one if multiple)
+                cancelled_order = target_orders[0]
+                cancelled_price = cancelled_order.price or 0
+                cancelled_qty = cancelled_order.quantity or 0
+                cancelled_time = cancelled_order.updated_at or cancelled_order.exchange_update_time
+                cancelled_time_str = cancelled_time.strftime("%Y-%m-%d %H:%M:%S UTC") if cancelled_time else "N/A"
+                
+                # Calculate profit/loss if applicable
+                pnl_info = ""
+                if executed_order.parent_order_id:
+                    parent_order = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.exchange_order_id == executed_order.parent_order_id
+                    ).first()
+                    if parent_order:
+                        entry_price = parent_order.avg_price or parent_order.price or 0
+                        parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
+                        
+                        if entry_price > 0 and executed_price > 0 and executed_qty > 0:
+                            if parent_side == "BUY":
+                                pnl_usd = (executed_price - entry_price) * executed_qty
+                                pnl_pct = ((executed_price - entry_price) / entry_price) * 100
+                            else:  # SELL
+                                pnl_usd = (entry_price - executed_price) * executed_qty
+                                pnl_pct = ((entry_price - executed_price) / entry_price) * 100
+                            
+                            if pnl_usd >= 0:
+                                pnl_emoji = "💰"
+                                pnl_label = "Profit"
+                            else:
+                                pnl_emoji = "💸"
+                                pnl_label = "Loss"
+                            
+                            pnl_info = (
+                                f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
+                                f"   💵 Entry: ${entry_price:,.4f} → Exit: ${executed_price:,.4f}"
+                            )
+                
+                message = (
+                    f"🔄 <b>SL/TP ORDER ALREADY CANCELLED</b>\n\n"
+                    f"📊 Symbol: <b>{symbol}</b>\n\n"
+                    f"✅ <b>Executed Order:</b>\n"
+                    f"   🎯 Type: {executed_order_type}\n"
+                    f"   💵 Price: ${executed_price:.4f}\n"
+                    f"   📦 Quantity: {executed_qty:.8f}\n"
+                    f"   ⏰ Time: {executed_time_str}\n"
+                    f"{pnl_info}\n"
+                    f"❌ <b>Auto-Cancelled Order:</b>\n"
+                    f"   🎯 Type: {target_order_type}\n"
+                    f"   💵 Price: ${cancelled_price:.4f}\n"
+                    f"   📦 Quantity: {cancelled_qty:.8f}\n"
+                    f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
+                    f"📋 Order IDs:\n"
+                    f"   ✅ Executed: <code>{executed_order_id}</code>\n"
+                    f"   ❌ Cancelled: <code>{cancelled_order.exchange_order_id}</code>\n\n"
+                    f"💡 <b>Note:</b> The {target_order_type} order was automatically cancelled by Crypto.com OCO group when the {executed_order_type} order was executed."
+                )
+                
+                telegram_notifier.send_message(message)
+                logger.info(f"Sent notification for already CANCELLED {target_order_type} order: {cancelled_order.exchange_order_id}")
+            except Exception as telegram_err:
+                logger.warning(f"Failed to send Telegram notification for already cancelled SL/TP: {telegram_err}", exc_info=True)
+                
+        except Exception as e:
+            logger.error(f"Error in _notify_already_cancelled_sl_tp for {symbol}: {e}", exc_info=True)
     
     def sync_order_history(self, db: Session, page_size: int = 200):
         """Sync order history from Crypto.com - only adds new executed orders"""
@@ -1289,9 +1525,16 @@ class ExchangeSyncService:
                         # Mark that we updated an existing order (counts towards new_orders_count for commit)
                         new_orders_count += 1
                         
-                        # Send Telegram notification ONLY if status changed from non-FILLED to FILLED
-                        # Always send Telegram notifications (even if alert_enabled is false for that coin)
+                        # Mark as processed BEFORE sending Telegram to prevent duplicate notifications
+                        # This ensures that if the same order appears in multiple pages, we only process it once
+                        self._mark_order_processed(order_id)
+                        
+                        # Mark as processed BEFORE sending Telegram to prevent duplicate notifications
+                        # This ensures that if the same order appears in multiple pages, we only process it once
                         if needs_telegram:
+                            # Mark as processed IMMEDIATELY to prevent duplicate processing
+                            self._mark_order_processed(order_id)
+                            
                             try:
                                 from app.services.telegram_notifier import telegram_notifier
                                 
@@ -1302,36 +1545,66 @@ class ExchangeSyncService:
                                 # If this is a SL or TP order, find the original entry order to calculate profit/loss
                                 entry_price = None
                                 if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                                    # Find the most recent BUY or SELL order (depending on side) for this symbol
-                                    # For SL/TP after BUY: find last BUY order
-                                    # For SL/TP after SELL: find last SELL order
                                     current_side = side or (existing.side.value if existing.side else 'BUY')
                                     
-                                    # SL/TP after BUY means we're selling (SELL), so find last BUY
-                                    # SL/TP after SELL means we're buying (BUY), so find last SELL
-                                    if current_side == "SELL":
-                                        # This is selling, so find the original BUY order
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "BUY",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                    else:  # current_side == "BUY"
-                                        # This is buying, so find the original SELL order (for short positions)
-                                        original_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.symbol == (symbol or existing.symbol),
-                                            ExchangeOrder.side == "SELL",
-                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                            ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                    # First try to find by parent_order_id (most reliable)
+                                    if existing.parent_order_id:
+                                        parent_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.exchange_order_id == existing.parent_order_id
+                                        ).first()
+                                        if parent_order:
+                                            entry_price = parent_order.avg_price if parent_order.avg_price else parent_order.price
+                                            logger.info(f"Found entry price via parent_order_id for SL/TP order {order_id}: {entry_price} from parent {existing.parent_order_id}")
                                     
-                                    if original_order:
-                                        # Use avg_price if available (more accurate for MARKET orders), otherwise price
-                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
+                                    # If parent_order_id not found, search for most recent BUY order
+                                    if not entry_price and current_side == "SELL":
+                                        # This is selling (TP/SL after BUY), so find the original BUY order
+                                        # Look for BUY orders created before this TP/SL order
+                                        if existing.exchange_create_time:
+                                            original_order = db.query(ExchangeOrder).filter(
+                                                ExchangeOrder.symbol == (symbol or existing.symbol),
+                                                ExchangeOrder.side == "BUY",
+                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                                ExchangeOrder.exchange_order_id != order_id,  # Not the current order
+                                                ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
+                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                        else:
+                                            # Fallback without time constraint
+                                            original_order = db.query(ExchangeOrder).filter(
+                                                ExchangeOrder.symbol == (symbol or existing.symbol),
+                                                ExchangeOrder.side == "BUY",
+                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                                ExchangeOrder.exchange_order_id != order_id
+                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                        
+                                        if original_order:
+                                            entry_price = original_order.avg_price if original_order.avg_price else original_order.price
+                                            logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from BUY order {original_order.exchange_order_id}")
+                                    elif not entry_price and current_side == "BUY":
+                                        # This is buying (SL/TP after SELL for short positions), find original SELL order
+                                        if existing.exchange_create_time:
+                                            original_order = db.query(ExchangeOrder).filter(
+                                                ExchangeOrder.symbol == (symbol or existing.symbol),
+                                                ExchangeOrder.side == "SELL",
+                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                                ExchangeOrder.exchange_order_id != order_id,
+                                                ExchangeOrder.exchange_create_time <= existing.exchange_create_time
+                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                        else:
+                                            original_order = db.query(ExchangeOrder).filter(
+                                                ExchangeOrder.symbol == (symbol or existing.symbol),
+                                                ExchangeOrder.side == "SELL",
+                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                                ExchangeOrder.exchange_order_id != order_id
+                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                        
+                                        if original_order:
+                                            entry_price = original_order.avg_price if original_order.avg_price else original_order.price
+                                            logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
                                 
                                 # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
                                 # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
@@ -1359,11 +1632,19 @@ class ExchangeSyncService:
                                 logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                             
                             # Check if this is a SL or TP order that was executed - cancel the other one
+                            # Also check if this is a SELL LIMIT order that closes a position - cancel SL
                             order_type_from_history = order_data.get('order_type', '').upper()
                             order_type_from_db = existing.order_type or ''
                             is_sl_tp_executed = (
                                 order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'] or 
                                 order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                            )
+                            
+                            # If this is a SELL LIMIT order (not TP/SL) that closes a position, cancel remaining SL
+                            is_sell_limit_that_closes_position = (
+                                order_type_from_history == 'LIMIT' and 
+                                side == 'SELL' and 
+                                not is_sl_tp_executed
                             )
                             
                             if is_sl_tp_executed:
@@ -1376,10 +1657,24 @@ class ExchangeSyncService:
                                         logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
                                 
                                 # Also try the fallback method (for orders without OCO group ID)
+                                # This will search by parent_order_id, order_role, time window, or symbol+type
                                 try:
-                                    self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    if cancelled_count == 0:
+                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
                                 except Exception as cancel_err:
                                     logger.warning(f"Error canceling remaining SL/TP for {order_id}: {cancel_err}")
+                            
+                            # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
+                            elif is_sell_limit_that_closes_position:
+                                try:
+                                    logger.info(f"SELL LIMIT order {order_id} executed - cancelling remaining SL orders for {symbol or existing.symbol}")
+                                    self._cancel_remaining_sl_tp(db, symbol or existing.symbol, 'LIMIT', order_id)
+                                except Exception as cancel_err:
+                                    logger.warning(f"Error canceling remaining SL orders after SELL LIMIT execution for {order_id}: {cancel_err}")
                         
                         # Create SL/TP for LIMIT orders that were filled (only if status just changed to FILLED)
                         # Do this AFTER we've marked the order for update, but handle errors gracefully
@@ -1427,8 +1722,7 @@ class ExchangeSyncService:
                         # No update needed - order is already in correct state
                         logger.debug(f"Order {order_id} already in correct state, skipping update")
                     
-                    # Mark as processed even if already in DB
-                    self._mark_order_processed(order_id)
+                    # Already marked as processed before sending Telegram (see above)
                     continue  # Already synced to database
                 
                 # Create new order record (variables already extracted above)

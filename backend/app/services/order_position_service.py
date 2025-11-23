@@ -225,3 +225,77 @@ def count_total_open_positions(db: Session) -> int:
     return total
 
 
+def calculate_portfolio_value_for_symbol(db: Session, symbol: str, current_price: float) -> Tuple[float, float]:
+    """
+    Calculate portfolio value (USD) for a symbol based on net quantity * current_price.
+    
+    Uses the same logic as count_open_positions_for_symbol to get net quantity.
+    
+    Args:
+        db: Database session
+        symbol: Symbol to calculate portfolio value for (e.g., "AAVE" or "AAVE_USD")
+        current_price: Current market price for the symbol
+        
+    Returns:
+        Tuple[portfolio_value_usd, net_quantity]
+        - portfolio_value_usd: Total USD value of open positions for this symbol
+        - net_quantity: Net quantity (filled_buy_qty - filled_sell_qty)
+    """
+    symbol_filter = _normalized_symbol_filter(symbol)
+    
+    # Get filled BUY orders
+    main_role_filter = or_(
+        ExchangeOrder.order_role.is_(None),
+        not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+    )
+    
+    filled_buy_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            main_role_filter,
+        )
+        .all()
+    )
+    
+    filled_buy_qty = sum(_order_filled_quantity(o) for o in filled_buy_orders)
+    
+    # Get filled SELL orders
+    filled_sell_orders = (
+        db.query(ExchangeOrder)
+        .filter(
+            symbol_filter,
+            ExchangeOrder.side == OrderSideEnum.SELL,
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            or_(
+                ExchangeOrder.order_role.is_(None),
+                ExchangeOrder.order_role == "STOP_LOSS",
+                ExchangeOrder.order_role == "TAKE_PROFIT",
+            ),
+        )
+        .all()
+    )
+    
+    filled_sell_qty = sum(_order_filled_quantity(o) for o in filled_sell_orders)
+    
+    # Calculate net quantity
+    net_quantity = max(filled_buy_qty - filled_sell_qty, 0.0)
+    
+    # Calculate portfolio value
+    portfolio_value_usd = net_quantity * current_price
+    
+    logger.debug(
+        "[PORTFOLIO_VALUE] symbol=%s filled_buy_qty=%s filled_sell_qty=%s net_qty=%s price=%s portfolio_value=%s",
+        symbol,
+        round(filled_buy_qty, 8),
+        round(filled_sell_qty, 8),
+        round(net_quantity, 8),
+        round(current_price, 4),
+        round(portfolio_value_usd, 2),
+    )
+    
+    return portfolio_value_usd, net_quantity
+
+

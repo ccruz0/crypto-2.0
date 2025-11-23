@@ -6,16 +6,18 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.dashboard_cache import DashboardCache
+from app.utils.live_trading import get_live_trading_status
 
 logger = logging.getLogger(__name__)
 
 
-def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = None) -> dict:
+async def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = None) -> dict:
     """
     Update the dashboard snapshot cache by computing full dashboard state
     and storing it in the database.
     
     This function should only be called from background tasks, not from HTTP handlers.
+    This function is now async to properly handle async get_dashboard_state call.
     
     Args:
         db: Database session (optional, will create if None)
@@ -39,11 +41,13 @@ def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = None) 
         # Compute full dashboard state if not provided (this may take 40-70 seconds)
         if dashboard_state is None:
             try:
+                # Bug 1 Fix: Import _compute_dashboard_state instead of get_dashboard_state
+                # This avoids circular dependency and allows direct Session parameter
                 # Lazy import to avoid circular dependency
-                from app.api.routes_dashboard import get_dashboard_state
-                # get_dashboard_state is now async, so we need to run it in an event loop
-                # Use asyncio.run() which creates a new event loop and runs the coroutine
-                dashboard_state = asyncio.run(get_dashboard_state(db))
+                from app.api.routes_dashboard import _compute_dashboard_state
+                # _compute_dashboard_state is async and accepts a Session directly (no FastAPI dependencies)
+                # We're already in an async context from the scheduler
+                dashboard_state = await _compute_dashboard_state(db)
                 logger.info(f"✅ Dashboard state computed in {time.time() - start_time:.2f}s")
             except Exception as e:
                 logger.error(f"❌ Error computing dashboard state: {e}", exc_info=True)
@@ -140,7 +144,9 @@ def get_dashboard_snapshot(db: Session = None) -> dict:
                     "bot_status": {
                         "is_running": True,
                         "status": "running",
-                        "reason": None
+                        "reason": None,
+                        "live_trading_enabled": get_live_trading_status(db) if db else False,
+                        "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
                     },
                     "partial": True,
                     "errors": ["No snapshot available yet. Background update in progress."]

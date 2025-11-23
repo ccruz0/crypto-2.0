@@ -14,8 +14,11 @@ from fastapi import Depends
 import sys
 import os
 from datetime import datetime, timezone
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from simple_price_fetcher import price_fetcher
+from app.services.trading_signals import calculate_trading_signals
+from app.services.strategy_profiles import resolve_strategy_profile
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -735,8 +738,8 @@ async def trigger_cache_update():
 
 @router.get("/market/top-coins-data")
 def get_top_coins_with_prices(
-    current_user = None if _should_disable_auth() else Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
     """Get top coins with current prices from database (fast response <100ms)
     
@@ -844,18 +847,20 @@ def get_top_coins_with_prices(
                     signal = "WAIT"
                     try:
                         if current_price and current_price > 0:
-                            from app.services.trading_signals import calculate_trading_signals
                             
                             # Get buy_target and last_buy_price from watchlist_item if available
                             buy_target = watchlist_item.buy_target if watchlist_item else None
                             last_buy_price = watchlist_item.purchase_price if watchlist_item and watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None
                             
+                            strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+
                             signals = calculate_trading_signals(
                                 symbol=symbol,
                                 price=current_price,
                                 rsi=rsi,
                                 atr14=atr,
                                 ma50=ma50,
+                                ma200=ma200,
                                 ema10=ema10,
                                 ma10w=ma10w,
                                 volume=volume_24h,
@@ -865,7 +870,9 @@ def get_top_coins_with_prices(
                                 last_buy_price=last_buy_price,
                                 position_size_usd=watchlist_item.trade_amount_usd if watchlist_item and watchlist_item.trade_amount_usd else 100.0,
                                 rsi_buy_threshold=40,
-                                rsi_sell_threshold=70
+                                rsi_sell_threshold=70,
+                                strategy_type=strategy_type,
+                                risk_approach=risk_approach,
                             )
                             
                             if signals.get("buy_signal"):

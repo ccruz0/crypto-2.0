@@ -1,6 +1,6 @@
 """Loan management API endpoints"""
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -17,9 +17,9 @@ log = logging.getLogger("app.loans")
 class LoanInput(BaseModel):
     currency: str
     borrowed_amount: float
-    borrowed_usd_value: float | None = None
-    interest_rate: float | None = None
-    notes: str | None = None
+    borrowed_usd_value: Optional[float] = None
+    interest_rate: Optional[float] = None
+    notes: Optional[str] = None
 
 
 class LoanResponse(BaseModel):
@@ -27,8 +27,8 @@ class LoanResponse(BaseModel):
     currency: str
     borrowed_amount: float
     borrowed_usd_value: float
-    interest_rate: float | None
-    notes: str | None
+    interest_rate: Optional[float]
+    notes: Optional[str]
     is_active: bool
 
 

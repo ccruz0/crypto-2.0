@@ -155,7 +155,7 @@ class TradingScheduler:
     async def update_dashboard_snapshot(self):
         """Update dashboard snapshot cache periodically (every 60 seconds)"""
         try:
-            from app.services.dashboard_snapshot import update_dashboard_snapshot as run_snapshot_update
+            from app.services.dashboard_snapshot import update_dashboard_snapshot
             
             if not hasattr(self, '_last_snapshot_update'):
                 self._last_snapshot_update = 0
@@ -163,8 +163,9 @@ class TradingScheduler:
             now = time.time()
             if now - self._last_snapshot_update >= 60:  # Update every 60 seconds
                 logger.info("[SCHEDULER] 📸 Updating dashboard snapshot...")
-                # Run blocking snapshot update in separate thread to avoid blocking event loop
-                result = await asyncio.to_thread(run_snapshot_update)
+                # update_dashboard_snapshot is now async, so we await it directly
+                # Database operations will run in thread pool executor if needed
+                result = await update_dashboard_snapshot()
                 if result.get("success"):
                     self._last_snapshot_update = time.time()
                     logger.info(f"[SCHEDULER] ✅ Dashboard snapshot updated in {result.get('duration_seconds', 0):.2f}s")

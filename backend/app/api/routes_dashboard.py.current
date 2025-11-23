@@ -19,6 +19,7 @@ from app.models.watchlist import WatchlistItem
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.exchange_sync import exchange_sync_service
 from app.services.portfolio_cache import get_portfolio_summary
+from app.services.strategy_profiles import resolve_strategy_profile
 # NOTE: update_portfolio_cache is NOT imported - this endpoint ONLY reads from cache
 # Background service (exchange_sync) updates the cache automatically
 
@@ -118,13 +119,16 @@ def get_dashboard(db: Session = Depends(get_db)):
                 try:
                     if item.price and item.price > 0:
                         from app.services.trading_signals import calculate_trading_signals
-                        
+
+                        strategy_type, risk_approach = resolve_strategy_profile(item.symbol, db, item)
+
                         signals = calculate_trading_signals(
                             symbol=item.symbol,
                             price=item.price,
                             rsi=item.rsi,
                             atr14=item.atr,
                             ma50=item.ma50,
+                            ma200=item.ma200,
                             ema10=item.ema10,
                             ma10w=item.ma200,  # Use ma200 as ma10w fallback
                             volume=None,  # Not available in WatchlistItem
@@ -134,7 +138,9 @@ def get_dashboard(db: Session = Depends(get_db)):
                             last_buy_price=item.purchase_price if item.purchase_price and item.purchase_price > 0 else None,
                             position_size_usd=item.trade_amount_usd or 100.0,
                             rsi_buy_threshold=40,
-                            rsi_sell_threshold=70
+                            rsi_sell_threshold=70,
+                            strategy_type=strategy_type,
+                            risk_approach=risk_approach,
                         )
                         
                         if signals.get("buy_signal"):

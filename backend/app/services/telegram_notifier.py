@@ -3,21 +3,91 @@ import logging
 import requests
 from typing import Optional
 from datetime import datetime
+from enum import Enum
 import pytz
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+class AppEnv(str, Enum):
+    """Application environment identifiers for alert routing"""
+    AWS = "aws"
+    LOCAL = "local"
+
+
+def get_app_env() -> AppEnv:
+    """
+    Get the current application environment.
+    
+    Returns:
+        AppEnv.AWS if APP_ENV=aws, otherwise AppEnv.LOCAL
+        Defaults to LOCAL if APP_ENV is not set (with warning log)
+    
+    Configuration:
+        - Set APP_ENV=aws on AWS deployment (alerts go to hilovivo-alerts-aws)
+        - Set APP_ENV=local for local development (alerts go to hilovivo-alerts-local)
+    """
+    app_env = (settings.APP_ENV or "").strip().lower()
+    if app_env == "aws":
+        return AppEnv.AWS
+    elif app_env == "local":
+        return AppEnv.LOCAL
+    else:
+        # Default to LOCAL but log warning if APP_ENV is explicitly set to unknown value
+        if settings.APP_ENV:
+            logger.warning(
+                f"Unknown APP_ENV value '{settings.APP_ENV}', defaulting to LOCAL. "
+                f"Valid values are: 'aws' or 'local'"
+            )
+        else:
+            logger.debug("APP_ENV not set, defaulting to LOCAL")
+        return AppEnv.LOCAL
+
 class TelegramNotifier:
-    """Telegram notification service for trading alerts"""
+    """Telegram notification service for trading alerts
+    
+    IMPORTANT: Telegram messages are ONLY sent from AWS environment.
+    Local development must NEVER send Telegram messages.
+    This is enforced via RUN_TELEGRAM environment variable.
+    """
     
     def __init__(self):
+        # Check if Telegram should be enabled based on environment
+        # Telegram is ONLY enabled on AWS, NEVER on local development
+        run_telegram = (settings.RUN_TELEGRAM or "").strip().lower()
+        environment = (settings.ENVIRONMENT or "").strip().lower()
+        app_env = (settings.APP_ENV or "").strip().lower()
+        
+        # Determine if we're on AWS
+        is_aws = (
+            app_env == "aws" or 
+            environment == "aws" or 
+            os.getenv("ENVIRONMENT", "").lower() == "aws" or
+            os.getenv("APP_ENV", "").lower() == "aws"
+        )
+        
+        # Telegram is ONLY enabled if:
+        # 1. We're on AWS (is_aws=True)
+        # 2. RUN_TELEGRAM is explicitly set to "true"
+        # Local development ALWAYS disables Telegram (even if RUN_TELEGRAM=true)
+        should_enable = is_aws and run_telegram == "true"
+        
         # Environment-only configuration
         bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
         chat_id = (settings.TELEGRAM_CHAT_ID or "").strip()
         self.bot_token = bot_token or None
         self.chat_id = chat_id or None
-        self.enabled = bool(self.bot_token and self.chat_id)
+        
+        # Only enable if we should (AWS + RUN_TELEGRAM=true) and have credentials
+        self.enabled = should_enable and bool(self.bot_token and self.chat_id)
+        
+        if not should_enable:
+            logger.info(
+                f"Telegram disabled: Not on AWS or RUN_TELEGRAM not set to 'true'. "
+                f"Environment: {environment}, APP_ENV: {app_env}, RUN_TELEGRAM: {run_telegram}, is_aws: {is_aws}"
+            )
+            return
         
         # Timezone configuration - defaults to Asia/Makassar (Bali time UTC+8), can be overridden with TELEGRAM_TIMEZONE env var
         # Examples: "Asia/Makassar" (Bali), "Europe/Madrid" (Spain), "Europe/Paris" (France), etc.
@@ -69,16 +139,43 @@ class TelegramNotifier:
             return False
     
     def send_message(self, message: str, reply_markup: Optional[dict] = None) -> bool:
-        """Send a message to Telegram with optional inline keyboard"""
+        """
+        Send a message to Telegram with optional inline keyboard.
+        
+        This is the canonical helper that ALL alerts must route through.
+        It automatically:
+        - Adds environment prefix [AWS] or [LOCAL] based on APP_ENV
+        - Uses TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment
+        - Routes to the correct Telegram channel (hilovivo-alerts-aws or hilovivo-alerts-local)
+        
+        Args:
+            message: Message text (HTML format supported)
+            reply_markup: Optional inline keyboard markup
+            
+        Returns:
+            True if message sent successfully, False otherwise
+        """
         if not self.enabled:
             logger.debug("Telegram disabled: skipping send_message call")
             return False
         
         try:
+            # Get environment and add prefix
+            app_env = get_app_env()
+            env_label = "[AWS]" if app_env == AppEnv.AWS else "[LOCAL]"
+            
+            # Prepend environment label to message
+            # Only add prefix if message doesn't already start with [AWS] or [LOCAL]
+            if not (message.startswith("[AWS]") or message.startswith("[LOCAL]")):
+                full_message = f"{env_label} {message}"
+            else:
+                # Message already has prefix, use as-is
+                full_message = message
+            
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             payload = {
                 "chat_id": self.chat_id,
-                "text": message,
+                "text": full_message,
                 "parse_mode": "HTML"
             }
             
@@ -88,7 +185,29 @@ class TelegramNotifier:
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
             
-            logger.info("Telegram message sent successfully")
+            logger.info(f"Telegram message sent successfully to {app_env.value} channel")
+            
+            # Register sent message in dashboard (all messages sent to Telegram)
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                # Extract symbol from message if possible (optional, for better organization)
+                symbol = None
+                # Try to extract symbol from common message patterns
+                import re
+                symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', full_message)
+                if symbol_match:
+                    potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
+                    if '_' in potential_symbol or len(potential_symbol) >= 2:
+                        symbol = potential_symbol
+                
+                # Store the message without the [AWS]/[LOCAL] prefix for cleaner display
+                # The prefix is only needed for Telegram routing
+                display_message = message  # Use original message without env prefix
+                add_telegram_message(display_message, symbol=symbol, blocked=False)
+            except Exception as e:
+                logger.debug(f"Could not register Telegram message in dashboard: {e}")
+                # Non-critical, continue
+            
             return True
             
         except Exception as e:
@@ -447,23 +566,134 @@ class TelegramNotifier:
 """
         return self.send_message(message.strip())
     
-    def send_buy_signal(self, symbol: str, price: float, reason: str, strategy: Optional[str] = None):
-        """Send a buy signal alert"""
-        strategy_text = ""
-        if strategy:
-            strategy_emoji = "🛡️" if strategy.lower() == "conservative" else "⚡"
-            strategy_text = f"\n🎯 Strategy: {strategy_emoji} {strategy.capitalize()}"
+    def send_buy_signal(
+        self,
+        symbol: str,
+        price: float,
+        reason: str,
+        strategy: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        risk_approach: Optional[str] = None,
+        price_variation: Optional[str] = None,
+    ):
+        """Send a buy signal alert
+        
+        CRITICAL: This method now verifies alert_enabled=True before sending.
+        If alert_enabled=False, the alert will be blocked.
+        """
+        logger.info(f"🔍 send_buy_signal called for {symbol} - Starting verification...")
+        
+        # CRITICAL: Verify alert_enabled=True before sending alert
+        # This prevents alerts for coins with alert_enabled=False
+        try:
+            from app.database import SessionLocal
+            from app.models.watchlist import WatchlistItem
+            
+            db = SessionLocal()
+            try:
+                from sqlalchemy import or_
+                
+                symbol_upper = symbol.upper()
+                # Check for exact match and variants (USDT/USD)
+                symbol_variants = [symbol_upper]
+                if symbol_upper.endswith('_USDT'):
+                    symbol_variants.append(symbol_upper.replace('_USDT', '_USD'))
+                elif symbol_upper.endswith('_USD'):
+                    symbol_variants.append(symbol_upper.replace('_USD', '_USDT'))
+                
+                logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
+                
+                # Check if coin exists in watchlist and has alert_enabled=True
+                # Try exact match first, then variants
+                watchlist_item = db.query(WatchlistItem).filter(
+                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants]),
+                    WatchlistItem.alert_enabled == True
+                ).first()
+                
+                if not watchlist_item:
+                    logger.warning(
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist con alert_enabled=True "
+                        f"(buscado: {symbol_variants}). No se enviará alerta BUY."
+                    )
+                    # Register blocked message
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist con alert_enabled=True"
+                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    return False  # Block alert
+                
+                logger.debug(f"✅ Encontrado {watchlist_item.symbol} con alert_enabled={watchlist_item.alert_enabled}")
+                
+                # Double-check alert_enabled is still True
+                if not watchlist_item.alert_enabled:
+                    logger.warning(
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - alert_enabled=False en verificación final. "
+                        f"No se enviará alerta BUY."
+                    )
+                    # Register blocked message
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final"
+                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    return False  # Block alert
+                
+                logger.info(f"✅ Verificación pasada para {symbol} - alert_enabled=True confirmado")
+            except Exception as e:
+                logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
+                # On error, block alert to prevent unwanted alerts
+                return False
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"❌ Error en verificación de alert_enabled para {symbol}: {e}", exc_info=True)
+            # On error, block alert to prevent unwanted alerts
+            return False
+        resolved_strategy = strategy_type
+        if not resolved_strategy:
+            if strategy and strategy.lower() not in {"conservative", "aggressive"}:
+                resolved_strategy = strategy
+            else:
+                resolved_strategy = "Swing"
+
+        resolved_approach = risk_approach
+        if not resolved_approach:
+            if strategy and strategy.lower() in {"conservative", "aggressive"}:
+                resolved_approach = strategy.title()
+            else:
+                resolved_approach = "Conservative"
+
+        strategy_line = f"\n🎯 Strategy: <b>{resolved_strategy}</b>"
+        approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
         
         timestamp = self._format_timestamp()
+        price_line = f"💵 Price: ${price:,.4f}"
+        if price_variation:
+            price_line += f" ({price_variation})"
+
         message = f"""
 📊 <b>BUY SIGNAL DETECTED</b>
 
 📈 Symbol: <b>{symbol}</b>
-💵 Price: ${price:,.4f}
-✅ Reason: {reason}{strategy_text}
+{price_line}
+✅ Reason: {reason}{strategy_line}{approach_line}
 📅 Time: {timestamp}
 """
-        return self.send_message(message.strip())
+        result = self.send_message(message.strip())
+        
+        # Register sent message
+        if result:
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                sent_message = f"✅ BUY SIGNAL: {symbol} - {reason}"
+                add_telegram_message(sent_message, symbol=symbol, blocked=False)
+            except Exception:
+                pass  # Non-critical, continue
+        
+        return result
     
     def format_signal_message(self, signal_type: str, coin: str, last_price: float, 
                              buy_target: Optional[float], sell_target: Optional[float], 
@@ -547,26 +777,22 @@ class TelegramNotifier:
                            res_up: Optional[float], stop_loss: Optional[float],
                            rsi: float, method: str, row_idx: Optional[int] = None,
                            extra: Optional[str] = None) -> bool:
-        """Send a formatted trading signal message to Telegram"""
+        """
+        Send a formatted trading signal message to Telegram.
+        
+        Refactored to use send_message() for consistent environment prefix handling.
+        """
         try:
             message = self.format_signal_message(
                 signal_type, coin, last_price, buy_target, sell_target,
                 res_up, stop_loss, rsi, method, row_idx, extra
             )
             
-            # Use Markdown instead of HTML for better formatting
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "Markdown"
-            }
-            
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
-            
-            logger.info(f"[TELEGRAM] Alert sent for {coin} - {signal_type}")
-            return True
+            # Convert Markdown to HTML for consistency with send_message()
+            # send_message() uses HTML parse_mode, so we'll send as plain text
+            # and let send_message() add the environment prefix
+            # Note: Markdown formatting will be lost, but environment prefix is more important
+            return self.send_message(message)
             
         except Exception as e:
             logger.error(f"[TELEGRAM][ERROR] Failed to send signal alert: {e}")

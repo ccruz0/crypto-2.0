@@ -84,6 +84,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
       - ENVIRONMENT=${ENVIRONMENT:-local}
+      - APP_ENV=${APP_ENV:-local}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
@@ -102,8 +104,8 @@ services:
       - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
       - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:--5033055655}
     ports:
       - "8002:8002"
     volumes:
@@ -140,7 +142,9 @@ services:
       - .env.aws
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
-      - ENVIRONMENT=${ENVIRONMENT:-local}
+      - ENVIRONMENT=${ENVIRONMENT:-aws}
+      - APP_ENV=${APP_ENV:-aws}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
@@ -167,7 +171,7 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
-    command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 300"
+    command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
@@ -202,6 +206,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
       - ENVIRONMENT=${ENVIRONMENT:-local}
+      - APP_ENV=${APP_ENV:-local}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
     depends_on:
@@ -221,7 +227,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     env_file:
       - .env
       - .env.local

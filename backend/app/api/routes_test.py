@@ -265,10 +265,13 @@ async def simulate_alert(
             
             # Send Telegram alert
             try:
+                risk_display = (watchlist_item.sl_tp_mode or "conservative").title() if watchlist_item else "Conservative"
                 telegram_notifier.send_buy_signal(
                     symbol=symbol,
                     price=current_price,
-                    reason=f"🧪 SIMULATED TEST ALERT - RSI=35.0, Price={current_price:.4f}, MA50={current_price*1.01:.2f}, EMA10={current_price*1.02:.2f}"
+                    reason=f"🧪 SIMULATED TEST ALERT - RSI=35.0, Price={current_price:.4f}, MA50={current_price*1.01:.2f}, EMA10={current_price*1.02:.2f}",
+                    strategy_type="Swing",
+                    risk_approach=risk_display,
                 )
             except Exception as e:
                 logger.warning(f"Failed to send Telegram BUY alert: {e}")

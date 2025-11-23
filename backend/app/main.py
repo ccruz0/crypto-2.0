@@ -1,8 +1,7 @@
 from fastapi import FastAPI
-# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
-# from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.environment import get_cors_origins, get_environment, is_local, is_aws
+from app.core.environment import get_environment, is_local, is_aws
 from app.api.routes_account import router as account_router
 from app.api.routes_internal import router as internal_router
 from app.api.routes_orders import router as orders_router
@@ -92,18 +91,25 @@ app = FastAPI(
 
 # CORS middleware - ALWAYS enabled for browser requests (required for frontend)
 # This must be added BEFORE routers to handle OPTIONS preflight requests
-# TEMPORARILY DISABLED: Testing if CORS middleware is causing HTTP request hangs
-# cors_origins = get_cors_origins()
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=cors_origins if cors_origins != ["*"] else ["*"],
-#     allow_credentials=True,
-#     allow_methods=["*"],  # Allow all methods including OPTIONS
-#     allow_headers=["*"],
-#     expose_headers=["*"],
-#     max_age=3600,  # Cache preflight requests for 1 hour
-#     )
-# logger.info(f"CORS middleware enabled with origins: {cors_origins}")
+from fastapi.middleware.cors import CORSMiddleware
+cors_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001", 
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "https://dashboard.hilovivo.com",
+    "https://www.dashboard.hilovivo.com"
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods including OPTIONS
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
+    )
+logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 
 # Startup validation and database initialization
 @app.on_event("startup")
@@ -217,8 +223,153 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
     
+    # Ensure watchlist is never empty and sync with portfolio symbols
+    async def _ensure_watchlist_not_empty():
+        """Ensure watchlist has at least some items based on portfolio and sync missing portfolio coins"""
+        # Bug 2 Fix: Ensure db session is always closed, even if exception occurs before inner try
+        db = None
+        try:
+            from app.database import SessionLocal
+            from app.models.watchlist import WatchlistItem
+            from app.services.portfolio_cache import get_portfolio_summary
+            
+            db = SessionLocal()
+            try:
+                # Get portfolio symbols
+                portfolio_symbols = set()
+                try:
+                    portfolio = get_portfolio_summary(db)
+                    assets = portfolio.get("assets", [])
+                    # Extract symbols from portfolio (exclude stablecoins)
+                    for asset in assets:
+                        symbol = asset.get("coin", "").upper()
+                        if symbol and symbol not in ["USD", "USDT", "USDC", "EUR"]:
+                            portfolio_symbols.add(symbol)
+                except Exception as portfolio_err:
+                    logger.warning(f"Error getting portfolio for watchlist sync: {portfolio_err}")
+                
+                # Get existing watchlist symbols
+                existing_items = db.query(WatchlistItem).all()
+                existing_symbols = {item.symbol.upper() for item in existing_items if not item.is_deleted}
+                
+                # Check if watchlist is empty
+                count = len(existing_symbols)
+                if count == 0:
+                    logger.warning("Watchlist is empty - initializing with portfolio symbols...")
+                    
+                    # Default symbols to add if portfolio is also empty
+                    default_symbols = ["BTC_USDT", "ETH_USDT", "SOL_USD", "ALGO", "DOT_USD", 
+                                     "AAVE_USD", "XRP", "DOGE_USD", "DGB_USD", "BONK_USD"]
+                    
+                    symbols_to_add = []
+                    if portfolio_symbols:
+                        # Add all portfolio symbols
+                        symbols_to_add.extend(list(portfolio_symbols))
+                    
+                    # Add default symbols if we don't have enough from portfolio
+                    for symbol in default_symbols:
+                        if symbol not in symbols_to_add and len(symbols_to_add) < 10:
+                            symbols_to_add.append(symbol)
+                    
+                    # Create watchlist items
+                    items_created = 0
+                    processed_symbols = []  # Track symbols that were actually created or restored
+                    for symbol in symbols_to_add[:10]:  # Limit to 10 items for initial load
+                        # Check if item already exists (including deleted)
+                        existing = db.query(WatchlistItem).filter(
+                            WatchlistItem.symbol == symbol,
+                            WatchlistItem.exchange == "CRYPTO_COM"
+                        ).first()
+                        
+                        if existing:
+                            # Restore deleted item
+                            if existing.is_deleted:
+                                existing.is_deleted = False
+                                existing.trade_enabled = False
+                                existing.alert_enabled = False
+                                items_created += 1
+                                processed_symbols.append(symbol)
+                        else:
+                            # Create new item
+                            new_item = WatchlistItem(
+                                symbol=symbol,
+                                exchange="CRYPTO_COM",
+                                is_deleted=False,
+                                trade_enabled=False,
+                                alert_enabled=False,
+                                sl_tp_mode="conservative"
+                            )
+                            db.add(new_item)
+                            items_created += 1
+                            processed_symbols.append(symbol)
+                    
+                    if items_created > 0:
+                        db.commit()
+                        logger.info(f"✅ Initialized watchlist with {items_created} items: {', '.join(processed_symbols)}")
+                    else:
+                        logger.info("Watchlist initialization skipped - no new items needed")
+                else:
+                    # Watchlist not empty - sync missing portfolio coins
+                    missing_symbols = portfolio_symbols - existing_symbols
+                    if missing_symbols:
+                        items_added = 0
+                        processed_symbols = []  # Track symbols that were actually created or restored
+                        for symbol in missing_symbols:
+                            # Check if item exists but is deleted
+                            existing = db.query(WatchlistItem).filter(
+                                WatchlistItem.symbol == symbol,
+                                WatchlistItem.exchange == "CRYPTO_COM"
+                            ).first()
+                            
+                            if existing:
+                                # Restore deleted item
+                                if existing.is_deleted:
+                                    existing.is_deleted = False
+                                    existing.trade_enabled = False
+                                    existing.alert_enabled = False
+                                    items_added += 1
+                                    processed_symbols.append(symbol)
+                            else:
+                                # Create new item
+                                new_item = WatchlistItem(
+                                    symbol=symbol,
+                                    exchange="CRYPTO_COM",
+                                    is_deleted=False,
+                                    trade_enabled=False,
+                                    alert_enabled=False,
+                                    sl_tp_mode="conservative"
+                                )
+                                db.add(new_item)
+                                items_added += 1
+                                processed_symbols.append(symbol)
+                        
+                        if items_added > 0:
+                            db.commit()
+                            logger.info(f"✅ Synced {items_added} missing portfolio coins to watchlist: {', '.join(sorted(processed_symbols))}")
+                    else:
+                        logger.debug(f"Watchlist already has {count} items and all portfolio coins are present - no sync needed")
+            except Exception as inner_e:
+                logger.error(f"Error in watchlist sync inner block: {inner_e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error ensuring watchlist is not empty: {e}", exc_info=True)
+        finally:
+            # Bug 2 Fix: Ensure db session is always closed, even if exception occurs anywhere
+            # This handles both inner try exceptions and outer try exceptions (imports, SessionLocal)
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+    
     # Schedule background work - won't block startup
     asyncio.create_task(_background_init())
+    
+    # Schedule watchlist initialization in background (with delay to allow DB to be ready)
+    async def _delayed_watchlist_init():
+        await asyncio.sleep(10)  # Wait 10 seconds for DB and services to be ready
+        await _ensure_watchlist_not_empty()
+    asyncio.create_task(_delayed_watchlist_init())
+    
     t1 = time.perf_counter()
     elapsed_ms = (t1 - t0) * 1000
     logger.info(f"PERF: Startup event completed - server ready for requests - {elapsed_ms:.2f}ms")

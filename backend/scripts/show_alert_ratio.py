@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 from app.services.trading_signals import calculate_trading_signals
+from app.services.strategy_profiles import resolve_strategy_profile
 from price_fetcher import get_price_with_fallback
 from sqlalchemy import text
 
@@ -210,6 +211,8 @@ def main():
                 res_up = round(current_price * 1.02, price_precision)
                 res_down = round(current_price * 0.98, price_precision)
                 
+                strategy_type, risk_approach = resolve_strategy_profile(symbol, db, item)
+
                 # Calculate trading signals
                 signals = calculate_trading_signals(
                     symbol=symbol,
@@ -217,6 +220,7 @@ def main():
                     rsi=rsi,
                     atr14=atr,
                     ma50=ma50,
+                    ma200=ma200,
                     ema10=ema10,
                     ma10w=ma200,  # Use MA200 as MA10w approximation
                     volume=volume_24h,
@@ -226,7 +230,9 @@ def main():
                     last_buy_price=item.purchase_price if item.purchase_price and item.purchase_price > 0 else None,
                     position_size_usd=item.trade_amount_usd if item.trade_amount_usd and item.trade_amount_usd > 0 else 100.0,
                     rsi_buy_threshold=40,
-                    rsi_sell_threshold=70
+                    rsi_sell_threshold=70,
+                    strategy_type=strategy_type,
+                    risk_approach=risk_approach,
                 )
                 
                 # Calculate alert ratio

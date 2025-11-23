@@ -27,7 +27,8 @@ class WatchlistItem(Base):
     trade_on_margin = Column(Boolean, default=False)
     alert_enabled = Column(Boolean, default=False)  # Enable automatic alerts and order creation based on strategy
     sl_tp_mode = Column(String, default="conservative")  # 'conservative' or 'aggressive'
-    min_price_change_pct = Column(Float, nullable=True)  # Minimum price change % required for order creation/alerts (default: 3.0)
+    min_price_change_pct = Column(Float, nullable=True)  # Minimum price change % required for order creation/alerts (default: 1.0)
+    alert_cooldown_minutes = Column(Float, nullable=True)  # Cooldown in minutes between same-side alerts (default: 5.0)
     sl_percentage = Column(Float, nullable=True)  # Manual SL percentage (overrides calculated)
     tp_percentage = Column(Float, nullable=True)  # Manual TP percentage (overrides calculated)
     sl_price = Column(Float, nullable=True)  # Calculated SL price from strategy

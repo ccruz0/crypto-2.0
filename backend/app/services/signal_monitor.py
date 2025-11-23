@@ -5,8 +5,9 @@ for coins with alert_enabled = true
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
@@ -15,7 +16,14 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
+from app.services.strategy_profiles import (
+    resolve_strategy_profile,
+    StrategyType,
+    RiskApproach,
+)
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
+from app.services.config_loader import get_alert_thresholds
+from app.services.order_position_service import calculate_portfolio_value_for_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,8 @@ class SignalMonitorService:
     - Requires 3% price change from last order before creating another
     - Does NOT reset when signal changes to WAIT (preserves order tracking)
     """
+    
+    INACTIVE_MONITOR_PERIOD = 60  # Seconds: Check inactive coins every 60 seconds
     
     def __init__(self):
         self.is_running = False
@@ -44,10 +54,18 @@ class SignalMonitorService:
         self.ALERT_COOLDOWN_MINUTES = 5  # 5 minutes cooldown between same-side alerts
         self.ALERT_MIN_PRICE_CHANGE_PCT = 1.0  # Minimum 1% price change for same-side alerts
         self.alert_sending_locks: Dict[str, float] = {}  # Track when we're sending alerts: {symbol_side: timestamp}
-        self.ALERT_SENDING_LOCK_SECONDS = 2  # Lock for 2 seconds after checking/sending alert to prevent race conditions
+        self.ALERT_SENDING_LOCK_SECONDS = 300  # Lock for 5 minutes (300 seconds) after checking/sending alert to prevent duplicate alerts and race conditions
+        # Require BOTH cooldown and price-change thresholds before emitting another BUY alert.
+        # Set to True to prevent consecutive BUY spam when price oscillates frequently.
+        self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE = True
         # Bloqueo temporal para evitar reintentos con margen cuando hay error 609
         self.margin_error_609_locks: Dict[str, float] = {}  # Track symbols with error 609: {symbol: timestamp}
         self.MARGIN_ERROR_609_LOCK_MINUTES = 30  # Bloquear por 30 minutos después de error 609
+        # Dual-frequency polling: Track last time inactive coins were monitored
+        self.last_inactive_monitor_time: float = time.time()  # Initialize to current time
+        # Protection notification throttling: {symbol: {last_notification_time: datetime, last_orders_count: int}}
+        self.last_protection_notifications: Dict[str, Dict] = {}
+        self.PROTECTION_NOTIFICATION_COOLDOWN_MINUTES = 30  # 30 minutes cooldown between protection notifications
     
     @staticmethod
     def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
@@ -77,7 +95,57 @@ class SignalMonitorService:
             # On error, return a safe default (assume we're at limit to be conservative)
             return self.MAX_OPEN_ORDERS_PER_SYMBOL
     
-    def should_send_alert(self, symbol: str, side: str, current_price: float, trade_enabled: bool = True, min_price_change_pct: Optional[float] = None) -> tuple[bool, str]:
+    def _should_monitor_inactive_coin(self) -> bool:
+        """Determines if the full monitoring cycle should run for inactive coins."""
+        now = time.time()
+        # Check if the time elapsed since the last inactive check exceeds the period
+        if now - self.last_inactive_monitor_time >= self.INACTIVE_MONITOR_PERIOD:
+            self.last_inactive_monitor_time = now
+            return True
+        return False
+
+    def _resolve_alert_thresholds(self, watchlist_item: WatchlistItem) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Determine which alert thresholds apply to this coin.
+        Priority order:
+            1. Explicit per-coin override (min_price_change_pct and alert_cooldown_minutes columns in database)
+            2. Strategy/preset defaults from trading_config.json
+            3. Global defaults from trading_config.json
+            4. Service-wide defaults (self.ALERT_* constants)
+        """
+        # Get values from database first (highest priority)
+        min_pct = getattr(watchlist_item, "min_price_change_pct", None)
+        cooldown = getattr(watchlist_item, "alert_cooldown_minutes", None)
+        
+        # If not set in database, try to get from config
+        try:
+            strategy_key = watchlist_item.sl_tp_mode or None
+            symbol = (watchlist_item.symbol or "").upper()
+            preset_min, preset_cooldown = get_alert_thresholds(symbol, strategy_key)
+            if min_pct is None:
+                min_pct = preset_min
+            if cooldown is None:
+                cooldown = preset_cooldown
+        except Exception as e:
+            logger.warning(f"Failed to load alert thresholds for {getattr(watchlist_item, 'symbol', '?')}: {e}")
+        
+        # Fallback to service-wide defaults
+        if min_pct is None:
+            min_pct = self.ALERT_MIN_PRICE_CHANGE_PCT
+        if cooldown is None:
+            cooldown = self.ALERT_COOLDOWN_MINUTES
+        
+        return min_pct, cooldown
+    
+    def should_send_alert(
+        self,
+        symbol: str,
+        side: str,
+        current_price: float,
+        trade_enabled: bool = True,
+        min_price_change_pct: Optional[float] = None,
+        cooldown_minutes: Optional[float] = None,
+    ) -> tuple[bool, str]:
         """
         Check if an alert should be sent based on throttling rules.
         
@@ -105,10 +173,17 @@ class SignalMonitorService:
         # CRITICAL: Check if another thread is already processing this alert
         # This prevents race conditions when multiple cycles run simultaneously
         lock_key = f"{symbol}_{side}"
+        current_time_check = time.time()
         if lock_key in self.alert_sending_locks:
             lock_timestamp = self.alert_sending_locks[lock_key]
-            if time.time() - lock_timestamp < self.ALERT_SENDING_LOCK_SECONDS:
-                return False, f"Another thread is already processing {symbol} {side} alert (lock age: {time.time() - lock_timestamp:.2f}s)"
+            lock_age = current_time_check - lock_timestamp
+            if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
+                remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
+                return False, f"Another thread is already processing {symbol} {side} alert (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s)"
+            else:
+                # Lock expired, remove it
+                logger.debug(f"🔓 Expired lock removed for {symbol} {side} alert (age: {lock_age:.2f}s)")
+                del self.alert_sending_locks[lock_key]
         
         # Get last alert state for this symbol and side
         symbol_alerts = self.last_alert_states.get(symbol, {})
@@ -119,8 +194,14 @@ class SignalMonitorService:
             # Double-check lock to ensure we're the first to process this
             if lock_key in self.alert_sending_locks:
                 lock_timestamp = self.alert_sending_locks[lock_key]
-                if time.time() - lock_timestamp < self.ALERT_SENDING_LOCK_SECONDS:
-                    return False, f"Another thread is already processing first {symbol} {side} alert"
+                lock_age = current_time_check - lock_timestamp
+                if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
+                    remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
+                    return False, f"Another thread is already processing first {symbol} {side} alert (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s)"
+                else:
+                    # Lock expired, remove it
+                    logger.debug(f"🔓 Expired lock removed for first {symbol} {side} alert (age: {lock_age:.2f}s)")
+                    del self.alert_sending_locks[lock_key]
             return True, "First alert for this symbol and side"
         
         last_alert_time = last_alert.get("last_alert_time")
@@ -165,7 +246,8 @@ class SignalMonitorService:
         
         # Calculate time since last alert
         time_diff = (now_utc - last_alert_time_normalized).total_seconds() / 60  # minutes
-        cooldown_met = time_diff >= self.ALERT_COOLDOWN_MINUTES
+        cooldown_limit = cooldown_minutes if cooldown_minutes is not None else self.ALERT_COOLDOWN_MINUTES
+        cooldown_met = time_diff >= cooldown_limit
         
         # Calculate price change percentage
         if last_alert_price > 0:
@@ -177,28 +259,27 @@ class SignalMonitorService:
         alert_min_price_change = min_price_change_pct if min_price_change_pct is not None else self.ALERT_MIN_PRICE_CHANGE_PCT
         price_change_met = price_change_pct >= alert_min_price_change
         
-        # IMPORTANT: Different rules for trade_enabled vs trade_disabled
-        if not trade_enabled:
-            # When trade_enabled=False: ONLY send if price changed by threshold (no time-based cooldown)
-            # This prevents spam when trading is disabled
-            if price_change_met:
-                return True, f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) - sending (trade_enabled=False, requires {alert_min_price_change:.2f}% change)"
-            else:
-                return False, f"Throttled (trade_enabled=False): price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}% required (last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+        # ALWAYS require BOTH cooldown (5 minutes) AND price change (1%) for same-side alerts
+        # This prevents duplicate alerts even if one condition is met
+        if not price_change_met:
+            return False, (
+                f"Throttled: price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}% "
+                f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f}). "
+                f"Required: {alert_min_price_change:.2f}% minimum change"
+            )
+        if not cooldown_met:
+            minutes_remaining = max(0.0, cooldown_limit - time_diff)
+            return False, (
+                f"Throttled: cooldown not met ({time_diff:.1f} min < {cooldown_limit} min, "
+                f"{minutes_remaining:.1f} min remaining). "
+                f"Required: {cooldown_limit} minutes minimum between same-side alerts"
+            )
         
-        # When trade_enabled=True: send if EITHER condition is met:
-        # - 5 minutes have passed, OR
-        # - Price changed by more than threshold
-        # This allows significant price movements to trigger alerts even if cooldown hasn't passed
-        if price_change_met:
-            # Significant price change - send immediately even if cooldown not met
-            return True, f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) - sending despite cooldown ({time_diff:.1f} min < {self.ALERT_COOLDOWN_MINUTES} min)"
-        elif cooldown_met:
-            # Cooldown met but price change not significant - still send (cooldown is primary protection)
-            return True, f"Cooldown met ({time_diff:.1f} min >= {self.ALERT_COOLDOWN_MINUTES} min) - sending (price change: {price_change_pct:.2f}%)"
-        else:
-            # Neither condition met - throttle
-            return False, f"Throttled: cooldown not met ({time_diff:.1f} min < {self.ALERT_COOLDOWN_MINUTES} min) AND price change not met ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%, last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+        # Both conditions met - can send alert
+        return True, (
+            f"Cooldown ({time_diff:.1f} min >= {cooldown_limit} min) AND "
+            f"price change ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) satisfied"
+        )
     
     def _update_alert_state(self, symbol: str, side: str, price: float):
         """Update the last alert state for a symbol and side"""
@@ -211,6 +292,79 @@ class SignalMonitorService:
             "last_alert_time": datetime.now(timezone.utc),
             "last_alert_price": price
         }
+    
+    def _get_last_alert_price(self, symbol: str, side: str) -> Optional[float]:
+        symbol_alerts = self.last_alert_states.get(symbol)
+        if not symbol_alerts:
+            return None
+        last_alert = symbol_alerts.get(side)
+        if not last_alert:
+            return None
+        return last_alert.get("last_alert_price")
+
+    def _should_send_protection_notification(self, symbol: str, base_open: int, global_open: int) -> bool:
+        """
+        Check if we should send a protection notification for this symbol.
+        Returns True if:
+        - No previous notification was sent for this symbol, OR
+        - At least PROTECTION_NOTIFICATION_COOLDOWN_MINUTES have passed since last notification, OR
+        - The number of open orders has changed (increased or decreased)
+        """
+        from datetime import timezone
+        
+        now_utc = datetime.now(timezone.utc)
+        last_notification = self.last_protection_notifications.get(symbol)
+        
+        if not last_notification:
+            # First time blocking this symbol - always send notification
+            return True
+        
+        last_time = last_notification.get("last_notification_time")
+        last_base_open = last_notification.get("last_base_open", -1)
+        last_global_open = last_notification.get("last_global_open", -1)
+        
+        if not last_time:
+            return True
+        
+        # Normalize timezone
+        if last_time.tzinfo is None:
+            last_time_normalized = last_time.replace(tzinfo=timezone.utc)
+        elif last_time.tzinfo != timezone.utc:
+            last_time_normalized = last_time.astimezone(timezone.utc)
+        else:
+            last_time_normalized = last_time
+        
+        # Check if enough time has passed
+        time_diff_minutes = (now_utc - last_time_normalized).total_seconds() / 60
+        if time_diff_minutes >= self.PROTECTION_NOTIFICATION_COOLDOWN_MINUTES:
+            return True
+        
+        # Check if the number of open orders has changed
+        if base_open != last_base_open or global_open != last_global_open:
+            return True
+        
+        # Otherwise, don't send (throttled)
+        return False
+    
+    def _update_protection_notification_state(self, symbol: str, base_open: int, global_open: int):
+        """Update the last protection notification state for a symbol"""
+        from datetime import timezone
+        
+        self.last_protection_notifications[symbol] = {
+            "last_notification_time": datetime.now(timezone.utc),
+            "last_base_open": base_open,
+            "last_global_open": global_open
+        }
+    
+    @staticmethod
+    def _format_price_variation(previous_price: Optional[float], current_price: float) -> Optional[str]:
+        if previous_price is None or previous_price <= 0:
+            return None
+        try:
+            change_pct = ((current_price - previous_price) / previous_price) * 100
+        except ZeroDivisionError:
+            return None
+        return f"{change_pct:+.2f}%"
     
     def _fetch_watchlist_items_sync(self, db: Session) -> list:
         """Synchronous helper to fetch watchlist items from database
@@ -228,30 +382,48 @@ class SignalMonitorService:
         # Note: This includes coins that may have trade_enabled = false
         # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted) for legacy DBs
         try:
-            watchlist_items = db.query(WatchlistItem).filter(
-                WatchlistItem.alert_enabled == True
-            ).all()
+            # Try to filter by is_deleted if column exists
+            try:
+                watchlist_items = db.query(WatchlistItem).filter(
+                    WatchlistItem.alert_enabled == True,
+                    WatchlistItem.is_deleted == False
+                ).all()
+            except Exception:
+                # If is_deleted column doesn't exist, fall back to filtering only by alert_enabled
+                watchlist_items = db.query(WatchlistItem).filter(
+                    WatchlistItem.alert_enabled == True
+                ).all()
+            
+            if not watchlist_items:
+                logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
+                return []
+            
+            logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
+            for item in watchlist_items:
+                # Refresh the item from database to get latest values (important for trade_amount_usd and alert_enabled)
+                db.refresh(item)
+                # CRITICAL: Double-check alert_enabled after refresh - if it changed to False, log warning
+                if not item.alert_enabled:
+                    logger.error(
+                        f"⚠️ INCONSISTENCIA DETECTADA: {item.symbol} tiene alert_enabled=False después del refresh, "
+                        f"pero fue incluido en la consulta inicial. Esto no debería pasar."
+                    )
+                logger.info(
+                    f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, "
+                    f"trade_amount=${item.trade_amount_usd or 0}, is_deleted={getattr(item, 'is_deleted', 'N/A')}"
+                )
+            
+            return watchlist_items
         except Exception as e:
-            logger.warning(f"Error querying alert_enabled items, falling back to trade_enabled: {e}")
+            logger.error(f"Error querying alert_enabled items: {e}", exc_info=True)
+            # CRITICAL: Do NOT fallback to trade_enabled - this causes alerts for coins with alert_enabled=False
+            # If we can't query alert_enabled, return empty list to prevent sending alerts to wrong coins
+            logger.warning("⚠️ Cannot query alert_enabled - returning empty list to prevent incorrect alerts")
             try:
                 db.rollback()
             except Exception:
                 pass
-            watchlist_items = db.query(WatchlistItem).filter(
-                WatchlistItem.trade_enabled == True
-            ).all()
-        
-        if not watchlist_items:
-            logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
-            return []
-        
-        logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
-        for item in watchlist_items:
-            # Refresh the item from database to get latest values (important for trade_amount_usd)
-            db.refresh(item)
-            logger.info(f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, trade_amount=${item.trade_amount_usd or 0}")
-        
-        return watchlist_items
+            return []  # Return empty list instead of using trade_enabled fallback
     
     async def monitor_signals(self, db: Session):
         """Monitor signals for all coins with alert_enabled = true (for alerts)
@@ -274,14 +446,18 @@ class SignalMonitorService:
             logger.error(f"Error in monitor_signals: {e}", exc_info=True)
     
     async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem):
+        """Async wrapper to run the synchronous signal check in a thread"""
+        await asyncio.to_thread(self._check_signal_for_coin_sync, db, watchlist_item)
+
+    def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):
         """Check signal for a specific coin and take action if needed"""
         symbol = watchlist_item.symbol
         exchange = watchlist_item.exchange or "CRYPTO_COM"
         
-        # IMPORTANT: Query fresh from database to get latest trade_amount_usd
-        # This ensures we have the most recent value even if it was just updated from the dashboard
-        # Using a fresh query instead of refresh() to avoid any session caching issues
         try:
+            # IMPORTANT: Query fresh from database to get latest trade_amount_usd
+            # This ensures we have the most recent value even if it was just updated from the dashboard
+            # Using a fresh query instead of refresh() to avoid any session caching issues
             # Try to filter by is_deleted if column exists, otherwise just filter by symbol
             try:
                 fresh_item = db.query(WatchlistItem).filter(
@@ -295,6 +471,7 @@ class SignalMonitorService:
                 ).first()
             if fresh_item:
                 old_amount = watchlist_item.trade_amount_usd
+                old_alert = watchlist_item.alert_enabled
                 old_margin = watchlist_item.trade_on_margin if hasattr(watchlist_item, 'trade_on_margin') else None
                 # Update the watchlist_item object with fresh values
                 watchlist_item.trade_amount_usd = fresh_item.trade_amount_usd
@@ -303,17 +480,95 @@ class SignalMonitorService:
                 # CRITICAL: Also refresh trade_on_margin from database
                 if hasattr(fresh_item, 'trade_on_margin'):
                     watchlist_item.trade_on_margin = fresh_item.trade_on_margin
-                logger.info(f"🔄 Refreshed {symbol} from DB: trade_amount_usd={old_amount} -> {watchlist_item.trade_amount_usd}, trade_enabled={watchlist_item.trade_enabled}, trade_on_margin={old_margin} -> {getattr(watchlist_item, 'trade_on_margin', None)}")
+                
+                # Log alert_enabled change if it changed
+                if old_alert != fresh_item.alert_enabled:
+                    logger.warning(
+                        f"⚠️ CAMBIO DETECTADO: {symbol} - alert_enabled cambió de {old_alert} a {fresh_item.alert_enabled} "
+                        f"después del refresh. Usando valor más reciente: {fresh_item.alert_enabled}"
+                    )
+                
+                logger.info(
+                    f"🔄 Refreshed {symbol} from DB: "
+                    f"trade_amount_usd={old_amount} -> {watchlist_item.trade_amount_usd}, "
+                    f"trade_enabled={watchlist_item.trade_enabled}, "
+                    f"alert_enabled={old_alert} -> {watchlist_item.alert_enabled}, "
+                    f"trade_on_margin={old_margin} -> {getattr(watchlist_item, 'trade_on_margin', None)}"
+                )
             else:
                 logger.warning(f"Could not find {symbol} in database for refresh")
+                
+                # CRITICAL: If we can't find the item, check if there are multiple entries
+                try:
+                    all_matching = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == symbol
+                    ).all()
+                    if len(all_matching) > 1:
+                        logger.error(
+                            f"❌ MÚLTIPLES ENTRADAS: {symbol} tiene {len(all_matching)} entradas en la base de datos. "
+                            f"Esto puede causar alertas incorrectas. IDs: {[item.id for item in all_matching]}"
+                        )
+                        # Use the most recent non-deleted entry
+                        non_deleted = [item for item in all_matching if not getattr(item, 'is_deleted', False)]
+                        if non_deleted:
+                            # Sort by ID (assuming higher ID = more recent) or use updated_at if available
+                            latest = max(non_deleted, key=lambda x: getattr(x, 'updated_at', x.id) if hasattr(x, 'updated_at') else x.id)
+                            watchlist_item.alert_enabled = latest.alert_enabled
+                            watchlist_item.trade_enabled = latest.trade_enabled
+                            logger.warning(
+                                f"⚠️ Usando entrada más reciente para {symbol}: ID={latest.id}, "
+                                f"alert_enabled={latest.alert_enabled}"
+                            )
+                except Exception as e:
+                    logger.warning(f"Error checking for multiple entries for {symbol}: {e}")
         except Exception as e:
             logger.warning(f"Could not refresh {symbol} from DB: {e}")
         
+        strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+        strategy_display = strategy_type.value.title()
+        risk_display = risk_approach.value.title()
+
         # ========================================================================
-        # PRIMERA VERIFICACIÓN DE SEGURIDAD: Contar exposición abierta (Global y Base)
+        # CRITICAL: Verify alert_enabled is True after refresh - exit early if False
         # ========================================================================
-        # Bloquear si ya hay 3 o más posiciones/órdenes abiertas (global o por base)
-        # Esto previene sobre-exposición del portfolio
+        # This prevents processing and sending alerts for coins with alert_enabled=False
+        if not watchlist_item.alert_enabled:
+            blocked_msg = (
+                f"🚫 BLOQUEADO: {symbol} - alert_enabled=False después del refresh. "
+                f"No se procesará señal ni se enviarán alertas."
+            )
+            logger.warning(blocked_msg)
+            # Register blocked message
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+            except Exception:
+                pass  # Non-critical, continue
+            return  # Exit early - do not process signals or send alerts
+        else:
+            logger.debug(
+                f"✅ {symbol} - alert_enabled=True verificado después del refresh. "
+                f"Procediendo con procesamiento de señales."
+            )
+        
+        # ========================================================================
+        # DUAL-FREQUENCY POLLING: Skip heavy processing for inactive coins
+        # ========================================================================
+        # Check if the coin is inactive and should be skipped in this cycle
+        if not watchlist_item.alert_enabled and not watchlist_item.trade_enabled:
+            # If the coin is inactive, only run the heavy logic if the global inactive period is met
+            if not self._should_monitor_inactive_coin():
+                # Check for critical cleanup functions that must always run (e.g., SL/TP)
+                # If there are no immediate actions, simply log and return
+                logger.debug(f"Skipping heavy monitoring for inactive coin {watchlist_item.symbol} to save resources.")
+                return
+        
+        # ========================================================================
+        # VERIFICACIÓN DE EXPOSICIÓN: Contar exposición abierta (Global y Base)
+        # ========================================================================
+        # NOTA: Los límites NO bloquean las alertas, solo la creación de órdenes.
+        # Las alertas siempre se envían para mantener al usuario informado.
+        # La creación de órdenes se bloquea más adelante si se alcanza el límite.
         try:
             total_open_buy_orders = self._count_total_open_buy_orders(db)
             try:
@@ -327,82 +582,153 @@ class SignalMonitorService:
             MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
             
             logger.info(
-                f"🔍 SEGURIDAD 1/2 para {symbol}: Global={total_open_buy_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
-                f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
+                f"🔍 EXPOSICIÓN ACTUAL para {symbol}: Global={total_open_buy_orders}, "
+                f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (informativo, no bloquea alertas)"
             )
-            if self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=total_open_buy_orders):
-                logger.warning(
-                    f"🚫 SEGURIDAD: {symbol} - Bloqueado por límite de símbolo. "
-                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders}). "
-                    f"No se procesará ninguna nueva orden de compra hasta que se libere este símbolo."
-                )
-                # Enviar notificación a Telegram para alertar al usuario
-                try:
-                    telegram_notifier.send_message(
-                        f"🛡️ <b>PROTECCIÓN ACTIVADA</b>\n\n"
-                        f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
-                        f"🚫 <b>BLOQUEADA</b> por límite de símbolo\n\n"
-                        f"📈 {base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
-                        f"(global={total_open_buy_orders})\n"
-                        f"⚠️ No se crearán nuevas órdenes hasta que se cierren órdenes existentes."
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send Telegram security notification: {e}")
-                return  # Salir temprano - no procesar esta señal
-            else:
-                logger.debug(
-                    f"✅ SEGURIDAD 1/2: {symbol} - Verificación pasada. "
-                    f"Global={total_open_buy_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
-                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
+            
+            # Solo registrar si hay límite alcanzado, pero NO bloquear alertas
+            if base_open >= MAX_OPEN_ORDERS_PER_SYMBOL:
+                logger.info(
+                    f"ℹ️  {symbol} tiene {base_open} posiciones abiertas (límite: {MAX_OPEN_ORDERS_PER_SYMBOL}). "
+                    f"La alerta se enviará, pero la creación de órdenes se bloqueará si se alcanza el límite."
                 )
         except Exception as e:
-            logger.error(f"Error en primera verificación de seguridad para {symbol}: {e}", exc_info=True)
-            # En caso de error, ser conservador y bloquear
-            logger.warning(f"🚫 SEGURIDAD 1/2: {symbol} - Error en verificación, bloqueando por seguridad")
-            return
+            logger.error(f"Error verificando exposición para {symbol}: {e}", exc_info=True)
+            # No bloquear por error - continuar con el procesamiento
         
         try:
-            # Get current signals using the signals endpoint logic
-            # We'll call the internal calculation function directly
-            from app.services.data_sources import data_manager
+            # CRITICAL: Use the SAME data source as the dashboard (MarketData/MarketPrice)
+            # This ensures consistency between dashboard display and alert sending
+            # Priority: MarketData/MarketPrice → watchlist_items → API (fallback)
+            from app.models.market_price import MarketPrice, MarketData
             from price_fetcher import get_price_with_fallback
             
-            # Get price data with indicators
-            try:
+            # First, try to get data from MarketPrice and MarketData (same as dashboard)
+            mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+            md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            
+            # Get price from MarketPrice if available (same priority as dashboard)
+            if mp and mp.price and mp.price > 0:
+                current_price = mp.price
+                volume_24h = mp.volume_24h or 0.0
+                price_source = "MarketPrice"
+            else:
+                # Fallback to API if MarketPrice not available
+                logger.debug(f"⚠️ {symbol}: No MarketPrice data, falling back to API")
                 result = get_price_with_fallback(symbol, "15m")
                 current_price = result.get('price', 0)
-                if not current_price:
-                    logger.warning(f"No price data for {symbol}, skipping signal check")
-                    return
-                
-                rsi = result.get('rsi', 50)
-                ma50 = result.get('ma50', current_price)
-                ma200 = result.get('ma200', current_price)
-                ema10 = result.get('ma10', current_price)
-                atr = result.get('atr', current_price * 0.02)
-                
-                # Calculate resistance levels
-                price_precision = 2 if current_price >= 100 else 4
-                res_up = round(current_price * 1.02, price_precision)
-                res_down = round(current_price * 0.98, price_precision)
-                
-            except Exception as e:
-                logger.warning(f"Error fetching price data for {symbol}: {e}")
+                volume_24h = result.get('volume_24h', 0)
+                price_source = "API (fallback)"
+            
+            if not current_price or current_price <= 0:
+                logger.warning(f"⚠️ {symbol}: No price data available (tried MarketPrice and API), skipping signal check")
                 return
             
-            # Calculate trading signals
+            # Get indicators - use MarketData if available (same priority as dashboard)
+            # This ensures RSI/MA values match what the dashboard shows
+            if md and md.rsi is not None:
+                rsi = md.rsi
+                rsi_source = "MarketData"
+            elif watchlist_item and hasattr(watchlist_item, 'rsi') and watchlist_item.rsi is not None:
+                rsi = watchlist_item.rsi
+                rsi_source = "watchlist_items"
+            else:
+                # Fallback to API if neither MarketData nor watchlist_items has RSI
+                if 'result' not in locals():
+                    result = get_price_with_fallback(symbol, "15m")
+                rsi = result.get('rsi', 50)
+                rsi_source = "API (fallback)"
+            
+            # Get other indicators with same priority as dashboard
+            if md and md.ma50 is not None:
+                ma50 = md.ma50
+            elif watchlist_item and hasattr(watchlist_item, 'ma50') and watchlist_item.ma50 is not None:
+                ma50 = watchlist_item.ma50
+            else:
+                ma50 = None  # Will be validated later
+            
+            if md and md.ma200 is not None:
+                ma200 = md.ma200
+            elif watchlist_item and hasattr(watchlist_item, 'ma200') and watchlist_item.ma200 is not None:
+                ma200 = watchlist_item.ma200
+            else:
+                ma200 = current_price  # Fallback
+            
+            if md and md.ema10 is not None:
+                ema10 = md.ema10
+            elif watchlist_item and hasattr(watchlist_item, 'ema10') and watchlist_item.ema10 is not None:
+                ema10 = watchlist_item.ema10
+            else:
+                ema10 = None  # Will be validated later
+            
+            if md and md.atr is not None:
+                atr = md.atr
+            elif watchlist_item and hasattr(watchlist_item, 'atr') and watchlist_item.atr is not None:
+                atr = watchlist_item.atr
+            else:
+                atr = current_price * 0.02  # Fallback
+            
+            # Get ma10w (same as dashboard)
+            if md and md.ma10w is not None and md.ma10w > 0:
+                ma10w = md.ma10w
+            elif ma200 and ma200 > 0:
+                ma10w = ma200
+            elif ma50 and ma50 > 0:
+                ma10w = ma50
+            else:
+                ma10w = current_price
+            
+            # Get volume data
+            if md and md.avg_volume is not None and md.avg_volume > 0:
+                avg_volume = md.avg_volume
+            else:
+                avg_volume = volume_24h if volume_24h > 0 else None
+            
+            # Validate MAs are available before proceeding with buy signal checks
+            if ma50 is None or ema10 is None:
+                missing_mas = []
+                if ma50 is None:
+                    missing_mas.append("MA50")
+                if ema10 is None:
+                    missing_mas.append("EMA10")
+                logger.warning(
+                    f"⚠️ {symbol}: MAs REQUIRED but missing: {', '.join(missing_mas)}. "
+                    f"Cannot create buy orders without MA validation. Skipping signal check."
+                )
+                return  # Exit early - cannot validate buy conditions without MAs
+            
+            logger.debug(f"📊 {symbol}: Using data from {price_source}, RSI from {rsi_source}")
+            
+            # Calculate resistance levels
+            price_precision = 2 if current_price >= 100 else 4
+            res_up = round(current_price * 1.02, price_precision)
+            res_down = round(current_price * 0.98, price_precision)
+            
+        except Exception as e:
+            logger.warning(f"Error fetching price data for {symbol}: {e}", exc_info=True)
+            return
+        
+        # Calculate trading signals (moved outside try/except block)
+        try:
             signals = calculate_trading_signals(
                 symbol=symbol,
                 price=current_price,
                 rsi=rsi,
                 atr14=atr,
                 ma50=ma50,
+                ma200=ma200,
                 ema10=ema10,
+                ma10w=ma10w,
+                volume=volume_24h,
+                avg_volume=avg_volume,
+                resistance_up=res_up,
                 buy_target=watchlist_item.buy_target,
-                last_buy_price=watchlist_item.purchase_price,
-                position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 0,
+                last_buy_price=watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None,
+                position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0,
                 rsi_buy_threshold=40,
-                rsi_sell_threshold=70
+                rsi_sell_threshold=70,
+                strategy_type=strategy_type,
+                risk_approach=risk_approach,
             )
             
             buy_signal = signals.get("buy_signal", False)
@@ -410,8 +736,9 @@ class SignalMonitorService:
             sl_price = signals.get("sl")
             tp_price = signals.get("tp")
             
-            # Log signal detection for debugging
-            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}")
+            # Log signal detection for debugging (include MA values if available)
+            ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
+            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}{ma_info}")
             
             # Determine current signal state
             current_state = "WAIT"  # Default
@@ -423,6 +750,232 @@ class SignalMonitorService:
                 logger.info(f"🔴 SELL signal detected for {symbol}")
             else:
                 logger.debug(f"⚪ WAIT signal for {symbol} (no buy/sell conditions met)")
+        except Exception as e:
+            logger.error(f"Error calculating trading signals for {symbol}: {e}", exc_info=True)
+            return
+        
+        # ========================================================================
+        # ENVÍO DE ALERTAS: Enviar alerta SIEMPRE que buy_signal=True y alert_enabled=True
+        # IMPORTANTE: Hacer esto ANTES de toda la lógica de órdenes para garantizar que las alertas
+        # se envíen incluso si hay algún return temprano en la lógica de órdenes
+        # ========================================================================
+        if buy_signal and watchlist_item.alert_enabled:
+            logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
+            
+            # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
+            # This ensures only one thread can check and send an alert at a time
+            # IMPORTANT: Set lock FIRST, before any checks, to prevent race conditions
+            lock_key = f"{symbol}_BUY"
+            lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
+            import time
+            current_time = time.time()
+            
+            # Check if we're already processing an alert for this symbol+side
+            should_skip_alert = False
+            if lock_key in self.alert_sending_locks:
+                lock_timestamp = self.alert_sending_locks[lock_key]
+                lock_age = current_time - lock_timestamp
+                if lock_age < lock_timeout:
+                    remaining_seconds = lock_timeout - lock_age
+                    logger.debug(f"🔒 Alert sending already in progress for {symbol} BUY (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s), skipping duplicate check")
+                    should_skip_alert = True
+                else:
+                    # Lock expired, remove it
+                    logger.debug(f"🔓 Expired lock removed for {symbol} BUY (age: {lock_age:.2f}s)")
+                    del self.alert_sending_locks[lock_key]
+            
+            if not should_skip_alert:
+                # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
+                self.alert_sending_locks[lock_key] = current_time
+                logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
+                
+                prev_buy_price: Optional[float] = None
+                should_send = False
+                try:
+                    # Check if alert should be sent (throttling logic)
+                    # Pass trade_enabled to apply stricter rules when trading is disabled
+                    # Check if attribute exists (for backward compatibility)
+                    min_price_change, alert_cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    should_send, reason = self.should_send_alert(
+                        symbol,
+                        "BUY",
+                        current_price,
+                        trade_enabled=watchlist_item.trade_enabled,
+                        min_price_change_pct=min_price_change,
+                        cooldown_minutes=alert_cooldown,
+                    )
+                    
+                    if should_send:
+                        prev_buy_price = self._get_last_alert_price(symbol, "BUY")
+                        # DO NOT update alert state here - only update AFTER successful send
+                        # This prevents the state from being updated if the alert is blocked later
+                    else:
+                        # Register blocked message due to throttling
+                        blocked_msg = f"🚫 BLOQUEADO: {symbol} - {reason}"
+                        logger.debug(blocked_msg)
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        except Exception:
+                            pass  # Non-critical, continue
+                except Exception as e:
+                    logger.warning(f"Error checking alert for {symbol}: {e}")
+                    # Register error as blocked message
+                    blocked_msg = f"🚫 BLOQUEADO: {symbol} - Error al verificar alerta: {str(e)}"
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                
+                # ========================================================================
+                # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
+                # ========================================================================
+                # Esta verificación adicional previene que se envíen alertas cuando hay 3+ órdenes abiertas
+                # incluso si la señal BUY se detectó (protección contra race conditions)
+                db.expire_all()  # Force refresh from database
+                final_total_open_orders = self._count_total_open_buy_orders(db)
+                # Also compute per-base exposure for this symbol
+                try:
+                    from app.services.order_position_service import count_open_positions_for_symbol
+                    base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
+                    base_open = count_open_positions_for_symbol(db, base_symbol)
+                except Exception as _e:
+                    logger.warning(f"Failed to compute base exposure for {symbol}: {_e}")
+                    base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
+                    base_open = final_total_open_orders  # fallback worst-case
+                MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
+                
+                # Log detallado para debugging
+                logger.info(
+                    f"🔍 VERIFICACIÓN FINAL para {symbol}: "
+                    f"Global={final_total_open_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
+                )
+                
+                # Verificar límite - solo afecta creación de órdenes, NO alertas
+                # Las alertas SIEMPRE se envían para mantener al usuario informado
+                should_block_order_creation = self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders)
+                
+                if should_block_order_creation:
+                    logger.warning(
+                        f"ℹ️  LÍMITE ALCANZADO para {symbol}: {base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
+                        f"La alerta se enviará, pero la creación de órdenes estará bloqueada."
+                    )
+                else:
+                    logger.info(
+                        f"✅ VERIFICACIÓN FINAL PASADA para {symbol}: "
+                        f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
+                        f"Procediendo con alerta BUY y posible creación de orden."
+                    )
+                
+                # CRITICAL: Final check - verify alert_enabled is still True before sending alert
+                # This prevents alerts for coins that had alert_enabled changed while processing
+                # Also refresh from database one more time to ensure we have the latest value
+                db.expire_all()  # Force refresh from database
+                try:
+                    fresh_check = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == symbol
+                    ).first()
+                    if fresh_check:
+                        watchlist_item.alert_enabled = fresh_check.alert_enabled
+                        logger.debug(f"🔄 Última verificación de alert_enabled para {symbol}: {fresh_check.alert_enabled}")
+                except Exception as e:
+                    logger.warning(f"Error en última verificación de alert_enabled para {symbol}: {e}")
+                
+                if not watchlist_item.alert_enabled:
+                    blocked_msg = (
+                        f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
+                        f"No se enviará alerta aunque se detectó señal BUY."
+                    )
+                    logger.error(blocked_msg)
+                    # Register blocked message
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    # Remove locks and continue (don't return - continue with order logic)
+                    if lock_key in self.alert_sending_locks:
+                        del self.alert_sending_locks[lock_key]
+                else:
+                    # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                    trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
+                    limit_value = 3 * trade_amount_usd
+                    try:
+                        portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                        if portfolio_value > limit_value:
+                            blocked_msg = (
+                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                            )
+                            logger.warning(blocked_msg)
+                            # Register blocked message
+                            try:
+                                from app.api.routes_monitoring import add_telegram_message
+                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                            except Exception:
+                                pass  # Non-critical, continue
+                            # Bloquear silenciosamente - no enviar notificación a Telegram
+                            # Remove locks and continue (don't return - continue with order logic)
+                            if lock_key in self.alert_sending_locks:
+                                del self.alert_sending_locks[lock_key]
+                            should_send = False  # Don't send alert
+                        else:
+                            logger.debug(
+                                f"✅ Portfolio value check passed for {symbol}: "
+                                f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                            )
+                    except Exception as portfolio_check_err:
+                        logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
+                        # On error, continue (don't block alerts if we can't calculate portfolio value)
+                    
+                    # Send Telegram alert (only if alert_enabled = true and should_send = true)
+                    if should_send:
+                        try:
+                            price_variation = self._format_price_variation(prev_buy_price, current_price)
+                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                            reason_text = (
+                                f"{strategy_display}/{risk_display} | "
+                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                f"MA50={ma50_text}, "
+                                f"EMA10={ema10_text}, "
+                                f"MA200={ma200_text}"
+                            )
+                            result = telegram_notifier.send_buy_signal(
+                                symbol=symbol,
+                                price=current_price,
+                                reason=reason_text,
+                                strategy_type=strategy_display,
+                                risk_approach=risk_display,
+                                price_variation=price_variation,
+                            )
+                            if result is False:
+                                blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
+                                logger.warning(blocked_msg)
+                                # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
+                                try:
+                                    from app.api.routes_monitoring import add_telegram_message
+                                    add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                                except Exception:
+                                    pass  # Non-critical, continue
+                            else:
+                                # Message already registered in send_buy_signal as sent
+                                logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
+                                # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
+                                # This ensures that if multiple calls happen simultaneously, only the first one will update the state
+                                self._update_alert_state(symbol, "BUY", current_price)
+                        except Exception as e:
+                            logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
+                            # If sending failed, do NOT update the state - allow retry on next cycle
+                    else:
+                        logger.debug(f"⏭️  Skipping alert send for {symbol} - should_send=False")
+                
+                # Always remove lock when done
+                if lock_key in self.alert_sending_locks:
+                    del self.alert_sending_locks[lock_key]
             
             # Get previous signal state for this symbol
             prev_state = self.last_signal_states.get(symbol, {})
@@ -691,6 +1244,13 @@ class SignalMonitorService:
                 # In BUY state but price check already handled above - no action needed
                 logger.debug(f"ℹ️ {symbol} in BUY state - price check already performed above")
             
+            # ========================================================================
+            # NOTA: El bloque de alertas ahora se ejecuta ANTES de la lógica de órdenes
+            # (líneas 765-965) para garantizar que las alertas se envíen incluso si hay
+            # algún return temprano en la lógica de órdenes
+            # BLOQUE DUPLICADO REMOVIDO - Las alertas se procesan arriba (líneas 765-965)
+            # ========================================================================
+            
             if should_create_order:
                 # CRITICAL: Double-check for recent orders just before creating (race condition protection)
                 # Refresh the query to catch any orders that might have been created between checks
@@ -755,22 +1315,43 @@ class SignalMonitorService:
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
                 
+                prev_buy_price: Optional[float] = None
                 try:
                     # Check if alert should be sent (throttling logic)
                     # Pass trade_enabled to apply stricter rules when trading is disabled
                     # Check if attribute exists (for backward compatibility)
-                    if hasattr(watchlist_item, 'min_price_change_pct') and watchlist_item.min_price_change_pct is not None:
-                        min_price_change = watchlist_item.min_price_change_pct
-                    else:
-                        min_price_change = None  # Use default from should_send_alert
-                    should_send, reason = self.should_send_alert(symbol, "BUY", current_price, trade_enabled=watchlist_item.trade_enabled, min_price_change_pct=min_price_change)
+                    min_price_change, alert_cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    should_send, reason = self.should_send_alert(
+                        symbol,
+                        "BUY",
+                        current_price,
+                        trade_enabled=watchlist_item.trade_enabled,
+                        min_price_change_pct=min_price_change,
+                        cooldown_minutes=alert_cooldown,
+                    )
                     
                     if should_send:
-                        # CRITICAL: Update alert state BEFORE sending to prevent race conditions
-                        # This ensures that if multiple calls happen simultaneously, only the first one will send
-                        self._update_alert_state(symbol, "BUY", current_price)
+                        prev_buy_price = self._get_last_alert_price(symbol, "BUY")
+                        # DO NOT update alert state here - only update AFTER successful send
+                        # This prevents the state from being updated if the alert is blocked later
+                    else:
+                        # Register blocked message due to throttling
+                        blocked_msg = f"🚫 BLOQUEADO: {symbol} - {reason}"
+                        logger.debug(blocked_msg)
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        except Exception:
+                            pass  # Non-critical, continue
                 except Exception as e:
                     logger.warning(f"Error checking alert for {symbol}: {e}")
+                    # Register error as blocked message
+                    blocked_msg = f"🚫 BLOQUEADO: {symbol} - Error al verificar alerta: {str(e)}"
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -794,56 +1375,132 @@ class SignalMonitorService:
                 logger.info(
                     f"🔍 VERIFICACIÓN FINAL para {symbol}: "
                     f"Global={final_total_open_orders}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
-                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}, "
-                    f"bloquear={self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders)}"
+                    f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}"
                 )
                 
-                if self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders):
+                # Verificar límite - solo afecta creación de órdenes, NO alertas
+                # Las alertas SIEMPRE se envían para mantener al usuario informado
+                should_block_order_creation = self._should_block_open_orders(base_open, MAX_OPEN_ORDERS_PER_SYMBOL, global_open=final_total_open_orders)
+                
+                if should_block_order_creation:
                     logger.warning(
-                        f"🚫 BLOQUEO FINAL: {symbol} - No se enviará alerta BUY por límite de símbolo. "
-                        f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={final_total_open_orders}). "
-                        f"La señal fue detectada pero está bloqueada por seguridad."
+                        f"ℹ️  LÍMITE ALCANZADO para {symbol}: {base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
+                        f"La alerta se enviará, pero la creación de órdenes estará bloqueada."
                     )
-                    # Enviar notificación de bloqueo en lugar de la alerta BUY
-                    try:
-                        telegram_notifier.send_message(
-                            f"🛡️ <b>PROTECCIÓN ACTIVADA</b>\n\n"
-                            f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
-                            f"🚫 <b>ALERTA BLOQUEADA</b> por límite de símbolo\n\n"
-                            f"{base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
-                            f"(global={final_total_open_orders})\n"
-                            f"💵 Precio detectado: ${current_price:,.4f}\n"
-                            f"⚠️ No se enviará alerta ni se creará orden hasta que se cierren órdenes existentes."
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send Telegram security notification: {e}")
-                    # Salir sin enviar la alerta BUY ni crear la orden
-                    if symbol in self.order_creation_locks:
-                        del self.order_creation_locks[symbol]
-                    if lock_key in self.alert_sending_locks:
-                        del self.alert_sending_locks[lock_key]
-                    return  # Salir temprano - no procesar esta señal
+                    # Bloquear creación de órdenes, pero NO bloquear alertas
+                    should_create_order = False
                 else:
                     logger.info(
                         f"✅ VERIFICACIÓN FINAL PASADA para {symbol}: "
                         f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
-                        f"Procediendo con alerta BUY."
+                        f"Procediendo con alerta BUY y posible creación de orden."
                     )
                 
-                # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
+                # CRITICAL: Final check - verify alert_enabled is still True before sending alert
+                # This prevents alerts for coins that had alert_enabled changed while processing
+                # Also refresh from database one more time to ensure we have the latest value
+                db.expire_all()  # Force refresh from database
                 try:
-                    # Get strategy from watchlist item (sl_tp_mode: conservative or aggressive)
-                    strategy = watchlist_item.sl_tp_mode or "conservative"
-                    telegram_notifier.send_buy_signal(
+                    fresh_check = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == symbol
+                    ).first()
+                    if fresh_check:
+                        watchlist_item.alert_enabled = fresh_check.alert_enabled
+                        logger.debug(f"🔄 Última verificación de alert_enabled para {symbol}: {fresh_check.alert_enabled}")
+                except Exception as e:
+                    logger.warning(f"Error en última verificación de alert_enabled para {symbol}: {e}")
+                
+                if not watchlist_item.alert_enabled:
+                    blocked_msg = (
+                        f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
+                        f"No se enviará alerta aunque se detectó señal BUY."
+                    )
+                    logger.error(blocked_msg)
+                    # Register blocked message
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    # Remove locks and exit
+                    if symbol in self.order_creation_locks:
+                        del self.order_creation_locks[symbol]
+                    if lock_key in self.alert_sending_locks:
+                        del self.alert_sending_locks[lock_key]
+                    return  # Exit without sending alert
+                
+                # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
+                limit_value = 3 * trade_amount_usd
+                try:
+                    portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                    if portfolio_value > limit_value:
+                        blocked_msg = (
+                            f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                        )
+                        logger.warning(blocked_msg)
+                        # Register blocked message
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        except Exception:
+                            pass  # Non-critical, continue
+                        # Bloquear silenciosamente - no enviar notificación a Telegram
+                        # Remove locks and exit
+                        if symbol in self.order_creation_locks:
+                            del self.order_creation_locks[symbol]
+                        if lock_key in self.alert_sending_locks:
+                            del self.alert_sending_locks[lock_key]
+                        return  # Exit without sending alert
+                    else:
+                        logger.debug(
+                            f"✅ Portfolio value check passed for {symbol}: "
+                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                        )
+                except Exception as portfolio_check_err:
+                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
+                    # On error, continue (don't block alerts if we can't calculate portfolio value)
+                
+                # Send Telegram alert (only if alert_enabled = true)
+                try:
+                    price_variation = self._format_price_variation(prev_buy_price, current_price)
+                    ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                    ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                    ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                    reason_text = (
+                        f"{strategy_display}/{risk_display} | "
+                        f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                        f"MA50={ma50_text}, "
+                        f"EMA10={ema10_text}, "
+                        f"MA200={ma200_text}"
+                    )
+                    result = telegram_notifier.send_buy_signal(
                         symbol=symbol,
                         price=current_price,
-                        reason=f"RSI={rsi:.1f}, Price={current_price:.4f}, MA50={ma50:.2f}, EMA10={ema10:.2f}",
-                        strategy=strategy
+                        reason=reason_text,
+                        strategy_type=strategy_display,
+                        risk_approach=risk_display,
+                        price_variation=price_variation,
                     )
-                    logger.info(f"✅ BUY alert sent for {symbol} - {reason}")
+                    if result is False:
+                        blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
+                        logger.warning(blocked_msg)
+                        # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        except Exception:
+                            pass  # Non-critical, continue
+                    else:
+                        # Message already registered in send_buy_signal as sent
+                        logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
+                        # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
+                        # This ensures that if multiple calls happen simultaneously, only the first one will update the state
+                        self._update_alert_state(symbol, "BUY", current_price)
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
-                    # If sending failed, we should still keep the state update to prevent spam retries
+                    # If sending failed, do NOT update the state - allow retry on next cycle
                 finally:
                     # Always remove lock when done
                     if lock_key in self.alert_sending_locks:
@@ -852,11 +1509,66 @@ class SignalMonitorService:
                 # Create order automatically ONLY if trade_enabled = true AND alert_enabled = true
                 # alert_enabled = true is already filtered, so we only need to check trade_enabled
                 logger.info(f"🔍 Checking order creation for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}, alert_enabled={watchlist_item.alert_enabled}")
+                
+                # CRITICAL: Verify alert_enabled is still True before creating order
+                if not watchlist_item.alert_enabled:
+                    logger.warning(
+                        f"🚫 ORDEN BLOQUEADA: {symbol} - alert_enabled=False. "
+                        f"No se creará orden aunque se detectó señal BUY."
+                    )
+                    # Remove locks and exit
+                    if symbol in self.order_creation_locks:
+                        del self.order_creation_locks[symbol]
+                    return  # Exit without creating order
+                
+                # CRITICAL: Final validation - MAs must be available before creating order
+                if ma50 is None or ema10 is None:
+                    missing_mas = []
+                    if ma50 is None:
+                        missing_mas.append("MA50")
+                    if ema10 is None:
+                        missing_mas.append("EMA10")
+                    error_msg = f"❌ Cannot create BUY order for {symbol}: MAs REQUIRED but missing: {', '.join(missing_mas)}"
+                    logger.error(error_msg)
+                    # Bloquear silenciosamente - no enviar notificación a Telegram
+                    return  # Exit - cannot create order without MAs
+                
+                # Log MA values for verification
+                logger.info(f"✅ MA validation passed for {symbol}: MA50={ma50:.2f}, EMA10={ema10:.2f}, MA50>EMA10={ma50 > ema10}")
+                
+                # Check portfolio value limit: Block BUY orders if portfolio_value > 3x trade_amount_usd
+                trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
+                limit_value = 3 * trade_amount_usd
+                try:
+                    portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                    if portfolio_value > limit_value:
+                        logger.warning(
+                            f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
+                            f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}. "
+                            f"No se creará orden aunque se detectó señal BUY."
+                        )
+                        # Bloquear silenciosamente - no enviar notificación a Telegram
+                        # Remove locks and exit
+                        if symbol in self.order_creation_locks:
+                            del self.order_creation_locks[symbol]
+                        return  # Exit without creating order
+                    else:
+                        logger.debug(
+                            f"✅ Portfolio value check passed for {symbol}: "
+                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                        )
+                except Exception as portfolio_check_err:
+                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with order creation...")
+                    # On error, continue (don't block orders if we can't calculate portfolio value)
+                
                 if watchlist_item.trade_enabled:
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                         logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically")
                         try:
-                            order_result = await self._create_buy_order(db, watchlist_item, current_price, res_up, res_down)
+                            # Use asyncio.run() to execute async function from sync context
+                            import asyncio
+                            order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
                             if order_result:
                                 filled_price = order_result.get("filled_price")
                                 state_entry = self.last_signal_states.get(symbol, {})
@@ -923,12 +1635,6 @@ class SignalMonitorService:
                     "orders_count": 0
                 })
                 self.last_signal_states[symbol] = state_entry
-        
-        except Exception as e:
-            logger.error(f"Error checking signal for {symbol}: {e}", exc_info=True)
-            # CRITICAL: Do NOT mark watchlist_item as deleted or hidden on error
-            # The symbol must remain visible in the watchlist even if order creation fails
-            # Only log the error - do not modify is_deleted, is_active, or any visibility flags
     
     async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem, 
                                 current_price: float, res_up: float, res_down: float):
@@ -1090,18 +1796,7 @@ class SignalMonitorService:
                     f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders_final}). "
                     f"Orden cancelada justo antes de ejecutar (posible race condition detectada)."
                 )
-                # Enviar notificación crítica a Telegram
-                try:
-                    telegram_notifier.send_message(
-                        f"🚨 <b>PROTECCIÓN CRÍTICA ACTIVADA</b>\n\n"
-                        f"📊 Orden de compra para <b>{symbol}</b> fue <b>CANCELADA</b>\n"
-                        f"🛡️ Verificación final de seguridad activada\n\n"
-                        f"{base_symbol}: <b>{base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}</b> "
-                        f"(global={total_open_buy_orders_final})\n"
-                        f"⚠️ La orden fue bloqueada justo antes de ejecutarse para prevenir sobre-exposición."
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send Telegram critical security notification: {e}")
+                # Bloquear silenciosamente - no enviar notificación a Telegram
                 return None  # Cancelar orden
             else:
                 logger.info(

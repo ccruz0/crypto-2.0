@@ -13,6 +13,11 @@ from app.models.market_price import MarketData
 from app.models.watchlist import WatchlistItem
 from app.services.telegram_notifier import telegram_notifier
 from app.services.trading_signals import calculate_trading_signals
+from app.services.strategy_profiles import (
+    resolve_strategy_profile,
+    StrategyType,
+    RiskApproach,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,9 @@ class BuyIndexMonitorService:
         ma50: Optional[float],
         ema10: Optional[float],
         buy_target: Optional[float],
-        rsi_buy_threshold: int = 40
+        rsi_buy_threshold: int = 40,
+        strategy_type: StrategyType = StrategyType.SWING,
+        risk_approach: RiskApproach = RiskApproach.CONSERVATIVE,
     ) -> dict:
         """
         Calculate buy proximity index (0-100) based on how close conditions are to being met.
@@ -49,9 +56,12 @@ class BuyIndexMonitorService:
             price=price,
             rsi=rsi,
             ma50=ma50,
+            ma200=None,
             ema10=ema10,
             buy_target=buy_target,
-            rsi_buy_threshold=rsi_buy_threshold
+            rsi_buy_threshold=rsi_buy_threshold,
+            strategy_type=strategy_type,
+            risk_approach=risk_approach,
         )
         
         if signals.get("buy_signal"):
@@ -211,12 +221,16 @@ class BuyIndexMonitorService:
             buy_target = watchlist_item.buy_target if watchlist_item else None
             
             # Calculate buy index
+            strategy_type, risk_approach = resolve_strategy_profile(self.symbol, db, watchlist_item)
+
             index_data = self.calculate_buy_index(
                 price=market_data.price,
                 rsi=market_data.rsi,
                 ma50=market_data.ma50,
                 ema10=market_data.ema10,
-                buy_target=buy_target
+                buy_target=buy_target,
+                strategy_type=strategy_type,
+                risk_approach=risk_approach,
             )
             
             # Format message

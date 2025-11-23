@@ -7,11 +7,31 @@ CONFIG_PATH = Path("trading_config.json")
 
 _DEFAULT_CONFIG = {
     "version": 1,
-    "defaults": {"timeframe": "4h", "preset": "swing"},
+    "defaults": {
+        "timeframe": "4h",
+        "preset": "swing",
+        "alert_cooldown_minutes": 5,
+        "alert_min_price_change_pct": 1.0
+    },
     "presets": {
-        "swing":   { "RSI_PERIOD":14, "RSI_BUY":38, "RSI_SELL":68, "MA50":50, "EMA10":9,  "MA10W":70, "ATR":14, "VOL":10 },
-        "intraday":{ "RSI_PERIOD":10, "RSI_BUY":42, "RSI_SELL":65, "MA50":25, "EMA10":7,  "MA10W":30, "ATR":10, "VOL":20 },
-        "scalp":   { "RSI_PERIOD":7,  "RSI_BUY":45, "RSI_SELL":60, "MA50":20, "EMA10":5,  "MA10W":15, "ATR":7,  "VOL":15 }
+        "swing":   {
+            "RSI_PERIOD":14, "RSI_BUY":38, "RSI_SELL":68, "MA50":50, "EMA10":9,
+            "MA10W":70, "ATR":14, "VOL":10,
+            "ALERT_COOLDOWN_MINUTES": 5,
+            "ALERT_MIN_PRICE_CHANGE_PCT": 1.0
+        },
+        "intraday":{
+            "RSI_PERIOD":10, "RSI_BUY":42, "RSI_SELL":65, "MA50":25, "EMA10":7,
+            "MA10W":30, "ATR":10, "VOL":20,
+            "ALERT_COOLDOWN_MINUTES": 3,
+            "ALERT_MIN_PRICE_CHANGE_PCT": 0.8
+        },
+        "scalp":   {
+            "RSI_PERIOD":7,  "RSI_BUY":45, "RSI_SELL":60, "MA50":20, "EMA10":5,
+            "MA10W":15, "ATR":7,  "VOL":15,
+            "ALERT_COOLDOWN_MINUTES": 2,
+            "ALERT_MIN_PRICE_CHANGE_PCT": 0.5
+        }
     },
     "coins": {}
 }
@@ -60,3 +80,36 @@ def resolve_params(symbol: str, inline_overrides: Optional[Dict[str, Any]]=None)
     if inline_overrides:
         out.update(inline_overrides)
     return out
+
+
+def get_alert_thresholds(symbol: str, risk_mode: Optional[str] = None) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Return (min_price_change_pct, cooldown_minutes) for a symbol/strategy.
+    Values are resolved in the following order:
+        1. Global defaults
+        2. Strategy/preset defaults
+        3. Coin overrides (including preset strings like "swing-conservative")
+    """
+    cfg = load_config()
+    defaults = cfg.get("defaults", {})
+    default_cooldown = defaults.get("alert_cooldown_minutes")
+    default_min_pct = defaults.get("alert_min_price_change_pct")
+
+    coins_cfg = cfg.get("coins", {})
+    coin_cfg = coins_cfg.get(symbol, {})
+    preset_name = coin_cfg.get("preset") or defaults.get("preset")
+
+    preset_cooldown = default_cooldown
+    preset_min_pct = default_min_pct
+
+    if preset_name:
+        preset_key = preset_name.split("-")[0]  # remove risk suffix if present
+        preset_cfg = cfg.get("presets", {}).get(preset_key, {})
+        preset_cooldown = preset_cfg.get("ALERT_COOLDOWN_MINUTES", preset_cooldown)
+        preset_min_pct = preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", preset_min_pct)
+
+    overrides = coin_cfg.get("overrides", {})
+    cooldown = overrides.get("ALERT_COOLDOWN_MINUTES", preset_cooldown)
+    min_pct = overrides.get("ALERT_MIN_PRICE_CHANGE_PCT", preset_min_pct)
+
+    return min_pct, cooldown

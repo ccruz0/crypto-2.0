@@ -13,6 +13,7 @@ from app.services.open_orders import (
     calculate_portfolio_order_metrics,
     serialize_unified_order,
 )
+from app.utils.live_trading import get_live_trading_status
 
 router = APIRouter()
 log = logging.getLogger("app.dashboard")
@@ -149,20 +150,74 @@ def get_dashboard_snapshot_endpoint(
     try:
         from app.services.dashboard_snapshot import get_dashboard_snapshot
         # This is a fast read-only operation - no heavy computation
-        return get_dashboard_snapshot(db)
+        snapshot = get_dashboard_snapshot(db)
+        if not snapshot:
+            log.warning("Dashboard snapshot returned None/empty - returning fallback")
+            # Return empty snapshot structure to prevent frontend errors
+            return {
+                "data": {
+                    "source": "empty",
+                    "total_usd_value": 0.0,
+                    "balances": [],
+                    "open_orders": [],
+                    "portfolio": {
+                        "assets": [],
+                        "total_value_usd": 0.0,
+                        "exchange": "Crypto.com Exchange"
+                    },
+                    "bot_status": {
+                        "is_running": True,
+                        "status": "running",
+                        "reason": None
+                    },
+                    "partial": True,
+                    "errors": ["No snapshot available yet"]
+                },
+                "last_updated_at": None,
+                "stale_seconds": None,
+                "stale": True,
+                "empty": True
+            }
+        return snapshot
     except Exception as e:
         log.error(f"Error getting dashboard snapshot: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return error response instead of raising exception to prevent frontend crashes
+        return {
+            "data": {
+                "source": "error",
+                "total_usd_value": 0.0,
+                "balances": [],
+                "open_orders": [],
+                "portfolio": {
+                    "assets": [],
+                    "total_value_usd": 0.0,
+                    "exchange": "Crypto.com Exchange"
+                },
+                "bot_status": {
+                    "is_running": True,
+                    "status": "running",
+                    "reason": None
+                },
+                "partial": True,
+                "errors": [f"Snapshot error: {str(e)}"]
+            },
+            "last_updated_at": None,
+            "stale_seconds": None,
+            "stale": True,
+            "empty": True
+        }
 
 
-@router.get("/dashboard/state")
-async def get_dashboard_state(
-    db: Session = Depends(get_db)
-):
+async def _compute_dashboard_state(db: Session) -> dict:
     """
-    Get dashboard state including portfolio balances, open orders, and signals.
-    RESTORED v4.0 behavior: Loads portfolio from portfolio_cache.
-    CONVERTED TO ASYNC: Uses asyncio.to_thread to prevent worker blocking.
+    Core function to compute dashboard state.
+    This can be called directly without FastAPI dependencies.
+    
+    Args:
+        db: Database session (required)
+    
+    Returns:
+        dict: Dashboard state
     """
     start_time = time.time()
     log.info("Starting dashboard state fetch")
@@ -179,7 +234,12 @@ async def get_dashboard_state(
         
         # Extract balances from portfolio summary
         balances_list = portfolio_summary.get("balances", [])
+        # Use total_usd from portfolio_summary (correctly calculated as assets - borrowed)
+        # Bug 3 Fix: portfolio_cache correctly calculates total_usd = total_assets_usd - total_borrowed_usd
+        # We should use that value instead of incorrectly recalculating it
         total_usd_value = portfolio_summary.get("total_usd", 0.0)
+        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
+        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
         last_updated = portfolio_summary.get("last_updated")
         
         # Log raw data for debugging
@@ -193,11 +253,20 @@ async def get_dashboard_state(
         unified_orders_elapsed = time.time() - unified_orders_start
         log.info(f"[PERF] get_unified_open_orders took {unified_orders_elapsed:.3f} seconds")
         
+        # Safely get last_updated with null-safety
+        last_updated_value = cached_open_orders.get("last_updated")
+        last_updated_iso = None
+        if last_updated_value:
+            # Check if it's already a datetime object
+            if hasattr(last_updated_value, 'isoformat'):
+                last_updated_iso = last_updated_value.isoformat()
+            elif isinstance(last_updated_value, str):
+                # Already a string, use as-is
+                last_updated_iso = last_updated_value
+        
         open_orders_summary = {
             "orders": open_orders_list,
-            "last_updated": cached_open_orders.get("last_updated").isoformat()
-            if cached_open_orders.get("last_updated")
-            else None,
+            "last_updated": last_updated_iso,
         }
         
         # Calculate portfolio order metrics
@@ -205,11 +274,36 @@ async def get_dashboard_state(
         order_metrics = calculate_portfolio_order_metrics(unified_open_orders)
         metrics_elapsed = time.time() - metrics_start
         log.info(f"[PERF] calculate_portfolio_order_metrics took {metrics_elapsed:.3f} seconds")
-        open_position_counts = {
-            symbol: int(metrics.get("open_orders_count", 0) or 0)
-            for symbol, metrics in order_metrics.items()
-        }
-
+        
+        # Count only TP (Take Profit) orders as "open orders"
+        # Group TP orders by base symbol
+        tp_orders_by_symbol: Dict[str, int] = {}
+        for order in unified_open_orders:
+            order_type = (order.order_type or "").upper()
+            if "TAKE_PROFIT" in order_type:
+                base_symbol = order.base_symbol
+                if base_symbol:
+                    tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
+        
+        # If cache is empty, also check database for TP orders
+        if not tp_orders_by_symbol:
+            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+            from app.services.open_orders import _extract_base_symbol
+            
+            open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+            db_tp_orders = db.query(ExchangeOrder).filter(
+                ExchangeOrder.status.in_(open_statuses),
+                ExchangeOrder.order_type.like('%TAKE_PROFIT%')
+            ).all()
+            
+            for order in db_tp_orders:
+                symbol = order.symbol or ""
+                base_symbol = _extract_base_symbol(symbol)
+                if base_symbol:
+                    tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
+        
+        open_position_counts = tp_orders_by_symbol
+        
         # Format portfolio assets (v4.0 format)
         # Filter: include all balances with balance > 0 OR usd_value > 0 (v4.0 behavior)
         portfolio_assets = []
@@ -220,9 +314,73 @@ async def get_dashboard_state(
             
             # v4.0 filter: include if balance > 0 OR usd_value > 0
             if balance_amount > 0 or usd_value > 0:
-                base_currency = balance.get("currency", balance.get("asset", "")).upper()
-                metrics = order_metrics.get(base_currency, {})
-                open_orders_count = int(metrics.get("open_orders_count", 0) or 0)
+                currency = balance.get("currency", balance.get("asset", "")).upper()
+                # Extract base currency (e.g., "AAVE" from "AAVE_USDT" or just "AAVE")
+                base_currency = currency.split("_")[0] if "_" in currency else currency
+                
+                # Search for metrics using multiple strategies to handle symbol variants
+                # This ensures we find metrics whether they're indexed by base_symbol or full symbol
+                # Example: Balance "AAVE" needs to match orders "AAVE_USDT" or "AAVE_USD"
+                metrics = {}
+                
+                # Strategy 1: Try base_currency (metrics are typically indexed by base_symbol)
+                # This handles cases where orders are "AAVE_USDT" but metrics indexed by "AAVE"
+                if base_currency in order_metrics:
+                    metrics = order_metrics[base_currency]
+                
+                # Strategy 2: Try full currency name if it differs from base
+                # This handles cases where metrics might be indexed by full symbol
+                if not metrics and currency != base_currency and currency in order_metrics:
+                    metrics = order_metrics[currency]
+                
+                # Strategy 3: Try common variants (USDT/USD) for all coins
+                # This handles cases where balance is "AAVE" but orders are "AAVE_USDT" or "AAVE_USD"
+                if not metrics:
+                    for variant in [f"{base_currency}_USDT", f"{base_currency}_USD"]:
+                        if variant in order_metrics:
+                            metrics = order_metrics[variant]
+                            log.debug(f"Found metrics for {currency} using variant {variant}")
+                            break
+                
+                # Count only TP (Take Profit) orders as "open orders"
+                # Search for TP orders count using same symbol variant strategy
+                tp_count = 0
+                
+                # Try to get TP count using base_currency
+                if base_currency in open_position_counts:
+                    tp_count = open_position_counts[base_currency]
+                
+                # Try full currency name if different from base
+                if tp_count == 0 and currency != base_currency and currency in open_position_counts:
+                    tp_count = open_position_counts[currency]
+                
+                # Try common variants (USDT/USD)
+                if tp_count == 0:
+                    for variant in [f"{base_currency}_USDT", f"{base_currency}_USD"]:
+                        if variant in open_position_counts:
+                            tp_count = open_position_counts[variant]
+                            break
+                
+                # Also count TP orders directly from unified_open_orders if not found in counts
+                if tp_count == 0:
+                    # Count TP orders for this symbol and variants
+                    symbol_variants = [currency, base_currency]
+                    if "_" not in currency:
+                        symbol_variants.extend([f"{base_currency}_USDT", f"{base_currency}_USD"])
+                    else:
+                        if currency.endswith("_USDT"):
+                            symbol_variants.append(currency.replace("_USDT", "_USD"))
+                        elif currency.endswith("_USD"):
+                            symbol_variants.append(currency.replace("_USD", "_USDT"))
+                    
+                    for order in unified_open_orders:
+                        order_symbol = (order.symbol or "").upper()
+                        order_type = (order.order_type or "").upper()
+                        if order_symbol in [v.upper() for v in symbol_variants] and "TAKE_PROFIT" in order_type:
+                            tp_count += 1
+                
+                # open_orders_count = count of TP orders only
+                open_orders_count = tp_count
 
                 tp_price = metrics.get("tp")
                 sl_price = metrics.get("sl")
@@ -276,7 +434,10 @@ async def get_dashboard_state(
                         log.info("   - Portfolio cache updated successfully, retrying get_portfolio_summary")
                         portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db)
                         balances_list = portfolio_summary.get("balances", [])
+                        # Bug 3 Fix: Use total_usd from portfolio_summary (correctly calculated)
                         total_usd_value = portfolio_summary.get("total_usd", 0.0)
+                        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
+                        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
                         last_updated = portfolio_summary.get("last_updated")
                         
                         # Re-process balances
@@ -322,7 +483,9 @@ async def get_dashboard_state(
             "bot_status": {
                 "is_running": True,
                 "status": "running",
-                "reason": None
+                "reason": None,
+                "live_trading_enabled": get_live_trading_status(db),
+                "mode": "LIVE" if get_live_trading_status(db) else "DRY_RUN"
             },
             "partial": False,
             "errors": []
@@ -350,18 +513,54 @@ async def get_dashboard_state(
             "bot_status": {
                 "is_running": True,
                 "status": "running",
-                "reason": None
+                "reason": None,
+                "live_trading_enabled": get_live_trading_status(db) if db else False,
+                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
             },
             "partial": True,
             "errors": [str(e)]
         }
 
 
+@router.get("/dashboard/state")
+async def get_dashboard_state(
+    db: Session = Depends(get_db)
+):
+    """
+    FastAPI route handler for /dashboard/state endpoint.
+    Delegates to _compute_dashboard_state to avoid circular dependencies.
+    """
+    return await _compute_dashboard_state(db)
+
+
 @router.get("/dashboard/open-orders-summary")
 def get_open_orders_summary():
     """Return the cached unified open orders."""
     cache = get_open_orders_cache()
-    orders = [serialize_unified_order(order) for order in cache.get("orders", [])]
+    cached_orders = cache.get("orders", [])
+    
+    # If cache is empty, try to get orders from the same source as /dashboard/state
+    if not cached_orders:
+        log.warning("Open orders cache is empty, attempting to get from exchange_sync...")
+        try:
+            from app.services.exchange_sync import ExchangeSyncService
+            from app.database import SessionLocal
+            sync_service = ExchangeSyncService()
+            db = SessionLocal()
+            try:
+                # Trigger a sync to populate the cache
+                sync_service.sync_open_orders(db)
+                db.commit()
+                # Re-read from cache after sync
+                cache = get_open_orders_cache()
+                cached_orders = cache.get("orders", [])
+                log.info(f"Synced {len(cached_orders)} orders to cache")
+            finally:
+                db.close()
+        except Exception as e:
+            log.error(f"Failed to sync orders for open-orders-summary: {e}", exc_info=True)
+    
+    orders = [serialize_unified_order(order) for order in cached_orders]
     last_updated = cache.get("last_updated")
     return {
         "orders": orders,
@@ -414,7 +613,9 @@ def create_watchlist_item(
     item = WatchlistItem(
         symbol=symbol,
         exchange=payload.get("exchange") or "CRYPTO_COM",
-        alert_enabled=payload.get("alert_enabled", True),
+        # CRITICAL: Default alert_enabled to False to prevent unwanted alerts
+        # Only set to True explicitly when user wants alerts for this coin
+        alert_enabled=payload.get("alert_enabled", False),
         trade_enabled=payload.get("trade_enabled", False),
         trade_amount_usd=payload.get("trade_amount_usd"),
         trade_on_margin=payload.get("trade_on_margin", False),
@@ -530,3 +731,129 @@ def delete_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
         log.exception("Error deleting watchlist item by symbol")
         raise HTTPException(status_code=500, detail=str(err))
     return {"ok": True}
+
+
+@router.get("/dashboard/expected-take-profit")
+def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
+    """
+    Get expected take profit summary for all symbols with open positions.
+    Returns summary data per symbol: net_qty, position_value, covered_qty, uncovered_qty, total_expected_profit.
+    """
+    try:
+        from app.services.expected_take_profit import get_expected_take_profit_summary
+        from app.services.portfolio_cache import get_portfolio_summary
+        
+        # Get portfolio assets (from balances format)
+        portfolio_summary = get_portfolio_summary(db)
+        portfolio_balances = portfolio_summary.get("balances", [])
+        log.info(f"Expected TP: Got {len(portfolio_balances)} portfolio balances")
+        
+        # Convert balances format to assets format for the service
+        portfolio_assets = [
+            {
+                "coin": bal.get("currency", "").upper(),
+                "balance": bal.get("balance", 0),
+                "value_usd": bal.get("usd_value", 0),
+            }
+            for bal in portfolio_balances
+            if bal.get("balance", 0) > 0
+        ]
+        log.info(f"Expected TP: Processing {len(portfolio_assets)} assets with positive balance")
+        
+        # Build market prices dict from portfolio data
+        market_prices: Dict[str, float] = {}
+        for asset in portfolio_assets:
+            symbol = asset.get("coin", "").upper()
+            balance = asset.get("balance", 0)
+            value_usd = asset.get("value_usd", 0)
+            if balance > 0:
+                market_prices[symbol] = float(value_usd) / float(balance)
+        
+        # Get expected take profit summary
+        log.info(f"Expected TP: Calling get_expected_take_profit_summary with {len(portfolio_assets)} assets")
+        summary = get_expected_take_profit_summary(db, portfolio_assets, market_prices)
+        log.info(f"Expected TP: Summary returned {len(summary)} symbols: {list(summary.keys())}")
+        
+        # Convert to list and sort by position_value descending
+        summary_list = list(summary.values())
+        summary_list.sort(key=lambda x: x.get("position_value", 0), reverse=True)
+        log.info(f"Expected TP: Summary list has {len(summary_list)} items after conversion")
+        
+        # Handle last_updated - can be timestamp (float) or datetime
+        last_updated = portfolio_summary.get("last_updated")
+        if last_updated:
+            if isinstance(last_updated, (int, float)):
+                from datetime import datetime, timezone
+                last_updated = datetime.fromtimestamp(last_updated, tz=timezone.utc).isoformat()
+            elif hasattr(last_updated, 'isoformat'):
+                last_updated = last_updated.isoformat()
+            else:
+                last_updated = None
+        
+        return {
+            "summary": summary_list,
+            "total_symbols": len(summary_list),
+            "last_updated": last_updated,
+        }
+    except Exception as e:
+        log.error(f"Error getting expected take profit summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dashboard/expected-take-profit/{symbol}")
+def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends(get_db)):
+    """
+    Get detailed expected take profit data for a specific symbol.
+    Returns matched lots with TP orders and uncovered quantity.
+    """
+    try:
+        from app.services.expected_take_profit import get_expected_take_profit_details
+        from app.services.portfolio_cache import get_portfolio_summary
+        
+        symbol = symbol.upper()
+        
+        # Get current price from portfolio
+        portfolio_summary = get_portfolio_summary(db)
+        portfolio_assets = portfolio_summary.get("assets", [])
+        portfolio_balances = portfolio_summary.get("balances", [])
+        
+        current_price = 0.0
+        balance = 0.0
+        
+        # Try assets format first
+        for asset in portfolio_assets:
+            coin = asset.get("coin", "").upper()
+            if coin == symbol or coin == symbol.split('_')[0]:
+                balance = asset.get("balance", 0)
+                value_usd = asset.get("value_usd", 0)
+                if balance > 0 and value_usd > 0:
+                    current_price = float(value_usd) / float(balance)
+                    break
+        
+        # Try balances format if not found
+        if current_price <= 0:
+            for bal in portfolio_balances:
+                currency = bal.get("currency", "").upper()
+                if currency == symbol or currency == symbol.split('_')[0]:
+                    balance = bal.get("balance", 0)
+                    value_usd = bal.get("usd_value", 0) or bal.get("value_usd", 0)
+                    if balance > 0 and value_usd > 0:
+                        current_price = float(value_usd) / float(balance)
+                        break
+        
+        # Get detailed data (pass balance and portfolio_summary for virtual lot creation)
+        details = get_expected_take_profit_details(db, symbol, current_price, balance, portfolio_summary)
+        
+        # Add uncovered quantity entry if exists
+        if details.get("uncovered_qty", 0) > 0:
+            details["uncovered_entry"] = {
+                "symbol": symbol,
+                "uncovered_qty": details["uncovered_qty"],
+                "label": f"No matching active take profit orders for {details['uncovered_qty']:.8f} {symbol.split('_')[0]}",
+                "is_uncovered": True,
+            }
+        
+        return details
+    except Exception as e:
+        log.error(f"Error getting expected take profit details for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -40,8 +40,8 @@ def calculate_rsi(prices: List[float], period: int = 14) -> float:
     
     return round(rsi, 2)
 
-def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-    """Calculate Average True Range (ATR)"""
+def calculate_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14, current_price: Optional[float] = None) -> float:
+    """Calculate Average True Range (ATR) with adaptive precision based on price"""
     if len(highs) < period + 1:
         return 0.0
     
@@ -57,7 +57,30 @@ def calculate_atr(highs: List[float], lows: List[float], closes: List[float], pe
     
     # Calculate ATR as average of TR
     atr = np.mean(tr_values[-period:])
-    return round(atr, 2)
+    
+    # Use adaptive precision based on current price (similar to MAs)
+    # This ensures low-value coins like DOGE/DGB show more precision
+    if current_price is not None and current_price > 0:
+        # Determine precision based on price magnitude
+        if current_price >= 100:
+            # High-value coins (BTC, ETH, etc.) - use 2 decimal places
+            precision = 2
+        elif current_price >= 1:
+            # Medium-value coins ($1-$99) - use 4 decimal places
+            precision = 4
+        else:
+            # Low-value coins (< $1, e.g., DOGE, DGB) - use 6 decimal places
+            precision = 6
+    else:
+        # If no price provided, use adaptive precision based on ATR magnitude itself
+        if atr >= 1:
+            precision = 2
+        elif atr >= 0.01:
+            precision = 4
+        else:
+            precision = 6
+    
+    return round(atr, precision)
 
 def calculate_ma(prices: List[float], period: int) -> float:
     """Calculate Moving Average"""
@@ -318,10 +341,12 @@ def get_signals(
                         current_price = market_data.price
                         source = market_data.source or "database"
                         rsi = market_data.rsi or 50.0
-                        ma50 = market_data.ma50 or current_price
-                        ma200 = market_data.ma200 or current_price
-                        ema10 = market_data.ema10 or current_price
-                        ma10w = market_data.ma10w or current_price
+                        # CRITICAL: MAs must be explicitly available (not None) - do NOT use fallback values
+                        # This ensures buy signals are only generated when MAs are actually available
+                        ma50 = market_data.ma50  # None if not available
+                        ma200 = market_data.ma200  # None if not available
+                        ema10 = market_data.ema10  # None if not available
+                        ma10w = market_data.ma10w  # None if not available
                         atr = market_data.atr or (current_price * 0.02)
                         volume_24h = market_data.volume_24h or 0.0
                         current_volume = market_data.current_volume  # Can be None
@@ -411,21 +436,71 @@ def get_signals(
                     source = price_result.source
                     logger.info(f"✅ [SIGNALS] {symbol}: Got price from {source}: ${current_price}")
                 else:
-                    logger.warning(f"⚠️ [SIGNALS] {symbol}: Price fetch returned no data, using default")
-                    current_price = 1.0
-                    source = 'fallback'
+                    logger.warning(f"⚠️ [SIGNALS] {symbol}: Price fetch returned no data, trying portfolio fallback")
+                    # Try to calculate price from portfolio balance/usd_value as fallback
+                    current_price = None
+                    try:
+                        from app.services.portfolio_cache import get_portfolio_summary
+                        portfolio = get_portfolio_summary(db)
+                        assets = portfolio.get("assets", [])
+                        
+                        # Find matching asset by base currency (e.g., ALGO from ALGO_USDT)
+                        symbol_base = symbol.split('_')[0].upper()
+                        for asset in assets:
+                            coin = asset.get("coin", "").upper()
+                            if coin == symbol_base:
+                                balance = float(asset.get("balance", 0))
+                                usd_value = float(asset.get("value_usd", 0))
+                                if balance > 0 and usd_value > 0:
+                                    current_price = usd_value / balance
+                                    source = 'portfolio_fallback'
+                                    logger.info(f"✅ [SIGNALS] {symbol}: Calculated price from portfolio: ${current_price:.8f} (balance: {balance:.8f}, usd_value: ${usd_value:.2f})")
+                                    break
+                    except Exception as portfolio_err:
+                        logger.debug(f"Could not calculate price from portfolio for {symbol}: {portfolio_err}")
+                    
+                    if current_price is None or current_price <= 0:
+                        current_price = 1.0
+                        source = 'fallback'
+                        logger.warning(f"⚠️ [SIGNALS] {symbol}: Using default price 1.0 (portfolio fallback unavailable)")
             except Exception as e:
                 price_fetch_elapsed = time_module.time() - price_fetch_start
                 logger.error(f"❌ [SIGNALS] {symbol}: Price fetch failed after {price_fetch_elapsed:.3f}s: {e}", exc_info=True)
-                current_price = 1.0
-                source = 'error_fallback'
+                # Try to calculate price from portfolio balance/usd_value as fallback
+                current_price = None
+                try:
+                    from app.services.portfolio_cache import get_portfolio_summary
+                    portfolio = get_portfolio_summary(db)
+                    assets = portfolio.get("assets", [])
+                    
+                    # Find matching asset by base currency (e.g., ALGO from ALGO_USDT)
+                    symbol_base = symbol.split('_')[0].upper()
+                    for asset in assets:
+                        coin = asset.get("coin", "").upper()
+                        if coin == symbol_base:
+                            balance = float(asset.get("balance", 0))
+                            usd_value = float(asset.get("value_usd", 0))
+                            if balance > 0 and usd_value > 0:
+                                current_price = usd_value / balance
+                                source = 'portfolio_fallback'
+                                logger.info(f"✅ [SIGNALS] {symbol}: Calculated price from portfolio (after error): ${current_price:.8f} (balance: {balance:.8f}, usd_value: ${usd_value:.2f})")
+                                break
+                except Exception as portfolio_err:
+                    logger.debug(f"Could not calculate price from portfolio for {symbol}: {portfolio_err}")
+                
+                if current_price is None or current_price <= 0:
+                    current_price = 1.0
+                    source = 'error_fallback'
+                    logger.warning(f"⚠️ [SIGNALS] {symbol}: Using default price 1.0 (portfolio fallback unavailable)")
             
             # Set default values for indicators
+            # CRITICAL: MAs must be None (not available) if not fetched - do NOT use fallback values
+            # This ensures buy signals are only generated when MAs are actually available
             rsi = 50.0
-            ma50 = current_price
-            ma200 = current_price
-            ema10 = current_price
-            ma10w = current_price
+            ma50 = None  # Must be explicitly available - no fallback
+            ma200 = None  # Must be explicitly available - no fallback
+            ema10 = None  # Must be explicitly available - no fallback
+            ma10w = None  # Must be explicitly available - no fallback
             atr = current_price * 0.02
             volume_24h = 0.0
             avg_volume = 0.0
@@ -518,7 +593,13 @@ def get_signals(
         is_swing_conservative = (rsi_buy_threshold <= 40 and ma50_period >= 80)
         
         # Basic buy signal: RSI < threshold AND MA50 > EMA10 (uptrend)
-        basic_buy = bool(rsi < rsi_buy_threshold and ma50 > ema10)
+        # CRITICAL: MAs are REQUIRED - cannot generate buy signal without them
+        if ma50 is None or ema10 is None:
+            # MAs are missing - cannot validate buy conditions
+            basic_buy = False
+            logger.warning(f"⚠️ [SIGNALS] {symbol}: Cannot calculate buy signal - MAs REQUIRED but missing: MA50={ma50 is not None}, EMA10={ema10 is not None}")
+        else:
+            basic_buy = bool(rsi < rsi_buy_threshold and ma50 > ema10)
         
         # Enhanced buy signal for swing-conservative: require trend confirmation
         if is_swing_conservative:
@@ -629,7 +710,32 @@ def get_signals(
         try:
             from simple_price_fetcher import price_fetcher
             price_result = price_fetcher.get_price(symbol)
-            current_price = price_result.price if price_result and price_result.success else 1.0
+            if price_result and price_result.success:
+                current_price = price_result.price
+            else:
+                # Try to calculate price from portfolio balance/usd_value as fallback
+                current_price = None
+                try:
+                    from app.services.portfolio_cache import get_portfolio_summary
+                    portfolio = get_portfolio_summary(db)
+                    assets = portfolio.get("assets", [])
+                    
+                    # Find matching asset by base currency (e.g., ALGO from ALGO_USDT)
+                    symbol_base = symbol.split('_')[0].upper()
+                    for asset in assets:
+                        coin = asset.get("coin", "").upper()
+                        if coin == symbol_base:
+                            balance = float(asset.get("balance", 0))
+                            usd_value = float(asset.get("value_usd", 0))
+                            if balance > 0 and usd_value > 0:
+                                current_price = usd_value / balance
+                                logger.info(f"✅ [SIGNALS] {symbol}: Calculated price from portfolio (in exception handler): ${current_price:.8f} (balance: {balance:.8f}, usd_value: ${usd_value:.2f})")
+                                break
+                except Exception as portfolio_err:
+                    logger.debug(f"Could not calculate price from portfolio for {symbol}: {portfolio_err}")
+                
+                if current_price is None or current_price <= 0:
+                    current_price = 1.0
         except:
             current_price = 1.0
         
@@ -775,10 +881,15 @@ def get_alert_ratio(
     
     Returns:
         - ratio: 0-100 where 100 = BUY ALERT, 0 = SELL ALERT, 50 = WAIT/NEUTRAL
+    
+    NOTE: This endpoint uses the SAME RSI source as the dashboard (MarketData or watchlist_items)
+    to ensure consistency between displayed values and alert ratio calculations.
     """
     try:
         from app.services.trading_signals import calculate_trading_signals
+        from app.services.strategy_profiles import resolve_strategy_profile
         from app.models.watchlist import WatchlistItem
+        from app.models.market_price import MarketPrice, MarketData
         from price_fetcher import get_price_with_fallback
         
         # Get watchlist item
@@ -798,24 +909,102 @@ def get_alert_ratio(
                 # Return neutral ratio if not in watchlist with alert enabled
                 return {"ratio": 50.0}
             
-            # Get price data with indicators
-            result = get_price_with_fallback(symbol, "15m")
-            current_price = result.get('price', 0)
+            # CRITICAL: Use the SAME data source as the dashboard (MarketData or watchlist_items)
+            # This ensures the RSI value matches what the user sees in the dashboard
+            # First, try to get indicators from MarketData (same as dashboard)
+            md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+            
+            # Get price - use MarketPrice if available, otherwise fetch from API
+            if mp and mp.price and mp.price > 0:
+                current_price = mp.price
+                volume_24h = mp.volume_24h or 0.0
+            else:
+                # Fallback to API if MarketPrice not available
+                result = get_price_with_fallback(symbol, "15m")
+                current_price = result.get('price', 0)
+                volume_24h = result.get('volume_24h', 0)
             
             if not current_price or current_price <= 0:
                 return {"ratio": 50.0}  # Neutral if no price data
             
-            rsi = result.get('rsi', 50)
-            ma50 = result.get('ma50', current_price)
-            ema10 = result.get('ma10', current_price)
-            atr = result.get('atr', current_price * 0.02)
-            volume_24h = result.get('volume_24h', 0)
-            avg_volume = result.get('avg_volume', volume_24h)
+            # Get indicators - use MarketData if available (same priority as dashboard)
+            # This ensures RSI matches what's displayed in the dashboard
+            rsi = None
+            if md and md.rsi is not None:
+                rsi = md.rsi
+            elif watchlist_item and hasattr(watchlist_item, 'rsi') and watchlist_item.rsi is not None:
+                rsi = watchlist_item.rsi
+            else:
+                # Fallback to API if neither MarketData nor watchlist_items has RSI
+                result = get_price_with_fallback(symbol, "15m")
+                rsi = result.get('rsi', 50)
+            
+            # Get other indicators with same priority as dashboard
+            ma50 = None
+            if md and md.ma50 is not None:
+                ma50 = md.ma50
+            elif watchlist_item and hasattr(watchlist_item, 'ma50') and watchlist_item.ma50 is not None:
+                ma50 = watchlist_item.ma50
+            else:
+                ma50 = current_price  # Default fallback
+            
+            ma200 = None
+            if md and md.ma200 is not None:
+                ma200 = md.ma200
+            elif watchlist_item and hasattr(watchlist_item, 'ma200') and watchlist_item.ma200 is not None:
+                ma200 = watchlist_item.ma200
+            else:
+                ma200 = current_price  # Default fallback
+            
+            ema10 = None
+            if md and md.ema10 is not None:
+                ema10 = md.ema10
+            elif watchlist_item and hasattr(watchlist_item, 'ema10') and watchlist_item.ema10 is not None:
+                ema10 = watchlist_item.ema10
+            else:
+                ema10 = current_price  # Default fallback
+            
+            atr = None
+            if md and md.atr is not None:
+                atr = md.atr
+            elif watchlist_item and hasattr(watchlist_item, 'atr') and watchlist_item.atr is not None:
+                atr = watchlist_item.atr
+            else:
+                atr = current_price * 0.02  # Default fallback
+            
+            # Get volume data - use current_volume (period volume) not volume_24h
+            current_volume = None
+            if md and md.current_volume is not None and md.current_volume > 0:
+                current_volume = md.current_volume
+            else:
+                # Fallback: approximate current_volume from volume_24h / 24
+                current_volume = (volume_24h / 24.0) if volume_24h > 0 else None
+            
+            avg_volume = None
+            if md and md.avg_volume is not None and md.avg_volume > 0:
+                avg_volume = md.avg_volume
+            else:
+                # Fallback: use volume_24h as average if no avg_volume available
+                avg_volume = volume_24h if volume_24h > 0 else None
             
             # Calculate resistance levels
             price_precision = 2 if current_price >= 100 else 4
             res_up = round(current_price * 1.02, price_precision)
             
+            # Get ma10w (10-week MA) - use ma200 as fallback (same as dashboard)
+            ma10w = None
+            if md and md.ma10w is not None and md.ma10w > 0:
+                ma10w = md.ma10w
+            elif ma200 and ma200 > 0:
+                ma10w = ma200  # Use MA200 as fallback (same as dashboard)
+            elif ma50 and ma50 > 0:
+                ma10w = ma50  # Use MA50 as fallback
+            else:
+                ma10w = current_price  # Use current price as last resort
+            
+            strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+
             # Calculate trading signals
             signals = calculate_trading_signals(
                 symbol=symbol,
@@ -823,16 +1012,19 @@ def get_alert_ratio(
                 rsi=rsi,
                 atr14=atr,
                 ma50=ma50,
+                ma200=ma200,
                 ema10=ema10,
-                ma10w=result.get('ma200', current_price),
-                volume=volume_24h,
+                ma10w=ma10w,
+                volume=current_volume,
                 avg_volume=avg_volume,
                 resistance_up=res_up,
                 buy_target=watchlist_item.buy_target,
                 last_buy_price=watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None,
                 position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0,
                 rsi_buy_threshold=40,
-                rsi_sell_threshold=70
+                rsi_sell_threshold=70,
+                strategy_type=strategy_type,
+                risk_approach=risk_approach,
             )
             
             # Calculate alert ratio

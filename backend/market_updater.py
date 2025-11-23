@@ -56,8 +56,10 @@ try:
     from app.database import SessionLocal, Base, engine
     from app.models.market_price import MarketPrice, MarketData
     from sqlalchemy import func
-    # Create tables if they don't exist
-    Base.metadata.create_all(bind=engine)
+    # Only create MarketPrice and MarketData tables, not all tables
+    # This avoids errors with other tables that may have schema issues
+    MarketPrice.__table__.create(bind=engine, checkfirst=True)
+    MarketData.__table__.create(bind=engine, checkfirst=True)
     DB_AVAILABLE = True
 except Exception as e:
     logger.warning(f"Database not available, will only use JSON cache: {e}")
@@ -73,11 +75,22 @@ except Exception as e:
 
 
 def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
-    """Fetch OHLCV data from Crypto.com API"""
+    """Fetch OHLCV data from Crypto.com API with symbol normalization"""
     try:
+        # Normalize symbol for Crypto.com API - automatically add _USDT if no pair specified
+        normalized_symbol = symbol
+        if "_" not in symbol or not any(symbol.upper().endswith(f"_{q}") for q in ["USDT", "USD", "BTC", "ETH", "EUR"]):
+            # No pair specified - add _USDT for Crypto.com
+            normalized_symbol = f"{symbol}_USDT"
+            logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
+        elif symbol.upper().endswith("_USD"):
+            # Convert _USD to _USDT for Crypto.com (they use USDT pairs)
+            normalized_symbol = symbol.replace("_USD", "_USDT")
+            logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
+        
         url = "https://api.crypto.com/v2/public/get-candlestick"
         params = {
-            "instrument_name": symbol,
+            "instrument_name": normalized_symbol,
             "timeframe": interval,
             "count": limit
         }
@@ -99,10 +112,14 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
                     "c": float(candle.get("c", 0)),  # close
                     "v": float(candle.get("v", 0))   # volume
                 })
-            logger.debug(f"Fetched {len(ohlcv_data)} candles for {symbol}")
+            logger.debug(f"Fetched {len(ohlcv_data)} candles for {symbol} (normalized: {normalized_symbol})")
             return ohlcv_data
+        else:
+            logger.warning(f"No OHLCV data in response for {symbol} (normalized: {normalized_symbol})")
+            return None
     except Exception as e:
-        logger.warning(f"Error fetching OHLCV for {symbol}: {e}")
+        normalized_symbol = symbol if "_" in symbol else f"{symbol}_USDT"
+        logger.warning(f"Error fetching OHLCV for {symbol} (normalized: {normalized_symbol}): {e}")
         return None
 
 def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float) -> Dict[str, float]:
@@ -150,7 +167,8 @@ def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float)
             # Use MA200 as approximation if we have it, otherwise use current price
             ma10w = float(ma200) if ma200 > 0 else current_price
         
-        atr = calculate_atr(highs, lows, closes, period=14)
+        # Calculate ATR with adaptive precision based on current price
+        atr = calculate_atr(highs, lows, closes, period=14, current_price=current_price)
         
         # Volume indicators
         volume_index = calculate_volume_index(volumes, period=10)

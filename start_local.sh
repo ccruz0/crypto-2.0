@@ -1,17 +1,13 @@
 #!/bin/bash
 
-# Start Local Development Environment
-echo "Starting local development environment..."
+# Script DISABLED - Local Docker usage is now disabled
+# All runtime must be on AWS. This script is kept for reference only.
 
-# Set environment variables
-export ENVIRONMENT=local
-export NODE_ENV=development
-
-# Start services with local profile
-docker compose --profile local up -d --build
-
-echo "Local development environment started!"
-echo "Backend: http://localhost:8000"
-echo "Frontend: http://localhost:3000"
-echo "Database: localhost:5432"
-
+echo "❌ ERROR: Local Docker usage is disabled."
+echo "This project now runs exclusively on AWS."
+echo ""
+echo "Local development workflow:"
+echo "1. Edit code locally"
+echo "2. Commit and push changes"
+echo "3. Pull and run on AWS: ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up -d'"
+exit 1

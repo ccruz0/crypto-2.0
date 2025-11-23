@@ -1,0 +1,7 @@
+ssh -o StrictHostKeyChecking=no ubuntu@175.41.189.249 \
+'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws \
+python - <<PY
+import os
+print("DATABASE_URL =", os.getenv("DATABASE_URL"))
+print("ENVIRONMENT =", os.getenv("ENVIRONMENT"))
+PY'

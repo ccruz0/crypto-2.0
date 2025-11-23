@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = "local"
+    # APP_ENV: Explicit environment identifier for alert routing ("aws" or "local")
+    # Used to route alerts to different Telegram channels and prefix messages
+    # Set APP_ENV=aws on AWS deployment, APP_ENV=local for local development
+    APP_ENV: Optional[str] = None
+    # RUN_TELEGRAM: Control whether Telegram messages are sent
+    # Set RUN_TELEGRAM=true on AWS (where all Telegram messages must be sent)
+    # Set RUN_TELEGRAM=false for local development (must never send Telegram messages)
+    RUN_TELEGRAM: Optional[str] = None
     
     # Trading APIs
     BINANCE_API_KEY: Optional[str] = None

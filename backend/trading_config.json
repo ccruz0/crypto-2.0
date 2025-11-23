@@ -101,7 +101,7 @@
       "preset": "swing"
     },
     "ETH_USDT": {
-      "preset": "intraday",
+      "preset": "intraday-conservative",
       "overrides": {}
     },
     "DOT_USDT": {
@@ -123,7 +123,7 @@
       "overrides": {}
     },
     "ALGO_USDT": {
-      "preset": "swing",
+      "preset": "swing-aggressive",
       "overrides": {}
     },
     "LINK_USDT": {
@@ -132,6 +132,38 @@
     },
     "ADA_USDT": {
       "preset": "swing-conservative",
+      "overrides": {}
+    },
+    "TON_USDT": {
+      "preset": "scalp-aggressive",
+      "overrides": {}
+    },
+    "AKT_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "BONK_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "CRO_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "DGB_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "ETH_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "NEAR_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "SUI_USDT": {
+      "preset": "swing-aggressive",
       "overrides": {}
     }
   }

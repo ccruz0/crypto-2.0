@@ -449,7 +449,7 @@ class CryptoComTradeClient:
         params = {
             "page": page,
             "page_size": page_size
-        }
+            }
         
         # Use proxy if enabled
         if self.use_proxy:
@@ -740,52 +740,6 @@ class CryptoComTradeClient:
             f"Unified open orders fetched: normal={stats['normal']}, trigger={stats['trigger']}, total={len(combined)}"
         )
         return combined
-    
-    def get_trigger_orders(self) -> dict:
-        """Get trigger (conditional TP/SL) orders."""
-        if not self.live_trading:
-            logger.info("DRY_RUN: get_trigger_orders - returning empty data")
-            return {"data": []}
-        
-        method = "private/get-trigger-orders"
-        params = {}
-        
-        if self.use_proxy:
-            logger.info("Using PROXY to get trigger orders")
-            try:
-                result = self._call_proxy(method, params)
-                if isinstance(result, dict) and "result" in result and "data" in result["result"]:
-                    data = result["result"]["data"]
-                    logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders via proxy")
-                    return {"data": data if isinstance(data, list) else []}
-                if isinstance(result, dict) and result.get("code") in [40101, 40103]:
-                    logger.warning(f"Proxy trigger orders auth error: {result.get('message')}")
-                else:
-                    logger.warning(f"Unexpected proxy trigger orders response: {result}")
-            except requests.exceptions.RequestException as proxy_err:
-                logger.warning(f"Proxy error fetching trigger orders: {proxy_err}")
-        
-        if not self.api_key or not self.api_secret:
-            logger.warning("API credentials not configured. Returning empty trigger orders.")
-            return {"data": []}
-        
-        payload = self.sign_request(method, params)
-        try:
-            url = f"{self.base_url}/{method}"
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            if response.status_code == 401:
-                logger.error(f"Trigger orders auth failed: {response.text}")
-                return {"data": []}
-            response.raise_for_status()
-            result = response.json()
-            data = result.get("result", {}).get("data", [])
-            logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from API")
-            return {"data": data if isinstance(data, list) else []}
-        except requests.exceptions.RequestException as http_err:
-            logger.error(f"Network error getting trigger orders: {http_err}")
-        except Exception as exc:
-            logger.error(f"Error getting trigger orders: {exc}")
-        return {"data": []}
     
     def get_order_history(self, page_size: int = 200, start_time: int = None, end_time: int = None, page: int = 0) -> dict:
         """Get order history (executed orders)"""

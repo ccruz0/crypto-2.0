@@ -327,12 +327,44 @@ class SimplePriceFetcher:
             self._mark_provider_failure("coingecko")
             return None
     
+    def _normalize_symbol(self, symbol: str) -> List[str]:
+        """Normalize symbol to try multiple variants - automatically adds USDT if no pair specified"""
+        variants = []
+        
+        # Check if symbol has a pair (contains underscore)
+        has_pair = '_' in symbol
+        
+        if not has_pair:
+            # No pair specified - try with USDT first (most common on Crypto.com)
+            variants.append(f"{symbol}_USDT")
+            variants.append(f"{symbol}_USD")
+            # Also try the original in case some providers support it
+            variants.append(symbol)
+        else:
+            # Has a pair - check if it's a standard pair
+            is_standard_pair = any(symbol.upper().endswith(f'_{q}') for q in ['USDT', 'USD', 'BTC', 'ETH', 'EUR'])
+            
+            if is_standard_pair:
+                # Standard pair - try as-is first, then alternative quote currencies
+                variants.append(symbol)
+                base = symbol.split('_')[0]
+                quote = symbol.split('_')[1]
+                if quote.upper() == 'USDT':
+                    variants.append(f"{base}_USD")
+                elif quote.upper() == 'USD':
+                    variants.append(f"{base}_USDT")
+            else:
+                # Non-standard pair (e.g., BTC_JPY) - use as-is, don't add _USDT suffix
+                variants.append(symbol)
+        
+        return variants
+    
     def get_price(self, symbol: str) -> PriceResult:
-        """Get price using dynamic provider rotation - Crypto.com is ALWAYS tried first"""
-        # Check cache first
-        cached_result = self._get_cached_price(symbol)
-        if cached_result:
-            return cached_result
+        """Get price using dynamic provider rotation - Crypto.com is ALWAYS tried first
+        Automatically normalizes symbols to try _USDT variants if no pair is specified
+        """
+        # Normalize symbol to try multiple variants (e.g., ALGO -> [ALGO_USDT, ALGO_USD, ALGO])
+        symbol_variants = self._normalize_symbol(symbol)
         
         # Map provider names to fetch functions
         fetch_functions = {
@@ -341,48 +373,64 @@ class SimplePriceFetcher:
             "coingecko": self._fetch_from_coingecko
         }
         
-        # ALWAYS try Crypto.com first (the exchange we trade on)
-        # Only skip it if it's currently rate-limited
-        primary_provider = "crypto_com"
-        
-        if self._is_provider_available(primary_provider):
-            logger.info(f"🌐 Trying {primary_provider} for {symbol} (primary provider)...")
-            fetch_func = fetch_functions.get(primary_provider)
-            if fetch_func:
-                result = fetch_func(symbol)
+        # Try each symbol variant until one succeeds
+        for variant in symbol_variants:
+            # Check cache first for this variant
+            cached_result = self._get_cached_price(variant)
+            if cached_result:
+                # Cache the result under the original symbol too for future lookups
+                if variant != symbol:
+                    self._cache_price(symbol, cached_result.price, cached_result.source)
+                return cached_result
+            
+            # ALWAYS try Crypto.com first (the exchange we trade on)
+            # Only skip it if it's currently rate-limited
+            primary_provider = "crypto_com"
+            
+            if self._is_provider_available(primary_provider):
+                logger.debug(f"🌐 Trying {primary_provider} for {variant} (primary provider)...")
+                fetch_func = fetch_functions.get(primary_provider)
+                if fetch_func:
+                    result = fetch_func(variant)
+                    if result and result.success:
+                        # Cache the result under both the variant and original symbol
+                        self._cache_price(variant, result.price, result.source)
+                        if variant != symbol:
+                            self._cache_price(symbol, result.price, result.source)
+                        logger.info(f"✅ Got price for {symbol}: ${result.price} from {primary_provider} using variant {variant}")
+                        return result
+                    else:
+                        logger.debug(f"⚠️ {primary_provider} failed for {variant}, trying backup providers...")
+            else:
+                logger.debug(f"⏸️ {primary_provider} rate limited, using backup providers...")
+
+            # If Crypto.com fails or is rate-limited, try backup providers
+            backup_providers = [p for p in self.providers if p != primary_provider]
+            available_backups = self._get_available_providers()
+            backup_providers = [p for p in backup_providers if p in available_backups]
+            
+            for provider in backup_providers:
+                if not self._is_provider_available(provider):
+                    logger.debug(f"⏸️ Skipping {provider} (rate limited)")
+                    continue
+                
+                logger.debug(f"🔄 Trying {provider} for {variant} (backup)...")
+                fetch_func = fetch_functions.get(provider)
+                if not fetch_func:
+                    continue
+                
+                result = fetch_func(variant)
                 if result and result.success:
-                    self._cache_price(symbol, result.price, result.source)
-                    logger.info(f"✅ Got price for {symbol}: ${result.price} from {primary_provider}")
+                    # Cache the result under both the variant and original symbol
+                    self._cache_price(variant, result.price, result.source)
+                    if variant != symbol:
+                        self._cache_price(symbol, result.price, result.source)
+                    logger.info(f"✅ Got price for {symbol}: ${result.price} from {provider} using variant {variant}")
                     return result
                 else:
-                    logger.debug(f"⚠️ {primary_provider} failed for {symbol}, trying backup providers...")
-        else:
-            logger.debug(f"⏸️ {primary_provider} rate limited, using backup providers...")
-
-        # If Crypto.com fails or is rate-limited, try backup providers
-        backup_providers = [p for p in self.providers if p != primary_provider]
-        available_backups = self._get_available_providers()
-        backup_providers = [p for p in backup_providers if p in available_backups]
+                    logger.debug(f"⚠️ {provider} failed for {variant}, trying next backup...")
         
-        for provider in backup_providers:
-            if not self._is_provider_available(provider):
-                logger.debug(f"⏸️ Skipping {provider} (rate limited)")
-                continue
-            
-            logger.info(f"🔄 Trying {provider} for {symbol} (backup)...")
-            fetch_func = fetch_functions.get(provider)
-            if not fetch_func:
-                continue
-            
-            result = fetch_func(symbol)
-            if result and result.success:
-                self._cache_price(symbol, result.price, result.source)
-                logger.info(f"✅ Got price for {symbol}: ${result.price} from {provider} (backup)")
-                return result
-            else:
-                logger.debug(f"⚠️ {provider} failed for {symbol}, trying next backup...")
-        
-        # All providers failed - log status
+        # All providers and variants failed - log status
         with self.lock:
             status_summary = []
             for provider in self.providers:
@@ -391,14 +439,14 @@ class SimplePriceFetcher:
                     rate_limited = time.time() < status.rate_limited_until
                     status_summary.append(f"{provider}: {'🚫 rate limited' if rate_limited else '❌ unavailable'}")
         
-        logger.error(f"❌ All providers failed for {symbol}. Status: {', '.join(status_summary)}")
+        logger.error(f"❌ All providers failed for {symbol} (tried variants: {', '.join(symbol_variants)}). Status: {', '.join(status_summary)}")
         
         return PriceResult(
             price=0.0,
             source="error",
             timestamp=time.time(),
             success=False,
-            error=f"All providers failed: {', '.join(status_summary)}"
+            error=f"All providers failed for {symbol} (tried variants: {', '.join(symbol_variants)}): {', '.join(status_summary)}"
         )
     
     def get_provider_stats(self) -> Dict[str, Dict]:

@@ -15,6 +15,9 @@ _active_alerts: List[Dict[str, Any]] = []
 _scheduler_ticks = 0
 _last_backend_restart: Optional[float] = None
 
+# In-memory Telegram message storage (last 50 messages - blocked and sent)
+_telegram_messages: List[Dict[str, Any]] = []
+
 def add_alert(alert_type: str, symbol: str, message: str, severity: str = "WARNING"):
     """Add an alert to the active alerts list"""
     global _active_alerts
@@ -54,14 +57,21 @@ def clear_old_alerts(max_age_seconds: int = 3600):
 async def get_monitoring_summary(db: Session = Depends(get_db)):
     """
     Get monitoring summary with KPIs and alerts.
-    Lightweight endpoint that reuses dashboard state data.
+    Lightweight endpoint that uses snapshot data to avoid heavy computation.
     """
     start_time = time.time()
     
     try:
-        # Get dashboard state data (reuse existing endpoint logic)
-        from app.api.routes_dashboard import get_dashboard_state
-        dashboard_state = await get_dashboard_state(db)
+        # Use snapshot data instead of full dashboard state (much faster)
+        from app.services.dashboard_snapshot import get_dashboard_snapshot
+        snapshot = get_dashboard_snapshot(db)
+        
+        if snapshot and not snapshot.get("empty"):
+            dashboard_state = snapshot.get("data", {})
+        else:
+            # If no snapshot, return minimal data (don't block on heavy computation)
+            log.warning("No snapshot available for monitoring summary, returning minimal data")
+            dashboard_state = {}
         
         # Calculate durations
         portfolio_state_duration = time.time() - start_time
@@ -126,5 +136,52 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             "errors": [str(e)],
             "last_backend_restart": _last_backend_restart,
             "alerts": _active_alerts[-50:]
+        }
+
+def add_telegram_message(message: str, symbol: Optional[str] = None, blocked: bool = False):
+    """Add a Telegram message to the history (blocked or sent)
+    
+    Messages are kept for 1 month before being removed.
+    """
+    global _telegram_messages
+    from datetime import timedelta
+    
+    msg = {
+        "message": message,
+        "symbol": symbol,
+        "blocked": blocked,
+        "timestamp": datetime.now().isoformat()
+    }
+    _telegram_messages.append(msg)
+    
+    # Clean old messages (older than 1 month)
+    # Keep messages from the last 30 days
+    one_month_ago = datetime.now() - timedelta(days=30)
+    _telegram_messages = [
+        msg for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    log.info(f"Telegram message stored: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+
+@router.get("/monitoring/telegram-messages")
+async def get_telegram_messages():
+    """Get Telegram messages from the last month (blocked and sent)"""
+    global _telegram_messages
+    from datetime import timedelta
+    
+    # Filter messages from the last month
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        msg for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
         }
 

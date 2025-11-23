@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
@@ -15,7 +15,10 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
+from app.services.strategy_profiles import resolve_strategy_profile
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
+from app.services.config_loader import get_alert_thresholds
+from app.services.order_position_service import calculate_portfolio_value_for_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +40,52 @@ class SignalMonitorService:
         self.processed_orders: set = set()  # Track orders we've created to avoid duplicates
         self.order_creation_locks: Dict[str, float] = {}  # Track when we're creating orders: {symbol: timestamp}
         self.MAX_OPEN_ORDERS_PER_SYMBOL = 3  # Maximum open orders per symbol
-        self.MIN_PRICE_CHANGE_PCT = 3.0  # Minimum 3% price change to create another order
+        self.MIN_PRICE_CHANGE_PCT = 1.0  # Minimum 1% price change to create another order
         self.ORDER_CREATION_LOCK_SECONDS = 10  # Lock for 10 seconds after creating an order
         # Alert throttling state: {symbol: {side: {last_alert_time: datetime, last_alert_price: float}}}
         self.last_alert_states: Dict[str, Dict[str, Dict]] = {}  # Track last alert per symbol and side
-        self.ALERT_COOLDOWN_MINUTES = 5  # 5 minutes cooldown between same-side alerts
-        self.ALERT_MIN_PRICE_CHANGE_PCT = 3.0  # Minimum 3% price change for same-side alerts
+        self.ALERT_COOLDOWN_MINUTES = 5  # default fallback
+        self.ALERT_MIN_PRICE_CHANGE_PCT = 1.0
         self.alert_sending_locks: Dict[str, float] = {}  # Track when we're sending alerts: {symbol_side: timestamp}
         self.ALERT_SENDING_LOCK_SECONDS = 2  # Lock for 2 seconds after checking/sending alert to prevent race conditions
+        self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE = True
+
+    def _resolve_alert_thresholds(self, watchlist_item: WatchlistItem) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Determine strategy-aware alert thresholds for a coin.
+
+        Priority order:
+            1. Per-coin override (watchlist_item.min_price_change_pct)
+            2. Strategy defaults from trading_config.json
+            3. Global defaults from trading_config.json
+            4. Service-level fallback constants
+        """
+        min_pct = getattr(watchlist_item, "min_price_change_pct", None)
+        cooldown = None
+        try:
+            strategy_key = getattr(watchlist_item, "sl_tp_mode", None)
+            symbol = (watchlist_item.symbol or "").upper()
+            preset_min, preset_cooldown = get_alert_thresholds(symbol, strategy_key)
+            if min_pct is None:
+                min_pct = preset_min
+            cooldown = preset_cooldown
+        except Exception as e:
+            logger.warning(f"Failed to resolve alert thresholds for {getattr(watchlist_item, 'symbol', '?')}: {e}")
+        if min_pct is None:
+            min_pct = self.ALERT_MIN_PRICE_CHANGE_PCT
+        if cooldown is None:
+            cooldown = self.ALERT_COOLDOWN_MINUTES
+        return min_pct, cooldown
     
-    def should_send_alert(self, symbol: str, side: str, current_price: float, trade_enabled: bool = True, min_price_change_pct: Optional[float] = None) -> tuple[bool, str]:
+    def should_send_alert(
+        self,
+        symbol: str,
+        side: str,
+        current_price: float,
+        trade_enabled: bool = True,
+        min_price_change_pct: Optional[float] = None,
+        cooldown_minutes: Optional[float] = None,
+    ) -> tuple[bool, str]:
         """
         Check if an alert should be sent based on throttling rules.
         
@@ -134,7 +173,8 @@ class SignalMonitorService:
         
         # Calculate time since last alert
         time_diff = (now_utc - last_alert_time_normalized).total_seconds() / 60  # minutes
-        cooldown_met = time_diff >= self.ALERT_COOLDOWN_MINUTES
+        cooldown_limit = cooldown_minutes if cooldown_minutes is not None else self.ALERT_COOLDOWN_MINUTES
+        cooldown_met = time_diff >= cooldown_limit
         
         # Calculate price change percentage
         if last_alert_price > 0:
@@ -146,28 +186,45 @@ class SignalMonitorService:
         alert_min_price_change = min_price_change_pct if min_price_change_pct is not None else self.ALERT_MIN_PRICE_CHANGE_PCT
         price_change_met = price_change_pct >= alert_min_price_change
         
-        # IMPORTANT: Different rules for trade_enabled vs trade_disabled
-        if not trade_enabled:
-            # When trade_enabled=False: ONLY send if price changed by threshold (no time-based cooldown)
-            # This prevents spam when trading is disabled
-            if price_change_met:
-                return True, f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) - sending (trade_enabled=False, requires {alert_min_price_change:.2f}% change)"
-            else:
-                return False, f"Throttled (trade_enabled=False): price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}% required (last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+        require_both = self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE or (not trade_enabled)
         
-        # When trade_enabled=True: send if EITHER condition is met:
-        # - 5 minutes have passed, OR
-        # - Price changed by more than threshold
-        # This allows significant price movements to trigger alerts even if cooldown hasn't passed
+        if require_both:
+            if not price_change_met and not cooldown_met:
+                return False, (
+                    f"Throttled: need cooldown ({time_diff:.1f} min < {cooldown_limit} min) "
+                    f"and price change ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%)"
+                )
+            if not price_change_met:
+                return False, (
+                    f"Throttled: price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}% "
+                    f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+                )
+            if not cooldown_met:
+                minutes_remaining = max(0.0, cooldown_limit - time_diff)
+                return False, (
+                    f"Throttled: cooldown not met ({time_diff:.1f} min < {cooldown_limit} min, "
+                    f"{minutes_remaining:.1f} min remaining)"
+                )
+            return True, (
+                f"Cooldown ({time_diff:.1f} min) and price change ({price_change_pct:.2f}%) satisfied "
+                f"(threshold {alert_min_price_change:.2f}%)"
+            )
+        
         if price_change_met:
-            # Significant price change - send immediately even if cooldown not met
-            return True, f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) - sending despite cooldown ({time_diff:.1f} min < {self.ALERT_COOLDOWN_MINUTES} min)"
-        elif cooldown_met:
-            # Cooldown met but price change not significant - still send (cooldown is primary protection)
-            return True, f"Cooldown met ({time_diff:.1f} min >= {self.ALERT_COOLDOWN_MINUTES} min) - sending (price change: {price_change_pct:.2f}%)"
-        else:
-            # Neither condition met - throttle
-            return False, f"Throttled: cooldown not met ({time_diff:.1f} min < {self.ALERT_COOLDOWN_MINUTES} min) AND price change not met ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%, last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+            return True, (
+                f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) "
+                f"- sending despite cooldown ({time_diff:.1f} min < {cooldown_limit} min)"
+            )
+        if cooldown_met:
+            return True, (
+                f"Cooldown met ({time_diff:.1f} min >= {cooldown_limit} min) "
+                f"- sending (price change: {price_change_pct:.2f}%)"
+            )
+        return False, (
+            f"Throttled: cooldown not met ({time_diff:.1f} min < {cooldown_limit} min) AND "
+            f"price change not met ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%, "
+            f"last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+        )
     
     def _update_alert_state(self, symbol: str, side: str, price: float):
         """Update the last alert state for a symbol and side"""
@@ -180,6 +237,25 @@ class SignalMonitorService:
             "last_alert_time": datetime.now(timezone.utc),
             "last_alert_price": price
         }
+
+    def _get_last_alert_price(self, symbol: str, side: str) -> Optional[float]:
+        symbol_alerts = self.last_alert_states.get(symbol)
+        if not symbol_alerts:
+            return None
+        last_alert = symbol_alerts.get(side)
+        if not last_alert:
+            return None
+        return last_alert.get("last_alert_price")
+
+    @staticmethod
+    def _format_price_variation(previous_price: Optional[float], current_price: float) -> Optional[str]:
+        if previous_price is None or previous_price <= 0:
+            return None
+        try:
+            change_pct = ((current_price - previous_price) / previous_price) * 100
+        except ZeroDivisionError:
+            return None
+        return f"{change_pct:+.2f}%"
     
     async def monitor_signals(self, db: Session):
         """Monitor signals for all coins with alert_enabled = true (for alerts)
@@ -266,6 +342,8 @@ class SignalMonitorService:
             logger.warning(f"Could not refresh {symbol} from DB: {e}")
         
         try:
+            strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+
             # Get current signals using the signals endpoint logic
             # We'll call the internal calculation function directly
             from app.services.data_sources import data_manager
@@ -301,12 +379,15 @@ class SignalMonitorService:
                 rsi=rsi,
                 atr14=atr,
                 ma50=ma50,
+                ma200=ma200,
                 ema10=ema10,
                 buy_target=watchlist_item.buy_target,
                 last_buy_price=watchlist_item.purchase_price,
                 position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 0,
                 rsi_buy_threshold=40,
-                rsi_sell_threshold=70
+                rsi_sell_threshold=70,
+                strategy_type=strategy_type,
+                risk_approach=risk_approach,
             )
             
             buy_signal = signals.get("buy_signal", False)
@@ -567,31 +648,74 @@ class SignalMonitorService:
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
                 
+                prev_buy_price: Optional[float] = None
                 try:
                     # Check if alert should be sent (throttling logic)
                     # Pass trade_enabled to apply stricter rules when trading is disabled
-                    min_price_change = watchlist_item.min_price_change_pct if watchlist_item.min_price_change_pct is not None else None
-                    should_send, reason = self.should_send_alert(symbol, "BUY", current_price, trade_enabled=watchlist_item.trade_enabled, min_price_change_pct=min_price_change)
+                    min_price_change, alert_cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    should_send, reason = self.should_send_alert(
+                        symbol,
+                        "BUY",
+                        current_price,
+                        trade_enabled=watchlist_item.trade_enabled,
+                        min_price_change_pct=min_price_change,
+                        cooldown_minutes=alert_cooldown,
+                    )
                     
                     if should_send:
-                        # CRITICAL: Update alert state BEFORE sending to prevent race conditions
-                        # This ensures that if multiple calls happen simultaneously, only the first one will send
-                        self._update_alert_state(symbol, "BUY", current_price)
-                        
-                        # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
+                        # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                        trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
+                        limit_value = 3 * trade_amount_usd
                         try:
-                            # Get strategy from watchlist item (sl_tp_mode: conservative or aggressive)
-                            strategy = watchlist_item.sl_tp_mode or "conservative"
-                            telegram_notifier.send_buy_signal(
-                                symbol=symbol,
-                                price=current_price,
-                                reason=f"RSI={rsi:.1f}, Price={current_price:.4f}, MA50={ma50:.2f}, EMA10={ema10:.2f}",
-                                strategy=strategy
-                            )
-                            logger.info(f"✅ BUY alert sent for {symbol} - {reason}")
-                        except Exception as e:
-                            logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
-                            # If sending failed, we should still keep the state update to prevent spam retries
+                            portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                            if portfolio_value > limit_value:
+                                logger.warning(
+                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                    f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
+                                    f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}"
+                                )
+                                # Bloquear silenciosamente - no enviar notificación a Telegram
+                                # Skip sending alert
+                                should_send = False
+                                reason = f"Portfolio value ${portfolio_value:.2f} > limit ${limit_value:.2f}"
+                            else:
+                                logger.debug(
+                                    f"✅ Portfolio value check passed for {symbol}: "
+                                    f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                                )
+                        except Exception as portfolio_check_err:
+                            logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
+                            # On error, continue (don't block alerts if we can't calculate portfolio value)
+                        
+                        if should_send:
+                            prev_buy_price = self._get_last_alert_price(symbol, "BUY")
+                            # CRITICAL: Update alert state BEFORE sending to prevent race conditions
+                            # This ensures that if multiple calls happen simultaneously, only the first one will send
+                            self._update_alert_state(symbol, "BUY", current_price)
+                            
+                            # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
+                            try:
+                                price_variation = self._format_price_variation(prev_buy_price, current_price)
+                                ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                                ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                                ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                                reason_text = (
+                                    f"{strategy_type.value.title()}/{risk_approach.value.title()} | "
+                                    f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                    f"MA50={ma50_text}, EMA10={ema10_text}, MA200={ma200_text}"
+                                )
+                                telegram_notifier.send_buy_signal(
+                                    symbol=symbol,
+                                    price=current_price,
+                                    reason=reason_text,
+                                    strategy_type=strategy_type.value.title(),
+                                    risk_approach=risk_approach.value.title(),
+                                    price_variation=price_variation,
+                                )
+                                logger.info(f"✅ BUY alert sent for {symbol} - {reason_text}")
+                            except Exception as e:
+                                logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
+                                # If sending failed, we should still keep the state update to prevent spam retries
                     else:
                         logger.info(f"🚫 BUY alert throttled for {symbol}: {reason}")
                 finally:
@@ -602,7 +726,32 @@ class SignalMonitorService:
                 # Create order automatically ONLY if trade_enabled = true AND alert_enabled = true
                 # alert_enabled = true is already filtered, so we only need to check trade_enabled
                 logger.info(f"🔍 Checking order creation for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}, alert_enabled={watchlist_item.alert_enabled}")
-                if watchlist_item.trade_enabled:
+                
+                # Check portfolio value limit: Block BUY orders if portfolio_value > 3x trade_amount_usd
+                trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
+                limit_value = 3 * trade_amount_usd
+                portfolio_check_passed = True
+                try:
+                    portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                    if portfolio_value > limit_value:
+                        logger.warning(
+                            f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
+                            f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}. "
+                            f"No se creará orden aunque se detectó señal BUY."
+                        )
+                        # Bloquear silenciosamente - no enviar notificación a Telegram
+                        portfolio_check_passed = False
+                    else:
+                        logger.debug(
+                            f"✅ Portfolio value check passed for {symbol}: "
+                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                        )
+                except Exception as portfolio_check_err:
+                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with order creation...")
+                    # On error, continue (don't block orders if we can't calculate portfolio value)
+                
+                if watchlist_item.trade_enabled and portfolio_check_passed:
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                         logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically")
                         try:
@@ -684,8 +833,15 @@ class SignalMonitorService:
                 try:
                     # Check if alert should be sent (throttling logic)
                     # Pass trade_enabled to apply stricter rules when trading is disabled
-                    min_price_change = watchlist_item.min_price_change_pct if watchlist_item.min_price_change_pct is not None else None
-                    should_send, reason = self.should_send_alert(symbol, "SELL", current_price, trade_enabled=watchlist_item.trade_enabled, min_price_change_pct=min_price_change)
+                    min_price_change, alert_cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    should_send, reason = self.should_send_alert(
+                        symbol,
+                        "SELL",
+                        current_price,
+                        trade_enabled=watchlist_item.trade_enabled,
+                        min_price_change_pct=min_price_change,
+                        cooldown_minutes=alert_cooldown,
+                    )
                     
                     if should_send:
                         # CRITICAL: Update alert state BEFORE sending to prevent race conditions
