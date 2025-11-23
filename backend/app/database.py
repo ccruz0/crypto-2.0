@@ -61,18 +61,22 @@ else:
     try:
         engine = create_engine(
             database_url,
-            pool_size=5,          # Reduced pool size to avoid connection issues
-            max_overflow=10,       # Reduced overflow
-            pool_timeout=3,       # Faster timeout
+            pool_size=10,          # Increased pool size for better concurrency
+            max_overflow=20,       # Increased overflow to handle spikes
+            pool_timeout=30,       # Longer timeout to wait for connections from pool
             pool_recycle=3600,     # Recycle connections every hour
-            pool_pre_ping=True,    # Verify connections before use
+            pool_pre_ping=True,    # Verify connections before use (critical for reliability)
             connect_args={
-                "connect_timeout": 3,  # Connection timeout in seconds (reduced)
+                "connect_timeout": 10,  # Connection timeout in seconds (increased for stability)
+                "keepalives": 1,        # Enable TCP keepalives
+                "keepalives_idle": 30,  # Start keepalives after 30s of idle
+                "keepalives_interval": 10,  # Send keepalives every 10s
+                "keepalives_count": 3,  # Drop connection after 3 failed keepalives
             },
             # Don't connect on engine creation - lazy connection
             poolclass=None  # Use default pool
         )
-        logger.info("Database engine configured for PostgreSQL with timeouts (lazy connection)")
+        logger.info("Database engine configured for PostgreSQL with improved pool settings (lazy connection)")
     except Exception as engine_err:
         logger.error(f"Failed to create database engine: {engine_err}", exc_info=True)
         # Create a dummy engine that will fail gracefully
