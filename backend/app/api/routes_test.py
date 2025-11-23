@@ -272,6 +272,7 @@ async def simulate_alert(
                     reason=f"🧪 SIMULATED TEST ALERT - RSI=35.0, Price={current_price:.4f}, MA50={current_price*1.01:.2f}, EMA10={current_price*1.02:.2f}",
                     strategy_type="Swing",
                     risk_approach=risk_display,
+                    source="TEST",
                 )
             except Exception as e:
                 logger.warning(f"Failed to send Telegram BUY alert: {e}")
@@ -423,30 +424,132 @@ async def simulate_alert(
         else:  # SELL
             logger.info(f"🧪 SIMULATING SELL signal for {symbol}")
             
-            # Send Telegram alert (SELL signals only generate alerts, no orders)
+            # Send Telegram alert
             try:
-                telegram_notifier.send_message(
-                    f"🔴 <b>SELL SIGNAL DETECTED</b> (🧪 SIMULATED TEST)\n\n"
-                    f"📊 Symbol: <b>{symbol}</b>\n"
-                    f"💵 Price: ${current_price:,.4f}\n"
-                    f"📈 RSI: 75.0\n"
-                    f"📊 MA50: ${current_price*0.98:.2f}\n"
-                    f"📊 EMA10: ${current_price*0.97:.2f}\n"
-                    f"⚠️ SELL signals only generate alerts, no orders are created automatically"
+                risk_display = (watchlist_item.sl_tp_mode or "conservative").title() if watchlist_item else "Conservative"
+                telegram_notifier.send_sell_signal(
+                    symbol=symbol,
+                    price=current_price,
+                    reason=f"🧪 SIMULATED TEST ALERT - RSI=75.0, Price={current_price:.4f}, MA50={current_price*0.98:.2f}, EMA10={current_price*0.97:.2f}",
+                    strategy_type="Swing",
+                    risk_approach=risk_display,
+                    source="TEST",
                 )
             except Exception as e:
                 logger.warning(f"Failed to send Telegram SELL alert: {e}")
             
-            return {
+            # Create order if trade_enabled = true AND trade_amount_usd > 0
+            order_created = False
+            order_error_message = None
+            order_result = None
+            
+            # Check if trade_enabled = true (REQUIRED for order creation)
+            if not watchlist_item.trade_enabled:
+                order_error_message = f"⚠️ TRADE NO HABILITADO\n\nEl campo 'Trade' está en NO para {symbol}.\n\nPor favor configura 'Trade' = YES en la Watchlist del Dashboard para crear órdenes automáticas."
+                logger.info(f"Trade not enabled for {symbol} - only alert sent, no order created")
+            
+            # Check if trade_amount_usd is configured
+            elif not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+                order_error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
+                logger.warning(f"Cannot create SELL order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
+                
+                try:
+                    telegram_notifier.send_message(
+                        f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔴 Side: SELL\n"
+                        f"❌ Error: {order_error_message}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram error notification: {e}")
+            
+            # Create order if trade_enabled = true AND trade_amount_usd > 0
+            elif watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
+                logger.info(f"✅ Trade enabled for {symbol} - creating SELL order automatically from simulate-alert")
+                
+                try:
+                    from app.services.signal_monitor import SignalMonitorService
+                    signal_monitor = SignalMonitorService()
+                    
+                    # Calculate resistance levels for SL/TP calculation
+                    res_up = current_price * 1.05
+                    res_down = current_price * 0.95
+                    
+                    # Create SELL order using the same logic as signal_monitor
+                    logger.info(f"🔍 Calling _create_sell_order for {symbol} with amount_usd={watchlist_item.trade_amount_usd}")
+                    order_result = await signal_monitor._create_sell_order(
+                        db=db,
+                        watchlist_item=watchlist_item,
+                        current_price=current_price,
+                        res_up=res_up,
+                        res_down=res_down
+                    )
+                    logger.info(f"🔍 _create_sell_order returned: {order_result}")
+                    
+                    if order_result:
+                        order_created = True
+                        order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                        logger.info(f"✅ SELL order created successfully for {symbol}: order_id={order_id}")
+                        
+                        # If order is immediately filled, SL/TP creation is handled in _create_sell_order
+                        filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
+                        filled_qty = order_result.get("filled_quantity")
+                        
+                        order_status = order_result.get("status", "").upper()
+                        is_filled = (
+                            order_status in ["FILLED", "filled"] or 
+                            order_result.get("avg_price") is not None or
+                            filled_price != current_price
+                        )
+                        
+                        if is_filled:
+                            logger.info(f"✅ Order {order_id} is FILLED (status={order_status}, filled_price={filled_price}, filled_qty={filled_qty}) - SL/TP orders created automatically")
+                        else:
+                            logger.info(f"ℹ️ Order {order_id} status={order_status} - SL/TP will be created when order is filled by exchange_sync service")
+                    else:
+                        order_error_message = "Order creation returned None (check logs for details)"
+                        logger.warning(f"SELL order creation returned None for {symbol}")
+                        
+                except Exception as order_err:
+                    order_error_message = f"Error creating SELL order: {str(order_err)}"
+                    logger.error(f"Error creating SELL order for {symbol}: {order_err}", exc_info=True)
+                    
+                    try:
+                        telegram_notifier.send_message(
+                            f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"🔴 Side: SELL\n"
+                            f"❌ Error: {order_error_message}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send Telegram error notification: {e}")
+            
+            response_data = {
                 "ok": True,
                 "message": f"SELL signal simulated for {symbol}",
                 "symbol": symbol,
                 "signal_type": signal_type,
                 "price": current_price,
                 "alert_sent": True,
-                "order_created": False,
-                "note": "SELL signals only generate alerts, no orders are created"
+                "order_created": order_created,
+                "trade_enabled": watchlist_item.trade_enabled,
+                "trade_amount_usd": watchlist_item.trade_amount_usd,
+                "alert_enabled": watchlist_item.alert_enabled
             }
+            
+            # Add order details if order was created
+            if order_result and order_created:
+                response_data["order_id"] = order_result.get("order_id") or order_result.get("client_order_id")
+                response_data["order_status"] = order_result.get("status", "UNKNOWN")
+                response_data["filled_price"] = order_result.get("filled_price")
+                response_data["sl_tp_created"] = True  # SL/TP creation attempted
+            
+            # Add error message if order was not created
+            if order_error_message:
+                response_data["note"] = order_error_message
+                response_data["order_error"] = order_error_message
+            
+            return response_data
     
     except HTTPException:
         raise

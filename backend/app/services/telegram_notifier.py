@@ -575,6 +575,7 @@ class TelegramNotifier:
         strategy_type: Optional[str] = None,
         risk_approach: Optional[str] = None,
         price_variation: Optional[str] = None,
+        source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
     ):
         """Send a buy signal alert
         
@@ -673,9 +674,16 @@ class TelegramNotifier:
         price_line = f"💵 Price: ${price:,.4f}"
         if price_variation:
             price_line += f" ({price_variation})"
+        
+        # Add source indicator
+        source_text = ""
+        if source == "TEST":
+            source_text = "\n🧪 <b>TEST MODE</b> - Simulated alert"
+        elif source == "LIVE ALERT":
+            source_text = "\n🔴 <b>LIVE ALERT</b> - Real-time signal"
 
         message = f"""
-📊 <b>BUY SIGNAL DETECTED</b>
+🟢 <b>BUY SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
 {price_line}
@@ -692,6 +700,136 @@ class TelegramNotifier:
                 add_telegram_message(sent_message, symbol=symbol, blocked=False)
             except Exception:
                 pass  # Non-critical, continue
+        
+        return result
+    
+    def send_sell_signal(
+        self,
+        symbol: str,
+        price: float,
+        reason: str,
+        strategy: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        risk_approach: Optional[str] = None,
+        price_variation: Optional[str] = None,
+        source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
+    ):
+        """Send a sell signal alert
+        
+        CRITICAL: This method now verifies alert_enabled=True before sending.
+        If alert_enabled=False, the alert will be blocked.
+        """
+        logger.info(f"🔍 send_sell_signal called for {symbol} - Starting verification...")
+        
+        # CRITICAL: Verify alert_enabled=True before sending alert
+        try:
+            from app.database import SessionLocal
+            from app.models.watchlist import WatchlistItem
+            
+            db = SessionLocal()
+            try:
+                from sqlalchemy import or_
+                
+                symbol_upper = symbol.upper()
+                symbol_variants = [symbol_upper]
+                if symbol_upper.endswith('_USDT'):
+                    symbol_variants.append(symbol_upper.replace('_USDT', '_USD'))
+                elif symbol_upper.endswith('_USD'):
+                    symbol_variants.append(symbol_upper.replace('_USD', '_USDT'))
+                
+                logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
+                
+                # Check if coin exists in watchlist and has alert_enabled=True
+                watchlist_item = db.query(WatchlistItem).filter(
+                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants]),
+                    WatchlistItem.alert_enabled == True
+                ).first()
+                
+                if not watchlist_item:
+                    logger.warning(
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist con alert_enabled=True "
+                        f"(buscado: {symbol_variants}). No se enviará alerta SELL."
+                    )
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist con alert_enabled=True"
+                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass
+                    return False
+                
+                logger.debug(f"✅ Encontrado {watchlist_item.symbol} con alert_enabled={watchlist_item.alert_enabled}")
+                
+                if not watchlist_item.alert_enabled:
+                    logger.warning(
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - alert_enabled=False en verificación final. "
+                        f"No se enviará alerta SELL."
+                    )
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final"
+                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass
+                    return False
+                
+                logger.info(f"✅ Verificación pasada para {symbol} - alert_enabled=True confirmado")
+            except Exception as e:
+                logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
+                return False
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"❌ Error en verificación de alert_enabled para {symbol}: {e}", exc_info=True)
+            return False
+        
+        resolved_strategy = strategy_type
+        if not resolved_strategy:
+            if strategy and strategy.lower() not in {"conservative", "aggressive"}:
+                resolved_strategy = strategy
+            else:
+                resolved_strategy = "Swing"
+
+        resolved_approach = risk_approach
+        if not resolved_approach:
+            if strategy and strategy.lower() in {"conservative", "aggressive"}:
+                resolved_approach = strategy.title()
+            else:
+                resolved_approach = "Conservative"
+
+        strategy_line = f"\n🎯 Strategy: <b>{resolved_strategy}</b>"
+        approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
+        
+        timestamp = self._format_timestamp()
+        price_line = f"💵 Price: ${price:,.4f}"
+        if price_variation:
+            price_line += f" ({price_variation})"
+        
+        # Add source indicator
+        source_text = ""
+        if source == "TEST":
+            source_text = "\n🧪 <b>TEST MODE</b> - Simulated alert"
+        elif source == "LIVE ALERT":
+            source_text = "\n🔴 <b>LIVE ALERT</b> - Real-time signal"
+
+        message = f"""
+🔴 <b>SELL SIGNAL DETECTED</b>{source_text}
+
+📈 Symbol: <b>{symbol}</b>
+{price_line}
+✅ Reason: {reason}{strategy_line}{approach_line}
+📅 Time: {timestamp}
+"""
+        result = self.send_message(message.strip())
+        
+        # Register sent message
+        if result:
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                sent_message = f"🔴 SELL SIGNAL: {symbol} - {reason}"
+                add_telegram_message(sent_message, symbol=symbol, blocked=False)
+            except Exception:
+                pass
         
         return result
     

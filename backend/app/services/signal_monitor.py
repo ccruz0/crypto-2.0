@@ -951,6 +951,7 @@ class SignalMonitorService:
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
+                                source="LIVE ALERT",
                             )
                             if result is False:
                                 blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
@@ -1482,6 +1483,7 @@ class SignalMonitorService:
                         strategy_type=strategy_display,
                         risk_approach=risk_display,
                         price_variation=price_variation,
+                        source="LIVE ALERT",
                     )
                     if result is False:
                         blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
@@ -2419,6 +2421,292 @@ class SignalMonitorService:
             "status": order_status,
             "avg_price": result.get("avg_price")
         }
+    
+    async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
+                                 current_price: float, res_up: float, res_down: float):
+        """Create a SELL order automatically based on signal"""
+        symbol = watchlist_item.symbol
+        
+        # Validate that trade_amount_usd is configured - REQUIRED, no default
+        if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+            error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
+            logger.error(f"Cannot create SELL order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
+            
+            # Send error notification to Telegram
+            try:
+                telegram_notifier.send_message(
+                    f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                    f"📊 Symbol: <b>{symbol}</b>\n"
+                    f"🔴 Side: SELL\n"
+                    f"❌ Error: {error_message}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send Telegram error notification: {e}")
+            
+            raise ValueError(error_message)
+        
+        amount_usd = watchlist_item.trade_amount_usd
+        
+        # For SELL orders, we need to check if we have enough balance of the base currency
+        # Extract base currency from symbol (e.g., ETH from ETH_USDT)
+        base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+        
+        try:
+            account_summary = trade_client.get_account_summary()
+            available_balance = 0
+            
+            if 'accounts' in account_summary or 'data' in account_summary:
+                accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
+                for acc in accounts:
+                    currency = acc.get('currency', '').upper()
+                    # Check for base currency (e.g., ETH for ETH_USDT)
+                    if currency == base_currency:
+                        available = float(acc.get('available', '0') or '0')
+                        available_balance = available
+                        break
+            
+            # Calculate required quantity
+            required_qty = amount_usd / current_price
+            logger.info(f"💰 Balance check para SELL {symbol}: available={available_balance:.8f} {base_currency}, required={required_qty:.8f} {base_currency} (${amount_usd:,.2f} USD)")
+            
+            # If we don't have enough base currency, cannot create SELL order
+            if available_balance < required_qty:
+                logger.warning(
+                    f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SELL. "
+                    f"Available: {available_balance:.8f} {base_currency} < Required: {required_qty:.8f} {base_currency}. "
+                    f"No se intentará crear la orden para evitar error 306."
+                )
+                try:
+                    telegram_notifier.send_message(
+                        f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
+                        f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
+                        f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
+                        f"📦 Quantity requerida: <b>{required_qty:.8f} {base_currency}</b>\n"
+                        f"💰 Balance disponible: <b>{available_balance:.8f} {base_currency}</b>\n\n"
+                        f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
+                        f"💡 Compra más {base_currency} o reduce el tamaño de las órdenes"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram balance notification: {e}")
+                return None
+        except Exception as balance_check_err:
+            logger.warning(f"⚠️ No se pudo verificar balance para SELL {symbol}: {balance_check_err}. Continuando con creación de orden...")
+        
+        # Read trade_on_margin from database
+        user_wants_margin = watchlist_item.trade_on_margin or False
+        
+        # For SELL orders, margin trading is less common, but we'll support it
+        from app.services.margin_decision_helper import decide_trading_mode, log_margin_decision, DEFAULT_CONFIGURED_LEVERAGE
+        
+        trading_decision = decide_trading_mode(
+            symbol=symbol,
+            configured_leverage=DEFAULT_CONFIGURED_LEVERAGE,
+            user_wants_margin=user_wants_margin
+        )
+        
+        log_margin_decision(symbol, trading_decision, DEFAULT_CONFIGURED_LEVERAGE)
+        
+        use_margin = trading_decision.use_margin
+        leverage_value = trading_decision.leverage
+        
+        logger.info(f"💰 MARGIN SETTINGS for SELL {symbol}: user_wants_margin={user_wants_margin}, use_margin={use_margin}, leverage={leverage_value}")
+        
+        try:
+            from app.utils.live_trading import get_live_trading_status
+            live_trading = get_live_trading_status(db)
+            dry_run_mode = not live_trading
+            
+            logger.info(f"🔴 Creating automatic SELL order for {symbol}: amount_usd={amount_usd}, margin={use_margin}")
+            
+            # Calculate quantity for SELL order
+            qty = amount_usd / current_price
+            # Round quantity based on price
+            if current_price >= 100:
+                qty = round(qty, 4)
+            elif current_price >= 1:
+                qty = round(qty, 6)
+            else:
+                qty = round(qty, 8)
+            
+            # Place MARKET SELL order
+            side_upper = "SELL"
+            
+            # SELL market order: use quantity (not notional)
+            result = trade_client.place_market_order(
+                symbol=symbol,
+                side=side_upper,
+                qty=qty,  # For SELL, use quantity
+                is_margin=use_margin,
+                leverage=leverage_value if use_margin else None,
+                dry_run=dry_run_mode
+            )
+            
+            if not result or "error" in result:
+                error_msg = result.get("error", "Unknown error") if result else "No response"
+                logger.error(f"❌ SELL order creation failed for {symbol}: {error_msg}")
+                
+                try:
+                    telegram_notifier.send_message(
+                        f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔴 Side: SELL\n"
+                        f"💰 Amount: ${amount_usd:,.2f}\n"
+                        f"📦 Quantity: {qty:.8f}\n"
+                        f"❌ Error: {error_msg}"
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"Failed to send Telegram error notification: {notify_err}")
+                
+                return None
+            
+            # Get order_id from result
+            order_id = result.get("order_id") or result.get("client_order_id")
+            if not order_id:
+                logger.error(f"SELL order placed but no order_id returned for {symbol}")
+                return None
+            
+            filled_price = None
+            try:
+                if result.get("avg_price"):
+                    filled_price = float(result.get("avg_price"))
+            except (TypeError, ValueError):
+                filled_price = None
+            if not filled_price:
+                filled_price = current_price
+            
+            # Send Telegram notification
+            try:
+                telegram_notifier.send_order_created(
+                    symbol=symbol,
+                    side="SELL",
+                    price=filled_price,
+                    quantity=qty,
+                    order_id=str(order_id),
+                    margin=use_margin,
+                    leverage=leverage_value if use_margin else None,
+                    dry_run=dry_run_mode,
+                    order_type="MARKET"
+                )
+                logger.info(f"Sent Telegram notification for automatic SELL order: {symbol} - {order_id}")
+            except Exception as telegram_err:
+                logger.warning(f"Failed to send Telegram notification for SELL order creation: {telegram_err}")
+            
+            # Save order to database
+            try:
+                from app.services.order_history_db import order_history_db
+                from datetime import timezone
+                import time
+                
+                result_status = result.get("status", "").upper()
+                cumulative_qty = float(result.get("cumulative_quantity", 0) or 0)
+                
+                if result_status in ["FILLED", "filled"]:
+                    db_status = OrderStatusEnum.FILLED
+                    db_status_str = "FILLED"
+                elif result_status in ["CANCELLED", "CANCELED"]:
+                    if cumulative_qty > 0:
+                        db_status = OrderStatusEnum.FILLED
+                        db_status_str = "FILLED"
+                    else:
+                        db_status = OrderStatusEnum.CANCELLED
+                        db_status_str = "CANCELLED"
+                else:
+                    db_status = OrderStatusEnum.NEW
+                    db_status_str = "OPEN"
+                
+                now_utc = datetime.now(timezone.utc)
+                
+                # Save to order_history_db
+                order_data = {
+                    "order_id": str(order_id),
+                    "client_oid": str(result.get("client_order_id", order_id)),
+                    "instrument_name": symbol,
+                    "order_type": "MARKET",
+                    "side": "SELL",
+                    "status": db_status_str,
+                    "quantity": str(qty),
+                    "price": str(result.get("avg_price", "0")) if result.get("avg_price") else "0",
+                    "avg_price": str(result.get("avg_price")) if result.get("avg_price") else None,
+                    "cumulative_quantity": str(result.get("cumulative_quantity")) if result.get("cumulative_quantity") else str(qty),
+                    "cumulative_value": str(result.get("cumulative_value")) if result.get("cumulative_value") else None,
+                    "create_time": int(time.time() * 1000),
+                    "update_time": int(time.time() * 1000),
+                }
+                order_history_db.upsert_order(order_data)
+                
+                # Save to ExchangeOrder (PostgreSQL)
+                try:
+                    existing_order = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.exchange_order_id == str(order_id)
+                    ).first()
+                    
+                    if not existing_order:
+                        new_exchange_order = ExchangeOrder(
+                            exchange_order_id=str(order_id),
+                            client_oid=str(result.get("client_order_id", order_id)),
+                            symbol=symbol,
+                            side=OrderSideEnum.SELL,
+                            order_type="MARKET",
+                            status=db_status,
+                            price=float(result.get("avg_price")) if result.get("avg_price") else None,
+                            quantity=qty,
+                            cumulative_quantity=float(result.get("cumulative_quantity")) if result.get("cumulative_quantity") else qty,
+                            cumulative_value=float(result.get("cumulative_value")) if result.get("cumulative_value") else None,
+                            avg_price=float(result.get("avg_price")) if result.get("avg_price") else None,
+                            exchange_create_time=now_utc,
+                            exchange_update_time=now_utc,
+                            created_at=now_utc,
+                            updated_at=now_utc
+                        )
+                        db.add(new_exchange_order)
+                        db.commit()
+                        logger.info(f"✅ Automatic SELL order saved to ExchangeOrder (PostgreSQL): {symbol} - {order_id}")
+                    else:
+                        logger.debug(f"Order {order_id} already exists in ExchangeOrder, skipping duplicate")
+                except Exception as pg_err:
+                    logger.error(f"Error saving automatic SELL order to ExchangeOrder: {pg_err}", exc_info=True)
+                    db.rollback()
+                
+                logger.info(f"Automatic SELL order saved to database: {symbol} - {order_id}")
+            except Exception as e:
+                logger.error(f"Error saving automatic SELL order to database: {e}", exc_info=True)
+            
+            logger.info(f"✅ Automatic SELL order created successfully: {symbol} - {order_id}")
+            
+            # If order is filled, create TP/SL orders
+            if result_status in ["FILLED", "filled"] or result.get("avg_price"):
+                filled_qty = float(result.get("cumulative_quantity", qty))
+                try:
+                    from app.services.exchange_sync import ExchangeSyncService
+                    exchange_sync = ExchangeSyncService()
+                    
+                    # Create SL/TP orders for the filled SELL order
+                    # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
+                    exchange_sync._create_sl_tp_for_filled_order(
+                        db=db,
+                        symbol=symbol,
+                        side="SELL",
+                        filled_price=float(filled_price),
+                        filled_qty=filled_qty,
+                        order_id=str(order_id)
+                    )
+                    logger.info(f"✅ SL/TP orders created for SELL {symbol} order {order_id}")
+                except Exception as sl_tp_err:
+                    logger.warning(f"⚠️ Could not create SL/TP orders immediately for SELL {symbol}: {sl_tp_err}. Exchange sync will handle this.", exc_info=True)
+            
+            filled_quantity = float(result.get("cumulative_quantity", qty)) if result.get("cumulative_quantity") else qty
+            
+            return {
+                "order_id": str(order_id),
+                "filled_price": filled_price,
+                "filled_quantity": filled_quantity,
+                "status": result_status,
+                "avg_price": result.get("avg_price")
+            }
+        
+        except Exception as e:
+            logger.error(f"Error creating automatic SELL order for {symbol}: {e}", exc_info=True)
+            return None
     
     async def start(self):
         """Start the signal monitoring service"""

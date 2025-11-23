@@ -79,10 +79,19 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
     try:
         # Normalize symbol for Crypto.com API - automatically add _USDT if no pair specified
         normalized_symbol = symbol
-        if "_" not in symbol or not any(symbol.upper().endswith(f"_{q}") for q in ["USDT", "USD", "BTC", "ETH", "EUR"]):
+        # Only normalize if symbol has no underscore (no pair specified)
+        # OR if it has underscore AND ends with a supported pair (we can convert _USD to _USDT)
+        has_pair = "_" in symbol
+        ends_with_supported_pair = any(symbol.upper().endswith(f"_{q}") for q in ["USDT", "USD", "BTC", "ETH", "EUR"])
+        
+        if not has_pair:
             # No pair specified - add _USDT for Crypto.com
             normalized_symbol = f"{symbol}_USDT"
             logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
+        elif has_pair and not ends_with_supported_pair:
+            # Has underscore but doesn't end with supported pair (e.g., BTC_UNKNOWN) - use as-is, don't normalize
+            # This prevents creating invalid symbols like "BTC_UNKNOWN_USDT"
+            logger.debug(f"Symbol {symbol} has non-standard pair, using as-is (no normalization)")
         elif symbol.upper().endswith("_USD"):
             # Convert _USD to _USDT for Crypto.com (they use USDT pairs)
             normalized_symbol = symbol.replace("_USD", "_USDT")

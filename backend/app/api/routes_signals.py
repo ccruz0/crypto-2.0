@@ -890,7 +890,7 @@ def get_alert_ratio(
         from app.services.strategy_profiles import resolve_strategy_profile
         from app.models.watchlist import WatchlistItem
         from app.models.market_price import MarketPrice, MarketData
-        from price_fetcher import get_price_with_fallback
+        from app.simple_price_fetcher import price_fetcher
         
         # Get watchlist item
         if not DB_AVAILABLE:
@@ -921,9 +921,9 @@ def get_alert_ratio(
                 volume_24h = mp.volume_24h or 0.0
             else:
                 # Fallback to API if MarketPrice not available
-                result = get_price_with_fallback(symbol, "15m")
-                current_price = result.get('price', 0)
-                volume_24h = result.get('volume_24h', 0)
+                price_result = price_fetcher.get_price(symbol)
+                current_price = price_result.price if price_result and price_result.success else 0
+                volume_24h = 0  # volume_24h not available from simple_price_fetcher
             
             if not current_price or current_price <= 0:
                 return {"ratio": 50.0}  # Neutral if no price data
@@ -936,9 +936,8 @@ def get_alert_ratio(
             elif watchlist_item and hasattr(watchlist_item, 'rsi') and watchlist_item.rsi is not None:
                 rsi = watchlist_item.rsi
             else:
-                # Fallback to API if neither MarketData nor watchlist_items has RSI
-                result = get_price_with_fallback(symbol, "15m")
-                rsi = result.get('rsi', 50)
+                # Fallback: use default RSI if neither MarketData nor watchlist_items has RSI
+                rsi = 50  # Default neutral RSI
             
             # Get other indicators with same priority as dashboard
             ma50 = None

@@ -25,7 +25,9 @@ class WatchlistItem(Base):
     trade_enabled = Column(Boolean, default=False)
     trade_amount_usd = Column(Float, nullable=True)
     trade_on_margin = Column(Boolean, default=False)
-    alert_enabled = Column(Boolean, default=False)  # Enable automatic alerts and order creation based on strategy
+    alert_enabled = Column(Boolean, default=False)  # Master switch: Enable automatic alerts and order creation based on strategy
+    buy_alert_enabled = Column(Boolean, default=False)  # Enable BUY alerts specifically
+    sell_alert_enabled = Column(Boolean, default=False)  # Enable SELL alerts specifically
     sl_tp_mode = Column(String, default="conservative")  # 'conservative' or 'aggressive'
     min_price_change_pct = Column(Float, nullable=True)  # Minimum price change % required for order creation/alerts (default: 1.0)
     alert_cooldown_minutes = Column(Float, nullable=True)  # Cooldown in minutes between same-side alerts (default: 5.0)

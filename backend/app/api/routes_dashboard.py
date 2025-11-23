@@ -82,6 +82,8 @@ def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
         "symbol": (item.symbol or "").upper(),
         "exchange": item.exchange,
         "alert_enabled": item.alert_enabled,
+        "buy_alert_enabled": getattr(item, "buy_alert_enabled", False),
+        "sell_alert_enabled": getattr(item, "sell_alert_enabled", False),
         "trade_enabled": item.trade_enabled,
         "trade_amount_usd": item.trade_amount_usd,
         "trade_on_margin": item.trade_on_margin,

@@ -15,7 +15,12 @@ import sys
 import os
 from datetime import datetime, timezone
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# Add paths to find simple_price_fetcher (can be in /app or /app/app)
+backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # /app
+app_root = os.path.dirname(os.path.dirname(__file__))  # /app/app
+for path in [backend_root, app_root]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
 from simple_price_fetcher import price_fetcher
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
@@ -118,14 +123,19 @@ def _should_disable_auth() -> bool:
 def _get_auth_dependency():
     """
     Get auth dependency based on DISABLE_AUTH env var.
+    This is called by FastAPI at request time when used as: current_user = Depends(_get_auth_dependency)
     
-    Returns None if auth is disabled, otherwise returns Depends(get_current_user).
-    This function must be called at request time, not at module import time,
-    to properly evaluate the environment variable.
+    Returns a callable that FastAPI will execute to get the current user.
+    If auth is disabled, returns a callable that returns None.
+    If auth is enabled, returns get_current_user directly (which FastAPI will execute).
     """
     if _should_disable_auth():
-        return None
-    return Depends(get_current_user)
+        # Return a callable that returns None (no auth required)
+        def no_auth():
+            return None
+        return no_auth
+    # Return the actual dependency function - FastAPI will call it at request time
+    return get_current_user
 
 
 @router.post("/market/top-coins/custom")
@@ -186,7 +196,7 @@ def add_custom_top_coin(
 @router.delete("/market/top-coins/custom/{instrument_name}")
 def delete_custom_top_coin(
     instrument_name: str,
-    current_user = _get_auth_dependency(),
+    current_user = Depends(_get_auth_dependency),
 ):
     if not instrument_name:
         raise HTTPException(status_code=400, detail="instrument_name is required")
@@ -752,7 +762,7 @@ async def trigger_cache_update():
 @router.get("/market/top-coins-data")
 def get_top_coins_with_prices(
     db: Session = Depends(get_db),
-    current_user = _get_auth_dependency()
+    current_user = Depends(_get_auth_dependency)
 ):
     """Get top coins with current prices from database (fast response <100ms)
     
@@ -1064,7 +1074,7 @@ def update_watchlist_alert(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Update alert_enabled for a watchlist item"""
+    """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
     try:
         alert_enabled = payload.get("alert_enabled", False)
         
@@ -1086,8 +1096,12 @@ def update_watchlist_alert(
             # If item is deleted, reactivate it first
             if watchlist_item.is_deleted:
                 watchlist_item.is_deleted = False
-            # Update existing item
+            # Update existing item - set both buy and sell to match legacy behavior
             watchlist_item.alert_enabled = alert_enabled
+            if hasattr(watchlist_item, "buy_alert_enabled"):
+                watchlist_item.buy_alert_enabled = alert_enabled
+            if hasattr(watchlist_item, "sell_alert_enabled"):
+                watchlist_item.sell_alert_enabled = alert_enabled
         
         db.commit()
         
@@ -1100,5 +1114,133 @@ def update_watchlist_alert(
         }
     except Exception as e:
         logger.error(f"Error updating alert_enabled for {symbol}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/watchlist/{symbol}/buy-alert")
+def update_buy_alert(
+    symbol: str,
+    payload: Dict[str, bool] = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Update buy_alert_enabled for a watchlist item"""
+    try:
+        buy_alert_enabled = payload.get("buy_alert_enabled", False)
+        
+        # Find or create watchlist item
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol.upper()
+        ).first()
+        
+        if not watchlist_item:
+            # Create new watchlist item if it doesn't exist
+            # Create new watchlist item
+            watchlist_item = WatchlistItem(
+                symbol=symbol.upper(),
+                exchange="CRYPTO_COM",
+                is_deleted=False,
+                alert_enabled=buy_alert_enabled  # Master switch follows buy alert
+            )
+            # Set buy/sell alert fields (will work even if columns don't exist yet - SQLAlchemy handles it)
+            try:
+                watchlist_item.buy_alert_enabled = buy_alert_enabled
+            except AttributeError:
+                pass  # Column doesn't exist yet, will be added by migration
+            try:
+                watchlist_item.sell_alert_enabled = False
+            except AttributeError:
+                pass  # Column doesn't exist yet, will be added by migration
+            db.add(watchlist_item)
+        else:
+            # If item is deleted, reactivate it first
+            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+                watchlist_item.is_deleted = False
+            # Update existing item
+            if hasattr(watchlist_item, "buy_alert_enabled"):
+                watchlist_item.buy_alert_enabled = buy_alert_enabled
+            # Update master alert_enabled if either buy or sell is enabled
+            if hasattr(watchlist_item, "sell_alert_enabled"):
+                watchlist_item.alert_enabled = buy_alert_enabled or watchlist_item.sell_alert_enabled
+            else:
+                watchlist_item.alert_enabled = buy_alert_enabled
+        
+        db.commit()
+        
+        logger.info(f"Updated buy_alert_enabled for {symbol}: {buy_alert_enabled}")
+        
+        return {
+            "ok": True,
+            "symbol": symbol.upper(),
+            "buy_alert_enabled": buy_alert_enabled,
+            "alert_enabled": watchlist_item.alert_enabled
+        }
+    except Exception as e:
+        logger.error(f"Error updating buy_alert_enabled for {symbol}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/watchlist/{symbol}/sell-alert")
+def update_sell_alert(
+    symbol: str,
+    payload: Dict[str, bool] = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Update sell_alert_enabled for a watchlist item"""
+    try:
+        sell_alert_enabled = payload.get("sell_alert_enabled", False)
+        
+        # Find or create watchlist item
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol.upper()
+        ).first()
+        
+        if not watchlist_item:
+            # Create new watchlist item if it doesn't exist
+            # Create new watchlist item
+            watchlist_item = WatchlistItem(
+                symbol=symbol.upper(),
+                exchange="CRYPTO_COM",
+                is_deleted=False,
+                alert_enabled=sell_alert_enabled  # Master switch follows sell alert
+            )
+            # Set buy/sell alert fields (will work even if columns don't exist yet - SQLAlchemy handles it)
+            try:
+                watchlist_item.buy_alert_enabled = False
+            except AttributeError:
+                pass  # Column doesn't exist yet, will be added by migration
+            try:
+                watchlist_item.sell_alert_enabled = sell_alert_enabled
+            except AttributeError:
+                pass  # Column doesn't exist yet, will be added by migration
+            db.add(watchlist_item)
+        else:
+            # If item is deleted, reactivate it first
+            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+                watchlist_item.is_deleted = False
+            # Update existing item
+            if hasattr(watchlist_item, "sell_alert_enabled"):
+                watchlist_item.sell_alert_enabled = sell_alert_enabled
+            # Update master alert_enabled if either buy or sell is enabled
+            if hasattr(watchlist_item, "buy_alert_enabled"):
+                watchlist_item.alert_enabled = watchlist_item.buy_alert_enabled or sell_alert_enabled
+            else:
+                watchlist_item.alert_enabled = sell_alert_enabled
+        
+        db.commit()
+        
+        logger.info(f"Updated sell_alert_enabled for {symbol}: {sell_alert_enabled}")
+        
+        return {
+            "ok": True,
+            "symbol": symbol.upper(),
+            "sell_alert_enabled": sell_alert_enabled,
+            "alert_enabled": watchlist_item.alert_enabled
+        }
+    except Exception as e:
+        logger.error(f"Error updating sell_alert_enabled for {symbol}: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
