@@ -59,12 +59,16 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
     Get monitoring summary with KPIs and alerts.
     Lightweight endpoint that uses snapshot data to avoid heavy computation.
     """
+    import asyncio
+    
     start_time = time.time()
     
     try:
         # Use snapshot data instead of full dashboard state (much faster)
+        # Bug 3 Fix: get_dashboard_snapshot is a blocking sync function, so we run it in a thread pool
+        # to avoid blocking the async event loop
         from app.services.dashboard_snapshot import get_dashboard_snapshot
-        snapshot = get_dashboard_snapshot(db)
+        snapshot = await asyncio.to_thread(get_dashboard_snapshot, db)
         
         if snapshot and not snapshot.get("empty"):
             dashboard_state = snapshot.get("data", {})

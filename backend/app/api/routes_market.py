@@ -115,6 +115,19 @@ def _should_disable_auth() -> bool:
     return os.getenv("DISABLE_AUTH", "false").lower() == "true"
 
 
+def _get_auth_dependency():
+    """
+    Get auth dependency based on DISABLE_AUTH env var.
+    
+    Returns None if auth is disabled, otherwise returns Depends(get_current_user).
+    This function must be called at request time, not at module import time,
+    to properly evaluate the environment variable.
+    """
+    if _should_disable_auth():
+        return None
+    return Depends(get_current_user)
+
+
 @router.post("/market/top-coins/custom")
 def add_custom_top_coin(
     payload: Dict[str, str] = Body(...),
@@ -173,7 +186,7 @@ def add_custom_top_coin(
 @router.delete("/market/top-coins/custom/{instrument_name}")
 def delete_custom_top_coin(
     instrument_name: str,
-    current_user = None if _should_disable_auth() else Depends(get_current_user),
+    current_user = _get_auth_dependency(),
 ):
     if not instrument_name:
         raise HTTPException(status_code=400, detail="instrument_name is required")
@@ -739,7 +752,7 @@ async def trigger_cache_update():
 @router.get("/market/top-coins-data")
 def get_top_coins_with_prices(
     db: Session = Depends(get_db),
-    current_user = None if _should_disable_auth() else Depends(get_current_user)
+    current_user = _get_auth_dependency()
 ):
     """Get top coins with current prices from database (fast response <100ms)
     

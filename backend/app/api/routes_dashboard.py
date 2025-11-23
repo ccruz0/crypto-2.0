@@ -613,8 +613,10 @@ def create_watchlist_item(
     item = WatchlistItem(
         symbol=symbol,
         exchange=payload.get("exchange") or "CRYPTO_COM",
-        # CRITICAL: Default alert_enabled to False to prevent unwanted alerts
-        # Only set to True explicitly when user wants alerts for this coin
+        # BEHAVIOR CHANGE: Default alert_enabled to False (was True previously)
+        # This prevents unwanted alerts for coins added via API.
+        # To enable alerts, the caller MUST explicitly set alert_enabled=True in the request payload.
+        # This is a security/safety measure to prevent alert spam from accidentally added coins.
         alert_enabled=payload.get("alert_enabled", False),
         trade_enabled=payload.get("trade_enabled", False),
         trade_amount_usd=payload.get("trade_amount_usd"),
