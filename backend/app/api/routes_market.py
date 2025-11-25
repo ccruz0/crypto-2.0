@@ -33,6 +33,20 @@ _top_coins_cache: Optional[Dict] = None
 _top_coins_cache_timestamp: Optional[float] = None
 
 
+def _log_alert_state(action: str, watchlist_item: WatchlistItem) -> None:
+    try:
+        logger.info(
+            "[ALERT] %s | %s -> alert_enabled=%s, buy_alert_enabled=%s, sell_alert_enabled=%s",
+            action,
+            watchlist_item.symbol,
+            bool(getattr(watchlist_item, "alert_enabled", False)),
+            bool(getattr(watchlist_item, "buy_alert_enabled", False)),
+            bool(getattr(watchlist_item, "sell_alert_enabled", False)),
+        )
+    except Exception as log_err:
+        logger.warning("Failed to log alert state: %s", log_err)
+
+
 CUSTOM_TOP_COINS_TABLE = """
 CREATE TABLE IF NOT EXISTS custom_top_coins (
     instrument_name TEXT PRIMARY KEY,
@@ -877,6 +891,13 @@ def get_top_coins_with_prices(
                             
                             strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
 
+                            # CRITICAL: Use current_volume (hourly) for signal calculation, not volume_24h
+                            # This ensures consistent signal calculation across all endpoints
+                            current_volume_for_signals = md.current_volume if md and md.current_volume is not None and md.current_volume > 0 else None
+                            if not current_volume_for_signals and volume_24h and volume_24h > 0:
+                                # Fallback: approximate current_volume from volume_24h / 24
+                                current_volume_for_signals = volume_24h / 24.0
+
                             signals = calculate_trading_signals(
                                 symbol=symbol,
                                 price=current_price,
@@ -886,7 +907,7 @@ def get_top_coins_with_prices(
                                 ma200=ma200,
                                 ema10=ema10,
                                 ma10w=ma10w,
-                                volume=volume_24h,
+                                volume=current_volume_for_signals,  # CRITICAL: Use current_volume (hourly), not volume_24h
                                 avg_volume=md.avg_volume if md else None,
                                 resistance_up=res_up,
                                 buy_target=buy_target,
@@ -927,7 +948,7 @@ def get_top_coins_with_prices(
                                 volumes = [candle.get("v", 0) for candle in ohlcv_data if candle.get("v", 0) > 0]
                                 if len(volumes) >= 11:
                                     # Recalculate volume index with fresh data - this is the source of truth
-                                    volume_index = calculate_volume_index(volumes, period=10)
+                                    volume_index = calculate_volume_index(volumes, period=5)
                                     fresh_current_volume = volume_index.get("current_volume")
                                     fresh_avg_volume = volume_index.get("average_volume")
                                     
@@ -1104,8 +1125,13 @@ def update_watchlist_alert(
                 watchlist_item.sell_alert_enabled = alert_enabled
         
         db.commit()
+        try:
+            db.refresh(watchlist_item)
+        except Exception as refresh_err:
+            logger.warning("Failed to refresh watchlist item %s after alert update: %s", symbol, refresh_err)
         
         logger.info(f"Updated alert_enabled for {symbol}: {alert_enabled}")
+        _log_alert_state("LEGACY ALERT UPDATE", watchlist_item)
         
         return {
             "ok": True,
@@ -1123,22 +1149,25 @@ def update_buy_alert(
     symbol: str,
     payload: Dict[str, bool] = Body(...),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
     """Update buy_alert_enabled for a watchlist item"""
+    symbol_upper = symbol.upper()
+    logger.info(f"🔄 [BUY ALERT] Request received for {symbol_upper}: payload={payload}")
+    
     try:
         buy_alert_enabled = payload.get("buy_alert_enabled", False)
         
         # Find or create watchlist item
         watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol.upper()
+            WatchlistItem.symbol == symbol_upper
         ).first()
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
-            # Create new watchlist item
+            logger.info(f"📝 [BUY ALERT] Creating new watchlist item for {symbol_upper}")
             watchlist_item = WatchlistItem(
-                symbol=symbol.upper(),
+                symbol=symbol_upper,
                 exchange="CRYPTO_COM",
                 is_deleted=False,
                 alert_enabled=buy_alert_enabled  # Master switch follows buy alert
@@ -1147,6 +1176,7 @@ def update_buy_alert(
             try:
                 watchlist_item.buy_alert_enabled = buy_alert_enabled
             except AttributeError:
+                logger.warning(f"⚠️ [BUY ALERT] buy_alert_enabled column not found for {symbol_upper}")
                 pass  # Column doesn't exist yet, will be added by migration
             try:
                 watchlist_item.sell_alert_enabled = False
@@ -1156,6 +1186,7 @@ def update_buy_alert(
         else:
             # If item is deleted, reactivate it first
             if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+                logger.info(f"♻️ [BUY ALERT] Reactivating deleted watchlist item for {symbol_upper}")
                 watchlist_item.is_deleted = False
             # Update existing item
             if hasattr(watchlist_item, "buy_alert_enabled"):
@@ -1167,19 +1198,33 @@ def update_buy_alert(
                 watchlist_item.alert_enabled = buy_alert_enabled
         
         db.commit()
+        logger.debug(f"✅ [BUY ALERT] Database commit successful for {symbol_upper}")
         
-        logger.info(f"Updated buy_alert_enabled for {symbol}: {buy_alert_enabled}")
+        try:
+            db.refresh(watchlist_item)
+        except Exception as refresh_err:
+            logger.warning(f"⚠️ [BUY ALERT] Failed to refresh watchlist item {symbol_upper} after update: {refresh_err}")
+        
+        logger.info(f"✅ Updated buy_alert_enabled for {symbol_upper}: {buy_alert_enabled}")
+        _log_alert_state("BUY ALERT UPDATE", watchlist_item)
         
         return {
             "ok": True,
-            "symbol": symbol.upper(),
+            "symbol": symbol_upper,
             "buy_alert_enabled": buy_alert_enabled,
-            "alert_enabled": watchlist_item.alert_enabled
+            "alert_enabled": watchlist_item.alert_enabled,
+            "message": f"BUY alert {'enabled' if buy_alert_enabled else 'disabled'} for {symbol_upper}"
         }
+    except HTTPException:
+        # Re-raise HTTP exceptions (e.g., from auth)
+        raise
     except Exception as e:
-        logger.error(f"Error updating buy_alert_enabled for {symbol}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ [BUY ALERT] Error updating buy_alert_enabled for {symbol_upper}: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception as rollback_err:
+            logger.error(f"❌ [BUY ALERT] Failed to rollback transaction for {symbol_upper}: {rollback_err}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.put("/watchlist/{symbol}/sell-alert")
@@ -1187,22 +1232,25 @@ def update_sell_alert(
     symbol: str,
     payload: Dict[str, bool] = Body(...),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
     """Update sell_alert_enabled for a watchlist item"""
+    symbol_upper = symbol.upper()
+    logger.info(f"🔄 [SELL ALERT] Request to update {symbol_upper}: payload={payload}")
+    
     try:
         sell_alert_enabled = payload.get("sell_alert_enabled", False)
         
         # Find or create watchlist item
         watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol.upper()
+            WatchlistItem.symbol == symbol_upper
         ).first()
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
-            # Create new watchlist item
+            logger.info(f"📝 [SELL ALERT] Creating new watchlist item for {symbol_upper}")
             watchlist_item = WatchlistItem(
-                symbol=symbol.upper(),
+                symbol=symbol_upper,
                 exchange="CRYPTO_COM",
                 is_deleted=False,
                 alert_enabled=sell_alert_enabled  # Master switch follows sell alert
@@ -1215,11 +1263,13 @@ def update_sell_alert(
             try:
                 watchlist_item.sell_alert_enabled = sell_alert_enabled
             except AttributeError:
+                logger.warning(f"⚠️ [SELL ALERT] sell_alert_enabled column not found for {symbol_upper}")
                 pass  # Column doesn't exist yet, will be added by migration
             db.add(watchlist_item)
         else:
             # If item is deleted, reactivate it first
             if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+                logger.info(f"♻️ [SELL ALERT] Reactivating deleted watchlist item for {symbol_upper}")
                 watchlist_item.is_deleted = False
             # Update existing item
             if hasattr(watchlist_item, "sell_alert_enabled"):
@@ -1231,16 +1281,30 @@ def update_sell_alert(
                 watchlist_item.alert_enabled = sell_alert_enabled
         
         db.commit()
+        logger.debug(f"✅ [SELL ALERT] Database commit successful for {symbol_upper}")
         
-        logger.info(f"Updated sell_alert_enabled for {symbol}: {sell_alert_enabled}")
+        try:
+            db.refresh(watchlist_item)
+        except Exception as refresh_err:
+            logger.warning(f"⚠️ [SELL ALERT] Failed to refresh watchlist item {symbol_upper} after update: {refresh_err}")
+        
+        logger.info(f"✅ Updated sell_alert_enabled for {symbol_upper}: {sell_alert_enabled}")
+        _log_alert_state("SELL ALERT UPDATE", watchlist_item)
         
         return {
             "ok": True,
-            "symbol": symbol.upper(),
+            "symbol": symbol_upper,
             "sell_alert_enabled": sell_alert_enabled,
-            "alert_enabled": watchlist_item.alert_enabled
+            "alert_enabled": watchlist_item.alert_enabled,
+            "message": f"SELL alert {'enabled' if sell_alert_enabled else 'disabled'} for {symbol_upper}"
         }
+    except HTTPException:
+        # Re-raise HTTP exceptions (e.g., from auth)
+        raise
     except Exception as e:
-        logger.error(f"Error updating sell_alert_enabled for {symbol}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ [SELL ALERT] Error updating sell_alert_enabled for {symbol_upper}: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception as rollback_err:
+            logger.error(f"❌ [SELL ALERT] Failed to rollback transaction for {symbol_upper}: {rollback_err}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
