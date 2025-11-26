@@ -91,7 +91,9 @@ services:
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
-      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - UVICORN_WORKERS=2
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
@@ -110,6 +112,8 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 3 --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10 --limit-concurrency 100 --backlog 2048"
     restart: always
     healthcheck:
@@ -150,7 +154,9 @@ services:
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
-      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - UVICORN_WORKERS=2
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
@@ -171,6 +177,8 @@ services:
       - "8002:8002"
     volumes:
       - ./backend:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
     restart: always
     healthcheck:
@@ -209,7 +217,9 @@ services:
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
       - LIVE_TRADING=${LIVE_TRADING:-true}
-      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
     depends_on:
       db:
         condition: service_healthy
