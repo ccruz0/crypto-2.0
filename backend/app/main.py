@@ -20,6 +20,7 @@ from app.api.routes_control import router as control_router
 from app.routers.config import router as config_router
 from app.api.routes_debug import router as debug_router
 from app.api.routes_monitoring import router as monitoring_router
+from app.api.routes_diag import router as diag_router
 import os
 import logging
 import time
@@ -453,3 +454,4 @@ app.include_router(control_router, prefix="/api", tags=["control"])
 app.include_router(monitoring_router, prefix="/api", tags=["monitoring"])
 app.include_router(config_router, tags=["config"])
 app.include_router(debug_router, prefix="/api", tags=["debug"])
+app.include_router(diag_router, prefix="/api", tags=["diagnostics"])
