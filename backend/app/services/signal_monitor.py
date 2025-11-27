@@ -73,6 +73,8 @@ class SignalMonitorService:
         # Protection notification throttling: {symbol: {last_notification_time: datetime, last_orders_count: int}}
         self.last_protection_notifications: Dict[str, Dict] = {}
         self.PROTECTION_NOTIFICATION_COOLDOWN_MINUTES = 30  # 30 minutes cooldown between protection notifications
+        self._task: Optional[asyncio.Task] = None
+        self.last_run_at: Optional[datetime] = None
     
     @staticmethod
     def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
@@ -1459,12 +1461,11 @@ class SignalMonitorService:
                     min_price_change_pct=min_pct,
                     cooldown_minutes=cooldown,
                 )
-                if not should_send:
-                    logger.debug(f"⏭️  BUY alert throttled for {symbol}: {throttle_reason}")
-                    # Remove lock and exit without sending alert
-                    if lock_key in self.alert_sending_locks:
-                        del self.alert_sending_locks[lock_key]
-                    return
+                    if not should_send:
+                        logger.debug(f"⏭️  BUY alert throttled for {symbol}: {throttle_reason}")
+                        # Remove lock and skip sending alert (but continue processing coin)
+                        if lock_key in self.alert_sending_locks:
+                            del self.alert_sending_locks[lock_key]
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -1829,10 +1830,9 @@ class SignalMonitorService:
                     )
                     if not should_send:
                         logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
-                        # Remove lock and exit without sending alert
+                        # Remove lock and skip sending alert (but continue processing coin)
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
-                        return
                     
                     # CRITICAL: Final check - verify sell_alert_enabled before sending
                     # Refresh flag from database to ensure we have latest value
@@ -3036,41 +3036,77 @@ class SignalMonitorService:
             return None
     
     async def start(self):
-        """Start the signal monitoring service"""
-        # Prevent multiple instances from starting
+        """Start the signal monitoring service loop."""
         if self.is_running:
             logger.warning("⚠️ Signal monitor is already running, skipping duplicate start")
             return
         self.is_running = True
         logger.info("=" * 60)
-        logger.info("🚀 SIGNAL MONITORING SERVICE STARTED")
-        logger.info(f"   - Monitor interval: {self.monitor_interval} seconds")
+        logger.info("🚀 SIGNAL MONITORING SERVICE STARTED (interval=%ss)", self.monitor_interval)
         logger.info(f"   - Max orders per symbol: {self.MAX_OPEN_ORDERS_PER_SYMBOL}")
         logger.info(f"   - Min price change: {self.MIN_PRICE_CHANGE_PCT}%")
         logger.info("=" * 60)
-        
+
         cycle_count = 0
-        while self.is_running:
-            try:
-                cycle_count += 1
-                logger.info(f"🔍 Signal Monitor Cycle #{cycle_count} - Checking watchlist for alerts...")
-                
-                db = SessionLocal()
+        try:
+            while self.is_running:
                 try:
-                    await self.monitor_signals(db)
-                finally:
-                    db.close()
-                    
-                logger.info(f"✅ Signal Monitor Cycle #{cycle_count} completed. Next check in {self.monitor_interval}s...")
-            except Exception as e:
-                logger.error(f"❌ Error in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
-            
-            await asyncio.sleep(self.monitor_interval)
+                    cycle_count += 1
+                    self.last_run_at = datetime.now(timezone.utc)
+                    logger.info("SignalMonitorService cycle #%s started", cycle_count)
+
+                    db = SessionLocal()
+                    try:
+                        await self.monitor_signals(db)
+                    finally:
+                        db.close()
+
+                    logger.info(
+                        "SignalMonitorService cycle #%s completed. Next check in %ss",
+                        cycle_count,
+                        self.monitor_interval,
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Error in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
+
+                await asyncio.sleep(self.monitor_interval)
+        except asyncio.CancelledError:
+            logger.info("SignalMonitorService loop cancelled")
+            raise
+        finally:
+            self.is_running = False
+            logger.info("SignalMonitorService loop exited after %s cycles", cycle_count)
     
     def stop(self):
         """Stop the signal monitoring service"""
+        if not self.is_running and not (self._task and not self._task.done()):
+            logger.info("Signal monitoring service already stopped")
         self.is_running = False
-        logger.info("Signal monitoring service stopped")
+        if self._task and not self._task.done():
+            self._task.cancel()
+        logger.info("Signal monitoring service stop requested")
+
+    def start_background(self, loop: Optional[asyncio.AbstractEventLoop] = None):
+        """Schedule the monitor loop on the given asyncio loop."""
+        loop = loop or asyncio.get_event_loop()
+        if self._task and not self._task.done():
+            logger.warning("SignalMonitorService background task already running")
+            return
+
+        async def runner():
+            try:
+                await self.start()
+            except asyncio.CancelledError:
+                logger.info("SignalMonitorService background task cancelled")
+                raise
+            except Exception:
+                logger.exception("SignalMonitorService background task crashed")
+                raise
+            finally:
+                self._task = None
+
+        self._task = loop.create_task(runner())
+        logger.info("SignalMonitorService background task scheduled")
 
 
 # Global instance

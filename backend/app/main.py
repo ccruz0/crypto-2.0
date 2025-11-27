@@ -196,8 +196,9 @@ async def startup_event():
                 try:
                     logger.info("🔧 Starting Signal monitor service...")
                     from app.services.signal_monitor import signal_monitor_service
-                    asyncio.create_task(signal_monitor_service.start())
-                    logger.info("✅ Signal monitor service started")
+                    loop = asyncio.get_running_loop()
+                    signal_monitor_service.start_background(loop)
+                    logger.info("✅ Signal monitor service start() scheduled")
                 except Exception as e:
                     logger.error(f"❌ Failed to start signal monitor: {e}", exc_info=True)
             else:
@@ -362,10 +363,20 @@ async def startup_event():
                 except Exception:
                     pass  # Ignore errors during cleanup
     
-    # Schedule background work - won't block startup
-    asyncio.create_task(_background_init())
+        # Schedule background work - won't block startup
+    # CRITICAL FIX: Start background services and signal_monitor directly
+    logger.info("📋 Starting background services...")
+    try:
+        # Start _background_init() which starts all services
+        background_task = asyncio.create_task(_background_init())
+        await asyncio.sleep(0.3)
+        logger.info(f"✅ _background_init() task created: done={background_task.done()}")
+        
+        # NOTE: Signal monitor is already started in _background_init(), no need to start twice
+    except Exception as e:
+        logger.error(f"❌ Failed to start background services: {e}", exc_info=True)
     
-    # Schedule watchlist initialization in background (with delay to allow DB to be ready)
+    # Schedule watchlist initialization in background (with delay to allow DB to be ready) in background (with delay to allow DB to be ready)
     async def _delayed_watchlist_init():
         await asyncio.sleep(10)  # Wait 10 seconds for DB and services to be ready
         await _ensure_watchlist_not_empty()
