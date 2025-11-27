@@ -46,7 +46,34 @@ def should_trigger_buy_signal(
     strategy_type: StrategyType,
     risk_approach: RiskApproach,
 ) -> BuyDecision:
-    profile_label = f"Strategy={strategy_type.value.title()} / Approach={risk_approach.value.title()}"
+    """
+    Determine if a BUY signal should trigger based on strategy rules from configuration.
+    
+    SOURCE OF TRUTH: This function reads from trading_config.json via get_strategy_rules().
+    
+    Flow:
+    1. User configures preset in Signal Configuration tab (frontend)
+    2. Frontend saves to backend via /api/config PUT endpoint
+    3. Backend stores in trading_config.json under "strategy_rules" key
+    4. This function reads from trading_config.json via get_strategy_rules()
+    5. Uses same config values for RSI thresholds, MA checks, volume ratios, etc.
+    
+    This ensures backend alert logic always matches what user configured in UI.
+    """
+    from app.services.config_loader import get_strategy_rules
+    
+    # SOURCE OF TRUTH: Read rules from trading_config.json (same config used by Signal Configuration UI)
+    preset_name = strategy_type.value.lower()  # e.g., "swing", "intraday", "scalp"
+    risk_mode = risk_approach.value.capitalize()  # "Conservative" or "Aggressive"
+    rules = get_strategy_rules(preset_name, risk_mode)
+    
+    # Extract configuration values
+    rsi_buy_below = rules.get("rsi", {}).get("buyBelow")
+    ma_checks = rules.get("maChecks", {})
+    check_ema10 = ma_checks.get("ema10", False)
+    check_ma50 = ma_checks.get("ma50", False)
+    check_ma200 = ma_checks.get("ma200", False)
+    profile_label = f"Strategy={strategy_type.value.title()} / Approach={risk_approach.value.title()} (Config-based)"
     reasons: List[str] = [profile_label]
     missing: List[str] = []
 
@@ -66,13 +93,27 @@ def should_trigger_buy_signal(
             )
         return decision
 
+    # Check RSI threshold from config
     if rsi is None:
         missing.append("RSI")
         return conclude(False, "RSI unavailable")
+    
+    if rsi_buy_below is not None and rsi >= rsi_buy_below:
+        return conclude(False, f"RSI={rsi:.1f} ≥ {rsi_buy_below} (threshold from config)")
+    reasons.append(f"RSI={rsi:.1f} < {rsi_buy_below or 'N/A'} (from config)")
 
-    if ema10 is None:
+    # Check required indicators based on maChecks config
+    if check_ema10 and ema10 is None:
         missing.append("EMA10")
-        return conclude(False, "EMA10 unavailable")
+        return conclude(False, "EMA10 required by config but unavailable")
+    
+    if check_ma50 and ma50 is None:
+        missing.append("MA50")
+        return conclude(False, "MA50 required by config but unavailable")
+    
+    if check_ma200 and ma200 is None:
+        missing.append("MA200")
+        return conclude(False, "MA200 required by config but unavailable")
 
     state = IndicatorState(
         symbol=symbol,
@@ -90,122 +131,34 @@ def should_trigger_buy_signal(
             return False
         return True
 
-    if strategy_type == StrategyType.SWING and risk_approach == RiskApproach.CONSERVATIVE:
-        if not require_indicator(state.ma200, "MA200", "MA200 required for Swing + Conservative"):
-            return conclude(False)
-        if not require_indicator(state.ma50, "MA50", "MA50 required for Swing + Conservative"):
-            return conclude(False)
-        if state.rsi >= 35:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 35 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 35")
-        if state.price <= state.ma200:
-            return conclude(False, f"Price {state.price:.2f} ≤ MA200 {state.ma200:.2f}")
-        reasons.append(f"Price {state.price:.2f} > MA200 {state.ma200:.2f}")
-        if state.price <= state.ma50:
-            return conclude(False, f"Price {state.price:.2f} ≤ MA50 {state.ma50:.2f}")
-        reasons.append(f"Price {state.price:.2f} > MA50 {state.ma50:.2f}")
-        if state.price <= state.ema10:
-            return conclude(False, f"Price {state.price:.2f} ≤ EMA10 {state.ema10:.2f}")
-        reasons.append(f"Price {state.price:.2f} > EMA10 {state.ema10:.2f}")
-        stretch_cap = state.ma200 * 1.10
-        if state.price > stretch_cap:
-            return conclude(False, f"Price {state.price:.2f} > stretch cap {stretch_cap:.2f}")
-        reasons.append(f"Price within +10% of MA200 ({stretch_cap:.2f})")
-        return conclude(True)
-
-    if strategy_type == StrategyType.SWING and risk_approach == RiskApproach.AGGRESSIVE:
-        # Swing/Aggressive logic matches dashboard: RSI < 45, MA50 > EMA10 (ma50Check=true), Price > MA200 (ma200Check=true), volume >= 2.0x
-        # Dashboard PRESET_CONFIG: maChecks.ma200=true, so Price > MA200 is REQUIRED
-        if not require_indicator(state.ma50, "MA50", "MA50 required for Swing + Aggressive"):
-            return conclude(False)
-        if not require_indicator(state.ema10, "EMA10", "EMA10 required for Swing + Aggressive"):
-            return conclude(False)
-        if state.rsi >= 45:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 45 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 45")
-        # Dashboard checks MA50 > EMA10 (not Price > MA50) when ma50Check=true for Swing-Aggressive
-        if state.ma50 <= state.ema10:
-            return conclude(False, f"MA50 {state.ma50:.2f} ≤ EMA10 {state.ema10:.2f}")
-        reasons.append(f"MA50 {state.ma50:.2f} > EMA10 {state.ema10:.2f}")
-        # Dashboard checks Price > MA200 when ma200Check=true for Swing-Aggressive (PRESET_CONFIG: maChecks.ma200=true)
-        if state.ma200 is not None:
-            if state.price <= state.ma200:
-                return conclude(False, f"Price {state.price:.2f} ≤ MA200 {state.ma200:.2f}")
-            reasons.append(f"Price {state.price:.2f} > MA200 {state.ma200:.2f}")
-        return conclude(True)
-
-    if strategy_type == StrategyType.INTRADAY and risk_approach == RiskApproach.CONSERVATIVE:
-        if not require_indicator(state.ma50, "MA50", "MA50 required for Intraday + Conservative"):
-            return conclude(False)
-        if not require_indicator(state.ma200, "MA200", "MA200 required for Intraday + Conservative"):
-            return conclude(False)
-        if state.rsi >= 40:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 40 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 40")
-        if state.price <= state.ma50:
-            return conclude(False, f"Price {state.price:.2f} ≤ MA50 {state.ma50:.2f}")
-        reasons.append(f"Price {state.price:.2f} > MA50 {state.ma50:.2f}")
-        if state.price <= state.ema10:
-            return conclude(False, f"Price {state.price:.2f} ≤ EMA10 {state.ema10:.2f}")
-        reasons.append(f"Price {state.price:.2f} > EMA10 {state.ema10:.2f}")
-        if state.price < state.ma200:
-            return conclude(False, f"Price {state.price:.2f} < MA200 {state.ma200:.2f}")
-        reasons.append(f"Price {state.price:.2f} ≥ MA200 {state.ma200:.2f}")
-        return conclude(True)
-
-    if strategy_type == StrategyType.INTRADAY and risk_approach == RiskApproach.AGGRESSIVE:
-        if state.rsi >= 50:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 50 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 50")
-        if state.price <= state.ema10:
-            return conclude(False, f"Price {state.price:.2f} ≤ EMA10 {state.ema10:.2f}")
-        reasons.append(f"Price {state.price:.2f} > EMA10 {state.ema10:.2f}")
-        if state.ma50 is not None:
-            relaxed_floor = state.ma50 * 0.97
-            if state.price < relaxed_floor:
-                return conclude(False, f"Price {state.price:.2f} < MA50 relaxed floor {relaxed_floor:.2f}")
-            reasons.append(f"Price {state.price:.2f} ≥ MA50 relaxed floor {relaxed_floor:.2f}")
-        if state.ma200 is not None:
-            deep_bear_floor = state.ma200 * 0.90
-            if state.price < deep_bear_floor:
-                return conclude(False, f"Price {state.price:.2f} < MA200 fail-safe {deep_bear_floor:.2f}")
-            reasons.append(f"Price {state.price:.2f} above MA200 fail-safe {deep_bear_floor:.2f}")
-        return conclude(True)
-
-    if strategy_type == StrategyType.SCALP and risk_approach == RiskApproach.CONSERVATIVE:
-        if state.rsi >= 45:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 45 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 45")
-        if state.price <= state.ema10:
-            return conclude(False, f"Price {state.price:.2f} ≤ EMA10 {state.ema10:.2f}")
-        reasons.append(f"Price {state.price:.2f} > EMA10 {state.ema10:.2f}")
-        if state.ma50 is not None:
-            allowed_dip = state.ma50 * 0.98
-            if state.price < allowed_dip:
-                return conclude(False, f"Price {state.price:.2f} < MA50 buffer {allowed_dip:.2f}")
-            reasons.append(f"Price {state.price:.2f} ≥ MA50 buffer {allowed_dip:.2f}")
+    # Apply MA checks based on configuration
+    # MA50 check: Price > MA50 OR MA50 > EMA10 (depending on strategy)
+    if check_ma50 and ma50 is not None:
+        if check_ema10 and ema10 is not None:
+            # Dashboard logic: when both ma50 and ema10 are checked, require MA50 > EMA10
+            if ma50 <= ema10:
+                return conclude(False, f"MA50 {ma50:.2f} ≤ EMA10 {ema10:.2f} (required by config)")
+            reasons.append(f"MA50 {ma50:.2f} > EMA10 {ema10:.2f} (from config)")
         else:
-            missing.append("MA50")
-            return conclude(False, "MA50 required for Scalp + Conservative")
-        return conclude(True)
+            # Only MA50 checked: require Price > MA50
+            if price <= ma50:
+                return conclude(False, f"Price {price:.2f} ≤ MA50 {ma50:.2f} (required by config)")
+            reasons.append(f"Price {price:.2f} > MA50 {ma50:.2f} (from config)")
+    
+    # MA200 check: Price > MA200
+    if check_ma200 and ma200 is not None:
+        if price <= ma200:
+            return conclude(False, f"Price {price:.2f} ≤ MA200 {ma200:.2f} (required by config)")
+        reasons.append(f"Price {price:.2f} > MA200 {ma200:.2f} (from config)")
+    
+    # EMA10 check: Price > EMA10 (if EMA10 is checked but MA50 is not)
+    if check_ema10 and ema10 is not None and not check_ma50:
+        if price <= ema10:
+            return conclude(False, f"Price {price:.2f} ≤ EMA10 {ema10:.2f} (required by config)")
+        reasons.append(f"Price {price:.2f} > EMA10 {ema10:.2f} (from config)")
 
-    if strategy_type == StrategyType.SCALP and risk_approach == RiskApproach.AGGRESSIVE:
-        if state.rsi >= 55:
-            return conclude(False, f"RSI={state.rsi:.1f} ≥ 55 ceiling")
-        reasons.append(f"RSI={state.rsi:.1f} < 55")
-        ema_floor = state.ema10 * 0.99
-        if state.price < ema_floor:
-            return conclude(False, f"Price {state.price:.2f} < EMA10 slack {ema_floor:.2f}")
-        reasons.append(f"Price {state.price:.2f} ≥ EMA10 slack {ema_floor:.2f}")
-        if state.ma200 is not None:
-            knife_floor = state.ma200 * 0.85
-            if state.price < knife_floor:
-                return conclude(False, f"Price {state.price:.2f} < MA200 safeguard {knife_floor:.2f}")
-            reasons.append(f"Price {state.price:.2f} ≥ MA200 safeguard {knife_floor:.2f}")
-        return conclude(True)
-
-    # Default fallback mimics swing conservative behavior
-    return conclude(False, "Unknown strategy profile")
+    # All configured checks passed
+    return conclude(True)
 
 
 def calculate_trading_signals(
@@ -305,11 +258,29 @@ def calculate_trading_signals(
             else:
                 buy_target_allows = False
                 target_reason = f"Price {price:.2f} > buy target {buy_target:.2f}"
-
-        if decision.should_buy and buy_target_allows:
+        
+        # Volume check: require minVolumeRatio (2.0x by default, matching frontend logic)
+        # If volume data is not available, assume volume is OK (don't block BUY signal)
+        # This matches frontend behavior where volume check defaults to True if data unavailable
+        min_volume_ratio = 2.0  # Default 2.0x as per frontend PRESET_CONFIG
+        volume_ok = True  # Default to True if volume data not available (matches frontend)
+        volume_ratio_val = 0.0
+        if volume is not None and avg_volume is not None and avg_volume > 0:
+            volume_ratio_val = volume / avg_volume
+            volume_ok = volume_ratio_val >= min_volume_ratio  # Require at least 2.0x average volume
+        
+        # BUY conditions: Must have ALL of the following (matching frontend logic):
+        # 1. Strategy-specific BUY conditions (from should_trigger_buy_signal)
+        # 2. Buy target allows (if buy_target is set)
+        # 3. Volume >= minVolumeRatio (2.0x) - or assumed OK if no volume data
+        if decision.should_buy and buy_target_allows and volume_ok:
             rationale_parts = [decision.summary]
             if target_reason:
                 rationale_parts.append(target_reason)
+            if volume_ok and volume is not None and avg_volume is not None and avg_volume > 0:
+                rationale_parts.append(f"Volume {volume_ratio_val:.2f}x >= {min_volume_ratio}x")
+            else:
+                rationale_parts.append(f"Volume: assumed OK (no data available)")
             clean_rationale = " | ".join(part for part in rationale_parts if part)
             result["buy_signal"] = True
             result["rationale"].append(f"✅ BUY ({profile_label}): {clean_rationale}")
@@ -330,6 +301,10 @@ def calculate_trading_signals(
                 no_buy_reasons.append(decision.summary)
             if not buy_target_allows and target_reason:
                 no_buy_reasons.append(target_reason)
+            if not volume_ok and volume is not None and avg_volume is not None and avg_volume > 0:
+                no_buy_reasons.append(f"Volume {volume_ratio_val:.2f}x < {min_volume_ratio}x")
+            elif not volume_ok:
+                no_buy_reasons.append(f"Volume: no data available")
             if not no_buy_reasons:
                 no_buy_reasons.append("Conditions not met")
             result["rationale"].append(f"⏸️ No buy signal ({profile_label}): {' | '.join(no_buy_reasons)}")
@@ -427,6 +402,13 @@ def calculate_trading_signals(
     # This is more conservative than requiring only MA reversal.
     trend_reversal = ma_reversal or price_below_ma10w
     
+    # Debug logging for SELL signal calculation
+    if symbol == "UNI_USD" or (rsi is not None and rsi > rsi_sell_threshold):
+        logger.debug(
+            f"🔍 {symbol} SELL check: rsi_sell_met={rsi_sell_met}, trend_reversal={trend_reversal} "
+            f"(ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w}), volume_ok={volume_ok}"
+        )
+    
     # Only activate SELL when ALL conditions are met
     if rsi_sell_met and trend_reversal and volume_ok:
         sell_conditions.append(True)
@@ -443,6 +425,17 @@ def calculate_trading_signals(
         if price_below_ma10w:
             result["ma10w_break"] = True
             result["rationale"].append("📉 Significant trend break detected")
+    else:
+        # Log why SELL signal is not triggered
+        missing_conditions = []
+        if not rsi_sell_met:
+            missing_conditions.append(f"RSI {rsi:.1f} <= {rsi_sell_threshold}")
+        if not trend_reversal:
+            missing_conditions.append(f"no trend reversal (ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w})")
+        if not volume_ok:
+            missing_conditions.append(f"volume {volume_ratio_val:.2f}x < {min_volume_ratio}x")
+        if symbol == "UNI_USD":
+            logger.debug(f"🔍 {symbol} SELL signal NOT triggered: {', '.join(missing_conditions)}")
     
     # If SELL conditions are met (all must be true)
     if any(sell_conditions):
