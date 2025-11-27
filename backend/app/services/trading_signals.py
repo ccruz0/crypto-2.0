@@ -404,7 +404,7 @@ def calculate_trading_signals(
     
     # Debug logging for SELL signal calculation
     if symbol == "UNI_USD" or (rsi is not None and rsi > rsi_sell_threshold):
-        logger.debug(
+        logger.info(
             f"🔍 {symbol} SELL check: rsi_sell_met={rsi_sell_met}, trend_reversal={trend_reversal} "
             f"(ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w}), volume_ok={volume_ok}"
         )
@@ -435,7 +435,7 @@ def calculate_trading_signals(
         if not volume_ok:
             missing_conditions.append(f"volume {volume_ratio_val:.2f}x < {min_volume_ratio}x")
         if symbol == "UNI_USD":
-            logger.debug(f"🔍 {symbol} SELL signal NOT triggered: {', '.join(missing_conditions)}")
+            logger.info(f"🔍 {symbol} SELL signal NOT triggered: {', '.join(missing_conditions)}")
     
     # If SELL conditions are met (all must be true)
     if any(sell_conditions):
