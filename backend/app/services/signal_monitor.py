@@ -1461,11 +1461,11 @@ class SignalMonitorService:
                     min_price_change_pct=min_pct,
                     cooldown_minutes=cooldown,
                 )
-                    if not should_send:
-                        logger.debug(f"⏭️  BUY alert throttled for {symbol}: {throttle_reason}")
-                        # Remove lock and skip sending alert (but continue processing coin)
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
+                if not should_send:
+                    logger.debug(f"⏭️  BUY alert throttled for {symbol}: {throttle_reason}")
+                    # Remove lock and skip sending alert (but continue processing coin)
+                    if lock_key in self.alert_sending_locks:
+                        del self.alert_sending_locks[lock_key]
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
