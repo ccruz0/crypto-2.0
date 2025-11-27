@@ -3,11 +3,13 @@ Monitors trading signals and automatically creates orders when BUY/SELL conditio
 for coins with alert_enabled = true
 """
 import asyncio
+import json
 import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
+from pathlib import Path
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
@@ -75,6 +77,52 @@ class SignalMonitorService:
         self.PROTECTION_NOTIFICATION_COOLDOWN_MINUTES = 30  # 30 minutes cooldown between protection notifications
         self._task: Optional[asyncio.Task] = None
         self.last_run_at: Optional[datetime] = None
+        self.status_file_path = Path(os.getenv("SIGNAL_MONITOR_STATUS_FILE", "/tmp/signal_monitor_status.json"))
+        self._latest_status_snapshot: Dict[str, str] = {}
+        self._load_persisted_status()
+
+    def _load_persisted_status(self) -> None:
+        """Load last known status from disk so diagnostics can read state cross-process."""
+        try:
+            if not self.status_file_path.exists():
+                return
+            data = json.loads(self.status_file_path.read_text().strip() or "{}")
+            self._latest_status_snapshot = data
+            last_run_at = data.get("last_run_at")
+            if last_run_at:
+                try:
+                    self.last_run_at = datetime.fromisoformat(last_run_at)
+                except ValueError:
+                    pass
+            is_running = bool(data.get("is_running"))
+            updated_at = data.get("updated_at")
+            if is_running and updated_at:
+                try:
+                    updated_dt = datetime.fromisoformat(updated_at)
+                    stale = datetime.now(timezone.utc) - updated_dt > timedelta(seconds=self.monitor_interval * 2)
+                    if stale:
+                        is_running = False
+                except ValueError:
+                    pass
+            if not self.is_running:
+                self.is_running = is_running
+        except Exception:
+            logger.debug("Failed to load persisted signal monitor status", exc_info=True)
+
+    def _persist_status(self, state: str) -> None:
+        """Persist current status so other processes can inspect it."""
+        payload = {
+            "state": state,
+            "is_running": self.is_running,
+            "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid(),
+        }
+        try:
+            self.status_file_path.write_text(json.dumps(payload))
+            self._latest_status_snapshot = payload
+        except Exception:
+            logger.debug("Failed to persist signal monitor status", exc_info=True)
     
     @staticmethod
     def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
@@ -3041,6 +3089,7 @@ class SignalMonitorService:
             logger.warning("⚠️ Signal monitor is already running, skipping duplicate start")
             return
         self.is_running = True
+        self._persist_status("starting")
         logger.info("=" * 60)
         logger.info("🚀 SIGNAL MONITORING SERVICE STARTED (interval=%ss)", self.monitor_interval)
         logger.info(f"   - Max orders per symbol: {self.MAX_OPEN_ORDERS_PER_SYMBOL}")
@@ -3053,6 +3102,7 @@ class SignalMonitorService:
                 try:
                     cycle_count += 1
                     self.last_run_at = datetime.now(timezone.utc)
+                    self._persist_status("cycle_started")
                     logger.info("SignalMonitorService cycle #%s started", cycle_count)
 
                     db = SessionLocal()
@@ -3066,16 +3116,20 @@ class SignalMonitorService:
                         cycle_count,
                         self.monitor_interval,
                     )
+                    self._persist_status("cycle_completed")
                 except Exception as e:
                     logger.error(f"❌ Error in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
+                    self._persist_status("cycle_error")
 
                 await asyncio.sleep(self.monitor_interval)
         except asyncio.CancelledError:
             logger.info("SignalMonitorService loop cancelled")
+            self._persist_status("cancelled")
             raise
         finally:
             self.is_running = False
             logger.info("SignalMonitorService loop exited after %s cycles", cycle_count)
+            self._persist_status("stopped")
     
     def stop(self):
         """Stop the signal monitoring service"""
@@ -3084,6 +3138,7 @@ class SignalMonitorService:
         self.is_running = False
         if self._task and not self._task.done():
             self._task.cancel()
+        self._persist_status("stop_requested")
         logger.info("Signal monitoring service stop requested")
 
     def start_background(self, loop: Optional[asyncio.AbstractEventLoop] = None):
