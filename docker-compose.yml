@@ -94,7 +94,7 @@ services:
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
       - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
-      - UVICORN_WORKERS=2
+      - UVICORN_WORKERS=1
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
       - DISABLE_AUTH=${DISABLE_AUTH:-true}
@@ -179,7 +179,7 @@ services:
       - ./backend:/app
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: sh -c "sleep 10 && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
+    command: sh -c "sleep 10 && gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]

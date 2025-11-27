@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
@@ -123,6 +123,56 @@ class SignalMonitorService:
             self._latest_status_snapshot = payload
         except Exception:
             logger.debug("Failed to persist signal monitor status", exc_info=True)
+
+    def _log_symbol_context(
+        self,
+        symbol: str,
+        side: str,
+        watchlist_item: WatchlistItem,
+        strategy_display: str,
+        risk_display: str,
+    ) -> None:
+        context = {
+            "alert_enabled": getattr(watchlist_item, "alert_enabled", None),
+            "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", None),
+            "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", None),
+            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+            "strategy": strategy_display,
+            "risk": risk_display,
+            "sl_tp_mode": getattr(watchlist_item, "sl_tp_mode", None),
+        }
+        logger.info("SignalMonitor: evaluating symbol=%s side=%s context=%s", symbol, side, context)
+
+    def _log_signal_candidate(self, symbol: str, side: str, details: Dict[str, Any]) -> None:
+        logger.info("SignalMonitor: %s signal candidate for %s details=%s", side, symbol, details)
+
+    def _log_signal_rejection(self, symbol: str, side: str, reason: str, details: Optional[Dict[str, Any]] = None) -> None:
+        logger.info(
+            "SignalMonitor: %s signal discarded for %s reason=%s details=%s",
+            side,
+            symbol,
+            reason,
+            details or {},
+        )
+
+    def _log_signal_accept(self, symbol: str, side: str, details: Optional[Dict[str, Any]] = None) -> None:
+        logger.info(
+            "SignalMonitor: %s signal ACCEPTED for %s details=%s",
+            side,
+            symbol,
+            details or {},
+        )
+
+    @staticmethod
+    def _classify_throttle_reason(reason: Optional[str]) -> str:
+        if not reason:
+            return "THROTTLED"
+        normalized = reason.lower()
+        if "cooldown" in normalized or "minutes" in normalized:
+            return "THROTTLED_MIN_TIME"
+        if "price change" in normalized or "%" in normalized:
+            return "THROTTLED_MIN_CHANGE"
+        return "THROTTLED"
     
     @staticmethod
     def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
@@ -575,6 +625,9 @@ class SignalMonitorService:
         strategy_display = strategy_type.value.title()
         risk_display = risk_approach.value.title()
 
+        self._log_symbol_context(symbol, "BUY", watchlist_item, strategy_display, risk_display)
+        self._log_symbol_context(symbol, "SELL", watchlist_item, strategy_display, risk_display)
+
         min_price_change_pct, alert_cooldown_minutes = self._resolve_alert_thresholds(watchlist_item)
 
         # ========================================================================
@@ -585,6 +638,18 @@ class SignalMonitorService:
             blocked_msg = (
                 f"🚫 BLOQUEADO: {symbol} - alert_enabled=False después del refresh. "
                 f"No se procesará señal ni se enviarán alertas."
+            )
+            self._log_signal_rejection(
+                symbol,
+                "BUY",
+                "DISABLED_ALERT",
+                {"alert_enabled": False},
+            )
+            self._log_signal_rejection(
+                symbol,
+                "SELL",
+                "DISABLED_ALERT",
+                {"alert_enabled": False},
             )
             logger.warning(blocked_msg)
             # Register blocked message
@@ -845,12 +910,29 @@ class SignalMonitorService:
             except Exception as snapshot_err:
                 logger.warning(f"Failed to load throttle state for {symbol}: {snapshot_err}")
                 signal_snapshots = {}
+        last_buy_snapshot = signal_snapshots.get("BUY")
+        last_sell_snapshot = signal_snapshots.get("SELL")
 
         now_utc = datetime.now(timezone.utc)
         buy_state_recorded = False
         sell_state_recorded = False
 
         if buy_signal:
+            self._log_signal_candidate(
+                symbol,
+                "BUY",
+                {
+                    "price": current_price,
+                    "rsi": rsi,
+                    "strategy_key": strategy_key,
+                    "min_price_change_pct": throttle_config.min_price_change_pct,
+                    "min_interval_minutes": throttle_config.min_interval_minutes,
+                    "last_signal_at": last_buy_snapshot.timestamp.isoformat()
+                    if last_buy_snapshot and last_buy_snapshot.timestamp
+                    else None,
+                    "last_signal_price": last_buy_snapshot.price if last_buy_snapshot else None,
+                },
+            )
             buy_allowed, buy_reason = should_emit_signal(
                 symbol=symbol,
                 side="BUY",
@@ -863,6 +945,12 @@ class SignalMonitorService:
             if not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
                 logger.info(blocked_msg)
+                self._log_signal_rejection(
+                    symbol,
+                    "BUY",
+                    self._classify_throttle_reason(buy_reason),
+                    {"throttle_reason": buy_reason},
+                )
                 try:
                     from app.api.routes_monitoring import add_telegram_message
 
@@ -879,6 +967,21 @@ class SignalMonitorService:
                 if current_state == "BUY":
                     current_state = "WAIT"
         if sell_signal:
+            self._log_signal_candidate(
+                symbol,
+                "SELL",
+                {
+                    "price": current_price,
+                    "rsi": rsi,
+                    "strategy_key": strategy_key,
+                    "min_price_change_pct": throttle_config.min_price_change_pct,
+                    "min_interval_minutes": throttle_config.min_interval_minutes,
+                    "last_signal_at": last_sell_snapshot.timestamp.isoformat()
+                    if last_sell_snapshot and last_sell_snapshot.timestamp
+                    else None,
+                    "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
+                },
+            )
             sell_allowed, sell_reason = should_emit_signal(
                 symbol=symbol,
                 side="SELL",
@@ -891,6 +994,12 @@ class SignalMonitorService:
             if not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 logger.info(blocked_msg)
+                self._log_signal_rejection(
+                    symbol,
+                    "SELL",
+                    self._classify_throttle_reason(sell_reason),
+                    {"throttle_reason": sell_reason},
+                )
                 try:
                     from app.api.routes_monitoring import add_telegram_message
 
@@ -932,6 +1041,12 @@ class SignalMonitorService:
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
                     f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
                     f"DECISION: SKIPPED ({', '.join(skip_reason)})"
+                )
+                self._log_signal_rejection(
+                    symbol,
+                    "BUY",
+                    "DISABLED_BUY_SELL_FLAG",
+                    {"buy_alert_enabled": buy_alert_enabled},
                 )
         
         if buy_signal and buy_alert_enabled:
@@ -1135,6 +1250,11 @@ class SignalMonitorService:
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
                                     f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
+                                )
+                                self._log_signal_accept(
+                                    symbol,
+                                    "BUY",
+                                    {"telegram": "sent", "reason": reason_text},
                                 )
                                 # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
                                 # This ensures that if multiple calls happen simultaneously, only the first one will update the state
@@ -1514,6 +1634,23 @@ class SignalMonitorService:
                     # Remove lock and skip sending alert (but continue processing coin)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+                    self._log_signal_rejection(
+                        symbol,
+                        "BUY",
+                        self._classify_throttle_reason(throttle_reason),
+                        {"throttle_reason": throttle_reason},
+                    )
+                else:
+                    self._log_signal_accept(
+                        symbol,
+                        "BUY",
+                        {
+                            "price": current_price,
+                            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                            "min_price_change_pct": min_pct,
+                            "cooldown_minutes": cooldown,
+                        },
+                    )
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -1836,6 +1973,12 @@ class SignalMonitorService:
                         f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
                         f"DECISION: SKIPPED ({', '.join(skip_reason)})"
                     )
+                self._log_signal_rejection(
+                    symbol,
+                    "SELL",
+                    "DISABLED_BUY_SELL_FLAG",
+                    {"sell_alert_enabled": sell_alert_enabled},
+                )
             
             if sell_signal and sell_alert_enabled:
                 logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
@@ -1881,6 +2024,23 @@ class SignalMonitorService:
                         # Remove lock and skip sending alert (but continue processing coin)
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
+                        self._log_signal_rejection(
+                            symbol,
+                            "SELL",
+                            self._classify_throttle_reason(throttle_reason),
+                            {"throttle_reason": throttle_reason},
+                        )
+                    else:
+                        self._log_signal_accept(
+                            symbol,
+                            "SELL",
+                            {
+                                "price": current_price,
+                                "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                                "min_price_change_pct": min_pct,
+                                "cooldown_minutes": cooldown,
+                            },
+                        )
                     
                     # CRITICAL: Final check - verify sell_alert_enabled before sending
                     # Refresh flag from database to ensure we have latest value
@@ -1899,6 +2059,12 @@ class SignalMonitorService:
                         blocked_msg = (
                             f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False en verificación final. "
                             f"No se enviará alerta SELL aunque se detectó señal SELL."
+                        )
+                        self._log_signal_rejection(
+                            symbol,
+                            "SELL",
+                            "DISABLED_BUY_SELL_FLAG",
+                            {"sell_alert_enabled": False},
                         )
                         logger.warning(blocked_msg)
                         try:
@@ -1946,6 +2112,11 @@ class SignalMonitorService:
                                     logger.info(
                                         f"✅ SELL alert SENT for {symbol}: "
                                         f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
+                                    )
+                                    self._log_signal_accept(
+                                        symbol,
+                                        "SELL",
+                                        {"telegram": "sent", "reason": reason_text},
                                     )
                                     # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
                                     self._update_alert_state(symbol, "SELL", current_price)
