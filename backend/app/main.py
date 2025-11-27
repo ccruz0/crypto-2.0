@@ -159,7 +159,8 @@ async def startup_event():
                     except Exception as e:
                         logger.warning(f"Database initialization failed: {e}")
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, init_db)
+                loop.run_in_executor(None, init_db)
+                logger.info("Database initialization scheduled in background")
         
             # Services            
             if not DEBUG_DISABLE_TRADING_SCHEDULER:
