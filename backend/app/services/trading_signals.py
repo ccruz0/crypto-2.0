@@ -402,8 +402,14 @@ def calculate_trading_signals(
     # This is more conservative than requiring only MA reversal.
     trend_reversal = ma_reversal or price_below_ma10w
     
-    # Debug logging for SELL signal calculation
-    if symbol == "UNI_USD" or (rsi is not None and rsi > rsi_sell_threshold):
+    # Debug logging for SELL signal calculation - ALWAYS log for UNI_USD
+    if symbol == "UNI_USD":
+        logger.info(
+            f"🔍 {symbol} SELL check: rsi={rsi}, rsi_sell_threshold={rsi_sell_threshold}, "
+            f"rsi_sell_met={rsi_sell_met}, ma50={ma50}, ema10={ema10}, ma_reversal={ma_reversal}, "
+            f"price_below_ma10w={price_below_ma10w}, trend_reversal={trend_reversal}, volume_ok={volume_ok}"
+        )
+    elif rsi is not None and rsi > rsi_sell_threshold:
         logger.info(
             f"🔍 {symbol} SELL check: rsi_sell_met={rsi_sell_met}, trend_reversal={trend_reversal} "
             f"(ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w}), volume_ok={volume_ok}"
