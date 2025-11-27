@@ -5,7 +5,9 @@ from typing import Optional
 from datetime import datetime
 from enum import Enum
 import pytz
-from app.core.config import settings
+from app.core.config import Settings
+from app.database import SessionLocal
+from app.models.watchlist import WatchlistItem
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +30,19 @@ def get_app_env() -> AppEnv:
         - Set APP_ENV=aws on AWS deployment (alerts go to hilovivo-alerts-aws)
         - Set APP_ENV=local for local development (alerts go to hilovivo-alerts-local)
     """
-    app_env = (settings.APP_ENV or "").strip().lower()
+    settings = Settings()
+    env_override = os.getenv("APP_ENV")
+    app_env = (env_override or settings.APP_ENV or "").strip().lower()
     if app_env == "aws":
         return AppEnv.AWS
     elif app_env == "local":
         return AppEnv.LOCAL
     else:
         # Default to LOCAL but log warning if APP_ENV is explicitly set to unknown value
-        if settings.APP_ENV:
+        configured_value = env_override or settings.APP_ENV
+        if configured_value:
             logger.warning(
-                f"Unknown APP_ENV value '{settings.APP_ENV}', defaulting to LOCAL. "
+                f"Unknown APP_ENV value '{configured_value}', defaulting to LOCAL. "
                 f"Valid values are: 'aws' or 'local'"
             )
         else:
@@ -53,11 +58,10 @@ class TelegramNotifier:
     """
     
     def __init__(self):
-        # Check if Telegram should be enabled based on environment
-        # Telegram is ONLY enabled on AWS, NEVER on local development
-        run_telegram = (settings.RUN_TELEGRAM or "").strip().lower()
+        # Check if Telegram should be enabled based on environment flag
+        settings = Settings()
         environment = (settings.ENVIRONMENT or "").strip().lower()
-        app_env = (settings.APP_ENV or "").strip().lower()
+        app_env = (os.getenv("APP_ENV") or settings.APP_ENV or "").strip().lower()
         
         # Determine if we're on AWS
         is_aws = (
@@ -67,11 +71,16 @@ class TelegramNotifier:
             os.getenv("APP_ENV", "").lower() == "aws"
         )
         
-        # Telegram is ONLY enabled if:
-        # 1. We're on AWS (is_aws=True)
-        # 2. RUN_TELEGRAM is explicitly set to "true"
-        # Local development ALWAYS disables Telegram (even if RUN_TELEGRAM=true)
-        should_enable = is_aws and run_telegram == "true"
+        run_telegram = (
+            settings.RUN_TELEGRAM
+            or os.getenv("RUN_TELEGRAM")
+            or "true"
+        )
+        run_telegram = run_telegram.strip().lower()
+        
+        # Telegram is enabled whenever RUN_TELEGRAM=true (default), regardless of environment.
+        # Set RUN_TELEGRAM=false to disable alerts entirely (used in certain tests/local runs).
+        should_enable = run_telegram == "true"
         
         # Environment-only configuration
         bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
@@ -79,13 +88,13 @@ class TelegramNotifier:
         self.bot_token = bot_token or None
         self.chat_id = chat_id or None
         
-        # Only enable if we should (AWS + RUN_TELEGRAM=true) and have credentials
+        # Only enable if toggle allows it and credentials are configured
         self.enabled = should_enable and bool(self.bot_token and self.chat_id)
         
         if not should_enable:
             logger.info(
-                f"Telegram disabled: Not on AWS or RUN_TELEGRAM not set to 'true'. "
-                f"Environment: {environment}, APP_ENV: {app_env}, RUN_TELEGRAM: {run_telegram}, is_aws: {is_aws}"
+                f"Telegram disabled via RUN_TELEGRAM flag. Environment: {environment}, "
+                f"APP_ENV: {app_env}, RUN_TELEGRAM: {run_telegram}, is_aws: {is_aws}"
             )
             return
         
@@ -576,6 +585,8 @@ class TelegramNotifier:
         risk_approach: Optional[str] = None,
         price_variation: Optional[str] = None,
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
+        throttle_status: Optional[str] = None,
+        throttle_reason: Optional[str] = None,
     ):
         """Send a buy signal alert
         
@@ -587,9 +598,6 @@ class TelegramNotifier:
         # CRITICAL: Verify alert_enabled=True before sending alert
         # This prevents alerts for coins with alert_enabled=False
         try:
-            from app.database import SessionLocal
-            from app.models.watchlist import WatchlistItem
-            
             db = SessionLocal()
             try:
                 from sqlalchemy import or_
@@ -604,45 +612,45 @@ class TelegramNotifier:
                 
                 logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
                 
-                # Check if coin exists in watchlist and has alert_enabled=True
-                # Try exact match first, then variants
+                # Check if coin exists in watchlist and has buy_alert_enabled=True
+                # NOTE: alert_enabled master switch was removed - only check buy_alert_enabled
                 watchlist_item = db.query(WatchlistItem).filter(
-                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants]),
-                    WatchlistItem.alert_enabled == True
+                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants])
                 ).first()
                 
                 if not watchlist_item:
                     logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist con alert_enabled=True "
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist "
                         f"(buscado: {symbol_variants}). No se enviará alerta BUY."
                     )
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist con alert_enabled=True"
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist"
                         add_telegram_message(blocked_message, symbol=symbol, blocked=True)
                     except Exception:
                         pass  # Non-critical, continue
                     return False  # Block alert
                 
-                logger.debug(f"✅ Encontrado {watchlist_item.symbol} con alert_enabled={watchlist_item.alert_enabled}")
+                logger.debug(f"✅ Encontrado {watchlist_item.symbol} en watchlist")
                 
-                # Double-check alert_enabled is still True
-                if not watchlist_item.alert_enabled:
+                # CRITICAL: Check buy_alert_enabled (required for BUY alerts)
+                buy_alert_enabled = getattr(watchlist_item, 'buy_alert_enabled', False)
+                if not buy_alert_enabled:
                     logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - alert_enabled=False en verificación final. "
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - buy_alert_enabled=False. "
                         f"No se enviará alerta BUY."
                     )
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final"
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} - buy_alert_enabled=False"
                         add_telegram_message(blocked_message, symbol=symbol, blocked=True)
                     except Exception:
                         pass  # Non-critical, continue
                     return False  # Block alert
                 
-                logger.info(f"✅ Verificación pasada para {symbol} - alert_enabled=True confirmado")
+                logger.info(f"✅ Verificación pasada para {symbol} - buy_alert_enabled=True confirmado")
             except Exception as e:
                 logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
                 # On error, block alert to prevent unwanted alerts
@@ -697,7 +705,13 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 sent_message = f"✅ BUY SIGNAL: {symbol} - {reason}"
-                add_telegram_message(sent_message, symbol=symbol, blocked=False)
+                add_telegram_message(
+                    sent_message,
+                    symbol=symbol,
+                    blocked=False,
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason or reason,
+                )
             except Exception:
                 pass  # Non-critical, continue
         
@@ -713,6 +727,8 @@ class TelegramNotifier:
         risk_approach: Optional[str] = None,
         price_variation: Optional[str] = None,
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
+        throttle_status: Optional[str] = None,
+        throttle_reason: Optional[str] = None,
     ):
         """Send a sell signal alert
         
@@ -723,9 +739,6 @@ class TelegramNotifier:
         
         # CRITICAL: Verify alert_enabled=True before sending alert
         try:
-            from app.database import SessionLocal
-            from app.models.watchlist import WatchlistItem
-            
             db = SessionLocal()
             try:
                 from sqlalchemy import or_
@@ -739,41 +752,43 @@ class TelegramNotifier:
                 
                 logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
                 
-                # Check if coin exists in watchlist and has alert_enabled=True
+                # Check if coin exists in watchlist and has sell_alert_enabled=True
+                # NOTE: alert_enabled master switch was removed - only check sell_alert_enabled
                 watchlist_item = db.query(WatchlistItem).filter(
-                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants]),
-                    WatchlistItem.alert_enabled == True
+                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants])
                 ).first()
                 
                 if not watchlist_item:
                     logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist con alert_enabled=True "
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist "
                         f"(buscado: {symbol_variants}). No se enviará alerta SELL."
                     )
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist con alert_enabled=True"
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} SELL - No se encontró en watchlist"
                         add_telegram_message(blocked_message, symbol=symbol, blocked=True)
                     except Exception:
                         pass
                     return False
                 
-                logger.debug(f"✅ Encontrado {watchlist_item.symbol} con alert_enabled={watchlist_item.alert_enabled}")
+                logger.debug(f"✅ Encontrado {watchlist_item.symbol} en watchlist")
                 
-                if not watchlist_item.alert_enabled:
+                # CRITICAL: Check sell_alert_enabled (required for SELL alerts)
+                sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
+                if not sell_alert_enabled:
                     logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - alert_enabled=False en verificación final. "
+                        f"🚫 ALERTA BLOQUEADA: {symbol} - sell_alert_enabled=False. "
                         f"No se enviará alerta SELL."
                     )
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final"
+                        blocked_message = f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False"
                         add_telegram_message(blocked_message, symbol=symbol, blocked=True)
                     except Exception:
                         pass
                     return False
                 
-                logger.info(f"✅ Verificación pasada para {symbol} - alert_enabled=True confirmado")
+                logger.info(f"✅ Verificación pasada para {symbol} - sell_alert_enabled=True confirmado")
             except Exception as e:
                 logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
                 return False
@@ -827,7 +842,13 @@ class TelegramNotifier:
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 sent_message = f"🔴 SELL SIGNAL: {symbol} - {reason}"
-                add_telegram_message(sent_message, symbol=symbol, blocked=False)
+                add_telegram_message(
+                    sent_message,
+                    symbol=symbol,
+                    blocked=False,
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason or reason,
+                )
             except Exception:
                 pass
         
