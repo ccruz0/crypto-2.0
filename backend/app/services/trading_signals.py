@@ -431,6 +431,10 @@ def calculate_trading_signals(
         if price_below_ma10w:
             result["ma10w_break"] = True
             result["rationale"].append("📉 Significant trend break detected")
+        
+        # Log for UNI_USD when conditions are met
+        if symbol == "UNI_USD":
+            logger.info(f"✅ {symbol} SELL conditions MET: rsi_sell_met={rsi_sell_met}, trend_reversal={trend_reversal}, volume_ok={volume_ok}")
     else:
         # Log why SELL signal is not triggered
         missing_conditions = []
@@ -447,6 +451,11 @@ def calculate_trading_signals(
     if any(sell_conditions):
         result["sell_signal"] = True
         result["rationale"].append(f"🔴 SELL ({strategy_type.value.title()}/{risk_approach.value.title()}): {' | '.join(sell_reasons)}")
+        if symbol == "UNI_USD":
+            logger.info(f"✅ {symbol} SELL signal SET TO TRUE in result")
+    else:
+        if symbol == "UNI_USD":
+            logger.warning(f"⚠️ {symbol} SELL signal NOT SET - sell_conditions={sell_conditions}, any()={any(sell_conditions)}")
     
     # 4. Position summary
     if last_buy_price is not None:
