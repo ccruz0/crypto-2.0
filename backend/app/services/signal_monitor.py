@@ -3274,7 +3274,7 @@ class SignalMonitorService:
                     cycle_count += 1
                     self.last_run_at = datetime.now(timezone.utc)
                     self._persist_status("cycle_started")
-                    logger.info("SignalMonitorService cycle #%s started", cycle_count)
+                    logger.info("SignalMonitorService cycle #%s started (is_running=%s)", cycle_count, self.is_running)
 
                     db = SessionLocal()
                     try:
@@ -3291,15 +3291,34 @@ class SignalMonitorService:
                 except Exception as e:
                     logger.error(f"❌ Error in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
                     self._persist_status("cycle_error")
-
-                await asyncio.sleep(self.monitor_interval)
+                    # Continue to next cycle even if this one failed
+                
+                # Sleep before next cycle, with error handling
+                try:
+                    await asyncio.sleep(self.monitor_interval)
+                except asyncio.CancelledError:
+                    logger.info("SignalMonitorService sleep cancelled, exiting loop")
+                    raise
+                except Exception as e:
+                    logger.error(f"❌ Error during sleep in signal monitoring cycle #{cycle_count}: {e}", exc_info=True)
+                    # Continue anyway - don't let sleep errors stop the monitor
+                    await asyncio.sleep(1)  # Short sleep before retrying
+                
+                # Verify we should continue
+                if not self.is_running:
+                    logger.warning("SignalMonitorService is_running set to False, exiting loop after %s cycles", cycle_count)
+                    break
         except asyncio.CancelledError:
-            logger.info("SignalMonitorService loop cancelled")
+            logger.info("SignalMonitorService loop cancelled after %s cycles", cycle_count)
             self._persist_status("cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Fatal error in SignalMonitorService loop after {cycle_count} cycles: {e}", exc_info=True)
+            self._persist_status("fatal_error")
             raise
         finally:
             self.is_running = False
-            logger.info("SignalMonitorService loop exited after %s cycles", cycle_count)
+            logger.info("SignalMonitorService loop exited after %s cycles (is_running=%s)", cycle_count, self.is_running)
             self._persist_status("stopped")
     
     def stop(self):
