@@ -233,9 +233,24 @@ class BuyIndexMonitorService:
                 risk_approach=risk_approach,
             )
             
-            # Format message
+            # Prepare formatted strings (handle missing data gracefully)
             index = index_data["index"]
             emoji = "🟢" if index >= 80 else "🟡" if index >= 50 else "🔴"
+            rsi_fmt = f"{index_data['rsi']:.1f}" if index_data['rsi'] is not None else "N/A"
+            ma50_fmt = (
+                f"${index_data['ma50']:,.2f}" if index_data['ma50'] is not None else "N/A"
+            )
+            ema10_fmt = (
+                f"${index_data['ema10']:,.2f}" if index_data['ema10'] is not None else "N/A"
+            )
+            buy_target_fmt = (
+                f"${index_data['buy_target']:,.2f}"
+                if index_data['buy_target'] is not None
+                else "Not set"
+            )
+            price_fmt = (
+                f"${index_data['price']:,.2f}" if index_data['price'] is not None else "N/A"
+            )
             
             message = f"""
 {emoji} <b>BTC_USD BUY INDEX</b>
@@ -243,11 +258,11 @@ class BuyIndexMonitorService:
 📊 <b>Index: {index}/100</b>
 {'✅ BUY SIGNAL ACTIVE' if index_data['buy_signal'] else '⏳ Approaching BUY conditions'}
 
-💵 Price: ${index_data['price']:,.2f}
-📈 RSI: {index_data['rsi']:.1f if index_data['rsi'] is not None else 'N/A'}
-📊 MA50: ${index_data['ma50']:,.2f if index_data['ma50'] is not None else 'N/A'}
-📊 EMA10: ${index_data['ema10']:,.2f if index_data['ema10'] is not None else 'N/A'}
-🎯 Buy Target: ${index_data['buy_target']:,.2f if index_data['buy_target'] is not None else 'Not set'}
+💵 Price: {price_fmt}
+📈 RSI: {rsi_fmt}
+📊 MA50: {ma50_fmt}
+📊 EMA10: {ema10_fmt}
+🎯 Buy Target: {buy_target_fmt}
 
 <b>Breakdown:</b>
 {chr(10).join(index_data['breakdown'])}
