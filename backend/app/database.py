@@ -123,30 +123,41 @@ def ensure_optional_columns(db_engine=None):
     
     try:
         from app.models.watchlist import WatchlistItem
+        from app.models.telegram_message import TelegramMessage
     except Exception as import_err:
-        logger.warning(f"Cannot load WatchlistItem model to verify optional columns: {import_err}")
+        logger.warning(f"Cannot load models to verify optional columns: {import_err}")
         return
     
-    table_name = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
+    table_configs = {}
+    
+    watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"
     )
-    
-    optional_columns = [
+    table_configs[watchlist_table] = [
         ("is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
         ("min_price_change_pct", "DOUBLE PRECISION"),
     ]
     
+    telegram_table = getattr(getattr(TelegramMessage, "__table__", None), "name", None) or getattr(
+        TelegramMessage, "__tablename__", "telegram_messages"
+    )
+    table_configs[telegram_table] = [
+        ("throttle_status", "VARCHAR(20)"),
+        ("throttle_reason", "TEXT"),
+    ]
+    
     try:
         with engine_to_use.begin() as conn:
-            for column_name, column_sql in optional_columns:
-                if table_has_column(engine_to_use, table_name, column_name):
-                    continue
-                stmt = text(
-                    f"ALTER TABLE {table_name} "
-                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_sql}"
-                )
-                conn.execute(stmt)
-                logger.info("Added optional column %s.%s", table_name, column_name)
+            for table_name, optional_columns in table_configs.items():
+                for column_name, column_sql in optional_columns:
+                    if table_has_column(engine_to_use, table_name, column_name):
+                        continue
+                    stmt = text(
+                        f"ALTER TABLE {table_name} "
+                        f"ADD COLUMN IF NOT EXISTS {column_name} {column_sql}"
+                    )
+                    conn.execute(stmt)
+                    logger.info("Added optional column %s.%s", table_name, column_name)
     except Exception as ensure_err:
         logger.warning(f"Could not ensure optional columns: {ensure_err}", exc_info=True)
 
@@ -187,4 +198,3 @@ def get_db():
                 db.close()
             except Exception as close_err:
                 logger.warning(f"Error closing database session: {close_err}")
-

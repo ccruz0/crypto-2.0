@@ -9,6 +9,7 @@ import math
 import requests
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
+from copy import deepcopy
 import pytz
 from app.services.telegram_notifier import telegram_notifier
 from sqlalchemy.orm import Session
@@ -69,19 +70,25 @@ def _format_coin_summary(item: WatchlistItem) -> str:
     amount_text = f"${amount:,.2f}" if (isinstance(amount, (int, float)) and amount > 0) else "N/A"
     min_pct = getattr(item, "min_price_change_pct", None)
     min_pct_text = f"{min_pct:.2f}%" if isinstance(min_pct, (int, float)) else "Strategy default"
+    cooldown = getattr(item, "alert_cooldown_minutes", None)
+    cooldown_text = f"{cooldown:.1f} min" if isinstance(cooldown, (int, float)) else "Strategy default"
     sl_mode = getattr(item, "sl_tp_mode", None) or "conservative"
     sl_pct = getattr(item, "sl_percentage", None)
     tp_pct = getattr(item, "tp_percentage", None)
     sl_text = f"{sl_pct:.2f}%" if isinstance(sl_pct, (int, float)) else "Auto"
     tp_text = f"{tp_pct:.2f}%" if isinstance(tp_pct, (int, float)) else "Auto"
+    buy_alert = "ENABLED" if getattr(item, "buy_alert_enabled", False) else "DISABLED"
+    sell_alert = "ENABLED" if getattr(item, "sell_alert_enabled", False) else "DISABLED"
     return (
         f"🔔 Alert: <b>{'ENABLED' if item.alert_enabled else 'DISABLED'}</b>\n"
+        f"🟢 Buy Alert: <b>{buy_alert}</b> | 🔻 Sell Alert: <b>{sell_alert}</b>\n"
         f"🤖 Trade: <b>{'ENABLED' if item.trade_enabled else 'DISABLED'}</b>\n"
         f"⚡ Margin: <b>{'ON' if item.trade_on_margin else 'OFF'}</b>\n"
         f"💵 Amount USD: <b>{amount_text}</b>\n"
         f"🎯 Risk Mode: <b>{sl_mode.title()}</b>\n"
         f"📉 SL%: <b>{sl_text}</b> | 📈 TP%: <b>{tp_text}</b>\n"
-        f"📊 Min Price Change: <b>{min_pct_text}</b>"
+        f"📊 Min Price Change: <b>{min_pct_text}</b>\n"
+        f"⏱ Cooldown: <b>{cooldown_text}</b>"
     )
 
 
@@ -167,9 +174,10 @@ def _prompt_value_input(
     allow_clear: bool = True,
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Store pending input metadata and prompt the user."""
-    PENDING_VALUE_INPUTS[chat_id] = {
+    pending_state: Dict[str, Any] = {
         "symbol": symbol,
         "field": field,
         "action": action,
@@ -178,6 +186,9 @@ def _prompt_value_input(
         "min_value": min_value,
         "max_value": max_value,
     }
+    if extra:
+        pending_state.update(extra)
+    PENDING_VALUE_INPUTS[chat_id] = pending_state
     footer = "\n\nEnvía el valor por chat. Escribe 'cancel' para salir."
     keyboard = _build_keyboard([[{"text": "❌ Cancelar", "callback_data": "input:cancel"}]])
     _send_menu_message(chat_id, prompt + footer, keyboard)
@@ -245,6 +256,21 @@ def _handle_pending_value_message(chat_id: str, text: str, db: Session) -> bool:
             _update_watchlist_fields(db, symbol, {"notes": value})
             send_command_response(chat_id, f"📝 Notas actualizadas para {symbol}")
             show_coin_menu(chat_id, symbol, db)
+        elif action == "update_rule":
+            preset = state.get("preset")
+            risk_mode = state.get("risk")
+            rule_path = state.get("rule_path")
+            label = state.get("label") or rule_path
+            if not preset or not risk_mode or not rule_path:
+                send_command_response(chat_id, "❌ No se pudo determinar la regla a actualizar.")
+            else:
+                try:
+                    _update_signal_rule_value(preset, risk_mode, rule_path, value)
+                    send_command_response(chat_id, f"✅ {label} actualizado para {preset.title()} · {risk_mode}")
+                    show_signal_config_detail(chat_id, preset, risk_mode)
+                except Exception as update_err:
+                    logger.error(f"[TG][ERROR] Failed to update rule {rule_path}: {update_err}", exc_info=True)
+                    send_command_response(chat_id, f"❌ Error guardando regla: {update_err}")
         else:
             send_command_response(chat_id, "⚠️ Acción no soportada.")
         PENDING_VALUE_INPUTS.pop(chat_id, None)
@@ -553,13 +579,18 @@ def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[
         rows = [
             [
                 {"text": "🔔 Alert", "callback_data": f"wl:coin:{normalized}:toggle:alert"},
+                {"text": "🟢 Buy Alert", "callback_data": f"wl:coin:{normalized}:toggle:buy_alert"},
+                {"text": "🔻 Sell Alert", "callback_data": f"wl:coin:{normalized}:toggle:sell_alert"},
+            ],
+            [
                 {"text": "🤖 Trade", "callback_data": f"wl:coin:{normalized}:toggle:trade"},
                 {"text": "⚡ Margin", "callback_data": f"wl:coin:{normalized}:toggle:margin"},
+                {"text": "🎯 Risk Mode", "callback_data": f"wl:coin:{normalized}:toggle:risk"},
             ],
             [
                 {"text": "💵 Amount USD", "callback_data": f"wl:coin:{normalized}:set:amount"},
-                {"text": "🎯 Risk Mode", "callback_data": f"wl:coin:{normalized}:toggle:risk"},
                 {"text": "📊 Min %", "callback_data": f"wl:coin:{normalized}:set:min_pct"},
+                {"text": "⏱ Cooldown", "callback_data": f"wl:coin:{normalized}:set:cooldown"},
             ],
             [
                 {"text": "📉 SL%", "callback_data": f"wl:coin:{normalized}:set:sl_pct"},
@@ -568,6 +599,7 @@ def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[
             ],
             [
                 {"text": "📝 Notas", "callback_data": f"wl:coin:{normalized}:set:notes"},
+                {"text": "🧪 Test Alert", "callback_data": f"wl:coin:{normalized}:test"},
                 {"text": "🗑️ Delete", "callback_data": f"wl:coin:{normalized}:delete"},
             ],
             [
@@ -646,6 +678,67 @@ def _apply_preset_change(chat_id: str, symbol: str, preset: str) -> None:
     cfg["coins"][symbol]["preset"] = preset
     save_config(cfg)
     send_command_response(chat_id, f"🧠 {symbol} ahora usa preset <b>{preset}</b>")
+
+
+def _trigger_watchlist_test(chat_id: str, symbol: str, db: Session) -> None:
+    """Simulate BUY/SELL alerts for the given symbol matching dashboard test button."""
+    if not db:
+        send_command_response(chat_id, "❌ Database not available.")
+        return
+    item = _get_watchlist_item(db, symbol)
+    if not item:
+        send_command_response(chat_id, f"❌ {symbol} no existe en la watchlist.")
+        return
+    buy_enabled = bool(getattr(item, "buy_alert_enabled", False))
+    sell_enabled = bool(getattr(item, "sell_alert_enabled", False))
+    if not buy_enabled and not sell_enabled:
+        send_command_response(
+            chat_id,
+            f"⚠️ No hay alerts activas para {symbol}.\nActiva BUY o SELL antes de ejecutar una prueba.",
+        )
+        return
+    url = f"{API_BASE_URL.rstrip('/')}/api/test/simulate-alert"
+    results: List[str] = []
+    errors: List[str] = []
+    for signal_type, enabled in (("BUY", buy_enabled), ("SELL", sell_enabled)):
+        if not enabled:
+            continue
+        payload = {
+            "symbol": symbol,
+            "signal_type": signal_type,
+            "force_order": False,
+        }
+        amount = getattr(item, "trade_amount_usd", None)
+        if isinstance(amount, (int, float)) and amount > 0:
+            payload["trade_amount_usd"] = amount
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            if response.status_code != 200:
+                errors.append(f"{signal_type}: {response.text}")
+                continue
+            data = response.json()
+            alert_sent = "✅" if data.get("alert_sent") else "❌"
+            order_created = "✅" if data.get("order_created") else "❌"
+            note = data.get("order_error") or data.get("note") or ""
+            results.append(
+                f"{'🟢' if signal_type == 'BUY' else '🔴'} <b>{signal_type}</b> → Alert {alert_sent} | Order {order_created}"
+                + (f"\n   {note}" if note else "")
+            )
+        except Exception as exc:
+            logger.error(f"[TG][ERROR] simulate alert {symbol} {signal_type}: {exc}", exc_info=True)
+            errors.append(f"{signal_type}: {exc}")
+    if not results and errors:
+        send_command_response(
+            chat_id,
+            "❌ Error simulando alertas:\n" + "\n".join(errors),
+        )
+        return
+    message_lines = [f"🧪 <b>Simulación para {symbol}</b>"]
+    message_lines.extend(results)
+    if errors:
+        message_lines.append("\n⚠️ Errores:")
+        message_lines.extend([f"• {err}" for err in errors])
+    send_command_response(chat_id, "\n".join(message_lines))
 
 def send_status_message(chat_id: str, db: Session = None) -> bool:
     """Send bot status report"""
@@ -2038,6 +2131,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             return
         elif callback_data == "menu:watchlist":
             show_watchlist_menu(chat_id, db, page=1, message_id=message_id)
+        elif callback_data == "menu:signal_config":
+            show_signal_config_menu(chat_id, message_id=message_id)
         elif callback_data.startswith("watchlist:page:"):
             try:
                 page = int(callback_data.split(":")[-1])
@@ -2071,6 +2166,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 field_key = parts[4]
                 toggle_map = {
                     "alert": "alert_enabled",
+                    "buy_alert": "buy_alert_enabled",
+                    "sell_alert": "sell_alert_enabled",
                     "trade": "trade_enabled",
                     "margin": "trade_on_margin",
                     "risk": "sl_tp_mode",
@@ -2129,6 +2226,16 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                         action="set_notes",
                         value_type="string",
                     )
+                elif field_key == "cooldown":
+                    _prompt_value_input(
+                        chat_id,
+                        f"⏱ <b>{symbol}</b>\nIngresa el cooldown en minutos (ej. 5).",
+                        symbol=symbol,
+                        field="alert_cooldown_minutes",
+                        action="update_field",
+                        value_type="float",
+                        min_value=0.0,
+                    )
             elif action == "preset":
                 if len(parts) >= 6 and parts[4] == "set":
                     preset_value = parts[5]
@@ -2144,6 +2251,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 except Exception as err:
                     logger.error(f"[TG][ERROR] delete {symbol}: {err}", exc_info=True)
                     send_command_response(chat_id, f"❌ Error eliminando {symbol}: {err}")
+            elif action == "test":
+                _trigger_watchlist_test(chat_id, symbol, db)
             return
         elif callback_data.startswith("analyze_"):
             symbol = callback_data.replace("analyze_", "")
@@ -2189,6 +2298,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         elif callback_data.startswith("setting:"):
             # Handle settings menu callbacks (e.g., setting:min_price_change_pct:select_strategy)
             _handle_setting_callback(chat_id, callback_data, callback_query.get("message", {}).get("message_id"), db)
+        elif callback_data.startswith("signal:"):
+            _handle_signal_config_callback(chat_id, callback_data, message_id)
         else:
             logger.warning(f"[TG] Unknown callback_data: {callback_data}")
             send_command_response(chat_id, f"❓ Unknown command: {callback_data}")
@@ -2640,4 +2751,395 @@ def _apply_setting_value_to_strategy(chat_id: str, setting_key: str, strategy_ke
     except Exception as e:
         logger.error(f"[TG][ERROR] Error applying strategy setting value: {e}", exc_info=True)
         send_command_response(chat_id, f"❌ Error: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Signal configurator helpers (mirror dashboard Strategy Presets panel)
+# ---------------------------------------------------------------------------
+
+def _normalize_risk_label(risk_mode: Optional[str]) -> str:
+    if not risk_mode:
+        return "Conservative"
+    normalized = risk_mode.strip().lower()
+    if normalized.startswith("agg"):
+        return "Aggressive"
+    if normalized.startswith("con"):
+        return "Conservative"
+    return risk_mode.strip().title()
+
+
+def _resolve_preset_key(cfg: Dict[str, Any], preset_name: str) -> str:
+    preset_key = (preset_name or "").strip().lower()
+    for existing in cfg.get("presets", {}).keys():
+        if existing.lower() == preset_key:
+            return existing
+    raise ValueError(f"Preset '{preset_name}' no existe en trading_config")
+
+
+def _default_rule_template(preset_key: str, preset_data: Dict[str, Any]) -> Dict[str, Any]:
+    buy_default = preset_data.get("RSI_BUY") or preset_data.get("rsi_buy") or 40
+    sell_default = preset_data.get("RSI_SELL") or preset_data.get("rsi_sell") or 70
+    min_pct = (
+        preset_data.get("minPriceChangePct")
+        or preset_data.get("ALERT_MIN_PRICE_CHANGE_PCT")
+        or preset_data.get("alert_min_price_change_pct")
+        or 1.0
+    )
+    cooldown = (
+        preset_data.get("alertCooldownMinutes")
+        or preset_data.get("ALERT_COOLDOWN_MINUTES")
+        or preset_data.get("alert_cooldown_minutes")
+        or 5.0
+    )
+    ma_checks = preset_data.get("maChecks") or {
+        "ema10": True,
+        "ma50": preset_key in {"swing", "intraday"},
+        "ma200": preset_key == "swing",
+    }
+    sl_cfg = preset_data.get("sl") or {"atrMult": 1.5}
+    tp_cfg = preset_data.get("tp") or {"rr": 1.5}
+    volume_ratio = preset_data.get("volumeMinRatio") or 0.5
+    notes = preset_data.get("notes") or ""
+    return {
+        "rsi": {"buyBelow": int(buy_default), "sellAbove": int(sell_default)},
+        "maChecks": {
+            "ema10": bool(ma_checks.get("ema10", True)),
+            "ma50": bool(ma_checks.get("ma50", False)),
+            "ma200": bool(ma_checks.get("ma200", False)),
+        },
+        "volumeMinRatio": float(volume_ratio),
+        "minPriceChangePct": float(min_pct),
+        "alertCooldownMinutes": float(cooldown),
+        "sl": sl_cfg,
+        "tp": tp_cfg,
+        "notes": notes,
+    }
+
+
+def _normalize_signal_config() -> Dict[str, Any]:
+    from app.services.config_loader import load_config, save_config
+
+    cfg = load_config()
+    changed = False
+    presets = cfg.setdefault("presets", {})
+    for key, data in list(presets.items()):
+        if "rules" not in data or not isinstance(data["rules"], dict):
+            template = _default_rule_template(key, data)
+            data["rules"] = {
+                "Conservative": deepcopy(template),
+                "Aggressive": deepcopy(template),
+            }
+            changed = True
+        else:
+            for risk in ("Conservative", "Aggressive"):
+                if risk not in data["rules"]:
+                    data["rules"][risk] = deepcopy(_default_rule_template(key, data))
+                    changed = True
+    if changed:
+        save_config(cfg)
+    return cfg
+
+
+def _get_signal_rules(cfg: Dict[str, Any], preset: str, risk_mode: str) -> Tuple[Dict[str, Any], Dict[str, Any], str]:
+    preset_key = _resolve_preset_key(cfg, preset)
+    preset_cfg = cfg.get("presets", {}).get(preset_key, {})
+    rules_by_risk = preset_cfg.setdefault("rules", {})
+    risk_label = _normalize_risk_label(risk_mode)
+    if risk_label not in rules_by_risk:
+        rules_by_risk[risk_label] = deepcopy(_default_rule_template(preset_key, preset_cfg))
+        from app.services.config_loader import save_config
+
+        save_config(cfg)
+    return rules_by_risk[risk_label], preset_cfg, risk_label
+
+
+def _save_signal_config(cfg: Dict[str, Any]) -> None:
+    from app.services.config_loader import save_config
+
+    save_config(cfg)
+
+
+def _update_signal_rule_value(preset: str, risk_mode: str, rule_path: str, value: Any) -> None:
+    cfg = _normalize_signal_config()
+    rules, _preset_cfg, risk_label = _get_signal_rules(cfg, preset, risk_mode)
+    target = rules
+    parts = rule_path.split(".")
+    for part in parts[:-1]:
+        target = target.setdefault(part, {})
+    target[parts[-1]] = value
+    _save_signal_config(cfg)
+
+
+def _toggle_signal_ma_check(preset: str, risk_mode: str, field: str) -> bool:
+    cfg = _normalize_signal_config()
+    rules, _, _ = _get_signal_rules(cfg, preset, risk_mode)
+    checks = rules.setdefault("maChecks", {})
+    current = bool(checks.get(field, False))
+    checks[field] = not current
+    _save_signal_config(cfg)
+    return checks[field]
+
+
+def _switch_signal_sl_method(preset: str, risk_mode: str) -> str:
+    cfg = _normalize_signal_config()
+    rules, _, _ = _get_signal_rules(cfg, preset, risk_mode)
+    sl_cfg = rules.get("sl") or {}
+    if "atrMult" in sl_cfg:
+        rules["sl"] = {"pct": 0.5}
+        new_mode = "pct"
+    else:
+        rules["sl"] = {"atrMult": 1.5}
+        new_mode = "atr"
+    _save_signal_config(cfg)
+    return new_mode
+
+
+def _switch_signal_tp_method(preset: str, risk_mode: str) -> str:
+    cfg = _normalize_signal_config()
+    rules, _, _ = _get_signal_rules(cfg, preset, risk_mode)
+    tp_cfg = rules.get("tp") or {}
+    if "rr" in tp_cfg:
+        rules["tp"] = {"pct": 2.0}
+        new_mode = "pct"
+    else:
+        rules["tp"] = {"rr": 1.5}
+        new_mode = "rr"
+    _save_signal_config(cfg)
+    return new_mode
+
+
+def show_signal_config_menu(chat_id: str, message_id: Optional[int] = None) -> bool:
+    """Display list of presets/risk combinations for editing."""
+    try:
+        cfg = _normalize_signal_config()
+        presets = cfg.get("presets", {})
+        if not presets:
+            return send_command_response(chat_id, "❌ No hay presets configurados.")
+        rows: List[List[Dict[str, str]]] = []
+        for preset_key in sorted(presets.keys()):
+            preset_label = preset_key.replace("_", " ").title()
+            rows.append([
+                {
+                    "text": f"{preset_label} · Cons",
+                    "callback_data": f"signal:detail:{preset_key}:Conservative",
+                },
+                {
+                    "text": f"{preset_label} · Agg",
+                    "callback_data": f"signal:detail:{preset_key}:Aggressive",
+                },
+            ])
+        rows.append([{"text": "🏠 Main Menu", "callback_data": "menu:main"}])
+        text = "📐 <b>Signal Configurator</b>\n\nSelecciona una estrategia para editar sus reglas."
+        return _send_or_edit_menu(chat_id, text, _build_keyboard(rows), message_id)
+    except Exception as exc:
+        logger.error(f"[TG][ERROR] show_signal_config_menu failed: {exc}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error mostrando Signal Config: {exc}")
+
+
+def _format_signal_detail_text(preset_label: str, risk_label: str, rules: Dict[str, Any]) -> str:
+    rsi = rules.get("rsi", {})
+    ma_checks = rules.get("maChecks", {})
+    sl_cfg = rules.get("sl", {})
+    tp_cfg = rules.get("tp", {})
+    sl_mode = "ATR x{:.2f}".format(sl_cfg.get("atrMult")) if "atrMult" in sl_cfg else "{}%".format(sl_cfg.get("pct"))
+    tp_mode = (
+        "RR {:.2f}".format(tp_cfg.get("rr"))
+        if "rr" in tp_cfg
+        else "{}%".format(tp_cfg.get("pct"))
+    )
+    notes = rules.get("notes") or "—"
+    return (
+        f"⚙️ <b>{preset_label} · {risk_label}</b>\n\n"
+        f"📈 RSI: Buy <b>{rsi.get('buyBelow')}</b> | Sell > <b>{rsi.get('sellAbove')}</b>\n"
+        f"📊 MA Checks: EMA10={'ON' if ma_checks.get('ema10') else 'OFF'}, "
+        f"MA50={'ON' if ma_checks.get('ma50') else 'OFF'}, "
+        f"MA200={'ON' if ma_checks.get('ma200') else 'OFF'}\n"
+        f"📦 Volume Ratio ≥ <b>{rules.get('volumeMinRatio')}</b>x\n"
+        f"📉 Min Price Change: <b>{rules.get('minPriceChangePct')}%</b>\n"
+        f"⏱ Cooldown: <b>{rules.get('alertCooldownMinutes')} min</b>\n"
+        f"🛡️ SL: <b>{sl_mode}</b>\n"
+        f"🎯 TP: <b>{tp_mode}</b>\n"
+        f"📝 Notes: {notes}"
+    )
+
+
+def show_signal_config_detail(chat_id: str, preset: str, risk_mode: str, message_id: Optional[int] = None) -> bool:
+    """Show editable details for a preset/risk combination."""
+    try:
+        cfg = _normalize_signal_config()
+        rules, _, risk_label = _get_signal_rules(cfg, preset, risk_mode)
+        preset_key = _resolve_preset_key(cfg, preset)
+        preset_label = preset_key.replace("_", " ").title()
+        text = _format_signal_detail_text(preset_label, risk_label, rules)
+        sl_cfg = rules.get("sl", {})
+        tp_cfg = rules.get("tp", {})
+        sl_method = "ATR" if "atrMult" in sl_cfg else "Percent"
+        tp_method = "RR" if "rr" in tp_cfg else "Percent"
+        keyboard_rows = [
+            [
+                {"text": "RSI Buy", "callback_data": f"signal:edit:{preset_key}:{risk_label}:rsi_buy"},
+                {"text": "RSI Sell", "callback_data": f"signal:edit:{preset_key}:{risk_label}:rsi_sell"},
+            ],
+            [
+                {"text": f"EMA10 {'✅' if rules.get('maChecks', {}).get('ema10') else '❌'}", "callback_data": f"signal:toggle:{preset_key}:{risk_label}:ema10"},
+                {"text": f"MA50 {'✅' if rules.get('maChecks', {}).get('ma50') else '❌'}", "callback_data": f"signal:toggle:{preset_key}:{risk_label}:ma50"},
+                {"text": f"MA200 {'✅' if rules.get('maChecks', {}).get('ma200') else '❌'}", "callback_data": f"signal:toggle:{preset_key}:{risk_label}:ma200"},
+            ],
+            [
+                {"text": "Volume Ratio", "callback_data": f"signal:edit:{preset_key}:{risk_label}:volume_ratio"},
+                {"text": "Min % Change", "callback_data": f"signal:edit:{preset_key}:{risk_label}:min_pct"},
+                {"text": "Cooldown", "callback_data": f"signal:edit:{preset_key}:{risk_label}:cooldown"},
+            ],
+            [
+                {"text": f"SL Mode ({sl_method})", "callback_data": f"signal:slmethod:{preset_key}:{risk_label}"},
+                {"text": "SL Value", "callback_data": f"signal:edit:{preset_key}:{risk_label}:sl_value"},
+            ],
+            [
+                {"text": f"TP Mode ({tp_method})", "callback_data": f"signal:tpmethod:{preset_key}:{risk_label}"},
+                {"text": "TP Value", "callback_data": f"signal:edit:{preset_key}:{risk_label}:tp_value"},
+            ],
+            [
+                {"text": "✏️ Notes", "callback_data": f"signal:notes:{preset_key}:{risk_label}"},
+            ],
+            [
+                {"text": "🔙 Estrategias", "callback_data": "signal:menu"},
+                {"text": "🏠 Main", "callback_data": "menu:main"},
+            ],
+        ]
+        return _send_or_edit_menu(chat_id, text, _build_keyboard(keyboard_rows), message_id)
+    except Exception as exc:
+        logger.error(f"[TG][ERROR] show_signal_config_detail failed: {exc}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error mostrando reglas: {exc}")
+
+
+def _handle_signal_config_callback(chat_id: str, callback_data: str, message_id: Optional[int]) -> None:
+    """Process inline button actions for the signal configurator."""
+    try:
+        parts = callback_data.split(":")
+        if len(parts) < 2:
+            send_command_response(chat_id, "❌ Acción inválida en configurador.")
+            return
+        action = parts[1]
+        if action == "menu":
+            show_signal_config_menu(chat_id, message_id=message_id)
+            return
+        if len(parts) < 4:
+            send_command_response(chat_id, "❌ Parámetros insuficientes.")
+            return
+        preset = parts[2]
+        risk_mode = parts[3]
+        if action == "detail":
+            show_signal_config_detail(chat_id, preset, risk_mode, message_id=message_id)
+            return
+        cfg = _normalize_signal_config()
+        rules, _, risk_label = _get_signal_rules(cfg, preset, risk_mode)
+        if action == "edit":
+            if len(parts) < 5:
+                send_command_response(chat_id, "❌ Campo no especificado.")
+                return
+            field = parts[4]
+            label = ""
+            rule_path = ""
+            value_type = "float"
+            min_value = None
+            max_value = None
+            if field == "rsi_buy":
+                label = "RSI Buy Below"
+                rule_path = "rsi.buyBelow"
+                value_type = "int"
+                min_value = 0
+                max_value = 100
+            elif field == "rsi_sell":
+                label = "RSI Sell Above"
+                rule_path = "rsi.sellAbove"
+                value_type = "int"
+                min_value = 0
+                max_value = 100
+            elif field == "volume_ratio":
+                label = "Volume Ratio"
+                rule_path = "volumeMinRatio"
+                min_value = 0.1
+            elif field == "min_pct":
+                label = "Min Price Change %"
+                rule_path = "minPriceChangePct"
+                min_value = 0.1
+            elif field == "cooldown":
+                label = "Alert Cooldown (minutes)"
+                rule_path = "alertCooldownMinutes"
+                min_value = 0.0
+            elif field == "sl_value":
+                sl_cfg = rules.get("sl", {})
+                if "atrMult" in sl_cfg:
+                    label = "SL ATR Multiplier"
+                    rule_path = "sl.atrMult"
+                    min_value = 0.1
+                else:
+                    label = "SL Percentage"
+                    rule_path = "sl.pct"
+                    min_value = 0.1
+            elif field == "tp_value":
+                tp_cfg = rules.get("tp", {})
+                if "rr" in tp_cfg:
+                    label = "TP Risk/Reward"
+                    rule_path = "tp.rr"
+                    min_value = 0.1
+                else:
+                    label = "TP Percentage"
+                    rule_path = "tp.pct"
+                    min_value = 0.1
+            else:
+                send_command_response(chat_id, "❌ Campo no soportado.")
+                return
+            _prompt_value_input(
+                chat_id,
+                f"{label}\n\nEnvía el nuevo valor.",
+                symbol=None,
+                field=None,
+                action="update_rule",
+                value_type=value_type,
+                min_value=min_value,
+                max_value=max_value,
+                extra={
+                    "preset": preset,
+                    "risk": risk_label,
+                    "rule_path": rule_path,
+                    "label": label,
+                },
+            )
+        elif action == "toggle":
+            if len(parts) < 5:
+                send_command_response(chat_id, "❌ Campo no especificado.")
+                return
+            field = parts[4]
+            new_value = _toggle_signal_ma_check(preset, risk_mode, field)
+            send_command_response(chat_id, f"✅ {field.upper()} ahora está {'ON' if new_value else 'OFF'}")
+            show_signal_config_detail(chat_id, preset, risk_mode)
+        elif action == "slmethod":
+            new_mode = _switch_signal_sl_method(preset, risk_mode)
+            send_command_response(chat_id, f"🛡️ SL configurado a {new_mode.upper()}")
+            show_signal_config_detail(chat_id, preset, risk_mode)
+        elif action == "tpmethod":
+            new_mode = _switch_signal_tp_method(preset, risk_mode)
+            send_command_response(chat_id, f"🎯 TP configurado a {new_mode.upper()}")
+            show_signal_config_detail(chat_id, preset, risk_mode)
+        elif action == "notes":
+            _prompt_value_input(
+                chat_id,
+                "📝 Escribe las notas para esta estrategia.",
+                symbol=None,
+                field=None,
+                action="update_rule",
+                value_type="string",
+                extra={
+                    "preset": preset,
+                    "risk": risk_label,
+                    "rule_path": "notes",
+                    "label": "Notas",
+                },
+            )
+        else:
+            send_command_response(chat_id, "❌ Acción no soportada.")
+    except Exception as exc:
+        logger.error(f"[TG][ERROR] signal config callback failed: {exc}", exc_info=True)
+        send_command_response(chat_id, f"❌ Error en configurador: {exc}")
 

@@ -40,7 +40,8 @@ async def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = 
         
         # Compute full dashboard state if not provided (this may take 40-70 seconds)
         if dashboard_state is None:
-            try:
+        try:
+                # Fixed indentation after if-block to avoid SyntaxError.
                 # Bug 1 Fix: Import _compute_dashboard_state instead of get_dashboard_state
                 # This avoids circular dependency and allows direct Session parameter
                 # Lazy import to avoid circular dependency
@@ -48,14 +49,14 @@ async def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = 
                 # _compute_dashboard_state is async and accepts a Session directly (no FastAPI dependencies)
                 # We're already in an async context from the scheduler
                 dashboard_state = await _compute_dashboard_state(db)
-                logger.info(f"✅ Dashboard state computed in {time.time() - start_time:.2f}s")
-            except Exception as e:
-                logger.error(f"❌ Error computing dashboard state: {e}", exc_info=True)
-                return {
-                    "success": False,
-                    "error": str(e),
-                    "duration_seconds": time.time() - start_time
-                }
+            logger.info(f"✅ Dashboard state computed in {time.time() - start_time:.2f}s")
+        except Exception as e:
+            logger.error(f"❌ Error computing dashboard state: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "duration_seconds": time.time() - start_time
+            }
         else:
             logger.info("📥 Using precomputed dashboard state for snapshot update")
         

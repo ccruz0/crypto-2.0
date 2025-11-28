@@ -105,11 +105,114 @@ def get_alert_thresholds(symbol: str, risk_mode: Optional[str] = None) -> Tuple[
     if preset_name:
         preset_key = preset_name.split("-")[0]  # remove risk suffix if present
         preset_cfg = cfg.get("presets", {}).get(preset_key, {})
-        preset_cooldown = preset_cfg.get("ALERT_COOLDOWN_MINUTES", preset_cooldown)
-        preset_min_pct = preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", preset_min_pct)
+        
+        # Support both old format (direct keys) and new format (rules structure)
+        if "rules" in preset_cfg:
+            # New format: check rules for risk mode
+            risk_key = risk_mode.lower().capitalize() if risk_mode else "Conservative"
+            if risk_key not in ["Conservative", "Aggressive"]:
+                risk_key = "Conservative"
+            rules = preset_cfg.get("rules", {}).get(risk_key, {})
+            preset_cooldown = rules.get("alertCooldownMinutes", rules.get("alert_cooldown_minutes", preset_cooldown))
+            preset_min_pct = rules.get("minPriceChangePct", rules.get("min_price_change_pct", preset_min_pct))
+        else:
+            # Old format: direct keys
+            preset_cooldown = preset_cfg.get("ALERT_COOLDOWN_MINUTES", preset_cooldown)
+            preset_min_pct = preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", preset_min_pct)
 
     overrides = coin_cfg.get("overrides", {})
     cooldown = overrides.get("ALERT_COOLDOWN_MINUTES", preset_cooldown)
     min_pct = overrides.get("ALERT_MIN_PRICE_CHANGE_PCT", preset_min_pct)
 
     return min_pct, cooldown
+
+
+def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dict[str, Any]:
+    """
+    SOURCE OF TRUTH: Get strategy rules from trading_config.json
+    
+    This is the canonical function that reads preset configuration used by:
+    1. Backend alert generation logic (should_trigger_buy_signal, etc.)
+    2. Frontend Signal Configuration UI (via /api/config GET)
+    3. Settings description text (generated from same config)
+    4. Tooltip/Infobox (generated from same config)
+    
+    The config is stored in trading_config.json under "strategy_rules" key:
+    {
+        "strategy_rules": {
+            "swing": {
+                "notificationProfile": "swing",
+                "rules": {
+                    "Conservative": {
+                        "rsi": {"buyBelow": 40, "sellAbove": 70},
+                        "maChecks": {"ema10": true, "ma50": true, "ma200": true},
+                        "volumeMinRatio": 0.5,
+                        ...
+                    },
+                    "Aggressive": {...}
+                }
+            },
+            ...
+        }
+    }
+    
+    When frontend saves config via /api/config PUT, it updates "strategy_rules" in trading_config.json.
+    This function then reads from that same structure, ensuring consistency.
+    
+    Supports both new format (rules structure from dashboard) and old format (legacy direct keys).
+    
+    Args:
+        preset_name: Strategy preset name (e.g., "swing", "intraday", "scalp")
+        risk_mode: Risk mode ("Conservative" or "Aggressive")
+    
+    Returns:
+        Dict with rules: {
+            "rsi": {"buyBelow": int, "sellAbove": int},
+            "maChecks": {"ema10": bool, "ma50": bool, "ma200": bool},
+            "volumeMinRatio": float,
+            ...
+        }
+    """
+    cfg = load_config()
+    preset_key = preset_name.lower()  # Normalize to lowercase
+    # SOURCE OF TRUTH: Prefer strategy_rules structure (dashboard source of truth)
+    # This is where frontend saves config when user changes Signal Configuration
+    strategy_rules_cfg = cfg.get("strategy_rules", {})
+    preset_cfg = strategy_rules_cfg.get(preset_key) or cfg.get("presets", {}).get(preset_key, {})
+    
+    # Normalize risk_mode
+    risk_key = risk_mode.capitalize() if risk_mode else "Conservative"
+    if risk_key not in ["Conservative", "Aggressive"]:
+        risk_key = "Conservative"
+    
+    # Check if new format (has "rules" structure)
+    if "rules" in preset_cfg:
+        rules = preset_cfg.get("rules", {}).get(risk_key, {})
+        if rules:
+            # Return rules in expected format
+            return {
+                "rsi": {
+                    "buyBelow": rules.get("rsi", {}).get("buyBelow") if isinstance(rules.get("rsi"), dict) else None,
+                    "sellAbove": rules.get("rsi", {}).get("sellAbove") if isinstance(rules.get("rsi"), dict) else None,
+                },
+                "maChecks": rules.get("maChecks", {}),
+                "volumeMinRatio": rules.get("volumeMinRatio"),
+                "minPriceChangePct": rules.get("minPriceChangePct"),
+                "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
+            }
+    
+    # Fallback to old format or defaults
+    return {
+        "rsi": {
+            "buyBelow": preset_cfg.get("RSI_BUY"),
+            "sellAbove": preset_cfg.get("RSI_SELL"),
+        },
+        "maChecks": {
+            "ema10": True,  # Default behavior
+            "ma50": True if preset_key in ["swing", "intraday"] else False,
+            "ma200": True if preset_key == "swing" else False,
+        },
+        "volumeMinRatio": 0.5,  # Default
+        "minPriceChangePct": preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", 1.0),
+        "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 5),
+    }

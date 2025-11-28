@@ -110,7 +110,19 @@ def resolve_strategy_profile(
 
     symbol_key = (symbol or "").upper()
 
-    # 2) Try database trade_signals for persisted values
+    # 2) Use trading_config preset mapping (dashboard is the source of truth)
+    cfg = _load_config_cached()
+    coins_cfg = cfg.get("coins", {})
+    coin_cfg = coins_cfg.get(symbol_key) or coins_cfg.get(symbol_key.replace("_USDT", "_USD")) or {}
+    preset_name = coin_cfg.get("preset") or cfg.get("defaults", {}).get("preset")
+    preset_strategy, preset_approach = _parse_preset(preset_name)
+
+    if strategy is None:
+        strategy = preset_strategy
+    if approach is None:
+        approach = preset_approach
+
+    # 3) Fall back to database trade_signals if still unresolved
     if strategy is None or approach is None:
         try:
             if db is not None and TradeSignal is not None:
@@ -126,18 +138,6 @@ def resolve_strategy_profile(
                         approach = _normalize_approach(getattr(trade_signal, "sl_profile", None))
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not read trade signal for %s: %s", symbol_key, exc)
-
-    # 3) Use trading_config preset mapping
-    cfg = _load_config_cached()
-    coins_cfg = cfg.get("coins", {})
-    coin_cfg = coins_cfg.get(symbol_key) or coins_cfg.get(symbol_key.replace("_USDT", "_USD")) or {}
-    preset_name = coin_cfg.get("preset") or cfg.get("defaults", {}).get("preset")
-    preset_strategy, preset_approach = _parse_preset(preset_name)
-
-    if strategy is None:
-        strategy = preset_strategy
-    if approach is None:
-        approach = preset_approach
 
     # 4) Final fallbacks
     if strategy is None:

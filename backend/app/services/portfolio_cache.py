@@ -4,9 +4,22 @@ from sqlalchemy.orm import Session
 from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.services.brokers.crypto_com_trade import trade_client
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_currency_name(value: Optional[str]) -> str:
+    """
+    Canonical currency key used across portfolio ingestion/storage/serialization.
+    Ensures that BTC_USDT, btc-usd, etc. are all treated as BTC.
+    """
+    if not value:
+        return ""
+    normalized = value.strip().upper().replace("-", "_")
+    if "_" in normalized:
+        normalized = normalized.split("_")[0]
+    return normalized
 
 
 def get_crypto_prices() -> Dict[str, float]:
@@ -125,9 +138,12 @@ def update_portfolio_cache(db: Session) -> Dict:
         logger.info(f"Processing {len(balance_data.get('accounts', []))} account balances from Crypto.com...")
         
         for account in balance_data.get("accounts", []):
-            currency = account.get("currency", "").upper()
+            # Normalize every Crypto.com balance before storing so downstream aggregation sees one symbol per coin.
+            currency = _normalize_currency_name(
+                account.get("currency") or account.get("instrument_name") or account.get("symbol")
+            )
             if not currency:
-                logger.debug(f"Skipping account with no currency: {account}")
+                logger.debug(f"Skipping account with no currency or symbol: {account}")
                 continue
                 
             balance = float(account.get("balance", 0))
@@ -297,7 +313,9 @@ def update_portfolio_cache(db: Session) -> Dict:
         loans_found = []
         
         for account in balance_data.get("accounts", []):
-            currency = account.get("currency", "").upper()
+            currency = _normalize_currency_name(
+                account.get("currency") or account.get("instrument_name") or account.get("symbol")
+            )
             if not currency:
                 continue
             
@@ -541,8 +559,10 @@ def get_portfolio_summary(db: Session) -> Dict:
         balances_by_currency = {}
         
         for balance in balances_query:
-            currency = balance.currency
+            currency = _normalize_currency_name(getattr(balance, 'currency', ''))
             balance_id = getattr(balance, 'id', None) if hasattr(balance, 'id') else None
+            if not currency:
+                continue
             
             # Keep only one balance per currency (prefer highest id = most recent)
             if currency not in balances_by_currency:

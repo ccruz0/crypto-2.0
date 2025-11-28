@@ -883,6 +883,19 @@ class SignalMonitorService:
             ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
             logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}{ma_info}")
             
+            # Enhanced logging for BCH and ETH to diagnose why signals aren't triggering
+            if symbol in ["BCH_USD", "ETH_USD"]:
+                rationale = signals.get("rationale", [])
+                logger.info(
+                    f"🔍 {symbol} DETAILED SIGNAL ANALYSIS: "
+                    f"buy_signal={buy_signal}, sell_signal={sell_signal}, "
+                    f"price={current_price:.4f}, RSI={rsi:.1f}, "
+                    f"MA50={ma50}, EMA10={ema10}, MA200={ma200}, "
+                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', None)}, "
+                    f"alert_enabled={watchlist_item.alert_enabled}, "
+                    f"rationale={rationale}"
+                )
+            
             # Determine current signal state
             current_state = "WAIT"  # Default
             if buy_signal:
@@ -3268,8 +3281,10 @@ class SignalMonitorService:
         logger.info("=" * 60)
 
         cycle_count = 0
+        logger.info("SignalMonitorService.start() called, entering main loop (is_running=%s)", self.is_running)
         try:
             while self.is_running:
+                logger.debug("SignalMonitorService loop iteration, is_running=%s", self.is_running)
                 try:
                     cycle_count += 1
                     self.last_run_at = datetime.now(timezone.utc)

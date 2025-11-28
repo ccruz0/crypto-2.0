@@ -48,7 +48,7 @@ class SignalMonitorService:
         self.ALERT_MIN_PRICE_CHANGE_PCT = 1.0
         self.alert_sending_locks: Dict[str, float] = {}  # Track when we're sending alerts: {symbol_side: timestamp}
         self.ALERT_SENDING_LOCK_SECONDS = 2  # Lock for 2 seconds after checking/sending alert to prevent race conditions
-        self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE = True
+        self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE = False
 
     def _resolve_alert_thresholds(self, watchlist_item: WatchlistItem) -> Tuple[Optional[float], Optional[float]]:
         """
@@ -186,45 +186,23 @@ class SignalMonitorService:
         alert_min_price_change = min_price_change_pct if min_price_change_pct is not None else self.ALERT_MIN_PRICE_CHANGE_PCT
         price_change_met = price_change_pct >= alert_min_price_change
         
-        require_both = self.ALERT_REQUIRE_COOLDOWN_AND_PRICE_CHANGE or (not trade_enabled)
-        
-        if require_both:
-            if not price_change_met and not cooldown_met:
-                return False, (
-                    f"Throttled: need cooldown ({time_diff:.1f} min < {cooldown_limit} min) "
-                    f"and price change ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%)"
-                )
-            if not price_change_met:
-                return False, (
-                    f"Throttled: price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}% "
-                    f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
-                )
-            if not cooldown_met:
-                minutes_remaining = max(0.0, cooldown_limit - time_diff)
-                return False, (
-                    f"Throttled: cooldown not met ({time_diff:.1f} min < {cooldown_limit} min, "
-                    f"{minutes_remaining:.1f} min remaining)"
-                )
-            return True, (
-                f"Cooldown ({time_diff:.1f} min) and price change ({price_change_pct:.2f}%) satisfied "
-                f"(threshold {alert_min_price_change:.2f}%)"
+        if not price_change_met and not cooldown_met:
+            minutes_remaining = max(0.0, cooldown_limit - time_diff)
+            return False, (
+                f"Throttled: cooldown {time_diff:.1f} min < {cooldown_limit} min "
+                f"(remaining {minutes_remaining:.1f} min) AND price change "
+                f"{price_change_pct:.2f}% < {alert_min_price_change:.2f}% "
+                f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
             )
-        
-        if price_change_met:
-            return True, (
-                f"Price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%) "
-                f"- sending despite cooldown ({time_diff:.1f} min < {cooldown_limit} min)"
-            )
+
+        reasons = []
         if cooldown_met:
-            return True, (
-                f"Cooldown met ({time_diff:.1f} min >= {cooldown_limit} min) "
-                f"- sending (price change: {price_change_pct:.2f}%)"
-            )
-        return False, (
-            f"Throttled: cooldown not met ({time_diff:.1f} min < {cooldown_limit} min) AND "
-            f"price change not met ({price_change_pct:.2f}% < {alert_min_price_change:.2f}%, "
-            f"last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
-        )
+            reasons.append(f"cooldown met ({time_diff:.1f} min >= {cooldown_limit} min)")
+        if price_change_met:
+            reasons.append(f"price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%)")
+        reason_text = " AND ".join(reasons) if reasons else "threshold satisfied"
+
+        return True, reason_text
     
     def _update_alert_state(self, symbol: str, side: str, price: float):
         """Update the last alert state for a symbol and side"""
@@ -711,6 +689,8 @@ class SignalMonitorService:
                                     strategy_type=strategy_type.value.title(),
                                     risk_approach=risk_approach.value.title(),
                                     price_variation=price_variation,
+                                    throttle_status="SENT",
+                                    throttle_reason=reason,
                                 )
                                 logger.info(f"✅ BUY alert sent for {symbol} - {reason_text}")
                             except Exception as e:

@@ -359,18 +359,27 @@ class PriceFetcher:
             
             current_price = df['close'].iloc[-1]
             
-            # Use more decimal places for small values (like DOGE)
-            price_decimals = 4 if current_price < 1 else 2
-            ma_decimals = 4 if current_price < 1 else 2
+            # Use adaptive precision based on value magnitude (matching frontend logic)
+            def get_ma_precision(value: float) -> int:
+                if value >= 100:
+                    return 2  # Values >= $100: 2 decimals
+                elif value >= 1:
+                    return 2  # Values $1-$99: 2 decimals
+                elif value >= 0.01:
+                    return 6  # Values $0.01-$0.99: 6 decimals
+                else:
+                    return 10  # Values < $0.01: 10 decimals
+            
+            price_decimals = get_ma_precision(current_price)
             
             return {
                 "symbol": symbol,
                 "source": source,
                 "price": round(current_price, price_decimals),
-                "rsi": round(rsi, 1),
-                "ma10": round(ma10, ma_decimals),
-                "ma50": round(ma50, ma_decimals),
-                "ma200": round(ma200, ma_decimals),
+                "rsi": round(rsi, 2),  # RSI should show 2 decimals
+                "ma10": round(ma10, get_ma_precision(ma10)),
+                "ma50": round(ma50, get_ma_precision(ma50)),
+                "ma200": round(ma200, get_ma_precision(ma200)),
                 "time": datetime.now(timezone.utc).isoformat()
             }
             

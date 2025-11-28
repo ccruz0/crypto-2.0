@@ -8,6 +8,7 @@ from app.services.telegram_notifier import telegram_notifier
 from app.services.sl_tp_checker import sl_tp_checker_service
 import requests
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -306,93 +307,118 @@ async def simulate_alert(
             
             # Create order if trade_enabled = true AND trade_amount_usd > 0
             elif watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically from simulate-alert")
+                logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically from simulate-alert (async)")
                 
-                try:
-                    # Import signal monitor service to reuse the order creation logic
-                    from app.services.signal_monitor import SignalMonitorService
-                    signal_monitor = SignalMonitorService()
-                    
-                    # Calculate resistance levels for SL/TP calculation (use current price as reference)
-                    res_up = current_price * 1.05  # 5% above current price
-                    res_down = current_price * 0.95  # 5% below current price
-                    
-                    # Create BUY order using the same logic as signal_monitor
-                    # This will create a MARKET order and when filled, exchange_sync will create SL/TP automatically
-                    logger.info(f"🔍 Calling _create_buy_order for {symbol} with amount_usd={watchlist_item.trade_amount_usd}")
-                    order_result = await signal_monitor._create_buy_order(
-                        db=db,
-                        watchlist_item=watchlist_item,
-                        current_price=current_price,
-                        res_up=res_up,
-                        res_down=res_down
-                    )
-                    logger.info(f"🔍 _create_buy_order returned: {order_result}")
-                    
-                    if order_result:
-                        order_created = True
-                        order_id = order_result.get("order_id") or order_result.get("client_order_id")
-                        logger.info(f"✅ BUY order created successfully for {symbol}: order_id={order_id}")
-                        
-                        # If order is immediately filled (MARKET orders usually are), trigger SL/TP creation
-                        # The exchange_sync service will handle this automatically, but we can also trigger it here
-                        filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
-                        filled_qty = order_result.get("filled_quantity")
-                        
-                        # If we don't have filled_quantity, estimate it
-                        if not filled_qty and filled_price:
-                            filled_qty = watchlist_item.trade_amount_usd / filled_price
-                        elif not filled_qty:
-                            filled_qty = watchlist_item.trade_amount_usd / current_price
-                        
-                        # Check if order is filled (MARKET orders are usually filled immediately)
-                        order_status = order_result.get("status", "").upper()
-                        is_filled = (
-                            order_status in ["FILLED", "filled"] or 
-                            order_result.get("avg_price") is not None or
-                            filled_price != current_price  # If filled_price differs from current_price, order was filled
-                        )
-                        
-                        if is_filled:
-                            logger.info(f"✅ Order {order_id} is FILLED (status={order_status}, filled_price={filled_price}, filled_qty={filled_qty}) - creating SL/TP orders automatically")
-                            
-                            # Trigger SL/TP creation immediately (exchange_sync will also handle this)
-                            try:
-                                from app.services.exchange_sync import ExchangeSyncService
-                                exchange_sync = ExchangeSyncService()
-                                
-                                # Create SL/TP orders for the filled order
-                                exchange_sync._create_sl_tp_for_filled_order(
-                                    db=db,
-                                    symbol=symbol,
-                                    side="BUY",
-                                    filled_price=float(filled_price),
-                                    filled_qty=float(filled_qty),
-                                    order_id=str(order_id)
-                                )
-                                logger.info(f"✅ SL/TP orders created for {symbol} order {order_id}")
-                            except Exception as sl_tp_err:
-                                logger.warning(f"⚠️ Could not create SL/TP orders immediately: {sl_tp_err}. Exchange sync will handle this.", exc_info=True)
-                        else:
-                            logger.info(f"ℹ️ Order {order_id} status={order_status} - SL/TP will be created when order is filled by exchange_sync service")
-                    else:
-                        order_error_message = "Order creation returned None (check logs for details)"
-                        logger.warning(f"Order creation returned None for {symbol}")
-                        
-                except Exception as order_err:
-                    order_error_message = f"Error creating order: {str(order_err)}"
-                    logger.error(f"Error creating order for {symbol}: {order_err}", exc_info=True)
-                    
-                    # Send error notification to Telegram
+                # Create order asynchronously in background to avoid timeout
+                # This allows the endpoint to return immediately while order creation happens in background
+                async def create_order_async():
+                    """Background task to create order without blocking the response"""
                     try:
-                        telegram_notifier.send_message(
-                            f"❌ <b>ORDER CREATION FAILED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"🟢 Side: BUY\n"
-                            f"❌ Error: {order_error_message}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send Telegram error notification: {e}")
+                        # Create a new database session for the background task
+                        from app.database import SessionLocal
+                        bg_db = SessionLocal()
+                        try:
+                            # Refresh watchlist_item in the new session
+                            bg_watchlist_item = bg_db.query(WatchlistItem).filter(
+                                WatchlistItem.symbol == symbol
+                            ).first()
+                            
+                            if not bg_watchlist_item:
+                                logger.error(f"Watchlist item not found in background task for {symbol}")
+                                return
+                            
+                            # Import signal monitor service to reuse the order creation logic
+                            from app.services.signal_monitor import SignalMonitorService
+                            signal_monitor = SignalMonitorService()
+                            
+                            # Calculate resistance levels for SL/TP calculation (use current price as reference)
+                            res_up = current_price * 1.05  # 5% above current price
+                            res_down = current_price * 0.95  # 5% below current price
+                            
+                            # Create BUY order using the same logic as signal_monitor
+                            logger.info(f"🔍 [Background] Calling _create_buy_order for {symbol} with amount_usd={bg_watchlist_item.trade_amount_usd}")
+                            order_result = await signal_monitor._create_buy_order(
+                                db=bg_db,
+                                watchlist_item=bg_watchlist_item,
+                                current_price=current_price,
+                                res_up=res_up,
+                                res_down=res_down
+                            )
+                            logger.info(f"🔍 [Background] _create_buy_order returned: {order_result}")
+                            
+                            if order_result:
+                                order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                                logger.info(f"✅ [Background] BUY order created successfully for {symbol}: order_id={order_id}")
+                                
+                                # If order is immediately filled (MARKET orders usually are), trigger SL/TP creation
+                                filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
+                                filled_qty = order_result.get("filled_quantity")
+                                
+                                # If we don't have filled_quantity, estimate it
+                                if not filled_qty and filled_price:
+                                    filled_qty = bg_watchlist_item.trade_amount_usd / filled_price
+                                elif not filled_qty:
+                                    filled_qty = bg_watchlist_item.trade_amount_usd / current_price
+                                
+                                # Check if order is filled (MARKET orders are usually filled immediately)
+                                order_status = order_result.get("status", "").upper()
+                                is_filled = (
+                                    order_status in ["FILLED", "filled"] or 
+                                    order_result.get("avg_price") is not None or
+                                    filled_price != current_price
+                                )
+                                
+                                if is_filled:
+                                    logger.info(f"✅ [Background] Order {order_id} is FILLED - creating SL/TP orders automatically")
+                                    
+                                    # Trigger SL/TP creation immediately
+                                    try:
+                                        from app.services.exchange_sync import ExchangeSyncService
+                                        exchange_sync = ExchangeSyncService()
+                                        
+                                        # Create SL/TP orders for the filled order
+                                        exchange_sync._create_sl_tp_for_filled_order(
+                                            db=bg_db,
+                                            symbol=symbol,
+                                            side="BUY",
+                                            filled_price=float(filled_price),
+                                            filled_qty=float(filled_qty),
+                                            order_id=str(order_id)
+                                        )
+                                        logger.info(f"✅ [Background] SL/TP orders created for {symbol} order {order_id}")
+                                    except Exception as sl_tp_err:
+                                        logger.warning(f"⚠️ [Background] Could not create SL/TP orders: {sl_tp_err}. Exchange sync will handle this.", exc_info=True)
+                                else:
+                                    logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
+                            else:
+                                logger.warning(f"⚠️ [Background] Order creation returned None for {symbol}")
+                                
+                        except Exception as order_err:
+                            logger.error(f"❌ [Background] Error creating order for {symbol}: {order_err}", exc_info=True)
+                            
+                            # Send error notification to Telegram
+                            try:
+                                telegram_notifier.send_message(
+                                    f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"🟢 Side: BUY\n"
+                                    f"❌ Error: {str(order_err)}"
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to send Telegram error notification: {e}")
+                        finally:
+                            bg_db.close()
+                    except Exception as bg_err:
+                        logger.error(f"❌ [Background] Fatal error in order creation task for {symbol}: {bg_err}", exc_info=True)
+                
+                # Start order creation in background (don't await - return immediately)
+                asyncio.create_task(create_order_async())
+                logger.info(f"🚀 Order creation started in background for {symbol} - returning response immediately")
+                
+                # Mark as in progress (not completed yet)
+                order_created = False
+                order_result = None
+                order_error_message = None
             
             response_data = {
                 "ok": True,
@@ -402,17 +428,22 @@ async def simulate_alert(
                 "price": current_price,
                 "alert_sent": True,
                 "order_created": order_created,
+                "order_in_progress": watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 and not order_created and not order_error_message,
                 "trade_enabled": watchlist_item.trade_enabled,
                 "trade_amount_usd": watchlist_item.trade_amount_usd,
                 "alert_enabled": watchlist_item.alert_enabled
             }
             
-            # Add order details if order was created
+            # Add order details if order was created synchronously
             if order_result and order_created:
                 response_data["order_id"] = order_result.get("order_id") or order_result.get("client_order_id")
                 response_data["order_status"] = order_result.get("status", "UNKNOWN")
                 response_data["filled_price"] = order_result.get("filled_price")
                 response_data["sl_tp_created"] = True  # SL/TP creation attempted
+            
+            # Add note if order is being created in background
+            if response_data.get("order_in_progress"):
+                response_data["note"] = "Order creation started in background. Check logs or Telegram for order status."
             
             # Add error message if order was not created
             if order_error_message:
@@ -465,64 +496,90 @@ async def simulate_alert(
             
             # Create order if trade_enabled = true AND trade_amount_usd > 0
             elif watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                logger.info(f"✅ Trade enabled for {symbol} - creating SELL order automatically from simulate-alert")
+                logger.info(f"✅ Trade enabled for {symbol} - creating SELL order automatically from simulate-alert (async)")
                 
-                try:
-                    from app.services.signal_monitor import SignalMonitorService
-                    signal_monitor = SignalMonitorService()
-                    
-                    # Calculate resistance levels for SL/TP calculation
-                    res_up = current_price * 1.05
-                    res_down = current_price * 0.95
-                    
-                    # Create SELL order using the same logic as signal_monitor
-                    logger.info(f"🔍 Calling _create_sell_order for {symbol} with amount_usd={watchlist_item.trade_amount_usd}")
-                    order_result = await signal_monitor._create_sell_order(
-                        db=db,
-                        watchlist_item=watchlist_item,
-                        current_price=current_price,
-                        res_up=res_up,
-                        res_down=res_down
-                    )
-                    logger.info(f"🔍 _create_sell_order returned: {order_result}")
-                    
-                    if order_result:
-                        order_created = True
-                        order_id = order_result.get("order_id") or order_result.get("client_order_id")
-                        logger.info(f"✅ SELL order created successfully for {symbol}: order_id={order_id}")
-                        
-                        # If order is immediately filled, SL/TP creation is handled in _create_sell_order
-                        filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
-                        filled_qty = order_result.get("filled_quantity")
-                        
-                        order_status = order_result.get("status", "").upper()
-                        is_filled = (
-                            order_status in ["FILLED", "filled"] or 
-                            order_result.get("avg_price") is not None or
-                            filled_price != current_price
-                        )
-                        
-                        if is_filled:
-                            logger.info(f"✅ Order {order_id} is FILLED (status={order_status}, filled_price={filled_price}, filled_qty={filled_qty}) - SL/TP orders created automatically")
-                        else:
-                            logger.info(f"ℹ️ Order {order_id} status={order_status} - SL/TP will be created when order is filled by exchange_sync service")
-                    else:
-                        order_error_message = "Order creation returned None (check logs for details)"
-                        logger.warning(f"SELL order creation returned None for {symbol}")
-                        
-                except Exception as order_err:
-                    order_error_message = f"Error creating SELL order: {str(order_err)}"
-                    logger.error(f"Error creating SELL order for {symbol}: {order_err}", exc_info=True)
-                    
+                # Create order asynchronously in background to avoid timeout
+                async def create_sell_order_async():
+                    """Background task to create SELL order without blocking the response"""
                     try:
-                        telegram_notifier.send_message(
-                            f"❌ <b>ORDER CREATION FAILED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"🔴 Side: SELL\n"
-                            f"❌ Error: {order_error_message}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send Telegram error notification: {e}")
+                        # Create a new database session for the background task
+                        from app.database import SessionLocal
+                        bg_db = SessionLocal()
+                        try:
+                            # Refresh watchlist_item in the new session
+                            bg_watchlist_item = bg_db.query(WatchlistItem).filter(
+                                WatchlistItem.symbol == symbol
+                            ).first()
+                            
+                            if not bg_watchlist_item:
+                                logger.error(f"Watchlist item not found in background task for {symbol}")
+                                return
+                            
+                            from app.services.signal_monitor import SignalMonitorService
+                            signal_monitor = SignalMonitorService()
+                            
+                            # Calculate resistance levels for SL/TP calculation
+                            res_up = current_price * 1.05
+                            res_down = current_price * 0.95
+                            
+                            # Create SELL order using the same logic as signal_monitor
+                            logger.info(f"🔍 [Background] Calling _create_sell_order for {symbol} with amount_usd={bg_watchlist_item.trade_amount_usd}")
+                            order_result = await signal_monitor._create_sell_order(
+                                db=bg_db,
+                                watchlist_item=bg_watchlist_item,
+                                current_price=current_price,
+                                res_up=res_up,
+                                res_down=res_down
+                            )
+                            logger.info(f"🔍 [Background] _create_sell_order returned: {order_result}")
+                            
+                            if order_result:
+                                order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                                logger.info(f"✅ [Background] SELL order created successfully for {symbol}: order_id={order_id}")
+                                
+                                # If order is immediately filled, SL/TP creation is handled in _create_sell_order
+                                filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
+                                filled_qty = order_result.get("filled_quantity")
+                                
+                                order_status = order_result.get("status", "").upper()
+                                is_filled = (
+                                    order_status in ["FILLED", "filled"] or 
+                                    order_result.get("avg_price") is not None or
+                                    filled_price != current_price
+                                )
+                                
+                                if is_filled:
+                                    logger.info(f"✅ [Background] Order {order_id} is FILLED - SL/TP orders created automatically")
+                                else:
+                                    logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
+                            else:
+                                logger.warning(f"⚠️ [Background] SELL order creation returned None for {symbol}")
+                                
+                        except Exception as order_err:
+                            logger.error(f"❌ [Background] Error creating SELL order for {symbol}: {order_err}", exc_info=True)
+                            
+                            try:
+                                telegram_notifier.send_message(
+                                    f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"🔴 Side: SELL\n"
+                                    f"❌ Error: {str(order_err)}"
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to send Telegram error notification: {e}")
+                        finally:
+                            bg_db.close()
+                    except Exception as bg_err:
+                        logger.error(f"❌ [Background] Fatal error in SELL order creation task for {symbol}: {bg_err}", exc_info=True)
+                
+                # Start order creation in background (don't await - return immediately)
+                asyncio.create_task(create_sell_order_async())
+                logger.info(f"🚀 SELL order creation started in background for {symbol} - returning response immediately")
+                
+                # Mark as in progress (not completed yet)
+                order_created = False
+                order_result = None
+                order_error_message = None
             
             response_data = {
                 "ok": True,
@@ -532,17 +589,22 @@ async def simulate_alert(
                 "price": current_price,
                 "alert_sent": True,
                 "order_created": order_created,
+                "order_in_progress": watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 and not order_created and not order_error_message,
                 "trade_enabled": watchlist_item.trade_enabled,
                 "trade_amount_usd": watchlist_item.trade_amount_usd,
                 "alert_enabled": watchlist_item.alert_enabled
             }
             
-            # Add order details if order was created
+            # Add order details if order was created synchronously
             if order_result and order_created:
                 response_data["order_id"] = order_result.get("order_id") or order_result.get("client_order_id")
                 response_data["order_status"] = order_result.get("status", "UNKNOWN")
                 response_data["filled_price"] = order_result.get("filled_price")
                 response_data["sl_tp_created"] = True  # SL/TP creation attempted
+            
+            # Add note if order is being created in background
+            if response_data.get("order_in_progress"):
+                response_data["note"] = "Order creation started in background. Check logs or Telegram for order status."
             
             # Add error message if order was not created
             if order_error_message:
@@ -601,4 +663,56 @@ def check_sl_tp(
     except Exception as e:
         logger.error(f"Error checking SL/TP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error checking SL/TP: {str(e)}")
+
+
+@router.post("/test/send-telegram-message")
+def send_test_telegram_message(
+    payload: Dict[str, Any] = Body(...),
+):
+    """
+    Send a test message to Telegram
+    Body: {
+        "symbol": "BTC_USDT",
+        "message": "Optional custom message"
+    }
+    """
+    try:
+        symbol = payload.get("symbol", "BTC_USDT").upper()
+        custom_message = payload.get("message", None)
+        
+        if custom_message:
+            message = custom_message
+        else:
+            from datetime import datetime
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            message = f"""🧪 <b>MENSAJE DE PRUEBA</b>
+
+📈 Symbol: <b>{symbol}</b>
+⏰ Hora: {now}
+
+✅ Este es un mensaje de prueba para verificar la conexión con Telegram.
+"""
+        
+        result = telegram_notifier.send_message(message)
+        
+        if result:
+            logger.info(f"✅ Test message sent to Telegram for {symbol}")
+            return {
+                "ok": True,
+                "message": "Test message sent successfully",
+                "symbol": symbol,
+                "telegram_enabled": telegram_notifier.enabled
+            }
+        else:
+            logger.warning(f"❌ Failed to send test message to Telegram for {symbol}")
+            return {
+                "ok": False,
+                "message": "Failed to send test message (Telegram may be disabled)",
+                "symbol": symbol,
+                "telegram_enabled": telegram_notifier.enabled
+            }
+    
+    except Exception as e:
+        logger.error(f"Error sending test Telegram message: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error sending test message: {str(e)}")
 

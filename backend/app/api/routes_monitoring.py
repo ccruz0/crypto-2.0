@@ -2,10 +2,11 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.models.signal_throttle import SignalThrottleState
 import logging
 import time
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
@@ -142,42 +143,152 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             "alerts": _active_alerts[-50:]
         }
 
-def add_telegram_message(message: str, symbol: Optional[str] = None, blocked: bool = False):
+def add_telegram_message(
+    message: str,
+    symbol: Optional[str] = None,
+    blocked: bool = False,
+    db: Optional[Session] = None,
+    throttle_status: Optional[str] = None,
+    throttle_reason: Optional[str] = None,
+):
     """Add a Telegram message to the history (blocked or sent)
     
     Messages are kept for 1 month before being removed.
+    Now persists to database instead of just in-memory for multi-worker compatibility.
     """
     global _telegram_messages
     from datetime import timedelta
+    from app.models.telegram_message import TelegramMessage
+    from app.database import SessionLocal
     
+    # Also keep in-memory for backward compatibility
     msg = {
         "message": message,
         "symbol": symbol,
         "blocked": blocked,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "throttle_status": throttle_status,
+        "throttle_reason": throttle_reason,
     }
     _telegram_messages.append(msg)
     
     # Clean old messages (older than 1 month)
-    # Keep messages from the last 30 days
     one_month_ago = datetime.now() - timedelta(days=30)
     _telegram_messages = [
         msg for msg in _telegram_messages
         if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
     ]
     
-    log.info(f"Telegram message stored: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+    # CRITICAL: Also save to database for persistence across workers and restarts
+    # Create session if not provided
+    db_session = db
+    own_session = False
+    if db_session is None and SessionLocal is not None:
+        try:
+            db_session = SessionLocal()
+            own_session = True
+        except Exception as session_err:
+            log.debug(f"Could not create database session for Telegram message: {session_err}")
+            db_session = None
+    
+    if db_session is not None:
+        try:
+            # Check for duplicate messages within last 5 seconds to avoid duplicates from multiple workers
+            recent_filters = [
+                TelegramMessage.message == message[:500],
+                TelegramMessage.symbol == symbol,
+                TelegramMessage.blocked == blocked,
+                TelegramMessage.timestamp >= datetime.now() - timedelta(seconds=5),
+            ]
+            recent_duplicate = db_session.query(TelegramMessage).filter(*recent_filters).first()
+            
+            if recent_duplicate:
+                log.debug(f"Skipping duplicate Telegram message (within 5 seconds): {symbol or 'N/A'}")
+                if own_session:
+                    db_session.close()
+                log.info(f"Telegram message stored (duplicate skipped): {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+                return
+            
+            telegram_msg = TelegramMessage(
+                message=message,
+                symbol=symbol,
+                blocked=blocked,
+                throttle_status=throttle_status,
+                throttle_reason=throttle_reason,
+            )
+            db_session.add(telegram_msg)
+            db_session.commit()
+            log.debug(f"Telegram message saved to database: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+        except Exception as db_err:
+            log.warning(f"Could not save Telegram message to database: {db_err}")
+            if db_session:
+                try:
+                    db_session.rollback()
+                except:
+                    pass
+        finally:
+            if own_session and db_session:
+                try:
+                    db_session.close()
+                except:
+                    pass
+    
+    status_label = throttle_status or ('BLOQUEADO' if blocked else 'ENVIADO')
+    log.info(f"Telegram message stored: {status_label} - {symbol or 'N/A'}")
 
 @router.get("/monitoring/telegram-messages")
-async def get_telegram_messages():
-    """Get Telegram messages from the last month (blocked and sent)"""
+async def get_telegram_messages(db: Session = Depends(get_db)):
+    """Get Telegram messages from the last month (blocked and sent)
+    
+    Now reads from database for multi-worker compatibility and persistence.
+    """
+    from datetime import timedelta
+    from app.models.telegram_message import TelegramMessage
+    
+    try:
+        # Read from database if available
+        if db is not None:
+            one_month_ago = datetime.now() - timedelta(days=30)
+            
+            # Query from database
+            db_messages = db.query(TelegramMessage).filter(
+                TelegramMessage.timestamp >= one_month_ago
+            ).order_by(TelegramMessage.timestamp.desc()).limit(500).all()
+            
+            # Convert to dict format for API response
+            messages = [
+                {
+                    "message": msg.message,
+                    "symbol": msg.symbol,
+                    "blocked": msg.blocked,
+                    "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
+                    "throttle_status": msg.throttle_status,
+                    "throttle_reason": msg.throttle_reason,
+                }
+                for msg in db_messages
+            ]
+            
+            return {
+                "messages": messages,
+                "total": len(messages)
+            }
+    except Exception as e:
+        log.warning(f"Could not read Telegram messages from database: {e}. Falling back to in-memory.")
+        # Fallback to in-memory if database query fails
+        pass
+    
+    # Fallback to in-memory storage (for backward compatibility)
     global _telegram_messages
     from datetime import timedelta
     
-    # Filter messages from the last month
     one_month_ago = datetime.now() - timedelta(days=30)
     recent_messages = [
-        msg for msg in _telegram_messages
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
         if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
     ]
     
@@ -187,5 +298,480 @@ async def get_telegram_messages():
     return {
         "messages": recent_messages,
         "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
         }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
+
+
+    
+    one_month_ago = datetime.now() - timedelta(days=30)
+    recent_messages = [
+        {
+            **msg,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+        }
+        for msg in _telegram_messages
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
+    ]
+    
+    # Return most recent first (newest at the top)
+    recent_messages.reverse()
+    
+    return {
+        "messages": recent_messages,
+        "total": len(recent_messages)
+    }
+
+@router.get("/monitoring/signal-throttle")
+async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
+    """Expose recent signal throttle state for the Monitoring dashboard."""
+    log.debug("Fetching signal throttle state (limit=%s)", limit)
+    if db is None:
+        return []
+    
+    try:
+        bounded_limit = max(1, min(limit, 500))
+        rows = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        now = datetime.now(timezone.utc)
+        payload = []
+        for row in rows:
+            last_time = row.last_time
+            if last_time and last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            seconds_since = (
+                max(0, int((now - last_time).total_seconds()))
+                if last_time
+                else None
+            )
+            payload.append(
+                {
+                    "symbol": row.symbol,
+                    "strategy_key": row.strategy_key,
+                    "side": row.side,
+                    "last_price": row.last_price,
+                    "last_time": last_time.isoformat() if last_time else None,
+                    "seconds_since_last": seconds_since,
+                }
+            )
+        return payload
+    except Exception as exc:
+        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
+        return []
 

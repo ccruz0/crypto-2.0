@@ -13,6 +13,8 @@ from app.services.open_orders import (
     calculate_portfolio_order_metrics,
     serialize_unified_order,
 )
+from app.services.portfolio_cache import get_portfolio_summary
+from app.services.portfolio_reconciliation import reconcile_portfolio_balances
 from app.utils.live_trading import get_live_trading_status
 
 router = APIRouter()
@@ -227,9 +229,10 @@ async def _compute_dashboard_state(db: Session) -> dict:
     try:
         # Load portfolio data from cache (v4.0 behavior)
         # Execute in thread pool to prevent blocking the worker
-        from app.services.portfolio_cache import get_portfolio_summary
         
         portfolio_start = time.time()
+        # Portfolio data is sourced from PortfolioBalance rows populated by portfolio_cache.update_portfolio_cache().
+        # get_portfolio_summary normalizes currencies and deduplicates balances per symbol so the frontend sees canonical assets.
         portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db)
         portfolio_elapsed = time.time() - portfolio_start
         log.info(f"Portfolio summary loaded in {portfolio_elapsed:.3f}s")
@@ -247,13 +250,128 @@ async def _compute_dashboard_state(db: Session) -> dict:
         # Log raw data for debugging
         log.debug(f"Raw portfolio_summary: balances={len(balances_list)}, total_usd={total_usd_value}, last_updated={last_updated}")
         
-        # Get unified open orders from cache and serialize
+        # Get unified open orders from cache and merge with database orders
         unified_orders_start = time.time()
         cached_open_orders = get_open_orders_cache()
         unified_open_orders = cached_open_orders.get("orders", []) or []
+        
+        # Also fetch orders from database (like /api/orders/open does)
+        # This ensures all orders (including database-only orders) are shown
+        try:
+            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+            from sqlalchemy import func
+            from datetime import timezone as tz
+            
+            open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+            
+            # Include all open orders AND all SL/TP orders (regardless of status)
+            # to show all potential orders that might be active on exchange
+            from sqlalchemy import or_
+            
+            db_orders = db.query(ExchangeOrder).filter(
+                or_(
+                    # Standard open orders (ACTIVE, NEW, PARTIALLY_FILLED)
+                    ExchangeOrder.status.in_(open_statuses),
+                    # OR all SL/TP orders (might be active on exchange even if marked CANCELLED)
+                    ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),
+                    # OR orders with trigger types (STOP_LIMIT, TAKE_PROFIT_LIMIT, etc.)
+                    ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'])
+                )
+            ).order_by(
+                func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
+            ).limit(500).all()
+            
+            # Convert database orders to UnifiedOpenOrder format and merge with cached orders
+            # Use order_id to deduplicate (cached orders take priority)
+            cached_order_ids = {order.order_id for order in unified_open_orders}
+            
+            for db_order in db_orders:
+                if db_order.exchange_order_id not in cached_order_ids:
+                    # Convert ExchangeOrder to UnifiedOpenOrder
+                    from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
+                    from decimal import Decimal
+                    
+                    create_time = db_order.exchange_create_time or db_order.created_at
+                    update_time = db_order.exchange_update_time or db_order.updated_at
+                    
+                    # ExchangeOrder doesn't have trigger_price field, only price and trigger_condition
+                    # Determine if this is a trigger order based on order_type or order_role
+                    is_trigger_order = (
+                        db_order.order_type and any(
+                            trigger_type in db_order.order_type.upper()
+                            for trigger_type in ['TRIGGER', 'STOP', 'TAKE_PROFIT', 'STOP_LIMIT', 'TAKE_PROFIT_LIMIT']
+                        )
+                    ) or db_order.order_role in ['STOP_LOSS', 'TAKE_PROFIT']
+                    
+                    db_unified = UnifiedOpenOrder(
+                        order_id=str(db_order.exchange_order_id),
+                        symbol=db_order.symbol or "",
+                        side=db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
+                        order_type=db_order.order_type or "LIMIT",
+                        status=db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
+                        price=Decimal(str(db_order.price)) if db_order.price else None,
+                        trigger_price=Decimal(str(db_order.trigger_condition)) if db_order.trigger_condition else None,  # Use trigger_condition as trigger_price
+                        quantity=Decimal(str(db_order.quantity)) if db_order.quantity else Decimal("0"),
+                        is_trigger=is_trigger_order,
+                        trigger_type=db_order.order_role if db_order.order_role else None,
+                        client_oid=db_order.client_oid,
+                        created_at=_format_timestamp(create_time),
+                        updated_at=_format_timestamp(update_time),
+                        source="database",
+                        metadata={},
+                    )
+                    unified_open_orders.append(db_unified)
+                    cached_order_ids.add(db_unified.order_id)
+                    
+                    log.debug(f"Added database order {db_order.exchange_order_id} to dashboard state")
+            
+            # Also check SQLite order_history_db for compatibility (like /api/orders/open does)
+            try:
+                from app.services.order_history_db import order_history_db
+                sqlite_orders = order_history_db.get_orders_by_status(['ACTIVE', 'NEW', 'PARTIALLY_FILLED'], limit=100)
+                
+                for sqlite_order in sqlite_orders:
+                    order_id = sqlite_order.get('order_id')
+                    if order_id and order_id not in cached_order_ids:
+                        # Convert SQLite order dict to UnifiedOpenOrder format
+                        from app.services.open_orders import UnifiedOpenOrder, _normalize_symbol, _safe_decimal, _format_timestamp
+                        from decimal import Decimal
+                        
+                        order_id_str = str(order_id)
+                        symbol = _normalize_symbol(sqlite_order.get('instrument_name') or sqlite_order.get('symbol'))
+                        side = (sqlite_order.get('side') or 'BUY').upper()
+                        order_type = (sqlite_order.get('order_type') or sqlite_order.get('type') or 'LIMIT').upper()
+                        status = (sqlite_order.get('status') or 'NEW').upper()
+                        
+                        sqlite_unified = UnifiedOpenOrder(
+                            order_id=order_id_str,
+                            symbol=symbol,
+                            side=side,
+                            order_type=order_type,
+                            status=status,
+                            price=_safe_decimal(sqlite_order.get('price')),
+                            trigger_price=_safe_decimal(sqlite_order.get('trigger_price') or sqlite_order.get('stop_price')),
+                            quantity=_safe_decimal(sqlite_order.get('quantity')) or Decimal("0"),
+                            is_trigger=False,
+                            client_oid=sqlite_order.get('client_oid'),
+                            created_at=_format_timestamp(sqlite_order.get('create_time') or sqlite_order.get('created_at')),
+                            updated_at=_format_timestamp(sqlite_order.get('update_time') or sqlite_order.get('updated_at')),
+                            source="sqlite",
+                            metadata=sqlite_order,
+                        )
+                        unified_open_orders.append(sqlite_unified)
+                        cached_order_ids.add(sqlite_unified.order_id)
+                        log.debug(f"Added SQLite order {order_id_str} to dashboard state")
+            except Exception as sqlite_err:
+                log.debug(f"Error getting orders from SQLite: {sqlite_err}")
+                
+        except Exception as db_err:
+            log.warning(f"Error merging database orders: {db_err}")
+            # Continue with cached orders only if database merge fails
+        
         open_orders_list = [serialize_unified_order(order) for order in unified_open_orders]
         unified_orders_elapsed = time.time() - unified_orders_start
-        log.info(f"[PERF] get_unified_open_orders took {unified_orders_elapsed:.3f} seconds")
+        log.info(f"[PERF] get_unified_open_orders (with DB merge) took {unified_orders_elapsed:.3f} seconds, total orders: {len(open_orders_list)}")
         
         # Safely get last_updated with null-safety
         last_updated_value = cached_open_orders.get("last_updated")
@@ -668,10 +786,38 @@ def update_watchlist_item(
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
     
+    # Track what was updated for the message
+    updates = []
+    if "trade_enabled" in payload:
+        old_value = item.trade_enabled
+        new_value = payload["trade_enabled"]
+        if old_value != new_value:
+            updates.append(f"TRADE: {'YES' if new_value else 'NO'}")
+    
+    if "buy_alert_enabled" in payload:
+        old_value = getattr(item, "buy_alert_enabled", False)
+        new_value = payload["buy_alert_enabled"]
+        if old_value != new_value:
+            updates.append(f"BUY alert: {'YES' if new_value else 'NO'}")
+    
+    if "sell_alert_enabled" in payload:
+        old_value = getattr(item, "sell_alert_enabled", False)
+        new_value = payload["sell_alert_enabled"]
+        if old_value != new_value:
+            updates.append(f"SELL alert: {'YES' if new_value else 'NO'}")
+    
     _apply_watchlist_updates(item, payload)
     db.commit()
     db.refresh(item)
-    return _serialize_watchlist_item(item)
+    
+    result = _serialize_watchlist_item(item)
+    
+    # Add success message if updates were made
+    if updates:
+        result["message"] = f"✅ Updated {item.symbol}: {', '.join(updates)}"
+        log.info(f"✅ Updated watchlist item {item.symbol} ({item_id}): {', '.join(updates)}")
+    
+    return result
 
 
 @router.delete("/dashboard/{item_id}")
@@ -737,6 +883,176 @@ def delete_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@router.get("/dashboard/alert-stats")
+def get_alert_stats(db: Session = Depends(get_db)):
+    """
+    Get statistics about alert statuses across all watchlist items.
+    
+    Returns:
+    {
+        "total_items": int,
+        "buy_alerts_enabled": int,
+        "sell_alerts_enabled": int,
+        "both_alerts_enabled": int,
+        "trade_enabled": int,
+        "buy_alert_coins": [str],
+        "sell_alert_coins": [str],
+        "both_alert_coins": [str],
+        "trade_coins": [str]
+    }
+    """
+    try:
+        # Get all active watchlist items (not deleted)
+        items = _filter_active_watchlist(
+            db.query(WatchlistItem),
+            db
+        ).all()
+        
+        if not items:
+            return {
+                "total_items": 0,
+                "buy_alerts_enabled": 0,
+                "sell_alerts_enabled": 0,
+                "both_alerts_enabled": 0,
+                "trade_enabled": 0,
+                "buy_alert_coins": [],
+                "sell_alert_coins": [],
+                "both_alert_coins": [],
+                "trade_coins": []
+            }
+        
+        total = len(items)
+        buy_alerts_yes = 0
+        sell_alerts_yes = 0
+        both_alerts_yes = 0
+        trade_yes = 0
+        
+        buy_alert_coins = []
+        sell_alert_coins = []
+        both_alert_coins = []
+        trade_coins = []
+        
+        for item in items:
+            symbol = (item.symbol or "").upper()
+            has_buy = getattr(item, "buy_alert_enabled", False)
+            has_sell = getattr(item, "sell_alert_enabled", False)
+            has_trade = item.trade_enabled
+            
+            if has_buy:
+                buy_alerts_yes += 1
+                buy_alert_coins.append(symbol)
+            
+            if has_sell:
+                sell_alerts_yes += 1
+                sell_alert_coins.append(symbol)
+            
+            if has_buy and has_sell:
+                both_alerts_yes += 1
+                both_alert_coins.append(symbol)
+            
+            if has_trade:
+                trade_yes += 1
+                trade_coins.append(symbol)
+        
+        return {
+            "total_items": total,
+            "buy_alerts_enabled": buy_alerts_yes,
+            "sell_alerts_enabled": sell_alerts_yes,
+            "both_alerts_enabled": both_alerts_yes,
+            "trade_enabled": trade_yes,
+            "buy_alert_coins": sorted(buy_alert_coins),
+            "sell_alert_coins": sorted(sell_alert_coins),
+            "both_alert_coins": sorted(both_alert_coins),
+            "trade_coins": sorted(trade_coins)
+        }
+        
+    except Exception as e:
+        log.error(f"Error getting alert stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dashboard/bulk-update-alerts")
+def bulk_update_alerts(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk update all watchlist items:
+    - Set buy_alert_enabled and sell_alert_enabled to specified values
+    - Set trade_enabled to specified value
+    
+    Request body:
+    {
+        "buy_alerts": true,  # Default: true
+        "sell_alerts": true,  # Default: true
+        "trade_enabled": false  # Default: false
+    }
+    
+    Default behavior: Enable all BUY/SELL alerts, disable all TRADE
+    """
+    try:
+        buy_alerts = payload.get("buy_alerts", True)
+        sell_alerts = payload.get("sell_alerts", True)
+        trade_enabled = payload.get("trade_enabled", False)
+        
+        # Get all active watchlist items (not deleted)
+        items = _filter_active_watchlist(
+            db.query(WatchlistItem),
+            db
+        ).all()
+        
+        if not items:
+            return {
+                "ok": True,
+                "updated_count": 0,
+                "message": "No watchlist items found"
+            }
+        
+        updated_count = 0
+        for item in items:
+            changed = False
+            
+            # Update BUY alert
+            if hasattr(item, "buy_alert_enabled") and item.buy_alert_enabled != buy_alerts:
+                item.buy_alert_enabled = buy_alerts
+                changed = True
+            
+            # Update SELL alert
+            if hasattr(item, "sell_alert_enabled") and item.sell_alert_enabled != sell_alerts:
+                item.sell_alert_enabled = sell_alerts
+                changed = True
+            
+            # Update TRADE
+            if item.trade_enabled != trade_enabled:
+                item.trade_enabled = trade_enabled
+                changed = True
+            
+            if changed:
+                updated_count += 1
+        
+        db.commit()
+        
+        log.info(f"Bulk update completed: {updated_count} items updated")
+        log.info(f"  - buy_alert_enabled: {buy_alerts}")
+        log.info(f"  - sell_alert_enabled: {sell_alerts}")
+        log.info(f"  - trade_enabled: {trade_enabled}")
+        
+        return {
+            "ok": True,
+            "updated_count": updated_count,
+            "total_items": len(items),
+            "buy_alert_enabled": buy_alerts,
+            "sell_alert_enabled": sell_alerts,
+            "trade_enabled": trade_enabled,
+            "message": f"Updated {updated_count} watchlist items"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        log.error(f"Error in bulk update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/dashboard/expected-take-profit")
 def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
     """
@@ -749,7 +1065,14 @@ def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
         
         # Get portfolio assets (from balances format)
         portfolio_summary = get_portfolio_summary(db)
-        portfolio_balances = portfolio_summary.get("balances", [])
+        if not portfolio_summary:
+            log.warning("Expected TP: portfolio_summary is None, returning empty summary")
+            return {
+                "summary": [],
+                "total_symbols": 0,
+                "last_updated": None,
+            }
+        portfolio_balances = portfolio_summary.get("balances", []) if portfolio_summary else []
         log.info(f"Expected TP: Got {len(portfolio_balances)} portfolio balances")
         
         # Convert balances format to assets format for the service
@@ -861,3 +1184,9 @@ def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends
     except Exception as e:
         log.error(f"Error getting expected take profit details for {symbol}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/diagnostics/portfolio-reconciliation", tags=["diagnostics"])
+def diagnostics_portfolio_reconciliation(db: Session = Depends(get_db)):
+    """Compare live Crypto.com balances vs cached PortfolioBalance rows."""
+    return reconcile_portfolio_balances(db)

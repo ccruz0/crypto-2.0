@@ -15,7 +15,7 @@ from app.core.failover_config import (
     CRYPTO_REST_BASE, CRYPTO_TIMEOUT, CRYPTO_RETRIES,
     TRADEBOT_BASE, FAILOVER_ENABLED
 )
-from app.schemas.orders import UnifiedOpenOrder
+from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,19 @@ class CryptoComTradeClient:
                 # Default to Crypto.com Exchange v1 API endpoint
                 self.base_url = REST_BASE
         
-        self.api_key = os.getenv("EXCHANGE_CUSTOM_API_KEY", "")
-        self.api_secret = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "")
+        self.api_key = os.getenv("EXCHANGE_CUSTOM_API_KEY", "").strip()
+        self.api_secret = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "").strip()
         self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+        
+        # [CRYPTO_AUTH_DIAG] Enhanced credential logging
+        logger.info(f"[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED ===")
+        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY repr: {repr(self.api_key)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY length: {len(self.api_key)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY preview: {self.api_key[:4]}....{self.api_key[-4:] if len(self.api_key) >= 4 else ''}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY length: {len(self.api_secret)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY starts with: {self.api_secret[:6] if len(self.api_secret) >= 6 else 'N/A'}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY has whitespace: {any(c.isspace() for c in self.api_secret) if self.api_secret else False}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] =========================")
         
         logger.info(f"CryptoComTradeClient initialized - Live Trading: {self.live_trading}")
         if self.use_proxy:
@@ -196,15 +206,21 @@ class CryptoComTradeClient:
         
         # String to sign format per Crypto.com Exchange API v1:
         # Format: method + id + api_key + params_str + nonce
-        # According to documentation: method + id + api_key + params_string + nonce
-        # For consistency with working methods (get_account_summary), use request_id (1) in signature
-        # This matches the behavior for empty params that works
-        # - Empty params {}: method + "1" + api_key + "" + nonce (verified to work)
-        # - Non-empty params: method + "1" + api_key + _params_to_str(params) + nonce
         string_to_sign = method + str(request_id) + self.api_key + params_str + str(nonce_ms)
         
-        logger.debug(f"String to sign (len={len(string_to_sign)}): {string_to_sign[:100]}...")
-        logger.debug(f"API Key: {self.api_key[:10] if self.api_key else 'None'}...")
+        # [CRYPTO_AUTH_DIAG] Complete signing process logging
+        current_utc = datetime.now(timezone.utc).isoformat()
+        current_time = time.time()
+        logger.info(f"[CRYPTO_AUTH_DIAG] === SIGNING PROCESS ===")
+        logger.info(f"[CRYPTO_AUTH_DIAG] method={method}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] params={json.dumps(params)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] request_id={request_id} (type={type(request_id).__name__})")
+        logger.info(f"[CRYPTO_AUTH_DIAG] nonce={nonce_ms} (type={type(nonce_ms).__name__})")
+        logger.info(f"[CRYPTO_AUTH_DIAG] server_time_utc={current_utc}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] server_time_epoch={current_time}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] params_str_len={len(params_str)}, params_str_repr={repr(params_str)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] string_to_sign_length={len(string_to_sign)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] string_to_sign={string_to_sign}")
         
         # Generate HMAC-SHA256 signature
         signature = hmac.new(
@@ -213,7 +229,9 @@ class CryptoComTradeClient:
             digestmod=hashlib.sha256
         ).hexdigest()
         
-        logger.debug(f"Generated signature: {signature[:20]}...")
+        logger.info(f"[CRYPTO_AUTH_DIAG] signature={signature}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] payload={json.dumps({k: v if k != 'sig' else signature[:10] + '...' + signature[-10:] for k, v in payload.items()}, indent=2)}")
+        logger.info(f"[CRYPTO_AUTH_DIAG] ====================")
         
         payload["sig"] = signature
         
@@ -221,9 +239,16 @@ class CryptoComTradeClient:
     
     def get_account_summary(self) -> dict:
         """Get account summary (balances)"""
+        # [CRYPTO_AUTH_DIAG] Log outbound IP before request
+        try:
+            egress_ip = requests.get("https://api.ipify.org", timeout=5).text.strip()
+            logger.info(f"[CRYPTO_AUTH_DIAG] CRYPTO_COM_OUTBOUND_IP: {egress_ip}")
+        except Exception as e:
+            logger.warning(f"[CRYPTO_AUTH_DIAG] Could not determine outbound IP: {e}")
+        
         # Use proxy if enabled (even in dry-run mode for real data)
         if self.use_proxy:
-            logger.info("Using PROXY to get account summary")
+            logger.info("[CRYPTO_AUTH_DIAG] Using PROXY to get account summary")
             method = "private/user-balance"
             params = {}
             
@@ -334,16 +359,14 @@ class CryptoComTradeClient:
                 # Extract position balances and convert to standard format
                 # Crypto.com API provides: instrument_name, quantity, market_value, max_withdrawal_balance
                 # and potentially loan/borrowed fields
-                for position in data:
-                    if "position_balances" in position:
-                        for balance in position["position_balances"]:
+                def _record_balance_entry(balance, account_type=None):
                             # Log ALL fields to discover loan-related data
                             logger.debug(f"Raw balance data from Crypto.com: {balance}")
                             
-                            instrument = balance.get("instrument_name", "")
-                            quantity = balance.get("quantity", "0")
-                            market_value = balance.get("market_value", "0")
-                            max_withdrawal = balance.get("max_withdrawal_balance", quantity)
+                    instrument = balance.get("instrument_name") or balance.get("currency") or ""
+                    quantity = balance.get("quantity", balance.get("balance", "0"))
+                    market_value = balance.get("market_value", balance.get("usd_value", "0"))
+                    max_withdrawal = balance.get("max_withdrawal_balance", balance.get("available", quantity))
                             
                             # Extract loan/borrowed fields if present
                             borrowed_balance = balance.get("borrowed_balance", "0")
@@ -381,8 +404,10 @@ class CryptoComTradeClient:
                                 "reserved": str(reserved_qty),
                                 "market_value": str(market_value),  # USD value from Crypto.com
                                 "max_withdrawal": str(max_withdrawal),
-                                "quantity": str(quantity)  # Keep original quantity
+                        "quantity": str(quantity),  # Keep original quantity
                             }
+                    if account_type:
+                        account_data["account_type"] = account_type
                             
                             # Add loan/borrowed fields if present
                             if borrowed_balance and float(borrowed_balance) != 0:
@@ -403,10 +428,19 @@ class CryptoComTradeClient:
                             if debt_value and float(debt_value) != 0:
                                 account_data["debt_value"] = str(debt_value)
                                 logger.info(f"📊 Found debt_value for {currency}: {debt_value}")
-                            if is_negative:
+                    if is_negative or (negative_balance and float(negative_balance) != 0):
                                 account_data["is_negative"] = True
                             
                             accounts.append(account_data)
+
+                for position in data:
+                    account_type = position.get("account_type")
+                    if "position_balances" in position:
+                        for balance in position["position_balances"]:
+                            _record_balance_entry(balance, account_type)
+                    if "balances" in position:
+                        for balance in position["balances"]:
+                            _record_balance_entry(balance, account_type)
                 
                 logger.info(f"Retrieved {len(accounts)} account balances")
                 return {"accounts": accounts}
@@ -642,18 +676,6 @@ class CryptoComTradeClient:
             or raw.get("trigger_price_value")
         )
 
-        timestamp = raw.get("create_time") or raw.get("order_time") or raw.get("created_at")
-        created_at = None
-        if timestamp is not None:
-            try:
-                if isinstance(timestamp, str):
-                    timestamp = int(float(timestamp))
-                if isinstance(timestamp, (int, float)):
-                    ts = timestamp / 1000 if timestamp > 1_000_000_000_000 else timestamp
-                    created_at = datetime.fromtimestamp(ts, tz=timezone.utc)
-            except Exception:
-                created_at = None
-
         status = (raw.get("status") or raw.get("order_status") or "NEW").upper()
         order_id = str(
             raw.get("order_id")
@@ -665,19 +687,27 @@ class CryptoComTradeClient:
         )
         client_oid = raw.get("client_oid") or raw.get("clientOrderId")
 
+        # Format timestamps as ISO strings (required by app.services.open_orders.UnifiedOpenOrder)
+        created_at_str = _format_timestamp(raw.get("create_time") or raw.get("order_time") or raw.get("created_at"))
+        updated_at_str = _format_timestamp(raw.get("update_time") or raw.get("updated_at"))
+
         return UnifiedOpenOrder(
+            order_id=order_id,
             symbol=symbol,
             side=side,
-            type=order_type,
-            quantity=quantity,
+            order_type=order_type,  # Changed from 'type' to 'order_type'
+            status=status,
             price=price,
             trigger_price=trigger_price,
-            status=status,
+            quantity=quantity,
             is_trigger=is_trigger,
-            order_id=order_id,
+            trigger_type=raw.get("trigger_type") or raw.get("trigger_by"),
+            trigger_condition=raw.get("trigger_condition"),
             client_oid=client_oid,
-            created_at=created_at,
-            raw=raw,
+            created_at=created_at_str,  # ISO string format
+            updated_at=updated_at_str,  # ISO string format
+            source="trigger" if is_trigger else "standard",
+            metadata=raw,  # Changed from 'raw' to 'metadata'
         )
 
     def get_all_unified_orders(self) -> List[UnifiedOpenOrder]:

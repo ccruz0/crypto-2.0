@@ -99,12 +99,23 @@ class RobustSignalsFetcher:
         res_up = current_price * (1.02 + random.uniform(0, 0.03))
         res_down = current_price * (0.97 + random.uniform(-0.02, 0))
         
+        # Adaptive precision function for MA values
+        def get_ma_precision(value: float) -> int:
+            if value >= 100:
+                return 2  # Values >= $100: 2 decimals
+            elif value >= 1:
+                return 2  # Values $1-$99: 2 decimals
+            elif value >= 0.01:
+                return 6  # Values $0.01-$0.99: 6 decimals
+            else:
+                return 10  # Values < $0.01: 10 decimals
+        
         return SignalsResult(
             rsi=round(base_rsi, 2),
-            ma50=round(base_ma50, 2),
-            ma200=round(base_ma200, 2),
-            ema10=round(base_ema10, 2),
-            ma10w=round(base_ma200, 2),  # Use MA200 as MA10w approximation
+            ma50=round(base_ma50, get_ma_precision(base_ma50)),
+            ma200=round(base_ma200, get_ma_precision(base_ma200)),
+            ema10=round(base_ema10, get_ma_precision(base_ema10)),
+            ma10w=round(base_ma200, get_ma_precision(base_ma200)),  # Use MA200 as MA10w approximation
             atr=round(atr, 2),
             volume=round(base_volume, 2),
             avg_volume=round(avg_volume, 2),

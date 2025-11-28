@@ -67,11 +67,22 @@ def get_signals(
         base_ma200 = current_price * (0.95 + random.uniform(-0.03, 0.05))
         base_ema10 = current_price * (0.99 + random.uniform(-0.02, 0.03))
         
+        # Adaptive precision function for MA values
+        def get_ma_precision(value: float) -> int:
+            if value >= 100:
+                return 2  # Values >= $100: 2 decimals
+            elif value >= 1:
+                return 2  # Values $1-$99: 2 decimals
+            elif value >= 0.01:
+                return 6  # Values $0.01-$0.99: 6 decimals
+            else:
+                return 10  # Values < $0.01: 10 decimals
+        
         rsi = round(base_rsi, 2)
-        ma50 = round(base_ma50, 2)
-        ma200 = round(base_ma200, 2)
-        ema10 = round(base_ema10, 2)
-        ma10w = round(base_ma200, 2)
+        ma50 = round(base_ma50, get_ma_precision(base_ma50))
+        ma200 = round(base_ma200, get_ma_precision(base_ma200))
+        ema10 = round(base_ema10, get_ma_precision(base_ema10))
+        ma10w = round(base_ma200, get_ma_precision(base_ma200))
         atr = round(current_price * 0.02, 2)
         volume = round(current_price * 1000000 * (0.5 + random.uniform(0, 1)), 2)
         avg_volume = round(volume * (0.8 + random.uniform(0, 0.4)), 2)

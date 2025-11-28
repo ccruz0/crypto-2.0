@@ -28,3 +28,4 @@ All timestamps refer to UTC. At this time the strategy profile resolved to **Swi
 
 If future logs ever show a BUY/SELL candidate for `CRO_USD`, re-run the same command and extend this table with the new price/Δprice/Δtime/decision rows to keep a historical audit trail.
 
+

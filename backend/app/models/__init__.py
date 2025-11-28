@@ -5,6 +5,8 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 from app.models.market_price import MarketPrice, MarketData
 from app.models.trading_settings import TradingSettings
 from app.models.dashboard_cache import DashboardCache
+from app.models.telegram_message import TelegramMessage
+from app.models.signal_throttle import SignalThrottleState
 
 __all__ = [
     "WatchlistItem",
@@ -20,5 +22,21 @@ __all__ = [
     "MarketData",
     "TradingSettings",
     "DashboardCache",
+    "TelegramMessage",
+    "SignalThrottleState",
 ]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

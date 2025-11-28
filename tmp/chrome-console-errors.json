@@ -1,42 +1,11 @@
 [
   {
-    "type": "console_error",
-    "message": "Failed to load resource: the server responded with a status of 500 ()",
+    "type": "request_failed",
+    "message": "Request failed: GET http://localhost:3000/",
     "location": {
-      "url": "https://dashboard.hilovivo.com/api/dashboard",
-      "line": 0,
-      "column": 0
+      "url": "http://localhost:3000/"
     },
-    "timestamp": "2025-11-23T11:46:29.774Z"
-  },
-  {
-    "type": "console_error",
-    "message": "API Error: /dashboard {name: Error, message: (psycopg2.OperationalError) connection to server a… on this error at: https://sqlalche.me/e/20/e3q8), stack: Error: (psycopg2.OperationalError) connection to s…_next/static/chunks/5a1cf48d936a9516.js:118:26967}",
-    "location": {
-      "url": "https://dashboard.hilovivo.com/_next/static/chunks/e94082691f4ff466.js",
-      "line": 0,
-      "column": 2321
-    },
-    "timestamp": "2025-11-23T11:46:29.777Z"
-  },
-  {
-    "type": "console_error",
-    "message": "Failed to load resource: the server responded with a status of 502 ()",
-    "location": {
-      "url": "https://dashboard.hilovivo.com/api/orders/history?limit=500&offset=0",
-      "line": 0,
-      "column": 0
-    },
-    "timestamp": "2025-11-23T11:46:29.807Z"
-  },
-  {
-    "type": "console_error",
-    "message": "API Error: /orders/history?limit=500&offset=0 {name: Error, message: (psycopg2.OperationalError) connection to server a… on this error at: https://sqlalche.me/e/20/e3q8), stack: Error: (psycopg2.OperationalError) connection to s…_next/static/chunks/5a1cf48d936a9516.js:118:25367}",
-    "location": {
-      "url": "https://dashboard.hilovivo.com/_next/static/chunks/e94082691f4ff466.js",
-      "line": 0,
-      "column": 2321
-    },
-    "timestamp": "2025-11-23T11:46:29.808Z"
+    "stack": "net::ERR_CONNECTION_REFUSED",
+    "timestamp": "2025-11-23T13:03:55.663Z"
   }
 ]

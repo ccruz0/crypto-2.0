@@ -5,10 +5,11 @@ Extends existing signals calculation with position-aware trading logic.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import logging
 
 from app.services.strategy_profiles import StrategyType, RiskApproach
+from app.services.config_loader import get_strategy_rules
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ def should_trigger_buy_signal(
     ema10: Optional[float],
     strategy_type: StrategyType,
     risk_approach: RiskApproach,
+    rules_override: Optional[Dict[str, Any]] = None,
 ) -> BuyDecision:
     """
     Determine if a BUY signal should trigger based on strategy rules from configuration.
@@ -60,9 +62,10 @@ def should_trigger_buy_signal(
     
     This ensures backend alert logic always matches what user configured in UI.
     """
-    from app.services.config_loader import get_strategy_rules
-    
     # SOURCE OF TRUTH: Read rules from trading_config.json (same config used by Signal Configuration UI)
+    if rules_override is not None:
+        rules = rules_override
+    else:
     preset_name = strategy_type.value.lower()  # e.g., "swing", "intraday", "scalp"
     risk_mode = risk_approach.value.capitalize()  # "Conservative" or "Aggressive"
     rules = get_strategy_rules(preset_name, risk_mode)
@@ -207,6 +210,22 @@ def calculate_trading_signals(
     """
     
     # Initialize result with defaults
+    preset_name = strategy_type.value.lower()
+    risk_mode = risk_approach.value.capitalize()
+    try:
+        strategy_rules = get_strategy_rules(preset_name, risk_mode)
+    except Exception as cfg_err:
+        logger.warning(
+            "⚠️ Failed to load strategy rules for %s (%s/%s): %s",
+            symbol,
+            strategy_type.value,
+            risk_approach.value,
+            cfg_err,
+            exc_info=True,
+        )
+        strategy_rules = {}
+    min_volume_ratio = strategy_rules.get("volumeMinRatio") or 0.5
+
     result = {
         "symbol": symbol,
         "buy_signal": False,
@@ -245,6 +264,7 @@ def calculate_trading_signals(
             ema10=ema10,
             strategy_type=strategy_type,
             risk_approach=risk_approach,
+            rules_override=strategy_rules,
         )
 
         if decision.missing_indicators:
@@ -259,20 +279,18 @@ def calculate_trading_signals(
                 buy_target_allows = False
                 target_reason = f"Price {price:.2f} > buy target {buy_target:.2f}"
         
-        # Volume check: require minVolumeRatio (2.0x by default, matching frontend logic)
-        # If volume data is not available, assume volume is OK (don't block BUY signal)
-        # This matches frontend behavior where volume check defaults to True if data unavailable
-        min_volume_ratio = 2.0  # Default 2.0x as per frontend PRESET_CONFIG
+        # Volume check: require minVolumeRatio (configurable, default 0.5x). If no volume data is
+        # available we assume it's OK (matches frontend behavior).
         volume_ok = True  # Default to True if volume data not available (matches frontend)
         volume_ratio_val = 0.0
         if volume is not None and avg_volume is not None and avg_volume > 0:
             volume_ratio_val = volume / avg_volume
-            volume_ok = volume_ratio_val >= min_volume_ratio  # Require at least 2.0x average volume
+            volume_ok = volume_ratio_val >= min_volume_ratio
         
         # BUY conditions: Must have ALL of the following (matching frontend logic):
         # 1. Strategy-specific BUY conditions (from should_trigger_buy_signal)
         # 2. Buy target allows (if buy_target is set)
-        # 3. Volume >= minVolumeRatio (2.0x) - or assumed OK if no volume data
+        # 3. Volume >= minVolumeRatio (configurable) - or assumed OK if no volume data
         if decision.should_buy and buy_target_allows and volume_ok:
             rationale_parts = [decision.summary]
             if target_reason:
@@ -308,6 +326,21 @@ def calculate_trading_signals(
             if not no_buy_reasons:
                 no_buy_reasons.append("Conditions not met")
             result["rationale"].append(f"⏸️ No buy signal ({profile_label}): {' | '.join(no_buy_reasons)}")
+            
+            # Enhanced logging for BCH and ETH
+            if symbol in ["BCH_USD", "ETH_USD"]:
+                logger.info(
+                    f"🔍 {symbol} BUY SIGNAL DECISION: "
+                    f"should_buy={decision.should_buy}, "
+                    f"buy_target_allows={buy_target_allows}, "
+                    f"volume_ok={volume_ok}, "
+                    f"volume_ratio={volume_ratio_val:.2f}, "
+                    f"min_volume_ratio={min_volume_ratio}, "
+                    f"buy_target={buy_target}, "
+                    f"price={price:.4f}, "
+                    f"decision_summary={decision.summary}, "
+                    f"reasons={no_buy_reasons}"
+                )
     
     # 2. TP BOOST LOGIC (only if position exists)
     if last_buy_price is not None:
@@ -355,6 +388,8 @@ def calculate_trading_signals(
     
     # SELL signals should respect strategy rules - check for trend reversal conditions
     # Based on frontend logic: RSI > sellAbove AND (MA reversal if MA checks active) AND volume
+    ma_checks_cfg = strategy_rules.get("maChecks", {}) if isinstance(strategy_rules, dict) else {}
+    requires_ma_reversal = bool(ma_checks_cfg.get("ma50", True))
     
     # Check for MA trend reversal (MA50 < EMA10 with >= 0.5% difference)
     ma_reversal = False
@@ -369,7 +404,7 @@ def calculate_trading_signals(
     # Strategy-specific SELL conditions
     # For Swing/Intraday/Scalp, SELL requires:
     # 1. RSI > strategy-specific threshold (from rsi_sell_threshold, typically 70)
-    # 2. Trend reversal: MA50 < EMA10 (with >= 0.5% diff) OR Price < MA10w
+    # 2. Trend reversal (only when strategy requires MA validation)
     # 3. Volume confirmation (if available)
     
     rsi_sell_met = False
@@ -381,26 +416,26 @@ def calculate_trading_signals(
     if ma10w is not None and price < ma10w:
         price_below_ma10w = True
     
-    # Volume check: require minVolumeRatio (2.0x by default, matching frontend logic)
-    # If volume data is not available, assume volume is OK (don't block SELL signal)
-    # This matches frontend behavior where volume check defaults to True if data unavailable
-    min_volume_ratio = 2.0  # Default 2.0x as per frontend PRESET_CONFIG
+    # Volume check: require minVolumeRatio (configurable, default 0.5x). If volume data is missing
+    # we assume it's OK (consistent with frontend behavior).
     volume_ok = True  # Default to True if volume data not available (matches frontend)
     volume_ratio_val = 0.0
     if volume is not None and avg_volume is not None and avg_volume > 0:
         volume_ratio_val = volume / avg_volume
-        volume_ok = volume_ratio_val >= min_volume_ratio  # Require at least 2.0x average volume
+        volume_ok = volume_ratio_val >= min_volume_ratio
     
     # SELL conditions: Must have ALL of the following (matching frontend logic):
     # 1. RSI > strategy-specific threshold (rsi_sell_threshold)
-    # 2. Trend reversal: MA50 < EMA10 (with >= 0.5% diff) - only if MA checks would be active
-    #    OR Price < MA10w (alternative reversal signal)
-    # 3. Volume >= minVolumeRatio (2.0x) - or assumed OK if no volume data
+    # 2. Trend reversal if strategy requires MA checks; otherwise optional context only.
+    # 3. Volume >= minVolumeRatio (configurable) - or assumed OK if no volume data
     #
     # NOTE: Frontend checks if MA50 checks are active before requiring MA reversal.
     # For now, we use MA reversal OR price below MA10w as trend reversal signal.
     # This is more conservative than requiring only MA reversal.
+    if requires_ma_reversal:
     trend_reversal = ma_reversal or price_below_ma10w
+    else:
+        trend_reversal = True  # Strategy doesn't require MA confirmation for SELL
     
     # Debug logging for SELL signal calculation - ALWAYS log for UNI_USD
     if symbol == "UNI_USD":
@@ -412,16 +447,23 @@ def calculate_trading_signals(
     elif rsi is not None and rsi > rsi_sell_threshold:
         logger.info(
             f"🔍 {symbol} SELL check: rsi_sell_met={rsi_sell_met}, trend_reversal={trend_reversal} "
-            f"(ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w}), volume_ok={volume_ok}"
+            f"(ma_reversal={ma_reversal}, price_below_ma10w={price_below_ma10w}, requires_ma_reversal={requires_ma_reversal}), "
+            f"volume_ok={volume_ok}"
         )
     
     # Only activate SELL when ALL conditions are met
     if rsi_sell_met and trend_reversal and volume_ok:
         sell_conditions.append(True)
+        if requires_ma_reversal:
         if ma_reversal:
             sell_reasons.append(f"MA trend reversal: MA50 {ma50:.2f} < EMA10 {ema10:.2f}")
         if price_below_ma10w:
             sell_reasons.append(f"Price {price:.2f} < MA10w {ma10w:.2f}")
+        else:
+            if ma_reversal:
+                sell_reasons.append("Optional MA reversal observed")
+            if price_below_ma10w:
+                sell_reasons.append("Optional MA10w break observed")
         sell_reasons.append(f"RSI={rsi:.1f} > {rsi_sell_threshold} (overbought)")
         if volume_ok and volume is not None and avg_volume is not None and avg_volume > 0:
             sell_reasons.append(f"Volume {volume_ratio_val:.2f}x >= {min_volume_ratio}x")

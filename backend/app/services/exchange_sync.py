@@ -1052,16 +1052,17 @@ class ExchangeSyncService:
             
             # Strategy 3: Find by symbol + order_type + similar creation time (fallback)
             if not target_orders and executed_order:
-                # Look for orders created around the same time (within 5 minutes of the executed order)
+            # Look for orders created around the same time (within 5 minutes of the executed order)
                 if executed_order.exchange_create_time:
                     from datetime import timedelta
                     time_window_start = executed_order.exchange_create_time - timedelta(minutes=5)
                     time_window_end = executed_order.exchange_create_time + timedelta(minutes=5)
                     
-                    target_orders = db.query(ExchangeOrder).filter(
-                        and_(
-                            ExchangeOrder.symbol == symbol,
-                            ExchangeOrder.order_type == target_order_type,
+                    # Fixed indentation to restore proper fallback query structure.
+            target_orders = db.query(ExchangeOrder).filter(
+                and_(
+                    ExchangeOrder.symbol == symbol,
+                    ExchangeOrder.order_type == target_order_type,
                             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id,
                             ExchangeOrder.exchange_create_time >= time_window_start,
@@ -1096,9 +1097,9 @@ class ExchangeSyncService:
                         ExchangeOrder.symbol == symbol,
                         ExchangeOrder.order_type == target_order_type,
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
-                        ExchangeOrder.exchange_order_id != executed_order_id
-                    )
-                ).all()
+                    ExchangeOrder.exchange_order_id != executed_order_id
+                )
+            ).all()
                 if target_orders:
                     logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type (fallback)")
             
@@ -1561,14 +1562,14 @@ class ExchangeSyncService:
                                         # This is selling (TP/SL after BUY), so find the original BUY order
                                         # Look for BUY orders created before this TP/SL order
                                         if existing.exchange_create_time:
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "BUY",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "BUY",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
                                                 ExchangeOrder.exchange_order_id != order_id,  # Not the current order
                                                 ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
                                         else:
                                             # Fallback without time constraint
                                             original_order = db.query(ExchangeOrder).filter(
@@ -1585,11 +1586,11 @@ class ExchangeSyncService:
                                     elif not entry_price and current_side == "BUY":
                                         # This is buying (SL/TP after SELL for short positions), find original SELL order
                                         if existing.exchange_create_time:
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "SELL",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "SELL",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
                                                 ExchangeOrder.exchange_order_id != order_id,
                                                 ExchangeOrder.exchange_create_time <= existing.exchange_create_time
                                             ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
@@ -1600,10 +1601,10 @@ class ExchangeSyncService:
                                                 ExchangeOrder.status == OrderStatusEnum.FILLED,
                                                 ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
                                                 ExchangeOrder.exchange_order_id != order_id
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                        
-                                        if original_order:
-                                            entry_price = original_order.avg_price if original_order.avg_price else original_order.price
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                    
+                                    if original_order:
+                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
                                             logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
                                 
                                 # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
@@ -1916,8 +1917,12 @@ class ExchangeSyncService:
     
     async def start(self):
         """Start the sync service - OPTIMIZED: delayed initial sync to avoid blocking startup"""
+        # Prevent multiple instances from starting
+        if self.is_running:
+            logger.warning("⚠️ Exchange sync service is already running, skipping duplicate start")
+            return
         self.is_running = True
-        logger.info("Exchange sync service started")
+        logger.info("🚀 Exchange sync service started")
         
         # OPTIMIZATION: Wait before first sync to avoid blocking initial HTTP requests
         # This allows the server to handle requests quickly on startup

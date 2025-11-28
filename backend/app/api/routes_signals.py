@@ -83,13 +83,26 @@ def calculate_atr(highs: List[float], lows: List[float], closes: List[float], pe
     return round(atr, precision)
 
 def calculate_ma(prices: List[float], period: int) -> float:
-    """Calculate Moving Average"""
+    """Calculate Moving Average with adaptive precision based on value magnitude"""
     if len(prices) < period:
         return prices[-1] if prices else 0.0
-    return round(np.mean(prices[-period:]), 2)
+    
+    ma_value = np.mean(prices[-period:])
+    
+    # Determine precision based on value magnitude
+    if ma_value >= 100:
+        decimals = 2  # Values >= $100: 2 decimals
+    elif ma_value >= 1:
+        decimals = 2  # Values $1-$99: 2 decimals
+    elif ma_value >= 0.01:
+        decimals = 6  # Values $0.01-$0.99: 6 decimals
+    else:
+        decimals = 10  # Values < $0.01: 10 decimals
+    
+    return round(ma_value, decimals)
 
 def calculate_ema(prices: List[float], period: int) -> float:
-    """Calculate Exponential Moving Average"""
+    """Calculate Exponential Moving Average with adaptive precision based on value magnitude"""
     if len(prices) < period:
         return prices[-1] if prices else 0.0
     
@@ -99,11 +112,29 @@ def calculate_ema(prices: List[float], period: int) -> float:
     for price in prices[1:]:
         ema = (price * multiplier) + (ema * (1 - multiplier))
     
-    return round(ema, 2)
+    # Determine precision based on value magnitude
+    if ema >= 100:
+        decimals = 2  # Values >= $100: 2 decimals
+    elif ema >= 1:
+        decimals = 2  # Values $1-$99: 2 decimals
+    elif ema >= 0.01:
+        decimals = 6  # Values $0.01-$0.99: 6 decimals
+    else:
+        decimals = 10  # Values < $0.01: 10 decimals
+    
+    return round(ema, decimals)
 
-def calculate_volume_index(volumes: List[float], period: int = 10) -> dict:
-    """Calculate Volume Index - compares current volume to average of last N periods"""
-    if len(volumes) < period + 1:
+def calculate_volume_index(volumes: List[float], period: int = 5) -> dict:
+    """Calculate Volume Index - compares current volume to average of last N periods
+    Uses a shorter period (5 instead of 10) for faster reaction to volume changes.
+    Also uses EMA for the average volume calculation to be more responsive to recent trends.
+    
+    IMPROVED: Also checks if multiple recent periods (last 3-4) are above average to detect
+    sustained volume increases even if the EMA average is "dragged down" by earlier low volumes.
+    """
+    # Minimum period reduced to 3 for faster detection
+    min_period = 3
+    if len(volumes) < min_period + 1:
         return {
             "current_volume": volumes[-1] if volumes else 0,
             "average_volume": 0,
@@ -111,10 +142,40 @@ def calculate_volume_index(volumes: List[float], period: int = 10) -> dict:
             "signal": None
         }
     
-    # Get current volume and average of last N periods
+    # Get current volume
     current_volume = volumes[-1]
-    recent_volumes = volumes[-(period+1):-1]  # Last N periods excluding current
-    average_volume = np.mean(recent_volumes)
+    
+    # Use EMA (Exponential Moving Average) for more reactive volume average
+    # EMA gives more weight to recent volumes, making it faster to detect changes
+    if len(volumes) >= period + 1:
+        # Calculate EMA of volumes for more reactive average
+        recent_volumes = volumes[-(period+1):-1]  # Last N periods excluding current
+        # Use EMA with multiplier 2/(period+1) for faster reaction
+        ema_multiplier = 2 / (period + 1)
+        average_volume = recent_volumes[0]  # Start with oldest value
+        for vol in recent_volumes[1:]:
+            average_volume = (vol * ema_multiplier) + (average_volume * (1 - ema_multiplier))
+    else:
+        # Fallback to simple average if not enough data
+        recent_volumes = volumes[-(len(volumes)-1):-1]  # All except current
+        average_volume = np.mean(recent_volumes) if recent_volumes else 0
+    
+    # IMPROVED: Also calculate a "baseline average" using a longer period (up to 10)
+    # to detect when multiple recent periods are above the longer-term average
+    baseline_period = min(10, len(volumes) - 1)  # Use up to 10 periods for baseline
+    if len(volumes) >= baseline_period + 1:
+        baseline_volumes = volumes[-(baseline_period+1):-1]  # Last 10 periods excluding current
+        baseline_average = np.mean(baseline_volumes) if baseline_volumes else average_volume
+        
+        # Check if last 3-4 periods are consistently above baseline
+        recent_count = min(4, len(volumes) - 1)
+        recent_above_baseline = sum(1 for v in volumes[-recent_count:] if v > baseline_average * 1.5)
+        
+        # If 3+ of the last 4 periods are 1.5x above baseline, use baseline for ratio
+        # This detects sustained volume increases even if EMA is "dragged down"
+        if recent_above_baseline >= 3 and baseline_average > 0:
+            # Use the higher of EMA average or baseline average to avoid false negatives
+            average_volume = max(average_volume, baseline_average * 0.8)  # Slight discount on baseline
     
     # Calculate ratio
     volume_ratio = current_volume / average_volume if average_volume > 0 else 0
@@ -301,7 +362,7 @@ def get_signals(
     ema10_period: int = Query(10, description="EMA10 period"),
     ma10w_period: int = Query(70, description="MA10w period"),
     atr_period: int = Query(14, description="ATR period"),
-    volume_period: int = Query(10, description="Volume period")
+    volume_period: int = Query(5, description="Volume period (reduced from 10 for faster reaction)")
 ):
     """Calculate technical indicators and trading signals - SIMPLIFIED VERSION
     
@@ -359,17 +420,34 @@ def get_signals(
                             if time_remaining > (MAX_TIME_BUDGET_S * 0.5):
                                 logger.debug(f"🔍 [SIGNALS] {symbol}: Attempting fresh volume fetch (time remaining: {time_remaining:.3f}s)")
                                 volume_fetch_start = time_module.time()
+                                
+                                # Use ThreadPoolExecutor with strict timeout to prevent blocking
+                                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
                                 from market_updater import fetch_ohlcv_data
-                                # calculate_volume_index is already defined in this file
-                                ohlcv_data = fetch_ohlcv_data(symbol, "1h", limit=11)  # Get 11 periods (need 10+1 for calculation)
+                                
+                                # Set a strict timeout: use at most 3 seconds for volume fetch
+                                # This prevents the endpoint from hanging if external APIs are slow
+                                volume_timeout = min(3.0, time_remaining * 0.8)
+                                ohlcv_data = None
+                                
+                                try:
+                                    with ThreadPoolExecutor(max_workers=1) as executor:
+                                        future = executor.submit(fetch_ohlcv_data, symbol, "1h", 6)
+                                        ohlcv_data = future.result(timeout=volume_timeout)
+                                except FuturesTimeoutError:
+                                    logger.warning(f"⏱️ [SIGNALS] {symbol}: Volume fetch timed out after {volume_timeout:.2f}s, using DB values")
+                                except Exception as thread_err:
+                                    logger.warning(f"🔍 [SIGNALS] {symbol}: Volume fetch error: {thread_err}")
+                                
                                 volume_fetch_elapsed = time_module.time() - volume_fetch_start
                                 logger.debug(f"🔍 [SIGNALS] {symbol}: Volume fetch took {volume_fetch_elapsed:.3f}s")
                                 
                                 if ohlcv_data and len(ohlcv_data) > 0:
                                     volumes = [candle.get("v", 0) for candle in ohlcv_data if candle.get("v", 0) > 0]
-                                    if len(volumes) >= 11:
+                                    if len(volumes) >= 6:
                                         # Recalculate volume index with fresh data - this is the source of truth
-                                        volume_index = calculate_volume_index(volumes, period=10)
+                                        # Using period=5 for faster reaction to volume changes
+                                        volume_index = calculate_volume_index(volumes, period=5)
                                         fresh_current_volume = volume_index.get("current_volume")
                                         fresh_avg_volume = volume_index.get("average_volume")
                                         
@@ -890,7 +968,7 @@ def get_alert_ratio(
         from app.services.strategy_profiles import resolve_strategy_profile
         from app.models.watchlist import WatchlistItem
         from app.models.market_price import MarketPrice, MarketData
-        from app.simple_price_fetcher import price_fetcher
+        from simple_price_fetcher import price_fetcher
         
         # Get watchlist item
         if not DB_AVAILABLE:

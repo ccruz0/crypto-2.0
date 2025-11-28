@@ -1149,7 +1149,7 @@ def update_buy_alert(
     symbol: str,
     payload: Dict[str, bool] = Body(...),
     db: Session = Depends(get_db),
-    current_user = None if _should_disable_auth() else Depends(get_current_user)
+    current_user = Depends(_get_auth_dependency)
 ):
     """Update buy_alert_enabled for a watchlist item"""
     symbol_upper = symbol.upper()
@@ -1232,7 +1232,7 @@ def update_sell_alert(
     symbol: str,
     payload: Dict[str, bool] = Body(...),
     db: Session = Depends(get_db),
-    current_user = None if _should_disable_auth() else Depends(get_current_user)
+    current_user = Depends(_get_auth_dependency)
 ):
     """Update sell_alert_enabled for a watchlist item"""
     symbol_upper = symbol.upper()
