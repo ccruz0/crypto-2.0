@@ -175,11 +175,11 @@ services:
     # Ports are exposed for external API access (health checks, frontend calls)
     ports:
       - "8002:8002"
-    volumes:
-      - ./backend:/app
+    # volumes:
+    #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: sh -c "sleep 10 && gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
