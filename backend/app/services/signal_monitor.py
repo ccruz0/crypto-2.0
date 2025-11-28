@@ -476,19 +476,42 @@ class SignalMonitorService:
         
         # Get all watchlist items with alert_enabled = true (for alerts)
         # Note: This includes coins that may have trade_enabled = false
-        # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted) for legacy DBs
+        # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted, alert_cooldown_minutes) for legacy DBs
         try:
+            # CRITICAL: Rollback any previous failed transaction first to reset connection state
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            
             # Try to filter by is_deleted if column exists
             try:
                 watchlist_items = db.query(WatchlistItem).filter(
                     WatchlistItem.alert_enabled == True,
                     WatchlistItem.is_deleted == False
                 ).all()
-            except Exception:
-                # If is_deleted column doesn't exist, fall back to filtering only by alert_enabled
-                watchlist_items = db.query(WatchlistItem).filter(
-                    WatchlistItem.alert_enabled == True
-                ).all()
+            except Exception as e1:
+                # If is_deleted column doesn't exist, rollback and try without it
+                logger.debug(f"is_deleted filter failed, trying without it: {e1}")
+                try:
+                    db.rollback()  # Rollback the failed transaction
+                    watchlist_items = db.query(WatchlistItem).filter(
+                        WatchlistItem.alert_enabled == True
+                    ).all()
+                except Exception as e2:
+                    # If query still fails (e.g., alert_cooldown_minutes column missing in DB),
+                    # rollback and try one more time with a fresh session state
+                    logger.warning(f"Standard query failed, retrying after rollback: {e2}")
+                    try:
+                        db.rollback()
+                        db.expire_all()  # Expire all objects to force fresh load
+                        watchlist_items = db.query(WatchlistItem).filter(
+                            WatchlistItem.alert_enabled == True
+                        ).all()
+                    except Exception as e3:
+                        logger.error(f"All query attempts failed: {e3}", exc_info=True)
+                        db.rollback()
+                        return []
             
             if not watchlist_items:
                 logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
@@ -496,14 +519,7 @@ class SignalMonitorService:
             
             logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
             for item in watchlist_items:
-                # Refresh the item from database to get latest values (important for trade_amount_usd and alert_enabled)
-                db.refresh(item)
-                # CRITICAL: Double-check alert_enabled after refresh - if it changed to False, log warning
-                if not item.alert_enabled:
-                    logger.error(
-                        f"⚠️ INCONSISTENCIA DETECTADA: {item.symbol} tiene alert_enabled=False después del refresh, "
-                        f"pero fue incluido en la consulta inicial. Esto no debería pasar."
-                    )
+                # Use getattr defensively for all optional columns - don't refresh if it might fail
                 logger.info(
                     f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, "
                     f"trade_amount=${item.trade_amount_usd or 0}, is_deleted={getattr(item, 'is_deleted', 'N/A')}"
