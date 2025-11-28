@@ -484,9 +484,28 @@ class SignalMonitorService:
             except Exception:
                 pass
             
-            # Try to filter by is_deleted if column exists
+            # Use load_only to avoid loading columns that don't exist in the database
+            # This prevents errors when alert_cooldown_minutes or other optional columns are missing
+            from sqlalchemy.orm import load_only
             try:
-                watchlist_items = db.query(WatchlistItem).filter(
+                # Try with is_deleted filter first
+                watchlist_items = db.query(WatchlistItem).options(
+                    load_only(
+                        WatchlistItem.id,
+                        WatchlistItem.symbol,
+                        WatchlistItem.exchange,
+                        WatchlistItem.alert_enabled,
+                        WatchlistItem.trade_enabled,
+                        WatchlistItem.trade_amount_usd,
+                        WatchlistItem.buy_target,
+                        WatchlistItem.take_profit,
+                        WatchlistItem.stop_loss,
+                        WatchlistItem.purchase_price,
+                        WatchlistItem.quantity,
+                        WatchlistItem.sold,
+                        WatchlistItem.sell_price,
+                    )
+                ).filter(
                     WatchlistItem.alert_enabled == True,
                     WatchlistItem.is_deleted == False
                 ).all()
@@ -495,23 +514,29 @@ class SignalMonitorService:
                 logger.debug(f"is_deleted filter failed, trying without it: {e1}")
                 try:
                     db.rollback()  # Rollback the failed transaction
-                    watchlist_items = db.query(WatchlistItem).filter(
+                    watchlist_items = db.query(WatchlistItem).options(
+                        load_only(
+                            WatchlistItem.id,
+                            WatchlistItem.symbol,
+                            WatchlistItem.exchange,
+                            WatchlistItem.alert_enabled,
+                            WatchlistItem.trade_enabled,
+                            WatchlistItem.trade_amount_usd,
+                            WatchlistItem.buy_target,
+                            WatchlistItem.take_profit,
+                            WatchlistItem.stop_loss,
+                            WatchlistItem.purchase_price,
+                            WatchlistItem.quantity,
+                            WatchlistItem.sold,
+                            WatchlistItem.sell_price,
+                        )
+                    ).filter(
                         WatchlistItem.alert_enabled == True
                     ).all()
                 except Exception as e2:
-                    # If query still fails (e.g., alert_cooldown_minutes column missing in DB),
-                    # rollback and try one more time with a fresh session state
-                    logger.warning(f"Standard query failed, retrying after rollback: {e2}")
-                    try:
-                        db.rollback()
-                        db.expire_all()  # Expire all objects to force fresh load
-                        watchlist_items = db.query(WatchlistItem).filter(
-                            WatchlistItem.alert_enabled == True
-                        ).all()
-                    except Exception as e3:
-                        logger.error(f"All query attempts failed: {e3}", exc_info=True)
-                        db.rollback()
-                        return []
+                    logger.error(f"Query failed even with load_only: {e2}", exc_info=True)
+                    db.rollback()
+                    return []
             
             if not watchlist_items:
                 logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
