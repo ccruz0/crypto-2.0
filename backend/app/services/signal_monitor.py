@@ -163,6 +163,46 @@ class SignalMonitorService:
             details or {},
         )
 
+    def _evaluate_alert_flag(
+        self,
+        watchlist_item: WatchlistItem,
+        side: str,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Centralized helper to determine whether alerts are enabled for a symbol/side.
+
+        Returns (allowed, reason_code, details) so callers can log consistently.
+        """
+        side = side.upper()
+        alert_enabled = bool(getattr(watchlist_item, "alert_enabled", False))
+        buy_enabled = bool(getattr(watchlist_item, "buy_alert_enabled", False))
+        sell_enabled = bool(getattr(watchlist_item, "sell_alert_enabled", False))
+
+        if not alert_enabled:
+            return False, "DISABLED_ALERT", {
+                "alert_enabled": alert_enabled,
+                "buy_alert_enabled": buy_enabled,
+                "sell_alert_enabled": sell_enabled,
+            }
+
+        if side == "BUY" and not buy_enabled:
+            return False, "DISABLED_BUY_SELL_FLAG", {
+                "alert_enabled": alert_enabled,
+                "buy_alert_enabled": buy_enabled,
+            }
+
+        if side == "SELL" and not sell_enabled:
+            return False, "DISABLED_BUY_SELL_FLAG", {
+                "alert_enabled": alert_enabled,
+                "sell_alert_enabled": sell_enabled,
+            }
+
+        return True, "ALERT_ENABLED", {
+            "alert_enabled": alert_enabled,
+            "buy_alert_enabled": buy_enabled,
+            "sell_alert_enabled": sell_enabled,
+        }
+
     @staticmethod
     def _classify_throttle_reason(reason: Optional[str]) -> str:
         if not reason:
@@ -1081,33 +1121,46 @@ class SignalMonitorService:
         # CRITICAL: Check both alert_enabled (master switch) AND buy_alert_enabled (BUY-specific flag)
         # ========================================================================
         # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-        buy_alert_enabled = getattr(watchlist_item, 'buy_alert_enabled', False)
+        buy_flag_allowed, buy_flag_reason, buy_flag_details = self._evaluate_alert_flag(
+            watchlist_item, "BUY"
+        )
+        buy_alert_enabled = bool(
+            buy_flag_details.get(
+                "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
+            )
+        )
         
         # Log alert decision with all flags for clarity
         if buy_signal:
-            if buy_alert_enabled:
+            sell_flag_for_log = buy_flag_details.get(
+                "sell_alert_enabled", getattr(watchlist_item, "sell_alert_enabled", False)
+            )
+            if buy_flag_allowed:
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
-                    f"DECISION: SENT (buy_alert_enabled enabled)"
+                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={sell_flag_for_log} → "
+                    f"DECISION: SENT (alerts enabled)"
                 )
             else:
                 skip_reason = []
-                if not buy_alert_enabled:
+                if not buy_flag_details.get("alert_enabled", True):
+                    skip_reason.append("alert_enabled=False")
+                if not buy_flag_details.get("buy_alert_enabled", True):
                     skip_reason.append("buy_alert_enabled=False")
+                reason_text = ", ".join(skip_reason) or buy_flag_reason
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
-                    f"DECISION: SKIPPED ({', '.join(skip_reason)})"
+                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={sell_flag_for_log} → "
+                    f"DECISION: SKIPPED ({reason_text})"
                 )
                 self._log_signal_rejection(
                     symbol,
                     "BUY",
-                    "DISABLED_BUY_SELL_FLAG",
-                    {"buy_alert_enabled": buy_alert_enabled},
+                    buy_flag_reason,
+                    buy_flag_details,
                 )
         
-        if buy_signal and buy_alert_enabled:
+        if buy_signal and buy_flag_allowed:
             logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
@@ -1202,39 +1255,55 @@ class SignalMonitorService:
                     ).first()
                     if fresh_check:
                         watchlist_item.alert_enabled = fresh_check.alert_enabled
-                        buy_alert_enabled = getattr(fresh_check, 'buy_alert_enabled', False)
-                        logger.debug(f"🔄 Última verificación para {symbol}: alert_enabled={fresh_check.alert_enabled}, buy_alert_enabled={buy_alert_enabled}")
+                        setattr(
+                            watchlist_item,
+                            "buy_alert_enabled",
+                            getattr(fresh_check, "buy_alert_enabled", False),
+                        )
+                        setattr(
+                            watchlist_item,
+                            "sell_alert_enabled",
+                            getattr(fresh_check, "sell_alert_enabled", False),
+                        )
+                        buy_alert_enabled = bool(
+                            getattr(fresh_check, "buy_alert_enabled", False)
+                        )
+                        logger.debug(
+                            f"🔄 Última verificación para {symbol}: "
+                            f"alert_enabled={fresh_check.alert_enabled}, "
+                            f"buy_alert_enabled={buy_alert_enabled}"
+                        )
                 except Exception as e:
                     logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
                 
-                if not watchlist_item.alert_enabled:
-                    blocked_msg = (
-                        f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
-                        f"No se enviará alerta aunque se detectó señal BUY."
+                final_flag_allowed, final_flag_reason, final_flag_details = self._evaluate_alert_flag(
+                    watchlist_item, "BUY"
+                )
+                if not final_flag_allowed:
+                    if final_flag_reason == "DISABLED_ALERT":
+                        blocked_msg = (
+                            f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
+                            f"No se enviará alerta aunque se detectó señal BUY."
+                        )
+                        log_func = logger.error
+                    else:
+                        blocked_msg = (
+                            f"🚫 BLOQUEADO: {symbol} - buy_alert_enabled=False en verificación final. "
+                            f"No se enviará alerta BUY aunque se detectó señal BUY y alert_enabled=True."
+                        )
+                        log_func = logger.warning
+                    log_func(blocked_msg)
+                    self._log_signal_rejection(
+                        symbol,
+                        "BUY",
+                        final_flag_reason,
+                        final_flag_details,
                     )
-                    logger.error(blocked_msg)
-                    # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
                         add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
                     except Exception:
                         pass  # Non-critical, continue
-                    # Remove locks and continue (don't return - continue with order logic)
-                    if lock_key in self.alert_sending_locks:
-                        del self.alert_sending_locks[lock_key]
-                elif not buy_alert_enabled:
-                    blocked_msg = (
-                        f"🚫 BLOQUEADO: {symbol} - buy_alert_enabled=False en verificación final. "
-                        f"No se enviará alerta BUY aunque se detectó señal BUY y alert_enabled=True."
-                    )
-                    logger.warning(blocked_msg)
-                    # Register blocked message
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                    except Exception:
-                        pass  # Non-critical, continue
-                    # Remove locks and continue (don't return - continue with order logic)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
                 else:
@@ -2012,33 +2081,47 @@ class SignalMonitorService:
             # IMPORTANTE: Similar a las alertas BUY, pero solo alertas (no órdenes automáticas)
             # ========================================================================
             # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-            sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
+            sell_flag_allowed, sell_flag_reason, sell_flag_details = self._evaluate_alert_flag(
+                watchlist_item, "SELL"
+            )
+            sell_alert_enabled = bool(
+                sell_flag_details.get(
+                    "sell_alert_enabled",
+                    getattr(watchlist_item, "sell_alert_enabled", False),
+                )
+            )
             
             # Log alert decision with all flags for clarity
             if sell_signal:
-                if sell_alert_enabled:
+                buy_flag_for_log = sell_flag_details.get(
+                    "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
+                )
+                if sell_flag_allowed:
                     logger.info(
                         f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
-                        f"DECISION: SENT (sell_alert_enabled enabled)"
+                        f"buy_alert_enabled={buy_flag_for_log}, sell_alert_enabled={sell_alert_enabled} → "
+                        f"DECISION: SENT (alerts enabled)"
                     )
                 else:
                     skip_reason = []
-                    if not sell_alert_enabled:
+                    if not sell_flag_details.get("alert_enabled", True):
+                        skip_reason.append("alert_enabled=False")
+                    if not sell_flag_details.get("sell_alert_enabled", True):
                         skip_reason.append("sell_alert_enabled=False")
+                    reason_text = ", ".join(skip_reason) or sell_flag_reason
                     logger.info(
                         f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
-                        f"DECISION: SKIPPED ({', '.join(skip_reason)})"
+                        f"buy_alert_enabled={buy_flag_for_log}, sell_alert_enabled={sell_alert_enabled} → "
+                        f"DECISION: SKIPPED ({reason_text})"
                     )
-                self._log_signal_rejection(
-                    symbol,
-                    "SELL",
-                    "DISABLED_BUY_SELL_FLAG",
-                    {"sell_alert_enabled": sell_alert_enabled},
-                )
+                    self._log_signal_rejection(
+                        symbol,
+                        "SELL",
+                        sell_flag_reason,
+                        sell_flag_details,
+                    )
             
-            if sell_signal and sell_alert_enabled:
+            if sell_signal and sell_flag_allowed:
                 logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
                 
                 # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
@@ -2108,21 +2191,43 @@ class SignalMonitorService:
                             WatchlistItem.symbol == symbol
                         ).first()
                         if fresh_check:
-                            sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
-                            logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
+                            setattr(
+                                watchlist_item,
+                                "sell_alert_enabled",
+                                getattr(fresh_check, "sell_alert_enabled", False),
+                            )
+                            setattr(
+                                watchlist_item,
+                                "alert_enabled",
+                                getattr(fresh_check, "alert_enabled", watchlist_item.alert_enabled),
+                            )
+                            logger.debug(
+                                f"🔄 Última verificación de sell_alert_enabled para {symbol}: "
+                                f"{getattr(fresh_check, 'sell_alert_enabled', False)}"
+                            )
                     except Exception as e:
                         logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
                     
-                    if not sell_alert_enabled:
-                        blocked_msg = (
-                            f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False en verificación final. "
-                            f"No se enviará alerta SELL aunque se detectó señal SELL."
-                        )
+                    final_sell_allowed, final_sell_reason, final_sell_details = self._evaluate_alert_flag(
+                        watchlist_item, "SELL"
+                    )
+                    
+                    if not final_sell_allowed:
+                        if final_sell_reason == "DISABLED_ALERT":
+                            blocked_msg = (
+                                f"🚫 BLOQUEADO: {symbol} SELL - alert_enabled=False en verificación final. "
+                                f"No se enviará alerta SELL aunque se detectó señal SELL."
+                            )
+                        else:
+                            blocked_msg = (
+                                f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False en verificación final. "
+                                f"No se enviará alerta SELL aunque se detectó señal SELL."
+                            )
                         self._log_signal_rejection(
                             symbol,
                             "SELL",
-                            "DISABLED_BUY_SELL_FLAG",
-                            {"sell_alert_enabled": False},
+                            final_sell_reason,
+                            final_sell_details,
                         )
                         logger.warning(blocked_msg)
                         try:
