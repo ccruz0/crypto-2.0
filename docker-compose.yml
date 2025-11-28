@@ -182,11 +182,11 @@ services:
     command: sh -c "sleep 10 && gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
     restart: always
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 120s
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
+      interval: 120s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
     deploy:
       resources:
         limits:
