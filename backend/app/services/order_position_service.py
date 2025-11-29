@@ -225,188 +225,122 @@ def count_total_open_positions(db: Session) -> int:
     return total
 
 
+# Configuration: Include open BUY orders in risk portfolio value calculation
+INCLUDE_OPEN_ORDERS_IN_RISK = True
+
+
 def calculate_portfolio_value_for_symbol(db: Session, symbol: str, current_price: float) -> Tuple[float, float]:
     """
-    Calculate portfolio value (USD) for a symbol based on net quantity * current_price.
+    Calculate portfolio value (USD) for a symbol based on actual exchange balances.
     
-    Uses the same logic as count_open_positions_for_symbol to get net quantity.
+    This aligns with what the Portfolio tab shows, using real balances from the exchange
+    instead of only historical filled orders.
     
     Args:
         db: Database session
-        symbol: Symbol to calculate portfolio value for (e.g., "AAVE" or "AAVE_USD")
+        symbol: Symbol to calculate portfolio value for (e.g., "CRO_USDT" or "CRO")
         current_price: Current market price for the symbol
         
     Returns:
-        Tuple[portfolio_value_usd, net_quantity]
-        - portfolio_value_usd: Total USD value of open positions for this symbol
-        - net_quantity: Net quantity (filled_buy_qty - filled_sell_qty)
+        Tuple[portfolio_value_usd, balance_quantity]
+        - portfolio_value_usd: Total USD value (balance + optionally open BUY orders)
+        - balance_quantity: Total balance quantity from exchange
     """
-    symbol_filter = _normalized_symbol_filter(symbol)
+    # Extract base currency (e.g., "CRO" from "CRO_USDT")
+    base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+    base_currency = base_currency.upper()
     
-    # Get filled BUY orders
-    main_role_filter = or_(
-        ExchangeOrder.order_role.is_(None),
-        not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
-    )
+    # Get exchange balance from PortfolioBalance table (same source as Portfolio tab)
+    balance_qty = 0.0
+    balance_value_usd = 0.0
     
-    filled_buy_orders = (
-        db.query(ExchangeOrder)
-        .filter(
-            symbol_filter,
-            ExchangeOrder.side == OrderSideEnum.BUY,
-            ExchangeOrder.status == OrderStatusEnum.FILLED,
-            main_role_filter,
-        )
-        .all()
-    )
-    
-    filled_buy_qty = sum(_order_filled_quantity(o) for o in filled_buy_orders)
-    
-    # Get filled SELL orders
-    filled_sell_orders = (
-        db.query(ExchangeOrder)
-        .filter(
-            symbol_filter,
-            ExchangeOrder.side == OrderSideEnum.SELL,
-            ExchangeOrder.status == OrderStatusEnum.FILLED,
-            or_(
-                ExchangeOrder.order_role.is_(None),
-                ExchangeOrder.order_role == "STOP_LOSS",
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-            ),
-        )
-        .all()
-    )
-    
-    filled_sell_qty = sum(_order_filled_quantity(o) for o in filled_sell_orders)
-    
-    # Calculate net quantity
-    net_quantity = max(filled_buy_qty - filled_sell_qty, 0.0)
-    
-    # Calculate portfolio value
-    portfolio_value_usd = net_quantity * current_price
-    
-    # Detailed logging for CRO_USDT (and variants) to debug portfolio value discrepancies
-    symbol_upper = (symbol or "").upper()
-    is_cro = "CRO" in symbol_upper
-    
-    if is_cro:
-        # Get detailed breakdown for CRO
-        buy_order_details = []
-        for order in filled_buy_orders:
-            qty = _order_filled_quantity(order)
-            buy_order_details.append({
-                "order_id": order.exchange_order_id,
-                "quantity": qty,
-                "price": float(order.price) if order.price else None,
-                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                "role": order.order_role,
-            })
+        try:
+            from app.models.portfolio import PortfolioBalance
+            from app.services.portfolio_cache import _normalize_currency_name
         
-        sell_order_details = []
-        for order in filled_sell_orders:
-            qty = _order_filled_quantity(order)
-            sell_order_details.append({
-                "order_id": order.exchange_order_id,
-                "quantity": qty,
-                "price": float(order.price) if order.price else None,
-                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                "role": order.order_role,
-            })
+        # Query for normalized currency name (balances are stored with base currency)
+        normalized_currency = _normalize_currency_name(base_currency)
         
-        # Also check for open orders
-        from sqlalchemy import or_, not_
-        pending_statuses = [
-            OrderStatusEnum.NEW,
-            OrderStatusEnum.ACTIVE,
-            OrderStatusEnum.PARTIALLY_FILLED,
-        ]
-        main_role_filter = or_(
-            ExchangeOrder.order_role.is_(None),
-            not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
-        )
-        open_buy_orders = (
-            db.query(ExchangeOrder)
-            .filter(
-                symbol_filter,
-                ExchangeOrder.side == OrderSideEnum.BUY,
-                ExchangeOrder.status.in_(pending_statuses),
-                main_role_filter,
-            )
+        # Get all balances matching this currency (could be multiple entries, take most recent)
+        portfolio_balances = (
+            db.query(PortfolioBalance)
+            .filter(PortfolioBalance.currency == normalized_currency)
+            .order_by(PortfolioBalance.id.desc())
             .all()
         )
-        open_buy_value = sum(
-            (_order_filled_quantity(o) or float(o.quantity or 0)) * (float(o.price) if o.price else current_price)
-            for o in open_buy_orders
-        )
         
-        # Check actual balances from exchange
-        try:
-            from app.models.portfolio_balance import PortfolioBalance
-            portfolio_balances = db.query(PortfolioBalance).filter(
-                PortfolioBalance.currency.like("CRO%")
-            ).all()
-            balance_details = []
-            total_balance_usd = 0.0
-            for bal in portfolio_balances:
-                balance_usd = float(bal.usd_value) if bal.usd_value else 0.0
-                total_balance_usd += balance_usd
-                balance_details.append({
-                    "currency": bal.currency,
-                    "balance": float(bal.balance) if bal.balance else 0.0,
-                    "usd_value": balance_usd,
-                })
-        except Exception as balance_err:
-            balance_details = []
-            total_balance_usd = 0.0
-            logger.warning(f"Could not fetch portfolio balances for CRO: {balance_err}")
+        # Sum all balance entries for this currency (in case of duplicates)
+        for bal in portfolio_balances:
+            balance_qty += float(bal.balance) if bal.balance else 0.0
+            balance_value_usd += float(bal.usd_value) if bal.usd_value else 0.0
         
-        logger.info(
-            "[RISK_PORTFOLIO_CHECK] symbol=%s "
-            "filled_buy_qty=%.8f filled_sell_qty=%.8f net_qty=%.8f "
-            "current_price=%.4f portfolio_value_usd=%.2f "
-            "open_buy_orders_count=%d open_buy_orders_value=%.2f "
-            "exchange_balance_usd=%.2f "
-            "buy_orders=%d sell_orders=%d",
-            symbol,
-            filled_buy_qty,
-            filled_sell_qty,
-            net_quantity,
-            current_price,
-            portfolio_value_usd,
-            len(open_buy_orders),
-            open_buy_value,
-            total_balance_usd,
-            len(filled_buy_orders),
-            len(filled_sell_orders),
-        )
-        
-        if buy_order_details:
-            logger.info(
-                "[RISK_PORTFOLIO_CHECK] CRO filled BUY orders: %s",
-                buy_order_details[:5]  # Log first 5
-            )
-        if sell_order_details:
-            logger.info(
-                "[RISK_PORTFOLIO_CHECK] CRO filled SELL orders: %s",
-                sell_order_details[:5]  # Log first 5
-            )
-        if balance_details:
-            logger.info(
-                "[RISK_PORTFOLIO_CHECK] CRO exchange balances: %s",
-                balance_details
-            )
-    else:
-        logger.debug(
-            "[PORTFOLIO_VALUE] symbol=%s filled_buy_qty=%s filled_sell_qty=%s net_qty=%s price=%s portfolio_value=%s",
-            symbol,
-            round(filled_buy_qty, 8),
-            round(filled_sell_qty, 8),
-            round(net_quantity, 8),
-            round(current_price, 4),
-            round(portfolio_value_usd, 2),
-        )
+        # If no balance found but we have a price, calculate from quantity
+        if balance_value_usd == 0.0 and balance_qty > 0:
+            balance_value_usd = balance_qty * current_price
+            
+    except Exception as balance_err:
+        logger.warning(f"Could not fetch portfolio balance for {symbol} (base={base_currency}): {balance_err}")
+        balance_qty = 0.0
+        balance_value_usd = 0.0
     
-    return portfolio_value_usd, net_quantity
+    # Optionally include open BUY orders exposure
+    open_buy_value_usd = 0.0
+    open_buy_orders_count = 0
+    
+    if INCLUDE_OPEN_ORDERS_IN_RISK:
+        try:
+            symbol_filter = _normalized_symbol_filter(symbol)
+            pending_statuses = [
+                OrderStatusEnum.NEW,
+                OrderStatusEnum.ACTIVE,
+                OrderStatusEnum.PARTIALLY_FILLED,
+            ]
+            main_role_filter = or_(
+                ExchangeOrder.order_role.is_(None),
+                not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+            )
+            
+            open_buy_orders = (
+                db.query(ExchangeOrder)
+                .filter(
+                    symbol_filter,
+                    ExchangeOrder.side == OrderSideEnum.BUY,
+                    ExchangeOrder.status.in_(pending_statuses),
+                    main_role_filter,
+                )
+                .all()
+            )
+            
+            open_buy_orders_count = len(open_buy_orders)
+            for order in open_buy_orders:
+                # Use order price if available, otherwise use current_price
+                order_price = float(order.price) if order.price else current_price
+                order_qty = _order_filled_quantity(order) or float(order.quantity or 0)
+                open_buy_value_usd += order_qty * order_price
+                
+        except Exception as open_orders_err:
+            logger.warning(f"Could not fetch open BUY orders for {symbol}: {open_orders_err}")
+            open_buy_value_usd = 0.0
+    
+    # Calculate total portfolio value
+    portfolio_value_usd = balance_value_usd + open_buy_value_usd
+    
+    # Log portfolio value calculation (concise for all symbols, detailed breakdown available in logs)
+    logger.info(
+        "[RISK_PORTFOLIO_CHECK] symbol=%s base_currency=%s balance_qty=%.8f balance_value_usd=%.2f "
+        "open_buy_orders_count=%d open_buy_value_usd=%.2f total_value_usd=%.2f "
+        "include_open_orders=%s",
+        symbol,
+        base_currency,
+        balance_qty,
+        balance_value_usd,
+        open_buy_orders_count,
+        open_buy_value_usd,
+        portfolio_value_usd,
+        INCLUDE_OPEN_ORDERS_IN_RISK,
+    )
+    
+    # Return portfolio value and balance quantity
+    return portfolio_value_usd, balance_qty
 
 

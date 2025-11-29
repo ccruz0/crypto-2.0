@@ -29,7 +29,11 @@ from app.services.strategy_profiles import (
 )
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
 from app.services.config_loader import get_alert_thresholds
-from app.services.order_position_service import calculate_portfolio_value_for_symbol
+from app.services.order_position_service import (
+    calculate_portfolio_value_for_symbol,
+    _normalized_symbol_filter,
+    INCLUDE_OPEN_ORDERS_IN_RISK,
+)
 from app.services.signal_throttle import (
     LastSignalSnapshot,
     SignalThrottleConfig,
@@ -1320,29 +1324,90 @@ class SignalMonitorService:
                     # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
                     trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                     limit_value = 3 * trade_amount_usd
+                    max_position_multiple = 3
                     try:
-                        portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                        portfolio_value, balance_qty = calculate_portfolio_value_for_symbol(db, symbol, current_price)
                         
-                        # Enhanced logging for CRO_USDT to debug portfolio value discrepancies
-                        if symbol and "CRO" in symbol.upper():
-                            logger.info(
-                                "[RISK_PORTFOLIO_CHECK] symbol=%s portfolio_value=%.2f trade_amount=%.2f "
-                                "limit_value=%.2f (3x trade_amount) current_price=%.4f net_quantity=%.8f "
-                                "check_result=%s",
-                                symbol,
-                                portfolio_value,
-                                trade_amount_usd,
-                                limit_value,
-                                current_price,
-                                net_quantity,
-                                "BLOCKED" if portfolio_value > limit_value else "ALLOWED",
-                            )
+                        # Get breakdown for detailed message (re-query to get balance and open orders separately)
+                        base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+                        base_currency = base_currency.upper()
+                        balance_value_usd = 0.0
+                        open_buy_value_usd = 0.0
                         
-                        if portfolio_value > limit_value:
-                            blocked_msg = (
-                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                                f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                        try:
+                            from app.models.portfolio import PortfolioBalance
+                            from app.services.portfolio_cache import _normalize_currency_name
+                            from app.services.order_position_service import INCLUDE_OPEN_ORDERS_IN_RISK
+                            
+                            normalized_currency = _normalize_currency_name(base_currency)
+                            portfolio_balances = (
+                                db.query(PortfolioBalance)
+                                .filter(PortfolioBalance.currency == normalized_currency)
+                                .all()
                             )
+                            for bal in portfolio_balances:
+                                balance_value_usd += float(bal.usd_value) if bal.usd_value else 0.0
+                            
+                            if INCLUDE_OPEN_ORDERS_IN_RISK:
+                                symbol_filter = _normalized_symbol_filter(symbol)
+                                pending_statuses = [
+                                    OrderStatusEnum.NEW,
+                                    OrderStatusEnum.ACTIVE,
+                                    OrderStatusEnum.PARTIALLY_FILLED,
+                                ]
+                                main_role_filter = or_(
+                                    ExchangeOrder.order_role.is_(None),
+                                    not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+                                )
+                                open_buy_orders = (
+                                    db.query(ExchangeOrder)
+                                    .filter(
+                                        symbol_filter,
+                                        ExchangeOrder.side == OrderSideEnum.BUY,
+                                        ExchangeOrder.status.in_(pending_statuses),
+                                        main_role_filter,
+                                    )
+                                    .all()
+                                )
+                                for order in open_buy_orders:
+                                    order_price = float(order.price) if order.price else current_price
+                                    order_qty = float(order.cumulative_quantity or order.quantity or 0)
+                                    open_buy_value_usd += order_qty * order_price
+                        except Exception as breakdown_err:
+                            logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
+                        
+                        blocked = portfolio_value > limit_value
+                        
+                        # Log risk check result
+                        logger.info(
+                            "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
+                            "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
+                            "limit_multiple=%s blocked=%s",
+                            symbol,
+                            balance_qty,
+                            balance_value_usd,
+                            open_buy_value_usd,
+                            portfolio_value,
+                            trade_amount_usd,
+                            max_position_multiple,
+                            blocked,
+                        )
+                        
+                        if blocked:
+                            # Build detailed message with breakdown
+                            if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
+                                blocked_msg = (
+                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                    f"Valor en cartera: ${portfolio_value:.2f} USD = "
+                                    f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
+                                    f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                )
+                            else:
+                                blocked_msg = (
+                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                    f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
+                                    f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                )
                             logger.warning(blocked_msg)
                             # Register blocked message
                             try:
@@ -1891,13 +1956,89 @@ class SignalMonitorService:
                 # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
                 trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                 limit_value = 3 * trade_amount_usd
+                max_position_multiple = 3
                 try:
-                    portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
-                    if portfolio_value > limit_value:
-                        blocked_msg = (
-                            f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                    portfolio_value, balance_qty = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                    
+                    # Get breakdown for detailed message
+                    base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+                    base_currency = base_currency.upper()
+                    balance_value_usd = 0.0
+                    open_buy_value_usd = 0.0
+                    
+                    try:
+                        from app.models.portfolio import PortfolioBalance
+                        from app.services.portfolio_cache import _normalize_currency_name
+                        
+                        normalized_currency = _normalize_currency_name(base_currency)
+                        portfolio_balances = (
+                            db.query(PortfolioBalance)
+                            .filter(PortfolioBalance.currency == normalized_currency)
+                            .all()
                         )
+                        for bal in portfolio_balances:
+                            balance_value_usd += float(bal.usd_value) if bal.usd_value else 0.0
+                        
+                        if INCLUDE_OPEN_ORDERS_IN_RISK:
+                            symbol_filter = _normalized_symbol_filter(symbol)
+                            pending_statuses = [
+                                OrderStatusEnum.NEW,
+                                OrderStatusEnum.ACTIVE,
+                                OrderStatusEnum.PARTIALLY_FILLED,
+                            ]
+                            main_role_filter = or_(
+                                ExchangeOrder.order_role.is_(None),
+                                not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+                            )
+                            open_buy_orders = (
+                                db.query(ExchangeOrder)
+                                .filter(
+                                    symbol_filter,
+                                    ExchangeOrder.side == OrderSideEnum.BUY,
+                                    ExchangeOrder.status.in_(pending_statuses),
+                                    main_role_filter,
+                                )
+                                .all()
+                            )
+                            for order in open_buy_orders:
+                                order_price = float(order.price) if order.price else current_price
+                                order_qty = float(order.cumulative_quantity or order.quantity or 0)
+                                open_buy_value_usd += order_qty * order_price
+                    except Exception as breakdown_err:
+                        logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
+                    
+                    blocked = portfolio_value > limit_value
+                    
+                    # Log risk check result
+                    logger.info(
+                        "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
+                        "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
+                        "limit_multiple=%s blocked=%s",
+                        symbol,
+                        balance_qty,
+                        balance_value_usd,
+                        open_buy_value_usd,
+                        portfolio_value,
+                        trade_amount_usd,
+                        max_position_multiple,
+                        blocked,
+                    )
+                    
+                    if blocked:
+                        # Build detailed message with breakdown
+                        if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
+                            blocked_msg = (
+                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                f"Valor en cartera: ${portfolio_value:.2f} USD = "
+                                f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
+                                f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                            )
+                        else:
+                            blocked_msg = (
+                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
+                                f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                            )
                         logger.warning(blocked_msg)
                         # Register blocked message
                         try:
@@ -2021,15 +2162,92 @@ class SignalMonitorService:
                 # Check portfolio value limit: Block BUY orders if portfolio_value > 3x trade_amount_usd
                 trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                 limit_value = 3 * trade_amount_usd
+                max_position_multiple = 3
                 try:
-                    portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
-                    if portfolio_value > limit_value:
-                        logger.warning(
-                            f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
-                            f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}. "
-                            f"No se creará orden aunque se detectó señal BUY."
+                    portfolio_value, balance_qty = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                    
+                    # Get breakdown for detailed message
+                    base_currency = symbol.split("_")[0] if "_" in symbol else symbol
+                    base_currency = base_currency.upper()
+                    balance_value_usd = 0.0
+                    open_buy_value_usd = 0.0
+                    
+                    try:
+                        from app.models.portfolio import PortfolioBalance
+                        from app.services.portfolio_cache import _normalize_currency_name
+                        
+                        normalized_currency = _normalize_currency_name(base_currency)
+                        portfolio_balances = (
+                            db.query(PortfolioBalance)
+                            .filter(PortfolioBalance.currency == normalized_currency)
+                            .all()
                         )
+                        for bal in portfolio_balances:
+                            balance_value_usd += float(bal.usd_value) if bal.usd_value else 0.0
+                        
+                        if INCLUDE_OPEN_ORDERS_IN_RISK:
+                            symbol_filter = _normalized_symbol_filter(symbol)
+                            pending_statuses = [
+                                OrderStatusEnum.NEW,
+                                OrderStatusEnum.ACTIVE,
+                                OrderStatusEnum.PARTIALLY_FILLED,
+                            ]
+                            main_role_filter = or_(
+                                ExchangeOrder.order_role.is_(None),
+                                not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
+                            )
+                            open_buy_orders = (
+                                db.query(ExchangeOrder)
+                                .filter(
+                                    symbol_filter,
+                                    ExchangeOrder.side == OrderSideEnum.BUY,
+                                    ExchangeOrder.status.in_(pending_statuses),
+                                    main_role_filter,
+                                )
+                                .all()
+                            )
+                            for order in open_buy_orders:
+                                order_price = float(order.price) if order.price else current_price
+                                order_qty = float(order.cumulative_quantity or order.quantity or 0)
+                                open_buy_value_usd += order_qty * order_price
+                    except Exception as breakdown_err:
+                        logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
+                    
+                    blocked = portfolio_value > limit_value
+                    
+                    # Log risk check result
+                    logger.info(
+                        "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
+                        "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
+                        "limit_multiple=%s blocked=%s",
+                        symbol,
+                        balance_qty,
+                        balance_value_usd,
+                        open_buy_value_usd,
+                        portfolio_value,
+                        trade_amount_usd,
+                        max_position_multiple,
+                        blocked,
+                    )
+                    
+                    if blocked:
+                        # Build detailed message with breakdown
+                        if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
+                            blocked_msg = (
+                                f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                f"Valor en cartera: ${portfolio_value:.2f} USD = "
+                                f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
+                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                f"No se creará orden aunque se detectó señal BUY."
+                            )
+                        else:
+                            blocked_msg = (
+                                f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
+                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                f"No se creará orden aunque se detectó señal BUY."
+                            )
+                        logger.warning(blocked_msg)
                         # Bloquear silenciosamente - no enviar notificación a Telegram
                         # Remove locks and exit
                         if symbol in self.order_creation_locks:
