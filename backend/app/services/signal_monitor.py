@@ -1322,6 +1322,22 @@ class SignalMonitorService:
                     limit_value = 3 * trade_amount_usd
                     try:
                         portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+                        
+                        # Enhanced logging for CRO_USDT to debug portfolio value discrepancies
+                        if symbol and "CRO" in symbol.upper():
+                            logger.info(
+                                "[RISK_PORTFOLIO_CHECK] symbol=%s portfolio_value=%.2f trade_amount=%.2f "
+                                "limit_value=%.2f (3x trade_amount) current_price=%.4f net_quantity=%.8f "
+                                "check_result=%s",
+                                symbol,
+                                portfolio_value,
+                                trade_amount_usd,
+                                limit_value,
+                                current_price,
+                                net_quantity,
+                                "BLOCKED" if portfolio_value > limit_value else "ALLOWED",
+                            )
+                        
                         if portfolio_value > limit_value:
                             blocked_msg = (
                                 f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
@@ -1361,6 +1377,13 @@ class SignalMonitorService:
                                 f"MA50={ma50_text}, "
                                 f"EMA10={ema10_text}, "
                                 f"MA200={ma200_text}"
+                            )
+                            logger.info(
+                                "TELEGRAM_EMIT_DEBUG | emitter=SignalMonitorService | symbol=%s | side=%s | strategy_key=%s | price=%s",
+                                symbol,
+                                "BUY",
+                                strategy_key,
+                                current_price,
                             )
                             result = telegram_notifier.send_buy_signal(
                                 symbol=symbol,
@@ -1910,6 +1933,13 @@ class SignalMonitorService:
                         f"MA50={ma50_text}, "
                         f"EMA10={ema10_text}, "
                         f"MA200={ma200_text}"
+                    )
+                    logger.info(
+                        "TELEGRAM_EMIT_DEBUG | emitter=SignalMonitorService (legacy BUY path) | symbol=%s | side=%s | strategy_key=%s | price=%s",
+                        symbol,
+                        "BUY",
+                        strategy_key,
+                        current_price,
                     )
                     result = telegram_notifier.send_buy_signal(
                         symbol=symbol,
