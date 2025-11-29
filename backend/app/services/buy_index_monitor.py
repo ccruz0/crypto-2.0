@@ -18,6 +18,14 @@ from app.services.strategy_profiles import (
     StrategyType,
     RiskApproach,
 )
+from app.services.signal_throttle import (
+    SignalThrottleConfig,
+    fetch_signal_states,
+    record_signal_event,
+    should_emit_signal,
+    LastSignalSnapshot,
+)
+from datetime import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,11 @@ class BuyIndexMonitorService:
         self.running = False
         self.interval_seconds = 120  # 2 minutes
         self.symbol = "BTC_USD"
+        # Local in-memory throttle guard (fallback when DB throttle state is empty)
+        # This ensures we never spam Telegram even if persistence is misconfigured.
+        self._last_index_price: Optional[float] = None
+        self._last_index_time: Optional[datetime] = None
+        self._last_index_signal: Optional[bool] = None
     
     def calculate_buy_index(
         self,
@@ -37,6 +50,9 @@ class BuyIndexMonitorService:
         ma50: Optional[float],
         ema10: Optional[float],
         buy_target: Optional[float],
+        *,
+        volume: Optional[float] = None,
+        avg_volume: Optional[float] = None,
         rsi_buy_threshold: int = 40,
         strategy_type: StrategyType = StrategyType.SWING,
         risk_approach: RiskApproach = RiskApproach.CONSERVATIVE,
@@ -50,7 +66,9 @@ class BuyIndexMonitorService:
         index = 0
         breakdown = []
         
-        # If already a buy signal, return 100
+        # If unified strategy already emits a BUY signal, return 100
+        # IMPORTANT: This uses the same strategy engine as SignalMonitorService / Watchlist,
+        # including volume-based checks and all structured reasons.
         signals = calculate_trading_signals(
             symbol=self.symbol,
             price=price,
@@ -58,22 +76,31 @@ class BuyIndexMonitorService:
             ma50=ma50,
             ma200=None,
             ema10=ema10,
+            volume=volume,
+            avg_volume=avg_volume,
             buy_target=buy_target,
             rsi_buy_threshold=rsi_buy_threshold,
             strategy_type=strategy_type,
             risk_approach=risk_approach,
         )
-        
-        if signals.get("buy_signal"):
+        strategy = signals.get("strategy") or {}
+        decision = strategy.get("decision", "WAIT")
+        reasons = strategy.get("reasons") or {}
+
+        if decision == "BUY" and signals.get("buy_signal"):
             return {
                 "index": 100,
                 "buy_signal": True,
-                "breakdown": ["✅ All BUY conditions met"],
+                "breakdown": ["✅ All BUY conditions met (unified strategy decision=BUY)"],
                 "price": price,
                 "rsi": rsi,
                 "ma50": ma50,
                 "ema10": ema10,
-                "buy_target": buy_target
+                "buy_target": buy_target,
+                "volume": volume,
+                "avg_volume": avg_volume,
+                "volume_ratio": signals.get("volume_ratio"),
+                "strategy": strategy,
             }
         
         # Calculate proximity for each condition
@@ -180,8 +207,9 @@ class BuyIndexMonitorService:
             # Use raw SQL query to avoid issues with missing columns
             from sqlalchemy import text
             try:
-                result = db.execute(text(f"""
-                    SELECT price, rsi, ma50, ema10, ma10w, atr, res_up, res_down
+                result = db.execute(text("""
+                    SELECT price, rsi, ma50, ema10, ma10w, atr, res_up, res_down,
+                           current_volume, avg_volume, volume_ratio
                     FROM market_data 
                     WHERE symbol = :symbol
                     LIMIT 1
@@ -194,14 +222,17 @@ class BuyIndexMonitorService:
                 # Create a simple object to hold the data
                 class MarketDataSimple:
                     def __init__(self, row):
-                        self.price = row.price if row.price else None
-                        self.rsi = row.rsi if row.rsi else None
-                        self.ma50 = row.ma50 if row.ma50 else None
-                        self.ema10 = row.ema10 if row.ema10 else None
-                        self.ma10w = row.ma10w if row.ma10w else None
-                        self.atr = row.atr if row.atr else None
-                        self.res_up = row.res_up if row.res_up else None
-                        self.res_down = row.res_down if row.res_down else None
+                        self.price = row.price if row.price is not None else None
+                        self.rsi = row.rsi if row.rsi is not None else None
+                        self.ma50 = row.ma50 if row.ma50 is not None else None
+                        self.ema10 = row.ema10 if row.ema10 is not None else None
+                        self.ma10w = row.ma10w if row.ma10w is not None else None
+                        self.atr = row.atr if row.atr is not None else None
+                        self.res_up = row.res_up if row.res_up is not None else None
+                        self.res_down = row.res_down if row.res_down is not None else None
+                        self.current_volume = row.current_volume if hasattr(row, "current_volume") else None
+                        self.avg_volume = row.avg_volume if hasattr(row, "avg_volume") else None
+                        self.volume_ratio = row.volume_ratio if hasattr(row, "volume_ratio") else None
                 
                 market_data = MarketDataSimple(row)
             except Exception as e:
@@ -229,6 +260,8 @@ class BuyIndexMonitorService:
                 ma50=market_data.ma50,
                 ema10=market_data.ema10,
                 buy_target=buy_target,
+                volume=getattr(market_data, "current_volume", None),
+                avg_volume=getattr(market_data, "avg_volume", None),
                 strategy_type=strategy_type,
                 risk_approach=risk_approach,
             )
@@ -252,6 +285,92 @@ class BuyIndexMonitorService:
                 f"${index_data['price']:,.2f}" if index_data['price'] is not None else "N/A"
             )
             
+            # Apply throttling to prevent spam
+            # Use special strategy_key "buy_index" and side "INDEX" for tracking
+            strategy_key = "buy_index:monitor"
+            side = "INDEX"
+            
+            # Throttle config: 10 minutes OR 1% price change
+            throttle_config = SignalThrottleConfig(
+                min_price_change_pct=1.0,
+                min_interval_minutes=10.0,
+            )
+
+            now_utc = datetime.now(timezone.utc)
+
+            # Local in-memory guard: prevent repeated identical messages when DB throttle state is empty
+            current_buy_active = bool(index_data.get("buy_signal"))
+            if (
+                self._last_index_time is not None
+                and self._last_index_price is not None
+                and self._last_index_signal is not None
+            ):
+                elapsed_minutes = (now_utc - self._last_index_time).total_seconds() / 60.0
+                price_change_pct = None
+                if self._last_index_price > 0:
+                    price_change_pct = abs(
+                        (market_data.price - self._last_index_price)
+                        / self._last_index_price
+                        * 100.0
+                    )
+
+                time_ok = elapsed_minutes >= throttle_config.min_interval_minutes
+                price_ok = (
+                    price_change_pct is not None
+                    and price_change_pct >= throttle_config.min_price_change_pct
+                )
+
+                # Block when decision is unchanged AND neither time nor price thresholds are met
+                if (
+                    current_buy_active == self._last_index_signal
+                    and not time_ok
+                    and not price_ok
+                ):
+                    logger.info(
+                        "[BUY_INDEX_LOCAL_THROTTLE] %s - unchanged=%s, "
+                        "elapsed=%.2fm, price_change=%s%% < %.2f%%, min_interval=%.2fm",
+                        self.symbol,
+                        current_buy_active,
+                        elapsed_minutes,
+                        f"{price_change_pct:.2f}" if price_change_pct is not None else "N/A",
+                        throttle_config.min_price_change_pct,
+                        throttle_config.min_interval_minutes,
+                    )
+                    return
+
+            # DB-backed throttle (shared with other parts of the system)
+            try:
+                signal_snapshots = fetch_signal_states(
+                    db, symbol=self.symbol, strategy_key=strategy_key
+                )
+            except Exception as snapshot_err:
+                logger.warning(
+                    "Failed to load throttle state for %s buy index: %s",
+                    self.symbol,
+                    snapshot_err,
+                )
+                signal_snapshots = {}
+            
+            last_index_snapshot = signal_snapshots.get(side)
+            
+            # Check if we should send (DB-based throttle)
+            allowed, reason = should_emit_signal(
+                symbol=self.symbol,
+                side=side,
+                current_price=market_data.price,
+                current_time=now_utc,
+                config=throttle_config,
+                last_same_side=last_index_snapshot,
+                last_opposite_side=None,  # No opposite side for index messages
+            )
+            
+            if not allowed:
+                logger.info(
+                    f"[BUY_INDEX_THROTTLED] {self.symbol} - {reason}. "
+                    f"Index: {index}/100, Price: {price_fmt}"
+                )
+                return
+            
             message = f"""
 {emoji} <b>BTC_USD BUY INDEX</b>
 
@@ -271,8 +390,28 @@ class BuyIndexMonitorService:
 """
             
             # Send to Telegram
-            telegram_notifier.send_message(message.strip())
-            logger.info(f"Sent BTC_USD buy index: {index}/100")
+            logger.info(
+                "TELEGRAM_EMIT_DEBUG | emitter=BuyIndexMonitorService.send_buy_index | symbol=%s | side=%s | strategy_key=%s | price=%s",
+                self.symbol,
+                side,
+                strategy_key,
+                market_data.price,
+            )
+            result = telegram_notifier.send_message(message.strip())
+            if result:
+                logger.info(f"Sent BTC_USD buy index: {index}/100 (throttle: {reason})")
+                # Record the signal event for throttling
+                try:
+                    record_signal_event(
+                        db,
+                        symbol=self.symbol,
+                        strategy_key=strategy_key,
+                        side=side,
+                        price=market_data.price,
+                        source="buy_index_monitor",
+                    )
+                except Exception as state_err:
+                    logger.warning(f"Failed to persist buy index throttle state: {state_err}")
             
         except Exception as e:
             logger.error(f"Error sending buy index: {e}", exc_info=True)
