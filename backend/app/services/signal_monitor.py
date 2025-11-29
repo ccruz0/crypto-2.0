@@ -8,11 +8,15 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
+from app.services.watchlist_selector import (
+    get_canonical_watchlist_item,
+    select_preferred_watchlist_item,
+)
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
@@ -514,9 +518,8 @@ class SignalMonitorService:
         # signal_monitor is using a stale database session
         db.expire_all()
         
-        # Get all watchlist items with alert_enabled = true (for alerts)
-        # Note: This includes coins that may have trade_enabled = false
-        # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted, alert_cooldown_minutes) for legacy DBs
+        # Get all watchlist items (including disabled) so we can deterministically pick a canonical row per symbol
+        # IMPORTANT: Do NOT reference non-existent columns (e.g., alert_cooldown_minutes) for legacy DBs
         try:
             # CRITICAL: Rollback any previous failed transaction first to reset connection state
             try:
@@ -527,74 +530,91 @@ class SignalMonitorService:
             # Use load_only to avoid loading columns that don't exist in the database
             # This prevents errors when alert_cooldown_minutes or other optional columns are missing
             from sqlalchemy.orm import load_only
+            columns = [
+                WatchlistItem.id,
+                WatchlistItem.symbol,
+                WatchlistItem.exchange,
+                WatchlistItem.alert_enabled,
+                WatchlistItem.buy_alert_enabled,
+                WatchlistItem.sell_alert_enabled,
+                WatchlistItem.trade_enabled,
+                WatchlistItem.trade_amount_usd,
+                WatchlistItem.trade_on_margin,
+                WatchlistItem.created_at,
+            ]
+            optional_columns = [
+                getattr(WatchlistItem, "is_deleted", None),
+                getattr(WatchlistItem, "take_profit", None),
+                getattr(WatchlistItem, "stop_loss", None),
+                getattr(WatchlistItem, "buy_target", None),
+                getattr(WatchlistItem, "sell_price", None),
+                getattr(WatchlistItem, "quantity", None),
+                getattr(WatchlistItem, "purchase_price", None),
+                getattr(WatchlistItem, "sold", None),
+            ]
+            for col in optional_columns:
+                if col is not None:
+                    columns.append(col)
             try:
                 # Try with is_deleted filter first
-                watchlist_items = db.query(WatchlistItem).options(
-                    load_only(
-                        WatchlistItem.id,
-                        WatchlistItem.symbol,
-                        WatchlistItem.exchange,
-                        WatchlistItem.alert_enabled,
-                        WatchlistItem.buy_alert_enabled,
-                        WatchlistItem.sell_alert_enabled,
-                        WatchlistItem.trade_enabled,
-                        WatchlistItem.trade_amount_usd,
-                        WatchlistItem.buy_target,
-                        WatchlistItem.take_profit,
-                        WatchlistItem.stop_loss,
-                        WatchlistItem.purchase_price,
-                        WatchlistItem.quantity,
-                        WatchlistItem.sold,
-                        WatchlistItem.sell_price,
-                    )
-                ).filter(
-                    WatchlistItem.alert_enabled == True,
-                    WatchlistItem.is_deleted == False
-                ).all()
+                watchlist_rows = (
+                    db.query(WatchlistItem)
+                    .options(load_only(*columns))
+                    .filter(WatchlistItem.is_deleted == False)
+                    .all()
+                )
             except Exception as e1:
                 # If is_deleted column doesn't exist, rollback and try without it
                 logger.debug(f"is_deleted filter failed, trying without it: {e1}")
                 try:
                     db.rollback()  # Rollback the failed transaction
-                    watchlist_items = db.query(WatchlistItem).options(
-                        load_only(
-                            WatchlistItem.id,
-                            WatchlistItem.symbol,
-                            WatchlistItem.exchange,
-                            WatchlistItem.alert_enabled,
-                            WatchlistItem.buy_alert_enabled,
-                            WatchlistItem.sell_alert_enabled,
-                            WatchlistItem.trade_enabled,
-                            WatchlistItem.trade_amount_usd,
-                            WatchlistItem.buy_target,
-                            WatchlistItem.take_profit,
-                            WatchlistItem.stop_loss,
-                            WatchlistItem.purchase_price,
-                            WatchlistItem.quantity,
-                            WatchlistItem.sold,
-                            WatchlistItem.sell_price,
-                        )
-                    ).filter(
-                        WatchlistItem.alert_enabled == True
-                    ).all()
+                    watchlist_rows = (
+                        db.query(WatchlistItem)
+                        .options(load_only(*columns))
+                        .all()
+                    )
                 except Exception as e2:
                     logger.error(f"Query failed even with load_only: {e2}", exc_info=True)
                     db.rollback()
                     return []
             
-            if not watchlist_items:
-                logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
+            if not watchlist_rows:
+                logger.warning("⚠️ No watchlist rows found in database!")
                 return []
             
-            logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
-            for item in watchlist_items:
-                # Use getattr defensively for all optional columns - don't refresh if it might fail
+            grouped: Dict[str, List[WatchlistItem]] = {}
+            for row in watchlist_rows:
+                symbol = (row.symbol or "").upper()
+                if not symbol:
+                    continue
+                grouped.setdefault(symbol, []).append(row)
+
+            canonical_items: List[WatchlistItem] = []
+            for symbol, rows in grouped.items():
+                preferred = select_preferred_watchlist_item(rows, symbol)
+                if not preferred:
+                    continue
                 logger.info(
-                    f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, "
-                    f"trade_amount=${item.trade_amount_usd or 0}, is_deleted={getattr(item, 'is_deleted', 'N/A')}"
+                    "[MONITOR_CANONICAL] symbol=%s id=%s alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s trade_enabled=%s",
+                    symbol,
+                    getattr(preferred, "id", None),
+                    getattr(preferred, "alert_enabled", None),
+                    getattr(preferred, "buy_alert_enabled", None),
+                    getattr(preferred, "sell_alert_enabled", None),
+                    getattr(preferred, "trade_enabled", None),
                 )
+                if getattr(preferred, "alert_enabled", False):
+                    canonical_items.append(preferred)
+                else:
+                    logger.info(
+                        "SignalMonitor: skipping %s canonical row id=%s because alert_enabled=%s",
+                        symbol,
+                        getattr(preferred, "id", None),
+                        getattr(preferred, "alert_enabled", None),
+                    )
             
-            return watchlist_items
+            logger.info(f"📊 Monitoring {len(canonical_items)} canonical coins with alert_enabled = true")
+            return canonical_items
         except Exception as e:
             logger.error(f"Error querying alert_enabled items: {e}", exc_info=True)
             # CRITICAL: Do NOT fallback to trade_enabled - this causes alerts for coins with alert_enabled=False
@@ -636,20 +656,8 @@ class SignalMonitorService:
         exchange = watchlist_item.exchange or "CRYPTO_COM"
         
         try:
-            # IMPORTANT: Query fresh from database to get latest trade_amount_usd
-            # This ensures we have the most recent value even if it was just updated from the dashboard
-            # Using a fresh query instead of refresh() to avoid any session caching issues
-            # Try to filter by is_deleted if column exists, otherwise just filter by symbol
-            try:
-                fresh_item = db.query(WatchlistItem).filter(
-                    WatchlistItem.symbol == symbol,
-                    WatchlistItem.is_deleted == False
-                ).first()
-            except Exception:
-                # If is_deleted column doesn't exist, fall back to filtering only by symbol
-                fresh_item = db.query(WatchlistItem).filter(
-                    WatchlistItem.symbol == symbol
-                ).first()
+            # IMPORTANT: Query the canonical row again to ensure we respect dashboard updates
+            fresh_item = get_canonical_watchlist_item(db, symbol)
             if fresh_item:
                 old_amount = watchlist_item.trade_amount_usd
                 old_alert = watchlist_item.alert_enabled
@@ -968,9 +976,10 @@ class SignalMonitorService:
             ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
             logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}{ma_info}")
             
-            # Enhanced logging for BCH and ETH to diagnose why signals aren't triggering
-            if symbol in ["BCH_USD", "ETH_USD"]:
+            # Enhanced logging for BCH, ETH, and AKT to diagnose why signals aren't triggering
+            if symbol in ["BCH_USD", "ETH_USD", "AKT_USDT"]:
                 rationale = signals.get("rationale", [])
+                strategy_state = signals.get("strategy_state", {})
                 logger.info(
                     f"🔍 {symbol} DETAILED SIGNAL ANALYSIS: "
                     f"buy_signal={buy_signal}, sell_signal={sell_signal}, "
@@ -978,6 +987,7 @@ class SignalMonitorService:
                     f"MA50={ma50}, EMA10={ema10}, MA200={ma200}, "
                     f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', None)}, "
                     f"alert_enabled={watchlist_item.alert_enabled}, "
+                    f"strategy_decision={strategy_state.get('decision', 'N/A')}, "
                     f"rationale={rationale}"
                 )
             

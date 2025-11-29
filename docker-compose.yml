@@ -146,8 +146,8 @@ services:
       - .env.aws
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
-      - ENVIRONMENT=${ENVIRONMENT:-aws}
-      - APP_ENV=${APP_ENV:-aws}
+      - ENVIRONMENT=aws
+      - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
