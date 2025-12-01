@@ -198,6 +198,8 @@ def should_trigger_buy_signal(
             reasons.append(f"Price {price:.2f} ≈ MA200 {ma200:.2f} (within {MA_TOLERANCE_PCT}% tolerance)")
     
     # EMA10 check: Price > EMA10 (if EMA10 is checked but MA50 is not) (with tolerance)
+    # CRITICAL: Only check EMA10 if it's explicitly enabled in config (check_ema10 = True)
+    # If check_ema10 = False, this check is skipped entirely (not blocking)
     # For scalp strategies, use a more lenient tolerance (5.0%) since they're more aggressive
     # This allows entries when RSI is very low (oversold) even if price is slightly below EMA10
     if check_ema10 and ema10 is not None and not check_ma50:
@@ -213,6 +215,11 @@ def should_trigger_buy_signal(
             reasons.append(f"Price {price:.2f} > EMA10 {ema10:.2f} (from config)")
         else:
             reasons.append(f"Price {price:.2f} ≈ EMA10 {ema10:.2f} (within {tolerance_pct}% tolerance)")
+    elif check_ema10 and ema10 is None and not check_ma50:
+        # EMA10 is required by config but not available
+        missing.append("EMA10")
+        condition_flags["ma_ok"] = False
+        return conclude(False, "EMA10 required by config but unavailable")
 
     if condition_flags["ma_ok"] is None:
         # No MA checks were configured - set to True (not blocking)
@@ -662,6 +669,7 @@ def calculate_trading_signals(
     
     # Volume check: require minVolumeRatio (configurable, default 0.5x). If volume data is missing
     # we assume it's OK (consistent with frontend behavior).
+    # CANONICAL: Set to True (not None) when volume data unavailable to match frontend behavior and buy_volume_ok logic
     sell_volume_ok = True  # Default to True if volume data not available (matches frontend)
     sell_volume_ratio = None
     if volume is not None and avg_volume is not None and avg_volume > 0:
@@ -669,7 +677,9 @@ def calculate_trading_signals(
         sell_volume_ok = sell_volume_ratio >= min_volume_ratio
         strategy_state["reasons"]["sell_volume_ok"] = sell_volume_ok
     else:
-        strategy_state["reasons"]["sell_volume_ok"] = None
+        # CANONICAL: Set to True (not None) when volume data unavailable to match frontend behavior
+        # Frontend assumes volume is OK when data is missing, so backend should too (same as buy_volume_ok)
+        strategy_state["reasons"]["sell_volume_ok"] = True
     
     # SELL conditions: Must have ALL of the following (matching frontend logic):
     # 1. RSI > strategy-specific threshold (rsi_sell_threshold)
@@ -787,8 +797,14 @@ def calculate_trading_signals(
     # ALWAYS logged at INFO level for visibility
     # Use the buy_flags dict we computed earlier for consistency
     # CANONICAL: Include volume_ratio and min_volume_ratio for debugging volume threshold issues
+    # Include sell flags for complete audit trail
+    sell_flags = {
+        "sell_rsi_ok": strategy_state["reasons"].get("sell_rsi_ok"),
+        "sell_trend_ok": strategy_state["reasons"].get("sell_trend_ok"),
+        "sell_volume_ok": strategy_state["reasons"].get("sell_volume_ok"),
+    }
     logger.info(
-        "[DEBUG_STRATEGY_FINAL] symbol=%s | decision=%s | buy_signal=%s | sell_signal=%s | index=%s | buy_rsi_ok=%s | buy_volume_ok=%s | buy_ma_ok=%s | buy_target_ok=%s | buy_price_ok=%s | volume_ratio=%.4f | min_volume_ratio=%.4f",
+        "[DEBUG_STRATEGY_FINAL] symbol=%s | decision=%s | buy_signal=%s | sell_signal=%s | index=%s | buy_rsi_ok=%s | buy_volume_ok=%s | buy_ma_ok=%s | buy_target_ok=%s | buy_price_ok=%s | sell_rsi_ok=%s | sell_trend_ok=%s | sell_volume_ok=%s | volume_ratio=%.4f | min_volume_ratio=%.4f",
         symbol,
         strategy_state.get("decision"),
         result.get("buy_signal"),
@@ -799,6 +815,9 @@ def calculate_trading_signals(
         buy_flags.get("buy_ma_ok"),
         buy_flags.get("buy_target_ok"),
         buy_flags.get("buy_price_ok"),
+        sell_flags.get("sell_rsi_ok"),
+        sell_flags.get("sell_trend_ok"),
+        sell_flags.get("sell_volume_ok"),
         volume_ratio_val if volume_ratio_val is not None else -1.0,
         min_volume_ratio,
     )
