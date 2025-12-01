@@ -1211,6 +1211,7 @@ class SignalMonitorService:
         
         if buy_signal and buy_flag_allowed:
             logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
+            logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: buy_signal=True, buy_flag_allowed=True, proceeding to alert sending logic")
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             # This ensures only one thread can check and send an alert at a time
@@ -1227,14 +1228,15 @@ class SignalMonitorService:
                 lock_age = current_time - lock_timestamp
                 if lock_age < lock_timeout:
                     remaining_seconds = lock_timeout - lock_age
-                    logger.debug(f"🔒 Alert sending already in progress for {symbol} BUY (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s), skipping duplicate check")
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: Alert sending locked (age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s), skipping duplicate check")
                     should_skip_alert = True
                 else:
                     # Lock expired, remove it
-                    logger.debug(f"🔓 Expired lock removed for {symbol} BUY (age: {lock_age:.2f}s)")
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: Expired lock removed (age: {lock_age:.2f}s), proceeding")
                     del self.alert_sending_locks[lock_key]
             
             if not should_skip_alert:
+                logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: No lock conflict, proceeding with alert processing")
                 # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
@@ -1328,6 +1330,8 @@ class SignalMonitorService:
                 final_flag_allowed, final_flag_reason, final_flag_details = self._evaluate_alert_flag(
                     watchlist_item, "BUY"
                 )
+                logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: Final flag check - allowed={final_flag_allowed}, reason={final_flag_reason}, details={final_flag_details}")
+                
                 if not final_flag_allowed:
                     if final_flag_reason == "DISABLED_ALERT":
                         blocked_msg = (
@@ -1341,7 +1345,7 @@ class SignalMonitorService:
                             f"No se enviará alerta BUY aunque se detectó señal BUY y alert_enabled=True."
                         )
                         log_func = logger.warning
-                    log_func(blocked_msg)
+                    log_func(f"[DEBUG_ALERT_FLOW] {symbol} BUY: {blocked_msg}")
                     self._log_signal_rejection(
                         symbol,
                         "BUY",
@@ -1355,8 +1359,16 @@ class SignalMonitorService:
                         pass  # Non-critical, continue
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: Alert BLOCKED by flag check, exiting alert flow")
                 else:
-                    # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: Final flag check PASSED, proceeding to portfolio risk check")
+                    # CRITICAL FIX: Portfolio risk check should ONLY block ORDERS, NEVER alerts
+                    # Alerts must ALWAYS be sent when decision=BUY and alert_enabled=true
+                    # This ensures users are informed even when orders are blocked by risk limits
+                    should_send = True  # Always send alerts - portfolio risk only blocks orders
+                    should_block_order_creation = False
+                    
+                    # Check portfolio value limit: Block ORDER CREATION (not alerts) if portfolio_value > 3x trade_amount_usd
                     trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                     limit_value = 3 * trade_amount_usd
                     max_position_multiple = 3
@@ -1411,13 +1423,13 @@ class SignalMonitorService:
                         except Exception as breakdown_err:
                             logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
                         
-                        blocked = portfolio_value > limit_value
+                        should_block_order_creation = portfolio_value > limit_value
                         
                         # Log risk check result
                         logger.info(
                             "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
                             "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
-                            "limit_multiple=%s blocked=%s",
+                            "limit_multiple=%s order_blocked=%s alert_will_send=True",
                             symbol,
                             balance_qty,
                             balance_value_usd,
@@ -1425,47 +1437,44 @@ class SignalMonitorService:
                             portfolio_value,
                             trade_amount_usd,
                             max_position_multiple,
-                            blocked,
+                            should_block_order_creation,
                         )
                         
-                        if blocked:
+                        if should_block_order_creation:
                             # Build detailed message with breakdown
                             if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
-                                blocked_msg = (
-                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                info_msg = (
+                                    f"ℹ️ ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
                                     f"Valor en cartera: ${portfolio_value:.2f} USD = "
                                     f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
-                                    f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                    f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                    f"ALERTA SE ENVIARÁ (solo se bloquea creación de orden)."
                                 )
                             else:
-                                blocked_msg = (
-                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                                info_msg = (
+                                    f"ℹ️ ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
                                     f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
-                                    f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                    f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                    f"ALERTA SE ENVIARÁ (solo se bloquea creación de orden)."
                                 )
-                            logger.warning(blocked_msg)
-                            # Register blocked message
-                            try:
-                                from app.api.routes_monitoring import add_telegram_message
-                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                            except Exception:
-                                pass  # Non-critical, continue
-                            # Bloquear silenciosamente - no enviar notificación a Telegram
-                            # Remove locks and continue (don't return - continue with order logic)
-                            if lock_key in self.alert_sending_locks:
-                                del self.alert_sending_locks[lock_key]
-                            should_send = False  # Don't send alert
+                            logger.info(info_msg)
+                            # Note: We do NOT add this to monitoring messages - it's just a log
+                            # The alert will still be sent to inform the user
                         else:
                             logger.debug(
                                 f"✅ Portfolio value check passed for {symbol}: "
-                                f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                                f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}. "
+                                f"Both alert and order will proceed."
                             )
                     except Exception as portfolio_check_err:
-                        logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
-                        # On error, continue (don't block alerts if we can't calculate portfolio value)
+                        logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert and order...")
+                        # On error, continue (don't block alerts or orders if we can't calculate portfolio value)
+                        should_block_order_creation = False
                     
                     # Send Telegram alert (only if alert_enabled = true and should_send = true)
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: About to check should_send={should_send} before sending alert")
                     if should_send:
+                        logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: should_send=True, CALLING telegram_notifier.send_buy_signal()")
                         try:
                             price_variation = self._format_price_variation(prev_buy_price, current_price)
                             ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
@@ -1535,7 +1544,7 @@ class SignalMonitorService:
                             logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                             # If sending failed, do NOT update the state - allow retry on next cycle
                     else:
-                        logger.debug(f"⏭️  Skipping alert send for {symbol} - should_send=False")
+                        logger.warning(f"[DEBUG_ALERT_FLOW] {symbol} BUY: ⏭️  ALERT BLOCKED - should_send=False. This should NOT happen when decision=BUY and alert_enabled=True!")
                 
                 # Always remove lock when done
                 if lock_key in self.alert_sending_locks:
