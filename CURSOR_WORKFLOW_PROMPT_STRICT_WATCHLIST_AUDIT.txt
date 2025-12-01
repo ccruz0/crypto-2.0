@@ -1,0 +1,177 @@
+You must create a new Workflow inside Cursor Settings → Workflows called:
+
+  Strict Watchlist Audit
+
+Follow these instructions exactly and do everything autonomously:
+
+==================================================
+1. CREATE WORKFLOW
+==================================================
+
+Open Cursor Settings → Workflows and create a new workflow with:
+
+Name:
+  Strict Watchlist Audit
+
+Trigger Keywords:
+  audit watchlist
+  watchlist audit
+  strict audit
+  verify watchlist
+  check signals
+
+Auto-trigger:
+  ENABLE "Automatically run for matching messages"
+
+==================================================
+2. INSERT WORKFLOW PROMPT
+==================================================
+
+Set the Workflow Prompt to the following EXACT text. Do NOT modify it:
+
+You act as an autonomous agent running a FULL STRICT AUDIT of the Watchlist tab for the automated-trading-platform.
+
+Never ask the user questions.
+
+Never wait for confirmation.
+
+Run the full autonomous cycle:
+
+INVESTIGATE → REASON → FIX → IMPLEMENT → TEST → DEPLOY → OPEN LIVE DASHBOARD → VALIDATE → ITERATE
+
+Continue until EVERYTHING matches the Business Rules.
+
+==================================================
+CONTEXT
+==================================================
+
+Project:
+automated-trading-platform
+
+Remote host:
+hilovivo-aws
+
+Remote path:
+ /home/ubuntu/automated-trading-platform
+
+Business Rules:
+- docs/monitoring/business_rules_canonical.md
+- docs/monitoring/signal_flow_overview.md
+
+Audit Workflow:
+- docs/WORKFLOW_WATCHLIST_AUDIT.md
+
+Autonomous Exec Rules:
+- docs/CURSOR_AUTONOMOUS_EXECUTION_GUIDELINES.md
+
+Constraints:
+- You CAN generate alerts.
+- You CANNOT create real trading orders.
+- You MUST test backend + frontend + AWS + browser live.
+- You MUST fix discrepancies until everything is correct.
+
+==================================================
+TASK
+==================================================
+
+Perform a STRICT audit of the Watchlist:
+
+1. Compare backend BUY/SELL decision logic with Business Rules.
+2. Compare backend strategy_state with frontend chips.
+3. Verify RSI, MA, EMA, volume ratio, and all indicators match backend values precisely.
+4. Verify Trading toggle and Alerts toggle persist and load correctly.
+5. Verify alert generation works whenever:
+   strategy.decision = BUY
+   AND alert_enabled = true
+   AND throttle allows.
+6. Confirm alerts appear in:
+   - Monitoring → Telegram Messages
+   - Telegram (test channel)
+
+==================================================
+REQUIRED VALIDATIONS
+==================================================
+
+For EVERY symbol:
+
+- If ALL buy_* flags are TRUE:
+  → decision MUST be BUY
+  → buy_signal MUST be true
+
+- If decision=BUY AND alert_enabled=true:
+  → an alert MUST be emitted.
+
+Check explicitly:
+- ALGO
+- LDO
+- TON
+
+Frontend:
+- Signals chip MUST equal backend decision.
+- Index chip MUST equal backend index.
+- RSI/MA/EMA/Volume displayed MUST match backend.
+
+==================================================
+HARD FAILURE CONDITION
+==================================================
+
+⚠️ **CRITICAL:** If you see any message containing 'send_buy_signal verification', 'send_sell_signal verification', or 'BLOQUEADO/BLOCKED' together with 'send_buy_signal' or 'send_sell_signal' in logs or Monitoring:
+
+→ Mark the audit as FAILED, stop claiming success, and:
+
+1) Add a section "Blocked Alert Regression Detected"
+2) List all offending messages
+3) Start a fix loop to remove this behavior from the codebase
+4) Check telegram_notifier.py and signal_monitor.py logic
+
+**Rule:** Portfolio / business rules may block ORDERS, but must NEVER block ALERTS.
+
+==================================================
+AUTONOMOUS FIX LOOP
+==================================================
+
+For ANY mismatch:
+
+1. Identify root cause.
+2. Fix code.
+3. Run tests.
+4. Rebuild Docker images.
+5. Deploy to AWS.
+6. Open the Production Dashboard in a browser.
+7. Validate visually (screenshots).
+8. Repeat until NO mismatches remain.
+
+==================================================
+OUTPUT
+==================================================
+
+Create:
+docs/WORKFLOW_WATCHLIST_STRICT_AUDIT_REPORT.md
+
+Include:
+- All mismatches found
+- Fixes applied (with diffs)
+- Validation evidence
+- **Blocked Alert Regression section (if any patterns detected):**
+  - List all offending messages
+  - Root cause analysis
+  - Fixes applied
+- Final confirmation that Business Rules match perfectly
+- **Explicit confirmation that NO blocked alert patterns were found**
+
+START NOW.
+
+==================================================
+3. SAVE THE WORKFLOW
+==================================================
+
+Save the Workflow inside Cursor and confirm it appears in the Workflows list.
+
+==================================================
+4. END
+==================================================
+
+When done, reply with:
+
+"Workflow created and active."
+

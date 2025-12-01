@@ -254,10 +254,10 @@ def calculate_portfolio_value_for_symbol(db: Session, symbol: str, current_price
     balance_qty = 0.0
     balance_value_usd = 0.0
     
-        try:
-            from app.models.portfolio import PortfolioBalance
-            from app.services.portfolio_cache import _normalize_currency_name
-        
+    try:
+        from app.models.portfolio import PortfolioBalance
+        from app.services.portfolio_cache import _normalize_currency_name
+    
         # Query for normalized currency name (balances are stored with base currency)
         normalized_currency = _normalize_currency_name(base_currency)
         
