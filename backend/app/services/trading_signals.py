@@ -73,7 +73,7 @@ def should_trigger_buy_signal(
     else:
         preset_name = strategy_type.value.lower()  # e.g., "swing", "intraday", "scalp"
         risk_mode = risk_approach.value.capitalize()  # "Conservative" or "Aggressive"
-        rules = get_strategy_rules(preset_name, risk_mode)
+        rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
     
     # Extract configuration values
     rsi_buy_below = rules.get("rsi", {}).get("buyBelow")
@@ -314,13 +314,14 @@ def calculate_trading_signals(
     
     # CANONICAL: Load strategy rules from trading_config.json (source of truth)
     try:
-        strategy_rules = get_strategy_rules(preset_name, risk_mode)
+        strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
         logger.debug(
-            "[DEBUG_RESOLVED_PROFILE] symbol=%s | preset=%s-%s | rsi_buyBelow=%s | maChecks=%s",
+            "[DEBUG_RESOLVED_PROFILE] symbol=%s | preset=%s-%s | rsi_buyBelow=%s | maChecks=%s | volumeMinRatio=%s",
             symbol,
             f"{preset_name}-{risk_mode}",
             strategy_rules.get("rsi", {}).get("buyBelow"),
-            strategy_rules.get("maChecks", {})
+            strategy_rules.get("maChecks", {}),
+            strategy_rules.get("volumeMinRatio")
         )
     except Exception as cfg_err:
         logger.warning(

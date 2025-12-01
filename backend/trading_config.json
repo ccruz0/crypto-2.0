@@ -194,8 +194,28 @@
       "overrides": {}
     },
     "ALGO_USDT": {
-      "preset": "swing-aggressive",
-      "overrides": {}
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "ALGO_USD": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "LDO_USD": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "LDO_USDT": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
     },
     "LINK_USDT": {
       "preset": "scalp",
@@ -207,7 +227,9 @@
     },
     "TON_USDT": {
       "preset": "scalp-aggressive",
-      "overrides": {}
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
     },
     "AKT_USDT": {
       "preset": "swing-aggressive",

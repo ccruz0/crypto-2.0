@@ -127,7 +127,7 @@ def get_alert_thresholds(symbol: str, risk_mode: Optional[str] = None) -> Tuple[
     return min_pct, cooldown
 
 
-def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dict[str, Any]:
+def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol: Optional[str] = None) -> Dict[str, Any]:
     """
     SOURCE OF TRUTH: Get strategy rules from trading_config.json
     
@@ -161,9 +161,13 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
     
     Supports both new format (rules structure from dashboard) and old format (legacy direct keys).
     
+    Per-symbol overrides: If symbol is provided, applies overrides from "coins" section.
+    Example: {"coins": {"ALGO_USDT": {"overrides": {"volumeMinRatio": 0.30}}}}
+    
     Args:
         preset_name: Strategy preset name (e.g., "swing", "intraday", "scalp")
         risk_mode: Risk mode ("Conservative" or "Aggressive")
+        symbol: Optional trading symbol to apply per-symbol overrides
     
     Returns:
         Dict with rules: {
@@ -189,8 +193,8 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
     if "rules" in preset_cfg:
         rules = preset_cfg.get("rules", {}).get(risk_key, {})
         if rules:
-            # Return rules in expected format
-            return {
+            # Build base rules dict
+            base_rules = {
                 "rsi": {
                     "buyBelow": rules.get("rsi", {}).get("buyBelow") if isinstance(rules.get("rsi"), dict) else None,
                     "sellAbove": rules.get("rsi", {}).get("sellAbove") if isinstance(rules.get("rsi"), dict) else None,
@@ -200,9 +204,31 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
                 "minPriceChangePct": rules.get("minPriceChangePct"),
                 "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
             }
+            
+            # Apply per-symbol overrides if symbol is provided
+            if symbol:
+                coins_cfg = cfg.get("coins", {})
+                coin_cfg = coins_cfg.get(symbol, {})
+                overrides = coin_cfg.get("overrides", {})
+                if overrides:
+                    # Apply overrides (only override keys that exist in base_rules)
+                    if "volumeMinRatio" in overrides:
+                        base_rules["volumeMinRatio"] = overrides["volumeMinRatio"]
+                    if "minPriceChangePct" in overrides:
+                        base_rules["minPriceChangePct"] = overrides["minPriceChangePct"]
+                    if "alertCooldownMinutes" in overrides:
+                        base_rules["alertCooldownMinutes"] = overrides["alertCooldownMinutes"]
+                    # RSI overrides (if provided as nested dict or flat keys)
+                    if "rsi" in overrides and isinstance(overrides["rsi"], dict):
+                        if "buyBelow" in overrides["rsi"]:
+                            base_rules["rsi"]["buyBelow"] = overrides["rsi"]["buyBelow"]
+                        if "sellAbove" in overrides["rsi"]:
+                            base_rules["rsi"]["sellAbove"] = overrides["rsi"]["sellAbove"]
+            
+            return base_rules
     
     # Fallback to old format or defaults
-    return {
+    base_rules = {
         "rsi": {
             "buyBelow": preset_cfg.get("RSI_BUY"),
             "sellAbove": preset_cfg.get("RSI_SELL"),
@@ -216,3 +242,18 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
         "minPriceChangePct": preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", 1.0),
         "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 5),
     }
+    
+    # Apply per-symbol overrides if symbol is provided
+    if symbol:
+        coins_cfg = cfg.get("coins", {})
+        coin_cfg = coins_cfg.get(symbol, {})
+        overrides = coin_cfg.get("overrides", {})
+        if overrides:
+            if "volumeMinRatio" in overrides:
+                base_rules["volumeMinRatio"] = overrides["volumeMinRatio"]
+            if "minPriceChangePct" in overrides:
+                base_rules["minPriceChangePct"] = overrides["minPriceChangePct"]
+            if "alertCooldownMinutes" in overrides:
+                base_rules["alertCooldownMinutes"] = overrides["alertCooldownMinutes"]
+    
+    return base_rules
