@@ -970,6 +970,41 @@ class SignalMonitorService:
             buy_signal = signals.get("buy_signal", False)
             sell_signal = signals.get("sell_signal", False)
             
+            # Extract strategy_state for debug logging
+            strategy_state = signals.get("strategy_state", {})
+            decision = strategy_state.get("decision", "WAIT")
+            strategy_index = strategy_state.get("index", 0)
+            reasons = strategy_state.get("reasons", {})
+            
+            # Get strategy rules to log min_volume_ratio
+            from app.services.config_loader import get_strategy_rules
+            preset_name = strategy_type.value.lower()
+            risk_mode = risk_approach.value.capitalize()
+            strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
+            min_volume_ratio = strategy_rules.get("volumeMinRatio", 0.5)
+            
+            # Calculate volume_ratio for logging
+            volume_ratio = None
+            if current_volume and avg_volume and avg_volume > 0:
+                volume_ratio = current_volume / avg_volume
+            
+            # Extract buy flags
+            buy_flags = {
+                "buy_rsi_ok": reasons.get("buy_rsi_ok"),
+                "buy_ma_ok": reasons.get("buy_ma_ok"),
+                "buy_volume_ok": reasons.get("buy_volume_ok"),
+                "buy_target_ok": reasons.get("buy_target_ok"),
+                "buy_price_ok": reasons.get("buy_price_ok"),
+            }
+            
+            # CRITICAL DEBUG LOG: Log all decision details for comparison with Watchlist API
+            logger.info(
+                f"[DEBUG_SIGNAL_MONITOR] symbol={symbol} | preset={preset_name}-{risk_mode} | "
+                f"min_vol_ratio={min_volume_ratio:.4f} | vol_ratio={volume_ratio:.4f if volume_ratio else 'N/A'} | "
+                f"decision={decision} | buy_signal={buy_signal} | sell_signal={sell_signal} | "
+                f"index={strategy_index} | buy_flags={buy_flags}"
+            )
+            
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
                 logger.info(f"🔍 {symbol} calculate_trading_signals returned: sell_signal={sell_signal}")

@@ -970,6 +970,16 @@ def get_top_coins_with_prices(
                                 risk_approach=risk_approach,
                             )
                             
+                            # Extract strategy_state for API response (for comparison with SignalMonitorService)
+                            strategy_state = signals.get("strategy_state", {})
+                            
+                            # Get strategy rules to include min_volume_ratio in response
+                            from app.services.config_loader import get_strategy_rules
+                            preset_name = strategy_type.value.lower()
+                            risk_mode = risk_approach.value.capitalize()
+                            strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
+                            min_volume_ratio = strategy_rules.get("volumeMinRatio", 0.5)
+                            
                             if signals.get("buy_signal"):
                                 signal = "BUY"
                             elif signals.get("sell_signal"):
@@ -1039,11 +1049,14 @@ def get_top_coins_with_prices(
                         "current_volume": current_volume_value,
                         "avg_volume": md.avg_volume if md else None,
                         "volume_ratio": volume_ratio_value,
+                        "min_volume_ratio": min_volume_ratio if 'min_volume_ratio' in locals() else 0.5,
                         # Resistance levels
                         "res_up": res_up,
                         "res_down": res_down,
                         # Trading signal (BUY/WAIT/SELL)
                         "signal": signal,
+                        # Strategy state (for comparison with SignalMonitorService)
+                        "strategy_state": strategy_state if 'strategy_state' in locals() else {},
                         # Mark as custom if user-added to watchlist
                         "is_custom": is_custom,
                         # Alert enabled status
