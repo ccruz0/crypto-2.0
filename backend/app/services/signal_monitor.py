@@ -2516,6 +2516,7 @@ class SignalMonitorService:
                                 )
                                 # CRITICAL: Update alert state ONLY after send attempt to prevent duplicate alerts
                                 self._update_alert_state(symbol, "SELL", current_price)
+                                if not sell_state_recorded:
                                     try:
                                         record_signal_event(
                                             db,

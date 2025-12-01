@@ -253,9 +253,125 @@ The fix is working correctly. Alerts are being dispatched to Telegram as expecte
 
 ---
 
+---
+
+## Critical Fix #2: Removed Redundant Alert Blocking (2025-12-01 14:30 UTC)
+
+### Root Cause
+
+A second critical bug was identified where alerts were being blocked with the message "🚫 BLOQUEADO: <symbol> – Alerta bloqueada por send_buy_signal verification". This occurred because:
+
+1. **Redundant Verification in `telegram_notifier.send_buy_signal()`**: The function was performing its own verification of `buy_alert_enabled` and returning `False` if not enabled, even though `SignalMonitorService` already verified this before calling the function.
+
+2. **Blocking Logic in `SignalMonitorService`**: When `send_buy_signal()` returned `False`, `SignalMonitorService` treated it as a block and logged "Alerta bloqueada por send_buy_signal verification", preventing alerts from being sent.
+
+### Code Changes
+
+#### 1. `backend/app/services/telegram_notifier.py`
+
+**Removed redundant verification in `send_buy_signal()`:**
+- Removed all database queries and `buy_alert_enabled` checks
+- Removed all `return False` statements that blocked alerts
+- Function now only sends alerts (verification is done by `SignalMonitorService` before calling)
+
+**Before:**
+```python
+def send_buy_signal(...):
+    """Send a buy signal alert
+    
+    CRITICAL: This method now verifies alert_enabled=True before sending.
+    If alert_enabled=False, the alert will be blocked.
+    """
+    logger.info(f"🔍 send_buy_signal called for {symbol} - Starting verification...")
+    
+    # CRITICAL: Verify alert_enabled=True before sending alert
+    try:
+        db = SessionLocal()
+        # ... database query ...
+        if not watchlist_item:
+            return False  # Block alert
+        if not buy_alert_enabled:
+            return False  # Block alert
+    except Exception as e:
+        return False  # Block alert on error
+```
+
+**After:**
+```python
+def send_buy_signal(...):
+    """Send a buy signal alert
+    
+    NOTE: Verification of alert_enabled and buy_alert_enabled is done by SignalMonitorService
+    before calling this method. This method should NEVER block alerts - it only sends them.
+    """
+    logger.info(f"🔍 send_buy_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
+    # ... send alert directly ...
+```
+
+**Similar changes applied to `send_sell_signal()`.**
+
+#### 2. `backend/app/services/signal_monitor.py`
+
+**Removed blocking logic that treated `False` as a block:**
+
+**Before (Main Path):**
+```python
+result = telegram_notifier.send_buy_signal(...)
+if result is False:
+    blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
+    logger.warning(blocked_msg)
+    add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+else:
+    logger.info(f"✅ BUY alert SENT for {symbol}...")
+    # ... update state ...
+```
+
+**After (Main Path):**
+```python
+result = telegram_notifier.send_buy_signal(...)
+# CRITICAL: Alerts should NEVER be blocked after all conditions are met.
+# send_buy_signal() may return False due to Telegram API errors, but we still
+# consider the alert as "attempted" and log it accordingly.
+# Only order creation may be blocked, never alerts.
+if result:
+    logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | price={current_price:.4f}")
+    logger.info(f"✅ BUY alert SENT for {symbol}...")
+else:
+    # Telegram API may have failed, but alert was attempted - log as warning, not block
+    logger.warning(
+        f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=telegram_api_failed | price={current_price:.4f} | "
+        f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
+    )
+
+# Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
+self._log_signal_accept(...)
+self._update_alert_state(symbol, "BUY", current_price)
+# ... update state ...
+```
+
+**Similar changes applied to legacy path and SELL signal handling.**
+
+### Validation
+
+1. **No Blocking Messages:** ✅ Verified that no "BLOQUEADO... verification" messages appear in logs after the fix
+2. **Alert Flow:** ✅ Alerts are now attempted even if Telegram API fails (logged as `telegram_api_failed`, not blocked)
+3. **Logging:** ✅ Added `[ALERT_EMIT_FINAL]` logging to track alert emission status
+
+### Key Principle
+
+**Alerts should NEVER be blocked after:**
+- `decision=BUY`
+- `alert_enabled=true`
+- `buy_alert_enabled=true`
+- Throttle allows
+
+**Only order creation may be blocked, never alerts.**
+
+---
+
 ## Next Steps (Optional)
 
 1. Monitor alert delivery for ALGO, LDO, and TON over the next 24-48 hours to confirm alerts are being sent correctly.
-2. Review `[DEBUG_ALERT_FLOW]` and `[DEBUG_SIGNAL_MONITOR]` logs periodically to ensure consistency.
+2. Review `[DEBUG_ALERT_FLOW]`, `[DEBUG_SIGNAL_MONITOR]`, and `[ALERT_EMIT_FINAL]` logs periodically to ensure consistency.
 3. Consider removing debug logging after a period of stable operation (optional, for performance optimization).
 
