@@ -1997,7 +1997,13 @@ class SignalMonitorService:
                         del self.alert_sending_locks[lock_key]
                     return  # Exit without sending alert
                 
-                # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                # CRITICAL FIX: Portfolio risk check should ONLY block ORDERS, NEVER alerts
+                # Alerts must ALWAYS be sent when decision=BUY and alert_enabled=true
+                # This ensures users are informed even when orders are blocked by risk limits
+                should_send = True  # Always send alerts - portfolio risk only blocks orders
+                should_block_order_creation = False
+                
+                # Check portfolio value limit: Block ORDER CREATION (not alerts) if portfolio_value > 3x trade_amount_usd
                 trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                 limit_value = 3 * trade_amount_usd
                 max_position_multiple = 3
@@ -2051,13 +2057,13 @@ class SignalMonitorService:
                     except Exception as breakdown_err:
                         logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
                     
-                    blocked = portfolio_value > limit_value
+                    should_block_order_creation = portfolio_value > limit_value
                     
                     # Log risk check result
                     logger.info(
                         "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
                         "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
-                        "limit_multiple=%s blocked=%s",
+                        "limit_multiple=%s order_blocked=%s alert_will_send=True",
                         symbol,
                         balance_qty,
                         balance_value_usd,
@@ -2065,109 +2071,107 @@ class SignalMonitorService:
                         portfolio_value,
                         trade_amount_usd,
                         max_position_multiple,
-                        blocked,
+                        should_block_order_creation,
                     )
                     
-                    if blocked:
+                    if should_block_order_creation:
                         # Build detailed message with breakdown
                         if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
-                            blocked_msg = (
-                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                            info_msg = (
+                                f"ℹ️ ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
                                 f"Valor en cartera: ${portfolio_value:.2f} USD = "
                                 f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
-                                f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                f"ALERTA SE ENVIARÁ (solo se bloquea creación de orden)."
                             )
                         else:
-                            blocked_msg = (
-                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                            info_msg = (
+                                f"ℹ️ ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
                                 f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
-                                f"Límite: ${limit_value:.2f} (3x trade_amount)"
+                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
+                                f"ALERTA SE ENVIARÁ (solo se bloquea creación de orden)."
                             )
-                        logger.warning(blocked_msg)
-                        # Register blocked message
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
-                        # Bloquear silenciosamente - no enviar notificación a Telegram
-                        # Remove locks and exit
-                        if symbol in self.order_creation_locks:
-                            del self.order_creation_locks[symbol]
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
-                        return  # Exit without sending alert
+                        logger.info(info_msg)
+                        # Note: We do NOT add this to monitoring messages - it's just a log
+                        # The alert will still be sent to inform the user
                     else:
                         logger.debug(
                             f"✅ Portfolio value check passed for {symbol}: "
-                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
+                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}. "
+                            f"Both alert and order will proceed."
                         )
                 except Exception as portfolio_check_err:
-                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
-                    # On error, continue (don't block alerts if we can't calculate portfolio value)
+                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert and order...")
+                    # On error, continue (don't block alerts or orders if we can't calculate portfolio value)
+                    should_block_order_creation = False
                 
-                # Send Telegram alert (only if alert_enabled = true)
-                try:
-                    price_variation = self._format_price_variation(prev_buy_price, current_price)
-                    ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                    ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                    ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                    reason_text = (
-                        f"{strategy_display}/{risk_display} | "
-                        f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                        f"MA50={ma50_text}, "
-                        f"EMA10={ema10_text}, "
-                        f"MA200={ma200_text}"
-                    )
-                    logger.info(
-                        "TELEGRAM_EMIT_DEBUG | emitter=SignalMonitorService (legacy BUY path) | symbol=%s | side=%s | strategy_key=%s | price=%s",
-                        symbol,
-                        "BUY",
-                        strategy_key,
-                        current_price,
-                    )
-                    result = telegram_notifier.send_buy_signal(
-                        symbol=symbol,
-                        price=current_price,
-                        reason=reason_text,
-                        strategy_type=strategy_display,
-                        risk_approach=risk_display,
-                        price_variation=price_variation,
-                        source="LIVE ALERT",
-                        throttle_status="SENT",
-                        throttle_reason=buy_reason,
-                    )
-                    if result is False:
-                        blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
-                        logger.warning(blocked_msg)
-                        # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
-                    else:
-                        # Message already registered in send_buy_signal as sent
-                        logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
-                        # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                        # This ensures that if multiple calls happen simultaneously, only the first one will update the state
-                        self._update_alert_state(symbol, "BUY", current_price)
-                        if not buy_state_recorded:
+                # Send Telegram alert (only if alert_enabled = true and should_send = true)
+                logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY (legacy path): About to check should_send={should_send} before sending alert")
+                if should_send:
+                    logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY (legacy path): should_send=True, CALLING telegram_notifier.send_buy_signal()")
+                    try:
+                        price_variation = self._format_price_variation(prev_buy_price, current_price)
+                        ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                        ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                        ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                        reason_text = (
+                            f"{strategy_display}/{risk_display} | "
+                            f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                            f"MA50={ma50_text}, "
+                            f"EMA10={ema10_text}, "
+                            f"MA200={ma200_text}"
+                        )
+                        logger.info(
+                            "TELEGRAM_EMIT_DEBUG | emitter=SignalMonitorService (legacy BUY path) | symbol=%s | side=%s | strategy_key=%s | price=%s",
+                            symbol,
+                            "BUY",
+                            strategy_key,
+                            current_price,
+                        )
+                        result = telegram_notifier.send_buy_signal(
+                            symbol=symbol,
+                            price=current_price,
+                            reason=reason_text,
+                            strategy_type=strategy_display,
+                            risk_approach=risk_display,
+                            price_variation=price_variation,
+                            source="LIVE ALERT",
+                            throttle_status="SENT",
+                            throttle_reason=buy_reason,
+                        )
+                        if result is False:
+                            blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
+                            logger.warning(blocked_msg)
+                            # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
                             try:
-                                record_signal_event(
-                                    db,
-                                    symbol=symbol,
-                                    strategy_key=strategy_key,
-                                    side="BUY",
-                                    price=current_price,
-                                    source="alert",
-                                )
-                                buy_state_recorded = True
-                            except Exception as state_err:
-                                logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
-                except Exception as e:
-                    logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
-                    # If sending failed, do NOT update the state - allow retry on next cycle
+                                from app.api.routes_monitoring import add_telegram_message
+                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                            except Exception:
+                                pass  # Non-critical, continue
+                        else:
+                            # Message already registered in send_buy_signal as sent
+                            logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
+                            # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
+                            # This ensures that if multiple calls happen simultaneously, only the first one will update the state
+                            self._update_alert_state(symbol, "BUY", current_price)
+                            if not buy_state_recorded:
+                                try:
+                                    record_signal_event(
+                                        db,
+                                        symbol=symbol,
+                                        strategy_key=strategy_key,
+                                        side="BUY",
+                                        price=current_price,
+                                        source="alert",
+                                    )
+                                    buy_state_recorded = True
+                                except Exception as state_err:
+                                    logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
+                        # If sending failed, do NOT update the state - allow retry on next cycle
+                else:
+                    logger.warning(f"[DEBUG_ALERT_FLOW] {symbol} BUY (legacy path): ⏭️  ALERT BLOCKED - should_send=False. This should NOT happen when decision=BUY and alert_enabled=True!")
                 finally:
                     # Always remove lock when done
                     if lock_key in self.alert_sending_locks:
@@ -2203,108 +2207,18 @@ class SignalMonitorService:
                 # Log MA values for verification
                 logger.info(f"✅ MA validation passed for {symbol}: MA50={ma50:.2f}, EMA10={ema10:.2f}, MA50>EMA10={ma50 > ema10}")
                 
-                # Check portfolio value limit: Block BUY orders if portfolio_value > 3x trade_amount_usd
-                trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
-                limit_value = 3 * trade_amount_usd
-                max_position_multiple = 3
-                try:
-                    portfolio_value, balance_qty = calculate_portfolio_value_for_symbol(db, symbol, current_price)
-                    
-                    # Get breakdown for detailed message
-                    base_currency = symbol.split("_")[0] if "_" in symbol else symbol
-                    base_currency = base_currency.upper()
-                    balance_value_usd = 0.0
-                    open_buy_value_usd = 0.0
-                    
-                    try:
-                        from app.models.portfolio import PortfolioBalance
-                        from app.services.portfolio_cache import _normalize_currency_name
-                        
-                        normalized_currency = _normalize_currency_name(base_currency)
-                        portfolio_balances = (
-                            db.query(PortfolioBalance)
-                            .filter(PortfolioBalance.currency == normalized_currency)
-                            .all()
-                        )
-                        for bal in portfolio_balances:
-                            balance_value_usd += float(bal.usd_value) if bal.usd_value else 0.0
-                        
-                        if INCLUDE_OPEN_ORDERS_IN_RISK:
-                            symbol_filter = _normalized_symbol_filter(symbol)
-                            pending_statuses = [
-                                OrderStatusEnum.NEW,
-                                OrderStatusEnum.ACTIVE,
-                                OrderStatusEnum.PARTIALLY_FILLED,
-                            ]
-                            main_role_filter = or_(
-                                ExchangeOrder.order_role.is_(None),
-                                not_(ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"])),
-                            )
-                            open_buy_orders = (
-                                db.query(ExchangeOrder)
-                                .filter(
-                                    symbol_filter,
-                                    ExchangeOrder.side == OrderSideEnum.BUY,
-                                    ExchangeOrder.status.in_(pending_statuses),
-                                    main_role_filter,
-                                )
-                                .all()
-                            )
-                            for order in open_buy_orders:
-                                order_price = float(order.price) if order.price else current_price
-                                order_qty = float(order.cumulative_quantity or order.quantity or 0)
-                                open_buy_value_usd += order_qty * order_price
-                    except Exception as breakdown_err:
-                        logger.debug(f"Could not get breakdown for {symbol}: {breakdown_err}")
-                    
-                    blocked = portfolio_value > limit_value
-                    
-                    # Log risk check result
-                    logger.info(
-                        "[RISK_PORTFOLIO_CHECK] symbol=%s balance_qty=%.8f balance_value_usd=%.2f "
-                        "open_buy_orders_value_usd=%.2f total_value_usd=%.2f trade_amount=%.2f "
-                        "limit_multiple=%s blocked=%s",
-                        symbol,
-                        balance_qty,
-                        balance_value_usd,
-                        open_buy_value_usd,
-                        portfolio_value,
-                        trade_amount_usd,
-                        max_position_multiple,
-                        blocked,
+                # CRITICAL: Use should_block_order_creation from earlier check (already calculated before alert was sent)
+                # This ensures portfolio risk only blocks orders, not alerts (which were already sent above)
+                if should_block_order_creation:
+                    logger.warning(
+                        f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                        f"Límite de riesgo alcanzado. "
+                        f"No se creará orden aunque se detectó señal BUY y la alerta ya fue enviada."
                     )
-                    
-                    if blocked:
-                        # Build detailed message with breakdown
-                        if INCLUDE_OPEN_ORDERS_IN_RISK and open_buy_value_usd > 0:
-                            blocked_msg = (
-                                f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                                f"Valor en cartera: ${portfolio_value:.2f} USD = "
-                                f"${balance_value_usd:.2f} balance + ${open_buy_value_usd:.2f} órdenes abiertas. "
-                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
-                                f"No se creará orden aunque se detectó señal BUY."
-                            )
-                        else:
-                            blocked_msg = (
-                                f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                                f"Valor en cartera: ${portfolio_value:.2f} USD (balance actual en exchange). "
-                                f"Límite: ${limit_value:.2f} (3x trade_amount). "
-                                f"No se creará orden aunque se detectó señal BUY."
-                            )
-                        logger.warning(blocked_msg)
-                        # Bloquear silenciosamente - no enviar notificación a Telegram
-                        # Remove locks and exit
-                        if symbol in self.order_creation_locks:
-                            del self.order_creation_locks[symbol]
-                        return  # Exit without creating order
-                    else:
-                        logger.debug(
-                            f"✅ Portfolio value check passed for {symbol}: "
-                            f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
-                        )
-                except Exception as portfolio_check_err:
-                    logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with order creation...")
-                    # On error, continue (don't block orders if we can't calculate portfolio value)
+                    # Remove locks and exit
+                    if symbol in self.order_creation_locks:
+                        del self.order_creation_locks[symbol]
+                    return  # Exit without creating order
                 
                 if watchlist_item.trade_enabled:
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
