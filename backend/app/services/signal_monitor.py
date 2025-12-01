@@ -998,9 +998,10 @@ class SignalMonitorService:
             }
             
             # CRITICAL DEBUG LOG: Log all decision details for comparison with Watchlist API
+            volume_ratio_str = f"{volume_ratio:.4f}" if volume_ratio is not None else "N/A"
             logger.info(
                 f"[DEBUG_SIGNAL_MONITOR] symbol={symbol} | preset={preset_name}-{risk_mode} | "
-                f"min_vol_ratio={min_volume_ratio:.4f} | vol_ratio={volume_ratio:.4f if volume_ratio else 'N/A'} | "
+                f"min_vol_ratio={min_volume_ratio:.4f} | vol_ratio={volume_ratio_str} | "
                 f"decision={decision} | buy_signal={buy_signal} | sell_signal={sell_signal} | "
                 f"index={strategy_index} | buy_flags={buy_flags}"
             )
