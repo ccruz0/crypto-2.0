@@ -590,77 +590,10 @@ class TelegramNotifier:
     ):
         """Send a buy signal alert
         
-        CRITICAL: This method now verifies alert_enabled=True before sending.
-        If alert_enabled=False, the alert will be blocked.
+        NOTE: Verification of alert_enabled and buy_alert_enabled is done by SignalMonitorService
+        before calling this method. This method should NEVER block alerts - it only sends them.
         """
-        logger.info(f"🔍 send_buy_signal called for {symbol} - Starting verification...")
-        
-        # CRITICAL: Verify alert_enabled=True before sending alert
-        # This prevents alerts for coins with alert_enabled=False
-        try:
-            db = SessionLocal()
-            try:
-                from sqlalchemy import or_
-                
-                symbol_upper = symbol.upper()
-                # Check for exact match and variants (USDT/USD)
-                symbol_variants = [symbol_upper]
-                if symbol_upper.endswith('_USDT'):
-                    symbol_variants.append(symbol_upper.replace('_USDT', '_USD'))
-                elif symbol_upper.endswith('_USD'):
-                    symbol_variants.append(symbol_upper.replace('_USD', '_USDT'))
-                
-                logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
-                
-                # Check if coin exists in watchlist and has buy_alert_enabled=True
-                # NOTE: alert_enabled master switch was removed - only check buy_alert_enabled
-                watchlist_item = db.query(WatchlistItem).filter(
-                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants])
-                ).first()
-                
-                if not watchlist_item:
-                    logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist "
-                        f"(buscado: {symbol_variants}). No se enviará alerta BUY."
-                    )
-                    # Register blocked message
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - No se encontró en watchlist"
-                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
-                    except Exception:
-                        pass  # Non-critical, continue
-                    return False  # Block alert
-                
-                logger.debug(f"✅ Encontrado {watchlist_item.symbol} en watchlist")
-                
-                # CRITICAL: Check buy_alert_enabled (required for BUY alerts)
-                buy_alert_enabled = getattr(watchlist_item, 'buy_alert_enabled', False)
-                if not buy_alert_enabled:
-                    logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - buy_alert_enabled=False. "
-                        f"No se enviará alerta BUY."
-                    )
-                    # Register blocked message
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} - buy_alert_enabled=False"
-                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
-                    except Exception:
-                        pass  # Non-critical, continue
-                    return False  # Block alert
-                
-                logger.info(f"✅ Verificación pasada para {symbol} - buy_alert_enabled=True confirmado")
-            except Exception as e:
-                logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
-                # On error, block alert to prevent unwanted alerts
-                return False
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error(f"❌ Error en verificación de alert_enabled para {symbol}: {e}", exc_info=True)
-            # On error, block alert to prevent unwanted alerts
-            return False
+        logger.info(f"🔍 send_buy_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
         resolved_strategy = strategy_type
         if not resolved_strategy:
             if strategy and strategy.lower() not in {"conservative", "aggressive"}:
@@ -732,71 +665,10 @@ class TelegramNotifier:
     ):
         """Send a sell signal alert
         
-        CRITICAL: This method now verifies alert_enabled=True before sending.
-        If alert_enabled=False, the alert will be blocked.
+        NOTE: Verification of alert_enabled and sell_alert_enabled is done by SignalMonitorService
+        before calling this method. This method should NEVER block alerts - it only sends them.
         """
-        logger.info(f"🔍 send_sell_signal called for {symbol} - Starting verification...")
-        
-        # CRITICAL: Verify alert_enabled=True before sending alert
-        try:
-            db = SessionLocal()
-            try:
-                from sqlalchemy import or_
-                
-                symbol_upper = symbol.upper()
-                symbol_variants = [symbol_upper]
-                if symbol_upper.endswith('_USDT'):
-                    symbol_variants.append(symbol_upper.replace('_USDT', '_USD'))
-                elif symbol_upper.endswith('_USD'):
-                    symbol_variants.append(symbol_upper.replace('_USD', '_USDT'))
-                
-                logger.debug(f"🔍 Verificando {symbol} - Variantes: {symbol_variants}")
-                
-                # Check if coin exists in watchlist and has sell_alert_enabled=True
-                # NOTE: alert_enabled master switch was removed - only check sell_alert_enabled
-                watchlist_item = db.query(WatchlistItem).filter(
-                    or_(*[WatchlistItem.symbol == variant for variant in symbol_variants])
-                ).first()
-                
-                if not watchlist_item:
-                    logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - No se encontró en watchlist "
-                        f"(buscado: {symbol_variants}). No se enviará alerta SELL."
-                    )
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} SELL - No se encontró en watchlist"
-                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
-                    except Exception:
-                        pass
-                    return False
-                
-                logger.debug(f"✅ Encontrado {watchlist_item.symbol} en watchlist")
-                
-                # CRITICAL: Check sell_alert_enabled (required for SELL alerts)
-                sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
-                if not sell_alert_enabled:
-                    logger.warning(
-                        f"🚫 ALERTA BLOQUEADA: {symbol} - sell_alert_enabled=False. "
-                        f"No se enviará alerta SELL."
-                    )
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        blocked_message = f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False"
-                        add_telegram_message(blocked_message, symbol=symbol, blocked=True)
-                    except Exception:
-                        pass
-                    return False
-                
-                logger.info(f"✅ Verificación pasada para {symbol} - sell_alert_enabled=True confirmado")
-            except Exception as e:
-                logger.error(f"❌ Error verificando alert_enabled para {symbol}: {e}", exc_info=True)
-                return False
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error(f"❌ Error en verificación de alert_enabled para {symbol}: {e}", exc_info=True)
-            return False
+        logger.info(f"🔍 send_sell_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
         
         resolved_strategy = strategy_type
         if not resolved_strategy:

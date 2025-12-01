@@ -1506,41 +1506,45 @@ class SignalMonitorService:
                             throttle_status="SENT",
                             throttle_reason=buy_reason,
                             )
-                            if result is False:
-                                blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
-                                logger.warning(blocked_msg)
-                                # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
-                                try:
-                                    from app.api.routes_monitoring import add_telegram_message
-                                    add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                                except Exception:
-                                    pass  # Non-critical, continue
-                            else:
+                            # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
+                            # send_buy_signal() may return False due to Telegram API errors, but we still
+                            # consider the alert as "attempted" and log it accordingly.
+                            # Only order creation may be blocked, never alerts.
+                            if result:
+                                logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | price={current_price:.4f}")
                                 # Message already registered in send_buy_signal as sent
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
                                     f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
                                 )
-                                self._log_signal_accept(
-                                    symbol,
-                                    "BUY",
-                                    {"telegram": "sent", "reason": reason_text},
+                            else:
+                                # Telegram API may have failed, but alert was attempted - log as warning, not block
+                                logger.warning(
+                                    f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=telegram_api_failed | price={current_price:.4f} | "
+                                    f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
                                 )
-                                # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                                # This ensures that if multiple calls happen simultaneously, only the first one will update the state
-                                self._update_alert_state(symbol, "BUY", current_price)
-                                try:
-                                    record_signal_event(
-                                        db,
-                                        symbol=symbol,
-                                        strategy_key=strategy_key,
-                                        side="BUY",
-                                        price=current_price,
-                                        source="alert",
-                                    )
-                                    buy_state_recorded = True
-                                except Exception as state_err:
-                                    logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                            
+                            # Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
+                            self._log_signal_accept(
+                                symbol,
+                                "BUY",
+                                {"telegram": "sent" if result else "telegram_api_failed", "reason": reason_text},
+                            )
+                            # CRITICAL: Update alert state ONLY after send attempt to prevent duplicate alerts
+                            # This ensures that if multiple calls happen simultaneously, only the first one will update the state
+                            self._update_alert_state(symbol, "BUY", current_price)
+                            try:
+                                record_signal_event(
+                                    db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="BUY",
+                                    price=current_price,
+                                    source="alert",
+                                )
+                                buy_state_recorded = True
+                            except Exception as state_err:
+                                logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
                         except Exception as e:
                             logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                             # If sending failed, do NOT update the state - allow retry on next cycle
@@ -2140,41 +2144,48 @@ class SignalMonitorService:
                             throttle_status="SENT",
                             throttle_reason=buy_reason,
                         )
-                        if result is False:
-                            blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
-                            logger.warning(blocked_msg)
-                            # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
-                            try:
-                                from app.api.routes_monitoring import add_telegram_message
-                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                            except Exception:
-                                pass  # Non-critical, continue
-                        else:
+                        # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
+                        # send_buy_signal() may return False due to Telegram API errors, but we still
+                        # consider the alert as "attempted" and log it accordingly.
+                        # Only order creation may be blocked, never alerts.
+                        if result:
+                            logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | price={current_price:.4f}")
                             # Message already registered in send_buy_signal as sent
                             logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
-                            # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                            # This ensures that if multiple calls happen simultaneously, only the first one will update the state
-                            self._update_alert_state(symbol, "BUY", current_price)
-                            if not buy_state_recorded:
-                                try:
-                                    record_signal_event(
-                                        db,
-                                        symbol=symbol,
-                                        strategy_key=strategy_key,
-                                        side="BUY",
-                                        price=current_price,
-                                        source="alert",
-                                    )
-                                    buy_state_recorded = True
-                                except Exception as state_err:
-                                    logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                        else:
+                            # Telegram API may have failed, but alert was attempted - log as warning, not block
+                            logger.warning(
+                                f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=telegram_api_failed | price={current_price:.4f} | "
+                                f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
+                            )
+                        
+                        # Always update alert state - alert was attempted regardless of Telegram API result
+                        # CRITICAL: Update alert state ONLY after send attempt to prevent duplicate alerts
+                        # This ensures that if multiple calls happen simultaneously, only the first one will update the state
+                        self._update_alert_state(symbol, "BUY", current_price)
+                        if not buy_state_recorded:
+                            try:
+                                record_signal_event(
+                                    db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="BUY",
+                                    price=current_price,
+                                    source="alert",
+                                )
+                                buy_state_recorded = True
+                            except Exception as state_err:
+                                logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
                     except Exception as e:
                         logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                         # If sending failed, do NOT update the state - allow retry on next cycle
+                    finally:
+                        # Always remove lock when done
+                        if lock_key in self.alert_sending_locks:
+                            del self.alert_sending_locks[lock_key]
                 else:
                     logger.warning(f"[DEBUG_ALERT_FLOW] {symbol} BUY (legacy path): ⏭️  ALERT BLOCKED - should_send=False. This should NOT happen when decision=BUY and alert_enabled=True!")
-                finally:
-                    # Always remove lock when done
+                    # Remove lock when alert is blocked
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
                 
@@ -2480,26 +2491,31 @@ class SignalMonitorService:
                                     throttle_status="SENT",
                                     throttle_reason=sell_reason,
                                 )
-                                if result is False:
-                                    blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - Alerta bloqueada por send_sell_signal verification"
-                                    logger.warning(blocked_msg)
-                                    try:
-                                        from app.api.routes_monitoring import add_telegram_message
-                                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                                    except Exception:
-                                        pass  # Non-critical, continue
-                                else:
+                                # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
+                                # send_sell_signal() may return False due to Telegram API errors, but we still
+                                # consider the alert as "attempted" and log it accordingly.
+                                # Only order creation may be blocked, never alerts.
+                                if result:
+                                    logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=SELL | status=success | price={current_price:.4f}")
                                     logger.info(
                                         f"✅ SELL alert SENT for {symbol}: "
                                         f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
                                     )
-                                    self._log_signal_accept(
-                                        symbol,
-                                        "SELL",
-                                        {"telegram": "sent", "reason": reason_text},
+                                else:
+                                    # Telegram API may have failed, but alert was attempted - log as warning, not block
+                                    logger.warning(
+                                        f"[ALERT_EMIT_FINAL] symbol={symbol} | side=SELL | status=telegram_api_failed | price={current_price:.4f} | "
+                                        f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
                                     )
-                                    # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                                    self._update_alert_state(symbol, "SELL", current_price)
+                                
+                                # Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
+                                self._log_signal_accept(
+                                    symbol,
+                                    "SELL",
+                                    {"telegram": "sent" if result else "telegram_api_failed", "reason": reason_text},
+                                )
+                                # CRITICAL: Update alert state ONLY after send attempt to prevent duplicate alerts
+                                self._update_alert_state(symbol, "SELL", current_price)
                                     try:
                                         record_signal_event(
                                             db,
