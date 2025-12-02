@@ -171,6 +171,12 @@ async def simulate_alert(
         signal_type = payload.get("signal_type", "BUY").upper()
         force_order = payload.get("force_order", False)
         
+        # CRITICAL: Log immediately when endpoint is hit
+        logger.info(
+            f"[TEST_ENDPOINT_HIT] simulate_alert called: symbol={symbol}, signal_type={signal_type}, "
+            f"force_order={force_order}, payload_keys={list(payload.keys())}"
+        )
+        
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol is required")
         

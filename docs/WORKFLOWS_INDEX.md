@@ -141,6 +141,35 @@ The Auto-Router will automatically classify your request and activate the correc
 
 ---
 
+### 2f. **Alert Origin Audit** 🔍
+- **Documentation:** `docs/monitoring/ALERT_ORIGIN_AUDIT.md`
+- **Script:** `scripts/audit_alert_origins.sh`
+- **Purpose:** Detect any place where AWS notifications (Telegram or others) might be hardcoded to be blocked, mis-routed, or mis-labeled
+- **Use cases:**
+  - Verify AWS alerts are not blocked by hardcoded logic
+  - Check for environment flags that disable AWS notifications
+  - Ensure origin is correctly passed through alert chain
+  - Detect mis-routed origins (e.g., forcing LOCAL in AWS runtime)
+  - Audit docker-compose configuration for RUNTIME_ORIGIN
+- **How to run (from your Mac):**
+  ```bash
+  cd /Users/carloscruz/automated-trading-platform
+  bash scripts/audit_alert_origins.sh
+  ```
+- **What it checks:**
+  - RUNTIME_ORIGIN references and assignments
+  - Origin blocking patterns (e.g., `if origin == "AWS": return False`)
+  - Environment disable flags (DISABLE_ALERT, DISABLE_TELEGRAM)
+  - Origin parameter usage in alert functions
+  - Docker-compose configuration for AWS backend
+- **What to look for:**
+  - ✅ No suspicious patterns = AWS alerts should work correctly
+  - ⚠️ Suspicious patterns found = Review flagged files for blocking logic
+- **Key principle:** AWS alerts should **ALWAYS** be allowed by default. Any blocking logic should only affect LOCAL/DEBUG origins, never AWS.
+- **Status:** ✅ Active
+
+---
+
 ### 2c. **Strict Watchlist Audit** ⚡ NEW
 - **Document:** `docs/WORKFLOW_STRICT_WATCHLIST_AUDIT.md`
 - **Purpose:** Strict, comprehensive audit with enhanced validation

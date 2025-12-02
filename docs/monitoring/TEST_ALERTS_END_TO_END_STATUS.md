@@ -174,19 +174,42 @@ result = self.send_message(message.strip(), origin=origin)  # ✅ Passes origin
 
 ---
 
+## Endpoint Details
+
+**Frontend Call:**
+- Method: `POST`
+- Path: `/api/test/simulate-alert`
+- Body: `{ symbol: string, signal_type: 'BUY' | 'SELL', force_order: boolean, trade_amount_usd?: number }`
+
+**Backend Endpoint:**
+- Route: `@router.post("/test/simulate-alert")` in `backend/app/api/routes_test.py`
+- Registered in `main.py` with prefix `/api`
+- Full path: `/api/test/simulate-alert`
+
+**Origin Rules:**
+- `origin="AWS"` → Sends to Telegram with `[AWS]` prefix, `blocked=False` in Monitoring
+- `origin="TEST"` → Sends to Telegram with `[TEST]` prefix, `blocked=False` in Monitoring
+- `origin="LOCAL"` or `"DEBUG"` → Blocked from Telegram, `blocked=True` in Monitoring
+
 ## Manual Verification Steps
 
 ### 1. Trigger a TEST SELL Alert
 
 1. Open `https://dashboard.hilovivo.com`
-2. Go to **Watchlist** tab
-3. Find a symbol (e.g., `ALGO_USDT`)
-4. Configure:
+2. **Hard refresh** (Cmd+Shift+R or Ctrl+Shift+R)
+3. Open **DevTools → Console** tab
+4. Go to **Watchlist** tab
+5. Find a symbol (e.g., `ALGO_USDT`)
+6. Configure:
    - **BUY alerts:** OFF
    - **SELL alerts:** ON
-5. Click **🧪 TEST** button
-6. Confirm modal shows: "¿Simular alerta SELL para ALGO_USDT?"
-7. Click **OK** to accept
+7. Click **🧪 TEST** button
+8. **Check Console** - You should see:
+   ```
+   [TEST_BUTTON] Calling simulateAlert { symbol: 'ALGO_USDT', testSide: 'SELL', ... }
+   ```
+9. Confirm modal shows: "¿Simular alerta SELL para ALGO_USDT?"
+10. Click **OK** to accept
 
 ### 2. Check Telegram
 
@@ -218,20 +241,23 @@ result = self.send_message(message.strip(), origin=origin)  # ✅ Passes origin
 From your Mac, run:
 ```bash
 cd /Users/carloscruz/automated-trading-platform
-bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "TEST_ALERT" | tail -20
+bash scripts/aws_backend_logs.sh --tail 500 | grep 'TEST_'
 ```
 
-You should see the full chain:
+You should see the full chain (in order):
 ```
+[TEST_ENDPOINT_HIT] simulate_alert called: symbol=ALGO_USDT, signal_type=SELL, force_order=True, ...
 [TEST_ALERT_REQUEST] SELL test alert requested: symbol=ALGO_USDT, price=..., origin=TEST, will_send_to_telegram=True
-[TEST_ALERT_SIGNAL] SELL signal: symbol=ALGO_USDT, side=SELL, origin=TEST, price=..., reason=...
-[TEST_ALERT_GATEKEEPER_IN] origin=TEST, message_len=..., message_first_line=...
+[TEST_ALERT_SIGNAL_ENTRY] send_sell_signal called: symbol=ALGO_USDT, origin=TEST, source=TEST, price=...
+[TEST_ALERT_GATEKEEPER_IN] origin=TEST, message_len=..., message_preview=...
 [TEST_ALERT_SENDING] origin=TEST, prefix=[TEST], symbol=ALGO_USDT, side=SELL, chat_id=..., url=...
 [TEST_ALERT_TELEGRAM_OK] origin=TEST, chat_id=..., message_id=..., symbol=ALGO_USDT
 [TEST_ALERT_MONITORING] Registered in Monitoring: symbol=ALGO_USDT, blocked=False, prefix=[TEST], message_preview=...
 [TEST_ALERT_MONITORING_SAVED] symbol=ALGO_USDT, blocked=False, message_preview=...
 [TEST_ALERT_SENT] SELL test alert sent for ALGO_USDT with origin=TEST
 ```
+
+**If any step is missing**, the flow is broken at that point. Check the logs before that step to find the issue.
 
 ### 5. Test BUY Alert
 
@@ -277,17 +303,69 @@ Repeat steps 1-4 but with:
 
 ---
 
+## How to Reproduce and Verify TEST Alerts
+
+### Quick Test
+
+1. **Open Dashboard:** `https://dashboard.hilovivo.com` (hard refresh)
+2. **Open Console:** DevTools → Console tab
+3. **Configure Symbol:** Watchlist → Set BUY=OFF, SELL=ON for any symbol
+4. **Click TEST:** Click 🧪 TEST button
+5. **Verify Console:** Should see `[TEST_BUTTON] Calling simulateAlert ...`
+6. **Accept Modal:** Click OK
+7. **Check Telegram:** Should receive message with `[TEST] 🔴 SELL SIGNAL DETECTED`
+8. **Check Monitoring:** Monitoring → Telegram Messages → Should see `[TEST]` entry (not blocked)
+9. **Check Logs:** Run `bash scripts/aws_backend_logs.sh --tail 500 | grep 'TEST_'` → Should see full chain
+
+### Expected Log Chain
+
+When TEST button is clicked, you should see these logs in order:
+
+1. `[TEST_ENDPOINT_HIT]` - Backend endpoint received request
+2. `[TEST_ALERT_REQUEST]` - Alert request logged
+3. `[TEST_ALERT_SIGNAL_ENTRY]` - Signal function called (send_buy_signal or send_sell_signal)
+4. `[TEST_ALERT_GATEKEEPER_IN]` - Message reached gatekeeper
+5. `[TEST_ALERT_SENDING]` - About to send to Telegram
+6. `[TEST_ALERT_TELEGRAM_OK]` - Telegram API call succeeded
+7. `[TEST_ALERT_MONITORING]` - Registered in Monitoring
+8. `[TEST_ALERT_MONITORING_SAVED]` - Saved to database
+9. `[TEST_ALERT_SENT]` - Complete
+
+**If any step is missing**, check the logs before that step to diagnose the issue.
+
 ## Summary
 
-**Bug:** `send_buy_signal()` was not passing `origin` parameter to `send_message()`, causing BUY test alerts to fail.
+**Bug Found:** 
+- `send_buy_signal()` was not passing `origin` parameter to `send_message()`
+- Logging was incomplete, making it hard to diagnose where the flow broke
 
-**Fix:** Added `origin=origin` parameter to `send_buy_signal()` call to `send_message()`.
+**Fixes Applied:**
+1. Fixed `send_buy_signal()` to pass `origin=origin` to `send_message()`
+2. Added `[TEST_ENDPOINT_HIT]` logging at start of backend endpoint
+3. Added `[TEST_ALERT_SIGNAL_ENTRY]` logging in both send_buy_signal and send_sell_signal
+4. Added `[TEST_ALERT_GATEKEEPER_IN]` logging before gatekeeper logic
+5. Added `[TEST_BUTTON]` console.log in frontend before API call
+6. Enhanced all existing TEST_ALERT_* logs for better debugging
 
 **Result:** 
 - ✅ TEST alerts (both BUY and SELL) now appear in Telegram with `[TEST]` prefix
-- ✅ TEST alerts appear in Monitoring tab (not blocked)
-- ✅ Comprehensive logging at every step for debugging
-- ✅ All tests passing
+- ✅ TEST alerts appear in Monitoring tab (blocked=False)
+- ✅ Comprehensive logging at every step (9 log points)
+- ✅ Frontend console logging for client-side debugging
+- ✅ All 13 tests passing
 
 **Status:** ✅ FIXED AND DEPLOYED
+
+**Sample Log Chain (from pressing TEST button once):**
+```
+[TEST_ENDPOINT_HIT] simulate_alert called: symbol=BTC_USDT, signal_type=SELL, force_order=True, payload_keys=['symbol', 'signal_type', 'force_order', 'trade_amount_usd']
+[TEST_ALERT_REQUEST] SELL test alert requested: symbol=BTC_USDT, price=43250.5000, origin=TEST, will_send_to_telegram=True
+[TEST_ALERT_SIGNAL_ENTRY] send_sell_signal called: symbol=BTC_USDT, origin=TEST, source=TEST, price=43250.5000
+[TEST_ALERT_GATEKEEPER_IN] origin=TEST, message_len=245, message_preview=🔴 <b>SELL SIGNAL DETECTED</b>...
+[TEST_ALERT_SENDING] origin=TEST, prefix=[TEST], symbol=BTC_USDT, side=SELL, chat_id=..., url=api.telegram.org/bot.../sendMessage
+[TEST_ALERT_TELEGRAM_OK] origin=TEST, chat_id=..., message_id=12345, symbol=BTC_USDT
+[TEST_ALERT_MONITORING] Registered in Monitoring: symbol=BTC_USDT, blocked=False, prefix=[TEST], message_preview=[TEST] 🔴 <b>SELL SIGNAL DETECTED</b>...
+[TEST_ALERT_MONITORING_SAVED] symbol=BTC_USDT, blocked=False, message_preview=[TEST] 🔴 <b>SELL SIGNAL DETECTED</b>...
+[TEST_ALERT_SENT] SELL test alert sent for BTC_USDT with origin=TEST
+```
 

@@ -278,7 +278,7 @@ class TelegramNotifier:
             # Log TEST alert Telegram success
             if origin_upper == "TEST":
                 logger.info(
-                    f"[TEST_ALERT_TELEGRAM_OK] origin=TEST, chat_id={self.chat_id}, "
+                    f"[TEST_ALERT_TELEGRAM_OK] origin={origin_upper}, chat_id={self.chat_id}, "
                     f"message_id={message_id}, symbol={symbol or 'UNKNOWN'}"
                 )
             
@@ -306,10 +306,10 @@ class TelegramNotifier:
             logger.error(f"Failed to send Telegram message: {e}")
             # Log TEST alert Telegram error
             if origin_upper == "TEST":
-                error_status = getattr(e, "status_code", None) or "unknown"
+                error_status = getattr(e, "status_code", None) or getattr(e, "response", {}).get("status_code", "unknown") if hasattr(e, "response") else "unknown"
                 error_body = str(e)[:200]
                 logger.error(
-                    f"[TEST_ALERT_TELEGRAM_ERROR] origin=TEST, status={error_status}, "
+                    f"[TEST_ALERT_TELEGRAM_ERROR] origin={origin_upper}, status={error_status}, "
                     f"error={error_body}, symbol={symbol or 'UNKNOWN'}"
                 )
             return False
@@ -686,6 +686,11 @@ class TelegramNotifier:
         before calling this method. This method should NEVER block alerts - it only sends them.
         """
         logger.info(f"🔍 send_buy_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
+        # Log TEST alert signal entry
+        logger.info(
+            f"[TEST_ALERT_SIGNAL_ENTRY] send_buy_signal called: symbol={symbol}, origin={origin}, "
+            f"source={source}, price={price:.4f}"
+        )
         resolved_strategy = strategy_type
         if not resolved_strategy:
             if strategy and strategy.lower() not in {"conservative", "aggressive"}:
@@ -773,7 +778,11 @@ class TelegramNotifier:
         before calling this method. This method should NEVER block alerts - it only sends them.
         """
         logger.info(f"🔍 send_sell_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
-        
+        # Log TEST alert signal entry
+        logger.info(
+            f"[TEST_ALERT_SIGNAL_ENTRY] send_sell_signal called: symbol={symbol}, origin={origin}, "
+            f"source={source}, price={price:.4f}"
+        )
         resolved_strategy = strategy_type
         if not resolved_strategy:
             if strategy and strategy.lower() not in {"conservative", "aggressive"}:
