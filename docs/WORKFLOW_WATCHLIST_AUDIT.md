@@ -107,7 +107,7 @@ Once local tests and build pass:
 
 3. **Check backend logs for startup errors:**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 200'"
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200
    ```
 
 If anything fails to start, you must:

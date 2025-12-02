@@ -205,6 +205,13 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
                 "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
             }
             
+            # CRITICAL FIX: Add logging for debugging persistence
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"[STRATEGY_PERSISTENCE] get_strategy_rules({preset_name}, {risk_mode}, {symbol}): "
+                        f"maChecks={base_rules.get('maChecks')}, rsi={base_rules.get('rsi')}, "
+                        f"volumeMinRatio={base_rules.get('volumeMinRatio')}")
+            
             # Apply per-symbol overrides if symbol is provided
             if symbol:
                 coins_cfg = cfg.get("coins", {})
@@ -224,6 +231,9 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
                             base_rules["rsi"]["buyBelow"] = overrides["rsi"]["buyBelow"]
                         if "sellAbove" in overrides["rsi"]:
                             base_rules["rsi"]["sellAbove"] = overrides["rsi"]["sellAbove"]
+                    # CRITICAL FIX: Apply maChecks overrides from per-symbol config
+                    if "maChecks" in overrides and isinstance(overrides["maChecks"], dict):
+                        base_rules["maChecks"] = {**base_rules.get("maChecks", {}), **overrides["maChecks"]}
             
             return base_rules
     

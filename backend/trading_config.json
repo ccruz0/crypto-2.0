@@ -146,7 +146,7 @@
             "sellAbove": 65
           },
           "maChecks": {
-            "ema10": true,
+            "ema10": false,
             "ma50": false,
             "ma200": false
           },

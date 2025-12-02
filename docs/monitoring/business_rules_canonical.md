@@ -246,6 +246,44 @@ Per symbol/strategy throttle with:
   - Price change < `min_price_change_pct`
 - **Opposite side alerts** (BUY → SELL, SELL → BUY): Always allowed (no throttle)
 
+**Note:** Throttle rules apply **equally** to both BUY and SELL alerts. SELL alerts use the same cooldown and price-change thresholds as BUY alerts.
+
+### 4.3 LOCAL vs AWS Alert Origins
+
+- **AWS Runtime** (`RUNTIME_ORIGIN=AWS`):
+  - Sends production alerts to Telegram
+  - All alerts prefixed with `[AWS]`
+  - Throttle state persisted in database (`SignalThrottleState` table)
+  - Respects all throttle rules (cooldown + price change)
+
+- **LOCAL Runtime** (`RUNTIME_ORIGIN=LOCAL`):
+  - Alerts are **blocked** from reaching Telegram
+  - Logs `[TG_LOCAL_DEBUG]` instead of sending
+  - Still respects throttle rules in logs (for debugging consistency)
+  - Dashboard shows `[LOCAL DEBUG]` prefix for blocked alerts
+
+**Important:** LOCAL alerts cannot bypass throttle rules. Even though they don't reach Telegram, throttle decisions are still logged with `origin=LOCAL` for debugging.
+
+### 4.4 Telegram Alert Origin Gatekeeper
+
+**CRITICAL RULE:** Only the AWS runtime (origin = "AWS") is allowed to send alerts to the production Telegram chat.
+
+**Implementation:**
+- All alert-sending functions (`send_message`, `send_buy_signal`, `send_sell_signal`) accept an `origin` parameter
+- The central gatekeeper in `send_message()` blocks all non-AWS origins:
+  - If `origin != "AWS"`: Message is logged with `[TG_LOCAL_DEBUG]` but NOT sent to Telegram
+  - If `origin == "AWS"`: Message is sent to Telegram with `[AWS]` prefix
+- Local/debug runs (origin = "LOCAL" or "DEBUG") can still compute signals and log what WOULD have been sent, but they never send messages to Telegram
+
+**Call Sites:**
+- `SignalMonitorService` (production): Always passes `origin=get_runtime_origin()` (which is "AWS" in production)
+- Test endpoints (`/api/test/simulate-alert`): Always passes `origin="LOCAL"` to prevent test alerts from reaching production Telegram
+- Any debug scripts: Should explicitly pass `origin="LOCAL"` or `origin="DEBUG"`
+
+**Logging:**
+- Blocked alerts are logged: `[TG_LOCAL_DEBUG] Skipping Telegram send for non-AWS origin 'LOCAL'. Message would have been: ...`
+- Sent alerts are logged: `Telegram message sent successfully (origin=AWS)`
+
 ---
 
 ## 5. BTC Index Switch

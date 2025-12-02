@@ -193,6 +193,12 @@ def add_telegram_message(
     
     if db_session is not None:
         try:
+            # Log TEST alert monitoring save
+            if "[TEST]" in message:
+                log.info(
+                    f"[TEST_ALERT_MONITORING_SAVED] symbol={symbol or 'UNKNOWN'}, "
+                    f"blocked={blocked}, message_preview={message[:100]}"
+                )
             # Check for duplicate messages within last 5 seconds to avoid duplicates from multiple workers
             recent_filters = [
                 TelegramMessage.message == message[:500],

@@ -163,7 +163,7 @@ This workflow is executed when there are integration issues between frontend and
 
 - **Check SignalMonitor logs:**
   ```bash
-  docker logs automated-trading-platform-backend-aws-1 --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE'
+  cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE'
   ```
 
 - **Verify:**
@@ -276,7 +276,7 @@ curl -s "https://monitoring-ai-dashboard-nu.vercel.app/api/market/top-coins-data
 
 ### Backend Logs
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 500 | grep DEBUG_STRATEGY_FINAL'
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 500 | grep DEBUG_STRATEGY_FINAL
 ```
 
 ### Frontend Validation

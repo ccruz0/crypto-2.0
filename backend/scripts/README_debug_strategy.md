@@ -68,7 +68,7 @@ Buy Flags:
 The script uses `docker logs` internally, but you can also use docker directly:
 
 ```bash
-docker logs automated-trading-platform-backend-aws-1 --tail 10000 | \
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 10000 | \
   grep DEBUG_STRATEGY_FINAL | grep ALGO_USDT | tail -20
 ```
 

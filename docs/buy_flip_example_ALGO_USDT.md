@@ -13,7 +13,7 @@ This document analyzes why ALGO_USDT briefly shows BUY in the UI and then flips 
 
 2. Or use docker logs directly:
    ```bash
-   docker logs automated-trading-platform-backend-aws-1 --tail 10000 | \
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 10000 | \
      grep DEBUG_STRATEGY_FINAL | grep ALGO_USDT | tail -20
    ```
 

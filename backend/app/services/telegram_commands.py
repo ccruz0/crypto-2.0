@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from copy import deepcopy
 import pytz
 from app.services.telegram_notifier import telegram_notifier
+from app.core.runtime import is_aws_runtime
 from sqlalchemy.orm import Session
 from app.models.watchlist import WatchlistItem
 
@@ -370,7 +371,16 @@ def setup_bot_commands():
 
 
 def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
-    """Get updates from Telegram API using long polling"""
+    """Get updates from Telegram API using long polling
+    
+    RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
+    LOCAL runtime should not poll, as AWS is already polling.
+    """
+    # RUNTIME GUARD: Only AWS should poll Telegram
+    if not is_aws_runtime():
+        logger.debug("[TG_LOCAL_DEBUG] Skipping getUpdates in LOCAL runtime to avoid 409 conflicts")
+        return []
+    
     if not TELEGRAM_ENABLED:
         return []
     try:
@@ -395,9 +405,15 @@ def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
         return []
     except requests.exceptions.HTTPError as http_err:
         # If webhook is still configured elsewhere Telegram returns 409. Log once as warning.
+        # NOTE: In production, this usually means another instance (local dev, old server) is using the same bot token.
+        # FIX: Ensure only the AWS backend is using the bot token - stop any local bots or old servers.
         status = getattr(http_err.response, 'status_code', None)
         if status == 409:
-            logger.warning("[TG] getUpdates conflict (409). Another webhook or polling client is active. Skipping this cycle.")
+            logger.warning(
+                "[TG] getUpdates conflict (409). Another webhook or polling client is active. "
+                "This usually means another instance (local dev, old server) is using the same bot token. "
+                "FIX: Ensure only AWS backend uses the bot token. Skipping this cycle."
+            )
             return []
         logger.error(f"[TG] getUpdates HTTP error: {http_err}")
         return []

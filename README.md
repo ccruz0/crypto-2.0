@@ -2,6 +2,25 @@
 
 A full-stack automated trading platform built with FastAPI (backend) and Next.js (frontend).
 
+## Runtime Architecture
+
+**⚠️ IMPORTANT: AWS is the ONLY live production runtime (trading + alerts).**
+
+- **AWS Backend Container**: The only place where SignalMonitorService, scheduler, and Telegram bot run for production trading and alerts.
+- **Local Mac**: Used ONLY for:
+  - Development (edit code, run tests)
+  - Git operations
+  - SSH-based diagnostics and helper scripts that connect to AWS
+  - **NOT** a second live trading/alerts environment
+
+**Do NOT run a local backend with SignalMonitorService or scheduler in parallel with AWS, as this would:**
+- Create duplicate alerts
+- Cause Telegram bot conflicts (409 errors)
+- Create duplicate orders
+- Cause data inconsistencies
+
+For production, use AWS only. Local docker-compose is for development/testing only.
+
 ## Project Structure
 
 ```
@@ -30,6 +49,24 @@ automated-trading-platform/
 
 ## Getting Started
 
+### Production (AWS Only)
+
+**The production runtime is on AWS. To check health:**
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/check_runtime_health_aws.sh
+```
+
+**To view logs:**
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/aws_backend_logs.sh --tail 200
+```
+
+### Local Development (Dev Only - NOT Production)
+
+**⚠️ WARNING: Local setup is for development only. Do NOT use for production trading.**
+
 1. Copy the environment variables:
    ```bash
    cp .env.example .env
@@ -37,24 +74,30 @@ automated-trading-platform/
 
 2. Update the `.env` file with your actual values.
 
-3. Start the services:
+3. Start the services (local dev only):
    ```bash
-   docker-compose up -d
+   docker-compose --profile local up -d
    ```
 
 4. Access the applications:
    - Frontend: http://localhost:3000
-   - Backend API: http://localhost:8000
-   - API Documentation: http://localhost:8000/docs
+   - Backend API: http://localhost:8002
+   - API Documentation: http://localhost:8002/docs
+
+**Note:** Local backend will start SignalMonitorService and scheduler, but this should ONLY be used for development/testing, never in parallel with AWS production.
 
 ## Development
 
-### Backend Development
+**⚠️ NOTE: These commands are for LOCAL DEVELOPMENT ONLY. They will start SignalMonitorService and scheduler locally, which should NOT be run in parallel with AWS production.**
+
+### Backend Development (Local Dev Only)
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
+
+**Warning:** This starts a local backend with SignalMonitorService, scheduler, and Telegram bot. Only use this for development/testing. Do NOT run in parallel with AWS production.
 
 ### Frontend Development
 ```bash

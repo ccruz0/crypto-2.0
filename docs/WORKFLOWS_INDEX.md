@@ -35,7 +35,113 @@ The Auto-Router will automatically classify your request and activate the correc
 
 ---
 
-### 2b. **Strict Watchlist Audit** ⚡ NEW
+### 2b. **Runtime Health Check – AWS Only** 🏥
+- **Document:** `docs/FULL_RUNTIME_HEALTH_AUDIT.md`
+- **Script:** `scripts/check_runtime_health_aws.sh`
+- **Purpose:** Quick health check for AWS production backend (the ONLY live runtime)
+- **Use cases:**
+  - Verify backend API is responding
+  - Check SignalMonitorService is configured and running
+  - Verify recent alert activity
+  - Diagnose why alerts stopped appearing
+  - Quick sanity check after deployments
+- **How to run (from your Mac):**
+  ```bash
+  cd /Users/carloscruz/automated-trading-platform
+  bash scripts/check_runtime_health_aws.sh
+  ```
+- **What it checks:**
+  - API health endpoint (`/api/health`)
+  - Dashboard snapshot endpoint
+  - Monitoring summary (scheduler ticks, recent activity)
+  - SignalMonitorService configuration (enabled/disabled)
+  - Recent alerts in Monitoring → Telegram Messages
+- **What to look for:**
+  - ✅ All checks passed = backend is healthy
+  - ⚠️ Warnings = may be normal (e.g., no recent alerts if no BUY signals)
+  - ❌ Failed checks = backend is unhealthy, investigate logs with `bash scripts/aws_backend_logs.sh --tail 200`
+- **Note:** This script only performs passive checks (queries API, reads config). It does NOT start any services.
+
+---
+
+### 2c. **ADA SELL Alert Debug Script** 🔍
+- **Location:** `scripts/debug_ada_sell_alerts_remote.sh`
+- **Documentation:** `docs/monitoring/ADA_SELL_ALERT_FLOW_ANALYSIS.md`
+- **Purpose:** Debug SELL alerts for ADA_USDT / ADA_USD (or any symbol)
+- **Use cases:**
+  - Investigate why SELL signals appear in UI but alerts don't arrive
+  - Check throttle state for specific symbols
+  - View recent SELL decisions and alert emissions
+  - Diagnose throttling issues
+- **How to run (from your Mac):**
+  ```bash
+  cd /Users/carloscruz/automated-trading-platform
+  bash scripts/debug_ada_sell_alerts_remote.sh
+  ```
+- **What it shows:**
+  - Recent SELL decisions from strategy engine
+  - SELL alert emissions and throttling decisions
+  - SELL signal detection logs
+  - Throttle state from database (last price, last time)
+  - Recent Monitoring entries for the symbol
+
+---
+
+### 2d. **Full Runtime Integrity Check – AWS** 🔍
+- **Location:** `scripts/full_runtime_integrity_check_aws.sh`
+- **Documentation:** `docs/monitoring/FULL_RUNTIME_INTEGRITY_CHECK.md`
+- **Purpose:** Diagnose backend crashes, SignalMonitor failure, alert blackout, proxy issues, and scheduler stalls
+- **Use cases:**
+  - Comprehensive system health validation
+  - Diagnose why alerts are not appearing
+  - Verify complete signal → monitor → alert → Telegram pipeline
+  - Check container health and Crypto.com connectivity
+  - Full system audit after deployments or incidents
+  - When alerts stop appearing in Monitoring → Telegram Messages
+  - When backend shows unhealthy status
+  - When SignalMonitor cycles have gaps > 2 minutes
+- **How to run (from your Mac):**
+  ```bash
+  cd /Users/carloscruz/automated-trading-platform
+  bash scripts/full_runtime_integrity_check_aws.sh
+  ```
+- **What it checks:**
+  - Backend health summary (API endpoints, scheduler, SignalMonitorService)
+  - SignalMonitorService cycles (regular processing every ~30 seconds)
+  - Strategy decisions (BUY/SELL/WAIT calculations)
+  - Alert emissions (ALERT_EMIT_FINAL, send_buy_signal, send_sell_signal)
+  - Throttled alerts (ALERT_THROTTLED with reasons)
+  - Recent errors and exceptions (Traceback, Exception, ERROR)
+  - Docker container health status on AWS
+  - Crypto.com authentication and proxy status
+  - Telegram 409 conflicts (should not block outgoing alerts)
+- **What to look for:**
+  - ✅ All checks show healthy activity = system is functioning correctly
+  - ⚠️ Warnings (e.g., throttled alerts, 409 conflicts) = may be normal depending on conditions
+  - ❌ Failed checks or missing activity = investigate specific component
+- **Output:** Color-coded summary with pass/warn/fail counts and specific recommendations
+- **Note:** This is a comprehensive check that validates the entire runtime pipeline. Run this when you need a complete system health picture.
+
+---
+
+### 2e. **Telegram Alert Origin Gatekeeper** 🚫
+- **Documentation:** `docs/monitoring/TELEGRAM_ORIGIN_GATEKEEPER_SUMMARY.md`
+- **Purpose:** Controls which alerts are sent to production Telegram based on origin
+- **Behavior:**
+  - All alert functions (`send_message`, `send_buy_signal`, `send_sell_signal`) accept an `origin` parameter
+  - `origin="AWS"` → Sends to Telegram with `[AWS]` prefix (live runtime alerts)
+  - `origin="TEST"` → Sends to Telegram with `[TEST]` prefix (dashboard test alerts, visible in Monitoring)
+  - `origin="LOCAL"` or `origin="DEBUG"` → Blocks Telegram sends, logs `[TG_LOCAL_DEBUG]` instead
+- **Implementation:** Central gatekeeper in `telegram_notifier.send_message()` allows AWS and TEST, blocks others
+- **Test Coverage:** `backend/tests/test_telegram_alerts_origin.py` (10 tests, all passing)
+- **Note:** TEST alerts from the Dashboard TEST button appear as `[TEST]` messages in both Telegram and the Monitoring tab
+  bash scripts/check_runtime_health_aws.sh
+  ```
+- **Status:** ✅ Active
+
+---
+
+### 2c. **Strict Watchlist Audit** ⚡ NEW
 - **Document:** `docs/WORKFLOW_STRICT_WATCHLIST_AUDIT.md`
 - **Purpose:** Strict, comprehensive audit with enhanced validation
 - **Use cases:**
@@ -191,5 +297,6 @@ See: `docs/BLOCKED_ALERT_REGRESSION_GUARDRAIL.md` for full details.
 - [Frontend Change (Validated e2e)](./WORKFLOW_FRONTEND_CHANGE_VALIDATED.md)
 - [DevOps Deployment Fix](./WORKFLOW_DEVOPS_DEPLOYMENT.md)
 - [Watchlist + Backend Full Integration Audit](./WORKFLOW_FULL_INTEGRATION_AUDIT.md)
+- [Full Runtime Health Audit](./FULL_RUNTIME_HEALTH_AUDIT.md) - Runtime health check for containers, API, SignalMonitor, and alerts
 - [Autonomous Execution Guidelines](./CURSOR_AUTONOMOUS_EXECUTION_GUIDELINES.md)
 

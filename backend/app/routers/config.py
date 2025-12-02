@@ -84,8 +84,29 @@ def put_config(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
     
     # SOURCE OF TRUTH: Update strategy_rules (new structure from Signal Configuration UI)
     # This is the canonical location where preset config is stored
+    # CRITICAL FIX: Merge strategy_rules instead of replacing to preserve other presets
     if "strategy_rules" in new_cfg:
-        existing_cfg["strategy_rules"] = new_cfg["strategy_rules"]
+        existing_strategy_rules = existing_cfg.get("strategy_rules", {})
+        new_strategy_rules = new_cfg["strategy_rules"]
+        
+        # CRITICAL FIX: Add logging for debugging persistence
+        logger.info(f"[STRATEGY_PERSISTENCE] Saving strategy_rules: presets={list(new_strategy_rules.keys())}")
+        for preset_key, preset_data in new_strategy_rules.items():
+            if isinstance(preset_data, dict) and "rules" in preset_data:
+                rules = preset_data.get("rules", {})
+                for risk_mode, rule in rules.items():
+                    if isinstance(rule, dict):
+                        ma_checks = rule.get("maChecks", {})
+                        rsi = rule.get("rsi", {})
+                        volume_ratio = rule.get("volumeMinRatio")
+                        logger.info(f"[STRATEGY_PERSISTENCE]   {preset_key}-{risk_mode}: maChecks={ma_checks}, rsi={rsi}, volumeMinRatio={volume_ratio}")
+        
+        # Merge: update existing presets, add new ones, preserve ones not in new_cfg
+        for preset_key, preset_data in new_strategy_rules.items():
+            existing_strategy_rules[preset_key] = preset_data
+        existing_cfg["strategy_rules"] = existing_strategy_rules
+        
+        logger.info(f"[STRATEGY_PERSISTENCE] Saved strategy_rules to trading_config.json")
 
     # Update defaults if provided
     if "defaults" in new_cfg:
@@ -200,10 +221,24 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     cfg = load_config()
     preset = payload.get("preset")
     overrides = payload.get("overrides", {})
-    if preset and preset not in cfg.get("presets", {}):
-        raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'")
+    
+    # CRITICAL FIX: Validate preset exists in either presets or strategy_rules
+    if preset:
+        preset_key = preset.split("-")[0].lower()  # Extract base preset (e.g., "swing" from "swing-conservative")
+        preset_exists = (
+            preset_key in cfg.get("presets", {}) or 
+            preset_key in cfg.get("strategy_rules", {})
+        )
+        if not preset_exists:
+            raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (checked both presets and strategy_rules)")
+    
+    # CRITICAL FIX: Add logging for debugging persistence
+    logger.info(f"[STRATEGY_PERSISTENCE] Saving coin config for {symbol}: preset={preset}, overrides={overrides}")
+    
     cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
     save_config(cfg)
+    
+    logger.info(f"[STRATEGY_PERSISTENCE] Saved coin config for {symbol} to trading_config.json")
 
     # Keep trade_signals table aligned with dashboard selections
     _sync_trade_signal(symbol, preset)

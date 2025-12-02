@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Set RUN_TELEGRAM=true on AWS (where all Telegram messages must be sent)
     # Set RUN_TELEGRAM=false for local development (must never send Telegram messages)
     RUN_TELEGRAM: Optional[str] = None
+    # RUNTIME_ORIGIN: Explicit runtime origin identifier ("AWS" or "LOCAL")
+    # Used to enforce guards on order placement and Telegram alerts
+    # Set RUNTIME_ORIGIN=AWS on AWS deployment (production)
+    # Defaults to "LOCAL" for safety (prevents accidental production actions)
+    RUNTIME_ORIGIN: str = "LOCAL"
     
     # Trading APIs
     BINANCE_API_KEY: Optional[str] = None

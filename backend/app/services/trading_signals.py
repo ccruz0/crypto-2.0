@@ -126,16 +126,22 @@ def should_trigger_buy_signal(
     reasons.append(f"RSI={rsi:.1f} < {rsi_buy_below or 'N/A'} (from config)")
 
     # Check required indicators based on maChecks config
-    if check_ema10 and ema10 is None:
+    # CRITICAL: Only check for missing indicators if they are explicitly enabled
+    # EMA10: Only block if check_ema10=True AND ema10 is None AND no fallback (MA50) is available
+    if check_ema10 and ema10 is None and not check_ma50:
         missing.append("EMA10")
+        condition_flags["ma_ok"] = False
         return conclude(False, "EMA10 required by config but unavailable")
+    # If check_ema10=False, EMA10 is not required, so don't block even if ema10 is None
     
     if check_ma50 and ma50 is None:
         missing.append("MA50")
+        condition_flags["ma_ok"] = False
         return conclude(False, "MA50 required by config but unavailable")
     
     if check_ma200 and ma200 is None:
         missing.append("MA200")
+        condition_flags["ma_ok"] = False
         return conclude(False, "MA200 required by config but unavailable")
 
     state = IndicatorState(

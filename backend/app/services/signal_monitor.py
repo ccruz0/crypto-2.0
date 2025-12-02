@@ -42,6 +42,7 @@ from app.services.signal_throttle import (
     record_signal_event,
     should_emit_signal,
 )
+from app.core.runtime import get_runtime_origin
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,15 @@ class SignalMonitorService:
         self.status_file_path = Path(os.getenv("SIGNAL_MONITOR_STATUS_FILE", "/tmp/signal_monitor_status.json"))
         self._latest_status_snapshot: Dict[str, str] = {}
         self._load_persisted_status()
+        # Log initialization after all attributes are set
+        logger.info(
+            "[SignalMonitorService] initialized | interval=%ss | max_orders_per_symbol=%d | "
+            "min_price_change_pct=%.2f%% | alert_cooldown_minutes=%.1fm",
+            self.monitor_interval,
+            self.MAX_OPEN_ORDERS_PER_SYMBOL,
+            self.MIN_PRICE_CHANGE_PCT,
+            self.ALERT_COOLDOWN_MINUTES,
+        )
 
     def _load_persisted_status(self) -> None:
         """Load last known status from disk so diagnostics can read state cross-process."""
@@ -180,11 +190,25 @@ class SignalMonitorService:
         Centralized helper to determine whether alerts are enabled for a symbol/side.
 
         Returns (allowed, reason_code, details) so callers can log consistently.
+        
+        IMPORTANT: If alert_enabled=True but buy_alert_enabled/sell_alert_enabled is None,
+        we default to True (enabled) to match UI behavior where enabling alerts enables both buy and sell.
         """
         side = side.upper()
         alert_enabled = bool(getattr(watchlist_item, "alert_enabled", False))
-        buy_enabled = bool(getattr(watchlist_item, "buy_alert_enabled", False))
-        sell_enabled = bool(getattr(watchlist_item, "sell_alert_enabled", False))
+        # CRITICAL FIX: If alert_enabled=True but buy_alert_enabled is None, default to True
+        # This matches UI behavior where enabling alerts enables both buy and sell by default
+        buy_alert_enabled_raw = getattr(watchlist_item, "buy_alert_enabled", None)
+        if alert_enabled and buy_alert_enabled_raw is None:
+            buy_enabled = True  # Default to enabled when alert_enabled=True
+        else:
+            buy_enabled = bool(buy_alert_enabled_raw if buy_alert_enabled_raw is not None else False)
+        
+        sell_alert_enabled_raw = getattr(watchlist_item, "sell_alert_enabled", None)
+        if alert_enabled and sell_alert_enabled_raw is None:
+            sell_enabled = True  # Default to enabled when alert_enabled=True
+        else:
+            sell_enabled = bool(sell_alert_enabled_raw if sell_alert_enabled_raw is not None else False)
 
         if not alert_enabled:
             return False, "DISABLED_ALERT", {
@@ -630,7 +654,7 @@ class SignalMonitorService:
                 pass
             return []  # Return empty list instead of using trade_enabled fallback
     
-    async def monitor_signals(self, db: Session):
+    async def monitor_signals(self, db: Session, cycle_stats: Optional[Dict[str, int]] = None):
         """Monitor signals for all coins with alert_enabled = true (for alerts)
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
@@ -641,20 +665,30 @@ class SignalMonitorService:
             if not watchlist_items:
                 return
             
+            if cycle_stats is None:
+                cycle_stats = {
+                    "symbols_processed": 0,
+                    "alerts_emitted": 0,
+                    "buys": 0,
+                    "sells": 0,
+                    "throttled": 0,
+                }
+            
             for item in watchlist_items:
                 try:
-                    await self._check_signal_for_coin(db, item)
+                    cycle_stats["symbols_processed"] += 1
+                    await self._check_signal_for_coin(db, item, cycle_stats)
                 except Exception as e:
                     logger.error(f"Error monitoring signal for {item.symbol}: {e}", exc_info=True)
                     continue  # Continue with next coin even if one fails
         except Exception as e:
             logger.error(f"Error in monitor_signals: {e}", exc_info=True)
     
-    async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem):
+    async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem, cycle_stats: Optional[Dict[str, int]] = None):
         """Async wrapper to run the synchronous signal check in a thread"""
-        await asyncio.to_thread(self._check_signal_for_coin_sync, db, watchlist_item)
+        await asyncio.to_thread(self._check_signal_for_coin_sync, db, watchlist_item, cycle_stats)
 
-    def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):
+    def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem, cycle_stats: Optional[Dict[str, int]] = None):
         """Check signal for a specific coin and take action if needed"""
         symbol = watchlist_item.symbol
         exchange = watchlist_item.exchange or "CRYPTO_COM"
@@ -1092,7 +1126,8 @@ class SignalMonitorService:
             )
             if not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
-                logger.info(blocked_msg)
+                if cycle_stats:
+                    cycle_stats["throttled"] += 1
                 self._log_signal_rejection(
                     symbol,
                     "BUY",
@@ -1114,22 +1149,22 @@ class SignalMonitorService:
                 buy_signal = False
                 if current_state == "BUY":
                     current_state = "WAIT"
-        if sell_signal:
-            self._log_signal_candidate(
-                symbol,
-                "SELL",
-                {
-                    "price": current_price,
-                    "rsi": rsi,
-                    "strategy_key": strategy_key,
-                    "min_price_change_pct": throttle_config.min_price_change_pct,
-                    "min_interval_minutes": throttle_config.min_interval_minutes,
-                    "last_signal_at": last_sell_snapshot.timestamp.isoformat()
-                    if last_sell_snapshot and last_sell_snapshot.timestamp
-                    else None,
-                    "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
-                },
-            )
+            if sell_signal:
+                self._log_signal_candidate(
+                    symbol,
+                    "SELL",
+                    {
+                        "price": current_price,
+                        "rsi": rsi,
+                        "strategy_key": strategy_key,
+                        "min_price_change_pct": throttle_config.min_price_change_pct,
+                        "min_interval_minutes": throttle_config.min_interval_minutes,
+                        "last_signal_at": last_sell_snapshot.timestamp.isoformat()
+                        if last_sell_snapshot and last_sell_snapshot.timestamp
+                        else None,
+                        "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
+                    },
+                )
             sell_allowed, sell_reason = should_emit_signal(
                 symbol=symbol,
                 side="SELL",
@@ -1139,9 +1174,17 @@ class SignalMonitorService:
                 last_same_side=signal_snapshots.get("SELL"),
                 last_opposite_side=signal_snapshots.get("BUY"),
             )
+            origin = get_runtime_origin()
+            logger.info(
+                f"[ALERT_THROTTLE_DECISION] origin={origin} symbol={symbol} side=SELL allowed={sell_allowed} "
+                f"reason={sell_reason} price={current_price:.4f} "
+                f"last_sell_price={last_sell_snapshot.price if last_sell_snapshot else None} "
+                f"last_sell_time={last_sell_snapshot.timestamp.isoformat() if last_sell_snapshot and last_sell_snapshot.timestamp else None}"
+            )
             if not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
-                logger.info(blocked_msg)
+                if cycle_stats:
+                    cycle_stats["throttled"] += 1
                 self._log_signal_rejection(
                     symbol,
                     "SELL",
@@ -1317,9 +1360,12 @@ class SignalMonitorService:
                             "sell_alert_enabled",
                             getattr(fresh_check, "sell_alert_enabled", False),
                         )
-                        buy_alert_enabled = bool(
-                            getattr(fresh_check, "buy_alert_enabled", False)
-                        )
+                        # CRITICAL FIX: If alert_enabled=True but buy_alert_enabled is None, default to True
+                        buy_alert_enabled_raw = getattr(fresh_check, "buy_alert_enabled", None)
+                        if fresh_check.alert_enabled and buy_alert_enabled_raw is None:
+                            buy_alert_enabled = True  # Default to enabled when alert_enabled=True
+                        else:
+                            buy_alert_enabled = bool(buy_alert_enabled_raw if buy_alert_enabled_raw is not None else False)
                         logger.debug(
                             f"🔄 Última verificación para {symbol}: "
                             f"alert_enabled={fresh_check.alert_enabled}, "
@@ -1495,6 +1541,7 @@ class SignalMonitorService:
                                 strategy_key,
                                 current_price,
                             )
+                            origin = get_runtime_origin()
                             result = telegram_notifier.send_buy_signal(
                                 symbol=symbol,
                                 price=current_price,
@@ -1503,15 +1550,23 @@ class SignalMonitorService:
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
                                 source="LIVE ALERT",
-                            throttle_status="SENT",
-                            throttle_reason=buy_reason,
+                                throttle_status="SENT",
+                                throttle_reason=buy_reason,
+                                origin=origin,
                             )
                             # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                             # send_buy_signal() may return False due to Telegram API errors, but we still
                             # consider the alert as "attempted" and log it accordingly.
                             # Only order creation may be blocked, never alerts.
                             if result:
-                                logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | price={current_price:.4f}")
+                                origin = get_runtime_origin()
+                                logger.info(
+                                    f"[ALERT_EMIT_FINAL] origin={origin} symbol={symbol} | side=BUY | status=success | "
+                                    f"price={current_price:.4f} | strategy={strategy_display}-{risk_display}"
+                                )
+                                if cycle_stats:
+                                    cycle_stats["alerts_emitted"] += 1
+                                    cycle_stats["buys"] += 1
                                 # Message already registered in send_buy_signal as sent
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
@@ -1893,38 +1948,23 @@ class SignalMonitorService:
                 
                 prev_buy_price: Optional[float] = self._get_last_alert_price(symbol, "BUY")
                 
-                # Apply throttling logic: check if alert should be sent based on price change and cooldown
-                min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
-                should_send, throttle_reason = self.should_send_alert(
-                    symbol=symbol,
-                    side="BUY",
-                    current_price=current_price,
-                    trade_enabled=watchlist_item.trade_enabled,
-                    min_price_change_pct=min_pct,
-                    cooldown_minutes=cooldown,
+                # CRITICAL: Throttling was already checked earlier using should_emit_signal() (database-based)
+                # At this point, if buy_signal=True, it means throttle passed. We should send the alert.
+                # The should_send_alert() check here is redundant and uses in-memory state which can be out of sync.
+                # We'll skip it and proceed directly to sending, but keep the lock mechanism for race condition prevention.
+                should_send = True  # Early throttle already passed, so we should send
+                throttle_reason = "Early throttle check passed (database-based)"
+                
+                self._log_signal_accept(
+                    symbol,
+                    "BUY",
+                    {
+                        "price": current_price,
+                        "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                        "min_price_change_pct": throttle_config.min_price_change_pct,
+                        "cooldown_minutes": throttle_config.min_interval_minutes,
+                    },
                 )
-                if not should_send:
-                    logger.debug(f"⏭️  BUY alert throttled for {symbol}: {throttle_reason}")
-                    # Remove lock and skip sending alert (but continue processing coin)
-                    if lock_key in self.alert_sending_locks:
-                        del self.alert_sending_locks[lock_key]
-                    self._log_signal_rejection(
-                        symbol,
-                        "BUY",
-                        self._classify_throttle_reason(throttle_reason),
-                        {"throttle_reason": throttle_reason},
-                    )
-                else:
-                    self._log_signal_accept(
-                        symbol,
-                        "BUY",
-                        {
-                            "price": current_price,
-                            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
-                            "min_price_change_pct": min_pct,
-                            "cooldown_minutes": cooldown,
-                        },
-                    )
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -2133,6 +2173,7 @@ class SignalMonitorService:
                             strategy_key,
                             current_price,
                         )
+                        origin = get_runtime_origin()
                         result = telegram_notifier.send_buy_signal(
                             symbol=symbol,
                             price=current_price,
@@ -2143,13 +2184,21 @@ class SignalMonitorService:
                             source="LIVE ALERT",
                             throttle_status="SENT",
                             throttle_reason=buy_reason,
+                            origin=origin,
                         )
                         # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                         # send_buy_signal() may return False due to Telegram API errors, but we still
                         # consider the alert as "attempted" and log it accordingly.
                         # Only order creation may be blocked, never alerts.
                         if result:
-                            logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | price={current_price:.4f}")
+                            origin = get_runtime_origin()
+                            logger.info(
+                                f"[ALERT_EMIT_FINAL] origin={origin} symbol={symbol} | side=BUY | status=success | "
+                                f"price={current_price:.4f} | strategy={strategy_display}-{risk_display}"
+                            )
+                            if cycle_stats:
+                                cycle_stats["alerts_emitted"] += 1
+                                cycle_stats["buys"] += 1
                             # Message already registered in send_buy_signal as sent
                             logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
                         else:
@@ -2351,6 +2400,7 @@ class SignalMonitorService:
             
             if sell_signal and sell_flag_allowed:
                 logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
+                logger.info(f"[DEBUG_ALERT_FLOW] {symbol} SELL: sell_signal=True, sell_flag_allowed=True, proceeding to alert sending logic")
                 
                 # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
                 lock_key = f"{symbol}_SELL"
@@ -2378,38 +2428,23 @@ class SignalMonitorService:
                     
                     prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL")
                     
-                    # Apply throttling logic: check if alert should be sent based on price change and cooldown
-                    min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
-                    should_send, throttle_reason = self.should_send_alert(
-                        symbol=symbol,
-                        side="SELL",
-                        current_price=current_price,
-                        trade_enabled=watchlist_item.trade_enabled,
-                        min_price_change_pct=min_pct,
-                        cooldown_minutes=cooldown,
+                    # CRITICAL: Throttling was already checked earlier using should_emit_signal() (database-based)
+                    # At this point, if sell_signal=True, it means throttle passed. We should send the alert.
+                    # The should_send_alert() check here is redundant and uses in-memory state which can be out of sync.
+                    # We'll skip it and proceed directly to sending, but keep the lock mechanism for race condition prevention.
+                    should_send = True  # Early throttle already passed, so we should send
+                    throttle_reason = "Early throttle check passed (database-based)"
+                    
+                    self._log_signal_accept(
+                        symbol,
+                        "SELL",
+                        {
+                            "price": current_price,
+                            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                            "min_price_change_pct": throttle_config.min_price_change_pct,
+                            "cooldown_minutes": throttle_config.min_interval_minutes,
+                        },
                     )
-                    if not should_send:
-                        logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
-                        # Remove lock and skip sending alert (but continue processing coin)
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
-                        self._log_signal_rejection(
-                            symbol,
-                            "SELL",
-                            self._classify_throttle_reason(throttle_reason),
-                            {"throttle_reason": throttle_reason},
-                        )
-                    else:
-                        self._log_signal_accept(
-                            symbol,
-                            "SELL",
-                            {
-                                "price": current_price,
-                                "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
-                                "min_price_change_pct": min_pct,
-                                "cooldown_minutes": cooldown,
-                            },
-                        )
                     
                     # CRITICAL: Final check - verify sell_alert_enabled before sending
                     # Refresh flag from database to ensure we have latest value
@@ -2466,7 +2501,8 @@ class SignalMonitorService:
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
                     else:
-                        # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
+                        # Send Telegram alert (early throttle already passed, sell_alert_enabled verified)
+                        # should_send is always True here because early throttle check already filtered out throttled signals
                         if should_send:
                             try:
                                 price_variation = self._format_price_variation(prev_sell_price, current_price)
@@ -2480,6 +2516,7 @@ class SignalMonitorService:
                                     f"EMA10={ema10_text}, "
                                     f"MA200={ma200_text}"
                                 )
+                                origin = get_runtime_origin()
                                 result = telegram_notifier.send_sell_signal(
                                     symbol=symbol,
                                     price=current_price,
@@ -2490,13 +2527,21 @@ class SignalMonitorService:
                                     source="LIVE ALERT",
                                     throttle_status="SENT",
                                     throttle_reason=sell_reason,
+                                    origin=origin,
                                 )
                                 # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                                 # send_sell_signal() may return False due to Telegram API errors, but we still
                                 # consider the alert as "attempted" and log it accordingly.
                                 # Only order creation may be blocked, never alerts.
                                 if result:
-                                    logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=SELL | status=success | price={current_price:.4f}")
+                                    origin = get_runtime_origin()
+                                    logger.info(
+                                        f"[ALERT_EMIT_FINAL] origin={origin} symbol={symbol} | side=SELL | status=success | "
+                                        f"price={current_price:.4f} | strategy={strategy_display}-{risk_display}"
+                                    )
+                                    if cycle_stats:
+                                        cycle_stats["alerts_emitted"] += 1
+                                        cycle_stats["sells"] += 1
                                     logger.info(
                                         f"✅ SELL alert SENT for {symbol}: "
                                         f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
@@ -3658,14 +3703,15 @@ class SignalMonitorService:
             return
         self.is_running = True
         self._persist_status("starting")
-        logger.info("=" * 60)
-        logger.info("🚀 SIGNAL MONITORING SERVICE STARTED (interval=%ss)", self.monitor_interval)
-        logger.info(f"   - Max orders per symbol: {self.MAX_OPEN_ORDERS_PER_SYMBOL}")
-        logger.info(f"   - Min price change: {self.MIN_PRICE_CHANGE_PCT}%")
-        logger.info("=" * 60)
+        logger.info("[SignalMonitorService] started | interval=%ss | max_orders_per_symbol=%d | min_price_change_pct=%.2f%% | alert_cooldown_minutes=%.1fm",
+            self.monitor_interval,
+            self.MAX_OPEN_ORDERS_PER_SYMBOL,
+            self.MIN_PRICE_CHANGE_PCT,
+            self.ALERT_COOLDOWN_MINUTES,
+        )
 
         cycle_count = 0
-        logger.info("SignalMonitorService.start() called, entering main loop (is_running=%s)", self.is_running)
+        logger.info("[SignalMonitorService] start() called, entering main loop")
         try:
             while self.is_running:
                 logger.debug("SignalMonitorService loop iteration, is_running=%s", self.is_running)
@@ -3673,17 +3719,33 @@ class SignalMonitorService:
                     cycle_count += 1
                     self.last_run_at = datetime.now(timezone.utc)
                     self._persist_status("cycle_started")
-                    logger.info("SignalMonitorService cycle #%s started (is_running=%s)", cycle_count, self.is_running)
+                    
+                    # Initialize cycle counters
+                    cycle_stats = {
+                        "symbols_processed": 0,
+                        "alerts_emitted": 0,
+                        "buys": 0,
+                        "sells": 0,
+                        "throttled": 0,
+                    }
+                    
+                    logger.info("[SignalMonitorService] cycle #%s started", cycle_count)
 
                     db = SessionLocal()
                     try:
-                        await self.monitor_signals(db)
+                        await self.monitor_signals(db, cycle_stats)
                     finally:
                         db.close()
 
                     logger.info(
-                        "SignalMonitorService cycle #%s completed. Next check in %ss",
+                        "[DEBUG_SIGNAL_MONITOR] cycle=%d | symbols_processed=%d | alerts_emitted=%d | "
+                        "buys=%d | sells=%d | throttled=%d | next_check_in=%ds",
                         cycle_count,
+                        cycle_stats["symbols_processed"],
+                        cycle_stats["alerts_emitted"],
+                        cycle_stats["buys"],
+                        cycle_stats["sells"],
+                        cycle_stats["throttled"],
                         self.monitor_interval,
                     )
                     self._persist_status("cycle_completed")

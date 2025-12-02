@@ -856,6 +856,84 @@ def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     return _serialize_watchlist_item(item)
 
 
+@router.put("/dashboard/symbol/{symbol}")
+def update_watchlist_item_by_symbol(
+    symbol: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Update a watchlist item by symbol (canonical selector)."""
+    symbol = (symbol or "").upper()
+    # Use canonical selector: find the most recent non-deleted item for this symbol
+    item = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.symbol == symbol)
+        .order_by(WatchlistItem.created_at.desc())
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Watchlist item not found for symbol {symbol}")
+    
+    # Track what was updated for the message
+    updates = []
+    if "trade_enabled" in payload:
+        old_value = item.trade_enabled
+        new_value = payload["trade_enabled"]
+        if old_value != new_value:
+            updates.append(f"TRADE: {'YES' if new_value else 'NO'}")
+    
+    if "alert_enabled" in payload:
+        old_value = item.alert_enabled
+        new_value = payload["alert_enabled"]
+        if old_value != new_value:
+            updates.append(f"ALERTS: {'YES' if new_value else 'NO'}")
+    
+    if "buy_alert_enabled" in payload:
+        old_value = getattr(item, "buy_alert_enabled", False)
+        new_value = payload["buy_alert_enabled"]
+        if old_value != new_value:
+            updates.append(f"BUY alert: {'YES' if new_value else 'NO'}")
+    
+    if "sell_alert_enabled" in payload:
+        old_value = getattr(item, "sell_alert_enabled", False)
+        new_value = payload["sell_alert_enabled"]
+        if old_value != new_value:
+            updates.append(f"SELL alert: {'YES' if new_value else 'NO'}")
+    
+    if "trade_amount_usd" in payload:
+        old_value = item.trade_amount_usd
+        new_value = payload["trade_amount_usd"]
+        if old_value != new_value:
+            updates.append(f"Amount: ${new_value:.2f} USD" if new_value else "Amount: cleared")
+    
+    if "preset" in payload:
+        old_value = getattr(item, "preset", None)
+        new_value = payload["preset"]
+        if old_value != new_value:
+            updates.append(f"Preset: {new_value}")
+    
+    if "sl_percentage" in payload or "tp_percentage" in payload:
+        sl_old = item.sl_percentage
+        tp_old = item.tp_percentage
+        sl_new = payload.get("sl_percentage", sl_old)
+        tp_new = payload.get("tp_percentage", tp_old)
+        if sl_old != sl_new or tp_old != tp_new:
+            updates.append(f"SL/TP: {sl_new}%/{tp_new}%")
+    
+    _apply_watchlist_updates(item, payload)
+    db.commit()
+    db.refresh(item)
+    
+    result = _serialize_watchlist_item(item)
+    
+    # Add success message if updates were made
+    if updates:
+        result["message"] = f"✅ Updated {item.symbol}: {', '.join(updates)}"
+        log.info(f"✅ Updated watchlist item {item.symbol} (by symbol): {', '.join(updates)}")
+    
+    return result
+
+
 @router.delete("/dashboard/symbol/{symbol}")
 def delete_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     """Delete watchlist item by symbol."""

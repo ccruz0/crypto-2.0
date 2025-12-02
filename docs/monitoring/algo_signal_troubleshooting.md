@@ -51,8 +51,8 @@ ALGO_USDT debe tener datos de mercado actualizados:
 
 **Comando para verificar:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 100 | grep -i "ALGO_USDT" | tail -20'
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 100 | grep -i "ALGO_USDT" | tail -20
 ```
 
 ### 4. Verificar Logs de Estrategia
@@ -60,9 +60,9 @@ Buscar logs `DEBUG_STRATEGY_FINAL` y `DEBUG_BUY_FLAGS` para ALGO_USDT:
 
 **Comando:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 500 | \
-  grep "DEBUG_STRATEGY_FINAL.*ALGO_USDT" | tail -10'
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 500 | \
+  grep "DEBUG_STRATEGY_FINAL.*ALGO_USDT" | tail -10
 ```
 
 **Qué buscar:**
@@ -76,9 +76,9 @@ Revisar qué flags están bloqueando:
 
 **Comando:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 500 | \
-  grep "DEBUG_BUY_FLAGS.*ALGO_USDT" | tail -5'
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 500 | \
+  grep "DEBUG_BUY_FLAGS.*ALGO_USDT" | tail -5
 ```
 
 **Flags esperados para `scalp-aggressive`:**
@@ -93,9 +93,9 @@ El throttle puede estar bloqueando alertas repetidas:
 
 **Comando:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 500 | \
-  grep -i "ALGO_USDT.*throttle\|ALGO_USDT.*cooldown" | tail -10'
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 500 | \
+  grep -i "ALGO_USDT.*throttle\|ALGO_USDT.*cooldown" | tail -10
 ```
 
 **Si está bloqueado por throttle:**
@@ -107,9 +107,9 @@ Revisar si el alert path está siendo ejecutado:
 
 **Comando:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 500 | \
-  grep -i "DEBUG_MONITOR_BUY.*ALGO_USDT\|DEBUG_ALGO_ALERT" | tail -10'
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 500 | \
+  grep -i "DEBUG_MONITOR_BUY.*ALGO_USDT\|DEBUG_ALGO_ALERT" | tail -10
 ```
 
 ## Soluciones Comunes
@@ -149,10 +149,10 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
 Ejecutar en el servidor AWS:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
-  docker logs automated-trading-platform-backend-aws-1 --tail 200 | \
+cd /Users/carloscruz/automated-trading-platform && \
+  bash scripts/aws_backend_logs.sh --tail 200 | \
   grep -E "DEBUG_STRATEGY_FINAL.*ALGO_USDT|DEBUG_BUY_FLAGS.*ALGO_USDT|DEBUG_MONITOR_BUY.*ALGO_USDT" | \
-  tail -5'
+  tail -5
 ```
 
 Esto mostrará:

@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-Manual service starter - to be run inside the container
-This script starts all trading services manually
+DEBUG ONLY – DO NOT RUN IN PRODUCTION
+
+Manual service starter - to be run inside the container for debugging only.
+
+⚠️ WARNING: Do NOT run this in production because:
+- All services (scheduler, SignalMonitorService, exchange_sync) are already started
+  by the main FastAPI app (backend/app/main.py)
+- Running this would create duplicate service instances
+- This would cause duplicate alerts, duplicate orders, and data inconsistencies
+- In production, only the AWS backend container should run these services
+
+Use this script ONLY for:
+- Local debugging when the main app is not running
+- Testing services in isolation
+- Development scenarios where you need to debug services separately
+
+For production, all services are automatically started by the FastAPI app.
 """
 import asyncio
 import sys

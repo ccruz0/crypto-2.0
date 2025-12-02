@@ -128,7 +128,7 @@ To verify throttling is working:
 
 1. **Check logs** for `[RISK_THROTTLED]` entries:
    ```bash
-   docker logs automated-trading-platform-backend-aws-1 | grep RISK_THROTTLED
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep RISK_THROTTLED
    ```
 
 2. **Monitor Telegram Messages**:
@@ -140,7 +140,7 @@ To verify throttling is working:
 
 3. **Check risk check logs**:
    ```bash
-   docker logs automated-trading-platform-backend-aws-1 | grep RISK_PORTFOLIO_CHECK
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep RISK_PORTFOLIO_CHECK
    ```
 
 ## Files Changed

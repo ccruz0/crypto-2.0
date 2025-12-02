@@ -71,7 +71,7 @@ To capture FLIP DETECTED events:
 
 1. **Verify Logging Configuration**
    ```bash
-   ssh ubuntu@hilovivo-aws "docker logs automated-trading-platform-backend-aws-1 2>&1 | grep -i 'log.*level\|logging' | head -5"
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh 2>&1 | grep -i 'log.*level\|logging' | head -5
    ```
 
 2. **Trigger Strategy Evaluation**

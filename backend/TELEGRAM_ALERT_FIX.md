@@ -29,5 +29,5 @@ self.chat_id = env_chat_id or None
 The ALERT button should now send messages to Telegram correctly. If you still don't receive alerts:
 1. Check your Telegram chat with the bot (@hilofinoINVESTMENTbot)
 2. Verify the chat ID matches your private chat/channel
-3. Check backend logs for any errors: `docker logs automated-trading-platform-backend-1 | grep Telegram`
+3. Check backend logs for any errors: `cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep Telegram`
 

@@ -54,7 +54,7 @@ def check_docker_logs():
         cmd = [
             'sh', '-c',
             "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && "
-            "docker logs automated-trading-platform-backend-1 --tail 10000 2>&1'"
+            "bash scripts/aws_backend_logs.sh --tail 10000 2>&1'"
         ]
         result = subprocess.run(
             cmd,

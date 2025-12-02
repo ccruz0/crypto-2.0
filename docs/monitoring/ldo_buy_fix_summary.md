@@ -103,7 +103,7 @@ For **LDO_USDT** (and **LDO_USD**) with preset **scalp-aggressive**:
 ### Commands to Debug:
 ```bash
 # Check LDO logs
-ssh hilovivo-aws 'docker logs automated-trading-platform-backend-aws-1 --tail 2000 | grep -E "LDO.*DEBUG" | tail -20'
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "LDO.*DEBUG" | tail -20
 
 # Check preset configuration
 ssh hilovivo-aws 'cat /home/ubuntu/automated-trading-platform/backend/trading_config.json | grep -A 3 "LDO"'

@@ -154,7 +154,7 @@ Whenever this workflow is invoked for a backend-related problem (alerts, strateg
 
   - **Inspect logs for validation:**
     ```bash
-    ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 1000 | grep -E "DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER"'
+    cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER"
     ```
 
   - **Validate each rule against logs and test scenarios:**
@@ -271,7 +271,7 @@ curl -s https://monitoring-ai-dashboard-nu.vercel.app/api/health
 
 ### AWS Backend Logs
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER'"
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER'
 ```
 
 ### AWS API Tests

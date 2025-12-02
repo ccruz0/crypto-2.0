@@ -100,7 +100,7 @@ market_data.volume_ratio = volume_ratio     # Ratio pre-calculado
 1. **Verificar actualización de datos:**
    ```bash
    # Ver logs del market_updater
-   docker logs automated-trading-platform-backend-aws-1 | grep market_updater
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep market_updater
    ```
 
 2. **Forzar actualización:**

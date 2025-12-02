@@ -65,7 +65,7 @@ else
     echo -e "${YELLOW}⚠️  Some endpoints are slow. Check logs for details.${NC}"
     echo ""
     echo "Check logs with:"
-    echo "  docker logs automated-trading-platform-backend-1 --tail 100 | grep PERF"
+    echo "  cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 100 | grep PERF"
     exit 1
 fi
 

@@ -93,7 +93,7 @@ For **ALGO_USDT** with preset **scalp-aggressive**:
 ### Commands to Debug:
 ```bash
 # Check ALGO_USDT logs
-ssh hilovivo-aws 'docker logs automated-trading-platform-backend-aws-1 --tail 2000 | grep -E "ALGO_USDT.*DEBUG_BUY_FLAGS|ALGO_USDT.*DEBUG_STRATEGY_FINAL" | tail -10'
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "ALGO_USDT.*DEBUG_BUY_FLAGS|ALGO_USDT.*DEBUG_STRATEGY_FINAL" | tail -10
 
 # Check preset configuration
 ssh hilovivo-aws 'cat /home/ubuntu/automated-trading-platform/backend/trading_config.json | grep -A 5 "ALGO_USDT"'

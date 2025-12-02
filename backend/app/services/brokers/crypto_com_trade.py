@@ -16,6 +16,7 @@ from app.core.failover_config import (
     TRADEBOT_BASE, FAILOVER_ENABLED
 )
 from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
+from app.core.runtime import is_aws_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -942,6 +943,20 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
+        # RUNTIME GUARD: Only AWS can place real orders
+        if not is_aws_runtime() and not dry_run:
+            logger.warning(
+                f"[ORDER_GUARD] Attempt to place order in LOCAL runtime – blocking. "
+                f"symbol={symbol}, side={side}, is_margin={is_margin}"
+            )
+            return {
+                "status": "blocked-local-runtime",
+                "reason": "Order placement disabled on LOCAL runtime",
+                "symbol": symbol,
+                "side": side,
+                "dry_run": True
+            }
+        
         actual_dry_run = dry_run or not self.live_trading
         
         # Validate parameters based on side
@@ -1278,6 +1293,20 @@ class CryptoComTradeClient:
         dry_run: bool = True
     ) -> dict:
         """Place limit order"""
+        # RUNTIME GUARD: Only AWS can place real orders
+        if not is_aws_runtime() and not dry_run:
+            logger.warning(
+                f"[ORDER_GUARD] Attempt to place limit order in LOCAL runtime – blocking. "
+                f"symbol={symbol}, side={side}, is_margin={is_margin}"
+            )
+            return {
+                "status": "blocked-local-runtime",
+                "reason": "Order placement disabled on LOCAL runtime",
+                "symbol": symbol,
+                "side": side,
+                "dry_run": True
+            }
+        
         actual_dry_run = dry_run or not self.live_trading
         
         if actual_dry_run:

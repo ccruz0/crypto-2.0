@@ -267,6 +267,10 @@ async def simulate_alert(
             # Send Telegram alert
             try:
                 risk_display = (watchlist_item.sl_tp_mode or "conservative").title() if watchlist_item else "Conservative"
+                logger.info(
+                    f"[TEST_ALERT_REQUEST] BUY test alert requested: symbol={symbol}, "
+                    f"price={current_price:.4f}, origin=TEST, will_send_to_telegram=True"
+                )
                 telegram_notifier.send_buy_signal(
                     symbol=symbol,
                     price=current_price,
@@ -274,7 +278,9 @@ async def simulate_alert(
                     strategy_type="Swing",
                     risk_approach=risk_display,
                     source="TEST",
+                    origin="TEST",  # Test alerts from dashboard should send to Telegram with [TEST] prefix
                 )
+                logger.info(f"[TEST_ALERT_SENT] BUY test alert sent for {symbol} with origin=TEST")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram BUY alert: {e}")
             
@@ -458,6 +464,10 @@ async def simulate_alert(
             # Send Telegram alert
             try:
                 risk_display = (watchlist_item.sl_tp_mode or "conservative").title() if watchlist_item else "Conservative"
+                logger.info(
+                    f"[TEST_ALERT_REQUEST] SELL test alert requested: symbol={symbol}, "
+                    f"price={current_price:.4f}, origin=TEST, will_send_to_telegram=True"
+                )
                 telegram_notifier.send_sell_signal(
                     symbol=symbol,
                     price=current_price,
@@ -465,7 +475,9 @@ async def simulate_alert(
                     strategy_type="Swing",
                     risk_approach=risk_display,
                     source="TEST",
+                    origin="TEST",  # Test alerts from dashboard should send to Telegram with [TEST] prefix
                 )
+                logger.info(f"[TEST_ALERT_SENT] SELL test alert sent for {symbol} with origin=TEST")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram SELL alert: {e}")
             

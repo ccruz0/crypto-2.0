@@ -91,11 +91,11 @@ After deployment, verify logs appear:
 
 ```bash
 # Check for entry markers
-docker logs automated-trading-platform-backend-aws-1 --tail 1000 | \
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | \
   grep "STRATEGY_DEBUG_MARKER"
 
 # Check for final markers
-docker logs automated-trading-platform-backend-aws-1 --tail 1000 | \
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | \
   grep "DEBUG_STRATEGY_FINAL"
 ```
 

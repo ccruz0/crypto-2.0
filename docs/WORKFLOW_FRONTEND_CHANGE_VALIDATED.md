@@ -97,7 +97,7 @@ curl -s https://monitoring-ai-dashboard-nu.vercel.app/api/health
 
 ### Backend Logs
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 200'"
+cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200
 ```
 
 ### Dashboard URL

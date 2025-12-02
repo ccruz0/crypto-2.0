@@ -73,6 +73,10 @@ services:
   # ============================================
   # BACKEND - Local Profile (Direct Connection)
   # ============================================
+  # ⚠️ WARNING: This is for LOCAL DEVELOPMENT ONLY
+  # Do NOT run this in parallel with AWS production backend.
+  # AWS backend is the ONLY live production runtime (trading + alerts).
+  # This local profile is for development/testing only.
   backend:
     build:
       context: ./backend
@@ -149,6 +153,7 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      - RUNTIME_ORIGIN=AWS
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}

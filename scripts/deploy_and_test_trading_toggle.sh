@@ -60,7 +60,7 @@ echo ""
 # Step 5: Monitor logs
 echo -e "${YELLOW}Step 5: Monitoring backend logs (last 50 lines)...${NC}"
 echo -e "${YELLOW}Looking for DASHBOARD_UPDATE_BY_SYMBOL and MONITOR_TRADE_FLAG...${NC}"
-run_aws "docker logs automated-trading-platform-backend-aws-1 --tail 50 | grep -E 'DASHBOARD_UPDATE_BY_SYMBOL|MONITOR_TRADE_FLAG' || echo 'No matching logs found yet'"
+run_aws "bash scripts/aws_backend_logs.sh --tail 50 | grep -E 'DASHBOARD_UPDATE_BY_SYMBOL|MONITOR_TRADE_FLAG' || echo 'No matching logs found yet'"
 echo ""
 
 # Step 6: Instructions
@@ -82,7 +82,7 @@ echo "   - Run the debug script again"
 echo "   - Verify trade_enabled=True for the SAME canonical row id"
 echo ""
 echo "4. Monitor logs for consistency:"
-echo "   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 200 | grep -E \"DASHBOARD_UPDATE_BY_SYMBOL|MONITOR_TRADE_FLAG\"'"
+echo "   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200 | grep -E \"DASHBOARD_UPDATE_BY_SYMBOL|MONITOR_TRADE_FLAG\""
 echo ""
 echo "5. Verify the same id appears in both logs (DASHBOARD_UPDATE_BY_SYMBOL and MONITOR_TRADE_FLAG)"
 echo ""

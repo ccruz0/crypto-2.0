@@ -72,7 +72,7 @@ To verify the switch is working:
 
 1. **Check logs** for `[BUY_INDEX_DISABLED]` entries:
    ```bash
-   docker logs automated-trading-platform-backend-aws-1 | grep BUY_INDEX_DISABLED
+   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep BUY_INDEX_DISABLED
    ```
 
 2. **Monitor Telegram Messages** in the dashboard:

@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import Enum
 import pytz
 from app.core.config import Settings
+from app.core.runtime import is_aws_runtime, get_runtime_origin
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 
@@ -147,39 +148,113 @@ class TelegramNotifier:
             logger.error(f"Failed to set bot commands: {e}")
             return False
     
-    def send_message(self, message: str, reply_markup: Optional[dict] = None) -> bool:
+    def send_message(self, message: str, reply_markup: Optional[dict] = None, origin: Optional[str] = None) -> bool:
         """
         Send a message to Telegram with optional inline keyboard.
         
         This is the canonical helper that ALL alerts must route through.
         It automatically:
-        - Adds environment prefix [AWS] or [LOCAL] based on APP_ENV
+        - Blocks Telegram sends for non-AWS origins (logs instead)
+        - Adds environment prefix [AWS] or [LOCAL] based on origin
         - Uses TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment
         - Routes to the correct Telegram channel (hilovivo-alerts-aws or hilovivo-alerts-local)
         
         Args:
             message: Message text (HTML format supported)
             reply_markup: Optional inline keyboard markup
+            origin: Origin identifier ("AWS" or "LOCAL"). If None, defaults to runtime origin.
+                    Only "AWS" origin will actually send to Telegram.
             
         Returns:
             True if message sent successfully, False otherwise
         """
+        # CENTRAL GATEKEEPER: Only AWS and TEST origins can send Telegram alerts
+        # If origin is not provided, use runtime origin as fallback
+        if origin is None:
+            origin = get_runtime_origin()
+        
+        origin_upper = origin.upper() if origin else "LOCAL"
+        
+        # Extract symbol for logging and monitoring (used in all paths)
+        symbol = None
+        try:
+            import re
+            symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', message)
+            if symbol_match:
+                potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
+                if '_' in potential_symbol or len(potential_symbol) >= 2:
+                    symbol = potential_symbol
+        except Exception:
+            pass
+        
+        # 1) Block truly LOCAL / non-AWS, non-TEST origins
+        if origin_upper not in ("AWS", "TEST"):
+            # Log what would have been sent
+            preview = message[:200] + "..." if len(message) > 200 else message
+            logger.info(
+                f"[TG_LOCAL_DEBUG] Skipping Telegram send for non-AWS/non-TEST origin '{origin_upper}'. "
+                f"Message would have been: {preview}"
+            )
+            # Log blocked TEST alert if it was TEST
+            if origin_upper == "TEST":
+                logger.warning(
+                    f"[TEST_ALERT_BLOCKED] origin=TEST was blocked! This should never happen. "
+                    f"Check gatekeeper logic. message_preview={preview[:100]}"
+                )
+            
+            # Still register in dashboard for debugging, but mark as blocked
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                add_telegram_message(
+                    f"[LOCAL DEBUG] {message}", 
+                    symbol=symbol, 
+                    blocked=True
+                )
+            except Exception as e:
+                logger.debug(f"Could not register LOCAL debug message in dashboard: {e}")
+            return False
+        
         if not self.enabled:
             logger.debug("Telegram disabled: skipping send_message call")
             return False
         
         try:
-            # Get environment and add prefix
-            app_env = get_app_env()
-            env_label = "[AWS]" if app_env == AppEnv.AWS else "[LOCAL]"
+            # 2) For TEST origin: allow sending, but prefix with [TEST]
+            if origin_upper == "TEST":
+                # Add [TEST] prefix if not already present
+                if not message.startswith("[TEST]"):
+                    full_message = f"[TEST] {message}"
+                else:
+                    full_message = message
+                env_label = "[TEST]"
+                # Extract symbol and side for logging
+                test_symbol = symbol or "UNKNOWN"
+                test_side = "UNKNOWN"
+                if "BUY SIGNAL" in message or "🟢" in message:
+                    test_side = "BUY"
+                elif "SELL SIGNAL" in message or "🟥" in message:
+                    test_side = "SELL"
+                logger.info(
+                    f"[TEST_ALERT_LOG] symbol={test_symbol}, side={test_side}, origin=TEST, "
+                    f"prefix=[TEST], message_length={len(full_message)}, sending_to_telegram=True"
+                )
+                logger.info(
+                    f"[TEST_ALERT_SENDING] origin=TEST, prefix=[TEST], symbol={test_symbol}, "
+                    f"side={test_side}, chat_id={self.chat_id}, url=api.telegram.org/bot.../sendMessage"
+                )
             
-            # Prepend environment label to message
-            # Only add prefix if message doesn't already start with [AWS] or [LOCAL]
-            if not (message.startswith("[AWS]") or message.startswith("[LOCAL]")):
-                full_message = f"{env_label} {message}"
+            # 3) For AWS origin: production alerts with [AWS] prefix
+            elif origin_upper == "AWS":
+                # Add [AWS] prefix if not already present
+                if not message.startswith("[AWS]"):
+                    full_message = f"[AWS] {message}"
+                else:
+                    full_message = message
+                env_label = "[AWS]"
             else:
-                # Message already has prefix, use as-is
+                # Should not reach here due to gatekeeper above, but fallback
                 full_message = message
+                env_label = "[UNKNOWN]"
             
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             payload = {
@@ -194,25 +269,33 @@ class TelegramNotifier:
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
             
-            logger.info(f"Telegram message sent successfully to {app_env.value} channel")
+            # Extract message_id from response for logging
+            response_data = response.json()
+            message_id = response_data.get("result", {}).get("message_id", "unknown")
             
-            # Register sent message in dashboard (all messages sent to Telegram)
+            logger.info(f"Telegram message sent successfully (origin={origin_upper})")
+            
+            # Log TEST alert Telegram success
+            if origin_upper == "TEST":
+                logger.info(
+                    f"[TEST_ALERT_TELEGRAM_OK] origin=TEST, chat_id={self.chat_id}, "
+                    f"message_id={message_id}, symbol={symbol or 'UNKNOWN'}"
+                )
+            
+            # Register sent message in dashboard (both AWS and TEST messages)
             try:
                 from app.api.routes_monitoring import add_telegram_message
-                # Extract symbol from message if possible (optional, for better organization)
-                symbol = None
-                # Try to extract symbol from common message patterns
-                import re
-                symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', full_message)
-                if symbol_match:
-                    potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
-                    if '_' in potential_symbol or len(potential_symbol) >= 2:
-                        symbol = potential_symbol
-                
-                # Store the message without the [AWS]/[LOCAL] prefix for cleaner display
-                # The prefix is only needed for Telegram routing
-                display_message = message  # Use original message without env prefix
+                # Store the message with its prefix for clarity in monitoring
+                # TEST messages should show [TEST] prefix, AWS messages show [AWS]
+                display_message = full_message  # Keep prefix for monitoring clarity
                 add_telegram_message(display_message, symbol=symbol, blocked=False)
+                # Additional logging for TEST alerts
+                if origin_upper == "TEST":
+                    logger.info(
+                        f"[TEST_ALERT_MONITORING] Registered in Monitoring: symbol={symbol or 'UNKNOWN'}, "
+                        f"blocked=False, prefix=[TEST], message_preview={display_message[:100]}"
+                    )
+                    # Also log after saving to DB (will be logged in add_telegram_message if we add it there)
             except Exception as e:
                 logger.debug(f"Could not register Telegram message in dashboard: {e}")
                 # Non-critical, continue
@@ -221,6 +304,14 @@ class TelegramNotifier:
             
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+            # Log TEST alert Telegram error
+            if origin_upper == "TEST":
+                error_status = getattr(e, "status_code", None) or "unknown"
+                error_body = str(e)[:200]
+                logger.error(
+                    f"[TEST_ALERT_TELEGRAM_ERROR] origin=TEST, status={error_status}, "
+                    f"error={error_body}, symbol={symbol or 'UNKNOWN'}"
+                )
             return False
     
     def send_message_with_buttons(self, message: str, buttons: list) -> bool:
@@ -587,6 +678,7 @@ class TelegramNotifier:
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
+        origin: Optional[str] = None,  # "AWS" or "LOCAL"
     ):
         """Send a buy signal alert
         
@@ -631,7 +723,18 @@ class TelegramNotifier:
 ✅ Reason: {reason}{strategy_line}{approach_line}
 📅 Time: {timestamp}
 """
-        result = self.send_message(message.strip())
+        # Log TEST alert signal if origin is TEST
+        if origin == "TEST":
+            logger.info(
+                f"[TEST_ALERT_SIGNAL] BUY signal: symbol={symbol}, side=BUY, origin=TEST, "
+                f"price={price:.4f}, reason={reason[:100]}"
+            )
+        
+        # Default to AWS if origin not provided (for backward compatibility)
+        if origin is None:
+            origin = get_runtime_origin()
+        
+        result = self.send_message(message.strip(), origin=origin)
         
         # Register sent message
         if result:
@@ -662,6 +765,7 @@ class TelegramNotifier:
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
+        origin: Optional[str] = None,  # "AWS" or "LOCAL"
     ):
         """Send a sell signal alert
         
@@ -707,7 +811,11 @@ class TelegramNotifier:
 ✅ Reason: {reason}{strategy_line}{approach_line}
 📅 Time: {timestamp}
 """
-        result = self.send_message(message.strip())
+        # Default to AWS if origin not provided (for backward compatibility)
+        if origin is None:
+            origin = get_runtime_origin()
+        
+        result = self.send_message(message.strip(), origin=origin)
         
         # Register sent message
         if result:
