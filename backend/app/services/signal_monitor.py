@@ -1006,9 +1006,17 @@ class SignalMonitorService:
             
             # Extract strategy_state for debug logging
             strategy_state = signals.get("strategy_state", {})
-            decision = strategy_state.get("decision", "WAIT")
             strategy_index = strategy_state.get("index", 0)
             reasons = strategy_state.get("reasons", {})
+            
+            # CRITICAL: Determine decision matching debug script logic (BUY if buy_signal, SELL if sell_signal, else WAIT)
+            # Do NOT use strategy_state.decision as it may not match the actual signals
+            if buy_signal:
+                decision = "BUY"
+            elif sell_signal:
+                decision = "SELL"
+            else:
+                decision = "WAIT"
             
             # Get strategy rules to log min_volume_ratio
             from app.services.config_loader import get_strategy_rules
