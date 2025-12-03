@@ -22,6 +22,7 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
+from app.services.signal_evaluator import evaluate_signal_for_symbol
 from app.services.strategy_profiles import (
     resolve_strategy_profile,
     StrategyType,
@@ -43,6 +44,7 @@ from app.services.signal_throttle import (
     should_emit_signal,
 )
 from app.core.runtime import get_runtime_origin
+from app.services.alert_emitter import emit_alert
 
 logger = logging.getLogger(__name__)
 
@@ -841,108 +843,45 @@ class SignalMonitorService:
             logger.error(f"Error verificando exposición para {symbol}: {e}", exc_info=True)
             # No bloquear por error - continuar con el procesamiento
         
+        # ========================================================================
+        # CANONICAL SIGNAL EVALUATION: Use shared helper to ensure exact match with debug script
+        # ========================================================================
         try:
-            # CRITICAL: Use the SAME data source as the dashboard (MarketData/MarketPrice)
-            # This ensures consistency between dashboard display and alert sending
-            # Priority: MarketData/MarketPrice → watchlist_items → API (fallback)
-            from app.models.market_price import MarketPrice, MarketData
-            from price_fetcher import get_price_with_fallback
+            # Use the canonical evaluator (same logic as debug_live_signals_all.py)
+            eval_result = evaluate_signal_for_symbol(db, watchlist_item, symbol)
             
-            # First, try to get data from MarketPrice and MarketData (same as dashboard)
-            mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
-            md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            if eval_result.get("error"):
+                logger.warning(f"⚠️ {symbol}: Evaluation error: {eval_result['error']}")
+                if eval_result["error"] == "No price data":
+                    return
+                # Continue with other errors but log them
             
-            # Get price from MarketPrice if available (same priority as dashboard)
-            if mp and mp.price and mp.price > 0:
-                current_price = mp.price
-                volume_24h = mp.volume_24h or 0.0
-                price_source = "MarketPrice"
-            else:
-                # Fallback to API if MarketPrice not available
-                logger.debug(f"⚠️ {symbol}: No MarketPrice data, falling back to API")
-                result = get_price_with_fallback(symbol, "15m")
-                current_price = result.get('price', 0)
-                volume_24h = result.get('volume_24h', 0)
-                price_source = "API (fallback)"
+            # Extract values from canonical result
+            decision = eval_result["decision"]
+            buy_signal = eval_result["buy_signal"]
+            sell_signal = eval_result["sell_signal"]
+            strategy_index = eval_result["index"]
+            current_price = eval_result["price"]
+            rsi = eval_result["rsi"]
+            ma50 = eval_result["ma50"]
+            ma200 = eval_result["ma200"]
+            ema10 = eval_result["ema10"]
+            volume_ratio = eval_result["volume_ratio"]
+            min_volume_ratio = eval_result["min_volume_ratio"]
+            buy_allowed = eval_result["buy_allowed"]
+            sell_allowed = eval_result["sell_allowed"]
+            buy_flag_allowed = eval_result["buy_flag_allowed"]
+            sell_flag_allowed = eval_result["sell_flag_allowed"]
+            can_emit_buy = eval_result["can_emit_buy_alert"]
+            can_emit_sell = eval_result["can_emit_sell_alert"]
+            buy_throttle_status = eval_result["throttle_status_buy"]
+            sell_throttle_status = eval_result["throttle_status_sell"]
+            buy_reason = eval_result["throttle_reason_buy"]
+            sell_reason = eval_result["throttle_reason_sell"]
+            preset_name = eval_result["preset"].split("-")[0] if "-" in eval_result["preset"] else eval_result["preset"]
+            risk_mode = eval_result["preset"].split("-")[1] if "-" in eval_result["preset"] else "Conservative"
             
-            if not current_price or current_price <= 0:
-                logger.warning(f"⚠️ {symbol}: No price data available (tried MarketPrice and API), skipping signal check")
-                return
-            
-            # Get indicators - use MarketData if available (same priority as dashboard)
-            # This ensures RSI/MA values match what the dashboard shows
-            if md and md.rsi is not None:
-                rsi = md.rsi
-                rsi_source = "MarketData"
-            elif watchlist_item and hasattr(watchlist_item, 'rsi') and watchlist_item.rsi is not None:
-                rsi = watchlist_item.rsi
-                rsi_source = "watchlist_items"
-            else:
-                # Fallback to API if neither MarketData nor watchlist_items has RSI
-                if 'result' not in locals():
-                    result = get_price_with_fallback(symbol, "15m")
-                rsi = result.get('rsi', 50)
-                rsi_source = "API (fallback)"
-            
-            # Get other indicators with same priority as dashboard
-            if md and md.ma50 is not None:
-                ma50 = md.ma50
-            elif watchlist_item and hasattr(watchlist_item, 'ma50') and watchlist_item.ma50 is not None:
-                ma50 = watchlist_item.ma50
-            else:
-                ma50 = None  # Will be validated later
-            
-            if md and md.ma200 is not None:
-                ma200 = md.ma200
-            elif watchlist_item and hasattr(watchlist_item, 'ma200') and watchlist_item.ma200 is not None:
-                ma200 = watchlist_item.ma200
-            else:
-                ma200 = current_price  # Fallback
-            
-            if md and md.ema10 is not None:
-                ema10 = md.ema10
-            elif watchlist_item and hasattr(watchlist_item, 'ema10') and watchlist_item.ema10 is not None:
-                ema10 = watchlist_item.ema10
-            else:
-                ema10 = None  # Will be validated later
-            
-            if md and md.atr is not None:
-                atr = md.atr
-            elif watchlist_item and hasattr(watchlist_item, 'atr') and watchlist_item.atr is not None:
-                atr = watchlist_item.atr
-            else:
-                atr = current_price * 0.02  # Fallback
-            
-            # Get ma10w (same as dashboard)
-            if md and md.ma10w is not None and md.ma10w > 0:
-                ma10w = md.ma10w
-            elif ma200 and ma200 > 0:
-                ma10w = ma200
-            elif ma50 and ma50 > 0:
-                ma10w = ma50
-            else:
-                ma10w = current_price
-            
-            # Get volume data
-            # CRITICAL: Use current_volume (hourly) for ratio calculation, not volume_24h
-            # This ensures accurate volume ratio comparison (current volume vs average volume)
-            current_volume = None
-            if md and md.current_volume is not None and md.current_volume > 0:
-                current_volume = md.current_volume
-            elif volume_24h > 0:
-                # Fallback: approximate current_volume as volume_24h / 24 (hourly average)
-                current_volume = volume_24h / 24.0
-                logger.debug(f"⚠️ {symbol}: Using approximated current_volume from volume_24h: {current_volume:.2f} (volume_24h={volume_24h:.2f} / 24)")
-            
-            if md and md.avg_volume is not None and md.avg_volume > 0:
-                avg_volume = md.avg_volume
-            else:
-                # Fallback: if no avg_volume, approximate as volume_24h / 24 (hourly average)
-                avg_volume = (volume_24h / 24.0) if volume_24h > 0 else None
-                if avg_volume:
-                    logger.debug(f"⚠️ {symbol}: Using approximated avg_volume from volume_24h: {avg_volume:.2f} (volume_24h={volume_24h:.2f} / 24)")
-            
-            # Validate MAs are available before proceeding with buy signal checks
+            # Validate MAs are available before proceeding with order creation
             if ma50 is None or ema10 is None:
                 missing_mas = []
                 if ma50 is None:
@@ -951,36 +890,41 @@ class SignalMonitorService:
                     missing_mas.append("EMA10")
                 logger.warning(
                     f"⚠️ {symbol}: MAs REQUIRED but missing: {', '.join(missing_mas)}. "
-                    f"Cannot create buy orders without MA validation. Skipping signal check."
+                    f"Cannot create buy orders without MA validation. Alerts will still be sent if conditions are met."
                 )
-                return  # Exit early - cannot validate buy conditions without MAs
+                # Don't return - allow alerts to be sent even without MAs
             
-            logger.debug(f"📊 {symbol}: Using data from {price_source}, RSI from {rsi_source}")
-            if current_volume and avg_volume:
-                volume_ratio_debug = current_volume / avg_volume if avg_volume > 0 else 0
-                logger.debug(f"📊 {symbol}: Volume data - current={current_volume:.2f}, avg={avg_volume:.2f}, ratio={volume_ratio_debug:.2f}x")
-            
-            # Calculate resistance levels
+            # Calculate resistance levels (needed for order placement)
             price_precision = 2 if current_price >= 100 else 4
             res_up = round(current_price * 1.02, price_precision)
             res_down = round(current_price * 0.98, price_precision)
             
-        except Exception as e:
-            logger.warning(f"Error fetching price data for {symbol}: {e}", exc_info=True)
-            return
-        
-        # Calculate trading signals (moved outside try/except block)
-        try:
-            # Log input values for UNI_USD debugging
-            if symbol == "UNI_USD":
-                logger.info(
-                    f"🔍 {symbol} calling calculate_trading_signals with: "
-                    f"price={current_price}, rsi={rsi}, ma50={ma50}, ema10={ema10}, "
-                    f"ma10w={ma10w}, volume={current_volume}, avg_volume={avg_volume}, "
-                    f"rsi_sell_threshold=70"
-                )
+            # Get TP/SL from signals (needed for order placement)
+            # We need to call calculate_trading_signals again to get TP/SL, but use the canonical decision
+            from app.models.market_price import MarketPrice, MarketData
+            from price_fetcher import get_price_with_fallback
             
-            signals = calculate_trading_signals(
+            mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+            md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            
+            volume_24h = mp.volume_24h or 0.0 if mp else 0.0
+            current_volume = None
+            if md and md.current_volume is not None and md.current_volume > 0:
+                current_volume = md.current_volume
+            elif volume_24h > 0:
+                current_volume = volume_24h / 24.0
+            
+            avg_volume = None
+            if md and md.avg_volume is not None and md.avg_volume > 0:
+                avg_volume = md.avg_volume
+            else:
+                avg_volume = (volume_24h / 24.0) if volume_24h > 0 else None
+            
+            atr = eval_result.get("debug_flags", {}).get("atr") or (current_price * 0.02)
+            ma10w = ma200 if ma200 and ma200 > 0 else (ma50 if ma50 and ma50 > 0 else current_price)
+            
+            # Get TP/SL for order placement (if needed)
+            signals_for_tp_sl = calculate_trading_signals(
                 symbol=symbol,
                 price=current_price,
                 rsi=rsi,
@@ -989,7 +933,7 @@ class SignalMonitorService:
                 ma200=ma200,
                 ema10=ema10,
                 ma10w=ma10w,
-                volume=current_volume,  # CRITICAL: Use current_volume (hourly) instead of volume_24h
+                volume=current_volume,
                 avg_volume=avg_volume,
                 resistance_up=res_up,
                 buy_target=watchlist_item.buy_target,
@@ -1000,157 +944,25 @@ class SignalMonitorService:
                 strategy_type=strategy_type,
                 risk_approach=risk_approach,
             )
-            
-            buy_signal = signals.get("buy_signal", False)
-            sell_signal = signals.get("sell_signal", False)
-            
-            # Extract strategy_state for debug logging
-            strategy_state = signals.get("strategy_state", {})
-            strategy_index = strategy_state.get("index", 0)
-            reasons = strategy_state.get("reasons", {})
-            
-            # CRITICAL: Determine decision matching debug script logic (BUY if buy_signal, SELL if sell_signal, else WAIT)
-            # Do NOT use strategy_state.decision as it may not match the actual signals
-            if buy_signal:
-                decision = "BUY"
-            elif sell_signal:
-                decision = "SELL"
-            else:
-                decision = "WAIT"
-            
-            # Get strategy rules to log min_volume_ratio
-            from app.services.config_loader import get_strategy_rules
-            preset_name = strategy_type.value.lower()
-            risk_mode = risk_approach.value.capitalize()
-            strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
-            min_volume_ratio = strategy_rules.get("volumeMinRatio", 0.5)
-            
-            # Calculate volume_ratio for logging
-            volume_ratio = None
-            if current_volume and avg_volume and avg_volume > 0:
-                volume_ratio = current_volume / avg_volume
-            
-            # Extract buy flags
-            buy_flags = {
-                "buy_rsi_ok": reasons.get("buy_rsi_ok"),
-                "buy_ma_ok": reasons.get("buy_ma_ok"),
-                "buy_volume_ok": reasons.get("buy_volume_ok"),
-                "buy_target_ok": reasons.get("buy_target_ok"),
-                "buy_price_ok": reasons.get("buy_price_ok"),
-            }
-            
-            # CRITICAL DEBUG LOG: Log all decision details for comparison with Watchlist API
-            volume_ratio_str = f"{volume_ratio:.4f}" if volume_ratio is not None else "N/A"
-            logger.info(
-                f"[DEBUG_SIGNAL_MONITOR] symbol={symbol} | preset={preset_name}-{risk_mode} | "
-                f"min_vol_ratio={min_volume_ratio:.4f} | vol_ratio={volume_ratio_str} | "
-                f"decision={decision} | buy_signal={buy_signal} | sell_signal={sell_signal} | "
-                f"index={strategy_index} | buy_flags={buy_flags}"
-            )
-            
-            # Note: [LIVE_ALERT_DECISION] will be logged AFTER throttle checks to include can_emit flags
-            
-            # Log result for UNI_USD debugging
-            if symbol == "UNI_USD":
-                logger.info(f"🔍 {symbol} calculate_trading_signals returned: sell_signal={sell_signal}")
-            sl_price = signals.get("sl")
-            tp_price = signals.get("tp")
-            
-            # Log signal detection for debugging (include MA values if available)
-            ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
-            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f}{ma_info}")
-            
-            # Enhanced logging for BCH, ETH, and AKT to diagnose why signals aren't triggering
-            if symbol in ["BCH_USD", "ETH_USD", "AKT_USDT"]:
-                rationale = signals.get("rationale", [])
-                strategy_state = signals.get("strategy_state", {})
-                logger.info(
-                    f"🔍 {symbol} DETAILED SIGNAL ANALYSIS: "
-                    f"buy_signal={buy_signal}, sell_signal={sell_signal}, "
-                    f"price={current_price:.4f}, RSI={rsi:.1f}, "
-                    f"MA50={ma50}, EMA10={ema10}, MA200={ma200}, "
-                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', None)}, "
-                    f"alert_enabled={watchlist_item.alert_enabled}, "
-                    f"strategy_decision={strategy_state.get('decision', 'N/A')}, "
-                    f"rationale={rationale}"
-                )
+            sl_price = signals_for_tp_sl.get("sl")
+            tp_price = signals_for_tp_sl.get("tp")
             
             # Determine current signal state
-            current_state = "WAIT"  # Default
+            current_state = decision  # Use decision from canonical evaluator
+            
+            # Log signal detection
+            ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
+            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f if rsi else 'N/A'}{ma_info}")
+            
             if buy_signal:
-                current_state = "BUY"
                 logger.info(f"🟢 BUY signal detected for {symbol}")
             elif sell_signal:
-                current_state = "SELL"
                 logger.info(f"🔴 SELL signal detected for {symbol}")
             else:
                 logger.debug(f"⚪ WAIT signal for {symbol} (no buy/sell conditions met)")
-        except Exception as e:
-            logger.error(f"Error calculating trading signals for {symbol}: {e}", exc_info=True)
-            return
-
-        throttle_config = SignalThrottleConfig(
-            min_price_change_pct=min_price_change_pct or self.ALERT_MIN_PRICE_CHANGE_PCT,
-            min_interval_minutes=alert_cooldown_minutes or self.ALERT_COOLDOWN_MINUTES,
-        )
-        signal_snapshots: Dict[str, LastSignalSnapshot] = {}
-        if buy_signal or sell_signal:
-            try:
-                signal_snapshots = fetch_signal_states(
-                    db, symbol=symbol, strategy_key=strategy_key
-                )
-            except Exception as snapshot_err:
-                logger.warning(f"Failed to load throttle state for {symbol}: {snapshot_err}")
-                signal_snapshots = {}
-        last_buy_snapshot = signal_snapshots.get("BUY")
-        last_sell_snapshot = signal_snapshots.get("SELL")
-
-        now_utc = datetime.now(timezone.utc)
-        buy_state_recorded = False
-        sell_state_recorded = False
-        
-        # Initialize throttle variables (will be set in throttle check if signals are True)
-        buy_allowed = False
-        buy_reason = "No BUY signal detected"
-        sell_allowed = False
-        sell_reason = "No SELL signal detected"
-        
-        # ========================================================================
-        # BUY SIGNAL THROTTLE CHECK
-        # ========================================================================
-        if buy_signal:
-            self._log_signal_candidate(
-                symbol,
-                "BUY",
-                {
-                    "price": current_price,
-                    "rsi": rsi,
-                    "strategy_key": strategy_key,
-                    "min_price_change_pct": throttle_config.min_price_change_pct,
-                    "min_interval_minutes": throttle_config.min_interval_minutes,
-                    "last_signal_at": last_buy_snapshot.timestamp.isoformat()
-                    if last_buy_snapshot and last_buy_snapshot.timestamp
-                    else None,
-                    "last_signal_price": last_buy_snapshot.price if last_buy_snapshot else None,
-                },
-            )
-            buy_allowed, buy_reason = should_emit_signal(
-                symbol=symbol,
-                side="BUY",
-                current_price=current_price,
-                current_time=now_utc,
-                config=throttle_config,
-                last_same_side=signal_snapshots.get("BUY"),
-                last_opposite_side=signal_snapshots.get("SELL"),
-            )
-            origin = get_runtime_origin()
-            logger.info(
-                f"[ALERT_THROTTLE_DECISION] origin={origin} symbol={symbol} side=BUY allowed={buy_allowed} "
-                f"reason={buy_reason} price={current_price:.4f} "
-                f"last_buy_price={last_buy_snapshot.price if last_buy_snapshot else None} "
-                f"last_buy_time={last_buy_snapshot.timestamp.isoformat() if last_buy_snapshot and last_buy_snapshot.timestamp else None}"
-            )
-            if not buy_allowed:
+            
+            # Handle blocked signals (throttled)
+            if buy_signal and not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
                 if cycle_stats:
                     cycle_stats["throttled"] += 1
@@ -1171,58 +983,8 @@ class SignalMonitorService:
                     )
                 except Exception:
                     pass
-                try:
-                    from app.api.routes_monitoring import add_telegram_message
-
-                    add_telegram_message(
-                        blocked_msg,
-                        symbol=symbol,
-                        blocked=True,
-                        throttle_status="BLOCKED",
-                        throttle_reason=buy_reason,
-                    )
-                except Exception:
-                    pass
-                buy_signal = False
-                if current_state == "BUY":
-                    current_state = "WAIT"
-        
-        # ========================================================================
-        # SELL SIGNAL THROTTLE CHECK (same level as BUY, not nested inside BUY block)
-        # ========================================================================
-        if sell_signal:
-            self._log_signal_candidate(
-                symbol,
-                "SELL",
-                {
-                    "price": current_price,
-                    "rsi": rsi,
-                    "strategy_key": strategy_key,
-                    "min_price_change_pct": throttle_config.min_price_change_pct,
-                    "min_interval_minutes": throttle_config.min_interval_minutes,
-                    "last_signal_at": last_sell_snapshot.timestamp.isoformat()
-                    if last_sell_snapshot and last_sell_snapshot.timestamp
-                    else None,
-                    "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
-                },
-            )
-            sell_allowed, sell_reason = should_emit_signal(
-                symbol=symbol,
-                side="SELL",
-                current_price=current_price,
-                current_time=now_utc,
-                config=throttle_config,
-                last_same_side=signal_snapshots.get("SELL"),
-                last_opposite_side=signal_snapshots.get("BUY"),
-            )
-            origin = get_runtime_origin()
-            logger.info(
-                f"[ALERT_THROTTLE_DECISION] origin={origin} symbol={symbol} side=SELL allowed={sell_allowed} "
-                f"reason={sell_reason} price={current_price:.4f} "
-                f"last_sell_price={last_sell_snapshot.price if last_sell_snapshot else None} "
-                f"last_sell_time={last_sell_snapshot.timestamp.isoformat() if last_sell_snapshot and last_sell_snapshot.timestamp else None}"
-            )
-            if not sell_allowed:
+            
+            if sell_signal and not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 if cycle_stats:
                     cycle_stats["throttled"] += 1
@@ -1234,7 +996,6 @@ class SignalMonitorService:
                 )
                 try:
                     from app.api.routes_monitoring import add_telegram_message
-
                     add_telegram_message(
                         blocked_msg,
                         symbol=symbol,
@@ -1247,84 +1008,54 @@ class SignalMonitorService:
                     )
                 except Exception:
                     pass
-                sell_signal = False
-                if current_state == "SELL":
-                    current_state = "WAIT"
+            
+            # Log comprehensive decision (ALWAYS, even for WAIT) - matching debug script format
+            origin = get_runtime_origin()
+            volume_ratio_str = f"{volume_ratio:.4f}" if volume_ratio is not None else "N/A"
+            alert_enabled = getattr(watchlist_item, "alert_enabled", False)
+            buy_alert_enabled_raw = getattr(watchlist_item, "buy_alert_enabled", None)
+            sell_alert_enabled_raw = getattr(watchlist_item, "sell_alert_enabled", None)
+            trade_enabled = getattr(watchlist_item, "trade_enabled", False)
+            
+            logger.info(
+                f"[LIVE_ALERT_DECISION] symbol={symbol} decision={decision} buy_signal={buy_signal} sell_signal={sell_signal} "
+                f"can_emit_buy={can_emit_buy} can_emit_sell={can_emit_sell} buy_allowed={buy_allowed} sell_allowed={sell_allowed} "
+                f"buy_flag_allowed={buy_flag_allowed} sell_flag_allowed={sell_flag_allowed} index={strategy_index} "
+                f"buy_thr={buy_throttle_status} sell_thr={sell_throttle_status} "
+                f"preset={eval_result['preset']} volume_ratio={volume_ratio_str} min_volume_ratio={min_volume_ratio:.4f} origin={origin}"
+            )
+            
+            # Initialize state tracking
+            now_utc = datetime.now(timezone.utc)
+            buy_state_recorded = False
+            sell_state_recorded = False
+            
+        except Exception as e:
+            logger.error(f"Error in canonical signal evaluation for {symbol}: {e}", exc_info=True)
+            return
         
         # ========================================================================
-        # COMPREHENSIVE DECISION LOGGING (after throttle checks, matching debug script)
-        # ========================================================================
-        # Get all flags for logging
-        alert_enabled = getattr(watchlist_item, "alert_enabled", False)
-        buy_alert_enabled_raw = getattr(watchlist_item, "buy_alert_enabled", None)
-        sell_alert_enabled_raw = getattr(watchlist_item, "sell_alert_enabled", None)
-        trade_enabled = getattr(watchlist_item, "trade_enabled", False)
-        
-        # Evaluate flags (same logic as debug script)
-        buy_flag_allowed, buy_flag_reason, buy_flag_details = self._evaluate_alert_flag(
-            watchlist_item, "BUY"
-        )
-        sell_flag_allowed, sell_flag_reason, sell_flag_details = self._evaluate_alert_flag(
-            watchlist_item, "SELL"
-        )
-        
-        # Determine can_emit (matching debug script: can_emit = throttle_allowed AND flag_allowed)
-        can_emit_buy = buy_allowed and buy_flag_allowed if buy_signal else False
-        can_emit_sell = sell_allowed and sell_flag_allowed if sell_signal else False
-        
-        # Determine throttle status strings
-        buy_throttle_status = "SENT" if buy_allowed else ("BLOCKED" if buy_signal else "N/A")
-        sell_throttle_status = "SENT" if sell_allowed else ("BLOCKED" if sell_signal else "N/A")
-        
-        # Format volume ratio
-        volume_ratio_str = f"{volume_ratio:.4f}" if volume_ratio is not None else "N/A"
-        
-        # Log comprehensive decision (ALWAYS, even for WAIT)
-        origin = get_runtime_origin()
-        logger.info(
-            f"[LIVE_ALERT_DECISION] symbol={symbol} | preset={preset_name}-{risk_mode} | decision={decision} | "
-            f"buy_signal={buy_signal} | sell_signal={sell_signal} | alert_enabled={alert_enabled} | "
-            f"buy_alert_enabled={buy_alert_enabled_raw} | sell_alert_enabled={sell_alert_enabled_raw} | "
-            f"trade_enabled={trade_enabled} | can_emit_buy={can_emit_buy} | can_emit_sell={can_emit_sell} | "
-            f"buy_throttle_status={buy_throttle_status} | sell_throttle_status={sell_throttle_status} | "
-            f"volume_ratio={volume_ratio_str} | min_volume_ratio={min_volume_ratio:.4f} | origin={origin}"
-        )
-        
-        # ========================================================================
-        # ENVÍO DE ALERTAS: Enviar alerta SIEMPRE que buy_signal=True, alert_enabled=True, y buy_alert_enabled=True
+        # ENVÍO DE ALERTAS: Use canonical evaluator result (can_emit_buy_alert / can_emit_sell_alert)
         # IMPORTANTE: Hacer esto ANTES de toda la lógica de órdenes para garantizar que las alertas
         # se envíen incluso si hay algún return temprano en la lógica de órdenes
-        # CRITICAL: Check both alert_enabled (master switch) AND buy_alert_enabled (BUY-specific flag)
+        # CRITICAL: Use can_emit_buy from canonical evaluator (matches debug script exactly)
         # ========================================================================
-        # CRITICAL: Flags already evaluated above for logging, reuse them
-        buy_alert_enabled = bool(
-            buy_flag_details.get(
-                "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
-            )
-        )
-        
         # Log alert decision with all flags for clarity
         if buy_signal:
-            sell_flag_for_log = buy_flag_details.get(
-                "sell_alert_enabled", getattr(watchlist_item, "sell_alert_enabled", False)
-            )
-            # Check if BUY alert can be emitted (matching debug script: can_emit_buy_alert = buy_allowed and buy_alert_enabled)
-            can_emit_buy = buy_allowed and buy_flag_allowed
             if can_emit_buy:
                 logger.info(
-                    f"[LIVE_BUY_CALL] symbol={symbol} can_emit=True throttle_status={'SENT' if buy_allowed else 'BLOCKED'} "
-                    f"buy_alert_enabled={buy_alert_enabled} alert_enabled={buy_flag_details.get('alert_enabled', True)}"
+                    f"[LIVE_BUY_CALL] symbol={symbol} decision={decision} index={strategy_index} "
+                    f"can_emit=True buy_thr={buy_throttle_status} "
+                    f"buy_flag_allowed={buy_flag_allowed} buy_allowed={buy_allowed}"
                 )
             else:
                 # Determine skip reason
                 skip_reason = []
                 if not buy_allowed:
                     skip_reason.append(f"throttled ({buy_reason})")
-                if not buy_flag_details.get("alert_enabled", True):
-                    skip_reason.append("alert_enabled=False")
-                if not buy_flag_details.get("buy_alert_enabled", True):
-                    skip_reason.append("buy_alert_enabled=False")
-                reason_text = ", ".join(skip_reason) or buy_flag_reason
+                if not buy_flag_allowed:
+                    skip_reason.append("buy_alert_enabled=False or alert_enabled=False")
+                reason_text = ", ".join(skip_reason) or "flags/throttle blocked"
                 logger.info(
                     f"[LIVE_BUY_SKIPPED] symbol={symbol} reason={reason_text} "
                     f"buy_signal=True buy_allowed={buy_allowed} buy_flag_allowed={buy_flag_allowed}"
@@ -1332,13 +1063,12 @@ class SignalMonitorService:
                 self._log_signal_rejection(
                     symbol,
                     "BUY",
-                    buy_flag_reason,
-                    buy_flag_details,
+                    reason_text,
+                    {"buy_allowed": buy_allowed, "buy_flag_allowed": buy_flag_allowed},
                 )
         
-        # CRITICAL: Check BOTH throttle (buy_allowed) AND alert flags (buy_flag_allowed)
-        # This matches the debug script logic: can_emit_buy_alert = buy_allowed and buy_alert_enabled
-        if buy_signal and buy_allowed and buy_flag_allowed:
+        # CRITICAL: Use can_emit_buy from canonical evaluator (matches debug script exactly)
+        if buy_signal and can_emit_buy:
             logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
             logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: buy_signal=True, buy_flag_allowed=True, proceeding to alert sending logic")
             
@@ -1627,53 +1357,31 @@ class SignalMonitorService:
                                 current_price,
                             )
                             origin = get_runtime_origin()
-                            logger.info(
-                                f"[LIVE_ALERT_CALL] symbol={symbol} side=BUY origin={origin} "
-                                f"price={current_price:.4f} reason={reason_text[:100]}"
-                            )
-                            result = telegram_notifier.send_buy_signal(
+                            # Use central emit_alert helper
+                            context = {
+                                "preset": preset_name if 'preset_name' in locals() else None,
+                                "risk": risk_level if 'risk_level' in locals() else None,
+                                "strategy": strategy_display,
+                                "risk_approach": risk_display,
+                                "throttle_status": "SENT",
+                                "throttle_reason": buy_reason,
+                            }
+                            
+                            result = emit_alert(
                                 symbol=symbol,
-                                price=current_price,
+                                side="BUY",
                                 reason=reason_text,
+                                price=current_price,
+                                context=context,
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
-                                source="LIVE ALERT",
                                 throttle_status="SENT",
                                 throttle_reason=buy_reason,
-                                origin=origin,
                             )
-                            # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
-                            # send_buy_signal() may return False due to Telegram API errors, but we still
-                            # consider the alert as "attempted" and log it accordingly.
-                            # Only order creation may be blocked, never alerts.
-                            # Ensure monitoring registration even if Telegram fails
-                            monitoring_saved = False
-                            if result:
-                                # Monitoring already registered in send_buy_signal
-                                monitoring_saved = True
-                            else:
-                                # Telegram failed, but we should still register in monitoring
-                                try:
-                                    from app.api.routes_monitoring import add_telegram_message
-                                    add_telegram_message(
-                                        f"✅ BUY SIGNAL: {symbol} - {reason_text} (Telegram send failed)",
-                                        symbol=symbol,
-                                        blocked=False,
-                                        throttle_status="SENT",
-                                        throttle_reason=buy_reason,
-                                    )
-                                    monitoring_saved = True
-                                except Exception as mon_err:
-                                    logger.warning(f"Failed to register BUY alert in Monitoring after Telegram failure: {mon_err}")
                             
-                            origin = get_runtime_origin()
+                            # Update cycle stats
                             if result:
-                                logger.info(
-                                    f"[ALERT_EMIT_FINAL] side=BUY symbol={symbol} origin={origin} "
-                                    f"sent=True blocked=False throttle_status=SENT throttle_reason={buy_reason} "
-                                    f"monitoring_saved={monitoring_saved}"
-                                )
                                 if cycle_stats:
                                     cycle_stats["alerts_emitted"] += 1
                                     cycle_stats["buys"] += 1
@@ -2464,50 +2172,38 @@ class SignalMonitorService:
                     logger.info(f"ℹ️ Alert sent for {symbol} but trade_enabled = false - no order created (trade_amount_usd={watchlist_item.trade_amount_usd})")
         
         # ========================================================================
-        # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True, sell_alert_enabled=True, y throttle permite
+        # ENVÍO DE ALERTAS SELL: Use canonical evaluator result (can_emit_sell_alert)
         # IMPORTANTE: Similar a las alertas BUY, pero solo alertas (no órdenes automáticas)
         # CRITICAL: This block is at the SAME level as BUY block, not nested inside it
         # ========================================================================
-        # CRITICAL: Flags already evaluated above for logging, reuse them
-        sell_alert_enabled = bool(
-            sell_flag_details.get(
-                "sell_alert_enabled",
-                getattr(watchlist_item, "sell_alert_enabled", False),
-            )
-        )
-        
         # Log alert decision with all flags for clarity
         if sell_signal:
-            buy_flag_for_log = sell_flag_details.get(
-                "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
-            )
             origin = get_runtime_origin()
             logger.info(
                 f"[LIVE_SELL_DECISION] symbol={symbol} decision={decision} sell_signal={sell_signal} "
                 f"trade_enabled={getattr(watchlist_item, 'trade_enabled', False)} "
-                f"sell_alert_enabled={sell_alert_enabled} origin={origin}"
+                f"sell_flag_allowed={sell_flag_allowed} origin={origin}"
             )
             # Log throttle decision
             logger.info(
-                f"[LIVE_SELL_THROTTLE] symbol={symbol} can_emit_sell={sell_allowed} reason={sell_reason}"
+                f"[LIVE_SELL_THROTTLE] symbol={symbol} can_emit_sell={can_emit_sell} "
+                f"sell_allowed={sell_allowed} sell_flag_allowed={sell_flag_allowed} reason={sell_reason if not sell_allowed else ''}"
             )
             # Check if SELL alert can be emitted (matching debug script: can_emit_sell_alert = sell_allowed and sell_alert_enabled)
-            can_emit_sell = sell_allowed and sell_flag_allowed
             if can_emit_sell:
                 logger.info(
-                    f"[LIVE_SELL_CALL] symbol={symbol} can_emit=True throttle_status={'SENT' if sell_allowed else 'BLOCKED'} "
-                    f"sell_alert_enabled={sell_alert_enabled} alert_enabled={sell_flag_details.get('alert_enabled', True)}"
+                    f"[LIVE_SELL_CALL] symbol={symbol} decision={decision} index={strategy_index} "
+                    f"can_emit=True sell_thr={sell_throttle_status} "
+                    f"sell_flag_allowed={sell_flag_allowed} sell_allowed={sell_allowed}"
                 )
             else:
                 # Determine skip reason
                 skip_reason = []
                 if not sell_allowed:
                     skip_reason.append(f"throttled ({sell_reason})")
-                if not sell_flag_details.get("alert_enabled", True):
-                    skip_reason.append("alert_enabled=False")
-                if not sell_flag_details.get("sell_alert_enabled", True):
-                    skip_reason.append("sell_alert_enabled=False")
-                reason_text = ", ".join(skip_reason) or sell_flag_reason
+                if not sell_flag_allowed:
+                    skip_reason.append("sell_alert_enabled=False or alert_enabled=False")
+                reason_text = ", ".join(skip_reason) or "flags/throttle blocked"
                 logger.info(
                     f"[LIVE_SELL_SKIPPED] symbol={symbol} reason={reason_text} "
                     f"sell_signal=True sell_allowed={sell_allowed} sell_flag_allowed={sell_flag_allowed}"
@@ -2515,12 +2211,12 @@ class SignalMonitorService:
                 self._log_signal_rejection(
                     symbol,
                     "SELL",
-                    sell_flag_reason,
-                    sell_flag_details,
+                    reason_text,
+                    {"sell_allowed": sell_allowed, "sell_flag_allowed": sell_flag_allowed},
                 )
         
-        # CRITICAL: Check BOTH throttle (sell_allowed) AND alert flags (sell_flag_allowed)
-        if sell_signal and sell_allowed and sell_flag_allowed:
+        # CRITICAL: Use can_emit_sell from canonical evaluator (matches debug script exactly)
+        if sell_signal and can_emit_sell:
             logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
             logger.info(f"[DEBUG_ALERT_FLOW] {symbol} SELL: sell_signal=True, sell_flag_allowed=True, proceeding to alert sending logic")
             
@@ -2550,12 +2246,28 @@ class SignalMonitorService:
                 
                 prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL")
                 
-                # CRITICAL: Throttling was already checked earlier using should_emit_signal() (database-based)
-                # At this point, sell_allowed=True means throttle passed. We should send the alert.
-                # sell_allowed is from the throttle check at lines 1203-1211
-                should_send = sell_allowed  # Use the throttle result from earlier check
-                throttle_status = "SENT" if sell_allowed else "BLOCKED"
-                throttle_reason_for_send = sell_reason
+                # CRITICAL: Use values from canonical evaluator (already checked throttle and flags)
+                # can_emit_sell = True means both throttle and flags allow emission
+                should_send = can_emit_sell  # Use canonical result
+                throttle_status = sell_throttle_status  # From canonical evaluator
+                throttle_reason_for_send = sell_reason if not sell_allowed else ""
+                
+                # Get throttle config for logging
+                from app.services.config_loader import get_alert_thresholds
+                min_price_change_pct = getattr(watchlist_item, "min_price_change_pct", None)
+                alert_cooldown_minutes = getattr(watchlist_item, "alert_cooldown_minutes", None)
+                try:
+                    preset_min, preset_cooldown = get_alert_thresholds(symbol, strategy_key)
+                    if min_price_change_pct is None:
+                        min_price_change_pct = preset_min
+                    if alert_cooldown_minutes is None:
+                        alert_cooldown_minutes = preset_cooldown
+                except Exception:
+                    pass
+                if min_price_change_pct is None:
+                    min_price_change_pct = self.ALERT_MIN_PRICE_CHANGE_PCT
+                if alert_cooldown_minutes is None:
+                    alert_cooldown_minutes = self.ALERT_COOLDOWN_MINUTES
                 
                 self._log_signal_accept(
                     symbol,
@@ -2563,8 +2275,8 @@ class SignalMonitorService:
                     {
                         "price": current_price,
                         "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
-                        "min_price_change_pct": throttle_config.min_price_change_pct,
-                        "cooldown_minutes": throttle_config.min_interval_minutes,
+                        "min_price_change_pct": min_price_change_pct,
+                        "cooldown_minutes": alert_cooldown_minutes,
                     },
                 )
                 
@@ -2646,21 +2358,28 @@ class SignalMonitorService:
                                 f"[LIVE_SELL_CALL] symbol={symbol} can_emit={should_send} origin={origin} "
                                 f"throttle_status={throttle_status} reason={throttle_reason_for_send}"
                             )
-                            logger.info(
-                                f"[LIVE_ALERT_CALL] symbol={symbol} side=SELL origin={origin} "
-                                f"price={current_price:.4f} reason={reason_text[:100]}"
-                            )
-                            result = telegram_notifier.send_sell_signal(
+                            
+                            # Use central emit_alert helper
+                            context = {
+                                "preset": preset_name if 'preset_name' in locals() else None,
+                                "risk": risk_level if 'risk_level' in locals() else None,
+                                "strategy": strategy_display,
+                                "risk_approach": risk_display,
+                                "throttle_status": throttle_status,
+                                "throttle_reason": throttle_reason_for_send,
+                            }
+                            
+                            result = emit_alert(
                                 symbol=symbol,
-                                price=current_price,
+                                side="SELL",
                                 reason=reason_text,
+                                price=current_price,
+                                context=context,
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
-                                source="LIVE ALERT",
                                 throttle_status=throttle_status,
                                 throttle_reason=throttle_reason_for_send,
-                                origin=origin,
                             )
                             # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                             # send_sell_signal() may return False due to Telegram API errors, but we still

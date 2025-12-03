@@ -493,3 +493,153 @@ This audit workflow ensures that:
 
 **Key Principle:** AWS alerts should **ALWAYS** be allowed by default. Any blocking logic should only affect LOCAL/DEBUG origins, never AWS.
 
+---
+
+## E2E Telegram + Monitoring Test
+
+### Overview
+
+The E2E (End-to-End) test provides a minimal, isolated test workflow to debug why TEST alerts might not reach Telegram or the Monitoring tab. It bypasses all strategy logic and signal processing, sending a simple test message directly through the alert pipeline.
+
+### Endpoint
+
+**POST** `/api/test/e2e-alert`
+
+**Behavior:**
+1. Detects current runtime origin via `get_runtime_origin()`
+2. Builds a simple test message with origin and environment info
+3. Calls `telegram_notifier.send_message()` directly
+4. Registers the message in Monitoring if successful
+5. Returns detailed status with origin, success flags, and configuration
+
+**Response:**
+```json
+{
+  "ok": true,
+  "origin": "AWS",
+  "success": true,
+  "monitoring_saved": true,
+  "telegram_enabled": true,
+  "environment": "aws",
+  "app_env": "aws",
+  "run_telegram": "true",
+  "message": "E2E test completed - check logs for [E2E_TEST_*] markers"
+}
+```
+
+### How to Run
+
+**From your Mac:**
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/e2e_test_alert_remote.sh
+```
+
+The script will:
+1. Trigger the E2E test endpoint on AWS backend
+2. Display the API response
+3. Show the last 300 log lines filtered for `E2E_TEST` markers
+
+### What Logs to Look For
+
+The E2E test adds comprehensive logging at every step. Look for these markers in the logs:
+
+#### 1. Endpoint Entry
+```
+[E2E_TEST] Incoming request, origin=AWS
+[E2E_TEST] Built message, length=123, origin=AWS
+[E2E_TEST] Calling telegram_notifier.send_message(origin=AWS)
+```
+
+#### 2. Gatekeeper Logs
+```
+[E2E_TEST_GATEKEEPER_IN] message_len=123, origin=AWS
+[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper=AWS
+```
+
+**If blocked:**
+```
+[E2E_TEST_GATEKEEPER_BLOCK] origin_upper=LOCAL, message_preview=...
+```
+
+**If Telegram disabled:**
+```
+[E2E_TEST_CONFIG] Telegram sending disabled by configuration (RUN_TELEGRAM or similar)
+[E2E_TEST_CONFIG] telegram_notifier.enabled=False
+[E2E_TEST_CONFIG] RUN_TELEGRAM env=false
+```
+
+#### 3. Telegram API Logs
+```
+[E2E_TEST_SENDING_TELEGRAM] origin_upper=AWS, prefix=[AWS], message_preview=...
+[E2E_TEST_TELEGRAM_OK] origin_upper=AWS, message_id=12345
+```
+
+**If error:**
+```
+[E2E_TEST_TELEGRAM_ERROR] origin_upper=AWS, error=...
+```
+
+#### 4. Monitoring Registration
+```
+[E2E_TEST] Registering in Monitoring, symbol=E2E_TEST, blocked=False
+[E2E_TEST_MONITORING_SAVE] message_preview=..., symbol=E2E_TEST, blocked=False
+[E2E_TEST] Monitoring registration: success=True
+```
+
+#### 5. Final Result
+```
+[E2E_TEST] Telegram send result: success=True
+```
+
+### Expected Flow
+
+**Successful E2E Test (AWS origin):**
+1. ✅ `[E2E_TEST] Incoming request, origin=AWS`
+2. ✅ `[E2E_TEST_GATEKEEPER_IN]` → `[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper=AWS`
+3. ✅ `[E2E_TEST_SENDING_TELEGRAM]` → `[E2E_TEST_TELEGRAM_OK]`
+4. ✅ `[E2E_TEST_MONITORING_SAVE]` → `[E2E_TEST] Monitoring registration: success=True`
+5. ✅ Message appears in Telegram with `[AWS]` prefix
+6. ✅ Message appears in Monitoring tab with `symbol=E2E_TEST`
+
+**Failed E2E Test (common issues):**
+
+**Issue 1: Telegram Disabled**
+- Look for: `[E2E_TEST_CONFIG] Telegram sending disabled`
+- Check: `RUN_TELEGRAM` env var, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+**Issue 2: Origin Blocked**
+- Look for: `[E2E_TEST_GATEKEEPER_BLOCK]`
+- Check: Origin is not `AWS` or `TEST` (should be `AWS` on AWS backend)
+
+**Issue 3: Telegram API Error**
+- Look for: `[E2E_TEST_TELEGRAM_ERROR]`
+- Check: Network connectivity, Telegram API status, bot token validity
+
+**Issue 4: Monitoring Not Saved**
+- Look for: `[E2E_TEST] Monitoring registration: success=False`
+- Check: Database connection, `add_telegram_message()` function
+
+### Debugging Tips
+
+1. **Check origin first:** If `origin` is not `AWS` on AWS backend, check `RUNTIME_ORIGIN` env var
+2. **Check Telegram config:** Look for `[E2E_TEST_CONFIG]` logs to see what's disabled
+3. **Check gatekeeper:** Look for `[E2E_TEST_GATEKEEPER_*]` logs to see if message is blocked
+4. **Check API call:** Look for `[E2E_TEST_SENDING_TELEGRAM]` and `[E2E_TEST_TELEGRAM_OK/ERROR]`
+5. **Check Monitoring:** Look for `[E2E_TEST_MONITORING_SAVE]` to see if message is registered
+
+### Integration with Alert Origin Audit
+
+This E2E test complements the Alert Origin Audit by:
+- Testing the actual alert flow end-to-end
+- Providing detailed logs at every step
+- Isolating issues to specific components (gatekeeper, Telegram API, Monitoring)
+- Verifying that TEST alerts work correctly when origin is explicitly set
+
+**Use this test when:**
+- TEST alerts from dashboard don't reach Telegram
+- TEST alerts don't appear in Monitoring tab
+- You need to verify the complete alert pipeline
+- You want to debug a specific failure point
+

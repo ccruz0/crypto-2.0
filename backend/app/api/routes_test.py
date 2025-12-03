@@ -277,7 +277,8 @@ async def simulate_alert(
                     f"[TEST_ALERT_REQUEST] BUY test alert requested: symbol={symbol}, "
                     f"price={current_price:.4f}, origin=TEST, will_send_to_telegram=True"
                 )
-                telegram_notifier.send_buy_signal(
+                logger.info(f"[TEST_ALERT_GATEKEEPER] Calling send_buy_signal with origin=TEST for {symbol}")
+                result = telegram_notifier.send_buy_signal(
                     symbol=symbol,
                     price=current_price,
                     reason=f"🧪 SIMULATED TEST ALERT - RSI=35.0, Price={current_price:.4f}, MA50={current_price*1.01:.2f}, EMA10={current_price*1.02:.2f}",
@@ -286,7 +287,12 @@ async def simulate_alert(
                     source="TEST",
                     origin="TEST",  # Test alerts from dashboard should send to Telegram with [TEST] prefix
                 )
-                logger.info(f"[TEST_ALERT_SENT] BUY test alert sent for {symbol} with origin=TEST")
+                if result:
+                    logger.info(f"[TEST_ALERT_TELEGRAM_OK] BUY test alert sent successfully for {symbol} with origin=TEST")
+                    logger.info(f"[TEST_ALERT_MONITORING_SAVE] BUY test alert registered in Monitoring for {symbol}")
+                else:
+                    logger.warning(f"[TEST_ALERT_TELEGRAM_FAILED] BUY test alert failed to send for {symbol} with origin=TEST")
+                logger.info(f"[TEST_ALERT_SENT] BUY test alert processed for {symbol} with origin=TEST, result={result}")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram BUY alert: {e}")
             
@@ -474,7 +480,8 @@ async def simulate_alert(
                     f"[TEST_ALERT_REQUEST] SELL test alert requested: symbol={symbol}, "
                     f"price={current_price:.4f}, origin=TEST, will_send_to_telegram=True"
                 )
-                telegram_notifier.send_sell_signal(
+                logger.info(f"[TEST_ALERT_GATEKEEPER] Calling send_sell_signal with origin=TEST for {symbol}")
+                result = telegram_notifier.send_sell_signal(
                     symbol=symbol,
                     price=current_price,
                     reason=f"🧪 SIMULATED TEST ALERT - RSI=75.0, Price={current_price:.4f}, MA50={current_price*0.98:.2f}, EMA10={current_price*0.97:.2f}",
@@ -483,7 +490,12 @@ async def simulate_alert(
                     source="TEST",
                     origin="TEST",  # Test alerts from dashboard should send to Telegram with [TEST] prefix
                 )
-                logger.info(f"[TEST_ALERT_SENT] SELL test alert sent for {symbol} with origin=TEST")
+                if result:
+                    logger.info(f"[TEST_ALERT_TELEGRAM_OK] SELL test alert sent successfully for {symbol} with origin=TEST")
+                    logger.info(f"[TEST_ALERT_MONITORING_SAVE] SELL test alert registered in Monitoring for {symbol}")
+                else:
+                    logger.warning(f"[TEST_ALERT_TELEGRAM_FAILED] SELL test alert failed to send for {symbol} with origin=TEST")
+                logger.info(f"[TEST_ALERT_SENT] SELL test alert processed for {symbol} with origin=TEST, result={result}")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram SELL alert: {e}")
             
@@ -733,4 +745,96 @@ def send_test_telegram_message(
     except Exception as e:
         logger.error(f"Error sending test Telegram message: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error sending test message: {str(e)}")
+
+
+@router.post("/test/e2e-alert")
+def e2e_test_alert():
+    """
+    Minimal end-to-end test for Telegram alerts and Monitoring registration.
+    
+    This endpoint:
+    1. Detects current runtime origin
+    2. Sends a simple test message via telegram_notifier
+    3. Registers the message in Monitoring
+    4. Returns detailed status with origin and success flags
+    
+    Use this to debug why TEST alerts might not reach Telegram or Monitoring.
+    """
+    try:
+        from app.core.runtime import get_runtime_origin
+        from app.api.routes_monitoring import add_telegram_message
+        from datetime import datetime, timezone
+        import os
+        
+        # Detect runtime origin
+        origin = get_runtime_origin()
+        logger.info(f"[E2E_TEST] Incoming request, origin={origin}")
+        
+        # Get environment info
+        environment = os.getenv("ENVIRONMENT", "unknown")
+        app_env = os.getenv("APP_ENV", "unknown")
+        run_telegram = os.getenv("RUN_TELEGRAM", "unknown")
+        
+        # Build simple test message
+        now_utc = datetime.now(timezone.utc)
+        message = f"""[E2E] End-to-end alert test
+
+Origin: {origin}
+Env: {environment}
+APP_ENV: {app_env}
+RUN_TELEGRAM: {run_telegram}
+Time: {now_utc.isoformat()}
+"""
+        
+        logger.info(f"[E2E_TEST] Built message, length={len(message)}, origin={origin}")
+        
+        # Check Telegram notifier status
+        if not telegram_notifier.enabled:
+            logger.warning("[E2E_TEST_CONFIG] Telegram sending disabled by configuration (RUN_TELEGRAM or similar)")
+            logger.warning(f"[E2E_TEST_CONFIG] telegram_notifier.enabled={telegram_notifier.enabled}")
+            logger.warning(f"[E2E_TEST_CONFIG] RUN_TELEGRAM env={run_telegram}")
+            logger.warning(f"[E2E_TEST_CONFIG] TELEGRAM_BOT_TOKEN present={bool(os.getenv('TELEGRAM_BOT_TOKEN'))}")
+            logger.warning(f"[E2E_TEST_CONFIG] TELEGRAM_CHAT_ID present={bool(os.getenv('TELEGRAM_CHAT_ID'))}")
+        
+        # Send via Telegram notifier
+        logger.info(f"[E2E_TEST] Calling telegram_notifier.send_message(origin={origin})")
+        success = telegram_notifier.send_message(message, origin=origin)
+        logger.info(f"[E2E_TEST] Telegram send result: success={success}")
+        
+        # Register in Monitoring if successful
+        monitoring_saved = False
+        if success:
+            try:
+                logger.info(f"[E2E_TEST] Registering in Monitoring, symbol=E2E_TEST, blocked=False")
+                add_telegram_message(
+                    message,
+                    symbol="E2E_TEST",
+                    blocked=False
+                )
+                monitoring_saved = True
+                logger.info(f"[E2E_TEST] Monitoring registration: success={monitoring_saved}")
+            except Exception as monitoring_err:
+                logger.error(f"[E2E_TEST] Failed to register in Monitoring: {monitoring_err}", exc_info=True)
+        
+        return {
+            "ok": True,
+            "origin": origin,
+            "success": success,
+            "monitoring_saved": monitoring_saved,
+            "telegram_enabled": telegram_notifier.enabled,
+            "environment": environment,
+            "app_env": app_env,
+            "run_telegram": run_telegram,
+            "detailed_status": {
+                "gatekeeper_allowed": origin in ("AWS", "TEST"),
+                "telegram_configured": bool(telegram_notifier.bot_token and telegram_notifier.chat_id),
+                "telegram_sent": success,
+                "monitoring_registered": monitoring_saved
+            },
+            "message": "E2E test completed - check logs for [E2E_TEST_*] markers"
+        }
+    
+    except Exception as e:
+        logger.error(f"[E2E_TEST] Exception in e2e_test_alert: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"E2E test error: {str(e)}")
 

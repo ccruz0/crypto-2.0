@@ -120,3 +120,4 @@ def test_canonical_buy_rule_none_flags_ignored():
     if all(buy_flags.values()):
         assert result["buy_signal"] is True, "buy_signal should be True when all boolean flags are True (None ignored)"
 
+

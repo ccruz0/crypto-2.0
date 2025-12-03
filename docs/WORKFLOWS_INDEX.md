@@ -234,6 +234,47 @@ The Auto-Router will automatically classify your request and activate the correc
 
 ---
 
+### 7. **Orders-Signal Consistency Audit** 🔄
+- **Document:** `docs/WORKFLOW_ORDERS_SIGNAL_CONSISTENCY.md`
+- **Purpose:** Ensure orders created by SignalMonitorService are consistent with signals
+- **Use cases:**
+  - Orders created when signals show WAIT
+  - BUY orders from SELL signals (or vice versa)
+  - Order prices/quantities don't match signal evaluation
+  - Orders created when `trade_enabled=False`
+  - Verify order-signal alignment after code changes
+- **What it validates:**
+  - Orders only created when signals match (BUY orders from BUY signals)
+  - Order parameters consistent with signal evaluation
+  - Order creation respects `trade_enabled` flag
+  - Orders not created when signals are WAIT
+  - Order creation uses same signal evaluation as alerts
+- **Status:** ✅ Ready for use
+
+---
+
+### 8. **BUY/SELL Signal Consistency Audit** 🟢🔴
+- **Document:** `docs/WORKFLOW_BUY_SIGNAL_CONSISTENCY.md`
+- **Purpose:** Verificar que las señales BUY y SELL se detectan, evalúan y emiten de manera consistente
+- **Use cases:**
+  - Señales BUY o SELL aparecen en debug script pero no se emiten alertas
+  - Watchlist UI muestra BUY o SELL pero no llegan alertas a Telegram
+  - Señales BUY o SELL se bloquean incorrectamente
+  - Verificar consistencia de señales BUY y SELL después de cambios de código
+  - Discrepancias entre `BUY_SIGNALS_NOW` o `SELL_SIGNALS_NOW` del debug script y alertas reales
+  - Verificar que SELL alerts funcionan independientemente de BUY alerts
+- **What it validates:**
+  - Señales BUY y SELL se detectan correctamente por `calculate_trading_signals()`
+  - Evaluación consistente entre debug script y live monitor (para BUY y SELL)
+  - Alertas BUY y SELL se emiten cuando `can_emit_buy_alert=True` o `can_emit_sell_alert=True`
+  - Señales BUY y SELL no se bloquean incorrectamente por flags o throttle
+  - Consistencia entre Watchlist UI, debug script, y SignalMonitorService
+  - SELL se evalúa independientemente de BUY (no anidado)
+  - SELL tiene su propio throttle (independiente de BUY)
+- **Status:** ✅ Ready for use
+
+---
+
 ## 🔄 Workflow Selection Guide
 
 | User Request Type | Workflow | Document |
@@ -241,6 +282,8 @@ The Auto-Router will automatically classify your request and activate the correc
 | UI/Button/Chip issues | Watchlist Audit | `WORKFLOW_WATCHLIST_AUDIT.md` |
 | Strict audit/validation | Strict Watchlist Audit | `WORKFLOW_STRICT_WATCHLIST_AUDIT.md` |
 | Backend logic/alerts | Backend Strategy & Alerts Audit | `WORKFLOW_BACKEND_STRATEGY_ALERTS_AUDIT.md` |
+| BUY/SELL signal consistency | BUY/SELL Signal Consistency Audit | `WORKFLOW_BUY_SIGNAL_CONSISTENCY.md` |
+| Orders-signal consistency | Orders-Signal Consistency Audit | `WORKFLOW_ORDERS_SIGNAL_CONSISTENCY.md` |
 | Frontend code changes | Frontend Change (Validated e2e) | `WORKFLOW_FRONTEND_CHANGE_VALIDATED.md` |
 | Deployment/infrastructure | DevOps Deployment Fix | `WORKFLOW_DEVOPS_DEPLOYMENT.md` |
 | Full system integration | Watchlist + Backend Full Integration Audit | `WORKFLOW_FULL_INTEGRATION_AUDIT.md` |
@@ -326,6 +369,8 @@ See: `docs/BLOCKED_ALERT_REGRESSION_GUARDRAIL.md` for full details.
 - [Frontend Change (Validated e2e)](./WORKFLOW_FRONTEND_CHANGE_VALIDATED.md)
 - [DevOps Deployment Fix](./WORKFLOW_DEVOPS_DEPLOYMENT.md)
 - [Watchlist + Backend Full Integration Audit](./WORKFLOW_FULL_INTEGRATION_AUDIT.md)
+- [BUY/SELL Signal Consistency Audit](./WORKFLOW_BUY_SIGNAL_CONSISTENCY.md) - Verificar consistencia de señales BUY y SELL
+- [Orders-Signal Consistency Audit](./WORKFLOW_ORDERS_SIGNAL_CONSISTENCY.md) - Validate orders match signals
 - [Full Runtime Health Audit](./FULL_RUNTIME_HEALTH_AUDIT.md) - Runtime health check for containers, API, SignalMonitor, and alerts
 - [Autonomous Execution Guidelines](./CURSOR_AUTONOMOUS_EXECUTION_GUIDELINES.md)
 

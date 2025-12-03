@@ -161,6 +161,9 @@ def add_telegram_message(
     from app.models.telegram_message import TelegramMessage
     from app.database import SessionLocal
     
+    # E2E TEST LOGGING: Log monitoring save attempt
+    log.info(f"[E2E_TEST_MONITORING_SAVE] message_preview={message[:80]}, symbol={symbol}, blocked={blocked}")
+    
     # Also keep in-memory for backward compatibility
     msg = {
         "message": message,

@@ -151,3 +151,4 @@ curl -s "http://localhost:8002/api/signals?symbol=LDO_USD" | jq '.strategy.decis
 - MA checks respect strategy configuration from `trading_config.json`
 - The canonical rule is the PRIMARY rule and overrides other logic
 
+

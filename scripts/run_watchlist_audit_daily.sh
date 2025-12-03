@@ -134,3 +134,4 @@ find "$REPORT_DIR" -name "report_*.html" -type f -mtime +30 -delete 2>/dev/null 
 # Exit with test result code
 exit $TEST_EXIT_CODE
 
+

@@ -140,3 +140,4 @@ Si el volumen muestra 0.00 pero el ratio es > 0:
 - `backend/market_updater.py` - Actualización de datos de mercado
 - `backend/app/api/routes_signals.py` - Función `calculate_volume_index()`
 
+

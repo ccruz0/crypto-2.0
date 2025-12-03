@@ -441,3 +441,4 @@ const index = coin.strategy?.index;  // Backend source of truth
 - **2025-12-01**: Initial signal flow documentation created
 - Based on code analysis of `signal_monitor.py`, `trading_signals.py`, `routes_market.py`
 
+

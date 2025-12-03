@@ -86,3 +86,4 @@ with engine.connect() as conn:
 - The `BuyIndexMonitorService` is still using hardcoded `BTC_USD` instead of resolving from the Watchlist. This is a separate issue that should be addressed in a future update to align with the Watchlist symbol resolution (preferring `BTC_USDT`).
 - The local in-memory throttle guard in `BuyIndexMonitorService` provides a fallback, but the database-backed throttle is now the primary mechanism.
 
+

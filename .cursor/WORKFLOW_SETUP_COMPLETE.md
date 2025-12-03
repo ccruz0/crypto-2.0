@@ -40,3 +40,4 @@ To verify the workflow is active:
 - `.cursor/workflows.json` - Workflow configuration
 - `.cursor/create_workflow.py` - Script to recreate/update the workflow
 
+

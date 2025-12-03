@@ -67,3 +67,4 @@ Si después de limpiar la caché todavía aparece SELL, puede ser que:
 2. El CDN/proxy esté cacheando (poco probable en este caso)
 3. Necesitar rebuild completo del frontend
 
+

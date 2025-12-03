@@ -276,3 +276,4 @@ Una vez registrados, Cursor los ejecutará automáticamente según el Auto-Route
 - [Auto-Router](./WORKFLOW_AUTO_ROUTER.md)
 - [Autonomous Execution Guidelines](./CURSOR_AUTONOMOUS_EXECUTION_GUIDELINES.md)
 
+

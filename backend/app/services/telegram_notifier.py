@@ -280,6 +280,23 @@ class TelegramNotifier:
             prefix = "[TEST]" if origin_upper == "TEST" else "[AWS]" if origin_upper == "AWS" else "[UNKNOWN]"
             logger.info(f"[E2E_TEST_SENDING_TELEGRAM] origin_upper={origin_upper}, prefix={prefix}, message_preview={message[:80]}")
             
+            # Extract symbol and side for logging
+            log_symbol = symbol or "UNKNOWN"
+            log_side = "UNKNOWN"
+            if "BUY SIGNAL" in message or "🟢" in message:
+                log_side = "BUY"
+            elif "SELL SIGNAL" in message or "🔴" in message:
+                log_side = "SELL"
+            
+            # Log Telegram send attempt
+            logger.info(
+                "[TELEGRAM_SEND] symbol=%s side=%s chat_id=%s origin=%s",
+                log_symbol,
+                log_side,
+                self.chat_id,
+                origin_upper,
+            )
+            
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             payload = {
                 "chat_id": self.chat_id,
@@ -290,8 +307,32 @@ class TelegramNotifier:
             if reply_markup:
                 payload["reply_markup"] = reply_markup
             
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
+            try:
+                response = requests.post(url, json=payload, timeout=10)
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                # Log Telegram error with details
+                status_code = e.response.status_code if hasattr(e, 'response') and e.response else "unknown"
+                error_body = e.response.text[:200] if hasattr(e, 'response') and e.response else str(e)[:200] if str(e) else "unknown"
+                logger.error(
+                    "[TELEGRAM_ERROR] symbol=%s side=%s status=%s body=%s origin=%s",
+                    log_symbol,
+                    log_side,
+                    status_code,
+                    error_body,
+                    origin_upper,
+                )
+                raise
+            except Exception as e:
+                # Log other Telegram errors
+                logger.error(
+                    "[TELEGRAM_ERROR] symbol=%s side=%s status=unknown body=%s origin=%s",
+                    log_symbol,
+                    log_side,
+                    str(e)[:200],
+                    origin_upper,
+                )
+                raise
             
             # Extract message_id from response for logging
             response_data = response.json()

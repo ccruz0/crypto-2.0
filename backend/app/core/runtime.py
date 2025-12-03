@@ -65,3 +65,4 @@ def is_local_runtime() -> bool:
     """
     return not is_aws_runtime()
 
+

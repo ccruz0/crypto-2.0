@@ -121,3 +121,4 @@ def test_buy_decision_index_partial_flags():
     buy_rsi_ok = reasons.get("buy_rsi_ok")
     assert buy_rsi_ok is False, f"buy_rsi_ok should be False (RSI=60 > 40), got {buy_rsi_ok}"
 
+

@@ -150,3 +150,4 @@ Si después de todo esto todavía ves JavaScript antiguo:
 - [Next.js Headers Documentation](https://nextjs.org/docs/app/api-reference/next-config-js/headers)
 - [MDN Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
 
+

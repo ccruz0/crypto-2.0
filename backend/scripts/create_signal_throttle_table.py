@@ -55,3 +55,4 @@ if __name__ == "__main__":
     success = create_signal_throttle_table()
     sys.exit(0 if success else 1)
 
+

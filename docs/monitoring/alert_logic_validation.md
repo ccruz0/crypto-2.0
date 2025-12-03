@@ -174,3 +174,4 @@ The alert logic is **100% compliant** with canonical rules:
 
 **Key Principle Verified:** ✅ **Portfolio risk protects orders, not alerts**
 
+

@@ -59,3 +59,4 @@ results.push({ type: 'BUY', result: buyResult });
 - Si en el futuro se necesita simular SELL, se puede agregar un botón separado o un parámetro adicional
 - La simulación de BUY es la más común para testing, ya que permite probar el flujo completo de compra → SL/TP
 
+
