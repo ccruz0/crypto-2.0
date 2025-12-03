@@ -168,12 +168,31 @@ class TelegramNotifier:
         Returns:
             True if message sent successfully, False otherwise
         """
+        # E2E TEST LOGGING: Log entry point
+        logger.info(f"[E2E_TEST_GATEKEEPER_IN] message_len={len(message)}, origin={origin}")
+        
         # CENTRAL GATEKEEPER: Only AWS and TEST origins can send Telegram alerts
         # If origin is not provided, use runtime origin as fallback
         if origin is None:
             origin = get_runtime_origin()
         
         origin_upper = origin.upper() if origin else "LOCAL"
+        
+        # E2E TEST LOGGING: Log normalized origin
+        logger.info(f"[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper={origin_upper}")
+        
+        # LIVE ALERT LOGGING: Log gatekeeper check for live alerts
+        if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
+            allowed = origin_upper in ("AWS", "TEST") and self.enabled
+            logger.info(
+                f"[LIVE_ALERT_GATEKEEPER] origin={origin_upper} enabled={self.enabled} "
+                f"bot_token_present={bool(self.bot_token)} chat_id_present={bool(self.chat_id)} allowed={allowed}"
+            )
+            # Specific logging for SELL alerts
+            if "SELL SIGNAL" in message:
+                logger.info(
+                    f"[LIVE_SELL_GATEKEEPER] origin={origin_upper} allowed={allowed}"
+                )
         
         # Extract symbol for logging and monitoring (used in all paths)
         symbol = None
@@ -195,6 +214,8 @@ class TelegramNotifier:
                 f"[TG_LOCAL_DEBUG] Skipping Telegram send for non-AWS/non-TEST origin '{origin_upper}'. "
                 f"Message would have been: {preview}"
             )
+            # E2E TEST LOGGING: Log block
+            logger.info(f"[E2E_TEST_GATEKEEPER_BLOCK] origin_upper={origin_upper}, message_preview={message[:80]}")
             # Log blocked TEST alert if it was TEST
             if origin_upper == "TEST":
                 logger.warning(
@@ -216,6 +237,8 @@ class TelegramNotifier:
         
         if not self.enabled:
             logger.debug("Telegram disabled: skipping send_message call")
+            # E2E TEST LOGGING: Log disabled state
+            logger.warning("[E2E_TEST_CONFIG] Telegram sending disabled by configuration (RUN_TELEGRAM or similar)")
             return False
         
         try:
@@ -256,6 +279,10 @@ class TelegramNotifier:
                 full_message = message
                 env_label = "[UNKNOWN]"
             
+            # E2E TEST LOGGING: Log before sending to Telegram API
+            prefix = "[TEST]" if origin_upper == "TEST" else "[AWS]" if origin_upper == "AWS" else "[UNKNOWN]"
+            logger.info(f"[E2E_TEST_SENDING_TELEGRAM] origin_upper={origin_upper}, prefix={prefix}, message_preview={message[:80]}")
+            
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             payload = {
                 "chat_id": self.chat_id,
@@ -274,6 +301,9 @@ class TelegramNotifier:
             message_id = response_data.get("result", {}).get("message_id", "unknown")
             
             logger.info(f"Telegram message sent successfully (origin={origin_upper})")
+            
+            # E2E TEST LOGGING: Log success
+            logger.info(f"[E2E_TEST_TELEGRAM_OK] origin_upper={origin_upper}, message_id={message_id}")
             
             # Log TEST alert Telegram success
             if origin_upper == "TEST":
@@ -304,6 +334,8 @@ class TelegramNotifier:
             
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+            # E2E TEST LOGGING: Log error with full traceback
+            logger.error(f"[E2E_TEST_TELEGRAM_ERROR] origin_upper={origin_upper}, error={e}", exc_info=True)
             # Log TEST alert Telegram error
             if origin_upper == "TEST":
                 error_status = getattr(e, "status_code", None) or getattr(e, "response", {}).get("status_code", "unknown") if hasattr(e, "response") else "unknown"

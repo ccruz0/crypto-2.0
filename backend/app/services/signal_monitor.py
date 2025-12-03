@@ -1040,6 +1040,19 @@ class SignalMonitorService:
                 f"index={strategy_index} | buy_flags={buy_flags}"
             )
             
+            # LIVE ALERT LOGGING: Log decision point
+            origin = get_runtime_origin()
+            if buy_signal:
+                logger.info(
+                    f"[LIVE_ALERT_DECISION] symbol={symbol} side=BUY decision={decision} "
+                    f"price={current_price:.4f} origin={origin} strategy={preset_name}-{risk_mode}"
+                )
+            if sell_signal:
+                logger.info(
+                    f"[LIVE_ALERT_DECISION] symbol={symbol} side=SELL decision={decision} "
+                    f"price={current_price:.4f} origin={origin} strategy={preset_name}-{risk_mode}"
+                )
+            
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
                 logger.info(f"🔍 {symbol} calculate_trading_signals returned: sell_signal={sell_signal}")
@@ -1124,6 +1137,13 @@ class SignalMonitorService:
                 last_same_side=signal_snapshots.get("BUY"),
                 last_opposite_side=signal_snapshots.get("SELL"),
             )
+            origin = get_runtime_origin()
+            logger.info(
+                f"[ALERT_THROTTLE_DECISION] origin={origin} symbol={symbol} side=BUY allowed={buy_allowed} "
+                f"reason={buy_reason} price={current_price:.4f} "
+                f"last_buy_price={last_buy_snapshot.price if last_buy_snapshot else None} "
+                f"last_buy_time={last_buy_snapshot.timestamp.isoformat() if last_buy_snapshot and last_buy_snapshot.timestamp else None}"
+            )
             if not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
                 if cycle_stats:
@@ -1134,6 +1154,17 @@ class SignalMonitorService:
                     self._classify_throttle_reason(buy_reason),
                     {"throttle_reason": buy_reason},
                 )
+                try:
+                    from app.api.routes_monitoring import add_telegram_message
+                    add_telegram_message(
+                        blocked_msg,
+                        symbol=symbol,
+                        blocked=True,
+                        throttle_status="BLOCKED",
+                        throttle_reason=buy_reason,
+                    )
+                except Exception:
+                    pass
                 try:
                     from app.api.routes_monitoring import add_telegram_message
 
@@ -1149,22 +1180,26 @@ class SignalMonitorService:
                 buy_signal = False
                 if current_state == "BUY":
                     current_state = "WAIT"
-            if sell_signal:
-                self._log_signal_candidate(
-                    symbol,
-                    "SELL",
-                    {
-                        "price": current_price,
-                        "rsi": rsi,
-                        "strategy_key": strategy_key,
-                        "min_price_change_pct": throttle_config.min_price_change_pct,
-                        "min_interval_minutes": throttle_config.min_interval_minutes,
-                        "last_signal_at": last_sell_snapshot.timestamp.isoformat()
-                        if last_sell_snapshot and last_sell_snapshot.timestamp
-                        else None,
-                        "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
-                    },
-                )
+        
+        # ========================================================================
+        # SELL SIGNAL THROTTLE CHECK (same level as BUY, not nested inside BUY block)
+        # ========================================================================
+        if sell_signal:
+            self._log_signal_candidate(
+                symbol,
+                "SELL",
+                {
+                    "price": current_price,
+                    "rsi": rsi,
+                    "strategy_key": strategy_key,
+                    "min_price_change_pct": throttle_config.min_price_change_pct,
+                    "min_interval_minutes": throttle_config.min_interval_minutes,
+                    "last_signal_at": last_sell_snapshot.timestamp.isoformat()
+                    if last_sell_snapshot and last_sell_snapshot.timestamp
+                    else None,
+                    "last_signal_price": last_sell_snapshot.price if last_sell_snapshot else None,
+                },
+            )
             sell_allowed, sell_reason = should_emit_signal(
                 symbol=symbol,
                 side="SELL",
@@ -1200,6 +1235,9 @@ class SignalMonitorService:
                         blocked=True,
                         throttle_status="BLOCKED",
                         throttle_reason=sell_reason,
+                    )
+                    logger.info(
+                        f"[LIVE_SELL_MONITORING] symbol={symbol} blocked=True throttle_status=BLOCKED reason={sell_reason}"
                     )
                 except Exception:
                     pass
@@ -1542,6 +1580,10 @@ class SignalMonitorService:
                                 current_price,
                             )
                             origin = get_runtime_origin()
+                            logger.info(
+                                f"[LIVE_ALERT_CALL] symbol={symbol} side=BUY origin={origin} "
+                                f"price={current_price:.4f} reason={reason_text[:100]}"
+                            )
                             result = telegram_notifier.send_buy_signal(
                                 symbol=symbol,
                                 price=current_price,
@@ -2373,6 +2415,12 @@ class SignalMonitorService:
                 buy_flag_for_log = sell_flag_details.get(
                     "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
                 )
+                origin = get_runtime_origin()
+                logger.info(
+                    f"[LIVE_SELL_DECISION] symbol={symbol} decision={decision} sell_signal={sell_signal} "
+                    f"trade_enabled={getattr(watchlist_item, 'trade_enabled', False)} "
+                    f"sell_alert_enabled={sell_alert_enabled} origin={origin}"
+                )
                 if sell_flag_allowed:
                     logger.info(
                         f"🔍 {symbol} SELL alert decision: sell_signal=True, "
@@ -2496,6 +2544,9 @@ class SignalMonitorService:
                         try:
                             from app.api.routes_monitoring import add_telegram_message
                             add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                            logger.info(
+                                f"[LIVE_SELL_MONITORING] symbol={symbol} blocked=True throttle_status=BLOCKED reason={final_sell_reason}"
+                            )
                         except Exception:
                             pass  # Non-critical, continue
                         if lock_key in self.alert_sending_locks:
@@ -2517,6 +2568,14 @@ class SignalMonitorService:
                                     f"MA200={ma200_text}"
                                 )
                                 origin = get_runtime_origin()
+                                logger.info(
+                                    f"[LIVE_SELL_CALL] symbol={symbol} can_emit={should_send} origin={origin} "
+                                    f"throttle_status=SENT reason={sell_reason if sell_allowed else 'N/A'}"
+                                )
+                                logger.info(
+                                    f"[LIVE_ALERT_CALL] symbol={symbol} side=SELL origin={origin} "
+                                    f"price={current_price:.4f} reason={reason_text[:100]}"
+                                )
                                 result = telegram_notifier.send_sell_signal(
                                     symbol=symbol,
                                     price=current_price,
@@ -2574,6 +2633,11 @@ class SignalMonitorService:
                                         sell_state_recorded = True
                                     except Exception as state_err:
                                         logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
+                                
+                                # Log Monitoring registration
+                                logger.info(
+                                    f"[LIVE_SELL_MONITORING] symbol={symbol} blocked=False throttle_status=SENT"
+                                )
                                     
                                     # ========================================================================
                                     # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
