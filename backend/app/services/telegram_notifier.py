@@ -184,15 +184,12 @@ class TelegramNotifier:
         # LIVE ALERT LOGGING: Log gatekeeper check for live alerts
         if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
             allowed = origin_upper in ("AWS", "TEST") and self.enabled
+            side = "BUY" if "BUY SIGNAL" in message else ("SELL" if "SELL SIGNAL" in message else "UNKNOWN")
             logger.info(
-                f"[LIVE_ALERT_GATEKEEPER] origin={origin_upper} enabled={self.enabled} "
-                f"bot_token_present={bool(self.bot_token)} chat_id_present={bool(self.chat_id)} allowed={allowed}"
+                f"[LIVE_ALERT_GATEKEEPER] symbol={symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
+                f"enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
+                f"chat_id_present={bool(self.chat_id)} allowed={allowed}"
             )
-            # Specific logging for SELL alerts
-            if "SELL SIGNAL" in message:
-                logger.info(
-                    f"[LIVE_SELL_GATEKEEPER] origin={origin_upper} allowed={allowed}"
-                )
         
         # Extract symbol for logging and monitoring (used in all paths)
         symbol = None

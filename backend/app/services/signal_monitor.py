@@ -1048,26 +1048,7 @@ class SignalMonitorService:
                 f"index={strategy_index} | buy_flags={buy_flags}"
             )
             
-            # LIVE ALERT LOGGING: Log decision point with all flags (matching debug script)
-            origin = get_runtime_origin()
-            alert_enabled = getattr(watchlist_item, "alert_enabled", False)
-            buy_alert_enabled = getattr(watchlist_item, "buy_alert_enabled", None)
-            sell_alert_enabled = getattr(watchlist_item, "sell_alert_enabled", None)
-            trade_enabled = getattr(watchlist_item, "trade_enabled", False)
-            
-            # Determine actual decision (matching debug script logic: BUY if buy_signal, SELL if sell_signal, else WAIT)
-            actual_decision = "WAIT"
-            if buy_signal:
-                actual_decision = "BUY"
-            elif sell_signal:
-                actual_decision = "SELL"
-            
-            logger.info(
-                f"[LIVE_ALERT_DECISION] symbol={symbol} preset={preset_name}-{risk_mode} decision={actual_decision} "
-                f"buy_signal={buy_signal} sell_signal={sell_signal} alert_enabled={alert_enabled} "
-                f"buy_alert_enabled={buy_alert_enabled} sell_alert_enabled={sell_alert_enabled} "
-                f"trade_enabled={trade_enabled} origin={origin}"
-            )
+            # Note: [LIVE_ALERT_DECISION] will be logged AFTER throttle checks to include can_emit flags
             
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
@@ -1271,15 +1252,51 @@ class SignalMonitorService:
                     current_state = "WAIT"
         
         # ========================================================================
+        # COMPREHENSIVE DECISION LOGGING (after throttle checks, matching debug script)
+        # ========================================================================
+        # Get all flags for logging
+        alert_enabled = getattr(watchlist_item, "alert_enabled", False)
+        buy_alert_enabled_raw = getattr(watchlist_item, "buy_alert_enabled", None)
+        sell_alert_enabled_raw = getattr(watchlist_item, "sell_alert_enabled", None)
+        trade_enabled = getattr(watchlist_item, "trade_enabled", False)
+        
+        # Evaluate flags (same logic as debug script)
+        buy_flag_allowed, buy_flag_reason, buy_flag_details = self._evaluate_alert_flag(
+            watchlist_item, "BUY"
+        )
+        sell_flag_allowed, sell_flag_reason, sell_flag_details = self._evaluate_alert_flag(
+            watchlist_item, "SELL"
+        )
+        
+        # Determine can_emit (matching debug script: can_emit = throttle_allowed AND flag_allowed)
+        can_emit_buy = buy_allowed and buy_flag_allowed if buy_signal else False
+        can_emit_sell = sell_allowed and sell_flag_allowed if sell_signal else False
+        
+        # Determine throttle status strings
+        buy_throttle_status = "SENT" if buy_allowed else ("BLOCKED" if buy_signal else "N/A")
+        sell_throttle_status = "SENT" if sell_allowed else ("BLOCKED" if sell_signal else "N/A")
+        
+        # Format volume ratio
+        volume_ratio_str = f"{volume_ratio:.4f}" if volume_ratio is not None else "N/A"
+        
+        # Log comprehensive decision (ALWAYS, even for WAIT)
+        origin = get_runtime_origin()
+        logger.info(
+            f"[LIVE_ALERT_DECISION] symbol={symbol} | preset={preset_name}-{risk_mode} | decision={decision} | "
+            f"buy_signal={buy_signal} | sell_signal={sell_signal} | alert_enabled={alert_enabled} | "
+            f"buy_alert_enabled={buy_alert_enabled_raw} | sell_alert_enabled={sell_alert_enabled_raw} | "
+            f"trade_enabled={trade_enabled} | can_emit_buy={can_emit_buy} | can_emit_sell={can_emit_sell} | "
+            f"buy_throttle_status={buy_throttle_status} | sell_throttle_status={sell_throttle_status} | "
+            f"volume_ratio={volume_ratio_str} | min_volume_ratio={min_volume_ratio:.4f} | origin={origin}"
+        )
+        
+        # ========================================================================
         # ENVÍO DE ALERTAS: Enviar alerta SIEMPRE que buy_signal=True, alert_enabled=True, y buy_alert_enabled=True
         # IMPORTANTE: Hacer esto ANTES de toda la lógica de órdenes para garantizar que las alertas
         # se envíen incluso si hay algún return temprano en la lógica de órdenes
         # CRITICAL: Check both alert_enabled (master switch) AND buy_alert_enabled (BUY-specific flag)
         # ========================================================================
-        # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-        buy_flag_allowed, buy_flag_reason, buy_flag_details = self._evaluate_alert_flag(
-            watchlist_item, "BUY"
-        )
+        # CRITICAL: Flags already evaluated above for logging, reuse them
         buy_alert_enabled = bool(
             buy_flag_details.get(
                 "buy_alert_enabled", getattr(watchlist_item, "buy_alert_enabled", False)
@@ -1630,27 +1647,46 @@ class SignalMonitorService:
                             # send_buy_signal() may return False due to Telegram API errors, but we still
                             # consider the alert as "attempted" and log it accordingly.
                             # Only order creation may be blocked, never alerts.
+                            # Ensure monitoring registration even if Telegram fails
+                            monitoring_saved = False
                             if result:
-                                origin = get_runtime_origin()
+                                # Monitoring already registered in send_buy_signal
+                                monitoring_saved = True
+                            else:
+                                # Telegram failed, but we should still register in monitoring
+                                try:
+                                    from app.api.routes_monitoring import add_telegram_message
+                                    add_telegram_message(
+                                        f"✅ BUY SIGNAL: {symbol} - {reason_text} (Telegram send failed)",
+                                        symbol=symbol,
+                                        blocked=False,
+                                        throttle_status="SENT",
+                                        throttle_reason=buy_reason,
+                                    )
+                                    monitoring_saved = True
+                                except Exception as mon_err:
+                                    logger.warning(f"Failed to register BUY alert in Monitoring after Telegram failure: {mon_err}")
+                            
+                            origin = get_runtime_origin()
+                            if result:
                                 logger.info(
                                     f"[ALERT_EMIT_FINAL] side=BUY symbol={symbol} origin={origin} "
-                                    f"sent=True blocked=False throttle_status=SENT throttle_reason={buy_reason}"
+                                    f"sent=True blocked=False throttle_status=SENT throttle_reason={buy_reason} "
+                                    f"monitoring_saved={monitoring_saved}"
                                 )
                                 if cycle_stats:
                                     cycle_stats["alerts_emitted"] += 1
                                     cycle_stats["buys"] += 1
-                                # Message already registered in send_buy_signal as sent
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
                                     f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
                                 )
                             else:
                                 # Telegram API may have failed, but alert was attempted - log as warning, not block
-                                origin = get_runtime_origin()
                                 logger.warning(
                                     f"[ALERT_EMIT_FINAL] side=BUY symbol={symbol} origin={origin} "
                                     f"sent=False blocked=False throttle_status=SENT throttle_reason={buy_reason} "
-                                    f"error=telegram_api_failed"
+                                    f"monitoring_saved={monitoring_saved} error=telegram_api_failed"
                                 )
                             
                             # Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
@@ -2432,10 +2468,7 @@ class SignalMonitorService:
         # IMPORTANTE: Similar a las alertas BUY, pero solo alertas (no órdenes automáticas)
         # CRITICAL: This block is at the SAME level as BUY block, not nested inside it
         # ========================================================================
-        # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-        sell_flag_allowed, sell_flag_reason, sell_flag_details = self._evaluate_alert_flag(
-            watchlist_item, "SELL"
-        )
+        # CRITICAL: Flags already evaluated above for logging, reuse them
         sell_alert_enabled = bool(
             sell_flag_details.get(
                 "sell_alert_enabled",
@@ -2633,11 +2666,32 @@ class SignalMonitorService:
                             # send_sell_signal() may return False due to Telegram API errors, but we still
                             # consider the alert as "attempted" and log it accordingly.
                             # Only order creation may be blocked, never alerts.
+                            # Ensure monitoring registration even if Telegram fails
+                            monitoring_saved = False
                             if result:
-                                origin = get_runtime_origin()
+                                # Monitoring already registered in send_sell_signal
+                                monitoring_saved = True
+                            else:
+                                # Telegram failed, but we should still register in monitoring
+                                try:
+                                    from app.api.routes_monitoring import add_telegram_message
+                                    add_telegram_message(
+                                        f"🔴 SELL SIGNAL: {symbol} - {reason_text} (Telegram send failed)",
+                                        symbol=symbol,
+                                        blocked=False,
+                                        throttle_status=throttle_status,
+                                        throttle_reason=throttle_reason_for_send,
+                                    )
+                                    monitoring_saved = True
+                                except Exception as mon_err:
+                                    logger.warning(f"Failed to register SELL alert in Monitoring after Telegram failure: {mon_err}")
+                            
+                            origin = get_runtime_origin()
+                            if result:
                                 logger.info(
                                     f"[ALERT_EMIT_FINAL] side=SELL symbol={symbol} origin={origin} "
-                                    f"status=SENT throttle_status={throttle_status} throttle_reason={throttle_reason_for_send}"
+                                    f"sent=True blocked=False throttle_status={throttle_status} throttle_reason={throttle_reason_for_send} "
+                                    f"monitoring_saved={monitoring_saved}"
                                 )
                                 if cycle_stats:
                                     cycle_stats["alerts_emitted"] += 1
@@ -2649,8 +2703,9 @@ class SignalMonitorService:
                             else:
                                 # Telegram API may have failed, but alert was attempted - log as warning, not block
                                 logger.warning(
-                                    f"[ALERT_EMIT_FINAL] symbol={symbol} | side=SELL | status=telegram_api_failed | price={current_price:.4f} | "
-                                    f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
+                                    f"[ALERT_EMIT_FINAL] side=SELL symbol={symbol} origin={origin} "
+                                    f"sent=False blocked=False throttle_status={throttle_status} throttle_reason={throttle_reason_for_send} "
+                                    f"monitoring_saved={monitoring_saved} error=telegram_api_failed"
                                 )
                             
                             # Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
