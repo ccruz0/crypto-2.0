@@ -214,3 +214,74 @@ bash scripts/debug_alert_pipeline_remote.sh TON_USDT 30
 3. Revisar logs para identificar el punto exacto de bloqueo
 4. Corregir la configuración según el diagnóstico
 
+---
+
+## Telegram Health-Check
+
+### Descripción
+
+El sistema incluye un health-check automático de Telegram que verifica la configuración en runtime y emite logs estructurados con el tag `[TELEGRAM_HEALTH]`.
+
+### Cuándo se Ejecuta
+
+1. **Al iniciar el scheduler** (`origin=scheduler_startup`)
+   - Se ejecuta una vez cuando el scheduler arranca
+   - Aparece en los logs al inicio del backend
+
+2. **En el workflow de consistencia nocturna** (`origin=nightly_consistency`)
+   - Se ejecuta a las 3:00 AM (hora de Bali, UTC+8)
+   - Forma parte del reporte de consistencia diario
+
+### Qué Verifica
+
+El health-check verifica:
+- `RUN_TELEGRAM`: Si Telegram está habilitado
+- `TELEGRAM_BOT_TOKEN`: Si el token del bot está configurado
+- `TELEGRAM_CHAT_ID`: Si el chat ID está configurado
+- `fully_configured`: Si todos los componentes están presentes
+
+### Formato del Log
+
+```
+[TELEGRAM_HEALTH] origin=scheduler_startup enabled=True token_present=True chat_id_present=True source=.env.aws fully_configured=True
+```
+
+Si hay problemas:
+```
+[TELEGRAM_HEALTH] origin=scheduler_startup enabled=True token_present=False chat_id_present=True source=.env.aws fully_configured=False
+[TELEGRAM_HEALTH] origin=scheduler_startup NOT_FULLY_CONFIGURED missing=TELEGRAM_BOT_TOKEN missing
+```
+
+### Verificación Manual
+
+Para verificar manualmente la configuración de Telegram:
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose exec -T backend-aws python -c "from app.services.telegram_health import check_telegram_health; check_telegram_health(origin=\"manual_check\")"'
+```
+
+Esto emitirá un log `[TELEGRAM_HEALTH]` que puedes verificar en los logs del contenedor:
+
+```bash
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=1m 2>&1 | grep TELEGRAM_HEALTH'
+```
+
+### Interpretación de Resultados
+
+- `enabled=True` + `token_present=True` + `chat_id_present=True` + `fully_configured=True` → ✅ Telegram está correctamente configurado
+- `enabled=False` → Telegram está deshabilitado por `RUN_TELEGRAM=false`
+- `token_present=False` → Falta `TELEGRAM_BOT_TOKEN` en el entorno
+- `chat_id_present=False` → Falta `TELEGRAM_CHAT_ID` en el entorno
+- `fully_configured=False` → Al menos uno de los componentes requeridos falta o está deshabilitado
+
+### Integración con Workflow Nocturno
+
+El workflow de consistencia nocturna (3:00 AM) ahora incluye el health-check de Telegram al inicio. Si hay problemas de configuración, aparecerán en el reporte de consistencia y en los logs del workflow.
+
+Para ver los logs del último workflow nocturno:
+
+```bash
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=24h 2>&1 | grep -E "(TELEGRAM_HEALTH|NIGHTLY_CONSISTENCY)" | tail -20'
+```
+

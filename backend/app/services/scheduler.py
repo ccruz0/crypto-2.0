@@ -24,8 +24,10 @@ class TradingScheduler:
         self.running = False
         self.daily_summary_time = time_module(8, 0)  # 8:00 AM
         self.sell_orders_report_time = time_module(7, 0)  # 7:00 AM
+        self.nightly_consistency_time = time_module(3, 0)  # 3:00 AM
         self.last_sl_tp_check_date = None  # Track last SL/TP check date
         self.last_sell_orders_report_date = None  # Track last sell orders report date
+        self.last_nightly_consistency_date = None  # Track last nightly consistency check date
         self._scheduler_task = None  # Track the running task to prevent duplicates
     
     def check_daily_summary_sync(self):
@@ -37,7 +39,15 @@ class TradingScheduler:
             abs(self.daily_summary_time.minute - now.minute) <= 1):
             
             logger.info("Sending daily summary...")
-            daily_summary_service.send_daily_summary()
+            try:
+                daily_summary_service.send_daily_summary()
+                # Record successful execution
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("daily_summary", "success", "Daily summary sent successfully")
+            except Exception as e:
+                logger.error(f"Error sending daily summary: {e}", exc_info=True)
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("daily_summary", "error", None, str(e))
     
     async def check_daily_summary(self):
         """Check if it's time to send daily summary - async wrapper"""
@@ -71,10 +81,15 @@ class TradingScheduler:
                     sl_tp_checker_service.send_sl_tp_reminder(db)
                     self.last_sl_tp_check_date = today
                     logger.info("SL/TP check completed")
+                    # Record successful execution
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("sl_tp_check", "success", "SL/TP check completed successfully")
                 finally:
                     db.close()
             except Exception as e:
                 logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("sl_tp_check", "error", None, str(e))
     
     async def check_sl_tp_positions(self):
         """Check if it's time to check positions for SL/TP - async wrapper"""
@@ -111,10 +126,15 @@ class TradingScheduler:
                     daily_summary_service.send_sell_orders_report(db)
                     self.last_sell_orders_report_date = today_bali
                     logger.info("Sell orders report sent")
+                    # Record successful execution
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("sell_orders_report", "success", "Sell orders report sent successfully")
                 finally:
                     db.close()
             except Exception as e:
                 logger.error(f"Error sending sell orders report: {e}", exc_info=True)
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("sell_orders_report", "error", None, str(e))
     
     async def check_sell_orders_report(self):
         """Check if it's time to send sell orders report - async wrapper"""
@@ -133,6 +153,69 @@ class TradingScheduler:
             # Wait 2 minutes to avoid duplicate sends
             await asyncio.sleep(120)
     
+    def check_nightly_consistency_sync(self):
+        """Check if it's time to run nightly consistency check - synchronous worker"""
+        # Get current time in Bali timezone
+        now_bali = datetime.now(BALI_TZ)
+        today_bali = now_bali.date()
+        
+        # Check if it's 3:00 AM Bali time (with 1 minute tolerance) and we haven't run today
+        if (now_bali.hour == 3 and 
+            abs(now_bali.minute) <= 1 and 
+            self.last_nightly_consistency_date != today_bali):
+            
+            logger.info(f"Running nightly consistency check... (Bali time: {now_bali.strftime('%Y-%m-%d %H:%M:%S %Z')})")
+            
+            try:
+                import subprocess
+                import sys
+                # Run the consistency check script
+                script_path = "backend/scripts/watchlist_consistency_check.py"
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=600  # 10 minute timeout
+                )
+                
+                if result.returncode == 0:
+                    self.last_nightly_consistency_date = today_bali
+                    logger.info("Nightly consistency check completed")
+                    # Record successful execution
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("nightly_consistency", "success", "Nightly consistency check completed successfully")
+                else:
+                    logger.error(f"Nightly consistency check failed with return code {result.returncode}")
+                    logger.error(f"STDOUT: {result.stdout}")
+                    logger.error(f"STDERR: {result.stderr}")
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("nightly_consistency", "error", None, f"Return code: {result.returncode}")
+            except subprocess.TimeoutExpired:
+                logger.error("Nightly consistency check timed out after 10 minutes")
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("nightly_consistency", "error", None, "Timeout after 10 minutes")
+            except Exception as e:
+                logger.error(f"Error running nightly consistency check: {e}", exc_info=True)
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("nightly_consistency", "error", None, str(e))
+    
+    async def check_nightly_consistency(self):
+        """Check if it's time to run nightly consistency check - async wrapper"""
+        # Get current time in Bali timezone
+        now_bali = datetime.now(BALI_TZ)
+        today_bali = now_bali.date()
+        
+        # Check if it's 3:00 AM Bali time (with 1 minute tolerance) and we haven't run today
+        if (now_bali.hour == 3 and 
+            abs(now_bali.minute) <= 1 and 
+            self.last_nightly_consistency_date != today_bali):
+            
+            # Run blocking script execution in thread pool
+            await asyncio.to_thread(self.check_nightly_consistency_sync)
+            
+            # Wait 2 minutes to avoid duplicate runs
+            await asyncio.sleep(120)
+    
     def check_telegram_commands_sync(self):
         """Check for pending Telegram commands - synchronous worker"""
         try:
@@ -141,11 +224,20 @@ class TradingScheduler:
             db = SessionLocal()
             try:
                 process_telegram_commands(db)
+                # Record execution (only log periodically to avoid spam - every 10th execution)
+                if not hasattr(self, '_telegram_commands_count'):
+                    self._telegram_commands_count = 0
+                self._telegram_commands_count += 1
+                if self._telegram_commands_count % 10 == 0:
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("telegram_commands", "success", f"Telegram commands check completed (execution #{self._telegram_commands_count})")
             finally:
                 db.close()
             logger.debug("[SCHEDULER] Telegram commands check completed")
         except Exception as e:
             logger.error(f"[TG] Error checking commands: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("telegram_commands", "error", None, str(e))
     
     async def check_telegram_commands(self):
         """Check for pending Telegram commands - async wrapper"""
@@ -169,14 +261,28 @@ class TradingScheduler:
                 if result.get("success"):
                     self._last_snapshot_update = time.time()
                     logger.info(f"[SCHEDULER] ✅ Dashboard snapshot updated in {result.get('duration_seconds', 0):.2f}s")
+                    # Record successful execution
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("dashboard_snapshot", "success", f"Snapshot updated in {result.get('duration_seconds', 0):.2f}s")
                 else:
                     logger.warning(f"[SCHEDULER] ⚠️ Dashboard snapshot update failed: {result.get('error')}")
+                    from app.api.routes_monitoring import record_workflow_execution
+                    record_workflow_execution("dashboard_snapshot", "error", None, result.get('error', 'Unknown error'))
         except Exception as e:
             logger.error(f"[SCHEDULER] Error updating dashboard snapshot: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("dashboard_snapshot", "error", None, str(e))
     
     async def run_scheduler(self):
         """Main scheduler loop"""
         logger.info("[SCHEDULER] 🚀 run_scheduler() STARTED")
+        
+        # Telegram health-check on startup
+        try:
+            from app.services.telegram_health import check_telegram_health
+            check_telegram_health(origin="scheduler_startup")
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] Failed to run Telegram health-check on startup: {e}")
         
         logger.info("run_scheduler() called - starting scheduler")
         self.running = True
@@ -192,6 +298,7 @@ class TradingScheduler:
                 await self.check_daily_summary()
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
+                await self.check_nightly_consistency()
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)

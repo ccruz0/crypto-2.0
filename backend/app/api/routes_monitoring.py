@@ -412,3 +412,80 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
         return []
 
+
+# Workflow execution tracking (in-memory for now)
+_workflow_executions: Dict[str, Dict[str, Any]] = {}
+
+def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
+    """Record a workflow execution"""
+    global _workflow_executions
+    _workflow_executions[workflow_id] = {
+        "last_execution": datetime.now().isoformat(),
+        "status": status,
+        "report": report,
+        "error": error,
+    }
+    log.info(f"Workflow execution recorded: {workflow_id} - {status}")
+
+@router.get("/monitoring/workflows")
+async def get_workflows(db: Session = Depends(get_db)):
+    """Get list of all workflows with their automation status and last execution report"""
+    workflows = [
+        {
+            "id": "daily_summary",
+            "name": "Daily Summary",
+            "description": "Envía resumen diario del portfolio y actividad de trading",
+            "automated": True,
+            "schedule": "Diario a las 8:00 AM",
+            "last_execution": _workflow_executions.get("daily_summary", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("daily_summary", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("daily_summary", {}).get("report"),
+            "last_error": _workflow_executions.get("daily_summary", {}).get("error"),
+        },
+        {
+            "id": "sell_orders_report",
+            "name": "Sell Orders Report",
+            "description": "Reporte de órdenes de venta pendientes",
+            "automated": True,
+            "schedule": "Diario a las 7:00 AM (Bali time)",
+            "last_execution": _workflow_executions.get("sell_orders_report", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("sell_orders_report", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("sell_orders_report", {}).get("report"),
+            "last_error": _workflow_executions.get("sell_orders_report", {}).get("error"),
+        },
+        {
+            "id": "sl_tp_check",
+            "name": "SL/TP Check",
+            "description": "Verifica posiciones sin órdenes de Stop Loss o Take Profit",
+            "automated": True,
+            "schedule": "Diario a las 8:00 AM",
+            "last_execution": _workflow_executions.get("sl_tp_check", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("sl_tp_check", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("sl_tp_check", {}).get("report"),
+            "last_error": _workflow_executions.get("sl_tp_check", {}).get("error"),
+        },
+        {
+            "id": "telegram_commands",
+            "name": "Telegram Commands",
+            "description": "Procesa comandos recibidos por Telegram",
+            "automated": True,
+            "schedule": "Continuo (cada segundo)",
+            "last_execution": _workflow_executions.get("telegram_commands", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("telegram_commands", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("telegram_commands", {}).get("report"),
+            "last_error": _workflow_executions.get("telegram_commands", {}).get("error"),
+        },
+        {
+            "id": "dashboard_snapshot",
+            "name": "Dashboard Snapshot",
+            "description": "Actualiza el snapshot del dashboard para mejorar rendimiento",
+            "automated": True,
+            "schedule": "Cada 60 segundos",
+            "last_execution": _workflow_executions.get("dashboard_snapshot", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("dashboard_snapshot", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("dashboard_snapshot", {}).get("report"),
+            "last_error": _workflow_executions.get("dashboard_snapshot", {}).get("error"),
+        },
+    ]
+    
+    return {"workflows": workflows}
