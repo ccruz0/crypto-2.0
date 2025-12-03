@@ -1040,18 +1040,26 @@ class SignalMonitorService:
                 f"index={strategy_index} | buy_flags={buy_flags}"
             )
             
-            # LIVE ALERT LOGGING: Log decision point
+            # LIVE ALERT LOGGING: Log decision point with all flags (matching debug script)
             origin = get_runtime_origin()
+            alert_enabled = getattr(watchlist_item, "alert_enabled", False)
+            buy_alert_enabled = getattr(watchlist_item, "buy_alert_enabled", None)
+            sell_alert_enabled = getattr(watchlist_item, "sell_alert_enabled", None)
+            trade_enabled = getattr(watchlist_item, "trade_enabled", False)
+            
+            # Determine actual decision (matching debug script logic: BUY if buy_signal, SELL if sell_signal, else WAIT)
+            actual_decision = "WAIT"
             if buy_signal:
-                logger.info(
-                    f"[LIVE_ALERT_DECISION] symbol={symbol} side=BUY decision={decision} "
-                    f"price={current_price:.4f} origin={origin} strategy={preset_name}-{risk_mode}"
-                )
-            if sell_signal:
-                logger.info(
-                    f"[LIVE_ALERT_DECISION] symbol={symbol} side=SELL decision={decision} "
-                    f"price={current_price:.4f} origin={origin} strategy={preset_name}-{risk_mode}"
-                )
+                actual_decision = "BUY"
+            elif sell_signal:
+                actual_decision = "SELL"
+            
+            logger.info(
+                f"[LIVE_ALERT_DECISION] symbol={symbol} preset={preset_name}-{risk_mode} decision={actual_decision} "
+                f"buy_signal={buy_signal} sell_signal={sell_signal} alert_enabled={alert_enabled} "
+                f"buy_alert_enabled={buy_alert_enabled} sell_alert_enabled={sell_alert_enabled} "
+                f"trade_enabled={trade_enabled} origin={origin}"
+            )
             
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
@@ -1112,9 +1120,16 @@ class SignalMonitorService:
         buy_state_recorded = False
         sell_state_recorded = False
         
-        # Initialize SELL throttle variables (will be set in throttle check if sell_signal=True)
+        # Initialize throttle variables (will be set in throttle check if signals are True)
+        buy_allowed = False
+        buy_reason = "No BUY signal detected"
         sell_allowed = False
         sell_reason = "No SELL signal detected"
+        
+        # ========================================================================
+        # BUY SIGNAL THROTTLE CHECK
+        # ========================================================================
+        if buy_signal:
             self._log_signal_candidate(
                 symbol,
                 "BUY",
@@ -1268,23 +1283,26 @@ class SignalMonitorService:
             sell_flag_for_log = buy_flag_details.get(
                 "sell_alert_enabled", getattr(watchlist_item, "sell_alert_enabled", False)
             )
-            if buy_flag_allowed:
+            # Check if BUY alert can be emitted (matching debug script: can_emit_buy_alert = buy_allowed and buy_alert_enabled)
+            can_emit_buy = buy_allowed and buy_flag_allowed
+            if can_emit_buy:
                 logger.info(
-                    f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={sell_flag_for_log} → "
-                    f"DECISION: SENT (alerts enabled)"
+                    f"[LIVE_BUY_CALL] symbol={symbol} can_emit=True throttle_status={'SENT' if buy_allowed else 'BLOCKED'} "
+                    f"buy_alert_enabled={buy_alert_enabled} alert_enabled={buy_flag_details.get('alert_enabled', True)}"
                 )
             else:
+                # Determine skip reason
                 skip_reason = []
+                if not buy_allowed:
+                    skip_reason.append(f"throttled ({buy_reason})")
                 if not buy_flag_details.get("alert_enabled", True):
                     skip_reason.append("alert_enabled=False")
                 if not buy_flag_details.get("buy_alert_enabled", True):
                     skip_reason.append("buy_alert_enabled=False")
                 reason_text = ", ".join(skip_reason) or buy_flag_reason
                 logger.info(
-                    f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={sell_flag_for_log} → "
-                    f"DECISION: SKIPPED ({reason_text})"
+                    f"[LIVE_BUY_SKIPPED] symbol={symbol} reason={reason_text} "
+                    f"buy_signal=True buy_allowed={buy_allowed} buy_flag_allowed={buy_flag_allowed}"
                 )
                 self._log_signal_rejection(
                     symbol,
@@ -1293,7 +1311,9 @@ class SignalMonitorService:
                     buy_flag_details,
                 )
         
-        if buy_signal and buy_flag_allowed:
+        # CRITICAL: Check BOTH throttle (buy_allowed) AND alert flags (buy_flag_allowed)
+        # This matches the debug script logic: can_emit_buy_alert = buy_allowed and buy_alert_enabled
+        if buy_signal and buy_allowed and buy_flag_allowed:
             logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
             logger.info(f"[DEBUG_ALERT_FLOW] {symbol} BUY: buy_signal=True, buy_flag_allowed=True, proceeding to alert sending logic")
             
@@ -1605,8 +1625,8 @@ class SignalMonitorService:
                             if result:
                                 origin = get_runtime_origin()
                                 logger.info(
-                                    f"[ALERT_EMIT_FINAL] origin={origin} symbol={symbol} | side=BUY | status=success | "
-                                    f"price={current_price:.4f} | strategy={strategy_display}-{risk_display}"
+                                    f"[ALERT_EMIT_FINAL] side=BUY symbol={symbol} origin={origin} "
+                                    f"sent=True blocked=False throttle_status=SENT throttle_reason={buy_reason}"
                                 )
                                 if cycle_stats:
                                     cycle_stats["alerts_emitted"] += 1
@@ -1618,9 +1638,11 @@ class SignalMonitorService:
                                 )
                             else:
                                 # Telegram API may have failed, but alert was attempted - log as warning, not block
+                                origin = get_runtime_origin()
                                 logger.warning(
-                                    f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=telegram_api_failed | price={current_price:.4f} | "
-                                    f"Alert was attempted but Telegram API returned False. This is NOT a block - alert conditions were met."
+                                    f"[ALERT_EMIT_FINAL] side=BUY symbol={symbol} origin={origin} "
+                                    f"sent=False blocked=False throttle_status=SENT throttle_reason={buy_reason} "
+                                    f"error=telegram_api_failed"
                                 )
                             
                             # Always log signal acceptance and update state - alert was attempted regardless of Telegram API result
@@ -2428,23 +2450,26 @@ class SignalMonitorService:
             logger.info(
                 f"[LIVE_SELL_THROTTLE] symbol={symbol} can_emit_sell={sell_allowed} reason={sell_reason}"
             )
-            if sell_flag_allowed:
+            # Check if SELL alert can be emitted (matching debug script: can_emit_sell_alert = sell_allowed and sell_alert_enabled)
+            can_emit_sell = sell_allowed and sell_flag_allowed
+            if can_emit_sell:
                 logger.info(
-                    f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                    f"buy_alert_enabled={buy_flag_for_log}, sell_alert_enabled={sell_alert_enabled} → "
-                    f"DECISION: SENT (alerts enabled)"
+                    f"[LIVE_SELL_CALL] symbol={symbol} can_emit=True throttle_status={'SENT' if sell_allowed else 'BLOCKED'} "
+                    f"sell_alert_enabled={sell_alert_enabled} alert_enabled={sell_flag_details.get('alert_enabled', True)}"
                 )
             else:
+                # Determine skip reason
                 skip_reason = []
+                if not sell_allowed:
+                    skip_reason.append(f"throttled ({sell_reason})")
                 if not sell_flag_details.get("alert_enabled", True):
                     skip_reason.append("alert_enabled=False")
                 if not sell_flag_details.get("sell_alert_enabled", True):
                     skip_reason.append("sell_alert_enabled=False")
                 reason_text = ", ".join(skip_reason) or sell_flag_reason
                 logger.info(
-                    f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                    f"buy_alert_enabled={buy_flag_for_log}, sell_alert_enabled={sell_alert_enabled} → "
-                    f"DECISION: SKIPPED ({reason_text})"
+                    f"[LIVE_SELL_SKIPPED] symbol={symbol} reason={reason_text} "
+                    f"sell_signal=True sell_allowed={sell_allowed} sell_flag_allowed={sell_flag_allowed}"
                 )
                 self._log_signal_rejection(
                     symbol,
