@@ -45,6 +45,7 @@ from app.services.signal_throttle import (
 )
 from app.core.runtime import get_runtime_origin
 from app.services.alert_emitter import emit_alert
+from app.services.throttle_gatekeeper import enforce_throttle
 
 logger = logging.getLogger(__name__)
 
@@ -878,6 +879,8 @@ class SignalMonitorService:
             sell_throttle_status = eval_result["throttle_status_sell"]
             buy_reason = eval_result["throttle_reason_buy"]
             sell_reason = eval_result["throttle_reason_sell"]
+            buy_throttle_metadata = eval_result.get("throttle_metadata_buy")
+            sell_throttle_metadata = eval_result.get("throttle_metadata_sell")
             preset_name = eval_result["preset"].split("-")[0] if "-" in eval_result["preset"] else eval_result["preset"]
             risk_mode = eval_result["preset"].split("-")[1] if "-" in eval_result["preset"] else "Conservative"
             
@@ -952,7 +955,8 @@ class SignalMonitorService:
             
             # Log signal detection
             ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
-            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi:.1f if rsi else 'N/A'}{ma_info}")
+            rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
+            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi_str}{ma_info}")
             
             if buy_signal:
                 logger.info(f"🟢 BUY signal detected for {symbol}")
@@ -966,6 +970,18 @@ class SignalMonitorService:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
                 if cycle_stats:
                     cycle_stats["throttled"] += 1
+                
+                # BTC-specific logging for blocked signals
+                if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                    logger.info(
+                        "[ALERT_THROTTLE] [BTC] symbol=%s side=BUY BLOCKED reason=%s "
+                        "current_price=%.4f strategy_key=%s",
+                        symbol,
+                        buy_reason,
+                        current_price,
+                        strategy_key,
+                    )
+                
                 self._log_signal_rejection(
                     symbol,
                     "BUY",
@@ -988,6 +1004,18 @@ class SignalMonitorService:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 if cycle_stats:
                     cycle_stats["throttled"] += 1
+                
+                # BTC-specific logging for blocked signals
+                if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                    logger.info(
+                        "[ALERT_THROTTLE] [BTC] symbol=%s side=SELL BLOCKED reason=%s "
+                        "current_price=%.4f strategy_key=%s",
+                        symbol,
+                        sell_reason,
+                        current_price,
+                        strategy_key,
+                    )
+                
                 self._log_signal_rejection(
                     symbol,
                     "SELL",
@@ -1024,6 +1052,21 @@ class SignalMonitorService:
                 f"buy_thr={buy_throttle_status} sell_thr={sell_throttle_status} "
                 f"preset={eval_result['preset']} volume_ratio={volume_ratio_str} min_volume_ratio={min_volume_ratio:.4f} origin={origin}"
             )
+            
+            # BTC-specific debug logging
+            if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                logger.info(
+                    "[BTC_DEBUG] [WATCHLIST_FLAGS] symbol=%s alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s trade_enabled=%s",
+                    symbol, alert_enabled, buy_alert_enabled_raw, sell_alert_enabled_raw, trade_enabled
+                )
+                logger.info(
+                    "[BTC_DEBUG] [EVAL] symbol=%s decision=%s buy_signal=%s sell_signal=%s can_emit_buy=%s can_emit_sell=%s",
+                    symbol, decision, buy_signal, sell_signal, can_emit_buy, can_emit_sell
+                )
+                logger.info(
+                    "[BTC_DEBUG] [THROTTLE] symbol=%s buy_status=%s buy_reason=%s sell_status=%s sell_reason=%s",
+                    symbol, buy_throttle_status, buy_reason, sell_throttle_status, sell_reason
+                )
             
             # Initialize state tracking
             now_utc = datetime.now(timezone.utc)
@@ -1357,15 +1400,47 @@ class SignalMonitorService:
                                 current_price,
                             )
                             origin = get_runtime_origin()
+                            
+                            # CRITICAL: Final throttle gatekeeper check - cannot be bypassed
+                            throttle_allowed, final_throttle_reason = enforce_throttle(
+                                symbol=symbol,
+                                side="BUY",
+                                current_price=current_price,
+                                throttle_allowed=buy_allowed,
+                                throttle_reason=buy_reason or "No throttle check performed",
+                                throttle_metadata=buy_throttle_metadata,
+                            )
+                            
+                            if not throttle_allowed:
+                                logger.error(
+                                    "[ALERT_BLOCKED] symbol=%s side=BUY reason=%s throttle_reason=%s origin=%s",
+                                    symbol,
+                                    reason_text,
+                                    final_throttle_reason,
+                                    origin,
+                                )
+                                # Remove lock and exit - do NOT send alert
+                                if lock_key in self.alert_sending_locks:
+                                    del self.alert_sending_locks[lock_key]
+                                return
+                            
                             # Use central emit_alert helper
                             context = {
                                 "preset": preset_name if 'preset_name' in locals() else None,
                                 "risk": risk_level if 'risk_level' in locals() else None,
                                 "strategy": strategy_display,
                                 "risk_approach": risk_display,
-                                "throttle_status": "SENT",
+                                "throttle_status": "SENT" if buy_allowed else "BLOCKED",
                                 "throttle_reason": buy_reason,
                             }
+                            
+                            # BTC-specific debug logging before emit
+                            if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                                logger.info(
+                                    "[BTC_DEBUG] [TELEGRAM_CALL] symbol=%s side=BUY calling emit_alert "
+                                    "alert_enabled=%s buy_alert_enabled=%s throttle_allowed=%s",
+                                    symbol, alert_enabled, buy_alert_enabled, throttle_allowed
+                                )
                             
                             result = emit_alert(
                                 symbol=symbol,
@@ -1376,9 +1451,17 @@ class SignalMonitorService:
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
-                                throttle_status="SENT",
+                                throttle_status="SENT" if buy_allowed else "BLOCKED",
                                 throttle_reason=buy_reason,
+                                throttle_metadata=buy_throttle_metadata,
                             )
+                            
+                            # BTC-specific debug logging after emit
+                            if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                                if result:
+                                    logger.info("[BTC_DEBUG] [TELEGRAM_SENT] symbol=%s side=BUY alert_sent=True", symbol)
+                                else:
+                                    logger.warning("[BTC_DEBUG] [TELEGRAM_SKIPPED] symbol=%s side=BUY alert_sent=False", symbol)
                             
                             # Update cycle stats
                             if result:
@@ -1601,15 +1684,29 @@ class SignalMonitorService:
                     del self.order_creation_locks[symbol]
             
             # Handle BUY signal
-            # Create order if:
-            # 1. First BUY signal (no previous order price), OR
-            # 2. New BUY signal after WAIT/SELL (transition) AND no recent orders, OR
-            # 3. Already in BUY but price has changed at least 3% from last order AND no recent orders
+            # CRITICAL: Order creation must respect the same throttle as alerts
+            # If buy_allowed=False (throttled), do NOT create orders
             should_create_order = False
             
+            # ZERO CHECK: Final throttle gatekeeper for order creation
+            throttle_allowed, final_throttle_reason = enforce_throttle(
+                symbol=symbol,
+                side="BUY",
+                current_price=current_price,
+                throttle_allowed=buy_allowed,
+                throttle_reason=buy_reason or "No throttle check performed",
+                throttle_metadata=buy_throttle_metadata,
+            )
+            
+            if not throttle_allowed:
+                logger.info(
+                    f"🚫 ORDER BLOCKED: {symbol} - Throttle gatekeeper blocked order creation. "
+                    f"Reason: {final_throttle_reason}. Order creation blocked to match alert throttling."
+                )
+                should_create_order = False
             # FIRST CHECK: Block if max open orders limit reached (most restrictive).
             # Use the UNIFIED count so that per-symbol logic matches global protection.
-            if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL:
+            elif unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL:
                 logger.warning(
                     f"🚫 BLOCKED: {symbol} has reached maximum open orders limit "
                     f"({unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}). Skipping new order."
@@ -1992,17 +2089,52 @@ class SignalMonitorService:
                             current_price,
                         )
                         origin = get_runtime_origin()
-                        result = telegram_notifier.send_buy_signal(
+                        
+                        # CRITICAL: Final throttle gatekeeper check - cannot be bypassed
+                        throttle_allowed, final_throttle_reason = enforce_throttle(
                             symbol=symbol,
-                            price=current_price,
+                            side="BUY",
+                            current_price=current_price,
+                            throttle_allowed=buy_allowed,
+                            throttle_reason=buy_reason or "No throttle check performed",
+                            throttle_metadata=buy_throttle_metadata,
+                        )
+                        
+                        if not throttle_allowed:
+                            logger.error(
+                                "[ALERT_BLOCKED] symbol=%s side=BUY reason=%s throttle_reason=%s origin=%s (legacy path)",
+                                symbol,
+                                reason_text,
+                                final_throttle_reason,
+                                origin,
+                            )
+                            # Remove lock and exit - do NOT send alert
+                            if lock_key in self.alert_sending_locks:
+                                del self.alert_sending_locks[lock_key]
+                            return
+                        
+                        # Use central emit_alert helper instead of direct telegram_notifier call
+                        context = {
+                            "preset": preset_name if 'preset_name' in locals() else None,
+                            "risk": risk_level if 'risk_level' in locals() else None,
+                            "strategy": strategy_display,
+                            "risk_approach": risk_display,
+                            "throttle_status": "SENT" if buy_allowed else "BLOCKED",
+                            "throttle_reason": buy_reason,
+                        }
+                        
+                        result = emit_alert(
+                            symbol=symbol,
+                            side="BUY",
                             reason=reason_text,
+                            price=current_price,
+                            context=context,
                             strategy_type=strategy_display,
                             risk_approach=risk_display,
                             price_variation=price_variation,
-                            source="LIVE ALERT",
-                            throttle_status="SENT",
+                            throttle_status="SENT" if buy_allowed else "BLOCKED",
                             throttle_reason=buy_reason,
-                            origin=origin,
+                            throttle_metadata=buy_throttle_metadata,
                         )
                         # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                         # send_buy_signal() may return False due to Telegram API errors, but we still
@@ -2354,6 +2486,30 @@ class SignalMonitorService:
                                 f"MA200={ma200_text}"
                             )
                             origin = get_runtime_origin()
+                            
+                            # CRITICAL: Final throttle gatekeeper check - cannot be bypassed
+                            throttle_allowed, final_throttle_reason = enforce_throttle(
+                                symbol=symbol,
+                                side="SELL",
+                                current_price=current_price,
+                                throttle_allowed=sell_allowed,
+                                throttle_reason=sell_reason or "No throttle check performed",
+                                throttle_metadata=sell_throttle_metadata,
+                            )
+                            
+                            if not throttle_allowed:
+                                logger.error(
+                                    "[ALERT_BLOCKED] symbol=%s side=SELL reason=%s throttle_reason=%s origin=%s",
+                                    symbol,
+                                    reason_text,
+                                    final_throttle_reason,
+                                    origin,
+                                )
+                                # Remove lock and exit - do NOT send alert
+                                if lock_key in self.alert_sending_locks:
+                                    del self.alert_sending_locks[lock_key]
+                                return
+                            
                             logger.info(
                                 f"[LIVE_SELL_CALL] symbol={symbol} can_emit={should_send} origin={origin} "
                                 f"throttle_status={throttle_status} reason={throttle_reason_for_send}"
@@ -2365,9 +2521,18 @@ class SignalMonitorService:
                                 "risk": risk_level if 'risk_level' in locals() else None,
                                 "strategy": strategy_display,
                                 "risk_approach": risk_display,
-                                "throttle_status": throttle_status,
-                                "throttle_reason": throttle_reason_for_send,
+                                "throttle_status": "SENT" if sell_allowed else "BLOCKED",
+                                "throttle_reason": sell_reason,
                             }
+                            
+                            # BTC-specific debug logging before emit
+                            if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                                sell_alert_enabled = getattr(watchlist_item, "sell_alert_enabled", False)
+                                logger.info(
+                                    "[BTC_DEBUG] [TELEGRAM_CALL] symbol=%s side=SELL calling emit_alert "
+                                    "alert_enabled=%s sell_alert_enabled=%s throttle_allowed=%s",
+                                    symbol, alert_enabled, sell_alert_enabled, throttle_allowed
+                                )
                             
                             result = emit_alert(
                                 symbol=symbol,
@@ -2378,9 +2543,18 @@ class SignalMonitorService:
                                 strategy_type=strategy_display,
                                 risk_approach=risk_display,
                                 price_variation=price_variation,
-                                throttle_status=throttle_status,
-                                throttle_reason=throttle_reason_for_send,
+                                throttle_status="SENT" if sell_allowed else "BLOCKED",
+                                throttle_reason=sell_reason,
+                                throttle_metadata=sell_throttle_metadata,
                             )
+                            
+                            # BTC-specific debug logging after emit
+                            if symbol.upper() in ("BTC_USDT", "BTC_USD", "BTC"):
+                                if result:
+                                    logger.info("[BTC_DEBUG] [TELEGRAM_SENT] symbol=%s side=SELL alert_sent=True", symbol)
+                                else:
+                                    logger.warning("[BTC_DEBUG] [TELEGRAM_SKIPPED] symbol=%s side=SELL alert_sent=False", symbol)
+                            
                             # CRITICAL: Alerts should NEVER be blocked after all conditions are met.
                             # send_sell_signal() may return False due to Telegram API errors, but we still
                             # consider the alert as "attempted" and log it accordingly.
