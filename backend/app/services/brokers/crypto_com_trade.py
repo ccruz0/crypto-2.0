@@ -628,7 +628,10 @@ class CryptoComTradeClient:
             
             # Check for 40101 authentication error in response (non-fatal)
             if isinstance(result, dict) and result.get("code") == 40101:
-                logger.warning(f"Authentication error (40101) while fetching trigger orders: {result.get('message', 'Unknown error')}. Returning empty list.")
+                logger.warning(
+                    f"Authentication error (40101) while fetching trigger orders: "
+                    f"{result.get('message', 'Unknown error')}. Returning empty list."
+                )
                 return {"data": []}
             
             data = result.get("result", {}).get("data", [])

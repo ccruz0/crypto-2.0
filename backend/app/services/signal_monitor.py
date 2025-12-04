@@ -956,7 +956,10 @@ class SignalMonitorService:
             # Log signal detection
             ma_info = f", MA50={ma50:.2f}, EMA10={ema10:.2f}" if ma50 is not None and ema10 is not None else ", MAs=N/A"
             rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
-            logger.info(f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, price=${current_price:.4f}, RSI={rsi_str}{ma_info}")
+            logger.info(
+                f"🔍 {symbol} signal check: buy_signal={buy_signal}, sell_signal={sell_signal}, "
+                f"price=${current_price:.4f}, RSI={rsi_str}{ma_info}"
+            )
             
             if buy_signal:
                 logger.info(f"🟢 BUY signal detected for {symbol}")
