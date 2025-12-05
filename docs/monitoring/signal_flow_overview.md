@@ -442,3 +442,6 @@ const index = coin.strategy?.index;  // Backend source of truth
 - Based on code analysis of `signal_monitor.py`, `trading_signals.py`, `routes_market.py`
 
 
+
+
+

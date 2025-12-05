@@ -118,3 +118,6 @@ Una alerta BUY automática se enviará cuando:
 El sistema está funcionando correctamente: las alertas solo se envían cuando **TODOS** los criterios se cumplen, no cuando solo algunos se cumplen.
 
 
+
+
+

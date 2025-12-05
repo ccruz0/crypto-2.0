@@ -60,3 +60,6 @@ results.push({ type: 'BUY', result: buyResult });
 - La simulación de BUY es la más común para testing, ya que permite probar el flujo completo de compra → SL/TP
 
 
+
+
+

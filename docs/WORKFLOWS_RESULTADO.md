@@ -277,3 +277,6 @@ Una vez registrados, Cursor los ejecutará automáticamente según el Auto-Route
 - [Autonomous Execution Guidelines](./CURSOR_AUTONOMOUS_EXECUTION_GUIDELINES.md)
 
 
+
+
+

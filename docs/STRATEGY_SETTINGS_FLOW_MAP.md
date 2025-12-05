@@ -206,3 +206,6 @@ Strategy logic uses updated rules
 - [ ] Verify global preset changes don't affect per-symbol overrides
 
 
+
+
+

@@ -141,3 +141,6 @@ Si el volumen muestra 0.00 pero el ratio es > 0:
 - `backend/app/api/routes_signals.py` - Función `calculate_volume_index()`
 
 
+
+
+

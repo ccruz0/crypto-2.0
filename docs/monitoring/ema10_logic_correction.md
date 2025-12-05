@@ -86,3 +86,6 @@ if check_ema10 and ema10 is not None and not check_ma50:
 The system now correctly respects the Signal Config settings. EMA10 is only checked and displayed if explicitly marked as required in the UI. If not marked, it is ignored and "No se requieren MAs" is shown.
 
 
+
+
+

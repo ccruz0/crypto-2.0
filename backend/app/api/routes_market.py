@@ -9,7 +9,7 @@ import requests
 import logging
 import sqlite3
 import time
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple
 from fastapi import Depends
 import sys
 import os
@@ -45,57 +45,6 @@ def _log_alert_state(action: str, watchlist_item: WatchlistItem) -> None:
         )
     except Exception as log_err:
         logger.warning("Failed to log alert state: %s", log_err)
-
-
-def _log_watchlist_update(action: str, payload: Dict[str, Any], watchlist_item: Optional[WatchlistItem]) -> None:
-    """Structured logging for watchlist alert updates."""
-    try:
-        state = {
-            "id": getattr(watchlist_item, "id", None) if watchlist_item else None,
-            "symbol": getattr(watchlist_item, "symbol", None) if watchlist_item else None,
-            "alert_enabled": bool(getattr(watchlist_item, "alert_enabled", False)) if watchlist_item else None,
-            "buy_alert_enabled": bool(getattr(watchlist_item, "buy_alert_enabled", False)) if watchlist_item else None,
-            "sell_alert_enabled": bool(getattr(watchlist_item, "sell_alert_enabled", False)) if watchlist_item else None,
-            "is_deleted": bool(getattr(watchlist_item, "is_deleted", False)) if watchlist_item else None,
-        }
-        logger.info("[WATCHLIST_UPDATE] action=%s payload=%s state=%s", action, payload, state)
-    except Exception as log_err:
-        logger.warning("Failed to log watchlist update for %s: %s", action, log_err)
-
-
-def _select_preferred_watchlist_item(items: List[WatchlistItem], symbol: str) -> Optional[WatchlistItem]:
-    """Pick the canonical watchlist row for a symbol when duplicates exist."""
-    if not items:
-        return None
-
-    def _priority(item: WatchlistItem) -> Tuple[int, int, int]:
-        is_deleted = 1 if getattr(item, "is_deleted", False) else 0
-        alert_priority = 0 if getattr(item, "alert_enabled", False) else 1
-        item_id = getattr(item, "id", 0) or 0
-        return (is_deleted, alert_priority, -item_id)
-
-    preferred = sorted(items, key=_priority)[0]
-    if len(items) > 1:
-        logger.warning(
-            "[WATCHLIST_DUPLICATE] symbol=%s rows=%s chosen_id=%s alert_enabled=%s is_deleted=%s",
-            symbol,
-            len(items),
-            getattr(preferred, "id", None),
-            getattr(preferred, "alert_enabled", None),
-            getattr(preferred, "is_deleted", None),
-        )
-    return preferred
-
-
-def _get_watchlist_item(db: Session, symbol_upper: str) -> Optional[WatchlistItem]:
-    """Return the preferred watchlist row for the given symbol."""
-    items = (
-        db.query(WatchlistItem)
-        .filter(WatchlistItem.symbol == symbol_upper)
-        .order_by(WatchlistItem.id.desc())
-        .all()
-    )
-    return _select_preferred_watchlist_item(items, symbol_upper)
 
 
 CUSTOM_TOP_COINS_TABLE = """
@@ -970,16 +919,6 @@ def get_top_coins_with_prices(
                                 risk_approach=risk_approach,
                             )
                             
-                            # Extract strategy_state for API response (for comparison with SignalMonitorService)
-                            strategy_state = signals.get("strategy_state", {})
-                            
-                            # Get strategy rules to include min_volume_ratio in response
-                            from app.services.config_loader import get_strategy_rules
-                            preset_name = strategy_type.value.lower()
-                            risk_mode = risk_approach.value.capitalize()
-                            strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
-                            min_volume_ratio = strategy_rules.get("volumeMinRatio", 0.5)
-                            
                             if signals.get("buy_signal"):
                                 signal = "BUY"
                             elif signals.get("sell_signal"):
@@ -1049,14 +988,11 @@ def get_top_coins_with_prices(
                         "current_volume": current_volume_value,
                         "avg_volume": md.avg_volume if md else None,
                         "volume_ratio": volume_ratio_value,
-                        "min_volume_ratio": min_volume_ratio if 'min_volume_ratio' in locals() else 0.5,
                         # Resistance levels
                         "res_up": res_up,
                         "res_down": res_down,
                         # Trading signal (BUY/WAIT/SELL)
                         "signal": signal,
-                        # Strategy state (for comparison with SignalMonitorService)
-                        "strategy_state": strategy_state if 'strategy_state' in locals() else {},
                         # Mark as custom if user-added to watchlist
                         "is_custom": is_custom,
                         # Alert enabled status
@@ -1162,15 +1098,16 @@ def update_watchlist_alert(
     """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
     try:
         alert_enabled = payload.get("alert_enabled", False)
-        symbol_upper = symbol.upper()
         
         # Find or create watchlist item
-        watchlist_item = _get_watchlist_item(db, symbol_upper)
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol.upper()
+        ).first()
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
             watchlist_item = WatchlistItem(
-                symbol=symbol_upper,
+                symbol=symbol.upper(),
                 exchange="CRYPTO_COM",
                 is_deleted=False,
                 alert_enabled=alert_enabled
@@ -1178,7 +1115,7 @@ def update_watchlist_alert(
             db.add(watchlist_item)
         else:
             # If item is deleted, reactivate it first
-            if getattr(watchlist_item, "is_deleted", False):
+            if watchlist_item.is_deleted:
                 watchlist_item.is_deleted = False
             # Update existing item - set both buy and sell to match legacy behavior
             watchlist_item.alert_enabled = alert_enabled
@@ -1193,13 +1130,12 @@ def update_watchlist_alert(
         except Exception as refresh_err:
             logger.warning("Failed to refresh watchlist item %s after alert update: %s", symbol, refresh_err)
         
-        logger.info(f"Updated alert_enabled for {symbol_upper}: {alert_enabled}")
+        logger.info(f"Updated alert_enabled for {symbol}: {alert_enabled}")
         _log_alert_state("LEGACY ALERT UPDATE", watchlist_item)
-        _log_watchlist_update("LEGACY_ALERT", payload, watchlist_item)
         
         return {
             "ok": True,
-            "symbol": symbol_upper,
+            "symbol": symbol.upper(),
             "alert_enabled": alert_enabled
         }
     except Exception as e:
@@ -1223,7 +1159,9 @@ def update_buy_alert(
         buy_alert_enabled = payload.get("buy_alert_enabled", False)
         
         # Find or create watchlist item
-        watchlist_item = _get_watchlist_item(db, symbol_upper)
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol_upper
+        ).first()
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
@@ -1247,7 +1185,7 @@ def update_buy_alert(
             db.add(watchlist_item)
         else:
             # If item is deleted, reactivate it first
-            if getattr(watchlist_item, "is_deleted", False):
+            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
                 logger.info(f"♻️ [BUY ALERT] Reactivating deleted watchlist item for {symbol_upper}")
                 watchlist_item.is_deleted = False
             # Update existing item
@@ -1269,7 +1207,6 @@ def update_buy_alert(
         
         logger.info(f"✅ Updated buy_alert_enabled for {symbol_upper}: {buy_alert_enabled}")
         _log_alert_state("BUY ALERT UPDATE", watchlist_item)
-        _log_watchlist_update("BUY_ALERT_UPDATE", payload, watchlist_item)
         
         return {
             "ok": True,
@@ -1305,7 +1242,9 @@ def update_sell_alert(
         sell_alert_enabled = payload.get("sell_alert_enabled", False)
         
         # Find or create watchlist item
-        watchlist_item = _get_watchlist_item(db, symbol_upper)
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol_upper
+        ).first()
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
@@ -1329,7 +1268,7 @@ def update_sell_alert(
             db.add(watchlist_item)
         else:
             # If item is deleted, reactivate it first
-            if getattr(watchlist_item, "is_deleted", False):
+            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
                 logger.info(f"♻️ [SELL ALERT] Reactivating deleted watchlist item for {symbol_upper}")
                 watchlist_item.is_deleted = False
             # Update existing item
@@ -1351,7 +1290,6 @@ def update_sell_alert(
         
         logger.info(f"✅ Updated sell_alert_enabled for {symbol_upper}: {sell_alert_enabled}")
         _log_alert_state("SELL ALERT UPDATE", watchlist_item)
-        _log_watchlist_update("SELL_ALERT_UPDATE", payload, watchlist_item)
         
         return {
             "ok": True,
