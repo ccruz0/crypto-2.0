@@ -371,74 +371,37 @@ def record_workflow_execution(workflow_id: str, status: str = "success", report:
 @router.get("/monitoring/workflows")
 async def get_workflows(db: Session = Depends(get_db)):
     """Get list of all workflows with their automation status and last execution report"""
-    workflows = [
-        {
-            "id": "watchlist_consistency",
-            "name": "Watchlist Consistency Check",
-            "description": "Compares backend vs watchlist for all symbols, including throttle and alert flags.",
-            "automated": True,
-            "schedule": "Nightly at 03:00 (Bali time)",
-            "last_execution": _workflow_executions.get("watchlist_consistency", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("watchlist_consistency", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("watchlist_consistency", {}).get("report"),
-            "last_error": _workflow_executions.get("watchlist_consistency", {}).get("error"),
-        },
-        {
-            "id": "daily_summary",
-            "name": "Daily Summary",
-            "description": "Envía resumen diario del portfolio y actividad de trading",
-            "automated": True,
-            "schedule": "Diario a las 8:00 AM",
-            "last_execution": _workflow_executions.get("daily_summary", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("daily_summary", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("daily_summary", {}).get("report"),
-            "last_error": _workflow_executions.get("daily_summary", {}).get("error"),
-        },
-        {
-            "id": "sell_orders_report",
-            "name": "Sell Orders Report",
-            "description": "Reporte de órdenes de venta pendientes",
-            "automated": True,
-            "schedule": "Diario a las 7:00 AM (Bali time)",
-            "last_execution": _workflow_executions.get("sell_orders_report", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("sell_orders_report", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("sell_orders_report", {}).get("report"),
-            "last_error": _workflow_executions.get("sell_orders_report", {}).get("error"),
-        },
-        {
-            "id": "sl_tp_check",
-            "name": "SL/TP Check",
-            "description": "Verifica posiciones sin órdenes de Stop Loss o Take Profit",
-            "automated": True,
-            "schedule": "Diario a las 8:00 AM",
-            "last_execution": _workflow_executions.get("sl_tp_check", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("sl_tp_check", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("sl_tp_check", {}).get("report"),
-            "last_error": _workflow_executions.get("sl_tp_check", {}).get("error"),
-        },
-        {
-            "id": "telegram_commands",
-            "name": "Telegram Commands",
-            "description": "Procesa comandos recibidos por Telegram",
-            "automated": True,
-            "schedule": "Continuo (cada segundo)",
-            "last_execution": _workflow_executions.get("telegram_commands", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("telegram_commands", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("telegram_commands", {}).get("report"),
-            "last_error": _workflow_executions.get("telegram_commands", {}).get("error"),
-        },
-        {
-            "id": "dashboard_snapshot",
-            "name": "Dashboard Snapshot",
-            "description": "Actualiza el snapshot del dashboard para mejorar rendimiento",
-            "automated": True,
-            "schedule": "Cada 60 segundos",
-            "last_execution": _workflow_executions.get("dashboard_snapshot", {}).get("last_execution"),
-            "last_status": _workflow_executions.get("dashboard_snapshot", {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get("dashboard_snapshot", {}).get("report"),
-            "last_error": _workflow_executions.get("dashboard_snapshot", {}).get("error"),
-        },
+    from app.monitoring.workflows_registry import get_all_workflows
+    
+    # Get workflow definitions from registry to include run_endpoint
+    registry_workflows = get_all_workflows()
+    registry_map = {wf["id"]: wf for wf in registry_workflows}
+    
+    workflow_ids = [
+        "watchlist_consistency",
+        "daily_summary",
+        "sell_orders_report",
+        "sl_tp_check",
+        "telegram_commands",
+        "dashboard_snapshot",
     ]
+    
+    workflows = []
+    for workflow_id in workflow_ids:
+        registry_wf = registry_map.get(workflow_id, {})
+        workflow = {
+            "id": workflow_id,
+            "name": registry_wf.get("name", workflow_id),
+            "description": registry_wf.get("description", ""),
+            "automated": registry_wf.get("automated", True),
+            "schedule": registry_wf.get("schedule", ""),
+            "run_endpoint": registry_wf.get("run_endpoint"),  # Include run_endpoint so frontend knows which can be run
+            "last_execution": _workflow_executions.get(workflow_id, {}).get("last_execution"),
+            "last_status": _workflow_executions.get(workflow_id, {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get(workflow_id, {}).get("report"),
+            "last_error": _workflow_executions.get(workflow_id, {}).get("error"),
+        }
+        workflows.append(workflow)
     
     return {"workflows": workflows}
 
@@ -516,19 +479,25 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
                     raise
             
+            # Check if workflow is already running to prevent race conditions
+            existing_task = _background_tasks.get(workflow_id)
+            if existing_task and not existing_task.done():
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=409, 
+                    detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                )
+            
             # Start the workflow execution (don't wait for completion)
             # Store task reference to prevent garbage collection before completion
             task = asyncio.create_task(run_script())
             _background_tasks[workflow_id] = task
             
             # Add callback to clean up task reference when done
-            def cleanup_task(t: asyncio.Task):
-                try:
-                    _background_tasks.pop(workflow_id, None)
-                except Exception:
-                    pass
-            
-            task.add_done_callback(cleanup_task)
+            # Capture workflow_id by value (not reference) to avoid closure issues with concurrent requests
+            # Using lambda with explicit capture ensures each callback has its own workflow_id value
+            captured_workflow_id = workflow_id  # Capture by value
+            task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
             
             # Record that we started the workflow with the correct workflow_id
             record_workflow_execution(workflow_id, "running", "Workflow execution started")
