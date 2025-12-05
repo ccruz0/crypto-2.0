@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 import logging
 import time
+import asyncio
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 
@@ -353,6 +354,8 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
 
 # Workflow execution tracking (in-memory for now)
 _workflow_executions: Dict[str, Dict[str, Any]] = {}
+# Background task tracking to prevent garbage collection
+_background_tasks: Dict[str, "asyncio.Task"] = {}
 
 def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
     """Record a workflow execution"""
@@ -465,16 +468,15 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
         try:
             # Calculate absolute path to the consistency check script
             # In Docker: WORKDIR is /app, backend contents are copied to /app/
-            # So structure is: /app/app/api/routes_monitoring.py and /app/scripts/watchlist_consistency_check.py
+            # So structure is: /app/api/routes_monitoring.py and /app/scripts/watchlist_consistency_check.py
             # In local dev: .../backend/app/api/routes_monitoring.py and .../backend/scripts/watchlist_consistency_check.py
             current_file_dir = os.path.dirname(os.path.abspath(__file__))
-            # current_file_dir is /app/app/api/ in Docker, or .../backend/app/api/ locally
-            # Go up 3 levels to get root: /app/ in Docker, or .../backend/ locally
-            root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file_dir)))
-            # In Docker: root_dir = /app/, scripts are at /app/scripts/
-            # In local: root_dir = .../backend/, scripts are at .../backend/scripts/
-            # Both Docker and local use the same calculation: root_dir/scripts/
-            script_path = os.path.join(root_dir, "scripts", "watchlist_consistency_check.py")
+            # current_file_dir is /app/api/ in Docker, or .../backend/app/api/ locally
+            # Go up 2 levels to get backend root: /app/ in Docker, or .../backend/ locally
+            backend_root = os.path.dirname(os.path.dirname(current_file_dir))
+            # In Docker: backend_root = /app/, scripts are at /app/scripts/
+            # In local: backend_root = .../backend/, scripts are at .../backend/scripts/
+            script_path = os.path.join(backend_root, "scripts", "watchlist_consistency_check.py")
             if not os.path.exists(script_path):
                 raise FileNotFoundError(f"Script not found at {script_path}")
             
@@ -515,7 +517,18 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     raise
             
             # Start the workflow execution (don't wait for completion)
-            asyncio.create_task(run_script())
+            # Store task reference to prevent garbage collection before completion
+            task = asyncio.create_task(run_script())
+            _background_tasks[workflow_id] = task
+            
+            # Add callback to clean up task reference when done
+            def cleanup_task(t: asyncio.Task):
+                try:
+                    _background_tasks.pop(workflow_id, None)
+                except Exception:
+                    pass
+            
+            task.add_done_callback(cleanup_task)
             
             # Record that we started the workflow with the correct workflow_id
             record_workflow_execution(workflow_id, "running", "Workflow execution started")

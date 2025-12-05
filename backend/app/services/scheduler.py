@@ -25,6 +25,7 @@ class TradingScheduler:
         self.daily_summary_time = time_module(8, 0)  # 8:00 AM
         self.sell_orders_report_time = time_module(7, 0)  # 7:00 AM
         self.nightly_consistency_time = time_module(3, 0)  # 3:00 AM
+        self.last_daily_summary_date = None  # Track last daily summary date
         self.last_sl_tp_check_date = None  # Track last SL/TP check date
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self.last_nightly_consistency_date = None  # Track last nightly consistency check date
@@ -32,19 +33,26 @@ class TradingScheduler:
     
     def check_daily_summary_sync(self):
         """Check if it's time to send daily summary - synchronous worker"""
-        now = datetime.now().time()
+        now = datetime.now()
+        today = now.date()
         
-        # Check if it's 8:00 AM (with 1 minute tolerance)
-        if (self.daily_summary_time.hour == now.hour and 
-            abs(self.daily_summary_time.minute - now.minute) <= 1):
+        # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't sent today
+        if (now.hour == 8 and 
+            abs(now.minute) <= 1 and 
+            self.last_daily_summary_date != today):
             
             logger.info("Sending daily summary...")
             try:
                 daily_summary_service.send_daily_summary()
+                # Set the date after execution to prevent duplicate sends
+                self.last_daily_summary_date = today
+                logger.info("Daily summary sent")
                 # Record successful execution
                 from app.api.routes_monitoring import record_workflow_execution
                 record_workflow_execution("daily_summary", "success", "Daily summary sent successfully")
             except Exception as e:
+                # Set the date even on failure to prevent retries during the 8:00-8:01 AM window
+                self.last_daily_summary_date = today
                 logger.error(f"Error sending daily summary: {e}", exc_info=True)
                 from app.api.routes_monitoring import record_workflow_execution
                 record_workflow_execution("daily_summary", "error", None, str(e))
@@ -172,18 +180,17 @@ class TradingScheduler:
                 import os
                 # Calculate absolute path to the consistency check script
                 # In Docker: WORKDIR is /app, backend contents are copied to /app/
-                # So structure is: /app/app/services/scheduler.py and /app/scripts/watchlist_consistency_check.py
+                # So structure is: /app/services/scheduler.py and /app/scripts/watchlist_consistency_check.py
                 # In local dev: .../backend/app/services/scheduler.py and .../backend/scripts/watchlist_consistency_check.py
                 current_file_dir = os.path.dirname(os.path.abspath(__file__))
-                # current_file_dir is /app/app/services/ in Docker, or .../backend/app/services/ locally
-                # Go up 3 levels to get root: /app/ in Docker, or .../backend/ locally
-                root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file_dir)))
-                # In Docker: root_dir = /app/, scripts are at /app/scripts/
-                # In local: root_dir = .../backend/, scripts are at .../backend/scripts/
-                # Both Docker and local use the same calculation: root_dir/scripts/ (NOT root_dir/backend/scripts/)
-                script_path = os.path.join(root_dir, "scripts", "watchlist_consistency_check.py")
+                # current_file_dir is /app/services/ in Docker, or .../backend/app/services/ locally
+                # Go up 2 levels to get backend root: /app/ in Docker, or .../backend/ locally
+                backend_root = os.path.dirname(os.path.dirname(current_file_dir))
+                # In Docker: backend_root = /app/, scripts are at /app/scripts/
+                # In local: backend_root = .../backend/, scripts are at .../backend/scripts/
+                script_path = os.path.join(backend_root, "scripts", "watchlist_consistency_check.py")
                 if not os.path.exists(script_path):
-                    raise FileNotFoundError(f"Script not found at {script_path}. Root dir: {root_dir}")
+                    raise FileNotFoundError(f"Script not found at {script_path}. Backend root: {backend_root}")
                 
                 result = subprocess.run(
                     [sys.executable, script_path],
@@ -192,8 +199,11 @@ class TradingScheduler:
                     timeout=600  # 10 minute timeout
                 )
                 
+                # Set the date regardless of success/failure to prevent retries during the 3:00-3:01 AM window
+                # This is consistent with other scheduled tasks and prevents unnecessary resource consumption
+                self.last_nightly_consistency_date = today_bali
+                
                 if result.returncode == 0:
-                    self.last_nightly_consistency_date = today_bali
                     logger.info("Nightly consistency check completed")
                     # Record successful execution with correct workflow_id
                     from app.api.routes_monitoring import record_workflow_execution
@@ -205,10 +215,14 @@ class TradingScheduler:
                     from app.api.routes_monitoring import record_workflow_execution
                     record_workflow_execution("watchlist_consistency", "error", None, f"Return code: {result.returncode}")
             except subprocess.TimeoutExpired:
+                # Set the date even on timeout to prevent retries
+                self.last_nightly_consistency_date = today_bali
                 logger.error("Nightly consistency check timed out after 10 minutes")
                 from app.api.routes_monitoring import record_workflow_execution
                 record_workflow_execution("watchlist_consistency", "error", None, "Timeout after 10 minutes")
             except Exception as e:
+                # Set the date even on exception to prevent retries
+                self.last_nightly_consistency_date = today_bali
                 logger.error(f"Error running nightly consistency check: {e}", exc_info=True)
                 from app.api.routes_monitoring import record_workflow_execution
                 record_workflow_execution("watchlist_consistency", "error", None, str(e))

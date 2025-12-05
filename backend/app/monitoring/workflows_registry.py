@@ -12,7 +12,7 @@ WORKFLOWS: List[Dict[str, Any]] = [
         "id": "watchlist_consistency",
         "name": "Watchlist Consistency Check",
         "description": "Compares backend vs watchlist for all symbols, including throttle and alert flags.",
-        "run_endpoint": "/api/monitoring/run-watchlist-consistency",
+        "run_endpoint": "/api/monitoring/workflows/watchlist_consistency/run",
         "schedule": "Nightly at 03:00 (Bali time)",
         "automated": True,
     },
