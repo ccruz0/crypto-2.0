@@ -185,7 +185,7 @@ services:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 30"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
@@ -233,6 +233,12 @@ services:
       - ./backend:/app
     command: python3 run_updater.py
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     profiles:
       - local
       - aws

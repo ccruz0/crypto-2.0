@@ -1,9 +1,32 @@
 import json
+import os
 from pathlib import Path
 from copy import deepcopy
 from typing import Dict, Any, Optional, Tuple
 
-CONFIG_PATH = Path("trading_config.json")
+# Determine config file path: use absolute path based on app root
+# In container: /app/trading_config.json
+# In local dev: backend/trading_config.json (relative to project root)
+# Try multiple locations for robustness
+_app_root = Path(__file__).parent.parent.parent  # backend/app/services -> backend/
+_possible_paths = [
+    Path("/app/trading_config.json"),  # Container absolute path
+    _app_root / "trading_config.json",  # Local dev: backend/trading_config.json
+    Path("trading_config.json"),  # Current working directory (fallback)
+]
+
+CONFIG_PATH = None
+for path in _possible_paths:
+    if path.exists():
+        CONFIG_PATH = path
+        break
+
+if CONFIG_PATH is None:
+    # Default to app root if file doesn't exist yet
+    CONFIG_PATH = _app_root / "trading_config.json"
+    # But if we're in container, prefer /app
+    if Path("/app").exists():
+        CONFIG_PATH = Path("/app/trading_config.json")
 
 _DEFAULT_CONFIG = {
     "version": 1,
@@ -38,11 +61,136 @@ _DEFAULT_CONFIG = {
 
 NUM_FIELDS = {"RSI_PERIOD","RSI_BUY","RSI_SELL","MA50","EMA10","MA10W","ATR","VOL"}
 
+def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize config to ensure strategy_rules is the single source of truth.
+    
+    If strategy_rules exists, use it.
+    If only legacy presets exists, migrate it to strategy_rules format.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # If strategy_rules already exists, return as-is
+    if "strategy_rules" in cfg and cfg["strategy_rules"]:
+        return cfg
+    
+    # If no strategy_rules but presets exists, migrate
+    if "presets" in cfg and cfg["presets"]:
+        logger.info("Migrating legacy presets to strategy_rules format")
+        
+        # Default strategy rules structure
+        default_strategy_rules = {
+            "swing": {
+                "notificationProfile": "swing",
+                "rules": {
+                    "Conservative": {
+                        "rsi": {"buyBelow": 40, "sellAbove": 70},
+                        "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                        "sl": {"atrMult": 1.5},
+                        "tp": {"rr": 1.5},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    },
+                    "Aggressive": {
+                        "rsi": {"buyBelow": 45, "sellAbove": 68},
+                        "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                        "sl": {"atrMult": 1.0},
+                        "tp": {"rr": 1.2},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    }
+                }
+            },
+            "intraday": {
+                "notificationProfile": "intraday",
+                "rules": {
+                    "Conservative": {
+                        "rsi": {"buyBelow": 45, "sellAbove": 70},
+                        "maChecks": {"ema10": True, "ma50": True, "ma200": False},
+                        "sl": {"atrMult": 1.0},
+                        "tp": {"rr": 1.2},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    },
+                    "Aggressive": {
+                        "rsi": {"buyBelow": 50, "sellAbove": 65},
+                        "maChecks": {"ema10": True, "ma50": True, "ma200": False},
+                        "sl": {"atrMult": 0.8},
+                        "tp": {"rr": 1.0},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    }
+                }
+            },
+            "scalp": {
+                "notificationProfile": "scalp",
+                "rules": {
+                    "Conservative": {
+                        "rsi": {"buyBelow": 50, "sellAbove": 70},
+                        "maChecks": {"ema10": True, "ma50": False, "ma200": False},
+                        "sl": {"pct": 0.5},
+                        "tp": {"pct": 0.8},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    },
+                    "Aggressive": {
+                        "rsi": {"buyBelow": 55, "sellAbove": 65},
+                        "maChecks": {"ema10": True, "ma50": False, "ma200": False},
+                        "sl": {"pct": 0.35},
+                        "tp": {"pct": 0.5},
+                        "volumeMinRatio": 0.5,
+                        "minPriceChangePct": 1.0,
+                        "alertCooldownMinutes": 5.0,
+                    }
+                }
+            }
+        }
+        
+        # Check if presets already has the new format (with rules structure)
+        migrated_rules = {}
+        for preset_key, preset_data in cfg["presets"].items():
+            if isinstance(preset_data, dict) and "rules" in preset_data:
+                # Already in new format, use it
+                migrated_rules[preset_key] = preset_data
+            else:
+                # Legacy format, use defaults (we can't convert old format to new format reliably)
+                if preset_key in default_strategy_rules:
+                    migrated_rules[preset_key] = default_strategy_rules[preset_key]
+        
+        # If we found any presets with rules structure, use them
+        if migrated_rules:
+            cfg["strategy_rules"] = migrated_rules
+            logger.info(f"Migrated {len(migrated_rules)} presets to strategy_rules")
+        else:
+            # No rules structure found, use defaults
+            cfg["strategy_rules"] = default_strategy_rules
+            logger.info("No rules structure in presets, using default strategy_rules")
+    
+    return cfg
+
+
 def load_config() -> Dict[str, Any]:
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Log config path at first load
+    if not hasattr(load_config, "_path_logged"):
+        logger.info(f"Config file path: {CONFIG_PATH.absolute()}")
+        load_config._path_logged = True
+    
     if not CONFIG_PATH.exists():
         CONFIG_PATH.write_text(json.dumps(_DEFAULT_CONFIG, indent=2))
-        return deepcopy(_DEFAULT_CONFIG)
-    return json.loads(CONFIG_PATH.read_text())
+        normalized = _normalize_config(deepcopy(_DEFAULT_CONFIG))
+        return normalized
+    
+    cfg = json.loads(CONFIG_PATH.read_text())
+    return _normalize_config(cfg)
 
 def validate_preset(preset: Dict[str, Any]) -> Tuple[bool, str]:
     for k in NUM_FIELDS:
@@ -58,7 +206,28 @@ def validate_preset(preset: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 def save_config(cfg: Dict[str, Any]) -> None:
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Normalize config before saving to ensure strategy_rules exists
+    cfg = _normalize_config(cfg)
+    
+    # Ensure strategy_rules is always present
+    if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
+        logger.warning("save_config: No strategy_rules after normalization, this should not happen")
+    
+    # Log volumeMinRatio values for each preset/riskMode
+    strategy_rules = cfg.get("strategy_rules", {})
+    if strategy_rules:
+        for preset_name, preset_data in strategy_rules.items():
+            if isinstance(preset_data, dict) and "rules" in preset_data:
+                for risk_mode, rules in preset_data.get("rules", {}).items():
+                    if isinstance(rules, dict):
+                        vol_ratio = rules.get("volumeMinRatio")
+                        logger.info(f"[VOLUME] Saving {preset_name}/{risk_mode} volumeMinRatio={vol_ratio}")
+    
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    logger.debug(f"Config saved to {CONFIG_PATH.absolute()}")
 
 def resolve_params(symbol: str, inline_overrides: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
     cfg = load_config()
@@ -127,7 +296,7 @@ def get_alert_thresholds(symbol: str, risk_mode: Optional[str] = None) -> Tuple[
     return min_pct, cooldown
 
 
-def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol: Optional[str] = None) -> Dict[str, Any]:
+def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dict[str, Any]:
     """
     SOURCE OF TRUTH: Get strategy rules from trading_config.json
     
@@ -161,13 +330,9 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
     
     Supports both new format (rules structure from dashboard) and old format (legacy direct keys).
     
-    Per-symbol overrides: If symbol is provided, applies overrides from "coins" section.
-    Example: {"coins": {"ALGO_USDT": {"overrides": {"volumeMinRatio": 0.30}}}}
-    
     Args:
         preset_name: Strategy preset name (e.g., "swing", "intraday", "scalp")
         risk_mode: Risk mode ("Conservative" or "Aggressive")
-        symbol: Optional trading symbol to apply per-symbol overrides
     
     Returns:
         Dict with rules: {
@@ -193,8 +358,8 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
     if "rules" in preset_cfg:
         rules = preset_cfg.get("rules", {}).get(risk_key, {})
         if rules:
-            # Build base rules dict
-            base_rules = {
+            # Return rules in expected format
+            return {
                 "rsi": {
                     "buyBelow": rules.get("rsi", {}).get("buyBelow") if isinstance(rules.get("rsi"), dict) else None,
                     "sellAbove": rules.get("rsi", {}).get("sellAbove") if isinstance(rules.get("rsi"), dict) else None,
@@ -204,41 +369,9 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
                 "minPriceChangePct": rules.get("minPriceChangePct"),
                 "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
             }
-            
-            # CRITICAL FIX: Add logging for debugging persistence
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.debug(f"[STRATEGY_PERSISTENCE] get_strategy_rules({preset_name}, {risk_mode}, {symbol}): "
-                        f"maChecks={base_rules.get('maChecks')}, rsi={base_rules.get('rsi')}, "
-                        f"volumeMinRatio={base_rules.get('volumeMinRatio')}")
-            
-            # Apply per-symbol overrides if symbol is provided
-            if symbol:
-                coins_cfg = cfg.get("coins", {})
-                coin_cfg = coins_cfg.get(symbol, {})
-                overrides = coin_cfg.get("overrides", {})
-                if overrides:
-                    # Apply overrides (only override keys that exist in base_rules)
-                    if "volumeMinRatio" in overrides:
-                        base_rules["volumeMinRatio"] = overrides["volumeMinRatio"]
-                    if "minPriceChangePct" in overrides:
-                        base_rules["minPriceChangePct"] = overrides["minPriceChangePct"]
-                    if "alertCooldownMinutes" in overrides:
-                        base_rules["alertCooldownMinutes"] = overrides["alertCooldownMinutes"]
-                    # RSI overrides (if provided as nested dict or flat keys)
-                    if "rsi" in overrides and isinstance(overrides["rsi"], dict):
-                        if "buyBelow" in overrides["rsi"]:
-                            base_rules["rsi"]["buyBelow"] = overrides["rsi"]["buyBelow"]
-                        if "sellAbove" in overrides["rsi"]:
-                            base_rules["rsi"]["sellAbove"] = overrides["rsi"]["sellAbove"]
-                    # CRITICAL FIX: Apply maChecks overrides from per-symbol config
-                    if "maChecks" in overrides and isinstance(overrides["maChecks"], dict):
-                        base_rules["maChecks"] = {**base_rules.get("maChecks", {}), **overrides["maChecks"]}
-            
-            return base_rules
     
     # Fallback to old format or defaults
-    base_rules = {
+    return {
         "rsi": {
             "buyBelow": preset_cfg.get("RSI_BUY"),
             "sellAbove": preset_cfg.get("RSI_SELL"),
@@ -252,18 +385,3 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative", symbol
         "minPriceChangePct": preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", 1.0),
         "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 5),
     }
-    
-    # Apply per-symbol overrides if symbol is provided
-    if symbol:
-        coins_cfg = cfg.get("coins", {})
-        coin_cfg = coins_cfg.get(symbol, {})
-        overrides = coin_cfg.get("overrides", {})
-        if overrides:
-            if "volumeMinRatio" in overrides:
-                base_rules["volumeMinRatio"] = overrides["volumeMinRatio"]
-            if "minPriceChangePct" in overrides:
-                base_rules["minPriceChangePct"] = overrides["minPriceChangePct"]
-            if "alertCooldownMinutes" in overrides:
-                base_rules["alertCooldownMinutes"] = overrides["alertCooldownMinutes"]
-    
-    return base_rules

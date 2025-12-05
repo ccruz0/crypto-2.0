@@ -106,6 +106,27 @@ npm install
 npm run dev
 ```
 
+## Troubleshooting
+
+### Dashboard Not Loading (502 / Blank UI)
+
+If the dashboard at https://dashboard.hilovivo.com is not loading:
+
+1. **Quick diagnostic**: Run the automated diagnostic script:
+   ```bash
+   cd /Users/carloscruz/automated-trading-platform
+   bash scripts/debug_dashboard_remote.sh
+   ```
+
+2. **Detailed troubleshooting**: See [Dashboard Health Check Runbook](docs/runbooks/dashboard_healthcheck.md) for step-by-step diagnostics and common fixes.
+
+The diagnostic script checks:
+- Container status and health
+- Backend API connectivity
+- Market-updater health
+- Recent logs from backend and market-updater
+- Nginx error logs
+
 ## Environment Variables
 
 See `.env.example` for all available environment variables and their descriptions.
