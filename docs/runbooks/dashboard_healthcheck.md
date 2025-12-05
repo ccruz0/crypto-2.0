@@ -1,31 +1,98 @@
-# Dashboard Health Check Runbook
+# Dashboard Health Check Runbook - Complete Guide
 
 ## Architecture Overview
 
-The dashboard at https://dashboard.hilovivo.com consists of:
+The dashboard at https://dashboard.hilovivo.com uses the following architecture:
 
-1. **Nginx** (host-level reverse proxy)
-   - Listens on ports 80/443
-   - Routes `/api/*` → `http://127.0.0.1:8002/api/*` (backend-aws)
-   - Routes `/` → `http://127.0.0.1:3000/` (frontend)
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    User Browser                             │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ HTTPS (443)
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Nginx (Host-level Reverse Proxy)                           │
+│  - Listens: 0.0.0.0:80, 0.0.0.0:443                         │
+│  - SSL: Let's Encrypt certificates                          │
+└──────┬──────────────────────────────┬───────────────────────┘
+       │                              │
+       │ /api/*                       │ /
+       │                              │
+       ▼                              ▼
+┌──────────────────────┐    ┌──────────────────────┐
+│  backend-aws         │    │  frontend-aws        │
+│  (FastAPI + gunicorn)│    │  (Next.js)           │
+│  Port: 8002 (host)   │    │  Port: 3000 (host)   │
+│  Internal: 8000       │    │  Internal: 3000      │
+└──────┬───────────────┘    └──────────────────────┘
+       │
+       │ PostgreSQL
+       ▼
+┌──────────────────────┐
+│  db (PostgreSQL)      │
+│  Port: 5432           │
+└──────────────────────┘
 
-2. **backend-aws** (FastAPI + gunicorn)
-   - Container: `automated-trading-platform-backend-aws-1`
-   - Internal port: 8000
-   - Host port mapping: `8002:8002`
-   - Healthcheck: `http://localhost:8002/ping_fast`
+Background Services:
+┌──────────────────────┐    ┌──────────────────────┐
+│  market-updater      │    │  gluetun (VPN)       │
+│  (Price updates)     │    │  (Outbound traffic)  │
+│  Healthcheck:        │    │  Required by:        │
+│  backend-aws:8002    │    │  - backend-aws       │
+└──────────────────────┘    │  - frontend-aws      │
+                             └──────────────────────┘
+```
 
-3. **market-updater** (background service)
-   - Container: `automated-trading-platform-market-updater-1`
-   - Healthcheck: Connects to `127.0.0.1:8002` (host network)
-   - **Note**: This healthcheck may fail if backend-aws is not accessible from host network
+## Request Flow
 
-4. **db** (PostgreSQL)
-   - Container: `postgres_hardened`
-   - Required by backend-aws and market-updater
+### API Request Flow
+```
+User → https://dashboard.hilovivo.com/api/config
+  ↓
+Nginx (reverse proxy)
+  ↓
+http://127.0.0.1:8002/api/config
+  ↓
+backend-aws container (port 8002)
+  ↓
+FastAPI application
+  ↓
+Database query (if needed)
+  ↓
+Response → Nginx → User
+```
 
-5. **gluetun** (VPN container)
-   - Required by backend-aws for outbound traffic
+### Frontend Request Flow
+```
+User → https://dashboard.hilovivo.com/
+  ↓
+Nginx (reverse proxy)
+  ↓
+http://127.0.0.1:3000/
+  ↓
+frontend-aws container (port 3000)
+  ↓
+Next.js server
+  ↓
+Response → Nginx → User
+```
+
+## Service Dependencies
+
+### Critical Path (Dashboard Functionality)
+```
+frontend-aws → depends_on: [gluetun, backend-aws]
+backend-aws → depends_on: [gluetun, db]
+```
+
+**If any of these fail, the dashboard will not work.**
+
+### Background Services (Non-Critical)
+```
+market-updater → depends_on: [db]
+```
+
+**Market-updater failures do NOT affect dashboard functionality.**
 
 ## Quick Diagnostic Script
 
@@ -36,10 +103,13 @@ cd /Users/carloscruz/automated-trading-platform
 bash scripts/debug_dashboard_remote.sh
 ```
 
-This script runs all diagnostics automatically and shows:
-- Container status and health
-- Backend API connectivity
-- Recent logs from backend and market-updater
+This script automatically checks:
+- ✅ All container statuses and health
+- ✅ Backend API connectivity (host and container network)
+- ✅ Database connectivity
+- ✅ External endpoint tests (domain → nginx → backend/frontend)
+- ✅ Recent error logs
+- ✅ Nginx status
 
 ## Manual Diagnostic Workflow
 
@@ -54,8 +124,11 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **What to look for:**
 - All containers should be `Up`
-- `backend-aws` should show `(healthy)`
-- `market-updater` health status (may show `(health: starting)` or `(unhealthy)`)
+- `backend-aws` should show `(healthy)` - **CRITICAL**
+- `frontend-aws` should show `Up` (may not have healthcheck)
+- `db` should show `(healthy)` - **CRITICAL**
+- `gluetun` should show `(healthy)` - **CRITICAL for backend**
+- `market-updater` health status (informational only)
 
 ### Step 2: Inspect Container Health Details
 
@@ -65,16 +138,18 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker inspect automated-trading-platform-backend-aws-1 --format="{{json .State.Health}}" | python3 -m json.tool'
 ```
 
+**What to look for:**
+- `Status`: Should be `"healthy"` (not `"unhealthy"` or `"starting"`)
+- `FailingStreak`: Should be `0`
+- `Log`: Last healthcheck should show `ExitCode: 0`
+
 **Market-updater health:**
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker inspect automated-trading-platform-market-updater-1 --format="{{json .State.Health}}" | python3 -m json.tool'
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker ps --filter "name=market-updater" --format "{{.Names}}" | head -1 | xargs -I {} docker inspect {} --format="{{json .State.Health}}" | python3 -m json.tool'
 ```
 
-**What to look for:**
-- `Status`: Should be `"healthy"` or `"starting"` (not `"unhealthy"`)
-- `FailingStreak`: Should be `0` for healthy containers
-- `Log`: Check last healthcheck result
+**Note:** Market-updater healthcheck failures are informational only and do NOT break the dashboard.
 
 ### Step 3: Test Backend API from Host
 
@@ -90,8 +165,24 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -v http://1
 - Backend container may be down or unhealthy
 - Port mapping issue (8002 not accessible)
 - Backend crashed or not listening
+- Check backend logs: `docker compose --profile aws logs backend-aws --tail=100`
 
-### Step 4: Test Domain Endpoints
+### Step 4: Test Backend from Container Network
+
+**Test Docker network connectivity:**
+
+```bash
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec market-updater python3 -c "import urllib.request; resp = urllib.request.urlopen(\"http://backend-aws:8002/ping_fast\", timeout=5); print(\"HTTP\", resp.getcode())"'
+```
+
+**Expected:** `HTTP 200`
+
+**If this fails:**
+- Docker network issue
+- Backend not accessible via service name
+- Check if containers are in the same network
+
+### Step 5: Test Domain Endpoints
 
 **From local Mac:**
 
@@ -113,12 +204,14 @@ curl -v https://dashboard.hilovivo.com/
 - Nginx cannot reach backend at `127.0.0.1:8002`
 - Check backend container status
 - Check nginx error logs: `sudo tail -f /var/log/nginx/error.log`
+- Verify backend is listening: `curl http://127.0.0.1:8002/api/config` (from host)
 
 **If `/` returns 502:**
 - Frontend container may be down
 - Check frontend container: `docker compose --profile aws ps frontend-aws`
+- Check frontend logs: `docker compose --profile aws logs frontend-aws --tail=100`
 
-### Step 5: Check Backend Logs
+### Step 6: Check Backend Logs
 
 ```bash
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=200 backend-aws'
@@ -126,51 +219,68 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **What to look for:**
 - Application startup errors
-- Database connection errors
+- Database connection errors (`psycopg2`, `connection refused`)
 - Python exceptions or tracebacks
 - Gunicorn worker crashes
 - Recent request logs
+- Authentication errors
 
-### Step 6: Check Market-Updater Logs
+### Step 7: Check Market-Updater Logs
 
 ```bash
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=200 market-updater'
 ```
 
 **What to look for:**
-- Connection errors to backend
+- Connection errors to backend (if healthcheck is failing)
 - Database connection issues
 - Python exceptions
+- Price fetch errors
 
-### Step 7: Check Nginx Error Logs
+### Step 8: Check Nginx Error Logs
 
 ```bash
 ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 ```
 
 **What to look for:**
-- `Connection refused` → Backend not listening on 8002
+- `Connection refused` → Backend/frontend not listening on expected port
 - `Connection reset by peer` → Backend crashed during request
 - `upstream timeout` → Backend taking too long to respond
 - `502 Bad Gateway` → General upstream failure
+- `504 Gateway Timeout` → Backend timeout
+
+### Step 9: Check Database Connectivity
+
+```bash
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
+```
+
+**Expected:** Returns `1` (connection successful)
+
+**If this fails:**
+- Database container may be down
+- Database credentials incorrect
+- Network issue between backend and database
 
 ## Decision Tree
 
-### Scenario 1: API 200, Root 502, Backend Healthy, Market-Updater Unhealthy
+### Scenario 1: API 200, Root 502, Backend Healthy, Frontend Missing
 
 **Symptoms:**
 - `curl https://dashboard.hilovivo.com/api/config` → HTTP 200
 - `curl https://dashboard.hilovivo.com/` → HTTP 502
-- `docker compose ps` shows backend-aws healthy, market-updater unhealthy
+- `docker compose ps` shows backend-aws healthy, frontend-aws missing or down
 
 **Likely Cause:**
 - Frontend container is down or not running
-- Market-updater healthcheck is failing (may be unrelated to dashboard)
+- Frontend build failed or container crashed
 
 **Action:**
 1. Check frontend container: `docker compose --profile aws ps frontend-aws`
 2. Check frontend logs: `docker compose --profile aws logs frontend-aws --tail=100`
-3. Market-updater healthcheck may be failing due to port/host mismatch (see Note below)
+3. Restart frontend: `docker compose --profile aws restart frontend-aws`
+4. If frontend is missing, rebuild: `docker compose --profile aws build frontend-aws && docker compose --profile aws up -d frontend-aws`
 
 ### Scenario 2: API 502, Backend Unhealthy
 
@@ -183,12 +293,15 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 - Database connection failure
 - Environment variable issues
 - Application startup error
+- Gunicorn worker crash
 
 **Action:**
 1. Check backend logs: `docker compose --profile aws logs backend-aws --tail=200`
 2. Check database: `docker compose --profile aws ps db`
 3. Check backend health details: `docker inspect automated-trading-platform-backend-aws-1 --format="{{json .State.Health}}"`
-4. Restart backend: `docker compose --profile aws restart backend-aws`
+4. Check database connectivity from backend
+5. Restart backend: `docker compose --profile aws restart backend-aws`
+6. If persistent, rebuild: `docker compose --profile aws build --no-cache backend-aws && docker compose --profile aws up -d backend-aws`
 
 ### Scenario 3: API Timeout, Backend Healthy
 
@@ -201,11 +314,14 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 - Nginx proxy timeout too short
 - Backend responding slowly
 - Network issue between nginx and backend
+- Backend under heavy load
 
 **Action:**
 1. Check nginx timeout settings: `sudo cat /etc/nginx/sites-enabled/dashboard.conf | grep timeout`
 2. Check backend response time: `time curl http://127.0.0.1:8002/api/config`
 3. Check nginx error logs for timeout errors
+4. Check backend logs for slow queries or operations
+5. Increase nginx timeout if needed (default should be 180s)
 
 ### Scenario 4: Both API and Root 502, Backend Healthy
 
@@ -218,12 +334,14 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 - Nginx configuration issue
 - Nginx not running
 - SSL certificate issue
+- Nginx cannot bind to ports 80/443
 
 **Action:**
 1. Check nginx status: `sudo systemctl status nginx`
 2. Check nginx config: `sudo nginx -t`
 3. Check nginx error logs: `sudo tail -f /var/log/nginx/error.log`
-4. Restart nginx: `sudo systemctl restart nginx`
+4. Check if ports are in use: `sudo netstat -tlnp | grep -E ':80|:443'`
+5. Restart nginx: `sudo systemctl restart nginx`
 
 ### Scenario 5: Market-Updater Healthcheck Failing
 
@@ -232,15 +350,54 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 - Dashboard may or may not be affected
 
 **Likely Cause:**
-- Market-updater healthcheck connects to `127.0.0.1:8002` (host network)
-- Backend-aws listens on `0.0.0.0:8002` inside container, mapped to host `8002`
-- Healthcheck may fail if backend is not accessible from host network perspective
-- **Note**: This is a known configuration issue - the healthcheck should connect to backend via Docker network, not host network
+- Market-updater healthcheck configuration issue (now fixed)
+- Backend not accessible from market-updater container
+- Healthcheck timeout too short
 
 **Action:**
 1. Verify backend is accessible: `curl http://127.0.0.1:8002/api/config`
-2. If backend is accessible but healthcheck fails, this is a healthcheck configuration issue (not a dashboard issue)
-3. Market-updater healthcheck failure does not necessarily indicate dashboard problems
+2. Test from market-updater container: `docker compose --profile aws exec market-updater python3 -c "import urllib.request; urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"`
+3. **Note**: Market-updater healthcheck failure does NOT indicate dashboard problems
+4. Market-updater is a background service and does not affect dashboard functionality
+
+### Scenario 6: Database Connection Errors
+
+**Symptoms:**
+- Backend logs show: `psycopg2.OperationalError: connection refused`
+- Backend shows as unhealthy
+- API returns 502 or 500
+
+**Likely Cause:**
+- Database container down
+- Database credentials incorrect
+- Network issue between backend and database
+- Database not accepting connections
+
+**Action:**
+1. Check database container: `docker compose --profile aws ps db`
+2. Test database connection: `docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"`
+3. Check database logs: `docker compose --profile aws logs db --tail=100`
+4. Verify DATABASE_URL in backend environment
+5. Restart database if needed: `docker compose --profile aws restart db`
+
+### Scenario 7: Gluetun (VPN) Failure
+
+**Symptoms:**
+- Backend shows as unhealthy
+- Backend logs show connection timeouts to external APIs
+- Telegram bot not working
+
+**Likely Cause:**
+- VPN connection failed
+- Gluetun container down or unhealthy
+- VPN credentials incorrect
+
+**Action:**
+1. Check gluetun status: `docker compose --profile aws ps gluetun`
+2. Check gluetun logs: `docker compose --profile aws logs gluetun --tail=100`
+3. Verify VPN credentials in environment
+4. Restart gluetun: `docker compose --profile aws restart gluetun`
+5. **Note**: Backend depends on gluetun, so VPN failure will cause backend to fail
 
 ## Common Fixes
 
@@ -250,7 +407,7 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
 ```
 
-Wait 60-90 seconds for healthcheck to pass, then test again.
+Wait 60-180 seconds for healthcheck to pass, then test again.
 
 ### Restart All Services
 
@@ -264,18 +421,68 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws build --no-cache backend-aws && docker compose --profile aws up -d backend-aws'
 ```
 
+### Restart Nginx
+
+```bash
+ssh hilovivo-aws 'sudo systemctl restart nginx'
+```
+
 ### Check Database Connection
 
 ```bash
 ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
 ```
 
+## Interpreting Diagnostic Script Output
+
+The diagnostic script (`scripts/debug_dashboard_remote.sh`) provides color-coded output:
+
+- **✅ GREEN**: Service is healthy and working
+- **⏳ YELLOW**: Service is starting (may be normal during startup)
+- **❌ RED**: Service is unhealthy or failing (needs attention)
+- **⚠️ YELLOW**: Warning (may not be critical)
+
+### Key Sections to Check
+
+1. **DOCKER COMPOSE STATUS**: Overall container status
+2. **CONTAINER HEALTH DETAILS**: Detailed health information
+3. **API CONNECTIVITY TESTS**: Network connectivity checks
+4. **EXTERNAL ENDPOINT TESTS**: Domain accessibility
+5. **RECENT ERROR LOGS**: Error messages and exceptions
+
+### What "OK" Looks Like
+
+```
+✅ Backend-aws: HEALTHY
+✅ Market-updater: HEALTHY (or starting, if just restarted)
+✅ Database: HEALTHY
+✅ Gluetun: HEALTHY
+✅ Backend API (Host): HTTP 200
+✅ Backend API (Container): HTTP 200
+✅ Database Connectivity: Success
+✅ Dashboard API: HTTP 200
+✅ Dashboard Root: HTTP 200
+✅ Nginx: running
+```
+
 ## Notes
 
 - **Port Mapping**: backend-aws listens on port 8000 internally, but is mapped to 8002 on the host. The healthcheck and nginx both use 8002 (host port).
 
-- **Market-Updater Healthcheck**: The market-updater healthcheck attempts to connect to `127.0.0.1:8002` from within the container. This may fail if the backend is not accessible via the host network from the container's perspective. This is a known configuration issue and does not necessarily indicate a dashboard problem.
+- **Market-Updater Healthcheck**: The market-updater healthcheck connects to `backend-aws:8002` via Docker network. This is correct and should work. Healthcheck failures are informational only and do NOT affect dashboard functionality.
 
 - **Nginx Timeouts**: Nginx proxy timeouts are set to 180s. If backend requests take longer, they will timeout. Check backend logs for slow queries or operations.
 
-- **Healthcheck Intervals**: Backend healthcheck runs every 60s with 5 retries. It may take up to 5 minutes for a container to be marked unhealthy after a failure.
+- **Healthcheck Intervals**: 
+  - Backend healthcheck runs every 120s with 5 retries. It may take up to 10 minutes for a container to be marked unhealthy after a failure.
+  - Market-updater healthcheck runs every 30s with 3 retries.
+
+- **Service Isolation**: Market-updater healthcheck failures are isolated and do not cause 502 errors. The dashboard only depends on backend-aws, not market-updater.
+
+- **Frontend Deployment**: The frontend may be deployed on Vercel or in the frontend-aws container. Check which one is configured in nginx.
+
+## Related Documentation
+
+- [Market-Updater Healthcheck Fix](../monitoring/MARKET_UPDATER_HEALTHCHECK_FIX.md)
+- [Backend 502 Fix](../monitoring/BACKEND_502_FIX.md)
+- [Dashboard Health Check Runbook](./dashboard_healthcheck.md) (this file)
