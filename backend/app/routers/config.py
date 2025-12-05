@@ -86,42 +86,77 @@ def put_config(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     """
-    # Merge with existing config to preserve coins and defaults
-    existing_cfg = load_config()
-    
-    # Update presets from new_cfg
-    new_presets = new_cfg.get("presets", {})
-    for preset_name, preset_data in new_presets.items():
-        # If new format (has "rules"), save as-is
-        if "rules" in preset_data:
-            existing_cfg.setdefault("presets", {})[preset_name] = preset_data
+    try:
+        logger.info("[CONFIG] PUT /config received request")
+        
+        # Merge with existing config to preserve coins and defaults
+        try:
+            existing_cfg = load_config()
+            logger.debug("[CONFIG] Loaded existing config successfully")
+        except Exception as e:
+            logger.error(f"[CONFIG] Failed to load existing config: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to load existing config: {str(e)}")
+        
+        # Update presets from new_cfg
+        new_presets = new_cfg.get("presets", {})
+        if new_presets:
+            logger.debug(f"[CONFIG] Processing {len(new_presets)} presets")
+            for preset_name, preset_data in new_presets.items():
+                # If new format (has "rules"), save as-is
+                if "rules" in preset_data:
+                    existing_cfg.setdefault("presets", {})[preset_name] = preset_data
+                else:
+                    # Old format: validate and save
+                    ok, msg = validate_preset(preset_data)
+                    if not ok:
+                        raise HTTPException(status_code=400, detail=f"Preset '{preset_name}': {msg}")
+                    existing_cfg.setdefault("presets", {})[preset_name] = preset_data
+        
+        # SOURCE OF TRUTH: Update strategy_rules (new structure from Signal Configuration UI)
+        # This is the canonical location where preset config is stored
+        if "strategy_rules" in new_cfg:
+            try:
+                _log_volume_min_ratio("PUT incoming", new_cfg)
+            except Exception as e:
+                logger.warning(f"[CONFIG] Failed to log volume min ratio (non-critical): {e}")
+            
+            existing_cfg["strategy_rules"] = new_cfg["strategy_rules"]
+            logger.info("[CONFIG] Saving strategy_rules with volumeMinRatio values")
         else:
-            # Old format: validate and save
-            ok, msg = validate_preset(preset_data)
-            if not ok:
-                raise HTTPException(status_code=400, detail=f"Preset '{preset_name}': {msg}")
-            existing_cfg.setdefault("presets", {})[preset_name] = preset_data
+            logger.warning("PUT /config: No strategy_rules in incoming config!")
+        
+        # Update defaults if provided
+        if "defaults" in new_cfg:
+            existing_cfg["defaults"] = {**existing_cfg.get("defaults", {}), **new_cfg["defaults"]}
+        
+        # Update coins if provided (merge, don't replace)
+        if "coins" in new_cfg:
+            existing_cfg.setdefault("coins", {}).update(new_cfg["coins"])
+        
+        # Save config (save_config will normalize and ensure strategy_rules exists)
+        try:
+            save_config(existing_cfg)
+            logger.info("[CONFIG] Config saved successfully")
+        except Exception as e:
+            logger.error(f"[CONFIG] Failed to save config: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to save config: {str(e)}")
+        
+        # Log saved config to verify persistence
+        try:
+            _log_volume_min_ratio("PUT saved", existing_cfg)
+        except Exception as e:
+            logger.warning(f"[CONFIG] Failed to log volume min ratio after save (non-critical): {e}")
+        
+        # Return the saved config so frontend can verify it was saved correctly
+        return {"ok": True, "config": existing_cfg}
     
-    # SOURCE OF TRUTH: Update strategy_rules (new structure from Signal Configuration UI)
-    # This is the canonical location where preset config is stored
-    if "strategy_rules" in new_cfg:
-        _log_volume_min_ratio("PUT incoming", new_cfg)
-        existing_cfg["strategy_rules"] = new_cfg["strategy_rules"]
-    else:
-        logger.warning("PUT /config: No strategy_rules in incoming config!")
-
-    # Update defaults if provided
-    if "defaults" in new_cfg:
-        existing_cfg["defaults"] = {**existing_cfg.get("defaults", {}), **new_cfg["defaults"]}
-    
-    # Update coins if provided (merge, don't replace)
-    if "coins" in new_cfg:
-        existing_cfg.setdefault("coins", {}).update(new_cfg["coins"])
-    
-    # Save config (save_config will normalize and ensure strategy_rules exists)
-    save_config(existing_cfg)
-    
-    return {"ok": True}
+    except HTTPException:
+        # Re-raise HTTP exceptions (400, 500, etc.) as-is
+        raise
+    except Exception as e:
+        # Catch any unexpected exceptions and return 500
+        logger.error(f"[CONFIG] Unexpected error in PUT /config: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.put("/presets/{name}")
 def upsert_preset(name: str, preset: Dict[str, Any]) -> Dict[str, Any]:

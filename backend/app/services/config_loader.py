@@ -67,11 +67,85 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     
     If strategy_rules exists, use it.
     If only legacy presets exists, migrate it to strategy_rules format.
+    If neither exists, create default strategy_rules to ensure consistency.
     """
     import logging
     logger = logging.getLogger(__name__)
     
-    # If strategy_rules already exists, return as-is
+    # Default strategy rules structure (used for migration and initialization)
+    default_strategy_rules = {
+        "swing": {
+            "notificationProfile": "swing",
+            "rules": {
+                "Conservative": {
+                    "rsi": {"buyBelow": 40, "sellAbove": 70},
+                    "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                    "sl": {"atrMult": 1.5},
+                    "tp": {"rr": 1.5},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                },
+                "Aggressive": {
+                    "rsi": {"buyBelow": 45, "sellAbove": 68},
+                    "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                    "sl": {"atrMult": 1.0},
+                    "tp": {"rr": 1.2},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                }
+            }
+        },
+        "intraday": {
+            "notificationProfile": "intraday",
+            "rules": {
+                "Conservative": {
+                    "rsi": {"buyBelow": 45, "sellAbove": 70},
+                    "maChecks": {"ema10": True, "ma50": True, "ma200": False},
+                    "sl": {"atrMult": 1.0},
+                    "tp": {"rr": 1.2},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                },
+                "Aggressive": {
+                    "rsi": {"buyBelow": 50, "sellAbove": 65},
+                    "maChecks": {"ema10": True, "ma50": True, "ma200": False},
+                    "sl": {"atrMult": 0.8},
+                    "tp": {"rr": 1.0},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                }
+            }
+        },
+        "scalp": {
+            "notificationProfile": "scalp",
+            "rules": {
+                "Conservative": {
+                    "rsi": {"buyBelow": 50, "sellAbove": 70},
+                    "maChecks": {"ema10": True, "ma50": False, "ma200": False},
+                    "sl": {"pct": 0.5},
+                    "tp": {"pct": 0.8},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                },
+                "Aggressive": {
+                    "rsi": {"buyBelow": 55, "sellAbove": 65},
+                    "maChecks": {"ema10": True, "ma50": False, "ma200": False},
+                    "sl": {"pct": 0.35},
+                    "tp": {"pct": 0.5},
+                    "volumeMinRatio": 0.5,
+                    "minPriceChangePct": 1.0,
+                    "alertCooldownMinutes": 5.0,
+                }
+            }
+        }
+    }
+    
+    # If strategy_rules already exists and is not empty, return as-is
     if "strategy_rules" in cfg and cfg["strategy_rules"]:
         return cfg
     
@@ -79,98 +153,75 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if "presets" in cfg and cfg["presets"]:
         logger.info("Migrating legacy presets to strategy_rules format")
         
-        # Default strategy rules structure
-        default_strategy_rules = {
-            "swing": {
-                "notificationProfile": "swing",
-                "rules": {
-                    "Conservative": {
-                        "rsi": {"buyBelow": 40, "sellAbove": 70},
-                        "maChecks": {"ema10": True, "ma50": True, "ma200": True},
-                        "sl": {"atrMult": 1.5},
-                        "tp": {"rr": 1.5},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    },
-                    "Aggressive": {
-                        "rsi": {"buyBelow": 45, "sellAbove": 68},
-                        "maChecks": {"ema10": True, "ma50": True, "ma200": True},
-                        "sl": {"atrMult": 1.0},
-                        "tp": {"rr": 1.2},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    }
-                }
-            },
-            "intraday": {
-                "notificationProfile": "intraday",
-                "rules": {
-                    "Conservative": {
-                        "rsi": {"buyBelow": 45, "sellAbove": 70},
-                        "maChecks": {"ema10": True, "ma50": True, "ma200": False},
-                        "sl": {"atrMult": 1.0},
-                        "tp": {"rr": 1.2},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    },
-                    "Aggressive": {
-                        "rsi": {"buyBelow": 50, "sellAbove": 65},
-                        "maChecks": {"ema10": True, "ma50": True, "ma200": False},
-                        "sl": {"atrMult": 0.8},
-                        "tp": {"rr": 1.0},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    }
-                }
-            },
-            "scalp": {
-                "notificationProfile": "scalp",
-                "rules": {
-                    "Conservative": {
-                        "rsi": {"buyBelow": 50, "sellAbove": 70},
-                        "maChecks": {"ema10": True, "ma50": False, "ma200": False},
-                        "sl": {"pct": 0.5},
-                        "tp": {"pct": 0.8},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    },
-                    "Aggressive": {
-                        "rsi": {"buyBelow": 55, "sellAbove": 65},
-                        "maChecks": {"ema10": True, "ma50": False, "ma200": False},
-                        "sl": {"pct": 0.35},
-                        "tp": {"pct": 0.5},
-                        "volumeMinRatio": 0.5,
-                        "minPriceChangePct": 1.0,
-                        "alertCooldownMinutes": 5.0,
-                    }
-                }
-            }
-        }
-        
         # Check if presets already has the new format (with rules structure)
         migrated_rules = {}
+        
         for preset_key, preset_data in cfg["presets"].items():
             if isinstance(preset_data, dict) and "rules" in preset_data:
-                # Already in new format, use it
+                # Already in new format, use it (preserves custom presets)
                 migrated_rules[preset_key] = preset_data
+                logger.debug(f"Preserved preset '{preset_key}' (already in new format)")
             else:
-                # Legacy format, use defaults (we can't convert old format to new format reliably)
+                # Legacy format
                 if preset_key in default_strategy_rules:
+                    # Known preset: use default structure
                     migrated_rules[preset_key] = default_strategy_rules[preset_key]
+                    logger.debug(f"Migrated known preset '{preset_key}' using defaults")
+                else:
+                    # Custom preset in legacy format: create basic structure to preserve it
+                    # We can't reliably convert old format, but we preserve the preset name
+                    # with default values to avoid data loss
+                    logger.warning(
+                        f"Custom preset '{preset_key}' in legacy format detected. "
+                        f"Creating basic structure with defaults (legacy values cannot be automatically converted)."
+                    )
+                    # Create a basic structure similar to default presets
+                    # Use 'swing' as template since it's the most conservative
+                    migrated_rules[preset_key] = {
+                        "notificationProfile": preset_key.lower() if preset_key.lower() in ["swing", "intraday", "scalp"] else "swing",
+                        "rules": {
+                            "Conservative": {
+                                "rsi": {"buyBelow": 40, "sellAbove": 70},
+                                "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                                "sl": {"atrMult": 1.5},
+                                "tp": {"rr": 1.5},
+                                "volumeMinRatio": 0.5,
+                                "minPriceChangePct": 1.0,
+                                "alertCooldownMinutes": 5.0,
+                            },
+                            "Aggressive": {
+                                "rsi": {"buyBelow": 45, "sellAbove": 68},
+                                "maChecks": {"ema10": True, "ma50": True, "ma200": True},
+                                "sl": {"atrMult": 1.0},
+                                "tp": {"rr": 1.2},
+                                "volumeMinRatio": 0.5,
+                                "minPriceChangePct": 1.0,
+                                "alertCooldownMinutes": 5.0,
+                            }
+                        }
+                    }
+                    logger.info(f"Created basic structure for custom preset '{preset_key}' (user should review and update values)")
         
         # If we found any presets with rules structure, use them
         if migrated_rules:
-            cfg["strategy_rules"] = migrated_rules
-            logger.info(f"Migrated {len(migrated_rules)} presets to strategy_rules")
+            # Always include default presets to ensure all standard presets exist
+            # Merge defaults with migrated rules (migrated rules take precedence)
+            final_rules = {**default_strategy_rules, **migrated_rules}
+            cfg["strategy_rules"] = final_rules
+            custom_count = len([k for k in migrated_rules if k not in default_strategy_rules])
+            if custom_count > 0:
+                logger.info(f"Migrated {len(migrated_rules)} presets to strategy_rules (including {custom_count} custom presets with default values)")
+            else:
+                logger.info(f"Migrated {len(migrated_rules)} presets to strategy_rules")
         else:
             # No rules structure found, use defaults
             cfg["strategy_rules"] = default_strategy_rules
             logger.info("No rules structure in presets, using default strategy_rules")
+    else:
+        # Neither strategy_rules nor presets exists (or presets is empty)
+        # Create default strategy_rules to ensure consistency
+        logger.warning("Config has neither strategy_rules nor presets. Creating default strategy_rules to ensure consistency.")
+        cfg["strategy_rules"] = default_strategy_rules
     
     return cfg
 
@@ -209,25 +260,46 @@ def save_config(cfg: Dict[str, Any]) -> None:
     import logging
     logger = logging.getLogger(__name__)
     
-    # Normalize config before saving to ensure strategy_rules exists
-    cfg = _normalize_config(cfg)
+    try:
+        # Normalize config before saving to ensure strategy_rules exists
+        cfg = _normalize_config(cfg)
+        
+        # Ensure strategy_rules is always present
+        if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
+            logger.warning("save_config: No strategy_rules after normalization, this should not happen")
+            # This should not happen after our fix, but if it does, re-normalize to create defaults
+            # Re-run normalization which will create default strategy_rules if missing
+            cfg = _normalize_config(cfg)
+            if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
+                # If still missing after re-normalization, this is a critical error
+                logger.error("save_config: strategy_rules still missing after re-normalization - this is a critical error")
+                raise ValueError("strategy_rules is missing and could not be created")
+        
+        # Log volumeMinRatio values for each preset/riskMode
+        strategy_rules = cfg.get("strategy_rules", {})
+        if strategy_rules:
+            for preset_name, preset_data in strategy_rules.items():
+                if isinstance(preset_data, dict) and "rules" in preset_data:
+                    for risk_mode, rules in preset_data.get("rules", {}).items():
+                        if isinstance(rules, dict):
+                            vol_ratio = rules.get("volumeMinRatio")
+                            logger.info(f"[VOLUME] Saving {preset_name}/{risk_mode} volumeMinRatio={vol_ratio}")
+        
+        # Write config to file
+        try:
+            config_json = json.dumps(cfg, indent=2)
+            CONFIG_PATH.write_text(config_json)
+            logger.debug(f"Config saved to {CONFIG_PATH.absolute()}")
+        except (IOError, OSError, PermissionError) as e:
+            logger.error(f"Failed to write config file to {CONFIG_PATH.absolute()}: {e}", exc_info=True)
+            raise
+        except (TypeError, ValueError) as e:
+            logger.error(f"Failed to serialize config to JSON: {e}", exc_info=True)
+            raise
     
-    # Ensure strategy_rules is always present
-    if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
-        logger.warning("save_config: No strategy_rules after normalization, this should not happen")
-    
-    # Log volumeMinRatio values for each preset/riskMode
-    strategy_rules = cfg.get("strategy_rules", {})
-    if strategy_rules:
-        for preset_name, preset_data in strategy_rules.items():
-            if isinstance(preset_data, dict) and "rules" in preset_data:
-                for risk_mode, rules in preset_data.get("rules", {}).items():
-                    if isinstance(rules, dict):
-                        vol_ratio = rules.get("volumeMinRatio")
-                        logger.info(f"[VOLUME] Saving {preset_name}/{risk_mode} volumeMinRatio={vol_ratio}")
-    
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    logger.debug(f"Config saved to {CONFIG_PATH.absolute()}")
+    except Exception as e:
+        logger.error(f"save_config failed: {e}", exc_info=True)
+        raise
 
 def resolve_params(symbol: str, inline_overrides: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
     cfg = load_config()

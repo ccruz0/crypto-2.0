@@ -91,13 +91,13 @@ cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /
 ### 4. Test Dashboard Endpoint from Inside Container
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8000/api/dashboard/state | head -20\"'"
+cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/dashboard/state | head -20\"'"
 ```
 
 ### 5. Test Config Endpoint from Inside Container
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8000/api/config | python3 -m json.tool | grep -A 5 volumeMinRatio\"'"
+cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/config | python3 -m json.tool | grep -A 5 volumeMinRatio\"'"
 ```
 
 ## Verification Steps
