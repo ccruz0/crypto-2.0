@@ -169,8 +169,22 @@ class TradingScheduler:
             try:
                 import subprocess
                 import sys
-                # Run the consistency check script
-                script_path = "backend/scripts/watchlist_consistency_check.py"
+                import os
+                # Calculate absolute path to the consistency check script
+                # In Docker: WORKDIR is /app, backend contents are copied to /app/
+                # So structure is: /app/app/services/scheduler.py and /app/scripts/watchlist_consistency_check.py
+                # In local dev: .../backend/app/services/scheduler.py and .../backend/scripts/watchlist_consistency_check.py
+                current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                # current_file_dir is /app/app/services/ in Docker, or .../backend/app/services/ locally
+                # Go up 3 levels to get root: /app/ in Docker, or .../backend/ locally
+                root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file_dir)))
+                # In Docker: root_dir = /app/, scripts are at /app/scripts/
+                # In local: root_dir = .../backend/, scripts are at .../backend/scripts/
+                # Both Docker and local use the same calculation: root_dir/scripts/ (NOT root_dir/backend/scripts/)
+                script_path = os.path.join(root_dir, "scripts", "watchlist_consistency_check.py")
+                if not os.path.exists(script_path):
+                    raise FileNotFoundError(f"Script not found at {script_path}. Root dir: {root_dir}")
+                
                 result = subprocess.run(
                     [sys.executable, script_path],
                     capture_output=True,
@@ -181,23 +195,23 @@ class TradingScheduler:
                 if result.returncode == 0:
                     self.last_nightly_consistency_date = today_bali
                     logger.info("Nightly consistency check completed")
-                    # Record successful execution
+                    # Record successful execution with correct workflow_id
                     from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("nightly_consistency", "success", "Nightly consistency check completed successfully")
+                    record_workflow_execution("watchlist_consistency", "success", "Nightly consistency check completed successfully")
                 else:
                     logger.error(f"Nightly consistency check failed with return code {result.returncode}")
                     logger.error(f"STDOUT: {result.stdout}")
                     logger.error(f"STDERR: {result.stderr}")
                     from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("nightly_consistency", "error", None, f"Return code: {result.returncode}")
+                    record_workflow_execution("watchlist_consistency", "error", None, f"Return code: {result.returncode}")
             except subprocess.TimeoutExpired:
                 logger.error("Nightly consistency check timed out after 10 minutes")
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("nightly_consistency", "error", None, "Timeout after 10 minutes")
+                record_workflow_execution("watchlist_consistency", "error", None, "Timeout after 10 minutes")
             except Exception as e:
                 logger.error(f"Error running nightly consistency check: {e}", exc_info=True)
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("nightly_consistency", "error", None, str(e))
+                record_workflow_execution("watchlist_consistency", "error", None, str(e))
     
     async def check_nightly_consistency(self):
         """Check if it's time to run nightly consistency check - async wrapper"""

@@ -351,68 +351,6 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         return []
 
 
-    
-    one_month_ago = datetime.now() - timedelta(days=30)
-    recent_messages = [
-        {
-            **msg,
-            "throttle_status": msg.get("throttle_status"),
-            "throttle_reason": msg.get("throttle_reason"),
-        }
-        for msg in _telegram_messages
-        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
-    ]
-    
-    # Return most recent first (newest at the top)
-    recent_messages.reverse()
-    
-    return {
-        "messages": recent_messages,
-        "total": len(recent_messages)
-    }
-
-@router.get("/monitoring/signal-throttle")
-async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
-    """Expose recent signal throttle state for the Monitoring dashboard."""
-    log.debug("Fetching signal throttle state (limit=%s)", limit)
-    if db is None:
-        return []
-    
-    try:
-        bounded_limit = max(1, min(limit, 500))
-        rows = (
-            db.query(SignalThrottleState)
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit)
-            .all()
-        )
-        now = datetime.now(timezone.utc)
-        payload = []
-        for row in rows:
-            last_time = row.last_time
-            if last_time and last_time.tzinfo is None:
-                last_time = last_time.replace(tzinfo=timezone.utc)
-            seconds_since = (
-                max(0, int((now - last_time).total_seconds()))
-                if last_time
-                else None
-            )
-            payload.append(
-                {
-                    "symbol": row.symbol,
-                    "strategy_key": row.strategy_key,
-                    "side": row.side,
-                    "last_price": row.last_price,
-                    "last_time": last_time.isoformat() if last_time else None,
-                    "seconds_since_last": seconds_since,
-                }
-            )
-        return payload
-    except Exception as exc:
-        log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
-        return []
-
-
 # Workflow execution tracking (in-memory for now)
 _workflow_executions: Dict[str, Dict[str, Any]] = {}
 
@@ -431,6 +369,17 @@ def record_workflow_execution(workflow_id: str, status: str = "success", report:
 async def get_workflows(db: Session = Depends(get_db)):
     """Get list of all workflows with their automation status and last execution report"""
     workflows = [
+        {
+            "id": "watchlist_consistency",
+            "name": "Watchlist Consistency Check",
+            "description": "Compares backend vs watchlist for all symbols, including throttle and alert flags.",
+            "automated": True,
+            "schedule": "Nightly at 03:00 (Bali time)",
+            "last_execution": _workflow_executions.get("watchlist_consistency", {}).get("last_execution"),
+            "last_status": _workflow_executions.get("watchlist_consistency", {}).get("status", "unknown"),
+            "last_report": _workflow_executions.get("watchlist_consistency", {}).get("report"),
+            "last_error": _workflow_executions.get("watchlist_consistency", {}).get("error"),
+        },
         {
             "id": "daily_summary",
             "name": "Daily Summary",
@@ -489,3 +438,101 @@ async def get_workflows(db: Session = Depends(get_db)):
     ]
     
     return {"workflows": workflows}
+
+@router.post("/monitoring/workflows/{workflow_id}/run")
+async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
+    """Run a workflow manually by its ID"""
+    from app.monitoring.workflows_registry import get_workflow_by_id
+    import subprocess
+    import sys
+    import os
+    import asyncio
+    
+    # Get workflow definition
+    workflow = get_workflow_by_id(workflow_id)
+    if not workflow:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    
+    # Check if workflow has a run endpoint
+    run_endpoint = workflow.get("run_endpoint")
+    if not run_endpoint:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Workflow '{workflow_id}' cannot be run manually (no run_endpoint)")
+    
+    # For watchlist_consistency, run the script
+    if workflow_id == "watchlist_consistency":
+        try:
+            # Calculate absolute path to the consistency check script
+            # In Docker: WORKDIR is /app, backend contents are copied to /app/
+            # So structure is: /app/app/api/routes_monitoring.py and /app/scripts/watchlist_consistency_check.py
+            # In local dev: .../backend/app/api/routes_monitoring.py and .../backend/scripts/watchlist_consistency_check.py
+            current_file_dir = os.path.dirname(os.path.abspath(__file__))
+            # current_file_dir is /app/app/api/ in Docker, or .../backend/app/api/ locally
+            # Go up 3 levels to get root: /app/ in Docker, or .../backend/ locally
+            root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file_dir)))
+            # In Docker: root_dir = /app/, scripts are at /app/scripts/
+            # In local: root_dir = .../backend/, scripts are at .../backend/scripts/
+            # Both Docker and local use the same calculation: root_dir/scripts/
+            script_path = os.path.join(root_dir, "scripts", "watchlist_consistency_check.py")
+            if not os.path.exists(script_path):
+                raise FileNotFoundError(f"Script not found at {script_path}")
+            
+            # Run the script asynchronously and handle completion
+            async def run_script():
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [sys.executable, script_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=600  # 10 minute timeout
+                    )
+                    
+                    # Record completion status based on return code
+                    if result.returncode == 0:
+                        record_workflow_execution(
+                            workflow_id, 
+                            "success", 
+                            f"Workflow completed successfully. STDOUT: {result.stdout[:500]}"
+                        )
+                        log.info(f"Workflow {workflow_id} completed successfully")
+                    else:
+                        error_msg = f"Return code: {result.returncode}"
+                        if result.stderr:
+                            error_msg += f". STDERR: {result.stderr[:500]}"
+                        record_workflow_execution(workflow_id, "error", None, error_msg)
+                        log.error(f"Workflow {workflow_id} failed: {error_msg}")
+                    
+                    return result
+                except subprocess.TimeoutExpired:
+                    record_workflow_execution(workflow_id, "error", None, "Timeout after 10 minutes")
+                    log.error(f"Workflow {workflow_id} timed out after 10 minutes")
+                    raise
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
+                    raise
+            
+            # Start the workflow execution (don't wait for completion)
+            asyncio.create_task(run_script())
+            
+            # Record that we started the workflow with the correct workflow_id
+            record_workflow_execution(workflow_id, "running", "Workflow execution started")
+            
+            # Return immediately
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            # Record error with correct workflow_id
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    else:
+        # For other workflows, return not implemented
+        from fastapi import HTTPException
+        raise HTTPException(status_code=501, detail=f"Manual execution of workflow '{workflow_id}' is not yet implemented")

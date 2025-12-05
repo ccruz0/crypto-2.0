@@ -45,10 +45,20 @@ def select_preferred_watchlist_item(items: List[WatchlistItem], symbol: str) -> 
 
 
 def get_canonical_watchlist_item(db: Session, symbol: str) -> Optional[WatchlistItem]:
-    """Fetch the canonical watchlist row for the given symbol."""
+    """Fetch the canonical watchlist row for the given symbol.
+    
+    Filters out deleted items to match behavior of watchlist_consistency_check.py
+    and other scripts that explicitly filter by is_deleted == False.
+    """
     symbol_upper = (symbol or "").upper()
     try:
         query = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
+        # Filter out deleted items (consistent with watchlist_consistency_check.py)
+        try:
+            query = query.filter(WatchlistItem.is_deleted == False)
+        except Exception:
+            # If is_deleted column doesn't exist, continue without filter
+            pass
         try:
             query = query.order_by(WatchlistItem.id.desc())
         except Exception:

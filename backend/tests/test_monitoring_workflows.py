@@ -30,9 +30,9 @@ def test_get_workflows_returns_list():
     )
     assert watchlist_workflow is not None
     assert watchlist_workflow["name"] == "Watchlist Consistency Check"
-    assert "status" in watchlist_workflow
-    assert "last_run_at" in watchlist_workflow
-    assert "report_path" in watchlist_workflow
+    assert "last_status" in watchlist_workflow
+    assert "last_execution" in watchlist_workflow
+    assert "last_report" in watchlist_workflow
     assert "run_endpoint" in watchlist_workflow
 
 
@@ -43,8 +43,8 @@ def test_get_workflows_includes_status():
     data = response.json()
     
     for workflow in data["workflows"]:
-        assert "status" in workflow
-        assert workflow["status"] in ["ok", "failed", "never_run", "unknown"]
+        assert "last_status" in workflow
+        assert workflow["last_status"] in ["success", "error", "running", "unknown"]
 
 
 def test_run_workflow_watchlist_consistency():
