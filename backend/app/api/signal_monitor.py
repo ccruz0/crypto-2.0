@@ -694,29 +694,9 @@ class SignalMonitorService:
                     )
                     
                     if should_send:
-                        # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
-                        trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
-                        limit_value = 3 * trade_amount_usd
-                        try:
-                            portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
-                            if portfolio_value > limit_value:
-                                logger.warning(
-                                    f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                                    f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
-                                    f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}"
-                                )
-                                # Bloquear silenciosamente - no enviar notificación a Telegram
-                                # Skip sending alert
-                                should_send = False
-                                reason = f"Portfolio value ${portfolio_value:.2f} > limit ${limit_value:.2f}"
-                            else:
-                                logger.debug(
-                                    f"✅ Portfolio value check passed for {symbol}: "
-                                    f"portfolio_value=${portfolio_value:.2f} <= limit=${limit_value:.2f}"
-                                )
-                        except Exception as portfolio_check_err:
-                            logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
-                            # On error, continue (don't block alerts if we can't calculate portfolio value)
+                        # NOTE: Portfolio value limit does NOT block alerts, only orders
+                        # Alerts should always be sent when criteria are met, regardless of portfolio value
+                        # The portfolio value check is applied later when creating orders (see order creation section)
                         
                         if should_send:
                             prev_buy_price = self._get_last_alert_price(symbol, "BUY")
