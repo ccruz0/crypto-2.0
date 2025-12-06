@@ -27,19 +27,29 @@ if python3 -c "import pytest" 2>/dev/null; then
         else
             # Check if any tests actually passed by looking at the summary line
             passed_count=$(grep -oE "[0-9]+ passed" /tmp/pytest_output.txt | grep -oE "[0-9]+" | head -1 || echo "0")
+            failed_count=$(grep -oE "[0-9]+ failed" /tmp/pytest_output.txt | grep -oE "[0-9]+" | head -1 || echo "0")
+            error_count=$(grep -oE "[0-9]+ error" /tmp/pytest_output.txt | grep -oE "[0-9]+" | head -1 || echo "0")
+            
             if [ -n "$passed_count" ] && [ "$passed_count" -gt "0" ]; then
                 echo "⚠️  Some backend tests passed ($passed_count passed), but some had issues"
+                if [ -n "$failed_count" ] && [ "$failed_count" -gt "0" ]; then
+                    echo "   Failed tests: $failed_count"
+                fi
+                if [ -n "$error_count" ] && [ "$error_count" -gt "0" ]; then
+                    echo "   Test errors: $error_count"
+                fi
                 echo "   Review test output below:"
                 cat /tmp/pytest_output.txt | tail -15
                 echo ""
-                echo "⚠️  Continuing despite test issues (some tests passed)"
+                echo "❌ Backend tests failed - commit blocked"
+                rm -f /tmp/pytest_output.txt
+                exit 1
             else
                 echo "❌ Backend tests failed - no tests passed"
                 cat /tmp/pytest_output.txt | tail -20
                 rm -f /tmp/pytest_output.txt
                 exit 1
             fi
-            rm -f /tmp/pytest_output.txt
         fi
     else
         echo "⚠️  app/tests directory not found. Skipping backend tests."
