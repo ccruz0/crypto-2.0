@@ -882,6 +882,7 @@ def get_top_coins_with_prices(
                     
                     # Calculate trading signal (BUY/WAIT/SELL)
                     signal = "WAIT"
+                    strategy_state = None  # FIX: Initialize strategy_state to None
                     try:
                         if current_price and current_price > 0:
                             
@@ -925,9 +926,13 @@ def get_top_coins_with_prices(
                                 signal = "SELL"
                             else:
                                 signal = "WAIT"
+                            
+                            # FIX: Extract strategy_state from signals result for frontend
+                            strategy_state = signals.get("strategy") if signals else None
                     except Exception as sig_err:
                         logger.debug(f"Could not calculate signal for {symbol}: {sig_err}")
                         signal = "WAIT"  # Default to WAIT on error
+                        strategy_state = None  # FIX: Ensure strategy_state is None on error
                     
                     # Volume data from MarketData
                     # OPTIMIZATION: Use MarketData values directly instead of fetching OHLCV for each symbol
@@ -993,6 +998,8 @@ def get_top_coins_with_prices(
                         "res_down": res_down,
                         # Trading signal (BUY/WAIT/SELL)
                         "signal": signal,
+                        # FIX: Include strategy_state with buy_volume_ok for frontend
+                        "strategy_state": strategy_state,
                         # Mark as custom if user-added to watchlist
                         "is_custom": is_custom,
                         # Alert enabled status
