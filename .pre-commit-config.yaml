@@ -1,0 +1,69 @@
+# Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+
+repos:
+  # Python formatting and linting
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(.*\.md|.*\.txt|.*\.csv)$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-json
+      - id: check-toml
+
+  # Python: Black formatter
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^backend/.*\.py$
+        args: ['--line-length=100']
+
+  # Python: Ruff linter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^backend/.*\.py$
+      - id: ruff-format
+        files: ^backend/.*\.py$
+
+  # Frontend: Prettier formatter
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: ^frontend/.*\.(js|jsx|ts|tsx|json|css|scss|md|yml|yaml)$
+        exclude: ^frontend/(node_modules|\.next|out|build)/
+
+  # Frontend: ESLint with auto-fix
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.15.0
+    hooks:
+      - id: eslint
+        files: ^frontend/.*\.(js|jsx|ts|tsx)$
+        exclude: ^frontend/(node_modules|\.next|out|build)/
+        additional_dependencies:
+          - eslint@9
+          - '@eslint/js@9'
+          - 'eslint-config-next@16.0.0'
+        args: ['--fix', '--max-warnings=0']
+        types: [file]
+
+  # Custom script: Run backend tests and frontend lint
+  - repo: local
+    hooks:
+      - id: pre-commit-checks
+        name: Run backend tests and frontend lint
+        entry: bash scripts/pre_commit_checks.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+

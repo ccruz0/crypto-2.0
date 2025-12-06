@@ -653,8 +653,12 @@ async def get_dashboard_state(
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard/state received")
     try:
         result = await _compute_dashboard_state(db)
-        has_portfolio = bool(result.get("portfolio", {}).get("balances"))
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 has_portfolio={has_portfolio}")
+        # FIX: Check portfolio.assets (v4.0 format) instead of portfolio.balances
+        # portfolio.balances doesn't exist - balances is at top level for backward compatibility
+        # portfolio.assets is the main portfolio data structure
+        portfolio_assets = result.get("portfolio", {}).get("assets", [])
+        has_portfolio = bool(portfolio_assets and len(portfolio_assets) > 0)
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 has_portfolio={has_portfolio} assets_count={len(portfolio_assets) if portfolio_assets else 0}")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)

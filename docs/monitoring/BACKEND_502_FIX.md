@@ -89,12 +89,24 @@ automated-trading-platform-backend-aws-1  Up X minutes (healthy)
 To monitor for similar issues in the future:
 
 1. **Quick diagnostic script**: Run `bash scripts/debug_dashboard_remote.sh` for comprehensive diagnostics
+   - Checks all containers, health status, API connectivity, and error logs
+   - Provides color-coded output with clear status indicators
+   - Tests both internal and external endpoints
+
 2. **Check nginx error logs**: `sudo tail -f /var/log/nginx/error.log | grep -i "502\|reset\|upstream"`
+
 3. **Check backend logs**: `docker compose --profile aws logs backend-aws --tail=100 | grep -iE "error|timeout|killed"`
+
 4. **Test endpoint**: `curl -v https://dashboard.hilovivo.com/api/config`
+
 5. **Check container health**: `docker compose --profile aws ps backend-aws`
 
 For detailed troubleshooting workflows, see: [Dashboard Health Check Runbook](../runbooks/dashboard_healthcheck.md)
+
+## Related Issues
+
+- **Market-Updater Healthcheck**: See [Market-Updater Healthcheck Fix](./MARKET_UPDATER_HEALTHCHECK_FIX.md) for similar connection issues
+- **Dashboard Diagnostics**: The diagnostic script now includes comprehensive checks for all services
 
 ## Files Changed
 

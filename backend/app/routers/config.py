@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from typing import Any, Dict, Optional
 import logging
 
@@ -36,7 +36,7 @@ def get_config() -> Dict[str, Any]:
     return cfg
 
 @router.put("/config")
-def put_config(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """
     SOURCE OF TRUTH: Save trading configuration to trading_config.json
     
@@ -88,6 +88,7 @@ def put_config(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     try:
         logger.info("[CONFIG] PUT /config received request")
+        logger.debug(f"[CONFIG] Received config keys: {list(new_cfg.keys()) if isinstance(new_cfg, dict) else 'not a dict'}")
         
         # Merge with existing config to preserve coins and defaults
         try:
@@ -134,21 +135,28 @@ def put_config(new_cfg: Dict[str, Any]) -> Dict[str, Any]:
             existing_cfg.setdefault("coins", {}).update(new_cfg["coins"])
         
         # Save config (save_config will normalize and ensure strategy_rules exists)
+        # FIX: save_config now returns the normalized config that was actually saved
+        # Use this returned value to ensure frontend receives the exact structure saved to disk
         try:
-            save_config(existing_cfg)
+            logger.debug(f"[CONFIG] About to save config with keys: {list(existing_cfg.keys())}")
+            saved_cfg = save_config(existing_cfg)
             logger.info("[CONFIG] Config saved successfully")
         except Exception as e:
             logger.error(f"[CONFIG] Failed to save config: {e}", exc_info=True)
+            import traceback
+            logger.error(f"[CONFIG] Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to save config: {str(e)}")
         
-        # Log saved config to verify persistence
+        # Log saved config to verify persistence (use saved_cfg, not existing_cfg)
         try:
-            _log_volume_min_ratio("PUT saved", existing_cfg)
+            _log_volume_min_ratio("PUT saved", saved_cfg)
         except Exception as e:
             logger.warning(f"[CONFIG] Failed to log volume min ratio after save (non-critical): {e}")
         
         # Return the saved config so frontend can verify it was saved correctly
-        return {"ok": True, "config": existing_cfg}
+        # FIX: Return saved_cfg (normalized) instead of existing_cfg (pre-normalization)
+        # This ensures frontend receives the exact structure that was persisted to disk
+        return {"ok": True, "config": saved_cfg}
     
     except HTTPException:
         # Re-raise HTTP exceptions (400, 500, etc.) as-is
@@ -165,7 +173,7 @@ def upsert_preset(name: str, preset: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=msg)
     cfg = load_config()
     cfg.setdefault("presets", {})[name] = preset
-    save_config(cfg)
+    save_config(cfg)  # Return value not needed here
     return {"ok": True}
 
 @router.delete("/presets/{name}")
@@ -176,7 +184,7 @@ def delete_preset(name: str) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail={"message": "Preset in use", "symbols": in_use})
     if name in cfg.get("presets", {}):
         del cfg["presets"][name]
-        save_config(cfg)
+        save_config(cfg)  # Return value not needed here
     return {"ok": True}
 
 def _parse_preset_strings(preset: Optional[str]) -> tuple[Optional[PresetEnum], Optional[RiskProfileEnum]]:
@@ -263,7 +271,7 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if preset and preset not in cfg.get("presets", {}):
         raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'")
     cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
-    save_config(cfg)
+    save_config(cfg)  # Return value not needed here
 
     # Keep trade_signals table aligned with dashboard selections
     _sync_trade_signal(symbol, preset)

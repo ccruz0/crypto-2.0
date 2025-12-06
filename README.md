@@ -106,6 +106,40 @@ npm install
 npm run dev
 ```
 
+## Pre-commit Checks
+
+This repository uses [pre-commit](https://pre-commit.com) to automatically run code quality checks before each commit. The hooks will:
+
+- **Python**: Format with `black` and lint with `ruff` on all Python files
+- **Frontend**: Format with `prettier` and lint with `eslint --fix` on staged TypeScript/JavaScript files
+- **Tests**: Run backend tests (`pytest -q`) and frontend lint (`npm run lint`)
+
+### Installation
+
+1. Install pre-commit:
+   ```bash
+   pip install pre-commit
+   ```
+
+2. Enable the hooks:
+   ```bash
+   pre-commit install
+   ```
+
+### Usage
+
+- Hooks run automatically on `git commit`
+- To run manually on all files:
+  ```bash
+  pre-commit run --all-files
+  ```
+- To run on staged files only:
+  ```bash
+  pre-commit run
+  ```
+
+If any hook fails, the commit will be blocked. Fix the issues and try committing again.
+
 ## Troubleshooting
 
 ### Dashboard Not Loading (502 / Blank UI)
@@ -118,14 +152,27 @@ If the dashboard at https://dashboard.hilovivo.com is not loading:
    bash scripts/debug_dashboard_remote.sh
    ```
 
-2. **Detailed troubleshooting**: See [Dashboard Health Check Runbook](docs/runbooks/dashboard_healthcheck.md) for step-by-step diagnostics and common fixes.
+   This comprehensive script automatically checks:
+   - ✅ All container statuses and health (backend, frontend, db, gluetun, market-updater)
+   - ✅ Backend API connectivity (host network and Docker network)
+   - ✅ Database connectivity from backend
+   - ✅ External endpoint tests (domain → nginx → services)
+   - ✅ Recent error logs from all services
+   - ✅ Nginx status and error logs
+   - ✅ Provides color-coded output with clear status indicators
 
-The diagnostic script checks:
-- Container status and health
-- Backend API connectivity
-- Market-updater health
-- Recent logs from backend and market-updater
-- Nginx error logs
+2. **Detailed troubleshooting**: See [Dashboard Health Check Runbook](docs/runbooks/dashboard_healthcheck.md) for:
+   - Complete architecture diagrams
+   - Request flow explanations
+   - Step-by-step diagnostic workflows
+   - Decision trees for common failure modes
+   - Common fixes and solutions
+
+3. **System overview**: See [Dashboard Diagnostic System](docs/monitoring/DASHBOARD_DIAGNOSTIC_SYSTEM.md) for:
+   - Complete system architecture
+   - Diagnostic script features
+   - Common failure modes and solutions
+   - Integration with runbook
 
 ## Environment Variables
 

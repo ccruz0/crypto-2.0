@@ -177,3 +177,21 @@ bash scripts/debug_dashboard_remote.sh
 - The healthcheck interval (30s) and timeout (10s) are appropriate for this service
 - Market-updater healthcheck failures are isolated and do not cause 502 errors
 - The diagnostic script now provides clear visual indicators for health status
+
+## Diagnostic Integration
+
+The market-updater healthcheck is now fully integrated into the diagnostic workflow:
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/debug_dashboard_remote.sh
+```
+
+The script will:
+- ✅ Detect market-updater container automatically (by name pattern)
+- ✅ Show health status with color-coded indicators
+- ✅ Display healthcheck logs and failing streaks
+- ✅ Warn if healthcheck is stuck in starting or unhealthy state
+- ✅ Note that market-updater failures do NOT affect dashboard
+
+For complete troubleshooting, see: [Dashboard Health Check Runbook](../runbooks/dashboard_healthcheck.md)

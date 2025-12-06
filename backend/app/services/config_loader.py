@@ -236,8 +236,12 @@ def load_config() -> Dict[str, Any]:
         load_config._path_logged = True
     
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(_DEFAULT_CONFIG, indent=2))
+        # Create default config and normalize it
         normalized = _normalize_config(deepcopy(_DEFAULT_CONFIG))
+        # Write the normalized version to disk to ensure consistency
+        # This prevents repeated migrations on subsequent loads
+        CONFIG_PATH.write_text(json.dumps(normalized, indent=2))
+        logger.info("Created new config file with normalized structure (including strategy_rules)")
         return normalized
     
     cfg = json.loads(CONFIG_PATH.read_text())
@@ -256,27 +260,36 @@ def validate_preset(preset: Dict[str, Any]) -> Tuple[bool, str]:
             return False, f"Field '{k}' must be >= 0"
     return True, ""
 
-def save_config(cfg: Dict[str, Any]) -> None:
+def save_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Save config to disk after normalization.
+    
+    Returns:
+        The normalized config that was actually saved to disk.
+        This ensures callers can use the returned value to get the exact
+        structure that was persisted, including any fields added by normalization.
+    """
     import logging
     logger = logging.getLogger(__name__)
     
     try:
         # Normalize config before saving to ensure strategy_rules exists
-        cfg = _normalize_config(cfg)
+        # Make a copy to avoid modifying the input dict
+        normalized_cfg = _normalize_config(deepcopy(cfg))
         
         # Ensure strategy_rules is always present
-        if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
+        if "strategy_rules" not in normalized_cfg or not normalized_cfg["strategy_rules"]:
             logger.warning("save_config: No strategy_rules after normalization, this should not happen")
             # This should not happen after our fix, but if it does, re-normalize to create defaults
             # Re-run normalization which will create default strategy_rules if missing
-            cfg = _normalize_config(cfg)
-            if "strategy_rules" not in cfg or not cfg["strategy_rules"]:
+            normalized_cfg = _normalize_config(normalized_cfg)
+            if "strategy_rules" not in normalized_cfg or not normalized_cfg["strategy_rules"]:
                 # If still missing after re-normalization, this is a critical error
                 logger.error("save_config: strategy_rules still missing after re-normalization - this is a critical error")
                 raise ValueError("strategy_rules is missing and could not be created")
         
         # Log volumeMinRatio values for each preset/riskMode
-        strategy_rules = cfg.get("strategy_rules", {})
+        strategy_rules = normalized_cfg.get("strategy_rules", {})
         if strategy_rules:
             for preset_name, preset_data in strategy_rules.items():
                 if isinstance(preset_data, dict) and "rules" in preset_data:
@@ -287,7 +300,7 @@ def save_config(cfg: Dict[str, Any]) -> None:
         
         # Write config to file
         try:
-            config_json = json.dumps(cfg, indent=2)
+            config_json = json.dumps(normalized_cfg, indent=2)
             CONFIG_PATH.write_text(config_json)
             logger.debug(f"Config saved to {CONFIG_PATH.absolute()}")
         except (IOError, OSError, PermissionError) as e:
@@ -296,6 +309,9 @@ def save_config(cfg: Dict[str, Any]) -> None:
         except (TypeError, ValueError) as e:
             logger.error(f"Failed to serialize config to JSON: {e}", exc_info=True)
             raise
+        
+        # Return the normalized config that was actually saved
+        return normalized_cfg
     
     except Exception as e:
         logger.error(f"save_config failed: {e}", exc_info=True)

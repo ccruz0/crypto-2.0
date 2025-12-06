@@ -309,3 +309,4 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep 'ADA_USDT.*ALERT_EMIT_FINAL.
 
 
 
+
