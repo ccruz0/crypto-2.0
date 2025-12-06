@@ -51,6 +51,10 @@ RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.t
 # Copiar código de la app
 COPY . .
 
+# FIX: Change ownership of /app to appuser so it can write trading_config.json
+# This must be done as root before switching to appuser
+RUN chown -R appuser:appuser /app
+
 # Puerto y healthcheck
 EXPOSE 8002
 
