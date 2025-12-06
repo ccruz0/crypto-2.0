@@ -743,7 +743,51 @@ def get_signals(
         res_up_float = float(res_up) if res_up is not None and res_up > 0 else float(current_price * 1.02)
         res_down_float = float(res_down) if res_down is not None and res_down > 0 else float(current_price * 0.98)
         
-        return {
+        # FIX: Calculate strategy_state with buy_volume_ok when volume data is available
+        # This ensures frontend receives buy_volume_ok status for volume checks
+        strategy_state = None
+        try:
+            if DB_AVAILABLE and db_data_used:
+                from app.services.trading_signals import calculate_trading_signals
+                from app.services.strategy_profiles import resolve_strategy_profile
+                from app.models.watchlist import WatchlistItem
+                
+                # Get watchlist item to determine strategy profile
+                watchlist_item = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol == symbol
+                ).first()
+                
+                if watchlist_item:
+                    strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+                    
+                    # Calculate trading signals with volume data to get strategy_state
+                    signals_result = calculate_trading_signals(
+                        symbol=symbol,
+                        price=current_price,
+                        rsi=rsi,
+                        atr14=atr,
+                        ma50=ma50,
+                        ma200=ma200,
+                        ema10=ema10,
+                        volume=current_volume if current_volume is not None else None,
+                        avg_volume=avg_volume if avg_volume is not None else None,
+                        buy_target=watchlist_item.buy_target,
+                        last_buy_price=watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None,
+                        position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0,
+                        rsi_buy_threshold=rsi_buy_threshold,
+                        rsi_sell_threshold=rsi_sell_threshold,
+                        strategy_type=strategy_type,
+                        risk_approach=risk_approach,
+                    )
+                    
+                    # Extract strategy_state from signals result
+                    if signals_result and "strategy" in signals_result:
+                        strategy_state = signals_result["strategy"]
+        except Exception as strategy_err:
+            # Don't fail the entire request if strategy_state calculation fails
+            logger.debug(f"Could not calculate strategy_state for {symbol}: {strategy_err}")
+        
+        response = {
             "symbol": symbol,
             "exchange": exchange,
             "price": float(current_price),
@@ -754,8 +798,8 @@ def get_signals(
             "ma200": float(ma200),
             "ema10": float(ema10),
             "ma10w": float(ma10w),
-            "volume": float(current_volume),
-            "avg_volume": float(avg_volume),
+            "volume": float(current_volume) if current_volume is not None and current_volume > 0 else None,
+            "avg_volume": float(avg_volume) if avg_volume is not None and avg_volume > 0 else None,
             "volume_ratio": float(volume_ratio) if volume_ratio else 1.0,
             "res_up": res_up_float,
             "res_down": res_down_float,
@@ -777,6 +821,12 @@ def get_signals(
             ],
             "method": "simplified_rsi_ma"
         }
+        
+        # FIX: Add strategy_state if available (includes buy_volume_ok)
+        if strategy_state:
+            response["strategy"] = strategy_state
+        
+        return response
         
     except HTTPException:
         raise
