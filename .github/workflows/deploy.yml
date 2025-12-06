@@ -1,0 +1,82 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout API
+      uses: actions/checkout@v4
+      
+    - name: Deploy to EC2
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ubuntu
+        EC2_KEY: ${{ secrets.EC2_KEY }}
+      run: |
+        set -e  # Exit on any error
+        
+        # Validate required connection configuration
+        if [ -z "$EC2_HOST" ]; then
+          echo "❌ Error: EC2_HOST is not set. Add it as a repository secret or variable."
+          exit 1
+        fi
+        if [ -z "$EC2_KEY" ]; then
+          echo "❌ Error: EC2_KEY secret is not set."
+          exit 1
+        fi
+        
+        echo "🔑 Setting up SSH key..."
+        echo "$EC2_KEY" > deploy_key.pem
+        chmod 600 deploy_key.pem
+        
+        # Add EC2 host to known_hosts
+        ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+        
+        echo "📡 Testing SSH connection..."
+        echo "🔍 Attempting to connect to: ubuntu@$EC2_HOST"
+        echo "🔍 Using IP: $EC2_HOST"
+        
+        # Test basic connectivity first
+        echo "🌐 Testing basic connectivity..."
+        ping -c 3 $EC2_HOST || echo "⚠️ Ping failed, but continuing with SSH test..."
+        
+        # Test SSH connection
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$EC2_HOST "echo 'SSH connection successful'"
+        
+        if [ $? -ne 0 ]; then
+          echo "❌ SSH connection failed. Checking common issues..."
+          echo "🔍 Verifying EC2 instance status..."
+          echo "💡 Make sure your EC2 instance is running and has the correct security group rules"
+          echo "💡 Security Group should allow SSH (port 22) from 0.0.0.0/0"
+          echo "💡 Verify the EC2_HOST and EC2_KEY secrets are correct"
+          exit 1
+        fi
+        
+        echo "📁 Copying files to EC2..."
+        rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
+          --exclude='.git' \
+          --exclude='node_modules' \
+          --exclude='.next' \
+          --exclude='__pycache__' \
+          ./ ubuntu@$EC2_HOST:~/automated-trading-platform/
+        
+        echo "🐳 Restarting services..."
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
+          "cd ~/automated-trading-platform && docker-compose down && docker-compose up -d --build"
+        
+        echo "✅ Verifying deployment..."
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
+          "cd ~/automated-trading-platform && docker-compose ps"
+        
+        echo "🧹 Cleaning up..."
+        rm deploy_key.pem
+        
+        echo "🎉 Deployment completed successfully!"
+
+

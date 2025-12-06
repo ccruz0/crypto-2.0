@@ -1,0 +1,811 @@
+"""Dashboard API endpoints
+Provides unified dashboard state endpoint for frontend
+"""
+import time
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Body
+from sqlalchemy import and_, or_, text
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.deps.auth import get_current_user
+from app.models.exchange_balance import ExchangeBalance
+from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+from app.models.trade_signal import PresetEnum, RiskProfileEnum, SignalStatusEnum, TradeSignal
+from app.models.watchlist import WatchlistItem
+from app.services.brokers.crypto_com_trade import trade_client
+    # 🔥 TEMP DISABLED: from app.services.exchange_sync import exchange_sync_service
+from app.services.portfolio_cache import get_portfolio_summary
+    # 🔥 TEMP DISABLED: # NOTE: update_portfolio_cache is NOT imported - this endpoint ONLY reads from cache
+    # 🔥 TEMP DISABLED: # Background service (exchange_sync) updates the cache automatically
+
+router = APIRouter()
+log = logging.getLogger("app.dashboard")
+
+
+@router.get("/dashboard")
+def get_dashboard(db: Session = Depends(get_db)):
+    # No auth required - this endpoint is public for dashboard data
+    """Get all watchlist items with complete data - OPTIMIZED FAST VERSION"""
+    import time as time_module
+    start_time = time_module.time()
+    
+    if db is None:
+        log.error("Database session is None - database not available")
+        return []
+    
+    try:
+        # Use timeout for database query to prevent hanging
+        # Get watchlist items with explicit timeout
+        items = []
+        try:
+            # Execute query and immediately convert to list to avoid lazy loading issues
+            # Use explicit session management to prevent hanging
+            items = list(db.query(WatchlistItem).limit(100).all())
+            # Immediately close the query result to free resources
+            query_time = time_module.time() - start_time
+            log.info(f"Query completed in {query_time:.3f}s, returning {len(items)} watchlist items")
+        except Exception as query_err:
+            log.error(f"Database query error: {query_err}", exc_info=True)
+            if db:
+                try:
+                    db.rollback()  # Rollback on error
+                except:
+                    pass
+            return []
+        
+        # Build result quickly - avoid any operations that can hang
+        result = []
+        for item in items:
+            try:
+                result.append({
+                    "id": item.id,
+                    "symbol": item.symbol,
+                    "exchange": item.exchange,
+                    "alert_enabled": item.alert_enabled,
+                    "trade_enabled": item.trade_enabled,
+                    "trade_amount_usd": item.trade_amount_usd,
+                    "trade_on_margin": item.trade_on_margin,
+                    "sl_tp_mode": item.sl_tp_mode,
+                    "sl_percentage": item.sl_percentage,
+                    "tp_percentage": item.tp_percentage,
+                    "sl_price": item.sl_price,
+                    "tp_price": item.tp_price,
+                    "buy_target": item.buy_target,
+                    "take_profit": item.take_profit,
+                    "stop_loss": item.stop_loss,
+                    # Market data from watchlist (frontend will merge with top-coins-data)
+                    "price": item.price,
+                    "rsi": item.rsi,
+                    "atr": item.atr,
+                    "ma50": item.ma50,
+                    "ma200": item.ma200,
+                    "ema10": item.ema10,
+                    "res_up": item.res_up,
+                    "res_down": item.res_down,
+                    # Order data
+                    "order_status": item.order_status,
+                    "order_date": item.order_date.isoformat() if item.order_date else None,
+                    "purchase_price": item.purchase_price,
+                    "quantity": item.quantity,
+                    "sold": item.sold,
+                    "sell_price": item.sell_price,
+                    "notes": item.notes,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "signals": item.signals,
+                    "skip_sl_tp_reminder": item.skip_sl_tp_reminder
+                })
+            except Exception as item_err:
+                log.warning(f"Error processing item {item.id}: {item_err}")
+                continue
+        
+        total_time = time_module.time() - start_time
+        log.info(f"Dashboard endpoint completed in {total_time:.3f}s, returning {len(result)} items")
+        
+        if total_time > 1.0:
+            log.warning(f"⚠️ Dashboard endpoint took {total_time:.3f}s - this is slow! Should be < 0.5 seconds.")
+        
+        return result
+    except Exception as e:
+        log.error(f"Error in dashboard endpoint: {e}", exc_info=True)
+        if db:
+            try:
+                db.rollback()
+            except:
+                pass
+        return []
+
+
+@router.post("/dashboard")
+def add_to_dashboard(
+    item: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Add new watchlist item"""
+    try:
+        symbol = item.get("symbol", "").upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        
+        # Log what we're receiving for debugging
+        log.info(f"Creating/updating watchlist item for {symbol} with data: {item}")
+        
+        # Check if item already exists - if it does, update it instead of creating new
+        existing = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+        if existing:
+            # Update existing item instead of raising error
+            log.info(f"Watchlist item for {symbol} already exists (ID={existing.id}), updating it")
+            watchlist_item = existing
+            # Update all provided fields
+            if "alert_enabled" in item:
+                watchlist_item.alert_enabled = item["alert_enabled"]
+            if "trade_enabled" in item:
+                old_value = watchlist_item.trade_enabled
+                watchlist_item.trade_enabled = item["trade_enabled"]
+                log.info(f"Updated trade_enabled for {symbol}: {old_value} -> {watchlist_item.trade_enabled}")
+            if "trade_amount_usd" in item:
+                watchlist_item.trade_amount_usd = item["trade_amount_usd"]
+            if "trade_on_margin" in item:
+                watchlist_item.trade_on_margin = item["trade_on_margin"]
+            if "sl_tp_mode" in item:
+                watchlist_item.sl_tp_mode = item["sl_tp_mode"]
+            if "sl_percentage" in item:
+                watchlist_item.sl_percentage = item["sl_percentage"]
+            if "tp_percentage" in item:
+                watchlist_item.tp_percentage = item["tp_percentage"]
+            if "sl_price" in item:
+                watchlist_item.sl_price = item["sl_price"]
+            if "tp_price" in item:
+                watchlist_item.tp_price = item["tp_price"]
+            if "buy_target" in item:
+                watchlist_item.buy_target = item["buy_target"]
+            if "take_profit" in item:
+                watchlist_item.take_profit = item["take_profit"]
+            if "stop_loss" in item:
+                watchlist_item.stop_loss = item["stop_loss"]
+            db.commit()
+            db.refresh(watchlist_item)
+        else:
+            # Create new watchlist item
+            watchlist_item = WatchlistItem(
+                symbol=symbol,
+                exchange=item.get("exchange", "CRYPTO_COM"),
+                alert_enabled=item.get("alert_enabled", False),
+                trade_enabled=item.get("trade_enabled", False),
+                trade_amount_usd=item.get("trade_amount_usd"),
+                trade_on_margin=item.get("trade_on_margin", False),
+                sl_tp_mode=item.get("sl_tp_mode", "conservative"),
+                sl_percentage=item.get("sl_percentage"),
+                tp_percentage=item.get("tp_percentage"),
+                sl_price=item.get("sl_price"),
+                tp_price=item.get("tp_price"),
+                buy_target=item.get("buy_target"),
+                take_profit=item.get("take_profit"),
+                stop_loss=item.get("stop_loss")
+            )
+            
+            db.add(watchlist_item)
+            db.commit()
+            db.refresh(watchlist_item)
+        
+        log.info(f"Created/Updated watchlist item for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        return {
+            "id": watchlist_item.id,
+            "symbol": watchlist_item.symbol,
+            "exchange": watchlist_item.exchange,
+            "alert_enabled": watchlist_item.alert_enabled,
+            "trade_enabled": watchlist_item.trade_enabled,
+            "trade_amount_usd": watchlist_item.trade_amount_usd,
+            "trade_on_margin": watchlist_item.trade_on_margin,
+            "sl_price": watchlist_item.sl_price,
+            "tp_price": watchlist_item.tp_price
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error creating watchlist item: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/dashboard/{item_id}")
+def update_dashboard_item(
+    item_id: int,
+    item: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Update watchlist item"""
+    try:
+        watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
+        
+        if not watchlist_item:
+            raise HTTPException(status_code=404, detail=f"Watchlist item {item_id} not found")
+        
+        # Log what we're receiving for debugging
+        log.info(f"Updating watchlist item {item_id} ({watchlist_item.symbol}) with data: {item}")
+        log.info(f"Current state before update: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        # Update all provided fields
+        if "symbol" in item:
+            watchlist_item.symbol = item["symbol"].upper()
+        if "exchange" in item:
+            watchlist_item.exchange = item["exchange"]
+        if "alert_enabled" in item:
+            watchlist_item.alert_enabled = item["alert_enabled"]
+        if "trade_enabled" in item:
+            old_value = watchlist_item.trade_enabled
+            new_value = item["trade_enabled"]
+            log.info(f"🔵 Received trade_enabled in request: {new_value} (type: {type(new_value).__name__})")
+            watchlist_item.trade_enabled = new_value
+            log.info(f"✅ Updated trade_enabled for {watchlist_item.symbol}: {old_value} -> {watchlist_item.trade_enabled}")
+        else:
+            log.warning(f"⚠️ trade_enabled NOT in request data for {watchlist_item.symbol}. Keys in request: {list(item.keys())}")
+        if "trade_amount_usd" in item:
+            watchlist_item.trade_amount_usd = item["trade_amount_usd"]
+        if "trade_on_margin" in item:
+            watchlist_item.trade_on_margin = item["trade_on_margin"]
+        if "sl_tp_mode" in item:
+            watchlist_item.sl_tp_mode = item["sl_tp_mode"]
+        if "sl_percentage" in item:
+            watchlist_item.sl_percentage = item["sl_percentage"]
+        if "tp_percentage" in item:
+            watchlist_item.tp_percentage = item["tp_percentage"]
+        if "sl_price" in item:
+            watchlist_item.sl_price = item["sl_price"]
+        if "tp_price" in item:
+            watchlist_item.tp_price = item["tp_price"]
+        if "buy_target" in item:
+            watchlist_item.buy_target = item["buy_target"]
+        if "take_profit" in item:
+            watchlist_item.take_profit = item["take_profit"]
+        if "stop_loss" in item:
+            watchlist_item.stop_loss = item["stop_loss"]
+        
+        db.commit()
+        db.refresh(watchlist_item)
+        
+        log.info(f"Updated watchlist item {item_id} ({watchlist_item.symbol}): trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        return {
+            "id": watchlist_item.id,
+            "symbol": watchlist_item.symbol,
+            "exchange": watchlist_item.exchange,
+            "alert_enabled": watchlist_item.alert_enabled,
+            "trade_enabled": watchlist_item.trade_enabled,
+            "trade_amount_usd": watchlist_item.trade_amount_usd,
+            "trade_on_margin": watchlist_item.trade_on_margin,
+            "sl_price": watchlist_item.sl_price,
+            "tp_price": watchlist_item.tp_price
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating watchlist item {item_id}: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dashboard/{item_id}")
+def delete_dashboard_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Delete watchlist item"""
+    try:
+        watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
+        
+        if not watchlist_item:
+            raise HTTPException(status_code=404, detail=f"Watchlist item {item_id} not found")
+        
+        symbol = watchlist_item.symbol
+        db.delete(watchlist_item)
+        db.commit()
+        
+        log.info(f"Deleted watchlist item {item_id} ({symbol})")
+        
+        return {"ok": True, "message": f"Deleted watchlist item for {symbol}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting watchlist item {item_id}: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def timed(label: str, func, *args, **kwargs) -> Tuple[Any, Optional[Exception]]:
+    """
+    Wrapper to time a function call and log duration.
+    Returns (result, error) tuple. error is None if successful.
+    """
+    t0 = time.perf_counter()
+    try:
+        res = func(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.info("dashboard.%s.ms=%.1f", label, elapsed_ms)
+        return res, None
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.error("dashboard.%s.error=%s ms=%.1f", label, repr(e), elapsed_ms, exc_info=True)
+        return None, e
+
+
+@router.get("/dashboard/state")
+def get_dashboard_state(db: Session = Depends(get_db)):
+    """
+    Get complete dashboard state in a single response - optimized for speed
+    
+    Returns:
+        {
+            "balances": [...],
+            "fast_signals": [...],  # should_trade=true or order_placed/filled
+            "slow_signals": [...],  # rest
+            "open_orders": [...],
+            "last_sync": "2025-10-31T06:20:00Z",
+            "bot_status": {
+                "is_running": true/false,
+                "status": "running" or "stopped",
+                "reason": "reason for stopped" or null
+            },
+            "partial": false,  # true if any query timed out
+            "errors": []  # list of error labels if partial=true
+        }
+    """
+    import time as time_module
+    start_time = time_module.time()
+    
+    # Track partial responses and errors
+    partial_response = False
+    error_labels = []
+    
+    try:
+        log.info("Starting dashboard state fetch")
+        
+        # Set per-request statement timeout (5 seconds) to prevent hanging queries
+        # This only affects queries in this request, not globally
+        # PostgreSQL statement_timeout is in milliseconds: 5000ms = 5 seconds
+        # SET LOCAL applies to the current transaction and doesn't require commit
+        # TEMPORARILY DISABLED TO ISOLATE HANGING ISSUE
+        # try:
+        #     db.execute(text("SET LOCAL statement_timeout = 5000"))  # Value in milliseconds without quotes
+        #     log.debug("Set statement_timeout=5000ms for this request")
+        # except Exception as e:
+        #     # If PostgreSQL doesn't support SET LOCAL or we're using SQLite, continue without it
+        #     log.debug(f"Could not set statement_timeout (may be SQLite or unsupported): {e}")
+    # 🔥 TEMP DISABLED:         # Get bot status - check both exchange_sync and signal_monitor services (fast, non-blocking)
+        try:
+            exchange_sync_running = exchange_sync_service.is_running
+        except Exception as e:
+    # 🔥 TEMP DISABLED:             log.warning(f"Could not check exchange_sync status: {e}")
+            exchange_sync_running = False
+        
+        # Also check signal_monitor service status
+        signal_monitor_running = False
+        try:
+            from app.services.signal_monitor import signal_monitor_service
+            signal_monitor_running = signal_monitor_service.is_running
+        except Exception as e:
+            log.warning(f"Could not check signal_monitor status: {e}")
+        
+        # Bot is running if at least one service is running
+    # 🔥 TEMP DISABLED:         # Both services are important: exchange_sync for balances/orders, signal_monitor for trading signals
+        bot_is_running = exchange_sync_running or signal_monitor_running
+        bot_status = "running" if bot_is_running else "stopped"
+        bot_reason = None
+        
+        if not bot_is_running:
+            # Check why bot is stopped
+            reasons = []
+            if not exchange_sync_running:
+                if exchange_sync_service.last_sync is None:
+                    reasons.append("Exchange sync service never started")
+                else:
+                    # Calculate time since last sync
+                    now = datetime.now(timezone.utc)
+                    if exchange_sync_service.last_sync.tzinfo is None:
+                        # Handle timezone-naive datetime (legacy)
+                        last_sync_utc = exchange_sync_service.last_sync.replace(tzinfo=timezone.utc)
+                    else:
+                        last_sync_utc = exchange_sync_service.last_sync
+                    time_since_sync = (now - last_sync_utc).total_seconds()
+                    if time_since_sync > exchange_sync_service.sync_interval * 3:  # 3 times the interval
+                        reasons.append(f"Exchange sync stopped ({int(time_since_sync)}s ago)")
+            
+            if not signal_monitor_running:
+                reasons.append("Signal monitor service not running")
+            
+            if reasons:
+                bot_reason = "; ".join(reasons)
+        
+        # Fetch balances from cached portfolio data (backend-maintained cache)
+        # Frontend only reads from this cache - no external API calls
+        balance_data = []
+        total_usd_value = 0.0
+        portfolio_last_updated_iso = None
+        portfolio_summary = {}
+        PORTFOLIO_STALENESS_SECONDS = 60
+        
+        # Fetch portfolio summary with timing
+        portfolio_summary, portfolio_err = timed("portfolio", get_portfolio_summary, db)
+        if portfolio_err:
+            error_labels.append("portfolio")
+            partial_response = True
+            portfolio_summary = {}
+            total_usd_value = 0.0
+            last_updated_ts = None
+            portfolio_last_updated_iso = None
+        else:
+            portfolio_summary = portfolio_summary or {}
+            total_usd_value = float(portfolio_summary.get("total_usd", 0.0) or 0.0)
+            last_updated_ts = portfolio_summary.get("last_updated")
+            if last_updated_ts:
+                portfolio_last_updated_iso = datetime.fromtimestamp(last_updated_ts, tz=timezone.utc).isoformat()
+            log.debug(f"Portfolio cache read: {len(portfolio_summary.get('balances', []))} balances, total_usd=${total_usd_value:,.2f}")
+        
+        # NEVER refresh cache on-demand - always use existing cache (even if stale)
+    # 🔥 TEMP DISABLED:         # Background service (exchange_sync) updates cache every 5 seconds
+        # This prevents timeout issues when external APIs (CoinGecko) are slow
+        # Better to return stale data than timeout - frontend can show "last updated X minutes ago"
+        if portfolio_summary.get("balances"):
+            if last_updated_ts:
+                age_seconds = time.time() - last_updated_ts
+                if age_seconds > PORTFOLIO_STALENESS_SECONDS:
+                    log.debug(f"Using stale portfolio cache ({age_seconds:.1f}s old) - background service should update it soon")
+        else:
+            # Cache is completely empty - this should only happen on first startup
+            # Don't refresh here - it will timeout. Background service will populate it.
+            log.warning("Portfolio cache is empty - background service will populate it. Returning empty balances for now.")
+            portfolio_summary = {"balances": [], "total_usd": 0.0, "last_updated": None}
+        
+        # Use portfolio cache directly (no merge with ExchangeBalance needed)
+        # Portfolio cache already has all balances with USD values calculated by backend
+        # Frontend ONLY reads from this cache - no external API calls
+        if portfolio_summary.get("balances"):
+            log.debug(f"Using portfolio cache with {len(portfolio_summary['balances'])} balances, total_usd=${total_usd_value:,.2f}")
+            
+            # Get ExchangeBalance data for free/locked breakdown if available
+            # OPTIMIZED: Only query if we have balances to match, with timeout protection
+            exchange_balance_map = {}
+            if portfolio_summary.get("balances"):
+                def fetch_exchange_balances():
+                    portfolio_assets = [e.get("currency", "").upper() for e in portfolio_summary["balances"] if e.get("currency")]
+                    if portfolio_assets:
+                        portfolio_assets_limited = portfolio_assets[:20]
+                        return db.query(ExchangeBalance).filter(
+                            ExchangeBalance.asset.in_(portfolio_assets_limited)
+                        ).limit(20).all()
+                    return []
+                
+                db_balances_result, db_balances_err = timed("exchange_balances", fetch_exchange_balances)
+                if db_balances_err:
+                    log.debug("Could not fetch ExchangeBalance for free/locked breakdown - continuing without it")
+                else:
+                    for bal in (db_balances_result or []):
+                            asset = (bal.asset or "").upper()
+                            if asset:
+                                exchange_balance_map[asset] = {
+                                    "free": float(bal.free),
+                                    "locked": float(bal.locked),
+                                    "total": float(bal.total)
+                                }
+            
+            # Build balance data directly from portfolio cache (backend-maintained)
+            for entry in portfolio_summary["balances"]:
+                currency = (entry.get("currency") or "").upper()
+                if not currency:
+                    continue
+                
+                # Get balance amounts from cache (backend already calculated USD values)
+                cache_balance = float(entry.get("balance", 0.0) or 0.0)
+                usd_value = float(entry.get("usd_value", 0.0) or 0.0)
+                
+                # Log warning if USD value is missing from cache (shouldn't happen)
+                if usd_value == 0.0 and cache_balance > 0 and currency not in ["USD", "USDT"]:
+                    log.debug(f"USD value is 0 for {currency} with balance {cache_balance} (may not have price data)")
+                
+                # Use ExchangeBalance for free/locked breakdown if available, otherwise use cache balance
+                if currency in exchange_balance_map:
+                    free = exchange_balance_map[currency]["free"]
+                    locked = exchange_balance_map[currency]["locked"]
+                    total = exchange_balance_map[currency]["total"]
+                else:
+                    # Fallback to cache balance for all fields
+                    free = cache_balance
+                    locked = 0.0
+                    total = cache_balance
+                
+                # Include all balances > 0 (even if USD value is 0 - backend will update it)
+                if total > 0 or usd_value > 0:
+                    balance_data.append({
+                        "asset": currency,
+                        "balance": total,
+                        "free": free,
+                        "locked": locked,
+                        "total": total,
+                        "usd_value": usd_value,  # From backend cache
+                        "quantity": total,
+                        "max_withdrawal": free,
+                        "market_value": usd_value  # Same as usd_value
+                    })
+        else:
+            log.warning("Portfolio cache has no balances - may need refresh")
+        
+        # Ensure total_usd_value is set correctly (use from cache or calculate from balances)
+        if total_usd_value == 0.0 and balance_data:
+            calculated_total = sum(item.get("usd_value", 0.0) for item in balance_data)
+            if calculated_total > 0:
+                log.info(f"Calculated total_usd_value from balances: ${calculated_total:,.2f}")
+                total_usd_value = calculated_total
+        
+        # Log balance data summary for debugging
+        balances_with_usd = [b for b in balance_data if b.get("usd_value", 0.0) > 0]
+        log.info(f"Dashboard state: {len(balance_data)} balances total, {len(balances_with_usd)} with USD values, total_usd=${total_usd_value:,.2f}")
+        if balances_with_usd:
+            log.debug(f"Top 5 balances by USD value:")
+            for b in sorted(balances_with_usd, key=lambda x: x.get("usd_value", 0.0), reverse=True)[:5]:
+                log.debug(f"  {b.get('asset')}: ${b.get('usd_value', 0.0):,.2f} (balance: {b.get('balance', 0.0):.8f})")
+        
+        # Get fast signals (should_trade=true OR status in order_placed/filled) with timing
+        def fetch_fast_signals():
+            return db.query(TradeSignal).filter(
+                or_(
+                    TradeSignal.should_trade == True,
+                    TradeSignal.status.in_([SignalStatusEnum.ORDER_PLACED, SignalStatusEnum.FILLED])
+                )
+            ).order_by(TradeSignal.last_update_at.desc()).limit(20).all()
+        
+        fast_signals_result, fast_signals_err = timed("fast_signals", fetch_fast_signals)
+        if fast_signals_err:
+            error_labels.append("fast_signals")
+            partial_response = True
+            fast_signals = []
+        else:
+            fast_signals = fast_signals_result or []
+        
+        fast_signals_data = []
+        for signal in fast_signals:
+            fast_signals_data.append({
+                "symbol": signal.symbol,
+                "preset": signal.preset.value if signal.preset else None,
+                "sl_profile": signal.sl_profile.value if signal.sl_profile else None,
+                "rsi": signal.rsi,
+                "ma50": signal.ma50,
+                "ma200": signal.ma200,
+                "ema10": signal.ema10,
+                "ma10w": signal.ma10w,
+                "atr": signal.atr,
+                "resistance_up": signal.resistance_up,
+                "resistance_down": signal.resistance_down,
+                "current_price": signal.current_price,
+                "volume_24h": signal.volume_24h,
+                "volume_ratio": signal.volume_ratio,
+                "status": signal.status.value if signal.status else None,
+                "should_trade": signal.should_trade,
+                "exchange_order_id": signal.exchange_order_id,
+                "last_update_at": signal.last_update_at.isoformat() if signal.last_update_at else None,
+                "refresh_hint": "fast"
+            })
+        
+        # Get slow signals (rest) with timing
+        def fetch_slow_signals():
+            return db.query(TradeSignal).filter(
+                and_(
+                    TradeSignal.should_trade == False,
+                    ~TradeSignal.status.in_([SignalStatusEnum.ORDER_PLACED, SignalStatusEnum.FILLED])
+                )
+            ).order_by(TradeSignal.last_update_at.desc()).limit(20).all()  # Optimized limit for speed
+            
+        slow_signals_result, slow_signals_err = timed("slow_signals", fetch_slow_signals)
+        if slow_signals_err:
+            error_labels.append("slow_signals")
+            partial_response = True
+            slow_signals = []
+        else:
+            slow_signals = slow_signals_result or []
+        
+        slow_signals_data = []
+        for signal in slow_signals:
+            slow_signals_data.append({
+                "symbol": signal.symbol,
+                "preset": signal.preset.value if signal.preset else None,
+                "sl_profile": signal.sl_profile.value if signal.sl_profile else None,
+                "rsi": signal.rsi,
+                "ma50": signal.ma50,
+                "ma200": signal.ma200,
+                "ema10": signal.ema10,
+                "ma10w": signal.ma10w,
+                "atr": signal.atr,
+                "resistance_up": signal.resistance_up,
+                "resistance_down": signal.resistance_down,
+                "current_price": signal.current_price,
+                "volume_24h": signal.volume_24h,
+                "volume_ratio": signal.volume_ratio,
+                "status": signal.status.value if signal.status else None,
+                "should_trade": signal.should_trade,
+                "exchange_order_id": signal.exchange_order_id,
+                "last_update_at": signal.last_update_at.isoformat() if signal.last_update_at else None,
+                "refresh_hint": "slow"
+            })
+        
+        # Get open orders - USE DATABASE FIRST (much faster), only call API if DB is empty/old
+        # exchange_sync_service updates the database every few seconds, so DB data should be fresh
+        open_orders_data = []
+        
+        # Try database first (fast) with timing
+        def fetch_open_orders():
+            return db.query(ExchangeOrder).filter(
+                ExchangeOrder.status.in_([
+                    OrderStatusEnum.NEW,
+                    OrderStatusEnum.ACTIVE,
+                    OrderStatusEnum.PARTIALLY_FILLED
+                ])
+            ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(30).all()
+        
+        db_orders_result, db_orders_err = timed("open_orders", fetch_open_orders)
+        if db_orders_err:
+            error_labels.append("open_orders")
+            partial_response = True
+            db_orders = []
+        else:
+            db_orders = db_orders_result or []
+            
+            if db_orders and len(db_orders) > 0:
+                # Use database orders - they're updated by exchange_sync_service
+                log.debug(f"Using {len(db_orders)} open orders from database")
+                for order in db_orders:
+                    open_orders_data.append({
+                        "exchange_order_id": order.exchange_order_id,
+                        "symbol": order.symbol,
+                        "side": order.side.value if order.side else None,
+                        "order_type": order.order_type,
+                        "status": order.status.value if order.status else None,
+                        "price": float(order.price) if order.price else None,
+                        "quantity": float(order.quantity) if order.quantity else None,
+                        "cumulative_quantity": float(order.cumulative_quantity) if order.cumulative_quantity else None,
+                        "cumulative_value": float(order.cumulative_value) if order.cumulative_value else None,
+                        "avg_price": float(order.avg_price) if order.avg_price else None,
+                        "created_at": order.exchange_create_time.isoformat() if order.exchange_create_time else None,
+                        "updated_at": order.exchange_update_time.isoformat() if order.exchange_update_time else None
+                    })
+        
+        # Only call API if database is empty
+        if not open_orders_data:
+            log.debug("Database empty, fetching open orders from Crypto.com API...")
+            try:
+                response = trade_client.get_open_orders()
+                
+                if response and "data" in response:
+                    orders = response.get("data", [])
+                    
+                    for order in orders:
+                        try:
+                            # Extract order data from Crypto.com API format
+                            order_id = order.get("order_id") or order.get("client_oid", "")
+                            instrument_name = order.get("instrument_name", "")
+                            order_type = order.get("order_type", "").upper()
+                            side = order.get("side", "").upper()
+                            status = order.get("status", "").upper()
+                            
+                            # Convert quantity and price
+                            quantity = 0.0
+                            price = 0.0
+                            order_value = 0.0
+                            avg_price = 0.0
+                            cumulative_quantity = 0.0
+                            cumulative_value = 0.0
+                            
+                            if order.get("quantity"):
+                                quantity = float(order.get("quantity"))
+                            if order.get("limit_price"):
+                                price = float(order.get("limit_price"))
+                            elif order.get("price"):
+                                price = float(order.get("price"))
+                            if order.get("order_value"):
+                                order_value = float(order.get("order_value"))
+                            if order.get("avg_price"):
+                                avg_price = float(order.get("avg_price"))
+                            if order.get("cumulative_quantity"):
+                                cumulative_quantity = float(order.get("cumulative_quantity"))
+                            if order.get("cumulative_value"):
+                                cumulative_value = float(order.get("cumulative_value"))
+                            
+                            # Parse timestamps
+                            create_time = order.get("create_time", 0)
+                            update_time = order.get("update_time", create_time)
+                            
+                            # Convert Crypto.com timestamp (milliseconds) to ISO format
+                            created_at = None
+                            updated_at = None
+                            if create_time:
+                                try:
+                                    # Crypto.com timestamps are in milliseconds
+                                    if create_time > 1e12:  # milliseconds
+                                        created_at = datetime.fromtimestamp(create_time / 1000, tz=timezone.utc).isoformat()
+                                    else:  # seconds
+                                        created_at = datetime.fromtimestamp(create_time, tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    created_at = None
+                            
+                            if update_time:
+                                try:
+                                    if update_time > 1e12:  # milliseconds
+                                        updated_at = datetime.fromtimestamp(update_time / 1000, tz=timezone.utc).isoformat()
+                                    else:  # seconds
+                                        updated_at = datetime.fromtimestamp(update_time, tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    updated_at = None
+                            
+                            # Map Crypto.com status to our status enum
+                            status_mapping = {
+                                "ACTIVE": "ACTIVE",
+                                "OPEN": "ACTIVE",
+                                "PENDING": "ACTIVE",
+                                "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+                                "FILLED": "FILLED",
+                                "CANCELLED": "CANCELLED",
+                                "REJECTED": "REJECTED"
+                            }
+                            mapped_status = status_mapping.get(status, status)
+                            
+                            open_orders_data.append({
+                                "exchange_order_id": order_id,
+                                "symbol": instrument_name,
+                                "side": side,
+                                "order_type": order_type,
+                                "status": mapped_status,
+                                "price": price if price > 0 else None,
+                                "quantity": quantity if quantity > 0 else None,
+                                "cumulative_quantity": cumulative_quantity if cumulative_quantity > 0 else None,
+                                "cumulative_value": cumulative_value if cumulative_value > 0 else None,
+                                "avg_price": avg_price if avg_price > 0 else None,
+                                "order_value": order_value if order_value > 0 else None,
+                                "created_at": created_at,
+                                "updated_at": updated_at
+                            })
+                        except Exception as e:
+                            log.warning(f"Error parsing order {order.get('order_id', 'unknown')}: {e}")
+                            continue
+                    
+                    log.info(f"Retrieved {len(open_orders_data)} open orders directly from Crypto.com API")
+                else:
+                    log.warning("No orders data in Crypto.com response")
+            except Exception as e:
+                log.warning(f"Error fetching open orders from Crypto.com API: {e}")
+        
+        # Get last sync time
+        last_sync = exchange_sync_service.last_sync
+        last_sync_str = last_sync.isoformat() if last_sync else None
+        
+        elapsed_time = time_module.time() - start_time
+        log.info(f"✅ Dashboard state fetched in {elapsed_time:.2f}s: {len(balance_data)} balances, {len(fast_signals_data)} fast signals, {len(slow_signals_data)} slow signals, {len(open_orders_data)} open orders")
+        
+        if elapsed_time > 5.0:
+            log.warning(f"⚠️ Dashboard state fetch took {elapsed_time:.2f}s - this is slow! Should be < 1 second")
+        
+        return {
+            "source": "portfolio_cache" if balance_data else "crypto.com",
+            "total_usd_value": total_usd_value,
+            "balances": balance_data,
+            "fast_signals": fast_signals_data,
+            "slow_signals": slow_signals_data,
+            "open_orders": open_orders_data,
+            "last_sync": last_sync_str,
+            "portfolio_last_updated": portfolio_last_updated_iso,
+            "bot_status": {
+                "is_running": bot_is_running,
+                "status": bot_status,
+                "reason": bot_reason
+            },
+            "partial": partial_response,
+            "errors": error_labels
+        }
+        
+    except Exception as e:
+        log.error(f"Error getting dashboard state: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting dashboard state: {str(e)}")

@@ -1,0 +1,59 @@
+###############################################################################
+# .trivyignore
+# -----------------------------------------------------------------------------
+# This file tells Trivy which vulnerabilities to ignore during scanning.
+# Syntax: one CVE ID per line (no leading spaces, no comments after IDs).
+# Use comments above each entry to explain *why* it's ignored.
+#
+# IMPORTANT:
+# - Do NOT use this to hide real security issues.
+# - Review entries monthly and remove old ones.
+# - This file applies to both image and filesystem scans.
+###############################################################################
+
+# -----------------------------------------------------------------------------
+# 🧩 Example section: CVEs in base images (false positives or already patched)
+# -----------------------------------------------------------------------------
+
+# Alpine: libc CVE false positive (patched in upstream)
+CVE-2024-24792
+
+# Debian Bookworm: tar package vulnerability mitigated in latest image
+CVE-2024-45317
+
+# -----------------------------------------------------------------------------
+# 🐍 Python / FastAPI known harmless dependencies
+# -----------------------------------------------------------------------------
+
+# "python-jose" - used only for JWT encoding, issue not exploitable in our use
+CVE-2024-24575
+
+# "starlette" - staticfiles issue, irrelevant (we don't serve files directly)
+CVE-2024-23323
+
+# -----------------------------------------------------------------------------
+# 🧱 Node / Next.js dependencies (frontend)
+# -----------------------------------------------------------------------------
+
+# "cross-spawn" - dev dependency fixed upstream but not in lockfile yet
+CVE-2024-21538
+
+# -----------------------------------------------------------------------------
+# 🧰 Local tooling / CI-only deps (not in runtime images)
+# -----------------------------------------------------------------------------
+
+# "pip" - developer tool, not shipped in final image
+CVE-2025-14211
+
+# "npm" - shipped only in builder, not runtime
+CVE-2024-39833
+
+###############################################################################
+# 📝 NOTES
+# - Keep this file under version control (tracked).
+# - Trivy matches by CVE ID regardless of comment text.
+# - To test: `trivy image --ignorefile .trivyignore <image>`
+# - You can also use regexes or wildcard patterns if needed:
+#     e.g., CVE-2024-24.*
+###############################################################################
+

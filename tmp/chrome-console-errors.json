@@ -1,0 +1,11 @@
+[
+  {
+    "type": "request_failed",
+    "message": "Request failed: GET http://localhost:3000/",
+    "location": {
+      "url": "http://localhost:3000/"
+    },
+    "stack": "net::ERR_CONNECTION_REFUSED",
+    "timestamp": "2025-11-23T13:03:55.663Z"
+  }
+]

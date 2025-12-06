@@ -1,0 +1,165 @@
+name: Security Scan (Trivy)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # para subir SARIF
+  actions: read
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      # ---------- Build images (no push) ----------
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: false
+          tags: local/atp-frontend:ci
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: local/atp-backend:ci
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Build db image (optional)
+        if: hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/postgres
+          file: ./docker/postgres/Dockerfile
+          push: false
+          tags: local/atp-postgres:ci
+          sbom: true
+          provenance: false
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      # ---------- Trivy image scans ----------
+
+      - name: Trivy Scan (frontend image)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-frontend:ci
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Trivy Scan (backend image)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-backend:ci
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Trivy Scan (db image)
+        if: hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          image-ref: local/atp-postgres:ci
+          format: sarif
+          output: trivy-db.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      # ---------- Trivy filesystem scan (IaC / code deps) ----------
+
+      - name: Trivy FS (repo)
+        uses: aquasecurity/trivy-action@0.21.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'   # no bloquear PR por findings de FS en esta primera fase
+          ignore-unfixed: true
+
+      # ---------- Upload SARIF to GitHub Code Scanning ----------
+
+      - name: Upload SARIF (frontend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+
+      - name: Upload SARIF (backend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+
+      - name: Upload SARIF (db)
+        if: always() && hashFiles('./docker/postgres/Dockerfile') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-db.sarif
+
+      - name: Upload SARIF (fs)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+
+      # ---------- Artifacts ----------
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-frontend.sarif
+            trivy-backend.sarif
+            trivy-db.sarif
+            trivy-fs.sarif
+          if-no-files-found: ignore
+

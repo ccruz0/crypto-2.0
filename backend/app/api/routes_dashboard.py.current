@@ -1,0 +1,1618 @@
+"""Dashboard API endpoints
+Provides unified dashboard state endpoint for frontend
+"""
+import time
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Body
+from sqlalchemy import and_, or_, text
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.deps.auth import get_current_user
+from app.models.exchange_balance import ExchangeBalance
+from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+from app.models.trade_signal import PresetEnum, RiskProfileEnum, SignalStatusEnum, TradeSignal
+from app.models.watchlist import WatchlistItem
+from app.services.brokers.crypto_com_trade import trade_client
+from app.services.exchange_sync import exchange_sync_service
+from app.services.portfolio_cache import get_portfolio_summary
+from app.services.strategy_profiles import resolve_strategy_profile
+# NOTE: update_portfolio_cache is NOT imported - this endpoint ONLY reads from cache
+# Background service (exchange_sync) updates the cache automatically
+
+router = APIRouter()
+log = logging.getLogger("app.dashboard")
+
+from app.services.config_loader import load_config
+
+DEBUG_DASHBOARD_FAST_PATH = False  # Disabled - use full optimized endpoint
+
+
+@router.get("/dashboard")
+def get_dashboard(db: Session = Depends(get_db)):
+    # No auth required - this endpoint is public for dashboard data
+    """Get all watchlist items with complete data - OPTIMIZED FAST VERSION
+    
+    OPTIMIZED: 
+    - Uses statement_timeout to prevent hanging queries
+    - Only queries WatchlistItem table (no joins to market_data)
+    - Market data fields (price, rsi, etc.) come from WatchlistItem columns, not MarketData table
+    - If market data is needed, it should be pre-populated in WatchlistItem by background services
+    """
+    import time as time_module
+    start_time = time_module.time()
+    
+    if db is None:
+        log.error("Database session is None - database not available")
+        return []
+    
+    try:
+        # Set per-request statement timeout (1 second) to prevent hanging queries
+        # This only affects queries in this request, not globally
+        # PostgreSQL statement_timeout is in milliseconds: 1000ms = 1 second
+        try:
+            db.execute(text("SET LOCAL statement_timeout = 1000"))  # Value in milliseconds without quotes
+            log.debug("Set statement_timeout=1000ms for /api/dashboard request")
+        except Exception as e:
+            # If PostgreSQL doesn't support SET LOCAL or we're using SQLite, continue without it
+            log.debug(f"Could not set statement_timeout (may be SQLite or unsupported): {e}")
+        
+        # Use timeout for database query to prevent hanging
+        # Get watchlist items with explicit timeout
+        # IMPORTANT: Only query WatchlistItem table - do NOT join with MarketData
+        # Market data should be pre-populated in WatchlistItem columns by background services
+        items = []
+        try:
+            # Execute query and immediately convert to list to avoid lazy loading issues
+            # Use explicit session management to prevent hanging
+            # Only select columns we need - avoid any potential joins or lazy loading
+            # Filter out soft-deleted items (is_deleted = True)
+            # Only show active items in dashboard
+            # Deduplicate by symbol: keep only the most recent entry per symbol
+            try:
+                all_items = db.query(WatchlistItem).filter(
+                    WatchlistItem.is_deleted == False
+                ).order_by(WatchlistItem.created_at.desc()).all()
+            except Exception:
+                # Column doesn't exist yet - show all items
+                all_items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).all()
+            
+            seen_symbols = {}
+            items = []
+            for item in all_items:
+                if item.symbol not in seen_symbols:
+                    seen_symbols[item.symbol] = item
+                    items.append(item)
+                else:
+                    # If we find a duplicate, keep the one with the most recent created_at
+                    existing_item = seen_symbols[item.symbol]
+                    if item.created_at and existing_item.created_at:
+                        if item.created_at > existing_item.created_at:
+                            # Replace with newer entry
+                            items.remove(existing_item)
+                            seen_symbols[item.symbol] = item
+                            items.append(item)
+            
+            # Limit to 100 items after deduplication
+            items = items[:100]
+            # Immediately close the query result to free resources
+            query_time = time_module.time() - start_time
+            log.info(f"Query completed in {query_time:.3f}s, returning {len(items)} watchlist items")
+        except Exception as query_err:
+            log.error(f"Database query error: {query_err}", exc_info=True)
+            if db:
+                try:
+                    db.rollback()  # Rollback on error
+                except:
+                    pass
+            return []
+        
+        # Build result quickly - avoid any operations that can hang
+        result = []
+        for item in items:
+            try:
+                # Calculate trading signal (BUY/WAIT/SELL) if we have price data
+                signal = "WAIT"
+                try:
+                    if item.price and item.price > 0:
+                        from app.services.trading_signals import calculate_trading_signals
+
+                        strategy_type, risk_approach = resolve_strategy_profile(item.symbol, db, item)
+
+                        signals = calculate_trading_signals(
+                            symbol=item.symbol,
+                            price=item.price,
+                            rsi=item.rsi,
+                            atr14=item.atr,
+                            ma50=item.ma50,
+                            ma200=item.ma200,
+                            ema10=item.ema10,
+                            ma10w=item.ma200,  # Use ma200 as ma10w fallback
+                            volume=None,  # Not available in WatchlistItem
+                            avg_volume=None,
+                            resistance_up=item.res_up,
+                            buy_target=item.buy_target,
+                            last_buy_price=item.purchase_price if item.purchase_price and item.purchase_price > 0 else None,
+                            position_size_usd=item.trade_amount_usd or 100.0,
+                            rsi_buy_threshold=40,
+                            rsi_sell_threshold=70,
+                            strategy_type=strategy_type,
+                            risk_approach=risk_approach,
+                        )
+                        
+                        if signals.get("buy_signal"):
+                            signal = "BUY"
+                        elif signals.get("sell_signal"):
+                            signal = "SELL"
+                        else:
+                            signal = "WAIT"
+                except Exception as sig_err:
+                    log.debug(f"Could not calculate signal for {item.symbol}: {sig_err}")
+                    signal = "WAIT"  # Default to WAIT on error
+                
+                result.append({
+                    "id": item.id,
+                    "symbol": item.symbol,
+                    "exchange": item.exchange,
+                    "alert_enabled": item.alert_enabled,
+                    "trade_enabled": item.trade_enabled,
+                    "trade_amount_usd": item.trade_amount_usd,
+                    "trade_on_margin": item.trade_on_margin,
+                    "sl_tp_mode": item.sl_tp_mode,
+                    "min_price_change_pct": item.min_price_change_pct,
+                    "sl_percentage": item.sl_percentage,
+                    "tp_percentage": item.tp_percentage,
+                    "sl_price": item.sl_price,
+                    "tp_price": item.tp_price,
+                    "buy_target": item.buy_target,
+                    "take_profit": item.take_profit,
+                    "stop_loss": item.stop_loss,
+                    # Market data from watchlist (frontend will merge with top-coins-data)
+                    "price": item.price,
+                    "rsi": item.rsi,
+                    "atr": item.atr,
+                    "ma50": item.ma50,
+                    "ma200": item.ma200,
+                    "ema10": item.ema10,
+                    "res_up": item.res_up,
+                    "res_down": item.res_down,
+                    # Trading signal (BUY/WAIT/SELL)
+                    "signal": signal,
+                    # Order data
+                    "order_status": item.order_status,
+                    "order_date": item.order_date.isoformat() if item.order_date else None,
+                    "purchase_price": item.purchase_price,
+                    "quantity": item.quantity,
+                    "sold": item.sold,
+                    "sell_price": item.sell_price,
+                    "notes": item.notes,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "signals": item.signals,
+                    "skip_sl_tp_reminder": item.skip_sl_tp_reminder,
+                    "is_deleted": item.is_deleted
+                })
+            except Exception as item_err:
+                log.warning(f"Error processing item {item.id}: {item_err}")
+                continue
+        
+        total_time = time_module.time() - start_time
+        log.info(f"Dashboard endpoint completed in {total_time:.3f}s, returning {len(result)} items")
+        
+        if total_time > 1.0:
+            log.warning(f"⚠️ Dashboard endpoint took {total_time:.3f}s - this is slow! Should be < 0.5 seconds.")
+        
+        return result
+    except Exception as e:
+        log.error(f"Error in dashboard endpoint: {e}", exc_info=True)
+        if db:
+            try:
+                db.rollback()
+            except:
+                pass
+        return []
+
+
+@router.post("/dashboard")
+def add_to_dashboard(
+    item: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Add new watchlist item - automatically removes duplicates before creating/updating"""
+    try:
+        symbol = item.get("symbol", "").upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        
+        exchange = item.get("exchange", "CRYPTO_COM")
+        
+        # Log what we're receiving for debugging
+        log.info(f"Creating/updating watchlist item for {symbol} with data: {item}")
+        
+        # CRITICAL: Remove any duplicates for this symbol BEFORE creating/updating
+        # This ensures we never have multiple entries for the same symbol
+        all_entries = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).all()
+        if len(all_entries) > 1:
+            log.warning(f"Found {len(all_entries)} duplicate entries for {symbol}, removing duplicates...")
+            # Keep the most recently created entry, delete the rest
+            all_entries_sorted = sorted(all_entries, key=lambda x: x.created_at or x.id, reverse=True)
+            keep_entry = all_entries_sorted[0]
+            delete_entries = all_entries_sorted[1:]
+            for dup_entry in delete_entries:
+                log.info(f"Deleting duplicate watchlist entry ID {dup_entry.id} for {symbol}")
+                db.delete(dup_entry)
+            db.flush()  # Flush deletions before proceeding
+        
+        # Check if item already exists - if it does, reactivate if deleted or update if active
+        existing = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol,
+            WatchlistItem.exchange == exchange
+        ).first()
+        if existing:
+            # If the entry is soft-deleted, reactivate it
+            if existing.is_deleted:
+                log.info(f"Reactivating deleted watchlist item for {symbol} (ID={existing.id})")
+                existing.is_deleted = False
+                # Keep fields at safe defaults unless explicitly provided in the request
+                # Only update fields that are explicitly provided
+            # Update existing item instead of raising error
+            log.info(f"Watchlist item for {symbol} already exists (ID={existing.id}), updating it")
+            watchlist_item = existing
+            # Update all provided fields
+            if "alert_enabled" in item:
+                watchlist_item.alert_enabled = item["alert_enabled"]
+            if "trade_enabled" in item:
+                old_value = watchlist_item.trade_enabled
+                watchlist_item.trade_enabled = item["trade_enabled"]
+                log.info(f"Updated trade_enabled for {symbol}: {old_value} -> {watchlist_item.trade_enabled}")
+            if "trade_amount_usd" in item:
+                watchlist_item.trade_amount_usd = item["trade_amount_usd"]
+            if "trade_on_margin" in item:
+                watchlist_item.trade_on_margin = item["trade_on_margin"]
+            if "sl_tp_mode" in item:
+                watchlist_item.sl_tp_mode = item["sl_tp_mode"]
+            if "min_price_change_pct" in item:
+                value = item["min_price_change_pct"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.min_price_change_pct = None
+                else:
+                    watchlist_item.min_price_change_pct = float(value) if value is not None else None
+            if "sl_percentage" in item:
+                value = item["sl_percentage"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.sl_percentage = None
+                else:
+                    watchlist_item.sl_percentage = float(value) if value is not None else None
+            if "tp_percentage" in item:
+                value = item["tp_percentage"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.tp_percentage = None
+                else:
+                    watchlist_item.tp_percentage = float(value) if value is not None else None
+            if "sl_price" in item:
+                watchlist_item.sl_price = item["sl_price"]
+            if "tp_price" in item:
+                watchlist_item.tp_price = item["tp_price"]
+            if "buy_target" in item:
+                watchlist_item.buy_target = item["buy_target"]
+            if "take_profit" in item:
+                watchlist_item.take_profit = item["take_profit"]
+            if "stop_loss" in item:
+                watchlist_item.stop_loss = item["stop_loss"]
+            db.commit()
+            db.refresh(watchlist_item)
+        else:
+            # Create new watchlist item
+            watchlist_item = WatchlistItem(
+                symbol=symbol,
+                exchange=exchange,
+                is_deleted=False,  # Explicitly set to False for new entries
+                alert_enabled=item.get("alert_enabled", False),
+                trade_enabled=item.get("trade_enabled", False),
+                trade_amount_usd=item.get("trade_amount_usd"),
+                trade_on_margin=item.get("trade_on_margin", False),
+                sl_tp_mode=item.get("sl_tp_mode", "conservative"),
+                min_price_change_pct=item.get("min_price_change_pct"),
+                sl_percentage=item.get("sl_percentage"),
+                tp_percentage=item.get("tp_percentage"),
+                sl_price=item.get("sl_price"),
+                tp_price=item.get("tp_price"),
+                buy_target=item.get("buy_target"),
+                take_profit=item.get("take_profit"),
+                stop_loss=item.get("stop_loss")
+            )
+            
+            db.add(watchlist_item)
+            db.commit()
+            db.refresh(watchlist_item)
+        
+        log.info(f"Created/Updated watchlist item for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        return {
+            "id": watchlist_item.id,
+            "symbol": watchlist_item.symbol,
+            "exchange": watchlist_item.exchange,
+            "alert_enabled": watchlist_item.alert_enabled,
+            "trade_enabled": watchlist_item.trade_enabled,
+            "trade_amount_usd": watchlist_item.trade_amount_usd,
+            "trade_on_margin": watchlist_item.trade_on_margin,
+            "sl_price": watchlist_item.sl_price,
+            "tp_price": watchlist_item.tp_price
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error creating watchlist item: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/dashboard/{item_id}")
+def update_dashboard_item(
+    item_id: int,
+    item: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Update watchlist item - robust error handling and validation
+    
+    CRITICAL: This endpoint MUST save trade_enabled to database successfully.
+    All errors are caught and logged, but the commit is guaranteed to happen if no exceptions occur.
+    """
+    if db is None:
+        log.error("Database session is None - database not available")
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        # Query item by ID - show all items regardless of is_deleted status
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.id == item_id
+        ).first()
+        
+        if not watchlist_item:
+            raise HTTPException(status_code=404, detail=f"Watchlist item {item_id} not found")
+        
+        # Log what we're receiving for debugging
+        log.info(f"Updating watchlist item {item_id} ({watchlist_item.symbol}) with data: {item}")
+        log.info(f"Current state before update: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        # Update all provided fields
+        # IMPORTANT: Only update fields that are explicitly provided in the request
+        # This prevents accidentally overwriting values like trade_enabled when updating other fields
+        try:
+            if "symbol" in item:
+                watchlist_item.symbol = str(item["symbol"]).upper()
+            if "exchange" in item:
+                watchlist_item.exchange = str(item["exchange"])
+            if "alert_enabled" in item:
+                watchlist_item.alert_enabled = bool(item["alert_enabled"])
+            if "trade_enabled" in item:
+                old_value = watchlist_item.trade_enabled
+                new_value = bool(item["trade_enabled"])
+                log.info(f"🔵 Received trade_enabled in request: {new_value} (type: {type(new_value).__name__})")
+                watchlist_item.trade_enabled = new_value
+                log.info(f"✅ Updated trade_enabled for {watchlist_item.symbol}: {old_value} -> {watchlist_item.trade_enabled}")
+            else:
+                # trade_enabled not in request - preserve existing value (don't change it)
+                log.debug(f"ℹ️ trade_enabled NOT in request data for {watchlist_item.symbol} - preserving existing value: {watchlist_item.trade_enabled}")
+            if "trade_amount_usd" in item:
+                value = item["trade_amount_usd"]
+                watchlist_item.trade_amount_usd = float(value) if value is not None else None
+            if "trade_on_margin" in item:
+                watchlist_item.trade_on_margin = bool(item["trade_on_margin"])
+            if "sl_tp_mode" in item:
+                watchlist_item.sl_tp_mode = str(item["sl_tp_mode"])
+            if "min_price_change_pct" in item:
+                value = item["min_price_change_pct"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.min_price_change_pct = None
+                else:
+                    watchlist_item.min_price_change_pct = float(value) if value is not None else None
+            if "sl_percentage" in item:
+                value = item["sl_percentage"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.sl_percentage = None
+                else:
+                    watchlist_item.sl_percentage = float(value) if value is not None else None
+            if "tp_percentage" in item:
+                value = item["tp_percentage"]
+                # Explicitly handle empty string, None, or 0 as None
+                if value == "" or value is None:
+                    watchlist_item.tp_percentage = None
+                else:
+                    watchlist_item.tp_percentage = float(value) if value is not None else None
+            if "sl_price" in item:
+                value = item["sl_price"]
+                watchlist_item.sl_price = float(value) if value is not None else None
+            if "tp_price" in item:
+                value = item["tp_price"]
+                watchlist_item.tp_price = float(value) if value is not None else None
+            if "buy_target" in item:
+                value = item["buy_target"]
+                watchlist_item.buy_target = float(value) if value is not None else None
+            if "take_profit" in item:
+                value = item["take_profit"]
+                watchlist_item.take_profit = float(value) if value is not None else None
+            if "stop_loss" in item:
+                value = item["stop_loss"]
+                watchlist_item.stop_loss = float(value) if value is not None else None
+        except (ValueError, TypeError) as ve:
+            log.error(f"Invalid value type in update request for item {item_id}: {ve}", exc_info=True)
+            if db:
+                try:
+                    db.rollback()
+                except:
+                    pass
+            raise HTTPException(status_code=422, detail=f"Invalid value type: {str(ve)}")
+        
+        # CRITICAL: Commit the changes to database
+        # This ensures trade_enabled is saved
+        try:
+            db.commit()
+            log.info(f"✅ Database commit successful for item {item_id}")
+        except Exception as commit_err:
+            log.error(f"❌ Database commit failed for item {item_id}: {commit_err}", exc_info=True)
+            try:
+                db.rollback()
+            except:
+                pass
+            raise HTTPException(status_code=500, detail=f"Failed to save changes to database: {str(commit_err)}")
+        
+        # Refresh to get latest state from database
+        try:
+            db.refresh(watchlist_item)
+            log.info(f"✅ Refreshed watchlist item {item_id} from database")
+        except Exception as refresh_err:
+            log.warning(f"⚠️ Failed to refresh item {item_id} from database (non-critical): {refresh_err}")
+            # Non-critical - we can still return the data we have
+        
+        # Verify trade_enabled was saved correctly - use a fresh query to avoid stale data
+        if "trade_enabled" in item:
+            expected_value = bool(item["trade_enabled"])
+            # Query fresh from database to verify
+            try:
+                fresh_item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
+                if fresh_item:
+                    final_trade_enabled = fresh_item.trade_enabled
+                    if final_trade_enabled != expected_value:
+                        log.error(f"❌ CRITICAL: trade_enabled mismatch! Expected {expected_value}, got {final_trade_enabled}")
+                        # Try to fix it with a fresh transaction
+                        try:
+                            db.rollback()  # Start fresh
+                            fresh_item.trade_enabled = expected_value
+                            db.commit()
+                            db.refresh(fresh_item)
+                            watchlist_item.trade_enabled = fresh_item.trade_enabled  # Update local reference
+                            log.info(f"✅ Fixed trade_enabled mismatch for item {item_id}")
+                        except Exception as fix_err:
+                            log.error(f"❌ Failed to fix trade_enabled mismatch: {fix_err}")
+                    else:
+                        watchlist_item.trade_enabled = final_trade_enabled  # Ensure local reference matches DB
+            except Exception as verify_err:
+                log.warning(f"⚠️ Could not verify trade_enabled from database: {verify_err}")
+        
+        log.info(f"✅ Successfully updated watchlist item {item_id} ({watchlist_item.symbol}): trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        return {
+            "id": watchlist_item.id,
+            "symbol": watchlist_item.symbol,
+            "exchange": watchlist_item.exchange,
+            "alert_enabled": watchlist_item.alert_enabled,
+            "trade_enabled": watchlist_item.trade_enabled,
+            "trade_amount_usd": watchlist_item.trade_amount_usd,
+            "trade_on_margin": watchlist_item.trade_on_margin,
+            "sl_price": watchlist_item.sl_price,
+            "tp_price": watchlist_item.tp_price
+        }
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        log.error(f"❌ Error updating watchlist item {item_id}: {e}", exc_info=True)
+        if db:
+            try:
+                db.rollback()
+            except:
+                pass
+        # Return a proper JSON error response with detailed message
+        error_detail = str(e)
+        if "database" in error_detail.lower() or "connection" in error_detail.lower():
+            raise HTTPException(status_code=503, detail=f"Database error: {error_detail}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Internal server error: {error_detail}")
+
+
+@router.delete("/dashboard/{item_id}")
+def delete_dashboard_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Delete watchlist item by ID"""
+    try:
+        watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
+        
+        if not watchlist_item:
+            raise HTTPException(status_code=404, detail=f"Watchlist item {item_id} not found")
+        
+        symbol = watchlist_item.symbol
+        db.delete(watchlist_item)
+        db.commit()
+        
+        log.info(f"Deleted watchlist item {item_id} ({symbol})")
+        
+        return {"ok": True, "message": f"Deleted watchlist item for {symbol}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting watchlist item {item_id}: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dashboard/symbol/{symbol}")
+def delete_dashboard_item_by_symbol(
+    symbol: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Reset watchlist item(s) by symbol - resets all configurable fields to safe defaults
+    
+    NOTE: Does NOT mark as deleted (is_deleted remains False) per user requirement.
+    All coins should remain visible in dashboard.
+    """
+    try:
+        symbol_upper = symbol.upper()
+        
+        # Find all entries for this symbol (there might be duplicates, but we'll handle them)
+        watchlist_items = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper).all()
+        
+        if not watchlist_items:
+            # Symbol doesn't exist in watchlist - create entry with safe defaults
+            log.info(f"Symbol {symbol_upper} not found in watchlist_items, creating entry with safe defaults")
+            watchlist_item = WatchlistItem(
+                symbol=symbol_upper,
+                exchange="CRYPTO_COM",
+                is_deleted=False,  # Keep visible per user requirement
+                trade_enabled=False,
+                alert_enabled=False,
+                trade_on_margin=False,
+                trade_amount_usd=None,
+                sl_percentage=None,
+                tp_percentage=None,
+                sl_price=None,
+                tp_price=None,
+                buy_target=None,
+                take_profit=None,
+                stop_loss=None,
+                sl_tp_mode="conservative",
+                order_status="PENDING",
+            )
+            db.add(watchlist_item)
+            db.commit()
+            log.info(f"Created watchlist entry for {symbol_upper} with safe defaults")
+            return {"ok": True, "message": f"Symbol {symbol_upper} reset to safe defaults"}
+        
+        # If there are duplicates, keep only the most recent one and delete the rest
+        if len(watchlist_items) > 1:
+            log.warning(f"Found {len(watchlist_items)} entries for {symbol_upper}, keeping only the most recent")
+            watchlist_items_sorted = sorted(watchlist_items, key=lambda x: x.created_at or x.id, reverse=True)
+            keep_item = watchlist_items_sorted[0]
+            delete_items = watchlist_items_sorted[1:]
+            for dup_item in delete_items:
+                log.info(f"Hard deleting duplicate entry ID {dup_item.id} for {symbol_upper}")
+                db.delete(dup_item)
+            watchlist_items = [keep_item]
+        
+        # Reset all configurable fields to safe defaults (but keep is_deleted=False)
+        for item in watchlist_items:
+            # DO NOT mark as deleted - keep visible per user requirement
+            # item.is_deleted = False  # Ensure it's False
+            
+            # Reset all configurable/active fields to safe defaults
+            item.trade_enabled = False
+            item.alert_enabled = False
+            item.trade_on_margin = False
+            item.trade_amount_usd = None
+            item.sl_percentage = None
+            item.tp_percentage = None
+            item.sl_price = None
+            item.tp_price = None
+            item.buy_target = None
+            item.take_profit = None
+            item.stop_loss = None
+            item.sl_tp_mode = "conservative"  # Reset to default
+            item.order_status = "PENDING"
+            item.order_date = None
+            item.purchase_price = None
+            item.quantity = None
+            item.sold = False
+            item.sell_price = None
+            item.skip_sl_tp_reminder = False
+            # Keep market data (price, rsi, etc.) as it's informational, not configurable
+            # Keep notes as it's user data that might be useful if reactivated
+        
+        db.commit()
+        
+        log.info(f"Reset {len(watchlist_items)} watchlist item(s) for symbol {symbol_upper} to safe defaults (kept visible)")
+        
+        return {"ok": True, "message": f"Deleted {len(watchlist_items)} watchlist item(s) for {symbol_upper}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting watchlist item(s) for symbol {symbol}: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dashboard/cleanup-duplicates")
+def cleanup_duplicates(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Cleanup duplicate watchlist entries - keeps only the most recent entry per symbol"""
+    try:
+        from sqlalchemy import func
+        
+        # Find duplicates grouped by symbol
+        duplicates_query = db.query(
+            WatchlistItem.symbol,
+            func.count(WatchlistItem.id).label('count')
+        ).group_by(WatchlistItem.symbol).having(func.count(WatchlistItem.id) > 1).all()
+        
+        if not duplicates_query:
+            return {"ok": True, "message": "No duplicates found", "deleted_count": 0}
+        
+        total_deleted = 0
+        cleaned_symbols = []
+        
+        for dup in duplicates_query:
+            symbol = dup.symbol
+            count = dup.count
+            
+            # Get all entries for this symbol, ordered by created_at desc (most recent first)
+            entries = db.query(WatchlistItem).filter(
+                WatchlistItem.symbol == symbol
+            ).order_by(WatchlistItem.created_at.desc()).all()
+            
+            if len(entries) <= 1:
+                continue
+            
+            # Keep the first (most recent) entry, delete the rest
+            keep_entry = entries[0]
+            delete_entries = entries[1:]
+            
+            log.info(f"Cleaning up {symbol}: keeping ID {keep_entry.id}, deleting {len(delete_entries)} duplicate(s)")
+            
+            for entry in delete_entries:
+                db.delete(entry)
+                total_deleted += 1
+            
+            cleaned_symbols.append(symbol)
+        
+        db.commit()
+        
+        log.info(f"Cleanup complete: Deleted {total_deleted} duplicate entries for {len(cleaned_symbols)} symbols")
+        
+        return {
+            "ok": True,
+            "message": f"Cleaned up {total_deleted} duplicate entries",
+            "deleted_count": total_deleted,
+            "cleaned_symbols": cleaned_symbols
+        }
+    except Exception as e:
+        log.error(f"Error during cleanup: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def timed(label: str, func, *args, **kwargs) -> Tuple[Any, Optional[Exception]]:
+    """
+    Wrapper to time a function call and log duration.
+    Returns (result, error) tuple. error is None if successful.
+    """
+    t0 = time.perf_counter()
+    try:
+        res = func(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.info("dashboard.%s.ms=%.1f", label, elapsed_ms)
+        return res, None
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.error("dashboard.%s.error=%s ms=%.1f", label, repr(e), elapsed_ms, exc_info=True)
+        return None, e
+
+
+@router.get("/dashboard/state")
+def get_dashboard_state(db: Session = Depends(get_db)):
+    """
+    Get complete dashboard state in a single response - optimized for speed
+    
+    Returns:
+        {
+            "balances": [...],
+            "fast_signals": [...],  # should_trade=true or order_placed/filled
+            "slow_signals": [...],  # rest
+            "open_orders": [...],
+            "last_sync": "2025-10-31T06:20:00Z",
+            "bot_status": {
+                "is_running": true/false,
+                "status": "running" or "stopped",
+                "reason": "reason for stopped" or null
+            },
+            "partial": false,  # true if any query timed out
+            "errors": []  # list of error labels if partial=true
+        }
+    """
+    # ⚡ Fast-path: devolver datos reales pero SIN operaciones pesadas
+    if DEBUG_DASHBOARD_FAST_PATH:
+        try:
+            # Get open orders from DB (already synced by exchange_sync)
+            open_orders_db = db.query(ExchangeOrder).filter(
+                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+            ).order_by(ExchangeOrder.updated_at.desc()).limit(50).all()
+            
+            open_orders_data = []
+            for order in open_orders_db:
+                # Get creation time (prefer exchange_create_time, fallback to created_at)
+                create_time = order.exchange_create_time or order.created_at
+                create_timestamp_ms = int(create_time.timestamp() * 1000) if create_time else None
+                
+                # Format creation datetime for display - use ISO format so frontend can parse as UTC correctly
+                if create_time:
+                    # Ensure datetime is timezone-aware (UTC)
+                    if create_time.tzinfo is None:
+                        create_time = create_time.replace(tzinfo=timezone.utc)
+                    create_datetime_str = create_time.isoformat()
+                else:
+                    create_datetime_str = "N/A"
+                
+                open_orders_data.append({
+                    "exchange_order_id": order.exchange_order_id,
+                    "symbol": order.symbol,
+                    "side": order.side.value if hasattr(order.side, 'value') else order.side,
+                    "order_type": order.order_type,
+                    "status": order.status.value if hasattr(order.status, 'value') else order.status,
+                    "price": float(order.price) if order.price else None,
+                    "quantity": float(order.quantity) if order.quantity else None,
+                    "cumulative_quantity": float(order.cumulative_quantity) if order.cumulative_quantity else None,
+                    "cumulative_value": float(order.cumulative_value) if order.cumulative_value else None,
+                    "avg_price": float(order.avg_price) if order.avg_price else None,
+                    "created_at": order.created_at.isoformat() if order.created_at else None,
+                    "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+                    "create_time": create_timestamp_ms,  # Timestamp in milliseconds
+                    "create_datetime": create_datetime_str  # Human-readable datetime string
+                })
+            
+            # Get portfolio from cache (fast) - INCLUDES HOLDINGS
+            portfolio = get_portfolio_summary(db)
+            total_usd = portfolio.get("total_usd", 0.0) if portfolio else 0.0
+            balances = portfolio.get("balances", []) if portfolio else []
+            
+            # RESTORED v4.0: Convert balances to assets format for frontend
+            # Include ALL balances, even if USD value is 0 (backend will calculate it on next sync)
+            assets = []
+            for bal in balances:
+                balance_val = bal.get("balance", 0) or 0.0
+                usd_val = bal.get("usd_value", 0) or 0.0
+                # RESTORED v4.0: Include all balances with balance > 0, even if USD value is 0
+                # This ensures portfolio shows all assets, not just those with calculated USD values
+                if balance_val > 0 or usd_val > 0:
+                    assets.append({
+                        "coin": bal.get("currency", ""),
+                        "balance": balance_val,
+                        "available_qty": balance_val,  # Frontend expects this
+                        "reserved_qty": 0,  # Not tracked in portfolio_balances
+                        "value_usd": usd_val,  # Frontend expects value_usd
+                        "pct_portfolio": (usd_val / total_usd * 100) if total_usd > 0 else 0
+                    })
+            
+            log.info(f"Fast-path: returning {len(open_orders_data)} open orders, {len(assets)} assets, portfolio: ${total_usd:,.2f}")
+            
+            return {
+                "summary": {
+                    "total_usd": total_usd,
+                    "num_signals": 0,
+                    "num_open_orders": len(open_orders_data),
+                    "num_executed_orders": 0,
+                    "num_watchlist_items": 0,
+                    "num_assets": len(assets),
+                    "exchange": "Crypto.com Exchange"
+                },
+                "signals": [],
+                "open_orders": open_orders_data,
+                "executed_orders": [],
+                "watchlist": [],
+                "portfolio": {
+                    "assets": assets,  # Frontend expects "assets" not "holdings"
+                    "total_value_usd": total_usd,  # Frontend expects "total_value_usd"
+                    "exchange": "Crypto.com Exchange"
+                }
+            }
+        except Exception as e:
+            log.error(f"Fast-path error: {e}")
+            return {
+                "summary": {"total_usd": 0.0, "num_signals": 0, "num_open_orders": 0, "num_executed_orders": 0, "num_watchlist_items": 0},
+                "signals": [],
+                "open_orders": [],
+                "executed_orders": [],
+                "watchlist": [],
+            }
+    
+    # RESTORED v4.0: Full dashboard functionality with performance optimizations
+    # - Statement timeout: 2 seconds per query
+    # - Limited queries: max 50 open orders, max 20 signals
+    # - Quick checks: skip expensive queries if tables are empty
+    # - Cached data: use portfolio cache instead of external APIs
+    # RESTORED v4.0: Increased time budget to allow full data loading
+    import time as time_module
+    start_time = time_module.time()
+    MAX_TIME_BUDGET_S = 5.0  # RESTORED v4.0: Increased from 2.5s to 5.0s to allow full data loading
+    
+    # Track partial responses and errors
+    partial_response = False
+    error_labels = []
+    
+    try:
+        log.info("Starting dashboard state fetch")
+        
+        # Set per-request statement timeout (2 seconds) to prevent hanging queries
+        # This only affects queries in this request, not globally
+        # PostgreSQL statement_timeout is in milliseconds: 2000ms = 2 seconds
+        # SET LOCAL applies to the current transaction and doesn't require commit
+        try:
+            db.execute(text("SET LOCAL statement_timeout = 2000"))  # Value in milliseconds without quotes
+            log.debug("Set statement_timeout=2000ms for this request")
+        except Exception as e:
+            # If PostgreSQL doesn't support SET LOCAL or we're using SQLite, continue without it
+            log.debug(f"Could not set statement_timeout (may be SQLite or unsupported): {e}")
+        # Get bot status - check both exchange_sync and signal_monitor services (fast, non-blocking)
+        try:
+            exchange_sync_running = exchange_sync_service.is_running
+        except Exception as e:
+            log.warning(f"Could not check exchange_sync status: {e}")
+            exchange_sync_running = False
+        
+        # Also check signal_monitor service status
+        signal_monitor_running = False
+        try:
+            from app.services.signal_monitor import signal_monitor_service
+            signal_monitor_running = signal_monitor_service.is_running
+        except Exception as e:
+            log.warning(f"Could not check signal_monitor status: {e}")
+        
+        # Bot is running if at least one service is running
+        # Both services are important: exchange_sync for balances/orders, signal_monitor for trading signals
+        bot_is_running = exchange_sync_running or signal_monitor_running
+        bot_status = "running" if bot_is_running else "stopped"
+        bot_reason = None
+        
+        # Get LIVE_TRADING status
+        live_trading_enabled = False
+        try:
+            from app.models.trading_settings import TradingSettings
+            import os
+            setting = db.query(TradingSettings).filter(
+                TradingSettings.setting_key == "LIVE_TRADING"
+            ).first()
+            if setting:
+                live_trading_enabled = setting.setting_value.lower() == "true"
+            else:
+                from app.utils.live_trading import get_live_trading_status
+                live_trading_enabled = get_live_trading_status(db)
+        except Exception as e:
+            log.warning(f"Could not check LIVE_TRADING status: {e}")
+            from app.utils.live_trading import get_live_trading_status
+            live_trading_enabled = get_live_trading_status(db)
+        
+        if not bot_is_running:
+            # Check why bot is stopped
+            reasons = []
+            if not exchange_sync_running:
+                if exchange_sync_service.last_sync is None:
+                    reasons.append("Exchange sync service never started")
+                else:
+                    # Calculate time since last sync
+                    now = datetime.now(timezone.utc)
+                    if exchange_sync_service.last_sync.tzinfo is None:
+                        # Handle timezone-naive datetime (legacy)
+                        last_sync_utc = exchange_sync_service.last_sync.replace(tzinfo=timezone.utc)
+                    else:
+                        last_sync_utc = exchange_sync_service.last_sync
+                    time_since_sync = (now - last_sync_utc).total_seconds()
+                    if time_since_sync > exchange_sync_service.sync_interval * 3:  # 3 times the interval
+                        reasons.append(f"Exchange sync stopped ({int(time_since_sync)}s ago)")
+            
+            if not signal_monitor_running:
+                reasons.append("Signal monitor service not running")
+            
+            if reasons:
+                bot_reason = "; ".join(reasons)
+        
+        # Fetch balances from cached portfolio data (backend-maintained cache)
+        # Frontend only reads from this cache - no external API calls
+        balance_data = []
+        total_usd_value = 0.0
+        portfolio_last_updated_iso = None
+        portfolio_summary = {}
+        PORTFOLIO_STALENESS_SECONDS = 60
+        
+        # Fetch portfolio summary with timing
+        portfolio_summary, portfolio_err = timed("portfolio", get_portfolio_summary, db)
+        if portfolio_err:
+            error_labels.append("portfolio")
+            partial_response = True
+            portfolio_summary = {}
+            total_usd_value = 0.0
+            last_updated_ts = None
+            portfolio_last_updated_iso = None
+            
+            # FALLBACK: If portfolio cache fails, try to calculate balances from filled orders
+            log.warning("Portfolio cache failed, attempting fallback: calculating balances from filled orders")
+            try:
+                from collections import defaultdict
+                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+                
+                # Get all filled BUY orders (these represent positions we own)
+                filled_buy_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                    ExchangeOrder.side == OrderSideEnum.BUY
+                ).all()
+                
+                # Group by symbol and calculate net positions
+                positions = defaultdict(lambda: {"quantity": 0.0, "total_cost": 0.0})
+                
+                for order in filled_buy_orders:
+                    if order.symbol and order.quantity and order.price:
+                        symbol = order.symbol.upper()
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        cost = qty * price
+                        
+                        positions[symbol]["quantity"] += qty
+                        positions[symbol]["total_cost"] += cost
+                
+                # Get current prices for these symbols
+                from app.services.portfolio_cache import get_crypto_prices
+                prices = get_crypto_prices()
+                
+                # Convert to balance format
+                fallback_balances = []
+                for symbol, pos in positions.items():
+                    if pos["quantity"] > 0:
+                        # Extract base currency (e.g., "BTC" from "BTC_USDT")
+                        base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+                        
+                        # Get current price
+                        current_price = prices.get(base_currency) or prices.get(symbol) or 0.0
+                        usd_value = pos["quantity"] * current_price if current_price > 0 else pos["total_cost"]
+                        
+                        fallback_balances.append({
+                            "currency": base_currency,
+                            "balance": pos["quantity"],
+                            "usd_value": usd_value
+                        })
+                
+                if fallback_balances:
+                    log.info(f"Fallback: Calculated {len(fallback_balances)} balances from filled orders")
+                    portfolio_summary = {
+                        "balances": fallback_balances,
+                        "total_usd": sum(b["usd_value"] for b in fallback_balances),
+                        "last_updated": time.time(),
+                        "source": "filled_orders_fallback"
+                    }
+                    total_usd_value = portfolio_summary["total_usd"]
+                    portfolio_last_updated_iso = datetime.now(timezone.utc).isoformat()
+            except Exception as fallback_err:
+                log.error(f"Fallback calculation also failed: {fallback_err}", exc_info=True)
+                portfolio_summary = {"balances": [], "total_usd": 0.0, "last_updated": None}
+        else:
+            portfolio_summary = portfolio_summary or {}
+            total_usd_value = float(portfolio_summary.get("total_usd", 0.0) or 0.0)
+            last_updated_ts = portfolio_summary.get("last_updated")
+            if last_updated_ts:
+                portfolio_last_updated_iso = datetime.fromtimestamp(last_updated_ts, tz=timezone.utc).isoformat()
+            log.debug(f"Portfolio cache read: {len(portfolio_summary.get('balances', []))} balances, total_usd=${total_usd_value:,.2f}")
+        
+        # NEVER refresh cache on-demand - always use existing cache (even if stale)
+        # Background service (exchange_sync) updates cache every 5 seconds
+        # This prevents timeout issues when external APIs (CoinGecko) are slow
+        # Better to return stale data than timeout - frontend can show "last updated X minutes ago"
+        if portfolio_summary.get("balances"):
+            if last_updated_ts:
+                age_seconds = time.time() - last_updated_ts
+                if age_seconds > PORTFOLIO_STALENESS_SECONDS:
+                    log.debug(f"Using stale portfolio cache ({age_seconds:.1f}s old) - background service should update it soon")
+        else:
+            # Cache is completely empty - try fallback from filled orders
+            log.warning("Portfolio cache is empty - attempting fallback from filled orders")
+            try:
+                from collections import defaultdict
+                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+                
+                filled_buy_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                    ExchangeOrder.side == OrderSideEnum.BUY
+                ).all()
+                
+                positions = defaultdict(lambda: {"quantity": 0.0, "total_cost": 0.0})
+                for order in filled_buy_orders:
+                    if order.symbol and order.quantity and order.price:
+                        symbol = order.symbol.upper()
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        cost = qty * price
+                        positions[symbol]["quantity"] += qty
+                        positions[symbol]["total_cost"] += cost
+                
+                from app.services.portfolio_cache import get_crypto_prices
+                prices = get_crypto_prices()
+                
+                fallback_balances = []
+                for symbol, pos in positions.items():
+                    if pos["quantity"] > 0:
+                        base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+                        current_price = prices.get(base_currency) or prices.get(symbol) or 0.0
+                        usd_value = pos["quantity"] * current_price if current_price > 0 else pos["total_cost"]
+                        fallback_balances.append({
+                            "currency": base_currency,
+                            "balance": pos["quantity"],
+                            "usd_value": usd_value
+                        })
+                
+                if fallback_balances:
+                    portfolio_summary = {
+                        "balances": fallback_balances,
+                        "total_usd": sum(b["usd_value"] for b in fallback_balances),
+                        "last_updated": time.time(),
+                        "source": "filled_orders_fallback"
+                    }
+                    total_usd_value = portfolio_summary["total_usd"]
+                    portfolio_last_updated_iso = datetime.now(timezone.utc).isoformat()
+                    log.info(f"Fallback: Using {len(fallback_balances)} balances from filled orders")
+                else:
+                    # FINAL FALLBACK: read from ExchangeBalance snapshot so Portfolio tab is not empty
+                    try:
+                        log.warning("Filled orders fallback empty - using ExchangeBalance snapshot as last resort")
+                        exchange_rows = db.query(ExchangeBalance).limit(100).all()
+                        eb_balances = []
+                        for row in exchange_rows:
+                            try:
+                                asset = (row.asset or "").upper()
+                                if not asset:
+                                    continue
+                                total = float(row.total or 0.0)
+                                free_amt = float(row.free or 0.0)
+                                locked_amt = float(row.locked or 0.0)
+                                if total <= 0 and free_amt <= 0 and locked_amt <= 0:
+                                    continue
+                                eb_balances.append({
+                                    "currency": asset,
+                                    "balance": total,
+                                    "usd_value": 0.0  # price unknown here; frontend handles 0 gracefully
+                                })
+                            except Exception:
+                                continue
+                        portfolio_summary = {
+                            "balances": eb_balances,
+                            "total_usd": 0.0,
+                            "last_updated": time.time(),
+                            "source": "exchange_balance_fallback"
+                        }
+                        total_usd_value = portfolio_summary["total_usd"]
+                        portfolio_last_updated_iso = datetime.now(timezone.utc).isoformat()
+                    except Exception as eb_err:
+                        log.error(f"ExchangeBalance fallback failed: {eb_err}", exc_info=True)
+                        portfolio_summary = {"balances": [], "total_usd": 0.0, "last_updated": None}
+            except Exception as fallback_err:
+                log.error(f"Fallback calculation failed: {fallback_err}", exc_info=True)
+                portfolio_summary = {"balances": [], "total_usd": 0.0, "last_updated": None}
+        
+        # RESTORED v4.0: Use portfolio cache directly (no merge with ExchangeBalance needed)
+        # Portfolio cache already has all balances with USD values calculated by backend
+        # Frontend ONLY reads from this cache - no external API calls
+        # IMPORTANT: Always process balances, even if the list is empty (to ensure proper fallback)
+        balances_list = portfolio_summary.get("balances", []) or []
+        log.debug(f"Processing portfolio cache with {len(balances_list)} balances, total_usd=${total_usd_value:,.2f}")
+        
+        # Get ExchangeBalance data for free/locked breakdown if available
+        # OPTIMIZED: Only query if we have balances to match, with timeout protection
+        exchange_balance_map = {}
+        if balances_list:
+            def fetch_exchange_balances():
+                portfolio_assets = [e.get("currency", "").upper() for e in balances_list if e.get("currency")]
+                if portfolio_assets:
+                    portfolio_assets_limited = portfolio_assets[:20]
+                    return db.query(ExchangeBalance).filter(
+                        ExchangeBalance.asset.in_(portfolio_assets_limited)
+                    ).limit(20).all()
+                return []
+            
+            db_balances_result, db_balances_err = timed("exchange_balances", fetch_exchange_balances)
+            if db_balances_err:
+                log.debug("Could not fetch ExchangeBalance for free/locked breakdown - continuing without it")
+            else:
+                for bal in (db_balances_result or []):
+                    asset = (bal.asset or "").upper()
+                    if asset:
+                        exchange_balance_map[asset] = {
+                            "free": float(bal.free),
+                            "locked": float(bal.locked),
+                            "total": float(bal.total)
+                        }
+        
+        # RESTORED v4.0: Build balance data directly from portfolio cache (backend-maintained)
+        # and compute unified open-position counts per currency so the frontend
+        # Holdings table can display "Open Orders" using the same logic as the
+        # trading engine and protection system.
+        open_position_counts = {}
+        from app.services.order_position_service import count_open_positions_for_symbol
+
+        # RESTORED v4.0: Process ALL balances from cache, even if empty (fallback will handle it)
+        for entry in balances_list:
+            currency = (entry.get("currency") or "").upper()
+            if not currency:
+                continue
+            
+            # Get balance amounts from cache (backend already calculated USD values)
+            cache_balance = float(entry.get("balance", 0.0) or 0.0)
+            usd_value = float(entry.get("usd_value", 0.0) or 0.0)
+            
+            # Log warning if USD value is missing from cache (shouldn't happen)
+            if usd_value == 0.0 and cache_balance > 0 and currency not in ["USD", "USDT"]:
+                log.debug(f"USD value is 0 for {currency} with balance {cache_balance} (may not have price data)")
+            
+            # Use ExchangeBalance for free/locked breakdown if available, otherwise use cache balance
+            if currency in exchange_balance_map:
+                free = exchange_balance_map[currency]["free"]
+                locked = exchange_balance_map[currency]["locked"]
+                total = exchange_balance_map[currency]["total"]
+            else:
+                # Fallback to cache balance for all fields
+                free = cache_balance
+                locked = 0.0
+                total = cache_balance
+            
+            # RESTORED v4.0: Include all balances > 0 (even if USD value is 0 - backend will update it)
+            if total > 0 or usd_value > 0:
+                balance_data.append({
+                    "asset": currency,
+                    "balance": total,
+                    "free": free,
+                    "locked": locked,
+                    "total": total,
+                    "usd_value": usd_value,  # From backend cache
+                    "quantity": total,
+                    "max_withdrawal": free,
+                    "market_value": usd_value  # Same as usd_value
+                })
+
+            # Unified open positions for this base currency (across all pairs, e.g. ADA_USD, ADA_USDT)
+            try:
+                count = count_open_positions_for_symbol(db, currency)
+                open_position_counts[currency] = count
+            except Exception as e:
+                log.warning(f"Could not compute open positions for {currency}: {e}")
+        
+        # RESTORED v4.0: If no balances from cache, log warning but continue (fallback already handled above)
+        if not balances_list:
+            log.warning("Portfolio cache has no balances - fallback should have been attempted above")
+        
+        # Ensure total_usd_value is set correctly (use from cache or calculate from balances)
+        if total_usd_value == 0.0 and balance_data:
+            calculated_total = sum(item.get("usd_value", 0.0) for item in balance_data)
+            if calculated_total > 0:
+                log.info(f"Calculated total_usd_value from balances: ${calculated_total:,.2f}")
+                total_usd_value = calculated_total
+        
+        # Log balance data summary for debugging
+        balances_with_usd = [b for b in balance_data if b.get("usd_value", 0.0) > 0]
+        log.info(f"Dashboard state: {len(balance_data)} balances total, {len(balances_with_usd)} with USD values, total_usd=${total_usd_value:,.2f}")
+        if balances_with_usd:
+            log.debug(f"Top 5 balances by USD value:")
+            for b in sorted(balances_with_usd, key=lambda x: x.get("usd_value", 0.0), reverse=True)[:5]:
+                log.debug(f"  {b.get('asset')}: ${b.get('usd_value', 0.0):,.2f} (balance: {b.get('balance', 0.0):.8f})")
+        
+        # RESTORED v4.0: Only short-circuit if we're VERY close to time budget (90% instead of 60%)
+        # This allows more time for loading orders and signals
+        elapsed_after_balances = time_module.time() - start_time
+        if elapsed_after_balances > MAX_TIME_BUDGET_S * 0.9:
+            log.warning(f"⏱️ Time budget nearly exceeded ({elapsed_after_balances:.2f}s) - returning balances-only snapshot")
+            # Prepare portfolio assets for frontend
+            portfolio_assets = []
+            for bal in balance_data:
+                portfolio_assets.append({
+                    "coin": bal.get("asset", ""),
+                    "balance": bal.get("balance", 0),
+                    "available_qty": bal.get("free", bal.get("balance", 0)),
+                    "reserved_qty": bal.get("locked", 0),
+                    "value_usd": bal.get("usd_value", 0),
+                    "pct_portfolio": (bal.get("usd_value", 0) / total_usd_value * 100) if total_usd_value > 0 else 0
+                })
+            return {
+                "source": "portfolio_cache" if balance_data else "crypto.com",
+                "total_usd_value": total_usd_value,
+                "balances": balance_data,
+                "fast_signals": [],
+                "slow_signals": [],
+                "open_orders": [],
+                "last_sync": exchange_sync_service.last_sync.isoformat() if exchange_sync_service.last_sync else None,
+                "portfolio_last_updated": portfolio_last_updated_iso,
+                "portfolio": {
+                    "assets": portfolio_assets,
+                    "total_value_usd": total_usd_value,
+                    "exchange": "Crypto.com Exchange"
+                },
+                "bot_status": {
+                    "is_running": bot_is_running,
+                    "status": bot_status,
+                    "reason": "time_budget_short_circuit",
+                    "live_trading_enabled": live_trading_enabled,
+                    "mode": "LIVE" if live_trading_enabled else "DRY_RUN"
+                },
+                "open_position_counts": {},
+                "partial": True,
+                "errors": error_labels + ["time_budget"]
+            }
+
+        # Get fast signals (should_trade=true OR status in order_placed/filled) with timing
+        # Quick check: if TradeSignal table is empty, return empty array immediately
+        # First, check if TradeSignal table has any data at all
+        signal_count = 0
+        try:
+            signal_count = db.query(TradeSignal).count()
+        except Exception as e:
+            log.warning(f"Error checking TradeSignal count: {e}")
+        
+        fast_signals = []
+        fast_signals_err = None
+        try:
+            if signal_count > 0:
+                def fetch_fast_signals():
+                    return db.query(TradeSignal).filter(
+                        or_(
+                            TradeSignal.should_trade == True,
+                            TradeSignal.status.in_([SignalStatusEnum.ORDER_PLACED, SignalStatusEnum.FILLED])
+                        )
+                    ).order_by(TradeSignal.last_update_at.desc()).limit(20).all()
+        
+                fast_signals_result, fast_signals_err = timed("fast_signals", fetch_fast_signals)
+                if fast_signals_err:
+                    error_labels.append("fast_signals")
+                    partial_response = True
+                else:
+                    fast_signals = fast_signals_result or []
+            else:
+                log.debug("TradeSignal table is empty, skipping fast_signals query")
+        except Exception as e:
+            fast_signals_err = e
+            error_labels.append("fast_signals")
+            partial_response = True
+            log.warning(f"Error checking/fetching fast_signals: {e}")
+        
+        fast_signals_data = []
+        for signal in fast_signals:
+            fast_signals_data.append({
+                "symbol": signal.symbol,
+                "preset": signal.preset.value if signal.preset else None,
+                "sl_profile": signal.sl_profile.value if signal.sl_profile else None,
+                "rsi": signal.rsi,
+                "ma50": signal.ma50,
+                "ma200": signal.ma200,
+                "ema10": signal.ema10,
+                "ma10w": signal.ma10w,
+                "atr": signal.atr,
+                "resistance_up": signal.resistance_up,
+                "resistance_down": signal.resistance_down,
+                "current_price": signal.current_price,
+                "volume_24h": signal.volume_24h,
+                "volume_ratio": signal.volume_ratio,
+                "status": signal.status.value if signal.status else None,
+                "should_trade": signal.should_trade,
+                "exchange_order_id": signal.exchange_order_id,
+                "last_update_at": signal.last_update_at.isoformat() if signal.last_update_at else None,
+                "refresh_hint": "fast"
+            })
+        
+        # Get slow signals (rest) with timing
+        # Quick check: reuse signal_count from above, if 0, skip expensive query
+        slow_signals = []
+        slow_signals_err = None
+        try:
+            # Use same signal_count check - if 0, skip expensive query
+            if signal_count > 0:
+                def fetch_slow_signals():
+                    return db.query(TradeSignal).filter(
+                        and_(
+                            TradeSignal.should_trade == False,
+                            ~TradeSignal.status.in_([SignalStatusEnum.ORDER_PLACED, SignalStatusEnum.FILLED])
+                        )
+                    ).order_by(TradeSignal.last_update_at.desc()).limit(20).all()  # Optimized limit for speed
+            
+                slow_signals_result, slow_signals_err = timed("slow_signals", fetch_slow_signals)
+                if slow_signals_err:
+                    error_labels.append("slow_signals")
+                    partial_response = True
+                else:
+                    slow_signals = slow_signals_result or []
+            else:
+                log.debug("TradeSignal table is empty, skipping slow_signals query")
+        except Exception as e:
+            slow_signals_err = e
+            error_labels.append("slow_signals")
+            partial_response = True
+            log.warning(f"Error checking/fetching slow_signals: {e}")
+        
+        slow_signals_data = []
+        for signal in slow_signals:
+            slow_signals_data.append({
+                "symbol": signal.symbol,
+                "preset": signal.preset.value if signal.preset else None,
+                "sl_profile": signal.sl_profile.value if signal.sl_profile else None,
+                "rsi": signal.rsi,
+                "ma50": signal.ma50,
+                "ma200": signal.ma200,
+                "ema10": signal.ema10,
+                "ma10w": signal.ma10w,
+                "atr": signal.atr,
+                "resistance_up": signal.resistance_up,
+                "resistance_down": signal.resistance_down,
+                "current_price": signal.current_price,
+                "volume_24h": signal.volume_24h,
+                "volume_ratio": signal.volume_ratio,
+                "status": signal.status.value if signal.status else None,
+                "should_trade": signal.should_trade,
+                "exchange_order_id": signal.exchange_order_id,
+                "last_update_at": signal.last_update_at.isoformat() if signal.last_update_at else None,
+                "refresh_hint": "slow"
+            })
+        
+        # Get open orders - USE DATABASE FIRST (much faster), only call API if DB is empty/old
+        # exchange_sync_service updates the database every few seconds, so DB data should be fresh
+        # RESTORED v4.0: Fetch recent open orders (last 50) to keep response fast
+        # NOTE: For /dashboard/state we only need recent open orders, not full history
+        open_orders_data = []
+        open_position_counts: dict[str, int] = {}
+        
+        # Try database first (fast) with timing
+        # RESTORED v4.0: Limit to 50 most recent open orders to prevent reading thousands of rows
+        # IMPORTANT: This query only fetches open orders (NEW, ACTIVE, PARTIALLY_FILLED)
+        # We do NOT fetch executed orders (FILLED, CANCELLED) to keep response fast
+        def fetch_open_orders():
+            # Import here to avoid scope issues
+            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+            from sqlalchemy import func
+            
+            # RESTORED v4.0: Use COALESCE to handle NULL exchange_create_time (fallback to created_at)
+            # This ensures ALL open orders are returned, even if exchange_create_time is NULL
+            # Order by creation time DESC to get most recent first
+            # Limit to 50 to prevent reading thousands of rows
+            try:
+                # Use explicit filter with status enum values
+                # Use COALESCE to handle NULL exchange_create_time (v4.0 behavior)
+                result = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status.in_([
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED
+                    ])
+                ).order_by(
+                    func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
+                ).limit(50).all()
+                
+                # Log how many orders we're returning
+                log.info(f"Fetched {len(result)} open orders from database (limited to 50, v4.0 behavior)")
+                return result
+            except Exception as e:
+                log.error(f"Error fetching open orders: {e}", exc_info=True)
+                raise
+        
+        db_orders_result, db_orders_err = timed("open_orders", fetch_open_orders)
+        if db_orders_err:
+            error_labels.append("open_orders")
+            partial_response = True
+            db_orders = []
+            log.warning(f"Error fetching open orders: {db_orders_err}")
+        else:
+            db_orders = db_orders_result or []
+            
+            if db_orders and len(db_orders) > 0:
+                # Use database orders - they're updated by exchange_sync_service
+                log.info(f"Dashboard state: returning {len(db_orders)} recent open orders (limited to 50 for performance)")
+                for order in db_orders:
+                    # Get creation time (prefer exchange_create_time, fallback to created_at)
+                    create_time = order.exchange_create_time or order.created_at
+                    create_timestamp_ms = int(create_time.timestamp() * 1000) if create_time else None
+                    
+                    # Format creation datetime for display
+                    if create_time:
+                        # Ensure datetime is timezone-aware (UTC)
+                        if create_time.tzinfo is None:
+                            create_time = create_time.replace(tzinfo=timezone.utc)
+                        create_datetime_str = create_time.isoformat()
+                    else:
+                        create_datetime_str = "N/A"
+                    
+                    open_orders_data.append({
+                        "exchange_order_id": order.exchange_order_id,
+                        "symbol": order.symbol,
+                        "side": order.side.value if order.side else None,
+                        "order_type": order.order_type,
+                        "status": order.status.value if order.status else None,
+                        "price": float(order.price) if order.price else None,
+                        "quantity": float(order.quantity) if order.quantity else None,
+                        "cumulative_quantity": float(order.cumulative_quantity) if order.cumulative_quantity else None,
+                        "cumulative_value": float(order.cumulative_value) if order.cumulative_value else None,
+                        "avg_price": float(order.avg_price) if order.avg_price else None,
+                        "created_at": order.exchange_create_time.isoformat() if order.exchange_create_time else (order.created_at.isoformat() if order.created_at else None),
+                        "updated_at": order.exchange_update_time.isoformat() if order.exchange_update_time else (order.updated_at.isoformat() if order.updated_at else None),
+                        "create_time": create_timestamp_ms,  # Timestamp in milliseconds
+                        "create_datetime": create_datetime_str  # Human-readable datetime string
+                    })
+        
+        # Only call API if database is empty
+        if not open_orders_data:
+            log.debug("Database empty, fetching open orders from Crypto.com API...")
+            try:
+                response = trade_client.get_open_orders()
+                
+                if response and "data" in response:
+                    orders = response.get("data", [])
+                    
+                    for order in orders:
+                        try:
+                            # Extract order data from Crypto.com API format
+                            order_id = order.get("order_id") or order.get("client_oid", "")
+                            instrument_name = order.get("instrument_name", "")
+                            order_type = order.get("order_type", "").upper()
+                            side = order.get("side", "").upper()
+                            status = order.get("status", "").upper()
+                            
+                            # Convert quantity and price
+                            quantity = 0.0
+                            price = 0.0
+                            order_value = 0.0
+                            avg_price = 0.0
+                            cumulative_quantity = 0.0
+                            cumulative_value = 0.0
+                            
+                            if order.get("quantity"):
+                                quantity = float(order.get("quantity"))
+                            if order.get("limit_price"):
+                                price = float(order.get("limit_price"))
+                            elif order.get("price"):
+                                price = float(order.get("price"))
+                            if order.get("order_value"):
+                                order_value = float(order.get("order_value"))
+                            if order.get("avg_price"):
+                                avg_price = float(order.get("avg_price"))
+                            if order.get("cumulative_quantity"):
+                                cumulative_quantity = float(order.get("cumulative_quantity"))
+                            if order.get("cumulative_value"):
+                                cumulative_value = float(order.get("cumulative_value"))
+                            
+                            # Parse timestamps
+                            create_time = order.get("create_time", 0)
+                            update_time = order.get("update_time", create_time)
+                            
+                            # Convert Crypto.com timestamp (milliseconds) to ISO format
+                            created_at = None
+                            updated_at = None
+                            if create_time:
+                                try:
+                                    # Crypto.com timestamps are in milliseconds
+                                    if create_time > 1e12:  # milliseconds
+                                        created_at = datetime.fromtimestamp(create_time / 1000, tz=timezone.utc).isoformat()
+                                    else:  # seconds
+                                        created_at = datetime.fromtimestamp(create_time, tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    created_at = None
+                            
+                            if update_time:
+                                try:
+                                    if update_time > 1e12:  # milliseconds
+                                        updated_at = datetime.fromtimestamp(update_time / 1000, tz=timezone.utc).isoformat()
+                                    else:  # seconds
+                                        updated_at = datetime.fromtimestamp(update_time, tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    updated_at = None
+                            
+                            # Map Crypto.com status to our status enum
+                            status_mapping = {
+                                "ACTIVE": "ACTIVE",
+                                "OPEN": "ACTIVE",
+                                "PENDING": "ACTIVE",
+                                "PARTIALLY_FILLED": "PARTIALLY_FILLED",
+                                "FILLED": "FILLED",
+                                "CANCELLED": "CANCELLED",
+                                "REJECTED": "REJECTED"
+                            }
+                            mapped_status = status_mapping.get(status, status)
+                            
+                            open_orders_data.append({
+                                "exchange_order_id": order_id,
+                                "symbol": instrument_name,
+                                "side": side,
+                                "order_type": order_type,
+                                "status": mapped_status,
+                                "price": price if price > 0 else None,
+                                "quantity": quantity if quantity > 0 else None,
+                                "cumulative_quantity": cumulative_quantity if cumulative_quantity > 0 else None,
+                                "cumulative_value": cumulative_value if cumulative_value > 0 else None,
+                                "avg_price": avg_price if avg_price > 0 else None,
+                                "order_value": order_value if order_value > 0 else None,
+                                "created_at": created_at,
+                                "updated_at": updated_at
+                            })
+                        except Exception as e:
+                            log.warning(f"Error parsing order {order.get('order_id', 'unknown')}: {e}")
+                            continue
+                    
+                    log.info(f"Retrieved {len(open_orders_data)} open orders directly from Crypto.com API")
+                else:
+                    log.warning("No orders data in Crypto.com response")
+            except Exception as e:
+                log.warning(f"Error fetching open orders from Crypto.com API: {e}")
+        
+        # Get last sync time
+        last_sync = exchange_sync_service.last_sync
+        last_sync_str = last_sync.isoformat() if last_sync else None
+        
+        elapsed_time = time_module.time() - start_time
+        log.info(f"✅ Dashboard state fetched in {elapsed_time:.2f}s: {len(balance_data)} balances, {len(fast_signals_data)} fast signals, {len(slow_signals_data)} slow signals, {len(open_orders_data)} open orders")
+        
+        if elapsed_time > 5.0:
+            log.warning(f"⚠️ Dashboard state fetch took {elapsed_time:.2f}s - this is slow! Should be < 1 second")
+        
+        # Convert balances to assets format for frontend portfolio
+        portfolio_assets = []
+        for bal in balance_data:
+            portfolio_assets.append({
+                "coin": bal.get("asset", ""),
+                "balance": bal.get("balance", 0),
+                "available_qty": bal.get("free", bal.get("balance", 0)),
+                "reserved_qty": bal.get("locked", 0),
+                "value_usd": bal.get("usd_value", 0),
+                "pct_portfolio": (bal.get("usd_value", 0) / total_usd_value * 100) if total_usd_value > 0 else 0
+            })
+        
+        return {
+            "source": "portfolio_cache" if balance_data else "crypto.com",
+            "total_usd_value": total_usd_value,
+            "balances": balance_data,
+            "fast_signals": fast_signals_data,
+            "slow_signals": slow_signals_data,
+            "open_orders": open_orders_data,
+            "last_sync": last_sync_str,
+            "portfolio_last_updated": portfolio_last_updated_iso,
+            "portfolio": {
+                "assets": portfolio_assets,  # Frontend expects "assets" not "holdings"
+                "total_value_usd": total_usd_value,  # Frontend expects "total_value_usd"
+                "exchange": "Crypto.com Exchange"
+            },
+            "bot_status": {
+                "is_running": bot_is_running,
+                "status": bot_status,
+                "reason": bot_reason,
+                "live_trading_enabled": live_trading_enabled,
+                "mode": "LIVE" if live_trading_enabled else "DRY_RUN"
+            },
+            # Unified open position counts per base currency (e.g., ADA, LDO).
+            # Used by frontend Holdings -> "Open Orders" column so that the
+            # number shown matches the trading engine and protection logic.
+            "open_position_counts": open_position_counts,
+            "partial": partial_response,
+            "errors": error_labels
+        }
+        
+    except Exception as e:
+        log.error(f"Error getting dashboard state: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting dashboard state: {str(e)}")

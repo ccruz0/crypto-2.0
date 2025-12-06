@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "defaults": {
+    "timeframe": "4h",
+    "preset": "swing",
+    "alert_cooldown_minutes": 5,
+    "alert_min_price_change_pct": 1.0
+  },
+  "presets": {
+    "swing": {
+      "notificationProfile": "swing",
+      "rules": {
+        "Conservative": {
+          "rsi": {
+            "buyBelow": 40,
+            "sellAbove": 70
+          },
+          "maChecks": {
+            "ema10": true,
+            "ma50": true,
+            "ma200": true
+          },
+          "sl": {
+            "atrMult": 1.5
+          },
+          "tp": {
+            "rr": 1.5
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "Operaciones multi-d\u00eda",
+            "Confirmaci\u00f3n MA50/MA200"
+          ]
+        },
+        "Aggressive": {
+          "rsi": {
+            "buyBelow": 45,
+            "sellAbove": 68
+          },
+          "maChecks": {
+            "ema10": true,
+            "ma50": true,
+            "ma200": true
+          },
+          "sl": {
+            "atrMult": 1.0
+          },
+          "tp": {
+            "rr": 1.2
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "Entrada m\u00e1s temprana",
+            "SL m\u00e1s estrecho"
+          ]
+        }
+      }
+    },
+    "intraday": {
+      "notificationProfile": "intraday",
+      "rules": {
+        "Conservative": {
+          "rsi": {
+            "buyBelow": 45,
+            "sellAbove": 70
+          },
+          "maChecks": {
+            "ema10": true,
+            "ma50": true,
+            "ma200": false
+          },
+          "sl": {
+            "atrMult": 1.0
+          },
+          "tp": {
+            "rr": 1.2
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "Cierra en el d\u00eda",
+            "Evita overnight"
+          ]
+        },
+        "Aggressive": {
+          "rsi": {
+            "buyBelow": 50,
+            "sellAbove": 65
+          },
+          "maChecks": {
+            "ema10": true,
+            "ma50": true,
+            "ma200": false
+          },
+          "sl": {
+            "atrMult": 0.8
+          },
+          "tp": {
+            "rr": 1.0
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "M\u00e1s se\u00f1ales",
+            "M\u00e1s ruido"
+          ]
+        }
+      }
+    },
+    "scalp": {
+      "notificationProfile": "scalp",
+      "rules": {
+        "Conservative": {
+          "rsi": {
+            "buyBelow": 50,
+            "sellAbove": 70
+          },
+          "maChecks": {
+            "ema10": true,
+            "ma50": false,
+            "ma200": false
+          },
+          "sl": {
+            "pct": 0.5
+          },
+          "tp": {
+            "pct": 0.8
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "Movimientos muy cortos",
+            "Slippage importa"
+          ]
+        },
+        "Aggressive": {
+          "rsi": {
+            "buyBelow": 55,
+            "sellAbove": 65
+          },
+          "maChecks": {
+            "ema10": false,
+            "ma50": false,
+            "ma200": false
+          },
+          "sl": {
+            "pct": 0.35
+          },
+          "tp": {
+            "pct": 0.5
+          },
+          "volumeMinRatio": 0.5,
+          "minPriceChangePct": 1.0,
+          "alertCooldownMinutes": 5.0,
+          "notes": [
+            "Entradas anticipadas",
+            "Muchas micro-salidas"
+          ]
+        }
+      }
+    }
+  },
+  "coins": {
+    "BTC_USDT": {
+      "preset": "swing"
+    },
+    "ETH_USDT": {
+      "preset": "intraday-conservative",
+      "overrides": {}
+    },
+    "DOT_USDT": {
+      "preset": "scalp",
+      "overrides": {
+        "RSI_BUY": 40
+      }
+    },
+    "BTC_USD": {
+      "preset": "scalp-conservative",
+      "overrides": {}
+    },
+    "BNB_USDT": {
+      "preset": "swing",
+      "overrides": {}
+    },
+    "SOL_USDT": {
+      "preset": "swing-conservative",
+      "overrides": {}
+    },
+    "ALGO_USDT": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "ALGO_USD": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "LDO_USD": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "LDO_USDT": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "LINK_USDT": {
+      "preset": "scalp",
+      "overrides": {}
+    },
+    "ADA_USDT": {
+      "preset": "swing-conservative",
+      "overrides": {}
+    },
+    "TON_USDT": {
+      "preset": "scalp-aggressive",
+      "overrides": {
+        "volumeMinRatio": 0.30
+      }
+    },
+    "AKT_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "BONK_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "CRO_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "DGB_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "ETH_USD": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "NEAR_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    },
+    "SUI_USDT": {
+      "preset": "swing-aggressive",
+      "overrides": {}
+    }
+  }
+}

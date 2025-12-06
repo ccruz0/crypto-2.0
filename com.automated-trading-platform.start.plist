@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.automated-trading-platform.start</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/carloscruz/automated-trading-platform/scripts/check-and-start-services.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/carloscruz/Library/Logs/automated-trading-platform/start.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/carloscruz/Library/Logs/automated-trading-platform/start.error.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/carloscruz/automated-trading-platform</string>
+</dict>
+</plist>

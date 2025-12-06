@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API URL Test</title>
+</head>
+<body>
+    <h1>API URL Test</h1>
+    <div id="result"></div>
+    
+    <script>
+        // Test the environment detection logic
+        function testEnvironmentDetection() {
+            const hostname = window.location.hostname;
+            const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+            const isAWS = hostname.includes('54.254.150.31') || hostname.includes('ec2');
+            
+            let apiUrl;
+            if (isLocalhost) {
+                apiUrl = 'http://localhost:8000/api';
+            } else if (isAWS) {
+                apiUrl = 'http://54.254.150.31:8000/api';
+            } else {
+                apiUrl = 'http://175.41.189.249:8000/api';
+            }
+            
+            return {
+                hostname,
+                isLocalhost,
+                isAWS,
+                apiUrl
+            };
+        }
+        
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            const env = testEnvironmentDetection();
+            
+            resultDiv.innerHTML = `
+                <h2>Environment Detection:</h2>
+                <p><strong>Hostname:</strong> ${env.hostname}</p>
+                <p><strong>Is Localhost:</strong> ${env.isLocalhost}</p>
+                <p><strong>Is AWS:</strong> ${env.isAWS}</p>
+                <p><strong>API URL:</strong> ${env.apiUrl}</p>
+                <hr>
+                <h2>Testing API Connection:</h2>
+            `;
+            
+            try {
+                console.log('Testing API connection to:', env.apiUrl);
+                const response = await fetch(`${env.apiUrl}/assets`, {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': 'demo-key'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.innerHTML += `
+                        <p style="color: green;">✅ API Connection Successful!</p>
+                        <p><strong>Assets Count:</strong> ${data.assets?.length || 0}</p>
+                        <p><strong>Total Value:</strong> $${data.total_value_usd || 0}</p>
+                    `;
+                } else {
+                    resultDiv.innerHTML += `
+                        <p style="color: red;">❌ API Connection Failed!</p>
+                        <p><strong>Status:</strong> ${response.status}</p>
+                        <p><strong>Status Text:</strong> ${response.statusText}</p>
+                    `;
+                }
+            } catch (error) {
+                console.error('API connection error:', error);
+                resultDiv.innerHTML += `
+                    <p style="color: red;">❌ API Connection Error!</p>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                `;
+            }
+        }
+        
+        // Run test when page loads
+        testAPI();
+    </script>
+</body>
+</html>
+

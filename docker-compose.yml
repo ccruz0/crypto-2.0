@@ -1,0 +1,375 @@
+version: "3.9"
+services:
+  # ============================================
+  # GLUETUN (VPN Container) - AWS Profile Only
+  # ============================================
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - SERVER_COUNTRIES=Netherlands
+      - OPENVPN_USER=Jy4gvM3reuQn4FywkvSdfDBq
+      - OPENVPN_PASSWORD=VJy8dMvnvjdNERQQar8v5ESm
+      # NOTE: FIREWALL_VPN_INPUT_PORTS is for incoming connections through VPN
+      # Backend AWS exposes port 8002 directly, gluetun only handles outbound traffic
+      - FIREWALL_OUTBOUND_SUBNETS=172.0.0.0/8,104.19.0.0/16,149.154.0.0/16,91.108.0.0/16
+      - FIREWALL_VPN_OUTBOUND_SUBNETS=149.154.0.0/16,91.108.0.0/16
+      - UPDATER_PERIOD=24h
+      - HTTP_CONTROL_SERVER_LOG=false
+      - DNS_SERVER=enabled
+      - DNS_ADDRESS=127.0.0.1
+      - DNS_KEEP_NAMESERVER=on
+    # NOTE: Gluetun only handles outbound traffic, backend-aws exposes port 8002 directly
+    # No port mapping needed here to avoid conflicts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/v1/openvpn/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - aws
+
+  # ============================================
+  # DATABASE - Both Profiles
+  # ============================================
+  db:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    container_name: postgres_hardened
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-atp}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traderpass}
+      POSTGRES_INITDB_ARGS: --auth=scram-sha-256
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: always
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-trader}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - local
+      - aws
+
+  # ============================================
+  # BACKEND - Local Profile (Direct Connection)
+  # ============================================
+  # ⚠️ WARNING: This is for LOCAL DEVELOPMENT ONLY
+  # Do NOT run this in parallel with AWS production backend.
+  # AWS backend is the ONLY live production runtime (trading + alerts).
+  # This local profile is for development/testing only.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      - ENVIRONMENT=${ENVIRONMENT:-local}
+      - APP_ENV=${APP_ENV:-local}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
+      - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
+      - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
+      - LIVE_TRADING=${LIVE_TRADING:-true}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+      - UVICORN_WORKERS=1
+      - DISABLE_MIDDLEWARES=0
+      - ENABLE_CORS=1
+      - DISABLE_AUTH=${DISABLE_AUTH:-true}
+      - VPN_GATE_ENABLED=${VPN_GATE_ENABLED:-true}
+      - VPN_GATE_URL=${VPN_GATE_URL:-https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT}
+      - VPN_GATE_EXPECTS_JSON=${VPN_GATE_EXPECTS_JSON:-true}
+      - VPN_GATE_TIMEOUT_SECS=${VPN_GATE_TIMEOUT_SECS:-3}
+      - VPN_GATE_RETRY_SECS=${VPN_GATE_RETRY_SECS:-5}
+      - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
+      - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
+      - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:--5033055655}
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 3 --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10 --limit-concurrency 100 --backlog 2048"
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "768M"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - local
+
+  # ============================================
+  # BACKEND - AWS Profile (Via Gluetun)
+  # ============================================
+  backend-aws:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      - ENVIRONMENT=aws
+      - APP_ENV=aws
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      - RUNTIME_ORIGIN=AWS
+      - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
+      - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
+      - LIVE_TRADING=${LIVE_TRADING:-true}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+      - UVICORN_WORKERS=1
+      - DISABLE_MIDDLEWARES=0
+      - ENABLE_CORS=1
+      - DISABLE_AUTH=${DISABLE_AUTH:-true}
+      - VPN_GATE_ENABLED=${VPN_GATE_ENABLED:-true}
+      - VPN_GATE_URL=${VPN_GATE_URL:-https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT}
+      - VPN_GATE_EXPECTS_JSON=${VPN_GATE_EXPECTS_JSON:-true}
+      - VPN_GATE_TIMEOUT_SECS=${VPN_GATE_TIMEOUT_SECS:-3}
+      - VPN_GATE_RETRY_SECS=${VPN_GATE_RETRY_SECS:-5}
+      - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
+      - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
+      - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
+      # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
+      # Do not override here to allow env_file values to be used
+    # NOTE: Backend AWS uses gluetun network for outbound traffic via VPN
+    # Ports are exposed for external API access (health checks, frontend calls)
+    ports:
+      - "8002:8002"
+    # volumes:
+    #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
+      interval: 120s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "1G"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    profiles:
+      - aws
+
+  # ============================================
+  # MARKET UPDATER - Both Profiles
+  # ============================================
+  market-updater:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      - ENVIRONMENT=${ENVIRONMENT:-local}
+      - APP_ENV=${APP_ENV:-local}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
+      - LIVE_TRADING=${LIVE_TRADING:-true}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python3 run_updater.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - local
+      - aws
+
+  # ============================================
+  # FRONTEND - Local Profile (Direct Connection)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - NEXT_PUBLIC_API_URL=http://localhost:8002/api
+      - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-local}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles:
+      - local
+
+  # ============================================
+  # FRONTEND - AWS Profile (Via Gluetun)
+  # ============================================
+  frontend-aws:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://backend-aws:8002/api
+      - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-aws}
+    ports:
+      - "3000:3000"
+    # Production build: use CMD from Dockerfile (node server.js)
+    # For faster updates during development, you can temporarily mount volumes:
+    # volumes:
+    #   - ./frontend:/app
+    #   - /app/node_modules
+    #   - /app/.next
+    # And use: command: npm run dev
+    # But for production, keep read_only and no volumes for security
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: always
+    healthcheck:
+      test: ["CMD", "sh", "-c", "exit 0"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+      backend-aws:
+        condition: service_healthy
+    profiles:
+      - aws
+
+  # ============================================
+  # AWS-SPECIFIC SERVICES
+  # ============================================
+  aws-backup:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    container_name: postgres_hardened_backup
+    env_file:
+      - .env
+      - .env.aws
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - aws_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader} -d ${POSTGRES_DB:-atp}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - aws
+
+volumes:
+  postgres_data:
+  aws_postgres_data:
+
+secrets:
+  pg_password:
+    file: ./secrets/pg_password
