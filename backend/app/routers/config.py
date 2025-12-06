@@ -116,13 +116,23 @@ def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         # SOURCE OF TRUTH: Update strategy_rules (new structure from Signal Configuration UI)
         # This is the canonical location where preset config is stored
         if "strategy_rules" in new_cfg:
+            # FIX: Validate that strategy_rules is not empty
+            # An empty dict would be falsy and cause _normalize_config to skip early return,
+            # triggering unintended migration logic from legacy presets
+            incoming_strategy_rules = new_cfg["strategy_rules"]
+            if not incoming_strategy_rules or not isinstance(incoming_strategy_rules, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="strategy_rules cannot be empty or invalid. It must be a non-empty dictionary with preset configurations."
+                )
+            
             try:
                 _log_volume_min_ratio("PUT incoming", new_cfg)
             except Exception as e:
                 logger.warning(f"[CONFIG] Failed to log volume min ratio (non-critical): {e}")
             
-            existing_cfg["strategy_rules"] = new_cfg["strategy_rules"]
-            logger.info("[CONFIG] Saving strategy_rules with volumeMinRatio values")
+            existing_cfg["strategy_rules"] = incoming_strategy_rules
+            logger.info(f"[CONFIG] Saving strategy_rules with {len(incoming_strategy_rules)} presets")
         else:
             logger.warning("PUT /config: No strategy_rules in incoming config!")
         

@@ -204,9 +204,45 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         
         # If we found any presets with rules structure, use them
         if migrated_rules:
-            # Always include default presets to ensure all standard presets exist
-            # Merge defaults with migrated rules (migrated rules take precedence)
-            final_rules = {**default_strategy_rules, **migrated_rules}
+            # FIX: Deep merge at risk-mode level to preserve missing risk modes
+            # Start with defaults, then merge migrated rules at preset level,
+            # but merge rules at risk-mode level to preserve both Conservative and Aggressive
+            final_rules = deepcopy(default_strategy_rules)
+            
+            for preset_key, migrated_preset in migrated_rules.items():
+                if preset_key in final_rules:
+                    # Known preset: deep merge at risk-mode level
+                    default_preset = final_rules[preset_key]
+                    if isinstance(migrated_preset, dict) and "rules" in migrated_preset:
+                        # Merge notificationProfile if present
+                        if "notificationProfile" in migrated_preset:
+                            default_preset["notificationProfile"] = migrated_preset["notificationProfile"]
+                        
+                        # Deep merge rules at risk-mode level
+                        # Start with default rules, then merge migrated rules
+                        merged_rules = deepcopy(default_preset.get("rules", {}))
+                        migrated_rules_dict = migrated_preset.get("rules", {})
+                        
+                        # Merge each risk mode individually
+                        for risk_mode, migrated_risk_rules in migrated_rules_dict.items():
+                            if isinstance(migrated_risk_rules, dict):
+                                # Merge migrated rules into default rules for this risk mode
+                                if risk_mode in merged_rules:
+                                    merged_rules[risk_mode] = {**merged_rules[risk_mode], **migrated_risk_rules}
+                                else:
+                                    # New risk mode not in defaults, add it
+                                    merged_rules[risk_mode] = migrated_risk_rules
+                        
+                        default_preset["rules"] = merged_rules
+                        logger.debug(f"Deep merged preset '{preset_key}' at risk-mode level")
+                    else:
+                        # Invalid structure, use default
+                        logger.warning(f"Preset '{preset_key}' in migrated_rules has invalid structure, using defaults")
+                else:
+                    # Custom preset not in defaults, add it as-is
+                    final_rules[preset_key] = deepcopy(migrated_preset)
+                    logger.debug(f"Added custom preset '{preset_key}' to final rules")
+            
             cfg["strategy_rules"] = final_rules
             custom_count = len([k for k in migrated_rules if k not in default_strategy_rules])
             if custom_count > 0:
