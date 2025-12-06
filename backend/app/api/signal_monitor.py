@@ -327,19 +327,44 @@ class SignalMonitorService:
             from app.services.data_sources import data_manager
             from price_fetcher import get_price_with_fallback
             
-            # Get price data with indicators
+            # Get price data with indicators and volume data
+            # FIX: Fetch volume data from database (same as /api/signals endpoint) to ensure accurate volume checks
             try:
-                result = get_price_with_fallback(symbol, "15m")
-                current_price = result.get('price', 0)
-                if not current_price:
-                    logger.warning(f"No price data for {symbol}, skipping signal check")
-                    return
+                # Try to get data from database first (includes volume data)
+                from app.models.market_price import MarketData
+                market_data = db.query(MarketData).filter(
+                    MarketData.symbol == symbol
+                ).first()
                 
-                rsi = result.get('rsi', 50)
-                ma50 = result.get('ma50', current_price)
-                ma200 = result.get('ma200', current_price)
-                ema10 = result.get('ma10', current_price)
-                atr = result.get('atr', current_price * 0.02)
+                if market_data and market_data.price and market_data.price > 0:
+                    # Use data from database (includes volume)
+                    current_price = market_data.price
+                    rsi = market_data.rsi or 50.0
+                    ma50 = market_data.ma50  # None if not available
+                    ma200 = market_data.ma200  # None if not available
+                    ema10 = market_data.ema10  # None if not available
+                    atr = market_data.atr or (current_price * 0.02)
+                    current_volume = market_data.current_volume  # Can be None
+                    avg_volume = market_data.avg_volume or 0.0
+                    
+                    logger.debug(f"📊 {symbol}: Using database data - price=${current_price}, volume={current_volume}, avg_volume={avg_volume}")
+                else:
+                    # Fallback to price fetcher if database doesn't have data
+                    result = get_price_with_fallback(symbol, "15m")
+                    current_price = result.get('price', 0)
+                    if not current_price:
+                        logger.warning(f"No price data for {symbol}, skipping signal check")
+                        return
+                    
+                    rsi = result.get('rsi', 50)
+                    ma50 = result.get('ma50', current_price)
+                    ma200 = result.get('ma200', current_price)
+                    ema10 = result.get('ma10', current_price)
+                    atr = result.get('atr', current_price * 0.02)
+                    current_volume = None  # Price fetcher doesn't provide volume
+                    avg_volume = None
+                    
+                    logger.debug(f"📊 {symbol}: Using price fetcher fallback - price=${current_price}, volume=unavailable")
                 
                 # Calculate resistance levels
                 price_precision = 2 if current_price >= 100 else 4
@@ -350,7 +375,7 @@ class SignalMonitorService:
                 logger.warning(f"Error fetching price data for {symbol}: {e}")
                 return
             
-            # Calculate trading signals
+            # Calculate trading signals with volume data
             signals = calculate_trading_signals(
                 symbol=symbol,
                 price=current_price,
@@ -359,6 +384,8 @@ class SignalMonitorService:
                 ma50=ma50,
                 ma200=ma200,
                 ema10=ema10,
+                volume=current_volume,  # FIX: Pass volume data from database
+                avg_volume=avg_volume,  # FIX: Pass avg_volume from database
                 buy_target=watchlist_item.buy_target,
                 last_buy_price=watchlist_item.purchase_price,
                 position_size_usd=watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 0,
