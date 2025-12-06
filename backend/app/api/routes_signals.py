@@ -411,7 +411,7 @@ def get_signals(
                         atr = market_data.atr or (current_price * 0.02)
                         volume_24h = market_data.volume_24h or 0.0
                         current_volume = market_data.current_volume  # Can be None
-                        avg_volume = market_data.avg_volume or 0.0
+                        avg_volume = market_data.avg_volume  # Can be None - keep None instead of 0.0 for semantic clarity
                         
                         # Try to refresh volume only if we still have time budget left
                         # This prevents long external calls from blocking the endpoint
@@ -472,7 +472,7 @@ def get_signals(
                         elif market_data.volume_ratio and market_data.volume_ratio > 0:
                             # Use stored ratio only if we don't have current values
                             volume_ratio = market_data.volume_ratio
-                        elif avg_volume > 0 and volume_24h > 0:
+                        elif avg_volume is not None and avg_volume > 0 and volume_24h > 0:
                             # Final fallback: approximate current_volume as volume_24h / 24
                             current_volume_approx = volume_24h / 24.0
                             volume_ratio = current_volume_approx / avg_volume
