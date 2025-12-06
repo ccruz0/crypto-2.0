@@ -347,6 +347,32 @@ class SignalMonitorService:
                     current_volume = market_data.current_volume  # Can be None
                     avg_volume = market_data.avg_volume  # Can be None - keep None instead of 0.0 for semantic clarity
                     
+                    # FIX: Try to fetch fresh volume data if database volume seems stale or missing
+                    # This ensures signal_monitor uses same fresh data as /api/signals endpoint
+                    try:
+                        from market_updater import fetch_ohlcv_data
+                        from app.api.routes_signals import calculate_volume_index
+                        
+                        ohlcv_data = fetch_ohlcv_data(symbol, "1h", 6)
+                        if ohlcv_data and len(ohlcv_data) > 0:
+                            volumes = [candle.get("v", 0) for candle in ohlcv_data if candle.get("v", 0) > 0]
+                            if len(volumes) >= 6:
+                                # Recalculate volume index with fresh data - this is the source of truth
+                                volume_index = calculate_volume_index(volumes, period=5)
+                                fresh_current_volume = volume_index.get("current_volume")
+                                fresh_avg_volume = volume_index.get("average_volume")
+                                
+                                # Use fresh values if available, otherwise fall back to DB values
+                                if fresh_current_volume and fresh_current_volume > 0:
+                                    current_volume = fresh_current_volume
+                                    logger.debug(f"📊 {symbol}: Using fresh current_volume={current_volume} (was {market_data.current_volume})")
+                                if fresh_avg_volume and fresh_avg_volume > 0:
+                                    avg_volume = fresh_avg_volume
+                                    logger.debug(f"📊 {symbol}: Using fresh avg_volume={avg_volume} (was {market_data.avg_volume})")
+                    except Exception as vol_fetch_err:
+                        # Don't fail if volume fetch fails - use DB values as fallback
+                        logger.debug(f"📊 {symbol}: Could not fetch fresh volume: {vol_fetch_err}, using DB values")
+                    
                     logger.debug(f"📊 {symbol}: Using database data - price=${current_price}, volume={current_volume}, avg_volume={avg_volume}")
                 else:
                     # Fallback to price fetcher if database doesn't have data
