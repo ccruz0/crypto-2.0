@@ -746,6 +746,22 @@ class SignalMonitorService:
                                     throttle_reason=reason,
                                 )
                                 logger.info(f"✅ BUY alert sent for {symbol} - {reason_text}")
+                                
+                                # Record signal event in throttle table for monitoring dashboard
+                                try:
+                                    from app.services.signal_throttle import record_signal_event, build_strategy_key
+                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                    record_signal_event(
+                                        db=db,
+                                        symbol=symbol,
+                                        strategy_key=strategy_key,
+                                        side="BUY",
+                                        price=current_price,
+                                        source="alert",
+                                    )
+                                    logger.debug(f"📝 Recorded BUY signal event for {symbol} in throttle table")
+                                except Exception as record_err:
+                                    logger.warning(f"⚠️ Could not record signal event for {symbol}: {record_err}")
                             except Exception as e:
                                 logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                                 # If sending failed, we should still keep the state update to prevent spam retries
@@ -893,6 +909,22 @@ class SignalMonitorService:
                                 f"⚠️ SELL signals only generate alerts, no orders are created automatically"
                             )
                             logger.info(f"✅ SELL alert sent for {symbol} - {reason}")
+                            
+                            # Record signal event in throttle table for monitoring dashboard
+                            try:
+                                from app.services.signal_throttle import record_signal_event, build_strategy_key
+                                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                record_signal_event(
+                                    db=db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="SELL",
+                                    price=current_price,
+                                    source="alert",
+                                )
+                                logger.debug(f"📝 Recorded SELL signal event for {symbol} in throttle table")
+                            except Exception as record_err:
+                                logger.warning(f"⚠️ Could not record signal event for {symbol}: {record_err}")
                         except Exception as e:
                             logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
                             # If sending failed, we should still keep the state update to prevent spam retries
