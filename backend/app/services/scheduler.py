@@ -30,119 +30,116 @@ class TradingScheduler:
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self.last_nightly_consistency_date = None  # Track last nightly consistency check date
         self._scheduler_task = None  # Track the running task to prevent duplicates
+        # Locks for atomic check-and-set operations on date tracking variables
+        self._daily_summary_lock = asyncio.Lock()
+        self._sl_tp_check_lock = asyncio.Lock()
+        self._sell_orders_report_lock = asyncio.Lock()
+        self._nightly_consistency_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
-        """Check if it's time to send daily summary - synchronous worker"""
-        now = datetime.now()
-        today = now.date()
-        
-        # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't sent today
-        if (now.hour == 8 and 
-            abs(now.minute) <= 1 and 
-            self.last_daily_summary_date != today):
-            
-            logger.info("Sending daily summary...")
-            try:
-                daily_summary_service.send_daily_summary()
-                # Set the date after execution to prevent duplicate sends
-                self.last_daily_summary_date = today
-                logger.info("Daily summary sent")
-                # Record successful execution
-                from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("daily_summary", "success", "Daily summary sent successfully")
-            except Exception as e:
-                # Set the date even on failure to prevent retries during the 8:00-8:01 AM window
-                self.last_daily_summary_date = today
-                logger.error(f"Error sending daily summary: {e}", exc_info=True)
-                from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("daily_summary", "error", None, str(e))
+        """Check if it's time to send daily summary - synchronous worker
+        Note: Date check is performed in async wrapper to ensure atomicity.
+        This function is called only after the date has been set in the async wrapper.
+        """
+        logger.info("Sending daily summary...")
+        try:
+            daily_summary_service.send_daily_summary()
+            logger.info("Daily summary sent")
+            # Record successful execution
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("daily_summary", "success", "Daily summary sent successfully")
+        except Exception as e:
+            logger.error(f"Error sending daily summary: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("daily_summary", "error", None, str(e))
     
     async def check_daily_summary(self):
         """Check if it's time to send daily summary - async wrapper"""
-        now = datetime.now().time()
-        
-        # Check if it's 8:00 AM (with 1 minute tolerance)
-        if (self.daily_summary_time.hour == now.hour and 
-            abs(self.daily_summary_time.minute - now.minute) <= 1):
-            
-            # Run blocking call in thread pool
-            await asyncio.to_thread(self.check_daily_summary_sync)
-            
-            # Wait 2 minutes to avoid duplicate sends
-            await asyncio.sleep(120)
-    
-    def check_sl_tp_positions_sync(self):
-        """Check if it's time to check positions for SL/TP - synchronous worker"""
         now = datetime.now()
         today = now.date()
+        now_time = now.time()
         
-        # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't checked today
-        if (now.hour == 8 and 
-            abs(now.minute) <= 1 and 
-            self.last_sl_tp_check_date != today):
-            
-            logger.info("Checking positions for missing SL/TP orders...")
-            
+        # Use lock to make check-and-set atomic, preventing concurrent execution
+        async with self._daily_summary_lock:
+            # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't sent today
+            if (self.daily_summary_time.hour == now_time.hour and 
+                abs(self.daily_summary_time.minute - now_time.minute) <= 1 and
+                self.last_daily_summary_date != today):
+                
+                # Set date immediately to prevent concurrent requests from passing the check
+                self.last_daily_summary_date = today
+                
+                # Run blocking call in thread pool
+                await asyncio.to_thread(self.check_daily_summary_sync)
+                
+                # Wait 2 minutes to avoid duplicate sends
+                await asyncio.sleep(120)
+    
+    def check_sl_tp_positions_sync(self):
+        """Check if it's time to check positions for SL/TP - synchronous worker
+        Note: Date check is performed in async wrapper to ensure atomicity.
+        This function is called only after the date has been set in the async wrapper.
+        """
+        logger.info("Checking positions for missing SL/TP orders...")
+        
+        try:
+            db = SessionLocal()
             try:
-                db = SessionLocal()
-                try:
-                    sl_tp_checker_service.send_sl_tp_reminder(db)
-                    self.last_sl_tp_check_date = today
-                    logger.info("SL/TP check completed")
-                    # Record successful execution
-                    from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("sl_tp_check", "success", "SL/TP check completed successfully")
-                finally:
-                    db.close()
-            except Exception as e:
-                logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
+                sl_tp_checker_service.send_sl_tp_reminder(db)
+                logger.info("SL/TP check completed")
+                # Record successful execution
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sl_tp_check", "error", None, str(e))
+                record_workflow_execution("sl_tp_check", "success", "SL/TP check completed successfully")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error checking SL/TP positions: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("sl_tp_check", "error", None, str(e))
     
     async def check_sl_tp_positions(self):
         """Check if it's time to check positions for SL/TP - async wrapper"""
         now = datetime.now()
         today = now.date()
         
-        # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't checked today
-        if (now.hour == 8 and 
-            abs(now.minute) <= 1 and 
-            self.last_sl_tp_check_date != today):
-            
-            # Run blocking DB/API calls in thread pool
-            await asyncio.to_thread(self.check_sl_tp_positions_sync)
-            
-            # Wait 2 minutes to avoid duplicate checks
-            await asyncio.sleep(120)
+        # Use lock to make check-and-set atomic, preventing concurrent execution
+        async with self._sl_tp_check_lock:
+            # Check if it's 8:00 AM (with 1 minute tolerance) and we haven't checked today
+            if (now.hour == 8 and 
+                abs(now.minute) <= 1 and 
+                self.last_sl_tp_check_date != today):
+                
+                # Set date immediately to prevent concurrent requests from passing the check
+                self.last_sl_tp_check_date = today
+                
+                # Run blocking DB/API calls in thread pool
+                await asyncio.to_thread(self.check_sl_tp_positions_sync)
+                
+                # Wait 2 minutes to avoid duplicate checks
+                await asyncio.sleep(120)
     
     def check_sell_orders_report_sync(self):
-        """Check if it's time to send sell orders report - synchronous worker"""
-        # Get current time in Bali timezone
+        """Check if it's time to send sell orders report - synchronous worker
+        Note: Date check is performed in async wrapper to ensure atomicity.
+        This function is called only after the date has been set in the async wrapper.
+        """
         now_bali = datetime.now(BALI_TZ)
-        today_bali = now_bali.date()
+        logger.info(f"Sending sell orders report... (Bali time: {now_bali.strftime('%Y-%m-%d %H:%M:%S %Z')})")
         
-        # Check if it's 7:00 AM Bali time (with 1 minute tolerance) and we haven't sent today
-        if (now_bali.hour == 7 and 
-            abs(now_bali.minute) <= 1 and 
-            self.last_sell_orders_report_date != today_bali):
-            
-            logger.info(f"Sending sell orders report... (Bali time: {now_bali.strftime('%Y-%m-%d %H:%M:%S %Z')})")
-            
+        try:
+            db = SessionLocal()
             try:
-                db = SessionLocal()
-                try:
-                    daily_summary_service.send_sell_orders_report(db)
-                    self.last_sell_orders_report_date = today_bali
-                    logger.info("Sell orders report sent")
-                    # Record successful execution
-                    from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("sell_orders_report", "success", "Sell orders report sent successfully")
-                finally:
-                    db.close()
-            except Exception as e:
-                logger.error(f"Error sending sell orders report: {e}", exc_info=True)
+                daily_summary_service.send_sell_orders_report(db)
+                logger.info("Sell orders report sent")
+                # Record successful execution
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sell_orders_report", "error", None, str(e))
+                record_workflow_execution("sell_orders_report", "success", "Sell orders report sent successfully")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error sending sell orders report: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("sell_orders_report", "error", None, str(e))
     
     async def check_sell_orders_report(self):
         """Check if it's time to send sell orders report - async wrapper"""
@@ -150,99 +147,101 @@ class TradingScheduler:
         now_bali = datetime.now(BALI_TZ)
         today_bali = now_bali.date()
         
-        # Check if it's 7:00 AM Bali time (with 1 minute tolerance) and we haven't sent today
-        if (now_bali.hour == 7 and 
-            abs(now_bali.minute) <= 1 and 
-            self.last_sell_orders_report_date != today_bali):
-            
-            # Run blocking DB/API calls in thread pool
-            await asyncio.to_thread(self.check_sell_orders_report_sync)
-            
-            # Wait 2 minutes to avoid duplicate sends
-            await asyncio.sleep(120)
+        # Use lock to make check-and-set atomic, preventing concurrent execution
+        async with self._sell_orders_report_lock:
+            # Check if it's 7:00 AM Bali time (with 1 minute tolerance) and we haven't sent today
+            if (now_bali.hour == 7 and 
+                abs(now_bali.minute) <= 1 and 
+                self.last_sell_orders_report_date != today_bali):
+                
+                # Set date immediately to prevent concurrent requests from passing the check
+                self.last_sell_orders_report_date = today_bali
+                
+                # Run blocking DB/API calls in thread pool
+                await asyncio.to_thread(self.check_sell_orders_report_sync)
+                
+                # Wait 2 minutes to avoid duplicate sends
+                await asyncio.sleep(120)
     
     def check_nightly_consistency_sync(self):
-        """Check if it's time to run nightly consistency check - synchronous worker"""
-        # Get current time in Bali timezone
+        """Check if it's time to run nightly consistency check - synchronous worker
+        Note: Date check is performed in async wrapper to ensure atomicity.
+        This function is called only after the date has been set in the async wrapper.
+        """
         now_bali = datetime.now(BALI_TZ)
-        today_bali = now_bali.date()
+        logger.info(f"Running nightly consistency check... (Bali time: {now_bali.strftime('%Y-%m-%d %H:%M:%S %Z')})")
         
-        # Check if it's 3:00 AM Bali time (with 1 minute tolerance) and we haven't run today
-        if (now_bali.hour == 3 and 
-            abs(now_bali.minute) <= 1 and 
-            self.last_nightly_consistency_date != today_bali):
+        try:
+            import subprocess
+            import sys
+            import os
+            # Calculate absolute path to the consistency check script
+            # In Docker: WORKDIR is /app, backend contents are copied to /app/
+            # So structure is: /app/services/scheduler.py and /app/scripts/watchlist_consistency_check.py
+            # In local dev: .../backend/app/services/scheduler.py and .../backend/scripts/watchlist_consistency_check.py
+            current_file_dir = os.path.dirname(os.path.abspath(__file__))
+            # current_file_dir is /app/services/ in Docker, or .../backend/app/services/ locally
+            # Go up 2 levels to get backend root: /app/ in Docker, or .../backend/ locally
+            backend_root = os.path.dirname(os.path.dirname(current_file_dir))
+            # In Docker: backend_root = /app/, scripts are at /app/scripts/
+            # In local: backend_root = .../backend/, scripts are at .../backend/scripts/
+            script_path = os.path.join(backend_root, "scripts", "watchlist_consistency_check.py")
+            if not os.path.exists(script_path):
+                raise FileNotFoundError(f"Script not found at {script_path}. Backend root: {backend_root}")
             
-            logger.info(f"Running nightly consistency check... (Bali time: {now_bali.strftime('%Y-%m-%d %H:%M:%S %Z')})")
+            result = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
             
-            try:
-                import subprocess
-                import sys
-                import os
-                # Calculate absolute path to the consistency check script
-                # In Docker: WORKDIR is /app, backend contents are copied to /app/
-                # So structure is: /app/services/scheduler.py and /app/scripts/watchlist_consistency_check.py
-                # In local dev: .../backend/app/services/scheduler.py and .../backend/scripts/watchlist_consistency_check.py
-                current_file_dir = os.path.dirname(os.path.abspath(__file__))
-                # current_file_dir is /app/services/ in Docker, or .../backend/app/services/ locally
-                # Go up 2 levels to get backend root: /app/ in Docker, or .../backend/ locally
-                backend_root = os.path.dirname(os.path.dirname(current_file_dir))
-                # In Docker: backend_root = /app/, scripts are at /app/scripts/
-                # In local: backend_root = .../backend/, scripts are at .../backend/scripts/
-                script_path = os.path.join(backend_root, "scripts", "watchlist_consistency_check.py")
-                if not os.path.exists(script_path):
-                    raise FileNotFoundError(f"Script not found at {script_path}. Backend root: {backend_root}")
-                
-                result = subprocess.run(
-                    [sys.executable, script_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=600  # 10 minute timeout
-                )
-                
-                # Set the date regardless of success/failure to prevent retries during the 3:00-3:01 AM window
-                # This is consistent with other scheduled tasks and prevents unnecessary resource consumption
-                self.last_nightly_consistency_date = today_bali
-                
-                if result.returncode == 0:
-                    logger.info("Nightly consistency check completed")
-                    # Record successful execution with correct workflow_id
-                    from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("watchlist_consistency", "success", "Nightly consistency check completed successfully")
-                else:
-                    logger.error(f"Nightly consistency check failed with return code {result.returncode}")
-                    logger.error(f"STDOUT: {result.stdout}")
-                    logger.error(f"STDERR: {result.stderr}")
-                    from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("watchlist_consistency", "error", None, f"Return code: {result.returncode}")
-            except subprocess.TimeoutExpired:
-                # Set the date even on timeout to prevent retries
-                self.last_nightly_consistency_date = today_bali
-                logger.error("Nightly consistency check timed out after 10 minutes")
+            # Date is already set in async wrapper to prevent concurrent execution
+            if result.returncode == 0:
+                logger.info("Nightly consistency check completed")
+                # Record successful execution with correct workflow_id
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("watchlist_consistency", "error", None, "Timeout after 10 minutes")
-            except Exception as e:
-                # Set the date even on exception to prevent retries
-                self.last_nightly_consistency_date = today_bali
-                logger.error(f"Error running nightly consistency check: {e}", exc_info=True)
+                record_workflow_execution("watchlist_consistency", "success", "Nightly consistency check completed successfully")
+            else:
+                logger.error(f"Nightly consistency check failed with return code {result.returncode}")
+                logger.error(f"STDOUT: {result.stdout}")
+                logger.error(f"STDERR: {result.stderr}")
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("watchlist_consistency", "error", None, str(e))
+                record_workflow_execution("watchlist_consistency", "error", None, f"Return code: {result.returncode}")
+        except subprocess.TimeoutExpired:
+            # Date is already set in async wrapper to prevent retries
+            logger.error("Nightly consistency check timed out after 10 minutes")
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("watchlist_consistency", "error", None, "Timeout after 10 minutes")
+        except Exception as e:
+            # Date is already set in async wrapper to prevent retries
+            logger.error(f"Error running nightly consistency check: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("watchlist_consistency", "error", None, str(e))
     
     async def check_nightly_consistency(self):
         """Check if it's time to run nightly consistency check - async wrapper"""
         # Get current time in Bali timezone
         now_bali = datetime.now(BALI_TZ)
         today_bali = now_bali.date()
+        now_bali_time = now_bali.time()
         
-        # Check if it's 3:00 AM Bali time (with 1 minute tolerance) and we haven't run today
-        if (now_bali.hour == 3 and 
-            abs(now_bali.minute) <= 1 and 
-            self.last_nightly_consistency_date != today_bali):
-            
-            # Run blocking script execution in thread pool
-            await asyncio.to_thread(self.check_nightly_consistency_sync)
-            
-            # Wait 2 minutes to avoid duplicate runs
-            await asyncio.sleep(120)
+        # Use lock to make check-and-set atomic, preventing concurrent execution
+        async with self._nightly_consistency_lock:
+            # Check if it's time to run (with 1 minute tolerance) and we haven't run today
+            # Use self.nightly_consistency_time to respect configuration changes
+            if (self.nightly_consistency_time.hour == now_bali_time.hour and 
+                abs(self.nightly_consistency_time.minute - now_bali_time.minute) <= 1 and 
+                self.last_nightly_consistency_date != today_bali):
+                
+                # Set date immediately to prevent concurrent requests from passing the check
+                self.last_nightly_consistency_date = today_bali
+                
+                # Run blocking script execution in thread pool
+                await asyncio.to_thread(self.check_nightly_consistency_sync)
+                
+                # Wait 2 minutes to avoid duplicate runs
+                await asyncio.sleep(120)
     
     def check_telegram_commands_sync(self):
         """Check for pending Telegram commands - synchronous worker"""

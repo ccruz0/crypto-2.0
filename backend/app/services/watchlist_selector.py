@@ -54,16 +54,35 @@ def get_canonical_watchlist_item(db: Session, symbol: str) -> Optional[Watchlist
     try:
         query = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
         # Filter out deleted items (consistent with watchlist_consistency_check.py)
+        # Note: SQLAlchemy queries are lazy, so we need to catch exceptions during query construction
+        # and also during execution (.all()) since column existence is checked at both stages
         try:
             query = query.filter(WatchlistItem.is_deleted == False)
         except Exception:
-            # If is_deleted column doesn't exist, continue without filter
+            # If is_deleted column doesn't exist during query construction, continue without filter
             pass
         try:
             query = query.order_by(WatchlistItem.id.desc())
         except Exception:
             pass
-        items = query.all()
+        # Execute query - if is_deleted column doesn't exist, exception may occur here
+        try:
+            items = query.all()
+        except Exception as query_err:
+            # If exception occurs during query execution (e.g., column doesn't exist),
+            # retry without the is_deleted filter
+            logger.debug("Query execution failed, retrying without is_deleted filter: %s", query_err)
+            try:
+                query = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
+                try:
+                    query = query.order_by(WatchlistItem.id.desc())
+                except Exception:
+                    pass
+                items = query.all()
+            except Exception as retry_err:
+                # If retry also fails, log and return empty list to allow graceful degradation
+                logger.warning("Retry query also failed for %s: %s", symbol_upper, retry_err)
+                items = []
     except Exception as err:
         logger.error("Failed to load watchlist rows for %s: %s", symbol_upper, err, exc_info=True)
         db.rollback()

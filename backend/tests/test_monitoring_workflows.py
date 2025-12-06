@@ -53,8 +53,14 @@ def test_run_workflow_watchlist_consistency():
     # We don't actually run the workflow in tests to avoid side effects
     import asyncio
     with patch.object(asyncio, "create_task") as mock_create_task:
-        # Mock create_task to do nothing (we're just testing the endpoint structure)
-        mock_create_task.return_value = None
+        # Create a proper mock task object with the methods the endpoint uses
+        # The endpoint calls task.add_done_callback() and checks task.done()
+        mock_task = MagicMock()
+        mock_task.done.return_value = False  # Task is not done yet
+        mock_task.add_done_callback.return_value = None  # Callback registration is a no-op
+        
+        # Mock create_task to return the mock task object
+        mock_create_task.return_value = mock_task
         
         response = client.post("/api/monitoring/workflows/watchlist_consistency/run")
         assert response.status_code == 200

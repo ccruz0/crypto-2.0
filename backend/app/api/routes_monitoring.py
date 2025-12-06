@@ -356,12 +356,14 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
 _workflow_executions: Dict[str, Dict[str, Any]] = {}
 # Background task tracking to prevent garbage collection
 _background_tasks: Dict[str, "asyncio.Task"] = {}
+# Locks for atomic check-and-set operations per workflow_id
+_workflow_locks: Dict[str, asyncio.Lock] = {}
 
 def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
     """Record a workflow execution"""
     global _workflow_executions
     _workflow_executions[workflow_id] = {
-        "last_execution": datetime.now().isoformat(),
+        "last_execution": datetime.now(timezone.utc).isoformat(),
         "status": status,
         "report": report,
         "error": error,
@@ -479,28 +481,41 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
                     raise
             
-            # Check if workflow is already running to prevent race conditions
-            existing_task = _background_tasks.get(workflow_id)
-            if existing_task and not existing_task.done():
-                from fastapi import HTTPException
-                raise HTTPException(
-                    status_code=409, 
-                    detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
-                )
+            # Use a lock per workflow_id to make check-and-set atomic
+            # This prevents race conditions where two concurrent requests both pass the check
+            # Use setdefault() to atomically get or create the lock for this workflow_id
+            # This ensures only one lock object exists per workflow_id, even with concurrent requests
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
             
-            # Start the workflow execution (don't wait for completion)
-            # Store task reference to prevent garbage collection before completion
-            task = asyncio.create_task(run_script())
-            _background_tasks[workflow_id] = task
-            
-            # Add callback to clean up task reference when done
-            # Capture workflow_id by value (not reference) to avoid closure issues with concurrent requests
-            # Using lambda with explicit capture ensures each callback has its own workflow_id value
-            captured_workflow_id = workflow_id  # Capture by value
-            task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
-            
-            # Record that we started the workflow with the correct workflow_id
-            record_workflow_execution(workflow_id, "running", "Workflow execution started")
+            # Acquire lock to make check-and-set atomic
+            # Only one request per workflow_id can execute this block at a time
+            async with workflow_lock:
+                # Check if workflow is already running to prevent race conditions
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409, 
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+                
+                # Record that we started the workflow BEFORE creating the task
+                # This prevents race condition where task completes and records final status
+                # before we record "running" status, causing incorrect status overwrite
+                record_workflow_execution(workflow_id, "running", "Workflow execution started")
+                
+                # Start the workflow execution (don't wait for completion)
+                # Store task reference to prevent garbage collection before completion
+                task = asyncio.create_task(run_script())
+                _background_tasks[workflow_id] = task
+                
+                # Add callback to clean up task reference when done
+                # IMPORTANT: Register callback while holding the lock to prevent race condition
+                # where task completes before callback is registered, leaving orphaned references
+                # Capture workflow_id by value (not reference) to avoid closure issues with concurrent requests
+                # Using lambda with explicit capture ensures each callback has its own workflow_id value
+                captured_workflow_id = workflow_id  # Capture by value
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
             
             # Return immediately
             return {
