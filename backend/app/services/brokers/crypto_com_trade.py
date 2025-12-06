@@ -360,78 +360,87 @@ class CryptoComTradeClient:
                 # Crypto.com API provides: instrument_name, quantity, market_value, max_withdrawal_balance
                 # and potentially loan/borrowed fields
                 def _record_balance_entry(balance, account_type=None):
-                            # Log ALL fields to discover loan-related data
-                            logger.debug(f"Raw balance data from Crypto.com: {balance}")
-                            
+                    """
+                    Normalize Crypto.com account balance entry into account data dict.
+                    """
+                    # Log ALL fields to discover loan-related data
+                    logger.debug(f"Raw balance data from Crypto.com: {balance}")
+                    
                     instrument = balance.get("instrument_name") or balance.get("currency") or ""
+                    if not instrument:
+                        # Skip malformed entries
+                        return
+                    
+                    # Convert everything to Decimal via str to avoid float issues
                     quantity = balance.get("quantity", balance.get("balance", "0"))
                     market_value = balance.get("market_value", balance.get("usd_value", "0"))
                     max_withdrawal = balance.get("max_withdrawal_balance", balance.get("available", quantity))
-                            
-                            # Extract loan/borrowed fields if present
-                            borrowed_balance = balance.get("borrowed_balance", "0")
-                            borrowed_value = balance.get("borrowed_value", "0")
-                            loan_amount = balance.get("loan_amount", "0")
-                            loan_value = balance.get("loan_value", "0")
-                            debt_amount = balance.get("debt_amount", "0")
-                            debt_value = balance.get("debt_value", "0")
-                            negative_balance = balance.get("negative_balance", "0")
-                            
-                            # Extract currency from instrument_name (e.g., "BTC_USDT" -> "BTC")
-                            # Crypto.com may return instrument_name as "BTC_USDT" or just "BTC"
-                            currency = instrument
-                            if "_" in instrument:
-                                # Extract base currency from instrument_name (e.g., "BTC_USDT" -> "BTC")
-                                currency = instrument.split("_")[0].upper()
-                            else:
-                                currency = instrument.upper()
-                            
-                            # Calculate available and reserved
-                            available_qty = float(max_withdrawal) if max_withdrawal else float(quantity)
-                            balance_qty = float(quantity)
-                            reserved_qty = max(0, balance_qty - available_qty)
-                            
-                            # Check for negative balances (indicates borrowed/loan)
-                            is_negative = balance_qty < 0
-                            if is_negative:
-                                logger.info(f"🔴 Found negative balance (loan): {currency} = {balance_qty}")
-                            
-                            # Include ALL available data from Crypto.com
-                            account_data = {
-                                "currency": currency,
-                                "balance": str(balance_qty),
-                                "available": str(available_qty),
-                                "reserved": str(reserved_qty),
-                                "market_value": str(market_value),  # USD value from Crypto.com
-                                "max_withdrawal": str(max_withdrawal),
+                    
+                    # Extract loan/borrowed fields if present
+                    borrowed_balance = balance.get("borrowed_balance", "0")
+                    borrowed_value = balance.get("borrowed_value", "0")
+                    loan_amount = balance.get("loan_amount", "0")
+                    loan_value = balance.get("loan_value", "0")
+                    debt_amount = balance.get("debt_amount", "0")
+                    debt_value = balance.get("debt_value", "0")
+                    negative_balance = balance.get("negative_balance", "0")
+                    
+                    # Extract currency from instrument_name (e.g., "BTC_USDT" -> "BTC")
+                    # Crypto.com may return instrument_name as "BTC_USDT" or just "BTC"
+                    currency = instrument
+                    if "_" in instrument:
+                        # Extract base currency from instrument_name (e.g., "BTC_USDT" -> "BTC")
+                        currency = instrument.split("_")[0].upper()
+                    else:
+                        currency = instrument.upper()
+                    
+                    # Calculate available and reserved using Decimal for precision
+                    total = Decimal(str(quantity))
+                    available = Decimal(str(max_withdrawal)) if max_withdrawal else total
+                    locked = total - available
+                    
+                    # Check for negative balances (indicates borrowed/loan)
+                    is_negative = total < 0
+                    if is_negative:
+                        logger.info(f"🔴 Found negative balance (loan): {currency} = {total}")
+                    
+                    # Include ALL available data from Crypto.com
+                    account_data = {
+                        "currency": currency,
+                        "balance": str(total),
+                        "available": str(available),
+                        "reserved": str(locked),
+                        "market_value": str(market_value),  # USD value from Crypto.com
+                        "max_withdrawal": str(max_withdrawal),
                         "quantity": str(quantity),  # Keep original quantity
-                            }
+                    }
+                    
                     if account_type:
                         account_data["account_type"] = account_type
-                            
-                            # Add loan/borrowed fields if present
-                            if borrowed_balance and float(borrowed_balance) != 0:
-                                account_data["borrowed_balance"] = str(borrowed_balance)
-                                logger.info(f"📊 Found borrowed_balance for {currency}: {borrowed_balance}")
-                            if borrowed_value and float(borrowed_value) != 0:
-                                account_data["borrowed_value"] = str(borrowed_value)
-                                logger.info(f"📊 Found borrowed_value for {currency}: {borrowed_value}")
-                            if loan_amount and float(loan_amount) != 0:
-                                account_data["loan_amount"] = str(loan_amount)
-                                logger.info(f"📊 Found loan_amount for {currency}: {loan_amount}")
-                            if loan_value and float(loan_value) != 0:
-                                account_data["loan_value"] = str(loan_value)
-                                logger.info(f"📊 Found loan_value for {currency}: {loan_value}")
-                            if debt_amount and float(debt_amount) != 0:
-                                account_data["debt_amount"] = str(debt_amount)
-                                logger.info(f"📊 Found debt_amount for {currency}: {debt_amount}")
-                            if debt_value and float(debt_value) != 0:
-                                account_data["debt_value"] = str(debt_value)
-                                logger.info(f"📊 Found debt_value for {currency}: {debt_value}")
+                    
+                    # Add loan/borrowed fields if present
+                    if borrowed_balance and float(borrowed_balance) != 0:
+                        account_data["borrowed_balance"] = str(borrowed_balance)
+                        logger.info(f"📊 Found borrowed_balance for {currency}: {borrowed_balance}")
+                    if borrowed_value and float(borrowed_value) != 0:
+                        account_data["borrowed_value"] = str(borrowed_value)
+                        logger.info(f"📊 Found borrowed_value for {currency}: {borrowed_value}")
+                    if loan_amount and float(loan_amount) != 0:
+                        account_data["loan_amount"] = str(loan_amount)
+                        logger.info(f"📊 Found loan_amount for {currency}: {loan_amount}")
+                    if loan_value and float(loan_value) != 0:
+                        account_data["loan_value"] = str(loan_value)
+                        logger.info(f"📊 Found loan_value for {currency}: {loan_value}")
+                    if debt_amount and float(debt_amount) != 0:
+                        account_data["debt_amount"] = str(debt_amount)
+                        logger.info(f"📊 Found debt_amount for {currency}: {debt_amount}")
+                    if debt_value and float(debt_value) != 0:
+                        account_data["debt_value"] = str(debt_value)
+                        logger.info(f"📊 Found debt_value for {currency}: {debt_value}")
                     if is_negative or (negative_balance and float(negative_balance) != 0):
-                                account_data["is_negative"] = True
-                            
-                            accounts.append(account_data)
+                        account_data["is_negative"] = True
+                    
+                    accounts.append(account_data)
 
                 for position in data:
                     account_type = position.get("account_type")
