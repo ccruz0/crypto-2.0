@@ -281,7 +281,8 @@ def load_config() -> Dict[str, Any]:
         return normalized
     
     cfg = json.loads(CONFIG_PATH.read_text())
-    return _normalize_config(cfg)
+    normalized = _normalize_config(cfg)
+    return normalized
 
 def validate_preset(preset: Dict[str, Any]) -> Tuple[bool, str]:
     for k in NUM_FIELDS:
