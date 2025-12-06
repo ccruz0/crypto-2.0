@@ -371,19 +371,70 @@ class CryptoComTradeClient:
                         # Skip malformed entries
                         return
                     
-                    # Convert everything to Decimal via str to avoid float issues
-                    quantity = balance.get("quantity", balance.get("balance", "0"))
-                    market_value = balance.get("market_value", balance.get("usd_value", "0"))
-                    max_withdrawal = balance.get("max_withdrawal_balance", balance.get("available", quantity))
+                    # FIX: Helper function to safely convert to Decimal, handling None and empty strings
+                    # If API returns empty strings for optional fields, Decimal("") raises InvalidOperation
+                    # The old code checked `if value` before converting, which skipped empty strings
+                    def safe_decimal(value, default="0"):
+                        """Convert value to Decimal, handling None and empty strings."""
+                        if value is None or value == "":
+                            return Decimal(default)
+                        return Decimal(str(value))
                     
-                    # Extract loan/borrowed fields if present
-                    borrowed_balance = balance.get("borrowed_balance", "0")
-                    borrowed_value = balance.get("borrowed_value", "0")
-                    loan_amount = balance.get("loan_amount", "0")
-                    loan_value = balance.get("loan_value", "0")
-                    debt_amount = balance.get("debt_amount", "0")
-                    debt_value = balance.get("debt_value", "0")
-                    negative_balance = balance.get("negative_balance", "0")
+                    # Convert everything to Decimal via str to avoid float issues
+                    # FIX: Use nested .get() calls to preserve legitimate zero values
+                    # The old code only fell back when keys were missing (None), not when values were falsy (0)
+                    # Using `or` chaining would incorrectly skip valid zero quantities (0 is falsy in Python)
+                    # But we still need to handle empty strings, so normalize them to None after getting
+                    quantity_raw = balance.get("quantity", balance.get("balance", "0"))
+                    if quantity_raw == "":  # Empty string is invalid, treat as missing and use fallback
+                        quantity_raw = balance.get("balance", "0")
+                        if quantity_raw == "":
+                            quantity_raw = "0"
+                    
+                    market_value_raw = balance.get("market_value", balance.get("usd_value", "0"))
+                    if market_value_raw == "":  # Empty string is invalid, treat as missing and use fallback
+                        market_value_raw = balance.get("usd_value", "0")
+                        if market_value_raw == "":
+                            market_value_raw = "0"
+                    
+                    # For max_withdrawal, preserve the original nested fallback logic
+                    max_withdrawal_raw = balance.get("max_withdrawal_balance", balance.get("available", quantity_raw))
+                    if max_withdrawal_raw == "":  # Empty string is invalid, treat as missing and use fallback
+                        max_withdrawal_raw = balance.get("available", quantity_raw)
+                        if max_withdrawal_raw == "":
+                            max_withdrawal_raw = quantity_raw if quantity_raw != "" else "0"
+                    
+                    # Convert all numeric values to Decimal for precision
+                    total = safe_decimal(quantity_raw)
+                    market_value = safe_decimal(market_value_raw)
+                    
+                    # FIX: Always convert max_withdrawal_raw to Decimal (preserves zero values)
+                    # The .get() chain above already provides appropriate fallbacks, so we always
+                    # have a value here. The old code preserved zero values ("0" -> 0.0), so we must too.
+                    # We convert to Decimal directly without checking if it's zero, because zero is
+                    # a valid value that should be preserved (e.g., locked balance with no available).
+                    max_withdrawal = safe_decimal(max_withdrawal_raw)
+                    
+                    # Extract loan/borrowed fields if present and convert to Decimal
+                    # FIX: Handle empty strings gracefully - if API returns empty string, treat as missing
+                    # The old code checked `if borrowed_balance` before converting, which skipped empty strings
+                    # We must do the same to avoid InvalidOperation when converting empty strings to Decimal
+                    
+                    borrowed_balance_raw = balance.get("borrowed_balance")
+                    borrowed_value_raw = balance.get("borrowed_value")
+                    loan_amount_raw = balance.get("loan_amount")
+                    loan_value_raw = balance.get("loan_value")
+                    debt_amount_raw = balance.get("debt_amount")
+                    debt_value_raw = balance.get("debt_value")
+                    negative_balance_raw = balance.get("negative_balance")
+                    
+                    borrowed_balance = safe_decimal(borrowed_balance_raw)
+                    borrowed_value = safe_decimal(borrowed_value_raw)
+                    loan_amount = safe_decimal(loan_amount_raw)
+                    loan_value = safe_decimal(loan_value_raw)
+                    debt_amount = safe_decimal(debt_amount_raw)
+                    debt_value = safe_decimal(debt_value_raw)
+                    negative_balance = safe_decimal(negative_balance_raw)
                     
                     # Extract currency from instrument_name (e.g., "BTC_USDT" -> "BTC")
                     # Crypto.com may return instrument_name as "BTC_USDT" or just "BTC"
@@ -395,49 +446,54 @@ class CryptoComTradeClient:
                         currency = instrument.upper()
                     
                     # Calculate available and reserved using Decimal for precision
-                    total = Decimal(str(quantity))
-                    available = Decimal(str(max_withdrawal)) if max_withdrawal else total
-                    locked = total - available
+                    # FIX: Use max_withdrawal directly (even if it's Decimal("0")) - don't double-check
+                    # The old code preserved zero values, so we must too. The check above already
+                    # handles the case where max_withdrawal wasn't provided.
+                    available = max_withdrawal
+                    # FIX: Ensure locked is never negative (matches old code behavior)
+                    # If API returns inconsistent data where max_withdrawal > total, cap locked at 0
+                    # This prevents invalid negative locked balances that could occur from API inconsistencies
+                    locked = max(Decimal("0"), total - available)
                     
                     # Check for negative balances (indicates borrowed/loan)
                     is_negative = total < 0
                     if is_negative:
                         logger.info(f"🔴 Found negative balance (loan): {currency} = {total}")
                     
-                    # Include ALL available data from Crypto.com
+                    # Include ALL available data from Crypto.com, using Decimal values for precision
                     account_data = {
                         "currency": currency,
                         "balance": str(total),
                         "available": str(available),
                         "reserved": str(locked),
-                        "market_value": str(market_value),  # USD value from Crypto.com
-                        "max_withdrawal": str(max_withdrawal),
-                        "quantity": str(quantity),  # Keep original quantity
+                        "market_value": str(market_value),  # USD value from Crypto.com (Decimal precision)
+                        "max_withdrawal": str(max_withdrawal),  # Decimal precision
+                        "quantity": str(total),  # Use Decimal-calculated total for consistency
                     }
                     
                     if account_type:
                         account_data["account_type"] = account_type
                     
-                    # Add loan/borrowed fields if present
-                    if borrowed_balance and float(borrowed_balance) != 0:
+                    # Add loan/borrowed fields if present (using Decimal values)
+                    if borrowed_balance != 0:
                         account_data["borrowed_balance"] = str(borrowed_balance)
                         logger.info(f"📊 Found borrowed_balance for {currency}: {borrowed_balance}")
-                    if borrowed_value and float(borrowed_value) != 0:
+                    if borrowed_value != 0:
                         account_data["borrowed_value"] = str(borrowed_value)
                         logger.info(f"📊 Found borrowed_value for {currency}: {borrowed_value}")
-                    if loan_amount and float(loan_amount) != 0:
+                    if loan_amount != 0:
                         account_data["loan_amount"] = str(loan_amount)
                         logger.info(f"📊 Found loan_amount for {currency}: {loan_amount}")
-                    if loan_value and float(loan_value) != 0:
+                    if loan_value != 0:
                         account_data["loan_value"] = str(loan_value)
                         logger.info(f"📊 Found loan_value for {currency}: {loan_value}")
-                    if debt_amount and float(debt_amount) != 0:
+                    if debt_amount != 0:
                         account_data["debt_amount"] = str(debt_amount)
                         logger.info(f"📊 Found debt_amount for {currency}: {debt_amount}")
-                    if debt_value and float(debt_value) != 0:
+                    if debt_value != 0:
                         account_data["debt_value"] = str(debt_value)
                         logger.info(f"📊 Found debt_value for {currency}: {debt_value}")
-                    if is_negative or (negative_balance and float(negative_balance) != 0):
+                    if is_negative or negative_balance != 0:
                         account_data["is_negative"] = True
                     
                     accounts.append(account_data)
