@@ -345,7 +345,7 @@ class SignalMonitorService:
                     ema10 = market_data.ema10  # None if not available
                     atr = market_data.atr or (current_price * 0.02)
                     current_volume = market_data.current_volume  # Can be None
-                    avg_volume = market_data.avg_volume or 0.0
+                    avg_volume = market_data.avg_volume  # Can be None - keep None instead of 0.0 for semantic clarity
                     
                     logger.debug(f"📊 {symbol}: Using database data - price=${current_price}, volume={current_volume}, avg_volume={avg_volume}")
                 else:
