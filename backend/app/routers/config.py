@@ -286,8 +286,9 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if preset:
         preset_enum, _ = _parse_preset_strings(preset)
         if preset_enum:
-            # Convert enum to string matching config keys (e.g., PresetEnum.SWING -> "Swing")
-            base_preset_name = preset_enum.value.capitalize()
+            # Use enum value directly (lowercase) to match config keys (e.g., PresetEnum.SWING -> "swing")
+            # The presets dictionary uses lowercase keys: "swing", "scalp", "intraday"
+            base_preset_name = preset_enum.value
             if base_preset_name not in cfg.get("presets", {}):
                 raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (parsed as '{base_preset_name}')")
         else:
