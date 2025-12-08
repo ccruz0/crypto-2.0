@@ -686,37 +686,47 @@ def get_signals(
             # 2. MA50 > MA200 (long-term uptrend confirmed)
             # 3. Volume > average (volume confirmation)
             # 4. RSI in recovery range (30-45), not extreme oversold (<25)
-            price_above_ma50 = current_price > ma50
-            ma50_above_ma200 = ma50 > ma200 if ma200 else True  # Allow if ma200 not available
-            volume_confirmation = volume_ratio > 1.0 if volume_ratio else True  # Volume above average
-            rsi_recovery_range = 30 <= rsi <= 45  # RSI in recovery range, not extreme oversold
-            
-            buy_signal = bool(
-                basic_buy and 
-                price_above_ma50 and 
-                ma50_above_ma200 and 
-                volume_confirmation and 
-                rsi_recovery_range
-            )
-            
-            # Log why buy signal was/wasn't triggered
-            if not buy_signal:
-                reasons = []
-                if not price_above_ma50:
-                    reasons.append(f"Price ${current_price:.2f} <= MA50 ${ma50:.2f}")
-                if ma200 and not ma50_above_ma200:
-                    reasons.append(f"MA50 ${ma50:.2f} <= MA200 ${ma200:.2f}")
-                if volume_ratio and not volume_confirmation:
-                    reasons.append(f"Volume {volume_ratio:.2f}x < 1.0x")
-                if not rsi_recovery_range:
-                    reasons.append(f"RSI {rsi:.1f} not in recovery range (30-45)")
-                if reasons:
-                    logger.debug(f"Swing-conservative buy signal blocked for {symbol}: {'; '.join(reasons)}")
+            # CRITICAL: Check for None values before comparisons
+            if ma50 is None or ema10 is None:
+                # Cannot calculate enhanced buy signal without MAs
+                buy_signal = False
+                logger.debug(f"Swing-conservative buy signal blocked for {symbol}: MAs missing (MA50={ma50 is not None}, EMA10={ema10 is not None})")
+            else:
+                price_above_ma50 = current_price > ma50
+                ma50_above_ma200 = ma50 > ma200 if ma200 is not None else True  # Allow if ma200 not available
+                volume_confirmation = volume_ratio > 1.0 if volume_ratio else True  # Volume above average
+                rsi_recovery_range = 30 <= rsi <= 45  # RSI in recovery range, not extreme oversold
+                
+                buy_signal = bool(
+                    basic_buy and 
+                    price_above_ma50 and 
+                    ma50_above_ma200 and 
+                    volume_confirmation and 
+                    rsi_recovery_range
+                )
+                
+                # Log why buy signal was/wasn't triggered
+                if not buy_signal:
+                    reasons = []
+                    if not price_above_ma50:
+                        reasons.append(f"Price ${current_price:.2f} <= MA50 ${ma50:.2f}")
+                    if ma200 is not None and not ma50_above_ma200:
+                        reasons.append(f"MA50 ${ma50:.2f} <= MA200 ${ma200:.2f}")
+                    if volume_ratio and not volume_confirmation:
+                        reasons.append(f"Volume {volume_ratio:.2f}x < 1.0x")
+                    if not rsi_recovery_range:
+                        reasons.append(f"RSI {rsi:.1f} not in recovery range (30-45)")
+                    if reasons:
+                        logger.debug(f"Swing-conservative buy signal blocked for {symbol}: {'; '.join(reasons)}")
         else:
             # Standard buy signal for other strategies
             buy_signal = basic_buy
         
-        sell_signal = bool(rsi > rsi_sell_threshold and ma50 < ema10)
+        # CRITICAL: Check for None values before sell signal calculation
+        if ma50 is None or ema10 is None:
+            sell_signal = False
+        else:
+            sell_signal = bool(rsi > rsi_sell_threshold and ma50 < ema10)
         
         # Calculate TP/SL levels
         sl_level = float(current_price * 0.98)  # 2% below current price
@@ -817,7 +827,7 @@ def get_signals(
             "stop_loss_take_profit": sl_tp_levels,
             "rationale": [
                 f"RSI: {rsi:.1f} ({'Oversold' if rsi < 30 else 'Overbought' if rsi > 70 else 'Neutral'})",
-                f"MA50: ${ma50:.2f} vs EMA10: ${ema10:.2f} ({'Uptrend' if ma50 > ema10 else 'Downtrend'})"
+                f"MA50: ${ma50:.2f} vs EMA10: ${ema10:.2f} ({'Uptrend' if (ma50 is not None and ema10 is not None and ma50 > ema10) else 'Downtrend' if (ma50 is not None and ema10 is not None) else 'N/A (MAs missing)'})" if (ma50 is not None and ema10 is not None) else f"MA50: {'N/A' if ma50 is None else f'${ma50:.2f}'} vs EMA10: {'N/A' if ema10 is None else f'${ema10:.2f}'} (MAs missing)"
             ],
             "method": "simplified_rsi_ma"
         }
