@@ -1,4 +1,5 @@
-# Solución de Caché del Navegador
+## Solución de Caché del Navegador
+rque ahora no llegan alertas a telegram
 
 **Fecha:** 2025-12-01  
 **Problema:** El navegador está mostrando JavaScript antiguo después de actualizaciones del frontend
@@ -149,6 +150,7 @@ Si después de todo esto todavía ves JavaScript antiguo:
 
 - [Next.js Headers Documentation](https://nextjs.org/docs/app/api-reference/next-config-js/headers)
 - [MDN Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control)
+
 
 
 
