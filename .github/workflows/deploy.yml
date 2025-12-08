@@ -8,6 +8,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ubuntu
+      EC2_KEY: ${{ secrets.EC2_KEY }}
     
     steps:
     - name: Checkout API
@@ -18,10 +22,6 @@ jobs:
         python3 scripts/audit_pairs_focused.py || exit 1
       
     - name: Deploy to EC2
-      env:
-        EC2_HOST: ${{ secrets.EC2_HOST }}
-        EC2_USER: ubuntu
-        EC2_KEY: ${{ secrets.EC2_KEY }}
       run: |
         set -e  # Exit on any error
         

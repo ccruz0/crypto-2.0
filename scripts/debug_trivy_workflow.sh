@@ -18,10 +18,14 @@
 
 set -e  # Exit on error
 
-REPO_ROOT="/Users/carloscruz/automated-trading-platform"
+# Dynamically resolve repo root based on script location
+# This allows the script to work regardless of where the repo is cloned
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
-# All commands use sh -c "cd $REPO_ROOT && ..." to match workflow behavior
+# All commands use sh -c "cd \"$REPO_ROOT\" && ..." to match workflow behavior
+# Quotes around $REPO_ROOT ensure paths with spaces are handled correctly
 
 echo "=========================================="
 echo "Trivy Workflow Debug Script"
@@ -46,7 +50,9 @@ if command -v trivy &> /dev/null; then
     TRIVY_CMD="trivy"
     echo -e "${GREEN}✓ Using Trivy CLI${NC}"
 elif docker run --rm aquasec/trivy version > /dev/null 2>&1; then
-    TRIVY_CMD="docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/workspace -w /workspace aquasec/trivy"
+    # Use $REPO_ROOT for volume mount to match workflow behavior
+    # Quote $REPO_ROOT to handle paths with spaces
+    TRIVY_CMD="docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v \"$REPO_ROOT:/workspace\" -w /workspace aquasec/trivy"
     echo -e "${YELLOW}⚠ Using Trivy via Docker${NC}"
 else
     echo -e "${RED}ERROR: Trivy not found. Install it or ensure Docker can run aquasec/trivy${NC}"
@@ -63,7 +69,7 @@ echo ""
 # Note: In the workflow, this step has continue-on-error: true
 # so it doesn't fail the job, but we track the outcome
 echo "Building frontend image..."
-if sh -c "cd $REPO_ROOT && docker build -t local/atp-frontend:ci -f ./frontend/Dockerfile ./frontend" 2>&1; then
+if sh -c "cd \"$REPO_ROOT\" && docker build -t local/atp-frontend:ci -f ./frontend/Dockerfile ./frontend" 2>&1; then
     echo -e "${GREEN}✓ Frontend image built successfully${NC}"
     FRONTEND_BUILT=true
 else
@@ -76,7 +82,7 @@ echo ""
 # Build backend image
 # Note: In the workflow, this step has continue-on-error: true
 echo "Building backend image..."
-if sh -c "cd $REPO_ROOT && docker build -t local/atp-backend:ci -f ./backend/Dockerfile ./backend" 2>&1; then
+if sh -c "cd \"$REPO_ROOT\" && docker build -t local/atp-backend:ci -f ./backend/Dockerfile ./backend" 2>&1; then
     echo -e "${GREEN}✓ Backend image built successfully${NC}"
     BACKEND_BUILT=true
 else
@@ -89,7 +95,7 @@ echo ""
 # Build db image (optional)
 if [ -f "./docker/postgres/Dockerfile" ]; then
     echo "Building db image..."
-    if sh -c "cd $REPO_ROOT && docker build -t local/atp-postgres:ci -f ./docker/postgres/Dockerfile ./docker/postgres" 2>&1; then
+    if sh -c "cd \"$REPO_ROOT\" && docker build -t local/atp-postgres:ci -f ./docker/postgres/Dockerfile ./docker/postgres" 2>&1; then
         echo -e "${GREEN}✓ DB image built successfully${NC}"
         DB_BUILT=true
     else
@@ -111,7 +117,7 @@ echo ""
 # Note: In workflow, this only runs if steps.build-frontend.outcome == 'success'
 if [ "$FRONTEND_BUILT" = true ]; then
     echo "Scanning frontend image..."
-    if sh -c "cd $REPO_ROOT && $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-frontend.json local/atp-frontend:ci" 2>&1; then
+    if sh -c "cd \"$REPO_ROOT\" && $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-frontend.json local/atp-frontend:ci" 2>&1; then
         echo -e "${GREEN}✓ Frontend scan completed (no HIGH/CRITICAL vulnerabilities)${NC}"
     else
         SCAN_EXIT=$?
@@ -128,9 +134,10 @@ fi
 echo ""
 
 # Scan backend image
+# Note: In workflow, this only runs if steps.build-backend.outcome == 'success'
 if [ "$BACKEND_BUILT" = true ]; then
     echo "Scanning backend image..."
-    if $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-backend.json local/atp-backend:ci 2>&1; then
+    if sh -c "cd \"$REPO_ROOT\" && $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-backend.json local/atp-backend:ci" 2>&1; then
         echo -e "${GREEN}✓ Backend scan completed (no HIGH/CRITICAL vulnerabilities)${NC}"
     else
         SCAN_EXIT=$?
@@ -141,7 +148,7 @@ if [ "$BACKEND_BUILT" = true ]; then
         fi
     fi
 else
-    echo -e "${YELLOW}⚠ Skipping backend scan (image not built)${NC}"
+    echo -e "${YELLOW}⚠ Skipping backend scan (image not built - matches workflow behavior)${NC}"
 fi
 
 echo ""
@@ -170,8 +177,9 @@ echo "=========================================="
 echo ""
 
 # Filesystem scan (exit-code 0 to not fail, but still report)
+# Note: In workflow, this runs with 'if: always()' to ensure it runs even if builds fail
 echo "Scanning filesystem..."
-if $TRIVY_CMD fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 --format json --output trivy-fs.json . 2>&1; then
+if sh -c "cd \"$REPO_ROOT\" && $TRIVY_CMD fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 --format json --output trivy-fs.json ." 2>&1; then
     echo -e "${GREEN}✓ Filesystem scan completed${NC}"
 else
     echo -e "${YELLOW}⚠ Filesystem scan completed with findings (non-blocking)${NC}"

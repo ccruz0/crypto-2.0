@@ -15,7 +15,10 @@
 
 set -e
 
-REPO_ROOT="/Users/carloscruz/automated-trading-platform"
+# Dynamically resolve repo root based on script location
+# This allows the script to work regardless of where the repo is cloned
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 # Check if Trivy is available
@@ -23,7 +26,8 @@ TRIVY_CMD=""
 if command -v trivy &> /dev/null; then
     TRIVY_CMD="trivy"
 elif docker run --rm aquasec/trivy version > /dev/null 2>&1; then
-    TRIVY_CMD="docker run --rm -v $(pwd):/workspace -w /workspace aquasec/trivy"
+    # Quote $REPO_ROOT to handle paths with spaces
+    TRIVY_CMD="docker run --rm -v \"$REPO_ROOT:/workspace\" -w /workspace aquasec/trivy"
 else
     echo "ERROR: Trivy not found. Install it or ensure Docker can run aquasec/trivy"
     exit 1
@@ -31,11 +35,12 @@ fi
 
 # Run filesystem scan with same parameters as workflow
 # exit-code: 0 means non-blocking (findings reported but don't fail)
-$TRIVY_CMD fs \
+# Uses sh -c "cd \"$REPO_ROOT\" && ..." to match workflow behavior (quoted for paths with spaces)
+sh -c "cd \"$REPO_ROOT\" && $TRIVY_CMD fs \
     --severity HIGH,CRITICAL \
     --ignore-unfixed \
     --exit-code 0 \
     --format table \
-    .
+    ."
 
 exit 0
