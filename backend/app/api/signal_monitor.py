@@ -698,11 +698,10 @@ class SignalMonitorService:
                         # Alerts should always be sent when criteria are met, regardless of portfolio value
                         # The portfolio value check is applied later when creating orders (see order creation section)
                         
-                        if should_send:
-                            prev_buy_price = self._get_last_alert_price(symbol, "BUY")
-                            # CRITICAL: Update alert state BEFORE sending to prevent race conditions
-                            # This ensures that if multiple calls happen simultaneously, only the first one will send
-                            self._update_alert_state(symbol, "BUY", current_price)
+                        prev_buy_price = self._get_last_alert_price(symbol, "BUY")
+                        # CRITICAL: Update alert state BEFORE sending to prevent race conditions
+                        # This ensures that if multiple calls happen simultaneously, only the first one will send
+                        self._update_alert_state(symbol, "BUY", current_price)
                             
                             # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
                             try:
