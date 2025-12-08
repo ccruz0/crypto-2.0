@@ -578,7 +578,10 @@ def main():
         json.dump(results.to_dict(), f, indent=2)
     print(f"📄 JSON results saved to: {json_file}")
     
-    return 0 if (task1_passed and task2_passed and task3_passed and task6_passed) else 1
+    # Return 0 (success) only if all completed tasks passed
+    # Task 4 is pending (runs separately), so we don't fail if it's not run
+    # Task 5 is validated (same as task 3), so it should be included in the check
+    return 0 if (task1_passed and task2_passed and task3_passed and task5_passed and task6_passed) else 1
 
 if __name__ == '__main__':
     sys.exit(main())
