@@ -702,48 +702,48 @@ class SignalMonitorService:
                         # CRITICAL: Update alert state BEFORE sending to prevent race conditions
                         # This ensures that if multiple calls happen simultaneously, only the first one will send
                         self._update_alert_state(symbol, "BUY", current_price)
+                        
+                        # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
+                        try:
+                            price_variation = self._format_price_variation(prev_buy_price, current_price)
+                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                            reason_text = (
+                                f"{strategy_type.value.title()}/{risk_approach.value.title()} | "
+                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                f"MA50={ma50_text}, EMA10={ema10_text}, MA200={ma200_text}"
+                            )
+                            telegram_notifier.send_buy_signal(
+                                symbol=symbol,
+                                price=current_price,
+                                reason=reason_text,
+                                strategy_type=strategy_type.value.title(),
+                                risk_approach=risk_approach.value.title(),
+                                price_variation=price_variation,
+                                throttle_status="SENT",
+                                throttle_reason=reason,
+                            )
+                            logger.info(f"✅ BUY alert sent for {symbol} - {reason_text}")
                             
-                            # Send Telegram alert (always send if alert_enabled = true, which we already filtered)
+                            # Record signal event in throttle table for monitoring dashboard
                             try:
-                                price_variation = self._format_price_variation(prev_buy_price, current_price)
-                                ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                                ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                                ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                                reason_text = (
-                                    f"{strategy_type.value.title()}/{risk_approach.value.title()} | "
-                                    f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                                    f"MA50={ma50_text}, EMA10={ema10_text}, MA200={ma200_text}"
-                                )
-                                telegram_notifier.send_buy_signal(
+                                from app.services.signal_throttle import record_signal_event, build_strategy_key
+                                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                record_signal_event(
+                                    db=db,
                                     symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="BUY",
                                     price=current_price,
-                                    reason=reason_text,
-                                    strategy_type=strategy_type.value.title(),
-                                    risk_approach=risk_approach.value.title(),
-                                    price_variation=price_variation,
-                                    throttle_status="SENT",
-                                    throttle_reason=reason,
+                                    source="alert",
                                 )
-                                logger.info(f"✅ BUY alert sent for {symbol} - {reason_text}")
-                                
-                                # Record signal event in throttle table for monitoring dashboard
-                                try:
-                                    from app.services.signal_throttle import record_signal_event, build_strategy_key
-                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
-                                    record_signal_event(
-                                        db=db,
-                                        symbol=symbol,
-                                        strategy_key=strategy_key,
-                                        side="BUY",
-                                        price=current_price,
-                                        source="alert",
-                                    )
-                                    logger.debug(f"📝 Recorded BUY signal event for {symbol} in throttle table")
-                                except Exception as record_err:
-                                    logger.warning(f"⚠️ Could not record signal event for {symbol}: {record_err}")
-                            except Exception as e:
-                                logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
-                                # If sending failed, we should still keep the state update to prevent spam retries
+                                logger.debug(f"📝 Recorded BUY signal event for {symbol} in throttle table")
+                            except Exception as record_err:
+                                logger.warning(f"⚠️ Could not record signal event for {symbol}: {record_err}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
+                            # If sending failed, we should still keep the state update to prevent spam retries
                     else:
                         logger.info(f"🚫 BUY alert throttled for {symbol}: {reason}")
                 finally:
