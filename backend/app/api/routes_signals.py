@@ -760,12 +760,12 @@ def get_signals(
             if DB_AVAILABLE and db_data_used:
                 from app.services.trading_signals import calculate_trading_signals
                 from app.services.strategy_profiles import resolve_strategy_profile
-                from app.models.watchlist import WatchlistItem
+                from app.services.watchlist_selector import get_canonical_watchlist_item
                 
-                # Get watchlist item to determine strategy profile
-                watchlist_item = db.query(WatchlistItem).filter(
-                    WatchlistItem.symbol == symbol
-                ).first()
+                # Get canonical watchlist item to determine strategy profile
+                # Use get_canonical_watchlist_item to handle duplicates correctly
+                # Priority: not deleted, alert_enabled=true, newest timestamp, highest ID
+                watchlist_item = get_canonical_watchlist_item(db, symbol)
                 
                 if watchlist_item:
                     strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
