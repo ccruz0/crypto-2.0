@@ -457,9 +457,9 @@ def calculate_trading_signals(
     strategy_state["reasons"]["buy_target_ok"] = buy_target_allows if buy_target is not None else True
     
     # Volume check: require minVolumeRatio (configurable from Signal Config, default 0.5x).
-    # CANONICAL: If no volume data is available we assume it's OK (matches frontend behavior).
-    # This ensures the canonical rule treats missing volume as "not blocking" (same as frontend)
-    volume_ok = True  # Default to True if volume data not available (matches frontend)
+    # CRITICAL: Volume data must be available and meet the minimum ratio threshold.
+    # If volume data is missing or unavailable, block BUY signals (volume_ok = False).
+    volume_ok = False  # Default to False if volume data not available - block BUY when no volume
     volume_ratio_val: Optional[float] = None
     if volume is not None and avg_volume is not None and avg_volume > 0:
         volume_ratio_val = volume / avg_volume
@@ -470,9 +470,9 @@ def calculate_trading_signals(
         
         strategy_state["reasons"]["buy_volume_ok"] = volume_ok
     else:
-        # CANONICAL: Set to True (not None) when volume data unavailable to match frontend behavior
-        # Frontend assumes volume is OK when data is missing, so backend should too
-        strategy_state["reasons"]["buy_volume_ok"] = True
+        # CRITICAL FIX: Block BUY signals when volume data is unavailable or missing
+        # This prevents green BUY buttons when there's no volume data (e.g., TRX with empty volume)
+        strategy_state["reasons"]["buy_volume_ok"] = False
     
     # Price check: ensure price is valid (always True for valid price data)
     strategy_state["reasons"]["buy_price_ok"] = True if price and price > 0 else False
@@ -549,10 +549,9 @@ def calculate_trading_signals(
         if buy_flags["buy_target_ok"] is True and target_reason:
             rationale_parts.append(target_reason)
         if buy_flags["buy_volume_ok"] is True:
-            if volume is not None and avg_volume is not None and avg_volume > 0:
-                rationale_parts.append(f"Volume {volume_ratio_val:.2f}x >= {min_volume_ratio}x")
-            else:
-                rationale_parts.append("Volume: assumed OK (no data available)")
+            # Since buy_volume_ok is True, volume data exists and meets threshold
+            # Therefore, volume_ratio_val is guaranteed to be calculated and valid
+            rationale_parts.append(f"Volume {volume_ratio_val:.2f}x >= {min_volume_ratio}x")
         if buy_flags["buy_ma_ok"] is True:
             rationale_parts.append("MA conditions met")
         if buy_flags["buy_price_ok"] is True:
@@ -674,19 +673,19 @@ def calculate_trading_signals(
     if ma10w is not None and price < ma10w:
         price_below_ma10w = True
     
-    # Volume check: require minVolumeRatio (configurable, default 0.5x). If volume data is missing
-    # we assume it's OK (consistent with frontend behavior).
-    # CANONICAL: Set to True (not None) when volume data unavailable to match frontend behavior and buy_volume_ok logic
-    sell_volume_ok = True  # Default to True if volume data not available (matches frontend)
+    # Volume check: require minVolumeRatio (configurable, default 0.5x).
+    # CRITICAL: Volume data must be available and meet the minimum ratio threshold.
+    # If volume data is missing or unavailable, block SELL signals (sell_volume_ok = False).
+    sell_volume_ok = False  # Default to False if volume data not available - block SELL when no volume
     sell_volume_ratio = None
     if volume is not None and avg_volume is not None and avg_volume > 0:
         sell_volume_ratio = volume / avg_volume
         sell_volume_ok = sell_volume_ratio >= min_volume_ratio
         strategy_state["reasons"]["sell_volume_ok"] = sell_volume_ok
     else:
-        # CANONICAL: Set to True (not None) when volume data unavailable to match frontend behavior
-        # Frontend assumes volume is OK when data is missing, so backend should too (same as buy_volume_ok)
-        strategy_state["reasons"]["sell_volume_ok"] = True
+        # CRITICAL FIX: Block SELL signals when volume data is unavailable or missing
+        # This prevents SELL signals when there's no volume data (consistent with BUY fix)
+        strategy_state["reasons"]["sell_volume_ok"] = False
     
     # SELL conditions: Must have ALL of the following (matching frontend logic):
     # 1. RSI > strategy-specific threshold (rsi_sell_threshold)
@@ -730,10 +729,9 @@ def calculate_trading_signals(
             if price_below_ma10w:
                 sell_reasons.append("Optional MA10w break observed")
         sell_reasons.append(f"RSI={rsi:.1f} > {rsi_sell_threshold} (overbought)")
-        if sell_volume_ok and volume is not None and avg_volume is not None and avg_volume > 0:
-            sell_reasons.append(f"Volume {sell_volume_ratio:.2f}x >= {min_volume_ratio}x")
-        else:
-            sell_reasons.append(f"Volume: assumed OK (no data available)")
+        # Since we're inside this block, sell_volume_ok must be True, which means volume data exists and meets threshold
+        # Therefore, sell_volume_ratio is guaranteed to be calculated and valid
+        sell_reasons.append(f"Volume {sell_volume_ratio:.2f}x >= {min_volume_ratio}x")
         
         if price_below_ma10w:
             result["ma10w_break"] = True

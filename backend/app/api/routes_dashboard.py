@@ -803,11 +803,25 @@ def update_watchlist_item(
     
     # Track what was updated for the message
     updates = []
+    alert_enabled_old_value = None  # Store old value for logging after verification
+    alert_enabled_was_updated = False  # Track if alert_enabled update was attempted
+    
     if "trade_enabled" in payload:
         old_value = item.trade_enabled
         new_value = payload["trade_enabled"]
         if old_value != new_value:
             updates.append(f"TRADE: {'YES' if new_value else 'NO'}")
+    
+    if "alert_enabled" in payload:
+        alert_enabled_old_value = item.alert_enabled  # May be None if NULL in DB
+        new_value = payload["alert_enabled"]
+        # Check if value actually changed (handle None as False for comparison)
+        old_value_for_comparison = alert_enabled_old_value if alert_enabled_old_value is not None else False
+        new_value_for_comparison = new_value if new_value is not None else False
+        if old_value_for_comparison != new_value_for_comparison:
+            updates.append(f"ALERT: {'YES' if new_value else 'NO'}")
+            alert_enabled_was_updated = True
+            # Log will be written after successful update verification (see below)
     
     if "buy_alert_enabled" in payload:
         old_value = getattr(item, "buy_alert_enabled", False)
@@ -824,6 +838,26 @@ def update_watchlist_item(
     _apply_watchlist_updates(item, payload)
     db.commit()
     db.refresh(item)
+    
+    # CRITICAL: Verify alert_enabled was actually saved to database
+    # Only verify if alert_enabled was actually changed (old_value != new_value)
+    if "alert_enabled" in payload and alert_enabled_old_value is not None:
+        expected_value = payload["alert_enabled"]
+        # Only verify and log if the value actually changed
+        if alert_enabled_old_value != expected_value:
+            db.refresh(item)  # Ensure we have latest from DB
+            actual_value = item.alert_enabled
+            if actual_value != expected_value:
+                log.error(f"❌ SYNC ERROR: alert_enabled mismatch for {item.symbol} ({item_id}): "
+                         f"Expected {expected_value}, but DB has {actual_value}. "
+                         f"Attempting to fix...")
+                item.alert_enabled = expected_value
+                db.commit()
+                db.refresh(item)
+                log.info(f"✅ Fixed alert_enabled sync issue for {item.symbol}")
+            else:
+                # Log successful update only after verification confirms it was saved correctly
+                log.info(f"✅ Updated alert_enabled for {item.symbol} ({item_id}): {alert_enabled_old_value} -> {expected_value}")
     
     result = _serialize_watchlist_item(item)
     

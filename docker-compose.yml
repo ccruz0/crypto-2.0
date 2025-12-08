@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   # ============================================
   # GLUETUN (VPN Container) - AWS Profile Only
