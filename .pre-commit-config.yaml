@@ -66,4 +66,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+      
+      - id: audit-trading-pairs
+        name: Audit trading pairs for duplicates
+        entry: python3 scripts/audit_pairs_focused.py
+        language: system
+        pass_filenames: false
+        always_run: false
+        stages: [pre-commit]
+        files: ^(backend/trading_config\.json|scripts/.*\.py|backend/scripts/.*\.py)$
 

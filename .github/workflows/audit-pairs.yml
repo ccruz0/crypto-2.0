@@ -1,0 +1,48 @@
+name: Audit Trading Pairs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/trading_config.json'
+      - 'scripts/audit_pairs*.py'
+      - 'backend/scripts/fix_watchlist_duplicates.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/trading_config.json'
+      - 'scripts/audit_pairs*.py'
+      - 'backend/scripts/fix_watchlist_duplicates.py'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    name: Check for duplicate trading pairs
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        # Install minimal dependencies for audit script
+        pip install psycopg2-binary sqlalchemy || echo "Database connection optional"
+        
+    - name: Run trading pairs audit
+      run: |
+        python3 scripts/audit_pairs_focused.py
+      continue-on-error: false
+      
+    - name: Report results
+      if: failure()
+      run: |
+        echo "❌ Trading pairs audit failed!"
+        echo "Duplicate trading pairs detected. Please fix before merging."
+        exit 1
