@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import inspect
 from typing import Optional
 from datetime import datetime
 from enum import Enum
@@ -168,30 +169,31 @@ class TelegramNotifier:
         Returns:
             True if message sent successfully, False otherwise
         """
-        # E2E TEST LOGGING: Log entry point
-        logger.info(f"[E2E_TEST_GATEKEEPER_IN] message_len={len(message)}, origin={origin}")
+        # ============================================================
+        # [TELEGRAM_INVOKE] - Diagnostic logging at entry point
+        # ============================================================
+        timestamp = datetime.now().isoformat()
         
-        # CENTRAL GATEKEEPER: Only AWS and TEST origins can send Telegram alerts
-        # If origin is not provided, use runtime origin as fallback
-        if origin is None:
-            origin = get_runtime_origin()
+        # Get caller information
+        # Check if currentframe() returns None before accessing .f_back
+        current_frame = inspect.currentframe()
+        caller_frame = current_frame.f_back if current_frame is not None else None
+        caller_path = "unknown"
+        caller_function = "unknown"
+        if caller_frame:
+            try:
+                caller_file = caller_frame.f_code.co_filename
+                caller_function = caller_frame.f_code.co_name
+                # Extract relative path from caller_file
+                if "backend" in caller_file:
+                    caller_path = caller_file.split("backend")[-1]
+                else:
+                    caller_path = os.path.basename(caller_file)
+                caller_path = f"{caller_path}:{caller_frame.f_lineno} in {caller_function}"
+            except Exception:
+                pass
         
-        origin_upper = origin.upper() if origin else "LOCAL"
-        
-        # E2E TEST LOGGING: Log normalized origin
-        logger.info(f"[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper={origin_upper}")
-        
-        # LIVE ALERT LOGGING: Log gatekeeper check for live alerts
-        if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
-            allowed = origin_upper in ("AWS", "TEST") and self.enabled
-            side = "BUY" if "BUY SIGNAL" in message else ("SELL" if "SELL SIGNAL" in message else "UNKNOWN")
-            logger.info(
-                f"[LIVE_ALERT_GATEKEEPER] symbol={symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
-                f"enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
-                f"chat_id_present={bool(self.chat_id)} allowed={allowed}"
-            )
-        
-        # Extract symbol for logging and monitoring (used in all paths)
+        # Extract symbol for logging
         symbol = None
         try:
             import re
@@ -203,6 +205,77 @@ class TelegramNotifier:
         except Exception:
             pass
         
+        # Get environment variables for diagnostics
+        env_runtime_origin = os.getenv("RUNTIME_ORIGIN", "NOT_SET")
+        env_aws_execution = os.getenv("AWS_EXECUTION_ENV", os.getenv("AWS_EXECUTION", "NOT_SET"))
+        env_run_telegram = os.getenv("RUN_TELEGRAM", "NOT_SET")
+        env_bot_token_present = "YES" if os.getenv("TELEGRAM_BOT_TOKEN") else "NO"
+        env_chat_id_present = "YES" if os.getenv("TELEGRAM_CHAT_ID") else "NO"
+        
+        logger.info(
+            "[TELEGRAM_INVOKE] timestamp=%s origin_param=%s message_len=%d symbol=%s "
+            "caller=%s RUNTIME_ORIGIN=%s AWS_EXECUTION=%s RUN_TELEGRAM=%s "
+            "TELEGRAM_BOT_TOKEN=%s TELEGRAM_CHAT_ID=%s",
+            timestamp,
+            origin if origin else "None",
+            len(message),
+            symbol or "N/A",
+            caller_path,
+            env_runtime_origin,
+            env_aws_execution,
+            env_run_telegram,
+            env_bot_token_present,
+            env_chat_id_present,
+        )
+        
+        # CENTRAL GATEKEEPER: Only AWS and TEST origins can send Telegram alerts
+        # If origin is not provided, use runtime origin as fallback
+        if origin is None:
+            origin = get_runtime_origin()
+        
+        origin_upper = origin.upper() if origin else "LOCAL"
+        
+        # E2E TEST LOGGING: Log normalized origin
+        logger.info(f"[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper={origin_upper}")
+        
+        # ============================================================
+        # [TELEGRAM_GATEKEEPER] - All conditions that decide send/skip
+        # ============================================================
+        gatekeeper_checks = {
+            "origin_upper": origin_upper,
+            "origin_in_whitelist": origin_upper in ("AWS", "TEST"),
+            "self.enabled": self.enabled,
+            "bot_token_present": bool(self.bot_token),
+            "chat_id_present": bool(self.chat_id),
+        }
+        gatekeeper_result = "ALLOW" if (
+            gatekeeper_checks["origin_in_whitelist"] and 
+            gatekeeper_checks["self.enabled"] and
+            gatekeeper_checks["bot_token_present"] and
+            gatekeeper_checks["chat_id_present"]
+        ) else "BLOCK"
+        
+        logger.info(
+            "[TELEGRAM_GATEKEEPER] origin_upper=%s origin_in_whitelist=%s enabled=%s "
+            "bot_token_present=%s chat_id_present=%s RESULT=%s",
+            gatekeeper_checks["origin_upper"],
+            gatekeeper_checks["origin_in_whitelist"],
+            gatekeeper_checks["self.enabled"],
+            gatekeeper_checks["bot_token_present"],
+            gatekeeper_checks["chat_id_present"],
+            gatekeeper_result,
+        )
+        
+        # LIVE ALERT LOGGING: Log gatekeeper check for live alerts
+        if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
+            allowed = origin_upper in ("AWS", "TEST") and self.enabled
+            side = "BUY" if "BUY SIGNAL" in message else ("SELL" if "SELL SIGNAL" in message else "UNKNOWN")
+            logger.info(
+                f"[LIVE_ALERT_GATEKEEPER] symbol={symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
+                f"enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
+                f"chat_id_present={bool(self.chat_id)} allowed={allowed}"
+            )
+        
         # 1) Block truly LOCAL / non-AWS, non-TEST origins
         if origin_upper not in ("AWS", "TEST"):
             # Log what would have been sent
@@ -213,12 +286,8 @@ class TelegramNotifier:
             )
             # E2E TEST LOGGING: Log block
             logger.info(f"[E2E_TEST_GATEKEEPER_BLOCK] origin_upper={origin_upper}, message_preview={message[:80]}")
-            # Log blocked TEST alert if it was TEST
-            if origin_upper == "TEST":
-                logger.warning(
-                    f"[TEST_ALERT_BLOCKED] origin=TEST was blocked! This should never happen. "
-                    f"Check gatekeeper logic. message_preview={preview[:100]}"
-                )
+            # Note: This block only executes when origin_upper is NOT "AWS" or "TEST",
+            # so checking for "TEST" here would be unreachable. Removed unreachable code.
             
             # Still register in dashboard for debugging, but mark as blocked
             try:
@@ -288,16 +357,20 @@ class TelegramNotifier:
             elif "SELL SIGNAL" in message or "🔴" in message:
                 log_side = "SELL"
             
-            # Log Telegram send attempt
+            # Log Telegram send attempt with full context
             logger.info(
-                "[TELEGRAM_SEND] symbol=%s side=%s chat_id=%s origin=%s",
+                "[TELEGRAM_SEND] type=ALERT symbol=%s side=%s chat_id=%s origin=%s message_len=%d message_preview=%s",
                 log_symbol,
                 log_side,
                 self.chat_id,
                 origin_upper,
+                len(full_message),
+                full_message[:100] if len(full_message) > 100 else full_message,
             )
             
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            # Log URL without token for security
+            url_safe = f"https://api.telegram.org/bot***/sendMessage"
             payload = {
                 "chat_id": self.chat_id,
                 "text": full_message,
@@ -307,13 +380,62 @@ class TelegramNotifier:
             if reply_markup:
                 payload["reply_markup"] = reply_markup
             
+            # ============================================================
+            # [TELEGRAM_REQUEST] - Request details before sending
+            # ============================================================
+            payload_keys = list(payload.keys())
+            timeout_seconds = 10
+            logger.info(
+                "[TELEGRAM_REQUEST] url=%s payload_keys=%s timeout=%d message_len=%d",
+                url_safe,
+                payload_keys,
+                timeout_seconds,
+                len(full_message),
+            )
+            
             try:
-                response = requests.post(url, json=payload, timeout=10)
+                response = requests.post(url, json=payload, timeout=timeout_seconds)
+                
+                # ============================================================
+                # [TELEGRAM_RESPONSE] - Response details
+                # ============================================================
+                status_code = response.status_code
+                response_text = response.text[:500] if response.text else ""
+                
+                if status_code == 200:
+                    try:
+                        response_data = response.json()
+                        message_id = response_data.get("result", {}).get("message_id", "unknown")
+                        logger.info(
+                            "[TELEGRAM_RESPONSE] status=%d RESULT=SUCCESS message_id=%s",
+                            status_code,
+                            message_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[TELEGRAM_RESPONSE] status=%d RESULT=SUCCESS (but failed to parse JSON: %s)",
+                            status_code,
+                            str(e),
+                        )
+                else:
+                    logger.error(
+                        "[TELEGRAM_RESPONSE] status=%d RESULT=FAILURE response_text=%s",
+                        status_code,
+                        response_text,
+                    )
+                
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
                 # Log Telegram error with details
                 status_code = e.response.status_code if hasattr(e, 'response') and e.response else "unknown"
                 error_body = e.response.text[:200] if hasattr(e, 'response') and e.response else str(e)[:200] if str(e) else "unknown"
+                
+                # Enhanced error logging
+                logger.error(
+                    "[TELEGRAM_RESPONSE] status=%s RESULT=FAILURE error_type=HTTPError response_text=%s",
+                    status_code,
+                    error_body,
+                )
                 logger.error(
                     "[TELEGRAM_ERROR] symbol=%s side=%s status=%s body=%s origin=%s",
                     log_symbol,
@@ -325,20 +447,36 @@ class TelegramNotifier:
                 raise
             except Exception as e:
                 # Log other Telegram errors
+                error_str = str(e)[:200]
+                logger.error(
+                    "[TELEGRAM_RESPONSE] status=unknown RESULT=FAILURE error_type=Exception error=%s",
+                    error_str,
+                )
                 logger.error(
                     "[TELEGRAM_ERROR] symbol=%s side=%s status=unknown body=%s origin=%s",
                     log_symbol,
                     log_side,
-                    str(e)[:200],
+                    error_str,
                     origin_upper,
                 )
                 raise
             
-            # Extract message_id from response for logging
-            response_data = response.json()
-            message_id = response_data.get("result", {}).get("message_id", "unknown")
+            # Extract message_id from response for logging (already logged in [TELEGRAM_RESPONSE])
+            try:
+                response_data = response.json()
+                message_id = response_data.get("result", {}).get("message_id", "unknown")
+            except Exception:
+                message_id = "unknown"
             
-            logger.info(f"Telegram message sent successfully (origin={origin_upper})")
+            # Enhanced success logging with diagnostics
+            logger.info(
+                "[TELEGRAM_SUCCESS] type=ALERT symbol=%s side=%s origin=%s message_id=%s chat_id=%s",
+                log_symbol,
+                log_side,
+                origin_upper,
+                message_id,
+                self.chat_id,
+            )
             
             # E2E TEST LOGGING: Log success
             logger.info(f"[E2E_TEST_TELEGRAM_OK] origin_upper={origin_upper}, message_id={message_id}")
@@ -1015,6 +1153,37 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"[TELEGRAM][ERROR] Failed to send signal alert: {e}")
             return False
+
+    def debug_test_alert(self, alert_type: str, symbol: Optional[str] = None, origin: Optional[str] = None) -> bool:
+        """
+        Debug helper function to test Telegram sending through all alert paths.
+        
+        This function sends a test message with explicit alert type, symbol, and origin
+        to help diagnose which execution contexts successfully send to Telegram.
+        
+        Args:
+            alert_type: Type of alert being tested (e.g., "BUY", "SELL", "ORDER", "MONITORING", "DAILY_REPORT")
+            symbol: Optional symbol for the alert
+            origin: Optional origin override. If None, uses get_runtime_origin()
+        
+        Returns:
+            True if message sent successfully, False otherwise
+        """
+        timestamp = datetime.now().isoformat()
+        test_message = (
+            f"[AWS TEST] AlertType={alert_type} Symbol={symbol or 'N/A'} "
+            f"Origin={origin or get_runtime_origin()} Timestamp={timestamp}"
+        )
+        
+        logger.info(
+            "[DEBUG_TEST_ALERT] alert_type=%s symbol=%s origin_param=%s message=%s",
+            alert_type,
+            symbol,
+            origin,
+            test_message,
+        )
+        
+        return self.send_message(test_message, origin=origin)
 
 # Global instance
 telegram_notifier = TelegramNotifier()

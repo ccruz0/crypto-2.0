@@ -466,7 +466,8 @@ def get_signals(
                             logger.warning(f"🔍 [SIGNALS] {symbol}: Could not fetch fresh volume: {vol_err}", exc_info=True)
                         
                         # Calculate volume_ratio - always recalculate from current values to ensure accuracy
-                        if current_volume is not None and current_volume > 0 and avg_volume and avg_volume > 0:
+                        # Use explicit None check to match semantic intent (avg_volume is kept as None when unavailable)
+                        if current_volume is not None and current_volume > 0 and avg_volume is not None and avg_volume > 0:
                             # Always recalculate ratio from current values to ensure accuracy
                             volume_ratio = current_volume / avg_volume
                         elif market_data.volume_ratio and market_data.volume_ratio > 0:

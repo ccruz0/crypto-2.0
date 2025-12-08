@@ -1180,28 +1180,25 @@ class SignalMonitorService:
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
                 else:
-                    # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                    # Check portfolio value limit: Skip orders if portfolio_value > 3x trade_amount_usd
+                    # IMPORTANT: Alerts are ALWAYS sent, but orders are skipped when limit is exceeded
+                    # NOTE: We only log here - monitoring entry is created in order creation path to avoid duplicates
                     trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                     limit_value = 3 * trade_amount_usd
+                    order_skipped_due_to_limit = False
                     try:
                         portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
                         if portfolio_value > limit_value:
-                            blocked_msg = (
-                                f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                                f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                            order_skipped_due_to_limit = True
+                            logger.warning(
+                                f"⚠️ Portfolio limit exceeded for {symbol}: "
+                                f"portfolio_value=${portfolio_value:.2f} > limit=${limit_value:.2f}. "
+                                f"Alert will be sent, but order will be skipped. "
+                                f"Monitoring entry will be created in order creation path."
                             )
-                            logger.warning(blocked_msg)
-                            # Register blocked message
-                            try:
-                                from app.api.routes_monitoring import add_telegram_message
-                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                            except Exception:
-                                pass  # Non-critical, continue
-                            # Bloquear silenciosamente - no enviar notificación a Telegram
-                            # Remove locks and continue (don't return - continue with order logic)
-                            if lock_key in self.alert_sending_locks:
-                                del self.alert_sending_locks[lock_key]
-                            should_send = False  # Don't send alert
+                            # Continue to send alert - don't set should_send = False
+                            # The order creation logic will check this flag and skip order creation
+                            # Monitoring entry will be created there to avoid duplicates
                         else:
                             logger.debug(
                                 f"✅ Portfolio value check passed for {symbol}: "
@@ -1726,30 +1723,25 @@ class SignalMonitorService:
                         del self.alert_sending_locks[lock_key]
                     return  # Exit without sending alert
                 
-                # Check portfolio value limit: Block BUY alerts if portfolio_value > 3x trade_amount_usd
+                # Check portfolio value limit: Skip orders if portfolio_value > 3x trade_amount_usd
+                # IMPORTANT: Alerts are ALWAYS sent, but orders are skipped when limit is exceeded
+                # NOTE: We only log here - monitoring entry is created in order creation path to avoid duplicates
                 trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                 limit_value = 3 * trade_amount_usd
+                order_skipped_due_to_limit = False
                 try:
                     portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
                     if portfolio_value > limit_value:
-                        blocked_msg = (
-                            f"🚫 ALERTA BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
-                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f})"
+                        order_skipped_due_to_limit = True
+                        logger.warning(
+                            f"⚠️ Portfolio limit exceeded for {symbol}: "
+                            f"portfolio_value=${portfolio_value:.2f} > limit=${limit_value:.2f}. "
+                            f"Alert will be sent, but order will be skipped. "
+                            f"Monitoring entry will be created in order creation path."
                         )
-                        logger.warning(blocked_msg)
-                        # Register blocked message
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
-                        # Bloquear silenciosamente - no enviar notificación a Telegram
-                        # Remove locks and exit
-                        if symbol in self.order_creation_locks:
-                            del self.order_creation_locks[symbol]
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
-                        return  # Exit without sending alert
+                        # Continue to send alert - don't return early
+                        # The order creation logic will check this flag and skip order creation
+                        # Monitoring entry will be created there to avoid duplicates
                     else:
                         logger.debug(
                             f"✅ Portfolio value check passed for {symbol}: "
@@ -1847,19 +1839,27 @@ class SignalMonitorService:
                 # Log MA values for verification
                 logger.info(f"✅ MA validation passed for {symbol}: MA50={ma50:.2f}, EMA10={ema10:.2f}, MA50>EMA10={ma50 > ema10}")
                 
-                # Check portfolio value limit: Block BUY orders if portfolio_value > 3x trade_amount_usd
+                # Check portfolio value limit: Skip BUY orders if portfolio_value > 3x trade_amount_usd
+                # NOTE: Alert was already sent above, this check only affects order creation
                 trade_amount_usd = watchlist_item.trade_amount_usd if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 else 100.0
                 limit_value = 3 * trade_amount_usd
                 try:
                     portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
                     if portfolio_value > limit_value:
-                        logger.warning(
-                            f"🚫 ORDEN BLOQUEADA POR VALOR EN CARTERA: {symbol} - "
+                        skipped_msg = (
+                            f"⚠️ ORDEN NO EJECUTADA POR VALOR EN CARTERA: {symbol} - "
                             f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
                             f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}. "
-                            f"No se creará orden aunque se detectó señal BUY."
+                            f"La alerta ya fue enviada, pero la orden de compra no se creará."
                         )
-                        # Bloquear silenciosamente - no enviar notificación a Telegram
+                        logger.warning(skipped_msg)
+                        # Register message with order_skipped=True, blocked=False
+                        # Alert was already sent, so this is just for monitoring
+                        try:
+                            from app.api.routes_monitoring import add_telegram_message
+                            add_telegram_message(skipped_msg, symbol=symbol, blocked=False, order_skipped=True)
+                        except Exception:
+                            pass  # Non-critical, continue
                         # Remove locks and exit
                         if symbol in self.order_creation_locks:
                             del self.order_creation_locks[symbol]

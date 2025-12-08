@@ -264,9 +264,10 @@ class SignalMonitorService:
                     ).all()
                 except Exception:
                     # Try without any filters (for old databases)
-                    watchlist_items = db.query(WatchlistItem).filter(
-                        WatchlistItem.trade_enabled == True
-                    ).all()
+                    # CRITICAL FIX: Don't filter by trade_enabled here - we want alert_enabled items only
+                    # If alert_enabled column doesn't exist, return empty list to be safe
+                    logger.warning("alert_enabled column may not exist - returning empty list to prevent unwanted orders")
+                    watchlist_items = []
             
             if not watchlist_items:
                 logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")

@@ -305,12 +305,14 @@ class ExchangeSyncService:
                 update_time = None
                 if order_data.get('create_time'):
                     try:
-                        create_time = datetime.fromtimestamp(order_data['create_time'] / 1000)
+                        # CRITICAL FIX: Use timezone.utc to ensure timestamps are interpreted as UTC, not local time
+                        create_time = datetime.fromtimestamp(order_data['create_time'] / 1000, tz=timezone.utc)
                     except:
                         pass
                 if order_data.get('update_time'):
                     try:
-                        update_time = datetime.fromtimestamp(order_data['update_time'] / 1000)
+                        # CRITICAL FIX: Use timezone.utc to ensure timestamps are interpreted as UTC, not local time
+                        update_time = datetime.fromtimestamp(order_data['update_time'] / 1000, tz=timezone.utc)
                     except:
                         pass
                 
@@ -1444,12 +1446,14 @@ class ExchangeSyncService:
                 update_time = None
                 if order_data.get('create_time'):
                     try:
-                        create_time = datetime.fromtimestamp(order_data['create_time'] / 1000)
+                        # CRITICAL FIX: Use timezone.utc to ensure timestamps are interpreted as UTC, not local time
+                        create_time = datetime.fromtimestamp(order_data['create_time'] / 1000, tz=timezone.utc)
                     except:
                         pass
                 if order_data.get('update_time'):
                     try:
-                        update_time = datetime.fromtimestamp(order_data['update_time'] / 1000)
+                        # CRITICAL FIX: Use timezone.utc to ensure timestamps are interpreted as UTC, not local time
+                        update_time = datetime.fromtimestamp(order_data['update_time'] / 1000, tz=timezone.utc)
                     except:
                         pass
                 
@@ -1696,26 +1700,66 @@ class ExchangeSyncService:
                             not is_sl_tp_order  # Double check - never create SL/TP for SL/TP orders
                         )
                         
-                        if is_main_order and needs_telegram:
-                            # For main orders, use the side from the order itself (which is the original side)
-                            # existing.side is the correct side for the original order
-                            original_side = existing.side.value if existing.side else (side or 'BUY')
-                            logger.info(f"Creating SL/TP for main order {order_id}: original_side={original_side}, order_type={order_type_from_history or order_type_from_db}")
+                        # CRITICAL FIX: Always check and create SL/TP for FILLED orders, not just when needs_telegram=True
+                        # This ensures SL/TP are created even if the order was already FILLED in the database
+                        # The _create_sl_tp_for_filled_order function already checks for duplicates, so it's safe to call multiple times
+                        if is_main_order and is_executed:
+                            # Check if order was filled within the last hour
+                            # This prevents creating SL/TP for old orders where prices may have changed significantly
+                            from datetime import timedelta, timezone
+                            # Use update_time or create_time from API (now timezone-aware UTC), or fallback to database time
+                            order_filled_time = update_time or create_time
+                            if not order_filled_time:
+                                # Fallback to database time if API times not available
+                                order_filled_time = existing.exchange_update_time or existing.exchange_create_time
                             
-                            try:
-                                self._create_sl_tp_for_filled_order(
-                                    db=db,
-                                    symbol=symbol or existing.symbol,
-                                    side=original_side,  # Use the original order's side (from existing.side)
-                                    filled_price=order_price_float or existing.price or 0,
-                                    filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API
-                                    order_id=order_id
+                            # CRITICAL FIX: If no timestamp is available at all, skip SL/TP creation
+                            # Using datetime.now() as fallback would make old orders appear freshly filled,
+                            # bypassing the 1-hour check and always creating SL/TP
+                            if not order_filled_time:
+                                logger.warning(
+                                    f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
+                                    f"No timestamp available (update_time, create_time, exchange_update_time, exchange_create_time all None). "
+                                    f"Cannot verify if order was filled within 1 hour. Skipping to prevent creating SL/TP for old orders."
                                 )
-                            except Exception as sl_tp_err:
-                                # Don't let SL/TP creation errors prevent order status update
-                                # Log but don't re-raise - we want the order status update to be committed
-                                logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
-                                # Continue - order status update should still be committed even if SL/TP fails
+                            else:
+                                # Ensure timezone is UTC (should already be UTC from fromtimestamp fix, but handle database times)
+                                if order_filled_time.tzinfo is None:
+                                    # Database times might be naive - assume UTC
+                                    logger.debug(f"Order {order_id} has naive datetime from database, assuming UTC")
+                                    order_filled_time = order_filled_time.replace(tzinfo=timezone.utc)
+                                elif order_filled_time.tzinfo != timezone.utc:
+                                    order_filled_time = order_filled_time.astimezone(timezone.utc)
+                                
+                                now_utc = datetime.now(timezone.utc)
+                                time_since_filled = (now_utc - order_filled_time).total_seconds() / 3600  # hours
+                                
+                                if time_since_filled > 1.0:
+                                    logger.info(
+                                        f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
+                                        f"Order was filled {time_since_filled:.2f} hours ago (limit: 1 hour). "
+                                        f"Price may have changed significantly."
+                                    )
+                                else:
+                                    # For main orders, use the side from the order itself (which is the original side)
+                                    # existing.side is the correct side for the original order
+                                    original_side = existing.side.value if existing.side else (side or 'BUY')
+                                    logger.info(f"Creating SL/TP for main order {order_id}: original_side={original_side}, order_type={order_type_from_history or order_type_from_db}, filled {time_since_filled:.2f} hours ago")
+                                    
+                                    try:
+                                        self._create_sl_tp_for_filled_order(
+                                            db=db,
+                                            symbol=symbol or existing.symbol,
+                                            side=original_side,  # Use the original order's side (from existing.side)
+                                            filled_price=order_price_float or existing.price or 0,
+                                            filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API
+                                            order_id=order_id
+                                        )
+                                    except Exception as sl_tp_err:
+                                        # Don't let SL/TP creation errors prevent order status update
+                                        # Log but don't re-raise - we want the order status update to be committed
+                                        logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
+                                        # Continue - order status update should still be committed even if SL/TP fails
                         elif is_sl_tp_order:
                             logger.debug(f"Skipping SL/TP creation for {order_type_from_history or order_type_from_db} order {order_id} - SL/TP orders should not create new SL/TP")
                     else:
@@ -1776,24 +1820,58 @@ class ExchangeSyncService:
                 
                 # Create SL/TP for both LIMIT and MARKET orders when they are filled
                 # (not for STOP_LIMIT or TAKE_PROFIT_LIMIT)
+                # BUT: Only create SL/TP if the order was filled within the last hour
                 order_type = order_data.get('order_type', '').upper()
                 
                 # IMPORTANT: NEVER create SL/TP for STOP_LIMIT or TAKE_PROFIT_LIMIT orders
                 if order_type in ['LIMIT', 'MARKET']:
-                    # Try to create SL/TP automatically
-                    # Use side from order_data which is the original order's side
-                    logger.info(f"Creating SL/TP for new main order {order_id}: side={side}, order_type={order_type}")
-                    try:
-                        self._create_sl_tp_for_filled_order(
-                            db=db,
-                            symbol=symbol,
-                            side=side,  # This is the original order's side (BUY or SELL)
-                            filled_price=order_price_float,
-                            filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API - this is the actual executed amount from MARKET order
-                            order_id=order_id
+                    # Check if order was filled within the last hour
+                    # CRITICAL FIX: update_time and create_time are now already timezone-aware (UTC) from the fix above
+                    # No need to use replace() which would mislabel local time as UTC
+                    order_filled_time = update_time or create_time
+                    
+                    # CRITICAL FIX: If no timestamp is available at all, skip SL/TP creation
+                    # Using datetime.now() as fallback would make old orders appear freshly filled,
+                    # bypassing the 1-hour check and always creating SL/TP
+                    if not order_filled_time:
+                        logger.warning(
+                            f"⏰ Skipping SL/TP creation for new order {order_id} ({symbol}): "
+                            f"No timestamp available (update_time and create_time both None). "
+                            f"Cannot verify if order was filled within 1 hour. Skipping to prevent creating SL/TP for old orders."
                         )
-                    except Exception as sl_tp_err:
-                        logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
+                    else:
+                        # Ensure timezone is UTC (should already be UTC from fromtimestamp fix, but handle edge cases)
+                        if order_filled_time.tzinfo is None:
+                            # This shouldn't happen with the fix, but handle it just in case
+                            logger.warning(f"Order {order_id} has naive datetime, assuming UTC")
+                            order_filled_time = order_filled_time.replace(tzinfo=timezone.utc)
+                        elif order_filled_time.tzinfo != timezone.utc:
+                            order_filled_time = order_filled_time.astimezone(timezone.utc)
+                        
+                        now_utc = datetime.now(timezone.utc)
+                        time_since_filled = (now_utc - order_filled_time).total_seconds() / 3600  # hours
+                        
+                        if time_since_filled > 1.0:
+                            logger.info(
+                                f"⏰ Skipping SL/TP creation for new order {order_id} ({symbol}): "
+                                f"Order was filled {time_since_filled:.2f} hours ago (limit: 1 hour). "
+                                f"Price may have changed significantly."
+                            )
+                        else:
+                            # Try to create SL/TP automatically
+                            # Use side from order_data which is the original order's side
+                            logger.info(f"Creating SL/TP for new main order {order_id}: side={side}, order_type={order_type}, filled {time_since_filled:.2f} hours ago")
+                            try:
+                                self._create_sl_tp_for_filled_order(
+                                    db=db,
+                                    symbol=symbol,
+                                    side=side,  # This is the original order's side (BUY or SELL)
+                                    filled_price=order_price_float,
+                                    filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API - this is the actual executed amount from MARKET order
+                                    order_id=order_id
+                                )
+                            except Exception as sl_tp_err:
+                                logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
                 elif order_type in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
                     logger.debug(f"Skipping SL/TP creation for {order_type} order {order_id} - SL/TP orders should not create new SL/TP")
                 

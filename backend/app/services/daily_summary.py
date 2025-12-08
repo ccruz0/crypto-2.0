@@ -282,7 +282,21 @@ class DailySummaryService:
                 message += f"\n⏰ Generado: {now_bali.strftime('%H:%M:%S')} (Bali)\n"
                 message += "🤖 Trading Bot Automático"
                 
-                # Send message
+                # ============================================================
+                # WORKING TELEGRAM PATH (CANONICAL) - Daily Sales Report
+                # ============================================================
+                # Trigger: Scheduled task (scheduler.py) → send_sell_orders_report()
+                # Message Builder: Builds message with sales data
+                # Telegram Sender: self.telegram.send_message(message)
+                #   → telegram_notifier.send_message() [telegram_notifier.py:151]
+                #   → Uses: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID env vars
+                #   → Origin: Defaults to get_runtime_origin() → "AWS" in AWS
+                #   → API Call: requests.post("https://api.telegram.org/bot{token}/sendMessage")
+                #   → Result: Message sent to Telegram chat
+                # ============================================================
+                # ALL other alerts (signals, monitoring, watchlist, CPI) should
+                # use the SAME path: telegram_notifier.send_message()
+                # ============================================================
                 success = self.telegram.send_message(message)
                 
                 if success:

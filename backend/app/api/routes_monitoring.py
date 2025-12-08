@@ -148,6 +148,7 @@ def add_telegram_message(
     message: str,
     symbol: Optional[str] = None,
     blocked: bool = False,
+    order_skipped: bool = False,
     db: Optional[Session] = None,
     throttle_status: Optional[str] = None,
     throttle_reason: Optional[str] = None,
@@ -170,6 +171,7 @@ def add_telegram_message(
         "message": message,
         "symbol": symbol,
         "blocked": blocked,
+        "order_skipped": order_skipped,
         "timestamp": datetime.now().isoformat(),
         "throttle_status": throttle_status,
         "throttle_reason": throttle_reason,
@@ -204,25 +206,30 @@ def add_telegram_message(
                     f"blocked={blocked}, message_preview={message[:100]}"
                 )
             # Check for duplicate messages within last 5 seconds to avoid duplicates from multiple workers
+            # IMPORTANT: Include order_skipped in duplicate check since it's a distinct monitoring state
+            # Two messages with same content but different order_skipped values are NOT duplicates
             recent_filters = [
                 TelegramMessage.message == message[:500],
                 TelegramMessage.symbol == symbol,
                 TelegramMessage.blocked == blocked,
+                TelegramMessage.order_skipped == order_skipped,
                 TelegramMessage.timestamp >= datetime.now() - timedelta(seconds=5),
             ]
             recent_duplicate = db_session.query(TelegramMessage).filter(*recent_filters).first()
             
             if recent_duplicate:
-                log.debug(f"Skipping duplicate Telegram message (within 5 seconds): {symbol or 'N/A'}")
+                log.debug(f"Skipping duplicate Telegram message (within 5 seconds): {symbol or 'N/A'}, blocked={blocked}, order_skipped={order_skipped}")
                 if own_session:
                     db_session.close()
-                log.info(f"Telegram message stored (duplicate skipped): {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+                status_label = 'BLOQUEADO' if blocked else ('ORDEN SKIPPED' if order_skipped else 'ENVIADO')
+                log.info(f"Telegram message stored (duplicate skipped): {status_label} - {symbol or 'N/A'}")
                 return
             
             telegram_msg = TelegramMessage(
                 message=message,
                 symbol=symbol,
                 blocked=blocked,
+                order_skipped=order_skipped,
                 throttle_status=throttle_status,
                 throttle_reason=throttle_reason,
             )
@@ -266,17 +273,24 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
             ).order_by(TelegramMessage.timestamp.desc()).limit(500).all()
             
             # Convert to dict format for API response
-            messages = [
-                {
+            messages = []
+            for msg in db_messages:
+                # Ensure order_skipped is always a boolean (handle None from old rows)
+                order_skipped_val = getattr(msg, 'order_skipped', None)
+                if order_skipped_val is None:
+                    order_skipped_val = False
+                else:
+                    order_skipped_val = bool(order_skipped_val)
+                
+                messages.append({
                     "message": msg.message,
                     "symbol": msg.symbol,
                     "blocked": msg.blocked,
+                    "order_skipped": order_skipped_val,
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
                     "throttle_status": msg.throttle_status,
                     "throttle_reason": msg.throttle_reason,
-                }
-                for msg in db_messages
-            ]
+                })
             
             return {
                 "messages": messages,
@@ -292,15 +306,22 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
     from datetime import timedelta
     
     one_month_ago = datetime.now() - timedelta(days=30)
-    recent_messages = [
-        {
-            **msg,
-            "throttle_status": msg.get("throttle_status"),
-            "throttle_reason": msg.get("throttle_reason"),
-        }
-        for msg in _telegram_messages
-        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago
-    ]
+    recent_messages = []
+    for msg in _telegram_messages:
+        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago:
+            # Ensure order_skipped is always a boolean
+            order_skipped_val = msg.get("order_skipped")
+            if order_skipped_val is None:
+                order_skipped_val = False
+            else:
+                order_skipped_val = bool(order_skipped_val)
+            
+            recent_messages.append({
+                **msg,
+                "order_skipped": order_skipped_val,
+                "throttle_status": msg.get("throttle_status"),
+                "throttle_reason": msg.get("throttle_reason"),
+            })
     
     # Return most recent first (newest at the top)
     recent_messages.reverse()

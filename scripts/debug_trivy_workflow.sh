@@ -154,9 +154,10 @@ fi
 echo ""
 
 # Scan db image
+# Note: In workflow, this only runs if Dockerfile exists AND steps.build-db.outcome == 'success'
 if [ "$DB_BUILT" = true ]; then
     echo "Scanning db image..."
-    if $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-db.json local/atp-postgres:ci 2>&1; then
+    if sh -c "cd \"$REPO_ROOT\" && $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-db.json local/atp-postgres:ci" 2>&1; then
         echo -e "${GREEN}✓ DB scan completed (no HIGH/CRITICAL vulnerabilities)${NC}"
     else
         SCAN_EXIT=$?

@@ -1,4 +1,4 @@
-# Watchlist Audit - Tasks Progress
+ Watchlist Audit - Tasks Progress
 
 **Last Updated:** 2025-12-01  
 **Status:** 🔄 In Progress
