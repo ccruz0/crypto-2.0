@@ -255,10 +255,10 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
                 
                 # Restore initial state
                 if initial_buy != final_buy or initial_sell != final_sell:
-                    db.query(WatchlistItem).filter(WatchlistItem.id == item.id).update({
-                        "buy_alert_enabled": initial_buy,
-                        "sell_alert_enabled": initial_sell
-                    })
+                    # Bug 1 fix: SQLAlchemy 2.0 Query.update() requires model attribute mappings, not string keys
+                    # Use direct object attribute update instead (works in both SQLAlchemy 1.x and 2.0)
+                    item.buy_alert_enabled = initial_buy
+                    item.sell_alert_enabled = initial_sell
                     db.commit()
                     print(f"    🔄 Restored initial state")
                 
