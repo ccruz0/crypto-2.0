@@ -1,4 +1,6 @@
 {
+  "_comment": "This file is deprecated. The authoritative config is backend/trading_config.json",
+  "_note": "This file is kept for backward compatibility but is not actively used by the backend",
   "version": 1,
   "defaults": {
     "timeframe": "4h",
@@ -11,9 +13,5 @@
     "intraday":{ "RSI_PERIOD":10, "RSI_BUY":42, "RSI_SELL":65, "MA50":25, "EMA10":7, "MA10W":30, "ATR":10, "VOL":20, "ALERT_COOLDOWN_MINUTES":3, "ALERT_MIN_PRICE_CHANGE_PCT":0.8 },
     "scalp":   { "RSI_PERIOD":7,  "RSI_BUY":45, "RSI_SELL":60, "MA50":20, "EMA10":5, "MA10W":15, "ATR":7,  "VOL":15, "ALERT_COOLDOWN_MINUTES":2, "ALERT_MIN_PRICE_CHANGE_PCT":0.5 }
   },
-  "coins": {
-    "BTC_USDT": { "preset": "swing" },
-    "ETH_USDT": { "preset": "intraday" },
-    "DOT_USDT": { "preset": "scalp", "overrides": { "RSI_BUY": 40 } }
-  }
+  "coins": {}
 }

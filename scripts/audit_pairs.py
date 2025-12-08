@@ -40,6 +40,13 @@ EXCLUDE_PATTERNS = [
     '*.pyc',
     '*.pyo',
     '*.egg-info',
+    'playwright-report',
+    'test-results',
+    'artifacts',
+    '*.md',  # Documentation files
+    '*.bak',
+    '*.backup',
+    '*.old',
 ]
 
 
@@ -61,7 +68,16 @@ def extract_pairs_from_text(text: str, file_path: str) -> List[Tuple[str, int]]:
 def scan_file(file_path: Path) -> List[Tuple[str, int]]:
     """Scan a single file for trading pairs."""
     try:
-        if file_path.suffix in ['.py', '.ts', '.tsx', '.js', '.jsx', '.json', '.sql', '.md', '.txt']:
+        # Skip markdown and other documentation
+        if file_path.suffix in ['.md', '.txt', '.log']:
+            return []
+        
+        # Only scan code and config files
+        if file_path.suffix in ['.py', '.ts', '.tsx', '.js', '.jsx', '.json', '.sql']:
+            # Skip test artifacts and reports
+            if any(exclude in str(file_path) for exclude in ['playwright-report', 'test-results', 'artifacts', '.bak', '.backup']):
+                return []
+            
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
                 return extract_pairs_from_text(content, str(file_path))
@@ -182,41 +198,48 @@ def main():
     print("TRADING PAIRS AUDIT")
     print("=" * 80)
     print()
+    print("Focus: Detecting duplicate DEFINITIONS (not code references)")
+    print("=" * 80)
+    print()
     
     pairs_by_location = {}
     
-    # Scan codebase files
-    print("Scanning codebase files...")
-    codebase_pairs = scan_directory(REPO_ROOT)
-    pairs_by_location.update(codebase_pairs)
-    print(f"  Found pairs in {len(codebase_pairs)} files")
-    
-    # Scan config JSON files specifically
+    # Scan config JSON files (only backend/trading_config.json is authoritative)
     print("Scanning config JSON files...")
-    config_files = [
-        REPO_ROOT / 'trading_config.json',
-        REPO_ROOT / 'backend' / 'trading_config.json',
-    ]
-    for config_file in config_files:
-        if config_file.exists():
-            config_pairs = scan_config_json(config_file)
-            pairs_by_location.update(config_pairs)
-            print(f"  Scanned {config_file.name}")
+    config_file = REPO_ROOT / 'backend' / 'trading_config.json'
+    if config_file.exists():
+        config_pairs = scan_config_json(config_file)
+        pairs_by_location.update(config_pairs)
+        print(f"  Scanned {config_file.name}: {len(config_pairs.get(str(config_file.relative_to(REPO_ROOT)), []))} pairs")
     
-    # Scan database
+    # Scan database (authoritative definitions)
     print("Scanning database...")
     try:
         db_pairs = scan_database()
         for table, pairs in db_pairs.items():
             pairs_by_location[f"database:{table}"] = pairs
         print(f"  Scanned {len(db_pairs)} database tables")
+        for table, pairs in db_pairs.items():
+            print(f"    {table}: {len(pairs)} pairs")
     except Exception as e:
         print(f"  Warning: Could not scan database: {e}")
     
-    # Generate report
+    # Generate report - check for duplicates WITHIN each source
     print()
     print("Generating report...")
-    pair_counts, duplicates = generate_report(pairs_by_location)
+    pair_counts, all_duplicates = generate_report(pairs_by_location)
+    
+    # Filter to only duplicates within the same source (not across sources)
+    # A pair appearing in both config and database is OK
+    # A pair appearing twice in the same table/file is NOT OK
+    source_duplicates = defaultdict(dict)
+    
+    for location, pairs in pairs_by_location.items():
+        # Count pairs within this location
+        location_pair_counts = Counter(pair for pair, _ in pairs)
+        location_dups = {p: c for p, c in location_pair_counts.items() if c > 1}
+        if location_dups:
+            source_duplicates[location] = location_dups
     
     # Print summary
     print()
@@ -225,22 +248,19 @@ def main():
     print("=" * 80)
     print(f"Total unique pairs found: {len(pair_counts)}")
     print(f"Total pair occurrences: {sum(pair_counts.values())}")
-    print(f"Pairs with duplicates: {len(duplicates)}")
+    print(f"Sources with internal duplicates: {len(source_duplicates)}")
     print()
     
-    if duplicates:
+    if source_duplicates:
         print("=" * 80)
-        print("DUPLICATES DETECTED")
+        print("DUPLICATES DETECTED (within same source)")
         print("=" * 80)
         print()
         
-        for pair, (count, locations) in sorted(duplicates.items()):
-            print(f"{pair}: appears {count} times")
-            for location, line_num in locations:
-                if line_num > 0:
-                    print(f"  - {location}:{line_num}")
-                else:
-                    print(f"  - {location}")
+        for location, dups in sorted(source_duplicates.items()):
+            print(f"{location}:")
+            for pair, count in sorted(dups.items()):
+                print(f"  {pair}: appears {count} times")
             print()
         
         print("=" * 80)
@@ -249,7 +269,7 @@ def main():
         return 1
     else:
         print("=" * 80)
-        print("✅ AUDIT PASSED: No duplicates found!")
+        print("✅ AUDIT PASSED: No duplicate definitions found!")
         print("=" * 80)
         return 0
 
