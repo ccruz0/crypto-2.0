@@ -106,10 +106,12 @@ def simulate_price_test():
         
         print(f"\n📦 BUY Signal Payload:")
         print(json.dumps({
-            "alert_type": buy_signal_payload.get("alert_type"),
-            "signal": buy_signal_payload.get("signal"),
-            "should_buy": buy_signal_payload.get("should_buy"),
-            "price": buy_signal_payload.get("price"),
+            "symbol": buy_signal_payload.get("symbol"),
+            "buy_signal": buy_signal_payload.get("buy_signal"),
+            "sell_signal": buy_signal_payload.get("sell_signal"),
+            "tp": buy_signal_payload.get("tp"),
+            "sl": buy_signal_payload.get("sl"),
+            "rationale": buy_signal_payload.get("rationale", [])[:3],  # Show first 3 rationale items
         }, indent=2))
         
         # Simulate SELL: Price above threshold
@@ -124,7 +126,11 @@ def simulate_price_test():
         # For SELL, we need to check if price is above resistance or RSI is high
         # Use calculate_trading_signals which handles both BUY and SELL
         # Bug 2 fix: Check rsi is not None instead of truthy (RSI=0 is valid)
-        simulated_rsi = (rsi + 20) if rsi is not None else 70
+        # Bug 2 fix: Clamp RSI to max 100 (valid range is 0-100)
+        if rsi is not None:
+            simulated_rsi = min(rsi + 20, 100.0)  # Clamp to max 100
+        else:
+            simulated_rsi = 70
         sell_signal_payload = calculate_trading_signals(
             symbol=symbol,
             price=sell_price,
@@ -138,10 +144,12 @@ def simulate_price_test():
         
         print(f"✅ SELL Signal Payload:")
         print(json.dumps({
-            "alert_type": sell_signal_payload.get("alert_type"),
-            "signal": sell_signal_payload.get("signal"),
-            "should_sell": sell_signal_payload.get("should_sell"),
-            "price": sell_signal_payload.get("price"),
+            "symbol": sell_signal_payload.get("symbol"),
+            "buy_signal": sell_signal_payload.get("buy_signal"),
+            "sell_signal": sell_signal_payload.get("sell_signal"),
+            "tp": sell_signal_payload.get("tp"),
+            "sl": sell_signal_payload.get("sl"),
+            "rationale": sell_signal_payload.get("rationale", [])[:3],  # Show first 3 rationale items
         }, indent=2))
         
         # Check monitoring table for new entries
