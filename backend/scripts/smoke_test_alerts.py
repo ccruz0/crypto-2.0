@@ -169,6 +169,9 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
         for item in test_items:
             print(f"\n--- Testing {item.symbol} (ID: {item.id}) ---")
             
+            # Track individual item pass/fail status (Bug 1 fix)
+            item_passed = True
+            
             # Get initial state
             initial_buy = getattr(item, "buy_alert_enabled", False)
             initial_sell = getattr(item, "sell_alert_enabled", False)
@@ -195,6 +198,7 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
                     print(f"    ✅ DB updated: buy_alert_enabled={new_buy}, sell_alert_enabled={new_sell}")
                 else:
                     print(f"    ❌ DB update failed: buy_alert_enabled={new_buy}, sell_alert_enabled={new_sell}")
+                    item_passed = False
                     all_passed = False
                     results.add_anomaly("TOGGLE_TEST", f"{item.symbol}: DB not updated after enable")
                 
@@ -221,6 +225,7 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
                 
             except Exception as e:
                 print(f"    ❌ Error enabling alerts: {e}")
+                item_passed = False
                 all_passed = False
                 results.add_anomaly("TOGGLE_TEST", f"{item.symbol}: Error enabling - {str(e)}")
             
@@ -244,6 +249,7 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
                     print(f"    ✅ DB updated: buy_alert_enabled={final_buy}, sell_alert_enabled={final_sell}")
                 else:
                     print(f"    ❌ DB update failed: buy_alert_enabled={final_buy}, sell_alert_enabled={final_sell}")
+                    item_passed = False
                     all_passed = False
                     results.add_anomaly("TOGGLE_TEST", f"{item.symbol}: DB not updated after disable")
                 
@@ -258,13 +264,15 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
                 
             except Exception as e:
                 print(f"    ❌ Error disabling alerts: {e}")
+                item_passed = False
                 all_passed = False
                 results.add_anomaly("TOGGLE_TEST", f"{item.symbol}: Error disabling - {str(e)}")
             
+            # Record individual item result (Bug 1 fix: use item_passed instead of all_passed)
             results.results["toggle_tests"].append({
                 "symbol": item.symbol,
                 "item_id": item.id,
-                "passed": all_passed
+                "passed": item_passed
             })
         
         return all_passed

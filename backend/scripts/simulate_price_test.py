@@ -123,10 +123,12 @@ def simulate_price_test():
         
         # For SELL, we need to check if price is above resistance or RSI is high
         # Use calculate_trading_signals which handles both BUY and SELL
+        # Bug 2 fix: Check rsi is not None instead of truthy (RSI=0 is valid)
+        simulated_rsi = (rsi + 20) if rsi is not None else 70
         sell_signal_payload = calculate_trading_signals(
             symbol=symbol,
             price=sell_price,
-            rsi=rsi + 20 if rsi else 70,  # Simulate higher RSI for SELL
+            rsi=simulated_rsi,  # Simulate higher RSI for SELL
             ma50=ma50,
             ma200=ma200,
             ema10=ema10,
