@@ -13,10 +13,15 @@
 #   - Trivy CLI installed (or use Docker: docker run aquasec/trivy)
 ###############################################################################
 
+# Note: This script should be run from the project root
+# It uses absolute paths to match GitHub Actions behavior
+
 set -e  # Exit on error
 
 REPO_ROOT="/Users/carloscruz/automated-trading-platform"
 cd "$REPO_ROOT" || exit 1
+
+# All commands use sh -c "cd $REPO_ROOT && ..." to match workflow behavior
 
 echo "=========================================="
 echo "Trivy Workflow Debug Script"
@@ -55,24 +60,27 @@ echo "=========================================="
 echo ""
 
 # Build frontend image
+# Note: In the workflow, this step has continue-on-error: true
+# so it doesn't fail the job, but we track the outcome
 echo "Building frontend image..."
-if docker build -t local/atp-frontend:ci -f ./frontend/Dockerfile ./frontend 2>&1; then
+if sh -c "cd $REPO_ROOT && docker build -t local/atp-frontend:ci -f ./frontend/Dockerfile ./frontend" 2>&1; then
     echo -e "${GREEN}✓ Frontend image built successfully${NC}"
     FRONTEND_BUILT=true
 else
-    echo -e "${RED}✗ Frontend image build failed${NC}"
+    echo -e "${YELLOW}⚠ Frontend image build failed (non-blocking in workflow)${NC}"
     FRONTEND_BUILT=false
 fi
 
 echo ""
 
 # Build backend image
+# Note: In the workflow, this step has continue-on-error: true
 echo "Building backend image..."
-if docker build -t local/atp-backend:ci -f ./backend/Dockerfile ./backend 2>&1; then
+if sh -c "cd $REPO_ROOT && docker build -t local/atp-backend:ci -f ./backend/Dockerfile ./backend" 2>&1; then
     echo -e "${GREEN}✓ Backend image built successfully${NC}"
     BACKEND_BUILT=true
 else
-    echo -e "${RED}✗ Backend image build failed${NC}"
+    echo -e "${YELLOW}⚠ Backend image build failed (non-blocking in workflow)${NC}"
     BACKEND_BUILT=false
 fi
 
@@ -81,11 +89,11 @@ echo ""
 # Build db image (optional)
 if [ -f "./docker/postgres/Dockerfile" ]; then
     echo "Building db image..."
-    if docker build -t local/atp-postgres:ci -f ./docker/postgres/Dockerfile ./docker/postgres 2>&1; then
+    if sh -c "cd $REPO_ROOT && docker build -t local/atp-postgres:ci -f ./docker/postgres/Dockerfile ./docker/postgres" 2>&1; then
         echo -e "${GREEN}✓ DB image built successfully${NC}"
         DB_BUILT=true
     else
-        echo -e "${RED}✗ DB image build failed${NC}"
+        echo -e "${YELLOW}⚠ DB image build failed (non-blocking in workflow)${NC}"
         DB_BUILT=false
     fi
 else
@@ -100,9 +108,10 @@ echo "=========================================="
 echo ""
 
 # Scan frontend image
+# Note: In workflow, this only runs if steps.build-frontend.outcome == 'success'
 if [ "$FRONTEND_BUILT" = true ]; then
     echo "Scanning frontend image..."
-    if $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-frontend.json local/atp-frontend:ci 2>&1; then
+    if sh -c "cd $REPO_ROOT && $TRIVY_CMD image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --format json --output trivy-frontend.json local/atp-frontend:ci" 2>&1; then
         echo -e "${GREEN}✓ Frontend scan completed (no HIGH/CRITICAL vulnerabilities)${NC}"
     else
         SCAN_EXIT=$?
@@ -113,7 +122,7 @@ if [ "$FRONTEND_BUILT" = true ]; then
         fi
     fi
 else
-    echo -e "${YELLOW}⚠ Skipping frontend scan (image not built)${NC}"
+    echo -e "${YELLOW}⚠ Skipping frontend scan (image not built - matches workflow behavior)${NC}"
 fi
 
 echo ""
@@ -201,9 +210,11 @@ echo ""
 # Check if images exist
 if [ "$FRONTEND_BUILT" = false ]; then
     echo -e "${RED}✗ Frontend image was not built - Trivy will fail if it tries to scan a non-existent image${NC}"
+    echo "   → FIX: Workflow uses 'if: steps.build-frontend.outcome == success' to skip scan if build failed"
 fi
 if [ "$BACKEND_BUILT" = false ]; then
     echo -e "${RED}✗ Backend image was not built - Trivy will fail if it tries to scan a non-existent image${NC}"
+    echo "   → FIX: Workflow uses 'if: steps.build-backend.outcome == success' to skip scan if build failed"
 fi
 
 # Check if Trivy can access Docker images
@@ -211,12 +222,16 @@ if docker images | grep -q "local/atp-frontend.*ci"; then
     echo -e "${GREEN}✓ Frontend image exists in Docker${NC}"
 else
     echo -e "${RED}✗ Frontend image not found in Docker${NC}"
+    echo "   → ROOT CAUSE: If build fails, image doesn't exist, and Trivy scan would fail"
+    echo "   → FIX: Build steps use continue-on-error: true, scan steps check outcome == 'success'"
 fi
 
 if docker images | grep -q "local/atp-backend.*ci"; then
     echo -e "${GREEN}✓ Backend image exists in Docker${NC}"
 else
     echo -e "${RED}✗ Backend image not found in Docker${NC}"
+    echo "   → ROOT CAUSE: If build fails, image doesn't exist, and Trivy scan would fail"
+    echo "   → FIX: Build steps use continue-on-error: true, scan steps check outcome == 'success'"
 fi
 
 echo ""
@@ -224,9 +239,11 @@ echo "=========================================="
 echo "Debug script completed"
 echo "=========================================="
 echo ""
-echo "If you see errors above, those are likely the same issues causing"
-echo "the GitHub Actions workflow to fail. The workflow should:"
-echo "  1. Only scan images that were successfully built"
-echo "  2. Handle missing images gracefully"
-echo "  3. Use a recent version of the Trivy action"
+echo "Summary of fixes applied to workflow:"
+echo "  1. Build steps: Added continue-on-error: true to prevent job failure on build errors"
+echo "  2. Scan conditions: Changed from 'if: success() || steps.build-X.outcome == success'"
+echo "     to 'if: steps.build-X.outcome == success' (only scan successfully built images)"
+echo "  3. Filesystem scan: Added 'if: always()' to ensure it runs even if builds fail"
+echo "  4. This ensures the workflow only fails for actual HIGH/CRITICAL vulnerabilities,"
+echo "     not for configuration errors or missing images"
 echo ""

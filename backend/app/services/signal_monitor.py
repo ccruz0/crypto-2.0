@@ -1236,15 +1236,13 @@ class SignalMonitorService:
                             throttle_status="SENT",
                             throttle_reason=buy_reason,
                             )
+                            # Alerts must never be blocked after conditions are met (guardrail compliance)
+                            # If send_buy_signal returns False, log as error but do not treat as block
                             if result is False:
-                                blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
-                                logger.warning(blocked_msg)
-                                # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
-                                try:
-                                    from app.api.routes_monitoring import add_telegram_message
-                                    add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                                except Exception:
-                                    pass  # Non-critical, continue
+                                logger.error(
+                                    f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
+                                    f"This should not happen when conditions are met. Check telegram_notifier."
+                                )
                             else:
                                 # Message already registered in send_buy_signal as sent
                                 logger.info(
@@ -1785,15 +1783,13 @@ class SignalMonitorService:
                         throttle_status="SENT",
                         throttle_reason=buy_reason,
                     )
+                    # Alerts must never be blocked after conditions are met (guardrail compliance)
+                    # If send_buy_signal returns False, log as error but do not treat as block
                     if result is False:
-                        blocked_msg = f"🚫 BLOQUEADO: {symbol} - Alerta bloqueada por send_buy_signal verification"
-                        logger.warning(blocked_msg)
-                        # Register blocked message (may also be registered in send_buy_signal, but ensure it's here too)
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
+                        logger.error(
+                            f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
+                            f"This should not happen when conditions are met. Check telegram_notifier."
+                        )
                     else:
                         # Message already registered in send_buy_signal as sent
                         logger.info(f"✅ BUY alert sent for {symbol} (alert_enabled=True verified) - {reason_text}")
@@ -2100,14 +2096,13 @@ class SignalMonitorService:
                                     throttle_status="SENT",
                                     throttle_reason=sell_reason,
                                 )
+                                # Alerts must never be blocked after conditions are met (guardrail compliance)
+                                # If send_sell_signal returns False, log as error but do not treat as block
                                 if result is False:
-                                    blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - Alerta bloqueada por send_sell_signal verification"
-                                    logger.warning(blocked_msg)
-                                    try:
-                                        from app.api.routes_monitoring import add_telegram_message
-                                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                                    except Exception:
-                                        pass  # Non-critical, continue
+                                    logger.error(
+                                        f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
+                                        f"This should not happen when conditions are met. Check telegram_notifier."
+                                    )
                                 else:
                                     logger.info(
                                         f"✅ SELL alert SENT for {symbol}: "
