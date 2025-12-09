@@ -26,6 +26,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ubuntu
@@ -34,6 +36,8 @@ jobs:
     steps:
     - name: Checkout API
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
       
     - name: Audit trading pairs
       run: |
