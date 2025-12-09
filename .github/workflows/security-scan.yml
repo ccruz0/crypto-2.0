@@ -65,7 +65,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
-          file: ./frontend/Dockerfile
+          file: Dockerfile
           push: false
           tags: local/atp-frontend:ci
           sbom: true
@@ -79,7 +79,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./backend
-          file: ./backend/Dockerfile
+          file: Dockerfile
           push: false
           tags: local/atp-backend:ci
           sbom: true
@@ -94,7 +94,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./docker/postgres
-          file: ./docker/postgres/Dockerfile
+          file: Dockerfile
           push: false
           tags: local/atp-postgres:ci
           sbom: true
