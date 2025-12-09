@@ -435,9 +435,41 @@ class SignalMonitorService:
             if buy_signal:
                 current_state = "BUY"
                 logger.info(f"🟢 BUY signal detected for {symbol}")
+                
+                # Record signal event in throttle table immediately when detected (regardless of throttling)
+                try:
+                    from app.services.signal_throttle import record_signal_event, build_strategy_key
+                    strategy_key = build_strategy_key(strategy_type, risk_approach)
+                    record_signal_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        source="signal_detection",
+                    )
+                    logger.debug(f"📝 Recorded BUY signal detection for {symbol} in throttle table")
+                except Exception as record_err:
+                    logger.warning(f"⚠️ Could not record BUY signal detection for {symbol}: {record_err}")
             elif sell_signal:
                 current_state = "SELL"
                 logger.info(f"🔴 SELL signal detected for {symbol}")
+                
+                # Record signal event in throttle table immediately when detected (regardless of throttling)
+                try:
+                    from app.services.signal_throttle import record_signal_event, build_strategy_key
+                    strategy_key = build_strategy_key(strategy_type, risk_approach)
+                    record_signal_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="SELL",
+                        price=current_price,
+                        source="signal_detection",
+                    )
+                    logger.debug(f"📝 Recorded SELL signal detection for {symbol} in throttle table")
+                except Exception as record_err:
+                    logger.warning(f"⚠️ Could not record SELL signal detection for {symbol}: {record_err}")
             else:
                 logger.debug(f"⚪ WAIT signal for {symbol} (no buy/sell conditions met)")
             
