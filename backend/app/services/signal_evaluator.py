@@ -259,7 +259,7 @@ def evaluate_signal_for_symbol(
         
         # Get min_volume_ratio from strategy config
         from app.services.config_loader import get_strategy_rules
-        strategy_rules = get_strategy_rules(preset_name, risk_mode, symbol=symbol)
+        strategy_rules = get_strategy_rules(preset_name, risk_mode)
         min_volume_ratio = strategy_rules.get("volumeMinRatio", 0.5)
         result["min_volume_ratio"] = min_volume_ratio
         
