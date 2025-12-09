@@ -275,8 +275,20 @@ class TelegramNotifier:
         if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
             allowed = origin_upper in ("AWS", "TEST") and self.enabled
             side = "BUY" if "BUY SIGNAL" in message else ("SELL" if "SELL SIGNAL" in message else "UNKNOWN")
+            # Use symbol if available, otherwise extract it safely
+            log_symbol = symbol if 'symbol' in locals() else (None)
+            if log_symbol is None:
+                try:
+                    import re
+                    symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', message)
+                    if symbol_match:
+                        potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
+                        if '_' in potential_symbol or len(potential_symbol) >= 2:
+                            log_symbol = potential_symbol
+                except Exception:
+                    pass
             logger.info(
-                f"[LIVE_ALERT_GATEKEEPER] symbol={symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
+                f"[LIVE_ALERT_GATEKEEPER] symbol={log_symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
                 f"enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
                 f"chat_id_present={bool(self.chat_id)} allowed={allowed}"
             )

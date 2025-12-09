@@ -258,8 +258,8 @@ class SignalMonitorService:
         
         Rules:
         - For same-side alerts (BUY->BUY or SELL->SELL): 
-          * If trade_enabled=True: require 5 minutes OR min_price_change_pct% price change
-          * If trade_enabled=False: require min_price_change_pct% price change ONLY (no time-based cooldown)
+          * Require BOTH cooldown (default 5 minutes) AND min_price_change_pct% price change (default 1.0%)
+          * Both conditions must be satisfied for the alert to be sent
         - For opposite-side alerts (BUY->SELL or SELL->BUY): always send immediately
         
         Args:
@@ -276,6 +276,35 @@ class SignalMonitorService:
         """
         import time
         
+        # Get last alert state for this symbol and side (needed for detailed messages)
+        symbol_alerts = self.last_alert_states.get(symbol, {})
+        last_alert = symbol_alerts.get(side)
+        last_alert_time = last_alert.get("last_alert_time") if last_alert else None
+        last_alert_price = last_alert.get("last_alert_price", 0.0) if last_alert else 0.0
+        
+        # Calculate time and price change info for detailed messages
+        time_info = ""
+        price_info = ""
+        if last_alert_time and last_alert_price > 0:
+            try:
+                # Normalize timezone
+                if last_alert_time.tzinfo is None:
+                    last_alert_time_normalized = last_alert_time.replace(tzinfo=timezone.utc)
+                elif last_alert_time.tzinfo != timezone.utc:
+                    last_alert_time_normalized = last_alert_time.astimezone(timezone.utc)
+                else:
+                    last_alert_time_normalized = last_alert_time
+                
+                now_utc = datetime.now(timezone.utc)
+                time_diff_minutes = (now_utc - last_alert_time_normalized).total_seconds() / 60.0
+                time_info = f", time since last alert: {time_diff_minutes:.2f} min"
+                
+                if current_price > 0:
+                    price_change_pct = abs((current_price - last_alert_price) / last_alert_price * 100)
+                    price_info = f", price change: {price_change_pct:.2f}% (${last_alert_price:.4f} → ${current_price:.4f})"
+            except Exception:
+                pass  # If calculation fails, just omit the info
+        
         # CRITICAL: Check if another thread is already processing this alert
         # This prevents race conditions when multiple cycles run simultaneously
         lock_key = f"{symbol}_{side}"
@@ -285,15 +314,14 @@ class SignalMonitorService:
             lock_age = current_time_check - lock_timestamp
             if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
                 remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
-                return False, f"Another thread is already processing {symbol} {side} alert (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s)"
+                return False, (
+                    f"Another thread is already processing {symbol} {side} alert "
+                    f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
+                )
             else:
                 # Lock expired, remove it
                 logger.debug(f"🔓 Expired lock removed for {symbol} {side} alert (age: {lock_age:.2f}s)")
                 del self.alert_sending_locks[lock_key]
-        
-        # Get last alert state for this symbol and side
-        symbol_alerts = self.last_alert_states.get(symbol, {})
-        last_alert = symbol_alerts.get(side)
         
         # If no previous alert for this symbol+side, check lock first to prevent duplicates
         if not last_alert:
@@ -303,7 +331,10 @@ class SignalMonitorService:
                 lock_age = current_time_check - lock_timestamp
                 if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
                     remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
-                    return False, f"Another thread is already processing first {symbol} {side} alert (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s)"
+                    return False, (
+                        f"Another thread is already processing first {symbol} {side} alert "
+                        f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
+                    )
                 else:
                     # Lock expired, remove it
                     logger.debug(f"🔓 Expired lock removed for first {symbol} {side} alert (age: {lock_age:.2f}s)")
@@ -365,21 +396,28 @@ class SignalMonitorService:
         alert_min_price_change = min_price_change_pct if min_price_change_pct is not None else self.ALERT_MIN_PRICE_CHANGE_PCT
         price_change_met = price_change_pct >= alert_min_price_change
         
-        if not price_change_met and not cooldown_met:
+        # CRITICAL: Both conditions must be met (AND logic, not OR)
+        # Alert should only be sent if BOTH cooldown AND price change thresholds are satisfied
+        if not cooldown_met:
             minutes_remaining = max(0.0, cooldown_limit - time_diff)
             return False, (
                 f"Throttled: cooldown {time_diff:.1f} min < {cooldown_limit} min "
-                f"(remaining {minutes_remaining:.1f} min) AND price change "
-                f"{price_change_pct:.2f}% < {alert_min_price_change:.2f}% "
-                f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f})"
+                f"(remaining {minutes_remaining:.1f} min). "
+                f"Requires BOTH cooldown >= {cooldown_limit} min AND price change >= {alert_min_price_change:.2f}%"
+            )
+        
+        if not price_change_met:
+            return False, (
+                f"Throttled: price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}%. "
+                f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f}). "
+                f"Requires BOTH cooldown >= {cooldown_limit} min AND price change >= {alert_min_price_change:.2f}%"
             )
 
-        reasons = []
-        if cooldown_met:
-            reasons.append(f"cooldown met ({time_diff:.1f} min >= {cooldown_limit} min)")
-        if price_change_met:
-            reasons.append(f"price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%)")
-        reason_text = " AND ".join(reasons) if reasons else "threshold satisfied"
+        # Both conditions met - allow alert
+        reason_text = (
+            f"cooldown met ({time_diff:.1f} min >= {cooldown_limit} min) AND "
+            f"price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%)"
+        )
 
         return True, reason_text
     
@@ -1223,7 +1261,7 @@ class SignalMonitorService:
                         cooldown_minutes=cooldown,
                     )
                     if not should_send:
-                        logger.debug(f"⏭️  BUY alert throttled for {symbol}: {buy_reason}")
+                        logger.info(f"⏭️  BUY alert throttled for {symbol}: {buy_reason}")
                         # Remove lock and skip sending alert (but continue processing coin)
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
@@ -1292,6 +1330,7 @@ class SignalMonitorService:
                                 # This ensures that if multiple calls happen simultaneously, only the first one will update the state
                                 self._update_alert_state(symbol, "BUY", current_price)
                                 try:
+                                    logger.info(f"📝 Recording signal event for {symbol} BUY at {current_price} (strategy: {strategy_key})")
                                     record_signal_event(
                                         db,
                                         symbol=symbol,
@@ -1300,12 +1339,16 @@ class SignalMonitorService:
                                         price=current_price,
                                         source="alert",
                                     )
+                                    logger.info(f"✅ Signal event recorded successfully for {symbol} BUY")
                                     buy_state_recorded = True
                                 except Exception as state_err:
-                                    logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                                    logger.error(f"❌ Failed to persist BUY throttle state for {symbol}: {state_err}", exc_info=True)
                         except Exception as e:
-                            logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
+                            logger.error(f"❌ Failed to send Telegram BUY alert for {symbol}: {e}", exc_info=True)
                             # If sending failed, do NOT update the state - allow retry on next cycle
+                            # Remove lock to allow retry
+                            if lock_key in self.alert_sending_locks:
+                                del self.alert_sending_locks[lock_key]
                     else:
                         logger.debug(f"⏭️  Skipping alert send for {symbol} - should_send=False")
                 
