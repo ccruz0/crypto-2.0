@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ubuntu
@@ -38,6 +39,14 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        persist-credentials: true
+      
+    - name: Verify checkout
+      run: |
+        echo "✅ Repository checked out successfully"
+        echo "📁 Current directory: $(pwd)"
+        echo "📦 Git status:"
+        git status --short || echo "⚠️ Git status check failed"
       
     - name: Audit trading pairs
       run: |
