@@ -241,6 +241,11 @@ class TelegramNotifier:
         # ============================================================
         # [TELEGRAM_GATEKEEPER] - All conditions that decide send/skip
         # ============================================================
+        # ALERT PATH COMPARISON:
+        # - Executed orders: Called from backend-aws (RUNTIME_ORIGIN=AWS) → origin="AWS" → ALLOW ✅
+        # - BUY/SELL signals: Called from market-updater (needs RUNTIME_ORIGIN=AWS) → origin="AWS" → ALLOW ✅
+        # - Monitoring alerts: Same as signals, must have RUNTIME_ORIGIN=AWS
+        # - If origin="LOCAL" or not in whitelist → BLOCK ❌
         gatekeeper_checks = {
             "origin_upper": origin_upper,
             "origin_in_whitelist": origin_upper in ("AWS", "TEST"),
@@ -280,9 +285,11 @@ class TelegramNotifier:
         if origin_upper not in ("AWS", "TEST"):
             # Log what would have been sent
             preview = message[:200] + "..." if len(message) > 200 else message
-            logger.info(
-                f"[TG_LOCAL_DEBUG] Skipping Telegram send for non-AWS/non-TEST origin '{origin_upper}'. "
-                f"Message would have been: {preview}"
+            logger.warning(
+                f"[TELEGRAM_BLOCKED] Skipping Telegram send for non-AWS/non-TEST origin '{origin_upper}'. "
+                f"Message would have been: {preview}. "
+                f"ROOT CAUSE: Service must have RUNTIME_ORIGIN=AWS env var set. "
+                f"Check docker-compose.yml for the service calling this alert."
             )
             # E2E TEST LOGGING: Log block
             logger.info(f"[E2E_TEST_GATEKEEPER_BLOCK] origin_upper={origin_upper}, message_preview={message[:80]}")
@@ -650,7 +657,13 @@ class TelegramNotifier:
                            tp_price: Optional[float] = None,
                            open_orders_count: Optional[int] = None,
                            order_role: Optional[str] = None):
-        """Send an executed order notification with profit/loss calculations"""
+        """Send an executed order notification with profit/loss calculations
+        
+        WORKING PATH (Order Executed Alerts):
+        - Called from exchange_sync.py in backend-aws service
+        - Uses get_runtime_origin() which returns "AWS" (backend-aws has RUNTIME_ORIGIN=AWS)
+        - send_executed_order() → send_message() → origin="AWS" → passes gatekeeper → Telegram ✅
+        """
         side_emoji = "🟢" if side == "BUY" else "🔴"
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
         
@@ -719,6 +732,8 @@ class TelegramNotifier:
 💸 Total: ${total_usd:,.2f}{profit_loss_text}{order_type_text}{order_id_text}{open_orders_text}
 📅 Time: {timestamp}
 """
+        # Executed order alert → send_message() → get_runtime_origin() → Telegram
+        # This works because backend-aws service has RUNTIME_ORIGIN=AWS
         return self.send_message(message.strip())
     
     def send_sl_tp_orders(self, symbol: str, sl_price: float, tp_price: float, 
@@ -892,6 +907,12 @@ class TelegramNotifier:
         
         NOTE: Verification of alert_enabled and buy_alert_enabled is done by SignalMonitorService
         before calling this method. This method should NEVER block alerts - it only sends them.
+        
+        SIGNAL ALERT PATH (BUY/SELL signals):
+        - Called from signal_monitor.py in market-updater service
+        - If origin=None, uses get_runtime_origin() which must return "AWS" for alerts to send
+        - send_buy_signal() → send_message(origin=...) → gatekeeper checks origin → Telegram
+        - FIX: market-updater service must have RUNTIME_ORIGIN=AWS in docker-compose.yml
         """
         logger.info(f"🔍 send_buy_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
         # Log TEST alert signal entry
@@ -984,6 +1005,12 @@ class TelegramNotifier:
         
         NOTE: Verification of alert_enabled and sell_alert_enabled is done by SignalMonitorService
         before calling this method. This method should NEVER block alerts - it only sends them.
+        
+        SIGNAL ALERT PATH (BUY/SELL signals):
+        - Called from signal_monitor.py in market-updater service
+        - If origin=None, uses get_runtime_origin() which must return "AWS" for alerts to send
+        - send_sell_signal() → send_message(origin=...) → gatekeeper checks origin → Telegram
+        - FIX: market-updater service must have RUNTIME_ORIGIN=AWS in docker-compose.yml
         """
         logger.info(f"🔍 send_sell_signal called for {symbol} - Sending alert (verification already done by SignalMonitorService)")
         # Log TEST alert signal entry

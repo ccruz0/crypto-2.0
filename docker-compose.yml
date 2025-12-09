@@ -206,7 +206,7 @@ services:
       - aws
 
   # ============================================
-  # MARKET UPDATER - Both Profiles
+  # MARKET UPDATER - Local Profile
   # ============================================
   market-updater:
     build:
@@ -215,12 +215,12 @@ services:
     env_file:
       - .env
       - .env.local
-      - .env.aws
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
+      - RUNTIME_ORIGIN=LOCAL
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
@@ -233,13 +233,50 @@ services:
     command: python3 run_updater.py
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend:8002/ping_fast', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
     profiles:
       - local
+
+  # ============================================
+  # MARKET UPDATER - AWS Profile
+  # ============================================
+  market-updater-aws:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+      - .env.local
+      - .env.aws
+    environment:
+      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      - ENVIRONMENT=aws
+      - APP_ENV=aws
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      - RUNTIME_ORIGIN=AWS
+      - LIVE_TRADING=${LIVE_TRADING:-true}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
+      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+      # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
+    depends_on:
+      db:
+        condition: service_healthy
+    # volumes:
+    #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
+    command: python3 run_updater.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
       - aws
 
   # ============================================
