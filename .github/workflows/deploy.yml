@@ -1,5 +1,23 @@
 name: Deploy to AWS EC2
 
+# ============================================
+# DEPLOYMENT WORKFLOW NOTES
+# ============================================
+# Root Cause: The workflow was using deprecated 'docker-compose' (hyphenated) syntax
+#             and missing the '--profile aws' flag required by docker-compose.yml
+#
+# Changes Made:
+#   - Replaced 'docker-compose' with 'docker compose' (Docker Compose V2 syntax)
+#   - Added '--profile aws' flag to all docker compose commands to only manage AWS profile services
+#   - Updated lines 75-76: docker compose --profile aws down/up commands
+#   - Updated line 81: docker compose --profile aws ps command
+#
+# Manual Verification:
+#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 60 backend-aws'
+#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 60 frontend-aws'
+# ============================================
+
 on:
   push:
     branches:
@@ -71,12 +89,14 @@ jobs:
           ./ ubuntu@$EC2_HOST:~/automated-trading-platform/
         
         echo "🐳 Restarting services..."
+        # Fixed: Use docker compose (new syntax) with --profile aws flag to only manage AWS profile services
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
-          "cd ~/automated-trading-platform && docker-compose down && docker-compose up -d --build"
+          "cd ~/automated-trading-platform && docker compose --profile aws down && docker compose --profile aws up -d --build"
         
         echo "✅ Verifying deployment..."
+        # Fixed: Use docker compose (new syntax) with --profile aws flag
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
-          "cd ~/automated-trading-platform && docker-compose ps"
+          "cd ~/automated-trading-platform && docker compose --profile aws ps"
         
         echo "🧹 Cleaning up..."
         rm deploy_key.pem
