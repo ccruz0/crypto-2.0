@@ -1208,6 +1208,39 @@ class SignalMonitorService:
                         logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
                         # On error, continue (don't block alerts if we can't calculate portfolio value)
                     
+                    # Apply throttling logic: check if alert should be sent based on price change and cooldown
+                    min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    should_send, buy_reason = self.should_send_alert(
+                        symbol=symbol,
+                        side="BUY",
+                        current_price=current_price,
+                        trade_enabled=watchlist_item.trade_enabled,
+                        min_price_change_pct=min_pct,
+                        cooldown_minutes=cooldown,
+                    )
+                    if not should_send:
+                        logger.debug(f"⏭️  BUY alert throttled for {symbol}: {buy_reason}")
+                        # Remove lock and skip sending alert (but continue processing coin)
+                        if lock_key in self.alert_sending_locks:
+                            del self.alert_sending_locks[lock_key]
+                        self._log_signal_rejection(
+                            symbol,
+                            "BUY",
+                            self._classify_throttle_reason(buy_reason),
+                            {"throttle_reason": buy_reason},
+                        )
+                    else:
+                        self._log_signal_accept(
+                            symbol,
+                            "BUY",
+                            {
+                                "price": current_price,
+                                "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                                "min_price_change_pct": min_pct,
+                                "cooldown_minutes": cooldown,
+                            },
+                        )
+                    
                     # Send Telegram alert (only if alert_enabled = true and should_send = true)
                     if should_send:
                         try:
