@@ -636,8 +636,9 @@ class SignalMonitorService:
         # This prevents processing and sending alerts for coins with alert_enabled=False
         if not watchlist_item.alert_enabled:
             blocked_msg = (
-                f"🚫 BLOQUEADO: {symbol} - alert_enabled=False después del refresh. "
-                f"No se procesará señal ni se enviarán alertas."
+                f"🚫 BLOQUEADO: {symbol} - Las alertas están deshabilitadas para este símbolo "
+                f"(alert_enabled=False). No se procesará señal ni se enviarán alertas. "
+                f"Para habilitar alertas, active 'alert_enabled' en la configuración del símbolo."
             )
             self._log_signal_rejection(
                 symbol,
@@ -1151,8 +1152,9 @@ class SignalMonitorService:
                 
                 if not watchlist_item.alert_enabled:
                     blocked_msg = (
-                        f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
-                        f"No se enviará alerta aunque se detectó señal BUY."
+                        f"🚫 BLOQUEADO: {symbol} - Las alertas están deshabilitadas para este símbolo "
+                        f"(alert_enabled=False). No se enviará alerta aunque se detectó señal BUY. "
+                        f"Para habilitar alertas, active 'alert_enabled' en la configuración del símbolo."
                     )
                     logger.error(blocked_msg)
                     # Register blocked message
@@ -1166,8 +1168,10 @@ class SignalMonitorService:
                         del self.alert_sending_locks[lock_key]
                 elif not buy_alert_enabled:
                     blocked_msg = (
-                        f"🚫 BLOQUEADO: {symbol} - buy_alert_enabled=False en verificación final. "
-                        f"No se enviará alerta BUY aunque se detectó señal BUY y alert_enabled=True."
+                        f"🚫 BLOQUEADO: {symbol} - Las alertas de compra (BUY) están deshabilitadas "
+                        f"para este símbolo (buy_alert_enabled=False). No se enviará alerta BUY aunque "
+                        f"se detectó señal BUY y alert_enabled=True. Para habilitar alertas de compra, "
+                        f"active 'buy_alert_enabled' en la configuración del símbolo."
                     )
                     logger.warning(blocked_msg)
                     # Register blocked message
@@ -1739,8 +1743,9 @@ class SignalMonitorService:
                 
                 if not watchlist_item.alert_enabled:
                     blocked_msg = (
-                        f"🚫 BLOQUEADO: {symbol} - alert_enabled=False en verificación final. "
-                        f"No se enviará alerta aunque se detectó señal BUY."
+                        f"🚫 BLOQUEADO: {symbol} - Las alertas están deshabilitadas para este símbolo "
+                        f"(alert_enabled=False). No se enviará alerta aunque se detectó señal BUY. "
+                        f"Para habilitar alertas, active 'alert_enabled' en la configuración del símbolo."
                     )
                     logger.error(blocked_msg)
                     # Register blocked message
@@ -2086,8 +2091,10 @@ class SignalMonitorService:
                     
                     if not sell_alert_enabled:
                         blocked_msg = (
-                            f"🚫 BLOQUEADO: {symbol} SELL - sell_alert_enabled=False en verificación final. "
-                            f"No se enviará alerta SELL aunque se detectó señal SELL."
+                            f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
+                            f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
+                            f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
+                            f"en la configuración del símbolo."
                         )
                         self._log_signal_rejection(
                             symbol,
