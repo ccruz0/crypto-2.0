@@ -116,14 +116,26 @@ def should_trigger_buy_signal(
         condition_flags["rsi_ok"] = False
         return conclude(False, "RSI unavailable")
     
+    # CRITICAL FIX: RSI validation must always be enforced when rsi_buy_below is configured
+    # If rsi_buy_below is None, log a warning but still require RSI to be valid
     if rsi_buy_below is not None:
         rsi_ok = rsi < rsi_buy_below
         condition_flags["rsi_ok"] = rsi_ok
         if not rsi_ok:
             return conclude(False, f"RSI={rsi:.1f} ≥ {rsi_buy_below} (threshold from config)")
+        # Only append success reason if RSI check passed
+        reasons.append(f"RSI={rsi:.1f} < {rsi_buy_below} (from config)")
     else:
-        condition_flags["rsi_ok"] = True
-    reasons.append(f"RSI={rsi:.1f} < {rsi_buy_below or 'N/A'} (from config)")
+        # If rsi_buy_below is not configured, this is a configuration error
+        # Log warning and block BUY to prevent invalid signals
+        logger.warning(
+            "⚠️ %s: RSI buyBelow threshold not configured for %s/%s - blocking BUY signal for safety",
+            symbol,
+            strategy_type.value.upper(),
+            risk_approach.value.upper(),
+        )
+        condition_flags["rsi_ok"] = False
+        return conclude(False, f"RSI threshold not configured (rsi={rsi:.1f})")
 
     # Check required indicators based on maChecks config
     # CRITICAL: Only check for missing indicators if they are explicitly enabled
