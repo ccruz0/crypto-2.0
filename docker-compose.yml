@@ -90,6 +90,7 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
+      - RUNTIME_ORIGIN=${RUNTIME_ORIGIN:-LOCAL}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}

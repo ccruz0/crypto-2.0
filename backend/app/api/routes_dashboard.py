@@ -115,7 +115,7 @@ def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
         "notes": item.notes,
         "created_at": _iso(item.created_at),
         "updated_at": _iso(item.updated_at) if hasattr(item, "updated_at") else None,
-        "signals": item.signals,
+        "signals": item.signals if hasattr(item, 'signals') else None,  # Manual signals from dashboard: {"buy": true/false, "sell": true/false}
         "skip_sl_tp_reminder": item.skip_sl_tp_reminder,
         "is_deleted": getattr(item, "is_deleted", False),
         "deleted": bool(getattr(item, "is_deleted", False)),
@@ -397,10 +397,14 @@ async def _compute_dashboard_state(db: Session) -> dict:
         
         # Count only TP (Take Profit) orders as "open orders"
         # Group TP orders by base symbol
+        # IMPORTANT: Only count ACTIVE orders (NEW, ACTIVE, PARTIALLY_FILLED)
+        # Exclude CANCELLED, FILLED, REJECTED, EXPIRED orders
         tp_orders_by_symbol: Dict[str, int] = {}
+        active_statuses = {"NEW", "ACTIVE", "PARTIALLY_FILLED"}
         for order in unified_open_orders:
             order_type = (order.order_type or "").upper()
-            if "TAKE_PROFIT" in order_type:
+            order_status = (order.status or "").upper()
+            if "TAKE_PROFIT" in order_type and order_status in active_statuses:
                 base_symbol = order.base_symbol
                 if base_symbol:
                     tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
@@ -496,7 +500,11 @@ async def _compute_dashboard_state(db: Session) -> dict:
                     for order in unified_open_orders:
                         order_symbol = (order.symbol or "").upper()
                         order_type = (order.order_type or "").upper()
-                        if order_symbol in [v.upper() for v in symbol_variants] and "TAKE_PROFIT" in order_type:
+                        order_status = (order.status or "").upper()
+                        # Only count ACTIVE TP orders (exclude CANCELLED, FILLED, etc.)
+                        if (order_symbol in [v.upper() for v in symbol_variants] 
+                            and "TAKE_PROFIT" in order_type 
+                            and order_status in active_statuses):
                             tp_count += 1
                 
                 # open_orders_count = count of TP orders only
@@ -892,7 +900,7 @@ def delete_watchlist_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/dashboard/symbol/{symbol}")
 def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
-    """Get a watchlist item by symbol."""
+    """Get a watchlist item by symbol (includes deleted items)."""
     symbol = (symbol or "").upper()
     item = (
         db.query(WatchlistItem)
@@ -903,6 +911,51 @@ def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
     return _serialize_watchlist_item(item)
+
+
+@router.put("/dashboard/symbol/{symbol}/restore")
+def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
+    """Restore a deleted watchlist item by symbol (set is_deleted=False)."""
+    symbol = (symbol or "").upper()
+    item = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.symbol == symbol)
+        .order_by(WatchlistItem.created_at.desc())
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    
+    # Check if already active
+    is_deleted = getattr(item, "is_deleted", False)
+    if not is_deleted:
+        return {
+            "ok": True,
+            "message": f"{symbol} is already active (not deleted)",
+            "item": _serialize_watchlist_item(item)
+        }
+    
+    # Restore the item
+    try:
+        if _soft_delete_supported(db) and hasattr(item, "is_deleted"):
+            item.is_deleted = False
+            # Optionally restore some default settings
+            if not item.alert_enabled:
+                item.alert_enabled = False
+            db.commit()
+            db.refresh(item)
+            log.info(f"✅ Restored watchlist item {symbol} (ID: {item.id})")
+            return {
+                "ok": True,
+                "message": f"{symbol} has been restored",
+                "item": _serialize_watchlist_item(item)
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Soft delete not supported on this database")
+    except Exception as err:
+        db.rollback()
+        log.exception(f"Error restoring watchlist item {symbol}")
+        raise HTTPException(status_code=500, detail=str(err))
 
 
 @router.delete("/dashboard/symbol/{symbol}")

@@ -899,7 +899,12 @@ class TelegramNotifier:
 {strategy_text}{original_order_text}{sl_order_details}{tp_order_details}
 📅 Time: {timestamp}
 """
-        return self.send_message(message.strip())
+        # CRITICAL: Pass origin="AWS" explicitly to ensure notification is sent
+        # SL/TP orders are created from exchange_sync which runs in backend-aws service
+        # This ensures the gatekeeper allows the notification to be sent
+        from app.core.runtime import get_runtime_origin
+        origin = get_runtime_origin()  # Will be "AWS" if RUNTIME_ORIGIN=AWS is set
+        return self.send_message(message.strip(), origin=origin)
     
     def send_buy_signal(
         self,

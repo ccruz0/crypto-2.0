@@ -909,8 +909,19 @@ class SignalMonitorService:
                 risk_approach=risk_approach,
             )
             
-            buy_signal = signals.get("buy_signal", False)
-            sell_signal = signals.get("sell_signal", False)
+            # Check if manual signals are set in dashboard (watchlist_item.signals)
+            # If manual signals exist, use them instead of calculated signals
+            manual_signals = watchlist_item.signals if hasattr(watchlist_item, 'signals') and watchlist_item.signals else None
+            
+            if manual_signals and isinstance(manual_signals, dict):
+                # Use manual signals from dashboard if they exist
+                buy_signal = manual_signals.get("buy", False) if "buy" in manual_signals else signals.get("buy_signal", False)
+                sell_signal = manual_signals.get("sell", False) if "sell" in manual_signals else signals.get("sell_signal", False)
+                logger.info(f"🔧 {symbol} using MANUAL signals from dashboard: buy={buy_signal}, sell={sell_signal}")
+            else:
+                # Use calculated signals (normal behavior)
+                buy_signal = signals.get("buy_signal", False)
+                sell_signal = signals.get("sell_signal", False)
             
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
