@@ -1085,11 +1085,56 @@ class CryptoComTradeClient:
                 notional_str = f"{float(notional):.2f}" if float(notional) >= 1 else f"{float(notional):.4f}"
                 params["notional"] = notional_str
         else:  # SELL
-            # Format quantity - use appropriate precision
-            if qty >= 1:
-                qty_str = f"{qty:.3f}".rstrip('0').rstrip('.')
+            # Get instrument info to determine exact quantity precision required
+            quantity_decimals = 2
+            qty_tick_size = 0.01
+            got_instrument_info = False
+            
+            try:
+                import requests as req
+                import decimal as dec
+                inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
+                inst_response = req.get(inst_url, timeout=3)
+                if inst_response.status_code == 200:
+                    inst_data = inst_response.json()
+                    if "result" in inst_data and "instruments" in inst_data["result"]:
+                        for inst in inst_data["result"]["instruments"]:
+                            inst_name = inst.get("instrument_name", "") or inst.get("symbol", "")
+                            if inst_name.upper() == symbol.upper():
+                                quantity_decimals = inst.get("quantity_decimals", 2)
+                                qty_tick_size_str = inst.get("qty_tick_size", "0.01")
+                                try:
+                                    qty_tick_size = float(qty_tick_size_str)
+                                except:
+                                    qty_tick_size = 10 ** -quantity_decimals if quantity_decimals else 0.01
+                                got_instrument_info = True
+                                logger.info(f"✅ Got instrument info for MARKET SELL {symbol}: quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size}")
+                                break
+            except Exception as e:
+                logger.debug(f"Could not fetch instrument info for MARKET SELL {symbol}: {e}. Using default precision.")
+            
+            # Format quantity with instrument-specific precision
+            import decimal
+            qty_decimal = decimal.Decimal(str(qty))
+            
+            if got_instrument_info and qty_tick_size:
+                # Round to nearest tick size
+                tick_decimal = decimal.Decimal(str(qty_tick_size))
+                qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
+                # Format with exact precision required
+                qty_str = f"{qty_decimal:.{quantity_decimals}f}".rstrip('0').rstrip('.')
+                # Ensure at least one decimal if quantity_decimals > 0
+                if quantity_decimals > 0 and '.' not in qty_str:
+                    qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+                logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
-                qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
+                # Fallback: Use default precision based on quantity range
+                if qty >= 1:
+                    qty_str = f"{qty:.3f}".rstrip('0').rstrip('.')
+                else:
+                    qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
+                logger.debug(f"Formatted quantity for MARKET SELL {symbol} with default precision: {qty} -> {qty_str}")
+            
             params["quantity"] = qty_str
         
         # MARGIN TRADING: Include leverage parameter when is_margin = True
