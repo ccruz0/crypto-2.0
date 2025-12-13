@@ -1119,7 +1119,7 @@ class SignalMonitorService:
             # IMPORTANT: Set lock FIRST, before any checks, to prevent race conditions
             lock_key = f"{symbol}_BUY"
             lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
-            import time
+            # Use time module (already imported at top of file)
             current_time = time.time()
             
             # Check if we're already processing an alert for this symbol+side
@@ -1537,7 +1537,7 @@ class SignalMonitorService:
             )
             
             # Check if we're currently creating an order for this symbol (lock check) - BEFORE any order creation logic
-            import time
+            # Use time module (already imported at top of file)
             current_time = time.time()
             if symbol in self.order_creation_locks:
                 lock_time = self.order_creation_locks[symbol]
@@ -1697,6 +1697,7 @@ class SignalMonitorService:
                 # IMPORTANT: Set lock FIRST, before any checks, to prevent race conditions
                 lock_key = f"{symbol}_BUY"
                 lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
+                # Use time module (already imported at top of file)
                 current_time = time.time()
                 
                 # Check if we're already processing an alert for this symbol+side
