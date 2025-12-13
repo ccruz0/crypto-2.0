@@ -1041,6 +1041,12 @@ class SignalMonitorService:
                 last_same_side=signal_snapshots.get("SELL"),
                 last_opposite_side=signal_snapshots.get("BUY"),
             )
+            # DEBUG: Log throttle check result for DOT_USD
+            if symbol == "DOT_USD":
+                logger.info(
+                    f"🔍 [DEBUG] {symbol} SELL throttle check: sell_allowed={sell_allowed}, "
+                    f"sell_reason={sell_reason}, sell_signal={sell_signal}"
+                )
             if not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 logger.info(blocked_msg)
@@ -2037,25 +2043,31 @@ class SignalMonitorService:
                     # alert_enabled = true but trade_enabled = false - send alert only, no order
                     logger.info(f"ℹ️ Alert sent for {symbol} but trade_enabled = false - no order created (trade_amount_usd={watchlist_item.trade_amount_usd})")
             
-            # ========================================================================
-            # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True y sell_alert_enabled=True
-            # IMPORTANTE: Similar a las alertas BUY, pero solo alertas (no órdenes automáticas)
-            # ========================================================================
-            # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-            sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
-            
-            # Log alert decision with all flags for clarity
-            if sell_signal:
-                if sell_alert_enabled:
-                    logger.info(
-                        f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
-                        f"DECISION: SENT (sell_alert_enabled enabled)"
-                    )
-                else:
-                    skip_reason = []
-                    if not sell_alert_enabled:
-                        skip_reason.append("sell_alert_enabled=False")
+        # ========================================================================
+        # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True y sell_alert_enabled=True
+        # IMPORTANTE: Similar a las alertas BUY, pero solo alertas (no órdenes automáticas)
+        # ========================================================================
+        # DEBUG: Log before SELL alert section for DOT_USD
+        if symbol == "DOT_USD":
+            logger.info(
+                f"🔍 [DEBUG] {symbol} entering SELL alert section: "
+                f"sell_signal={sell_signal}, current_state={current_state}"
+            )
+        # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
+        sell_alert_enabled = getattr(watchlist_item, 'sell_alert_enabled', False)
+        
+        # Log alert decision with all flags for clarity
+        if sell_signal:
+            if sell_alert_enabled:
+                logger.info(
+                    f"🔍 {symbol} SELL alert decision: sell_signal=True, "
+                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
+                    f"DECISION: SENT (sell_alert_enabled enabled)"
+                )
+            else:
+                skip_reason = []
+                if not sell_alert_enabled:
+                    skip_reason.append("sell_alert_enabled=False")
                     logger.info(
                         f"🔍 {symbol} SELL alert decision: sell_signal=True, "
                         f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
@@ -2067,217 +2079,223 @@ class SignalMonitorService:
                     "DISABLED_BUY_SELL_FLAG",
                     {"sell_alert_enabled": sell_alert_enabled},
                 )
+        
+        # DEBUG: Log before final SELL alert check for DOT_USD
+        if symbol == "DOT_USD":
+            logger.info(
+                f"🔍 [DEBUG] {symbol} final SELL alert check: "
+                f"sell_signal={sell_signal}, sell_alert_enabled={sell_alert_enabled}"
+            )
+        if sell_signal and sell_alert_enabled:
+            logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
             
-            if sell_signal and sell_alert_enabled:
-                logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
+            # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
+            lock_key = f"{symbol}_SELL"
+            lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
+            current_time = time.time()
+            
+            # Check if we're already processing an alert for this symbol+side
+            should_skip_alert = False
+            if lock_key in self.alert_sending_locks:
+                lock_timestamp = self.alert_sending_locks[lock_key]
+                lock_age = current_time - lock_timestamp
+                if lock_age < lock_timeout:
+                    remaining_seconds = lock_timeout - lock_age
+                    logger.debug(f"🔒 Alert sending already in progress for {symbol} SELL (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s), skipping duplicate check")
+                    should_skip_alert = True
+                else:
+                    # Lock expired, remove it
+                    logger.debug(f"🔓 Expired lock removed for {symbol} SELL (age: {lock_age:.2f}s)")
+                    del self.alert_sending_locks[lock_key]
+            
+            if not should_skip_alert:
+                # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
+                self.alert_sending_locks[lock_key] = current_time
+                logger.debug(f"🔒 Lock acquired for {symbol} SELL alert")
                 
-                # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
-                lock_key = f"{symbol}_SELL"
-                lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
-                current_time = time.time()
+                prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL")
                 
-                # Check if we're already processing an alert for this symbol+side
-                should_skip_alert = False
-                if lock_key in self.alert_sending_locks:
-                    lock_timestamp = self.alert_sending_locks[lock_key]
-                    lock_age = current_time - lock_timestamp
-                    if lock_age < lock_timeout:
-                        remaining_seconds = lock_timeout - lock_age
-                        logger.debug(f"🔒 Alert sending already in progress for {symbol} SELL (lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s), skipping duplicate check")
-                        should_skip_alert = True
-                    else:
-                        # Lock expired, remove it
-                        logger.debug(f"🔓 Expired lock removed for {symbol} SELL (age: {lock_age:.2f}s)")
-                        del self.alert_sending_locks[lock_key]
-                
-                if not should_skip_alert:
-                    # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
-                    self.alert_sending_locks[lock_key] = current_time
-                    logger.debug(f"🔒 Lock acquired for {symbol} SELL alert")
-                    
-                    prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL")
-                    
-                    # Apply throttling logic: check if alert should be sent based on price change and cooldown
-                    min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
-                    should_send, throttle_reason = self.should_send_alert(
-                        symbol=symbol,
-                        side="SELL",
-                        current_price=current_price,
-                        trade_enabled=watchlist_item.trade_enabled,
-                        min_price_change_pct=min_pct,
-                        cooldown_minutes=cooldown,
-                    )
-                    if not should_send:
-                        logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
-                        # Remove lock and skip sending alert (but continue processing coin)
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
-                        self._log_signal_rejection(
-                            symbol,
-                            "SELL",
-                            self._classify_throttle_reason(throttle_reason),
-                            {"throttle_reason": throttle_reason},
-                        )
-                    else:
-                        self._log_signal_accept(
-                            symbol,
-                            "SELL",
-                            {
-                                "price": current_price,
-                                "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
-                                "min_price_change_pct": min_pct,
-                                "cooldown_minutes": cooldown,
-                            },
-                        )
-                    
-                    # CRITICAL: Final check - verify sell_alert_enabled before sending
-                    # Refresh flag from database to ensure we have latest value
-                    db.expire_all()  # Force refresh from database
-                    try:
-                        fresh_check = db.query(WatchlistItem).filter(
-                            WatchlistItem.symbol == symbol
-                        ).first()
-                        if fresh_check:
-                            sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
-                            logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
-                    except Exception as e:
-                        logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
-                    
-                    if not sell_alert_enabled:
-                        blocked_msg = (
-                            f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
-                            f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
-                            f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
-                            f"en la configuración del símbolo."
-                        )
-                        self._log_signal_rejection(
-                            symbol,
-                            "SELL",
-                            "DISABLED_BUY_SELL_FLAG",
-                            {"sell_alert_enabled": False},
-                        )
-                        logger.warning(blocked_msg)
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
-                        if lock_key in self.alert_sending_locks:
-                            del self.alert_sending_locks[lock_key]
-                    else:
-                        # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
-                        if should_send:
-                            try:
-                                price_variation = self._format_price_variation(prev_sell_price, current_price)
-                                ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                                ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                                ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                                reason_text = (
-                                    f"{strategy_display}/{risk_display} | "
-                                    f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                                    f"MA50={ma50_text}, "
-                                    f"EMA10={ema10_text}, "
-                                    f"MA200={ma200_text}"
-                                )
-                                result = telegram_notifier.send_sell_signal(
-                                    symbol=symbol,
-                                    price=current_price,
-                                    reason=reason_text,
-                                    strategy_type=strategy_display,
-                                    risk_approach=risk_display,
-                                    price_variation=price_variation,
-                                    source="LIVE ALERT",
-                                    throttle_status="SENT",
-                                    throttle_reason=sell_reason,
-                                )
-                                # Alerts must never be blocked after conditions are met (guardrail compliance)
-                                # If send_sell_signal returns False, log as error but do not treat as block
-                                if result is False:
-                                    logger.error(
-                                        f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
-                                        f"This should not happen when conditions are met. Check telegram_notifier."
-                                    )
-                                else:
-                                    logger.info(
-                                        f"✅ SELL alert SENT for {symbol}: "
-                                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
-                                    )
-                                    self._log_signal_accept(
-                                        symbol,
-                                        "SELL",
-                                        {"telegram": "sent", "reason": reason_text},
-                                    )
-                                    # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                                    self._update_alert_state(symbol, "SELL", current_price)
-                                    try:
-                                        record_signal_event(
-                                            db,
-                                            symbol=symbol,
-                                            strategy_key=strategy_key,
-                                            side="SELL",
-                                            price=current_price,
-                                            source="alert",
-                                        )
-                                        sell_state_recorded = True
-                                    except Exception as state_err:
-                                        logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
-                                    
-                                    # ========================================================================
-                                    # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
-                                    # ========================================================================
-                                    if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                                        logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
-                                        try:
-                                            # Use asyncio.run() to execute async function from sync context
-                                            import asyncio
-                                            order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                            if order_result:
-                                                filled_price = order_result.get("filled_price")
-                                                if filled_price:
-                                                    logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
-                                                persist_price = filled_price or current_price
-                                                if not sell_state_recorded:
-                                                    try:
-                                                        record_signal_event(
-                                                            db,
-                                                            symbol=symbol,
-                                                            strategy_key=strategy_key,
-                                                            side="SELL",
-                                                            price=persist_price,
-                                                            source="order",
-                                                        )
-                                                        sell_state_recorded = True
-                                                    except Exception as state_err:
-                                                        logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
-                                            else:
-                                                logger.warning(f"⚠️ SELL order creation returned None for {symbol}")
-                                        except Exception as order_err:
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
-                                            # Don't raise - alert was sent, order creation is secondary
-                                    else:
-                                        logger.info(f"ℹ️ SELL alert sent for {symbol} but trade_enabled=False or trade_amount_usd not configured - no order created")
-                            except Exception as e:
-                                logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
-                                # If sending failed, do NOT update the state - allow retry on next cycle
-                        else:
-                            logger.debug(f"⏭️  Skipping SELL alert send for {symbol} - should_send=False")
-                    
-                    # Always remove lock when done
+                # Apply throttling logic: check if alert should be sent based on price change and cooldown
+                min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
+                should_send, throttle_reason = self.should_send_alert(
+                    symbol=symbol,
+                    side="SELL",
+                    current_price=current_price,
+                    trade_enabled=watchlist_item.trade_enabled,
+                    min_price_change_pct=min_pct,
+                    cooldown_minutes=cooldown,
+                )
+                if not should_send:
+                    logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
+                    # Remove lock and skip sending alert (but continue processing coin)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
-            
-            # Handle SELL signal state update (for internal tracking)
-            if current_state == "SELL":
-                state_entry = self.last_signal_states.get(symbol, {})
-                state_entry.update({
-                    "state": "SELL",
-                    "timestamp": datetime.utcnow(),
-                    "orders_count": state_entry.get("orders_count", 0)  # Preserve orders count
-                })
-                self.last_signal_states[symbol] = state_entry
+                    self._log_signal_rejection(
+                        symbol,
+                        "SELL",
+                        self._classify_throttle_reason(throttle_reason),
+                        {"throttle_reason": throttle_reason},
+                    )
+                else:
+                    self._log_signal_accept(
+                        symbol,
+                        "SELL",
+                        {
+                            "price": current_price,
+                            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
+                            "min_price_change_pct": min_pct,
+                            "cooldown_minutes": cooldown,
+                        },
+                    )
+                
+                # CRITICAL: Final check - verify sell_alert_enabled before sending
+                # Refresh flag from database to ensure we have latest value
+                db.expire_all()  # Force refresh from database
+                try:
+                    fresh_check = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == symbol
+                    ).first()
+                    if fresh_check:
+                        sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
+                        logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
+                except Exception as e:
+                    logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
+                
+                if not sell_alert_enabled:
+                    blocked_msg = (
+                        f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
+                        f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
+                        f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
+                        f"en la configuración del símbolo."
+                    )
+                    self._log_signal_rejection(
+                        symbol,
+                        "SELL",
+                        "DISABLED_BUY_SELL_FLAG",
+                        {"sell_alert_enabled": False},
+                    )
+                    logger.warning(blocked_msg)
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    if lock_key in self.alert_sending_locks:
+                        del self.alert_sending_locks[lock_key]
+                else:
+                    # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
+                    if should_send:
+                        try:
+                            price_variation = self._format_price_variation(prev_sell_price, current_price)
+                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                            reason_text = (
+                                f"{strategy_display}/{risk_display} | "
+                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                f"MA50={ma50_text}, "
+                                f"EMA10={ema10_text}, "
+                                f"MA200={ma200_text}"
+                            )
+                            result = telegram_notifier.send_sell_signal(
+                                symbol=symbol,
+                                price=current_price,
+                                reason=reason_text,
+                                strategy_type=strategy_display,
+                                risk_approach=risk_display,
+                                price_variation=price_variation,
+                                source="LIVE ALERT",
+                                throttle_status="SENT",
+                                throttle_reason=sell_reason,
+                            )
+                            # Alerts must never be blocked after conditions are met (guardrail compliance)
+                            # If send_sell_signal returns False, log as error but do not treat as block
+                            if result is False:
+                                logger.error(
+                                    f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
+                                    f"This should not happen when conditions are met. Check telegram_notifier."
+                                )
+                            else:
+                                logger.info(
+                                    f"✅ SELL alert SENT for {symbol}: "
+                                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
+                                )
+                                self._log_signal_accept(
+                                    symbol,
+                                    "SELL",
+                                    {"telegram": "sent", "reason": reason_text},
+                                )
+                                # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
+                                self._update_alert_state(symbol, "SELL", current_price)
+                                try:
+                                    record_signal_event(
+                                        db,
+                                        symbol=symbol,
+                                        strategy_key=strategy_key,
+                                        side="SELL",
+                                        price=current_price,
+                                        source="alert",
+                                    )
+                                    sell_state_recorded = True
+                                except Exception as state_err:
+                                    logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
+                                
+                                # ========================================================================
+                                # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
+                                # ========================================================================
+                                if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
+                                    logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
+                                    try:
+                                        # Use asyncio.run() to execute async function from sync context
+                                        import asyncio
+                                        order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
+                                        if order_result:
+                                            filled_price = order_result.get("filled_price")
+                                            if filled_price:
+                                                logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
+                                            persist_price = filled_price or current_price
+                                            if not sell_state_recorded:
+                                                try:
+                                                    record_signal_event(
+                                                        db,
+                                                        symbol=symbol,
+                                                        strategy_key=strategy_key,
+                                                        side="SELL",
+                                                        price=persist_price,
+                                                        source="order",
+                                                    )
+                                                    sell_state_recorded = True
+                                                except Exception as state_err:
+                                                    logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
+                                        else:
+                                            logger.warning(f"⚠️ SELL order creation returned None for {symbol}")
+                                    except Exception as order_err:
+                                        logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
+                                        # Don't raise - alert was sent, order creation is secondary
+                                else:
+                                    logger.info(f"ℹ️ SELL alert sent for {symbol} but trade_enabled=False or trade_amount_usd not configured - no order created")
+                        except Exception as e:
+                            logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
+                            # If sending failed, do NOT update the state - allow retry on next cycle
+                    else:
+                        logger.debug(f"⏭️  Skipping SELL alert send for {symbol} - should_send=False")
+                
+                # Always remove lock when done
+                if lock_key in self.alert_sending_locks:
+                    del self.alert_sending_locks[lock_key]
+        
+        # Handle SELL signal state update (for internal tracking)
+        if current_state == "SELL":
+            state_entry = self.last_signal_states.get(symbol, {})
+            state_entry.update({
+                "state": "SELL",
+                "timestamp": datetime.utcnow(),
+                "orders_count": state_entry.get("orders_count", 0)  # Preserve orders count
+            })
+            self.last_signal_states[symbol] = state_entry
     
     async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem, 
-                                current_price: float, res_up: float, res_down: float):
+                            current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
         symbol = watchlist_item.symbol
         
