@@ -302,7 +302,8 @@ class SignalMonitorService:
                 
                 if current_price > 0:
                     price_change_pct = abs((current_price - last_alert_price) / last_alert_price * 100)
-                    price_info = f", price change: {price_change_pct:.2f}% (${last_alert_price:.4f} → ${current_price:.4f})"
+                    direction = "↑" if current_price > last_alert_price else "↓"
+                    price_info = f", price change: {direction} {price_change_pct:.2f}% (abs) (${last_alert_price:.4f} → ${current_price:.4f})"
             except Exception:
                 pass  # If calculation fails, just omit the info
         
@@ -412,16 +413,18 @@ class SignalMonitorService:
             )
         
         if not price_change_met:
+            direction = "↑" if current_price > last_alert_price else "↓"
             return False, (
-                f"Throttled: price change {price_change_pct:.2f}% < {alert_min_price_change:.2f}%. "
+                f"Throttled: price change {direction} {price_change_pct:.2f}% (abs) < {alert_min_price_change:.2f}%. "
                 f"(last price: ${last_alert_price:.4f}, current: ${current_price:.4f}). "
-                f"Requires BOTH cooldown >= {cooldown_limit} min AND price change >= {alert_min_price_change:.2f}%"
+                f"Requires BOTH cooldown >= {cooldown_limit} min AND absolute price change >= {alert_min_price_change:.2f}%"
             )
 
         # Both conditions met - allow alert
+        direction = "↑" if current_price > last_alert_price else "↓"
         reason_text = (
             f"cooldown met ({time_diff:.1f} min >= {cooldown_limit} min) AND "
-            f"price change met ({price_change_pct:.2f}% >= {alert_min_price_change:.2f}%)"
+            f"absolute price change met ({direction} {price_change_pct:.2f}% >= {alert_min_price_change:.2f}%)"
         )
 
         return True, reason_text

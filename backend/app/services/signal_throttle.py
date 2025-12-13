@@ -124,16 +124,18 @@ def should_emit_signal(
             f"THROTTLED_MIN_TIME (elapsed {elapsed_minutes:.2f}m < {min_interval:.2f}m)",
         )
     if not price_met and price_required:
+        direction = "↑" if (last_price and current_price > last_price) else "↓" if last_price else ""
         return (
             False,
-            f"THROTTLED_MIN_CHANGE (price change {(price_change_pct or 0.0):.2f}% < {min_pct:.2f}%)",
+            f"THROTTLED_MIN_CHANGE (absolute price change {direction} {(price_change_pct or 0.0):.2f}% < {min_pct:.2f}%)",
         )
 
     summary_parts = []
     if cooldown_required:
         summary_parts.append(f"Δt={elapsed_minutes:.2f}m>= {min_interval:.2f}m")
     if price_required and price_change_pct is not None:
-        summary_parts.append(f"Δp={price_change_pct:.2f}%>= {min_pct:.2f}%")
+        direction = "↑" if (last_price and current_price > last_price) else "↓" if last_price else ""
+        summary_parts.append(f"|Δp|={direction} {price_change_pct:.2f}%>= {min_pct:.2f}%")
     reason = " & ".join(summary_parts) if summary_parts else "No previous limits configured"
     return True, reason
 
