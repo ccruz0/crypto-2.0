@@ -2098,7 +2098,7 @@ class SignalMonitorService:
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             lock_key = f"{symbol}_SELL"
             lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
-            import time
+            # Use time module (already imported at top of file)
             current_time = time.time()
             
             # Check if we're already processing an alert for this symbol+side
