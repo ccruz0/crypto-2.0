@@ -3233,16 +3233,20 @@ class SignalMonitorService:
             
             logger.info(f"🔴 Creating automatic SELL order for {symbol}: amount_usd={amount_usd}, margin={use_margin}")
             
+            # Calculate quantity for SELL order
+            # CRITICAL: Don't round here - let place_market_order handle formatting based on exchange requirements
+            # The exchange has specific precision requirements per symbol that we can't predict here
+            qty = amount_usd / current_price
+            
             # Place MARKET SELL order
             side_upper = "SELL"
             
-            # CRITICAL FIX: Use notional (like BUY orders) instead of calculating quantity manually
-            # This avoids "Invalid quantity format" errors by letting the exchange calculate the exact quantity
-            # based on current price and the symbol's precision requirements
+            # SELL market order: use quantity (exchange will format it according to symbol precision)
+            # place_market_order has logic to fetch instrument info and format quantity correctly
             result = trade_client.place_market_order(
                 symbol=symbol,
                 side=side_upper,
-                notional=amount_usd,  # Use notional instead of qty to avoid precision issues
+                qty=qty,  # Pass unrounded quantity - place_market_order will format it correctly
                 is_margin=use_margin,
                 leverage=leverage_value if use_margin else None,
                 dry_run=dry_run_mode
