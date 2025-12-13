@@ -1125,10 +1125,22 @@ class CryptoComTradeClient:
                 tick_decimal = decimal.Decimal(str(qty_tick_size))
                 qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
                 # Format with exact precision required
-                qty_str = f"{qty_decimal:.{quantity_decimals}f}".rstrip('0').rstrip('.')
-                # Ensure at least one decimal if quantity_decimals > 0
-                if quantity_decimals > 0 and '.' not in qty_str:
-                    qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+                # CRITICAL: Don't strip trailing zeros - exchange may require exact decimal places
+                # Format with the exact number of decimals required by the exchange
+                qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+                # Only strip trailing zeros if quantity_decimals allows it (but keep at least 1 decimal if needed)
+                # For very small quantities, the exchange might require all decimal places
+                if quantity_decimals > 0:
+                    # Try stripping zeros, but ensure we don't lose precision
+                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
+                    # If stripped version has fewer decimals than required, keep original
+                    if '.' in qty_str_stripped:
+                        stripped_decimals = len(qty_str_stripped.split('.')[1])
+                        if stripped_decimals >= min(2, quantity_decimals):  # Keep at least 2 decimals or required decimals
+                            qty_str = qty_str_stripped
+                    elif quantity_decimals > 0:
+                        # If no decimal point after stripping, add it back with required decimals
+                        qty_str = f"{qty_decimal:.{quantity_decimals}f}"
                 logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
                 # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
@@ -1139,8 +1151,14 @@ class CryptoComTradeClient:
                     qty_str = f"{qty_decimal:.2f}"
                 else:
                     # For quantities < 1, use 8 decimals but round down
+                    # CRITICAL: Don't strip trailing zeros - exchange may require exact format
                     qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal:.8f}".rstrip('0').rstrip('.')
+                    # Format with 8 decimals and keep trailing zeros (exchange may require them)
+                    qty_str = f"{qty_decimal:.8f}"
+                    # Only strip if it results in a valid format (keep at least 2 decimals for small quantities)
+                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
+                    if '.' in qty_str_stripped and len(qty_str_stripped.split('.')[1]) >= 2:
+                        qty_str = qty_str_stripped
                 logger.warning(f"⚠️ Using fallback precision for MARKET SELL {symbol}: {qty} -> {qty_str} (instrument info not available)")
             
             # CRITICAL: Store as string to prevent any float conversion
