@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fix BTC_USDT en Watchlist</title>
+    <link rel="stylesheet" href="fix_btc_usdt_frontend.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Fix: BTC_USDT en Watchlist</h1>
+        <div id="api-info" class="status info hidden"></div>
+        
+        <div id="status"></div>
+        
+        <div class="step">
+            <h3>Paso 1: Verificar Estado Actual</h3>
+            <button onclick="checkStatus()">Verificar Estado</button>
+        </div>
+        
+        <div class="step">
+            <h3>Paso 2: Limpiar Filtros de Frontend</h3>
+            <button onclick="fixLocalStorage()">Limpiar localStorage</button>
+        </div>
+        
+        <div class="step">
+            <h3>Paso 3: Verificar Backend</h3>
+            <button onclick="checkBackend()">Verificar API</button>
+        </div>
+        
+        <div class="step">
+            <h3>Paso 4: Aplicar Todas las Correcciones</h3>
+            <button onclick="fixAll()" class="success">🔧 Aplicar Todas las Correcciones</button>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        // Detectar automáticamente la URL de la API basándose en el hostname
+        function getApiUrl() {
+            const hostname = window.location.hostname;
+            
+            // Si estamos en localhost, usar localhost
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:8002/api';
+            }
+            
+            // Si estamos en AWS (IP o dominio)
+            if (hostname.includes('54.254.150.31') || hostname.includes('hilovivo') || hostname.includes('ec2')) {
+                // Si es dominio hilovivo, usar el mismo dominio (Nginx proxy)
+                if (hostname.includes('hilovivo')) {
+                    return `${window.location.protocol}//${hostname}/api`;
+                }
+                // Si es IP de AWS, usar puerto 8002 (según environment.ts)
+                return 'http://54.254.150.31:8002/api';
+            }
+            
+            // Por defecto, intentar usar el mismo hostname con puerto 8000
+            return `http://${hostname}:8000/api`;
+        }
+        
+        const API_URL = getApiUrl();
+        const API_KEY = 'demo-key';
+        
+        // Mostrar la URL detectada
+        console.log('🌐 API URL detectada:', API_URL);
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+
+        function addResult(title, content) {
+            const resultsDiv = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = 'step';
+            div.innerHTML = `<h4>${title}</h4><pre>${content}</pre>`;
+            resultsDiv.appendChild(div);
+        }
+
+        function checkStatus() {
+            showStatus('🔍 Verificando estado...', 'info');
+            const results = [];
+            
+            // Check localStorage
+            try {
+                const deletedCoins = JSON.parse(localStorage.getItem('deleted_coins') || '[]');
+                const hasBtc = deletedCoins.some(c => c.toUpperCase() === 'BTC_USDT');
+                results.push(`localStorage deleted_coins: ${hasBtc ? '❌ BTC_USDT está en la lista' : '✅ BTC_USDT NO está en la lista'}`);
+                results.push(`Total deleted coins: ${deletedCoins.length}`);
+            } catch (e) {
+                results.push(`Error leyendo localStorage: ${e.message}`);
+            }
+
+            // Check watchlist_order
+            try {
+                const watchlistOrder = JSON.parse(localStorage.getItem('watchlist_order') || '{}');
+                const hasBtcOrder = 'BTC_USDT' in watchlistOrder;
+                results.push(`watchlist_order: ${hasBtcOrder ? '✅ BTC_USDT tiene orden' : '⚠️ BTC_USDT no tiene orden'}`);
+            } catch (e) {
+                results.push(`Error leyendo watchlist_order: ${e.message}`);
+            }
+
+            addResult('Estado Actual', results.join('\n'));
+            showStatus('✅ Verificación completada', 'success');
+        }
+
+        function fixLocalStorage() {
+            showStatus('🔧 Limpiando localStorage...', 'info');
+            const fixes = [];
+            
+            try {
+                // Remove BTC_USDT from deleted_coins
+                const deletedCoins = JSON.parse(localStorage.getItem('deleted_coins') || '[]');
+                const beforeCount = deletedCoins.length;
+                const updated = deletedCoins.filter(c => c.toUpperCase() !== 'BTC_USDT');
+                
+                if (beforeCount !== updated.length) {
+                    localStorage.setItem('deleted_coins', JSON.stringify(updated));
+                    fixes.push(`✅ Removido BTC_USDT de deleted_coins (${beforeCount} → ${updated.length})`);
+                } else {
+                    fixes.push(`✅ BTC_USDT no estaba en deleted_coins`);
+                }
+            } catch (e) {
+                fixes.push(`❌ Error limpiando deleted_coins: ${e.message}`);
+            }
+
+            // Ensure BTC_USDT has a position in watchlist_order if needed
+            try {
+                const watchlistOrder = JSON.parse(localStorage.getItem('watchlist_order') || '{}');
+                if (!('BTC_USDT' in watchlistOrder)) {
+                    // Don't force an order, just note it
+                    fixes.push(`ℹ️ BTC_USDT no tiene orden específica (esto está bien)`);
+                } else {
+                    fixes.push(`✅ BTC_USDT tiene orden: ${watchlistOrder['BTC_USDT']}`);
+                }
+            } catch (e) {
+                fixes.push(`⚠️ Error verificando watchlist_order: ${e.message}`);
+            }
+
+            addResult('Limpieza de localStorage', fixes.join('\n'));
+            showStatus('✅ localStorage limpiado. Recarga la página para ver los cambios.', 'success');
+        }
+
+        async function checkBackend() {
+            showStatus('🔍 Verificando backend...', 'info');
+            const results = [];
+
+            try {
+                // Check watchlist item
+                const response = await fetch(`${API_URL}/dashboard/symbol/BTC_USDT`, {
+                    headers: { 'X-API-Key': API_KEY }
+                });
+                
+                if (response.ok) {
+                    const item = await response.json();
+                    results.push(`✅ BTC_USDT encontrado en watchlist`);
+                    results.push(`   ID: ${item.id}`);
+                    results.push(`   is_deleted: ${item.is_deleted || item.deleted}`);
+                    results.push(`   alert_enabled: ${item.alert_enabled}`);
+                    results.push(`   trade_enabled: ${item.trade_enabled}`);
+                } else if (response.status === 404) {
+                    results.push(`❌ BTC_USDT NO encontrado en watchlist`);
+                } else {
+                    results.push(`⚠️ Error ${response.status}: ${await response.text()}`);
+                }
+            } catch (e) {
+                results.push(`❌ Error conectando al backend: ${e.message}`);
+                results.push(`   Asegúrate de que el servidor esté corriendo en ${API_URL}`);
+            }
+
+            // Check top-coins-data
+            try {
+                const response = await fetch(`${API_URL}/market/top-coins-data`, {
+                    headers: { 'X-API-Key': API_KEY }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const btcCoin = data.find(c => c.instrument_name === 'BTC_USDT');
+                    if (btcCoin) {
+                        results.push(`✅ BTC_USDT encontrado en top-coins-data`);
+                        results.push(`   Precio: $${btcCoin.current_price}`);
+                    } else {
+                        results.push(`⚠️ BTC_USDT NO encontrado en top-coins-data`);
+                    }
+                } else {
+                    results.push(`⚠️ Error obteniendo top-coins-data: ${response.status}`);
+                }
+            } catch (e) {
+                results.push(`⚠️ Error verificando top-coins-data: ${e.message}`);
+            }
+
+            addResult('Verificación de Backend', results.join('\n'));
+            showStatus('✅ Verificación de backend completada', 'success');
+        }
+
+        async function fixAll() {
+            showStatus('🔧 Aplicando todas las correcciones...', 'info');
+            
+            // Step 1: Check status
+            checkStatus();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Step 2: Fix localStorage
+            fixLocalStorage();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Step 3: Check backend
+            await checkBackend();
+            
+            showStatus('✅ Todas las correcciones aplicadas. Recarga la página del dashboard (F5) para ver BTC_USDT.', 'success');
+        }
+
+        // Auto-check on load
+        window.addEventListener('load', () => {
+            // Mostrar información de la API detectada
+            const apiInfoDiv = document.getElementById('api-info');
+            apiInfoDiv.style.display = 'block';
+            apiInfoDiv.innerHTML = `🌐 <strong>API URL detectada:</strong> ${API_URL}<br>
+                <strong>Hostname actual:</strong> ${window.location.hostname}`;
+            
+            setTimeout(checkStatus, 500);
+        });
+    </script>
+</body>
+</html>
