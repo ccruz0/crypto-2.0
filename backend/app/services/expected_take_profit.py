@@ -689,20 +689,19 @@ def get_expected_take_profit_summary(
                 # Use the symbol with most TP orders, or default to the first TP order's symbol
                 preferred_symbol = max(tp_symbol_counts.items(), key=lambda x: x[1])[0] if tp_symbol_counts else None
                 
-                # Get buy price from MOST RECENT filled BUY order for the preferred symbol (matching TP orders)
-                # Prioritize the symbol that matches TP orders, not just the most recent overall
-                # This ensures we use an order that's related to the active TP orders
-                recent_buy = None
+                # Calculate weighted average buy price from ALL filled BUY orders
+                # This accounts for multiple purchase orders at different prices
+                all_buy_orders = []
                 
                 if preferred_symbol:
-                    # First try to find most recent BUY order for the preferred symbol with valid price
+                    # First try to find all BUY orders for the preferred symbol with valid prices
                     orders = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol == preferred_symbol,
                         ExchangeOrder.side == OrderSideEnum.BUY,
                         ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).all()
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
                     
-                    # Find the most recent order with a valid price
+                    # Collect all orders with valid prices
                     for order in orders:
                         price = order.avg_price or order.price
                         # If price is None or 0, try to calculate from cumulative_value / cumulative_quantity
@@ -711,18 +710,23 @@ def get_expected_take_profit_summary(
                                 if order.cumulative_value and order.cumulative_value > 0:
                                     price = order.cumulative_value / order.cumulative_quantity
                         if price and price > 0:
-                            recent_buy = order
-                            break
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty
+                                })
                 
                 # If not found, try all variants
-                if not recent_buy:
+                if not all_buy_orders:
                     orders = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol.in_(symbol_variants),
                         ExchangeOrder.side == OrderSideEnum.BUY,
                         ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).all()
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
                     
-                    # Find the most recent order with a valid price
+                    # Collect all orders with valid prices
                     for order in orders:
                         price = order.avg_price or order.price
                         # If price is None or 0, try to calculate from cumulative_value / cumulative_quantity
@@ -731,38 +735,43 @@ def get_expected_take_profit_summary(
                                 if order.cumulative_value and order.cumulative_value > 0:
                                     price = order.cumulative_value / order.cumulative_quantity
                         if price and price > 0:
-                            recent_buy = order
-                            break
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty
+                                })
                 
-                if recent_buy:
-                    # Get price with fallback to calculation from cumulative_value / cumulative_quantity
-                    buy_price = Decimal(str(recent_buy.avg_price or recent_buy.price or 0))
-                    if buy_price == 0:
-                        # Try to calculate from cumulative_value / cumulative_quantity
-                        if hasattr(recent_buy, 'cumulative_value') and hasattr(recent_buy, 'cumulative_quantity'):
-                            if recent_buy.cumulative_quantity and recent_buy.cumulative_quantity > 0:
-                                if recent_buy.cumulative_value and recent_buy.cumulative_value > 0:
-                                    buy_price = Decimal(str(recent_buy.cumulative_value)) / Decimal(str(recent_buy.cumulative_quantity))
+                if all_buy_orders:
+                    # Calculate weighted average buy price
+                    total_value = sum(bo['price'] * bo['qty'] for bo in all_buy_orders)
+                    total_qty = sum(bo['qty'] for bo in all_buy_orders)
+                    weighted_avg_price = total_value / total_qty if total_qty > 0 else Decimal("0")
+                    
+                    # Use the most recent order for metadata (time, order_id, etc.)
+                    most_recent_buy = max(all_buy_orders, key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc))
+                    recent_buy = most_recent_buy['order']
                     
                     buy_time = recent_buy.exchange_create_time or recent_buy.created_at
-                    if buy_price > 0:
+                    if weighted_avg_price > 0:
                         # Use preferred_symbol if available (matches TP orders), otherwise use recent_buy.symbol
                         # This ensures the virtual lot symbol matches the TP orders' symbol for better matching
                         virtual_lot_symbol = preferred_symbol if preferred_symbol else recent_buy.symbol
                         
-                        # Create virtual lot from portfolio balance
+                        # Create virtual lot from portfolio balance with weighted average price
                         from datetime import datetime, timezone
                         virtual_lot = OpenLot(
                             symbol=virtual_lot_symbol,  # Use symbol that matches TP orders (USD/USDT are equivalent)
-                            buy_order_id=recent_buy.exchange_order_id,
+                            buy_order_id=recent_buy.exchange_order_id,  # Use most recent order ID for reference
                             buy_time=buy_time or datetime.now(timezone.utc),
-                            buy_price=buy_price,
+                            buy_price=weighted_avg_price,  # Use weighted average price from all buy orders
                             lot_qty=Decimal(str(balance)),
                             parent_order_id=recent_buy.parent_order_id,
                             oco_group_id=recent_buy.oco_group_id,
                         )
                         open_lots = [virtual_lot]
-                        logger.info(f"Expected TP: Created virtual lot for {symbol} from portfolio balance: qty={balance}, price={buy_price}, symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
+                        logger.info(f"Expected TP: Created virtual lot for {symbol} from portfolio balance: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(all_buy_orders)} buy orders), symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
             
             # If still no open lots but we have balance, try to create a virtual lot without TP orders
             # This allows showing coins with balance but no TP protection (uncovered position)
@@ -779,16 +788,17 @@ def get_expected_take_profit_summary(
                     elif symbol.endswith('_USD'):
                         symbol_variants.append(symbol.replace('_USD', '_USDT'))
                 
-                recent_buy = None
+                # Calculate weighted average buy price from ALL filled BUY orders
+                all_buy_orders = []
                 for variant in symbol_variants:
                     # Get all filled BUY orders for this variant
                     orders = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol == variant,
                         ExchangeOrder.side == OrderSideEnum.BUY,
                         ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).all()
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
                     
-                    # Find the most recent order with a valid price
+                    # Collect all orders with valid prices
                     for order in orders:
                         # Try to get price from various fields
                         price = order.avg_price or order.price
@@ -799,38 +809,40 @@ def get_expected_take_profit_summary(
                                 if order.cumulative_value and order.cumulative_value > 0:
                                     price = order.cumulative_value / order.cumulative_quantity
                         
-                        # If we found a valid price, use this order
+                        # If we found a valid price, add to list
                         if price and price > 0:
-                            recent_buy = order
-                            break
-                    
-                    if recent_buy:
-                        break
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty
+                                })
                 
-                if recent_buy:
-                    # Get price with fallback to calculation
-                    buy_price = Decimal(str(recent_buy.avg_price or recent_buy.price or 0))
-                    if buy_price == 0:
-                        # Try to calculate from cumulative_value / cumulative_quantity
-                        if hasattr(recent_buy, 'cumulative_value') and hasattr(recent_buy, 'cumulative_quantity'):
-                            if recent_buy.cumulative_quantity and recent_buy.cumulative_quantity > 0:
-                                if recent_buy.cumulative_value and recent_buy.cumulative_value > 0:
-                                    buy_price = Decimal(str(recent_buy.cumulative_value)) / Decimal(str(recent_buy.cumulative_quantity))
+                if all_buy_orders:
+                    # Calculate weighted average buy price
+                    total_value = sum(bo['price'] * bo['qty'] for bo in all_buy_orders)
+                    total_qty = sum(bo['qty'] for bo in all_buy_orders)
+                    weighted_avg_price = total_value / total_qty if total_qty > 0 else Decimal("0")
+                    
+                    # Use the most recent order for metadata (time, order_id, etc.)
+                    most_recent_buy = max(all_buy_orders, key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc))
+                    recent_buy = most_recent_buy['order']
                     
                     buy_time = recent_buy.exchange_create_time or recent_buy.created_at
-                    if buy_price > 0:
+                    if weighted_avg_price > 0:
                         from datetime import datetime, timezone
                         virtual_lot = OpenLot(
                             symbol=recent_buy.symbol,  # Use symbol from order
                             buy_order_id=recent_buy.exchange_order_id,
                             buy_time=buy_time or datetime.now(timezone.utc),
-                            buy_price=buy_price,
+                            buy_price=weighted_avg_price,  # Use weighted average price from all buy orders
                             lot_qty=Decimal(str(balance)),
                             parent_order_id=recent_buy.parent_order_id,
                             oco_group_id=recent_buy.oco_group_id,
                         )
                         open_lots = [virtual_lot]
-                        logger.info(f"Expected TP: Created uncovered virtual lot for {symbol}: qty={balance}, price={buy_price}, symbol={recent_buy.symbol}, order_id={recent_buy.exchange_order_id[:15]}...")
+                        logger.info(f"Expected TP: Created uncovered virtual lot for {symbol}: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(all_buy_orders)} buy orders), symbol={recent_buy.symbol}, order_id={recent_buy.exchange_order_id[:15]}...")
                     else:
                         # Buy price is 0 or None, use current price as fallback
                         if current_price > 0:
@@ -1063,20 +1075,19 @@ def get_expected_take_profit_details(
                 # Use the symbol with most TP orders, or default to the first TP order's symbol
                 preferred_symbol = max(tp_symbol_counts.items(), key=lambda x: x[1])[0] if tp_symbol_counts else None
                 
-                # Get buy price from MOST RECENT filled BUY order for the preferred symbol (matching TP orders)
-                # Prioritize the symbol that matches TP orders, not just the most recent overall
-                # This ensures we use an order that's related to the active TP orders
-                recent_buy = None
+                # Calculate weighted average buy price from ALL filled BUY orders
+                # This accounts for multiple purchase orders at different prices
+                all_buy_orders = []
                 
                 if preferred_symbol:
-                    # First try to find most recent BUY order for the preferred symbol with valid price
+                    # First try to find all BUY orders for the preferred symbol with valid prices
                     orders = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol == preferred_symbol,
                         ExchangeOrder.side == OrderSideEnum.BUY,
                         ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).all()
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
                     
-                    # Find the most recent order with a valid price
+                    # Collect all orders with valid prices
                     for order in orders:
                         price = order.avg_price or order.price
                         # If price is None or 0, try to calculate from cumulative_value / cumulative_quantity
@@ -1085,18 +1096,23 @@ def get_expected_take_profit_details(
                                 if order.cumulative_value and order.cumulative_value > 0:
                                     price = order.cumulative_value / order.cumulative_quantity
                         if price and price > 0:
-                            recent_buy = order
-                            break
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty
+                                })
                 
                 # If not found, try all variants
-                if not recent_buy:
+                if not all_buy_orders:
                     orders = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol.in_(symbol_variants),
                         ExchangeOrder.side == OrderSideEnum.BUY,
                         ExchangeOrder.status == OrderStatusEnum.FILLED
-                    ).order_by(ExchangeOrder.exchange_create_time.desc()).all()
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
                     
-                    # Find the most recent order with a valid price
+                    # Collect all orders with valid prices
                     for order in orders:
                         price = order.avg_price or order.price
                         # If price is None or 0, try to calculate from cumulative_value / cumulative_quantity
@@ -1105,38 +1121,43 @@ def get_expected_take_profit_details(
                                 if order.cumulative_value and order.cumulative_value > 0:
                                     price = order.cumulative_value / order.cumulative_quantity
                         if price and price > 0:
-                            recent_buy = order
-                            break
+                            qty = Decimal(str(order.cumulative_quantity or order.quantity or 0))
+                            if qty > 0:
+                                all_buy_orders.append({
+                                    'order': order,
+                                    'price': Decimal(str(price)),
+                                    'qty': qty
+                                })
                 
-                if recent_buy:
-                    # Get price with fallback to calculation from cumulative_value / cumulative_quantity
-                    buy_price = Decimal(str(recent_buy.avg_price or recent_buy.price or 0))
-                    if buy_price == 0:
-                        # Try to calculate from cumulative_value / cumulative_quantity
-                        if hasattr(recent_buy, 'cumulative_value') and hasattr(recent_buy, 'cumulative_quantity'):
-                            if recent_buy.cumulative_quantity and recent_buy.cumulative_quantity > 0:
-                                if recent_buy.cumulative_value and recent_buy.cumulative_value > 0:
-                                    buy_price = Decimal(str(recent_buy.cumulative_value)) / Decimal(str(recent_buy.cumulative_quantity))
+                if all_buy_orders:
+                    # Calculate weighted average buy price
+                    total_value = sum(bo['price'] * bo['qty'] for bo in all_buy_orders)
+                    total_qty = sum(bo['qty'] for bo in all_buy_orders)
+                    weighted_avg_price = total_value / total_qty if total_qty > 0 else Decimal("0")
+                    
+                    # Use the most recent order for metadata (time, order_id, etc.)
+                    most_recent_buy = max(all_buy_orders, key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc))
+                    recent_buy = most_recent_buy['order']
                     
                     buy_time = recent_buy.exchange_create_time or recent_buy.created_at
-                    if buy_price > 0:
+                    if weighted_avg_price > 0:
                         # Use preferred_symbol if available (matches TP orders), otherwise use recent_buy.symbol
                         # This ensures the virtual lot symbol matches the TP orders' symbol for better matching
                         virtual_lot_symbol = preferred_symbol if preferred_symbol else recent_buy.symbol
                         
-                        # Create virtual lot from portfolio balance
+                        # Create virtual lot from portfolio balance with weighted average price
                         from datetime import datetime, timezone
                         virtual_lot = OpenLot(
                             symbol=virtual_lot_symbol,  # Use symbol that matches TP orders (USD/USDT are equivalent)
-                            buy_order_id=recent_buy.exchange_order_id,
+                            buy_order_id=recent_buy.exchange_order_id,  # Use most recent order ID for reference
                             buy_time=buy_time or datetime.now(timezone.utc),
-                            buy_price=buy_price,
+                            buy_price=weighted_avg_price,  # Use weighted average price from all buy orders
                             lot_qty=balance,
                             parent_order_id=recent_buy.parent_order_id,
                             oco_group_id=recent_buy.oco_group_id,
                         )
                         open_lots = [virtual_lot]
-                        logger.info(f"Expected TP Details: Created virtual lot for {symbol} from portfolio balance: qty={balance}, price={buy_price}, symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
+                        logger.info(f"Expected TP Details: Created virtual lot for {symbol} from portfolio balance: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(all_buy_orders)} buy orders), symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
         
         if not open_lots:
             return {
