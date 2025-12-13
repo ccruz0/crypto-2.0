@@ -2177,7 +2177,7 @@ class SignalMonitorService:
                         skip_lock_check=True,  # We already have the lock, don't check again
                     )
                     if not should_send:
-                        logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
+                        logger.info(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
                         self._log_signal_rejection(
                             symbol,
                             "SELL",
@@ -2196,7 +2196,12 @@ class SignalMonitorService:
                             )
                         except Exception as state_err:
                             logger.warning(f"Failed to persist SELL throttle state (throttled) for {symbol}: {state_err}")
+                        # CRITICAL: Remove lock and skip sending alert - throttling rules must be respected
+                        if lock_key in self.alert_sending_locks:
+                            del self.alert_sending_locks[lock_key]
+                        # Do NOT proceed to send alert - throttling rules must be respected
                     else:
+                        # should_send is True - proceed with alert sending
                         self._log_signal_accept(
                             symbol,
                             "SELL",
@@ -2207,53 +2212,57 @@ class SignalMonitorService:
                                 "cooldown_minutes": cooldown,
                             },
                         )
-                    
-                    # CRITICAL: Final check - verify sell_alert_enabled before sending
-                    # Refresh flag from database to ensure we have latest value
-                    db.expire_all()  # Force refresh from database
-                    try:
-                        fresh_check = db.query(WatchlistItem).filter(
-                            WatchlistItem.symbol == symbol
-                        ).first()
-                        if fresh_check:
-                            sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
-                            logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
-                    except Exception as e:
-                        logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
-                    
-                    if not sell_alert_enabled:
-                        blocked_msg = (
+                        
+                        # CRITICAL: Final check - verify sell_alert_enabled before sending
+                        # Refresh flag from database to ensure we have latest value
+                        db.expire_all()  # Force refresh from database
+                        try:
+                            fresh_check = db.query(WatchlistItem).filter(
+                                WatchlistItem.symbol == symbol
+                            ).first()
+                            if fresh_check:
+                                sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
+                                logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
+                        except Exception as e:
+                            logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
+                        
+                        if not sell_alert_enabled:
+                            blocked_msg = (
                             f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
                             f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
                             f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
                             f"en la configuración del símbolo."
-                        )
-                        self._log_signal_rejection(
-                            symbol,
-                            "SELL",
-                            "DISABLED_BUY_SELL_FLAG",
-                            {"sell_alert_enabled": False},
-                        )
-                        logger.warning(blocked_msg)
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
-                        except Exception:
-                            pass  # Non-critical, continue
-                        # Record blocked event in throttle state table so it appears in Throttle panel
-                        try:
-                            record_signal_event(
-                                db,
-                                symbol=symbol,
-                                strategy_key=strategy_key,
-                                side="SELL",
-                                price=current_price,
-                                source="blocked",
                             )
-                        except Exception as state_err:
-                            logger.warning(f"Failed to persist SELL throttle state (blocked) for {symbol}: {state_err}")
-                    elif should_send:
-                        # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
+                            self._log_signal_rejection(
+                                symbol,
+                                "SELL",
+                                "DISABLED_BUY_SELL_FLAG",
+                                {"sell_alert_enabled": False},
+                            )
+                            logger.warning(blocked_msg)
+                            try:
+                                from app.api.routes_monitoring import add_telegram_message
+                                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                            except Exception:
+                                pass  # Non-critical, continue
+                            # Record blocked event in throttle state table so it appears in Throttle panel
+                            try:
+                                record_signal_event(
+                                    db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="SELL",
+                                    price=current_price,
+                                    source="blocked",
+                                )
+                            except Exception as state_err:
+                                logger.warning(f"Failed to persist SELL throttle state (blocked) for {symbol}: {state_err}")
+                            # Remove lock since we're not sending
+                            if lock_key in self.alert_sending_locks:
+                                del self.alert_sending_locks[lock_key]
+                        else:
+                            # sell_alert_enabled is True and should_send is True - proceed to send alert
+                            # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
                         try:
                             price_variation = self._format_price_variation(prev_sell_price, current_price)
                             ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
