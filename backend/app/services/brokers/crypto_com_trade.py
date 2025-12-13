@@ -1085,6 +1085,13 @@ class CryptoComTradeClient:
                 notional_str = f"{float(notional):.2f}" if float(notional) >= 1 else f"{float(notional):.4f}"
                 params["notional"] = notional_str
         else:  # SELL
+            # CRITICAL: Format quantity immediately to prevent "Invalid quantity format" errors
+            # The exchange requires specific decimal precision per symbol
+            import decimal
+            
+            # Convert to Decimal immediately to preserve precision
+            qty_decimal = decimal.Decimal(str(qty))
+            
             # Get instrument info to determine exact quantity precision required
             quantity_decimals = 2
             qty_tick_size = 0.01
@@ -1092,7 +1099,6 @@ class CryptoComTradeClient:
             
             try:
                 import requests as req
-                import decimal as dec
                 inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
                 inst_response = req.get(inst_url, timeout=3)
                 if inst_response.status_code == 200:
@@ -1111,14 +1117,11 @@ class CryptoComTradeClient:
                                 logger.info(f"✅ Got instrument info for MARKET SELL {symbol}: quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size}")
                                 break
             except Exception as e:
-                logger.debug(f"Could not fetch instrument info for MARKET SELL {symbol}: {e}. Using default precision.")
+                logger.warning(f"⚠️ Could not fetch instrument info for MARKET SELL {symbol}: {e}. Using fallback precision.")
             
             # Format quantity with instrument-specific precision
-            import decimal
-            qty_decimal = decimal.Decimal(str(qty))
-            
             if got_instrument_info and qty_tick_size:
-                # Round to nearest tick size
+                # Round to nearest tick size (round DOWN to avoid exceeding balance)
                 tick_decimal = decimal.Decimal(str(qty_tick_size))
                 qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
                 # Format with exact precision required
@@ -1129,20 +1132,20 @@ class CryptoComTradeClient:
                 logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
                 # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
-                # Most exchanges require 2-3 decimals for quantities >= 1
-                # Use Decimal to avoid floating point precision issues
-                qty_decimal = decimal.Decimal(str(qty))
+                # Most exchanges require 2 decimals for quantities >= 1
                 if qty >= 1:
                     # For quantities >= 1, use 2 decimals (most common requirement)
                     qty_decimal = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal:.2f}".rstrip('0').rstrip('.')
+                    qty_str = f"{qty_decimal:.2f}"
                 else:
-                    # For quantities < 1, use 8 decimals but round down to avoid precision issues
+                    # For quantities < 1, use 8 decimals but round down
                     qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
                     qty_str = f"{qty_decimal:.8f}".rstrip('0').rstrip('.')
                 logger.warning(f"⚠️ Using fallback precision for MARKET SELL {symbol}: {qty} -> {qty_str} (instrument info not available)")
             
-            params["quantity"] = qty_str
+            # CRITICAL: Store as string to prevent any float conversion
+            params["quantity"] = str(qty_str)
+            logger.info(f"🔍 [QUANTITY_FORMAT] Final quantity string for {symbol}: '{params['quantity']}' (type: {type(params['quantity']).__name__})")
         
         # MARGIN TRADING: Include leverage parameter when is_margin = True
         # Crypto.com Exchange API: The presence of 'leverage' parameter makes the order a margin order
