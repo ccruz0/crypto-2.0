@@ -1128,12 +1128,19 @@ class CryptoComTradeClient:
                     qty_str = f"{qty_decimal:.{quantity_decimals}f}"
                 logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
-                # Fallback: Use default precision based on quantity range
+                # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
+                # Most exchanges require 2-3 decimals for quantities >= 1
+                # Use Decimal to avoid floating point precision issues
+                qty_decimal = decimal.Decimal(str(qty))
                 if qty >= 1:
-                    qty_str = f"{qty:.3f}".rstrip('0').rstrip('.')
+                    # For quantities >= 1, use 2 decimals (most common requirement)
+                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
+                    qty_str = f"{qty_decimal:.2f}".rstrip('0').rstrip('.')
                 else:
-                    qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
-                logger.debug(f"Formatted quantity for MARKET SELL {symbol} with default precision: {qty} -> {qty_str}")
+                    # For quantities < 1, use 8 decimals but round down to avoid precision issues
+                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
+                    qty_str = f"{qty_decimal:.8f}".rstrip('0').rstrip('.')
+                logger.warning(f"⚠️ Using fallback precision for MARKET SELL {symbol}: {qty} -> {qty_str} (instrument info not available)")
             
             params["quantity"] = qty_str
         
