@@ -1047,6 +1047,10 @@ class SignalMonitorService:
                     f"🔍 [DEBUG] {symbol} SELL throttle check: sell_allowed={sell_allowed}, "
                     f"sell_reason={sell_reason}, sell_signal={sell_signal}"
                 )
+            # CRITICAL FIX: Do NOT set sell_signal = False here!
+            # The throttle check should only log the blocking, but allow the alert section to handle it.
+            # This ensures the SELL alert section (line 2046+) can still execute and log the decision.
+            # The actual alert sending will be throttled in the alert section itself (line 2120+).
             if not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 logger.info(blocked_msg)
@@ -1068,7 +1072,9 @@ class SignalMonitorService:
                     )
                 except Exception:
                     pass
-                sell_signal = False
+                # REMOVED: sell_signal = False
+                # Keep sell_signal = True so the alert section can still execute and handle throttling properly
+                # Only update current_state for tracking purposes
                 if current_state == "SELL":
                     current_state = "WAIT"
         
@@ -2092,6 +2098,7 @@ class SignalMonitorService:
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             lock_key = f"{symbol}_SELL"
             lock_timeout = self.ALERT_SENDING_LOCK_SECONDS
+            import time
             current_time = time.time()
             
             # Check if we're already processing an alert for this symbol+side
