@@ -115,6 +115,8 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
     # Apply FIFO: track remaining quantity on each buy
     open_lots: List[OpenLot] = []
     
+    logger.info(f"rebuild_open_lots: Processing {len(buys)} buy orders and {len(sells)} sell orders for {symbol}")
+    
     for buy in buys:
         remaining_qty = Decimal(str(buy.cumulative_quantity or buy.quantity))
         
@@ -151,7 +153,9 @@ def rebuild_open_lots(db: Session, symbol: str) -> List[OpenLot]:
                     parent_order_id=buy.parent_order_id,
                     oco_group_id=buy.oco_group_id,
                 ))
+                logger.debug(f"rebuild_open_lots: Found open lot - {order_symbol} qty={remaining_qty} price={buy_price} order_id={buy.exchange_order_id[:15]}...")
     
+    logger.info(f"rebuild_open_lots: Found {len(open_lots)} open lots for {symbol}")
     return open_lots
 
 
@@ -744,13 +748,62 @@ def get_expected_take_profit_summary(
                                 })
                 
                 if all_buy_orders:
-                    # Calculate weighted average buy price
-                    total_value = sum(bo['price'] * bo['qty'] for bo in all_buy_orders)
-                    total_qty = sum(bo['qty'] for bo in all_buy_orders)
+                    # IMPORTANT: Only use buy orders that are still open (not fully sold)
+                    # Apply FIFO logic to determine which buy orders are still open
+                    # Get all sell orders for the same symbol variants
+                    sell_orders = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.symbol.in_(symbol_variants),
+                        ExchangeOrder.side == OrderSideEnum.SELL,
+                        ExchangeOrder.status == OrderStatusEnum.FILLED
+                    ).order_by(ExchangeOrder.exchange_create_time.asc()).all()
+                    
+                    # Track remaining sell quantities
+                    sell_remaining = {
+                        sell.exchange_order_id: Decimal(str(sell.cumulative_quantity or sell.quantity))
+                        for sell in sell_orders
+                    }
+                    
+                    # Calculate which buy orders are still open using FIFO
+                    open_buy_orders = []
+                    for bo in all_buy_orders:
+                        buy_order = bo['order']
+                        remaining_qty = bo['qty']
+                        
+                        # Apply sells in FIFO order
+                        for sell in sell_orders:
+                            if remaining_qty <= 0:
+                                break
+                            
+                            sell_id = sell.exchange_order_id
+                            sell_qty = sell_remaining.get(sell_id, Decimal("0"))
+                            
+                            if sell_qty <= 0:
+                                continue
+                            
+                            qty_to_apply = min(remaining_qty, sell_qty)
+                            remaining_qty -= qty_to_apply
+                            sell_remaining[sell_id] = sell_qty - qty_to_apply
+                        
+                        # If there's remaining quantity, this buy order is still open
+                        if remaining_qty > 0:
+                            open_buy_orders.append({
+                                'order': buy_order,
+                                'price': bo['price'],
+                                'qty': remaining_qty  # Use remaining quantity, not original
+                            })
+                    
+                    # Use open buy orders for weighted average (or fallback to all if none are open)
+                    orders_for_avg = open_buy_orders if open_buy_orders else all_buy_orders
+                    if not open_buy_orders:
+                        logger.warning(f"Expected TP: No open buy orders found after FIFO for {symbol}, using all buy orders (this may indicate an issue)")
+                    
+                    # Calculate weighted average buy price from open buy orders only
+                    total_value = sum(bo['price'] * bo['qty'] for bo in orders_for_avg)
+                    total_qty = sum(bo['qty'] for bo in orders_for_avg)
                     weighted_avg_price = total_value / total_qty if total_qty > 0 else Decimal("0")
                     
                     # Use the most recent order for metadata (time, order_id, etc.)
-                    most_recent_buy = max(all_buy_orders, key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc))
+                    most_recent_buy = max(orders_for_avg, key=lambda bo: bo['order'].exchange_create_time or bo['order'].created_at or datetime.min.replace(tzinfo=timezone.utc))
                     recent_buy = most_recent_buy['order']
                     
                     buy_time = recent_buy.exchange_create_time or recent_buy.created_at
@@ -765,13 +818,13 @@ def get_expected_take_profit_summary(
                             symbol=virtual_lot_symbol,  # Use symbol that matches TP orders (USD/USDT are equivalent)
                             buy_order_id=recent_buy.exchange_order_id,  # Use most recent order ID for reference
                             buy_time=buy_time or datetime.now(timezone.utc),
-                            buy_price=weighted_avg_price,  # Use weighted average price from all buy orders
+                            buy_price=weighted_avg_price,  # Use weighted average price from open buy orders only
                             lot_qty=Decimal(str(balance)),
                             parent_order_id=recent_buy.parent_order_id,
                             oco_group_id=recent_buy.oco_group_id,
                         )
                         open_lots = [virtual_lot]
-                        logger.info(f"Expected TP: Created virtual lot for {symbol} from portfolio balance: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(all_buy_orders)} buy orders), symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
+                        logger.info(f"Expected TP: Created virtual lot for {symbol} from portfolio balance: qty={balance}, weighted_avg_price={weighted_avg_price} (from {len(open_buy_orders)} open buy orders out of {len(all_buy_orders)} total), symbol={virtual_lot_symbol}, buy_order_id={recent_buy.exchange_order_id[:15]}... (preferred symbol: {preferred_symbol})")
             
             # If still no open lots but we have balance, try to create a virtual lot without TP orders
             # This allows showing coins with balance but no TP protection (uncovered position)
