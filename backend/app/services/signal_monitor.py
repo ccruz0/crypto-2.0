@@ -2301,53 +2301,60 @@ class SignalMonitorService:
         
         amount_usd = watchlist_item.trade_amount_usd
         
+        # Read trade_on_margin from database FIRST - CRITICAL for margin trading
+        # This must be read BEFORE balance check to avoid blocking margin orders
+        user_wants_margin = watchlist_item.trade_on_margin or False
+        
         # ========================================================================
         # VERIFICACIÓN PREVIA: Balance disponible antes de crear orden
         # ========================================================================
         # Verificar balance disponible ANTES de intentar crear la orden
         # Esto previene errores 306 (INSUFFICIENT_AVAILABLE_BALANCE) para SPOT
-        try:
-            account_summary = trade_client.get_account_summary()
-            available_balance = 0
-            
-            if 'accounts' in account_summary or 'data' in account_summary:
-                accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
-                for acc in accounts:
-                    currency = acc.get('currency', '').upper()
-                    if currency in ['USD', 'USDT']:
-                        available = float(acc.get('available', '0') or '0')
-                        available_balance += available
-            
-            # Para SPOT, necesitamos el monto completo (sin leverage)
-            spot_required = amount_usd * 1.1  # 10% buffer
-            logger.info(f"💰 Balance check para {symbol}: available=${available_balance:,.2f}, required=${spot_required:,.2f} para ${amount_usd:,.2f} orden SPOT")
-            
-            # Si no hay suficiente balance para SPOT, no intentar crear la orden
-            if available_balance < spot_required:
-                logger.warning(
-                    f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SPOT. "
-                    f"Available: ${available_balance:,.2f} < Required: ${spot_required:,.2f}. "
-                    f"No se intentará crear la orden para evitar error 306."
-                )
-                # Enviar notificación informativa (no como error crítico)
-                try:
-                    telegram_notifier.send_message(
-                        f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
-                        f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
-                        f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
-                        f"💰 Balance disponible: <b>${available_balance:,.2f}</b>\n\n"
-                        f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
-                        f"💡 Deposita más fondos o reduce el tamaño de las órdenes"
+        # IMPORTANTE: Solo verificar balance SPOT si NO se está usando margen
+        # Para órdenes con margen, el margen disponible se calcula de manera diferente
+        # y no podemos verificar aquí (el exchange lo manejará)
+        if not user_wants_margin:
+            try:
+                account_summary = trade_client.get_account_summary()
+                available_balance = 0
+                
+                if 'accounts' in account_summary or 'data' in account_summary:
+                    accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
+                    for acc in accounts:
+                        currency = acc.get('currency', '').upper()
+                        if currency in ['USD', 'USDT']:
+                            available = float(acc.get('available', '0') or '0')
+                            available_balance += available
+                
+                # Para SPOT, necesitamos el monto completo (sin leverage)
+                spot_required = amount_usd * 1.1  # 10% buffer
+                logger.info(f"💰 Balance check para {symbol} (SPOT): available=${available_balance:,.2f}, required=${spot_required:,.2f} para ${amount_usd:,.2f} orden SPOT")
+                
+                # Si no hay suficiente balance para SPOT, no intentar crear la orden
+                if available_balance < spot_required:
+                    logger.warning(
+                        f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SPOT. "
+                        f"Available: ${available_balance:,.2f} < Required: ${spot_required:,.2f}. "
+                        f"No se intentará crear la orden para evitar error 306."
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to send Telegram balance notification: {e}")
-                return None  # No intentar crear la orden
-        except Exception as balance_check_err:
-            logger.warning(f"⚠️ No se pudo verificar balance para {symbol}: {balance_check_err}. Continuando con creación de orden...")
-            # Si no podemos verificar balance, continuar (el exchange rechazará si no hay suficiente)
-        
-        # Read trade_on_margin from database - CRITICAL for margin trading
-        user_wants_margin = watchlist_item.trade_on_margin or False
+                    # Enviar notificación informativa (no como error crítico)
+                    try:
+                        telegram_notifier.send_message(
+                            f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
+                            f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
+                            f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
+                            f"💰 Balance disponible: <b>${available_balance:,.2f}</b>\n\n"
+                            f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
+                            f"💡 Deposita más fondos o reduce el tamaño de las órdenes"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send Telegram balance notification: {e}")
+                    return None  # No intentar crear la orden
+            except Exception as balance_check_err:
+                logger.warning(f"⚠️ No se pudo verificar balance para {symbol}: {balance_check_err}. Continuando con creación de orden...")
+                # Si no podemos verificar balance, continuar (el exchange rechazará si no hay suficiente)
+        else:
+            logger.info(f"💰 MARGIN TRADING activado para {symbol} - Saltando verificación de balance SPOT (el margen disponible se calcula de manera diferente)")
         
         # ========================================================================
         # VERIFICACIÓN: Bloqueo temporal por error 609 (INSUFFICIENT_MARGIN)
@@ -3083,53 +3090,59 @@ class SignalMonitorService:
         
         amount_usd = watchlist_item.trade_amount_usd
         
+        # Read trade_on_margin from database FIRST - CRITICAL for margin trading
+        # This must be read BEFORE balance check to avoid blocking margin orders
+        user_wants_margin = watchlist_item.trade_on_margin or False
+        
         # For SELL orders, we need to check if we have enough balance of the base currency
         # Extract base currency from symbol (e.g., ETH from ETH_USDT)
+        # IMPORTANTE: Solo verificar balance SPOT si NO se está usando margen
+        # Para órdenes con margen, el margen disponible se calcula de manera diferente
         base_currency = symbol.split('_')[0] if '_' in symbol else symbol
         
-        try:
-            account_summary = trade_client.get_account_summary()
-            available_balance = 0
-            
-            if 'accounts' in account_summary or 'data' in account_summary:
-                accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
-                for acc in accounts:
-                    currency = acc.get('currency', '').upper()
-                    # Check for base currency (e.g., ETH for ETH_USDT)
-                    if currency == base_currency:
-                        available = float(acc.get('available', '0') or '0')
-                        available_balance = available
-                        break
-            
-            # Calculate required quantity
-            required_qty = amount_usd / current_price
-            logger.info(f"💰 Balance check para SELL {symbol}: available={available_balance:.8f} {base_currency}, required={required_qty:.8f} {base_currency} (${amount_usd:,.2f} USD)")
-            
-            # If we don't have enough base currency, cannot create SELL order
-            if available_balance < required_qty:
-                logger.warning(
-                    f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SELL. "
-                    f"Available: {available_balance:.8f} {base_currency} < Required: {required_qty:.8f} {base_currency}. "
-                    f"No se intentará crear la orden para evitar error 306."
-                )
-                try:
-                    telegram_notifier.send_message(
-                        f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
-                        f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
-                        f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
-                        f"📦 Quantity requerida: <b>{required_qty:.8f} {base_currency}</b>\n"
-                        f"💰 Balance disponible: <b>{available_balance:.8f} {base_currency}</b>\n\n"
-                        f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
-                        f"💡 Compra más {base_currency} o reduce el tamaño de las órdenes"
+        if not user_wants_margin:
+            try:
+                account_summary = trade_client.get_account_summary()
+                available_balance = 0
+                
+                if 'accounts' in account_summary or 'data' in account_summary:
+                    accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
+                    for acc in accounts:
+                        currency = acc.get('currency', '').upper()
+                        # Check for base currency (e.g., ETH for ETH_USDT)
+                        if currency == base_currency:
+                            available = float(acc.get('available', '0') or '0')
+                            available_balance = available
+                            break
+                
+                # Calculate required quantity
+                required_qty = amount_usd / current_price
+                logger.info(f"💰 Balance check para SELL {symbol} (SPOT): available={available_balance:.8f} {base_currency}, required={required_qty:.8f} {base_currency} (${amount_usd:,.2f} USD)")
+                
+                # If we don't have enough base currency, cannot create SELL order
+                if available_balance < required_qty:
+                    logger.warning(
+                        f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SELL. "
+                        f"Available: {available_balance:.8f} {base_currency} < Required: {required_qty:.8f} {base_currency}. "
+                        f"No se intentará crear la orden para evitar error 306."
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to send Telegram balance notification: {e}")
-                return None
-        except Exception as balance_check_err:
-            logger.warning(f"⚠️ No se pudo verificar balance para SELL {symbol}: {balance_check_err}. Continuando con creación de orden...")
-        
-        # Read trade_on_margin from database
-        user_wants_margin = watchlist_item.trade_on_margin or False
+                    try:
+                        telegram_notifier.send_message(
+                            f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
+                            f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
+                            f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
+                            f"📦 Quantity requerida: <b>{required_qty:.8f} {base_currency}</b>\n"
+                            f"💰 Balance disponible: <b>{available_balance:.8f} {base_currency}</b>\n\n"
+                            f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
+                            f"💡 Compra más {base_currency} o reduce el tamaño de las órdenes"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send Telegram balance notification: {e}")
+                    return None
+            except Exception as balance_check_err:
+                logger.warning(f"⚠️ No se pudo verificar balance para SELL {symbol}: {balance_check_err}. Continuando con creación de orden...")
+        else:
+            logger.info(f"💰 MARGIN TRADING activado para SELL {symbol} - Saltando verificación de balance SPOT (el margen disponible se calcula de manera diferente)")
         
         # For SELL orders, margin trading is less common, but we'll support it
         from app.services.margin_decision_helper import decide_trading_mode, log_margin_decision, DEFAULT_CONFIGURED_LEVERAGE

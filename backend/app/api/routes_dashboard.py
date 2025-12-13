@@ -397,10 +397,11 @@ async def _compute_dashboard_state(db: Session) -> dict:
         
         # Count only TP (Take Profit) orders as "open orders"
         # Group TP orders by base symbol
-        # IMPORTANT: Only count ACTIVE orders (NEW, ACTIVE, PARTIALLY_FILLED)
+        # IMPORTANT: Only count ACTIVE orders (NEW, ACTIVE, PARTIALLY_FILLED, PENDING)
         # Exclude CANCELLED, FILLED, REJECTED, EXPIRED orders
+        # Note: PENDING is used by some exchanges/APIs as equivalent to ACTIVE
         tp_orders_by_symbol: Dict[str, int] = {}
-        active_statuses = {"NEW", "ACTIVE", "PARTIALLY_FILLED"}
+        active_statuses = {"NEW", "ACTIVE", "PARTIALLY_FILLED", "PENDING"}
         for order in unified_open_orders:
             order_type = (order.order_type or "").upper()
             order_status = (order.status or "").upper()
