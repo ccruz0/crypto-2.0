@@ -25,7 +25,7 @@ log() {
     shift
     local message="$@"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    echo -e "[$timestamp] [$level] $message" | tee -a "$LOG_FILE" >&2
 }
 
 # Send Telegram notification

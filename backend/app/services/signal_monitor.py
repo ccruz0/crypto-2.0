@@ -2233,10 +2233,10 @@ class SignalMonitorService:
                         
                         if not sell_alert_enabled:
                             blocked_msg = (
-                            f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
-                            f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
-                            f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
-                            f"en la configuración del símbolo."
+                                f"🚫 BLOQUEADO: {symbol} SELL - Las alertas de venta (SELL) están deshabilitadas "
+                                f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
+                                f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
+                                f"en la configuración del símbolo."
                             )
                             self._log_signal_rejection(
                                 symbol,
@@ -2268,61 +2268,61 @@ class SignalMonitorService:
                         else:
                             # sell_alert_enabled is True and should_send is True - proceed to send alert
                             # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
-                        try:
-                            price_variation = self._format_price_variation(prev_sell_price, current_price)
-                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                            reason_text = (
-                                f"{strategy_display}/{risk_display} | "
-                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                                f"MA50={ma50_text}, "
-                                f"EMA10={ema10_text}, "
-                                f"MA200={ma200_text}"
-                            )
-                            result = telegram_notifier.send_sell_signal(
-                                symbol=symbol,
-                                price=current_price,
-                                reason=reason_text,
-                                strategy_type=strategy_display,
-                                risk_approach=risk_display,
-                                price_variation=price_variation,
-                                previous_price=prev_sell_price,
-                                source="LIVE ALERT",
-                                throttle_status="SENT",
-                                throttle_reason=sell_reason,
-                            )
-                            # Alerts must never be blocked after conditions are met (guardrail compliance)
-                            # If send_sell_signal returns False, log as error but do not treat as block
-                            if result is False:
-                                logger.error(
-                                    f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
-                                    f"This should not happen when conditions are met. Check telegram_notifier."
+                            try:
+                                price_variation = self._format_price_variation(prev_sell_price, current_price)
+                                ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                                ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                                ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                                reason_text = (
+                                    f"{strategy_display}/{risk_display} | "
+                                    f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                    f"MA50={ma50_text}, "
+                                    f"EMA10={ema10_text}, "
+                                    f"MA200={ma200_text}"
                                 )
-                            else:
-                                logger.info(
-                                    f"✅ SELL alert SENT for {symbol}: "
-                                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
+                                result = telegram_notifier.send_sell_signal(
+                                    symbol=symbol,
+                                    price=current_price,
+                                    reason=reason_text,
+                                    strategy_type=strategy_display,
+                                    risk_approach=risk_display,
+                                    price_variation=price_variation,
+                                    previous_price=prev_sell_price,
+                                    source="LIVE ALERT",
+                                    throttle_status="SENT",
+                                    throttle_reason=sell_reason,
                                 )
-                                self._log_signal_accept(
-                                    symbol,
-                                    "SELL",
-                                    {"telegram": "sent", "reason": reason_text},
-                                )
-                                # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
-                                self._update_alert_state(symbol, "SELL", current_price)
-                                try:
-                                    record_signal_event(
-                                        db,
-                                        symbol=symbol,
-                                        strategy_key=strategy_key,
-                                        side="SELL",
-                                        price=current_price,
-                                        source="alert",
+                                # Alerts must never be blocked after conditions are met (guardrail compliance)
+                                # If send_sell_signal returns False, log as error but do not treat as block
+                                if result is False:
+                                    logger.error(
+                                        f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
+                                        f"This should not happen when conditions are met. Check telegram_notifier."
                                     )
-                                    sell_state_recorded = True
-                                except Exception as state_err:
-                                    logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
+                                else:
+                                    logger.info(
+                                        f"✅ SELL alert SENT for {symbol}: "
+                                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
+                                    )
+                                    self._log_signal_accept(
+                                        symbol,
+                                        "SELL",
+                                        {"telegram": "sent", "reason": reason_text},
+                                    )
+                                    # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
+                                    self._update_alert_state(symbol, "SELL", current_price)
+                                    try:
+                                        record_signal_event(
+                                            db,
+                                            symbol=symbol,
+                                            strategy_key=strategy_key,
+                                            side="SELL",
+                                            price=current_price,
+                                            source="alert",
+                                        )
+                                        sell_state_recorded = True
+                                    except Exception as state_err:
+                                        logger.warning(f"Failed to persist SELL throttle state for {symbol}: {state_err}")
                                 
                                 # ========================================================================
                                 # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
@@ -2358,11 +2358,9 @@ class SignalMonitorService:
                                         # Don't raise - alert was sent, order creation is secondary
                                 else:
                                     logger.info(f"ℹ️ SELL alert sent for {symbol} but trade_enabled=False or trade_amount_usd not configured - no order created")
-                        except Exception as e:
-                            logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
-                            # If sending failed, do NOT update the state - allow retry on next cycle
-                    else:
-                        logger.debug(f"⏭️  Skipping SELL alert send for {symbol} - should_send=False")
+                            except Exception as e:
+                                logger.warning(f"Failed to send Telegram SELL alert for {symbol}: {e}")
+                                # If sending failed, do NOT update the state - allow retry on next cycle
                 finally:
                     # CRITICAL: Always remove lock when done, even if an exception occurred
                     if lock_key in self.alert_sending_locks:
