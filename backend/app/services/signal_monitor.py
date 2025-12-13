@@ -252,6 +252,7 @@ class SignalMonitorService:
         trade_enabled: bool = True,
         min_price_change_pct: Optional[float] = None,
         cooldown_minutes: Optional[float] = None,
+        skip_lock_check: bool = False,
     ) -> tuple[bool, str]:
         """
         Check if an alert should be sent based on throttling rules.
@@ -307,21 +308,23 @@ class SignalMonitorService:
         
         # CRITICAL: Check if another thread is already processing this alert
         # This prevents race conditions when multiple cycles run simultaneously
-        lock_key = f"{symbol}_{side}"
-        current_time_check = time.time()
-        if lock_key in self.alert_sending_locks:
-            lock_timestamp = self.alert_sending_locks[lock_key]
-            lock_age = current_time_check - lock_timestamp
-            if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
-                remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
-                return False, (
-                    f"Another thread is already processing {symbol} {side} alert "
-                    f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
-                )
-            else:
-                # Lock expired, remove it
-                logger.debug(f"🔓 Expired lock removed for {symbol} {side} alert (age: {lock_age:.2f}s)")
-                del self.alert_sending_locks[lock_key]
+        # Skip lock check if we've already acquired the lock (skip_lock_check=True)
+        if not skip_lock_check:
+            lock_key = f"{symbol}_{side}"
+            current_time_check = time.time()
+            if lock_key in self.alert_sending_locks:
+                lock_timestamp = self.alert_sending_locks[lock_key]
+                lock_age = current_time_check - lock_timestamp
+                if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
+                    remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
+                    return False, (
+                        f"Another thread is already processing {symbol} {side} alert "
+                        f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
+                    )
+                else:
+                    # Lock expired, remove it
+                    logger.debug(f"🔓 Expired lock removed for {symbol} {side} alert (age: {lock_age:.2f}s)")
+                    del self.alert_sending_locks[lock_key]
         
         # If no previous alert for this symbol+side, check lock first to prevent duplicates
         if not last_alert:
@@ -2125,7 +2128,9 @@ class SignalMonitorService:
                     prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL")
                     
                     # Apply throttling logic: check if alert should be sent based on price change and cooldown
+                    # NOTE: We've already set the lock, so should_send_alert will skip the lock check
                     min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    # CRITICAL: Pass skip_lock_check=True since we've already acquired the lock
                     should_send, throttle_reason = self.should_send_alert(
                         symbol=symbol,
                         side="SELL",
@@ -2133,6 +2138,7 @@ class SignalMonitorService:
                         trade_enabled=watchlist_item.trade_enabled,
                         min_price_change_pct=min_pct,
                         cooldown_minutes=cooldown,
+                        skip_lock_check=True,  # We already have the lock, don't check again
                     )
                     if not should_send:
                         logger.debug(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
