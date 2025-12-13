@@ -1299,6 +1299,18 @@ class SignalMonitorService:
                             self._classify_throttle_reason(buy_reason),
                             {"throttle_reason": buy_reason},
                         )
+                        # Record throttled event in throttle state table so it appears in Throttle panel
+                        try:
+                            record_signal_event(
+                                db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="BUY",
+                                price=current_price,
+                                source="throttled",
+                            )
+                        except Exception as state_err:
+                            logger.warning(f"Failed to persist BUY throttle state (throttled) for {symbol}: {state_err}")
                     else:
                         self._log_signal_accept(
                             symbol,
@@ -2150,6 +2162,18 @@ class SignalMonitorService:
                             self._classify_throttle_reason(throttle_reason),
                             {"throttle_reason": throttle_reason},
                         )
+                        # Record throttled event in throttle state table so it appears in Throttle panel
+                        try:
+                            record_signal_event(
+                                db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="SELL",
+                                price=current_price,
+                                source="throttled",
+                            )
+                        except Exception as state_err:
+                            logger.warning(f"Failed to persist SELL throttle state (throttled) for {symbol}: {state_err}")
                     else:
                         self._log_signal_accept(
                             symbol,
@@ -2194,6 +2218,18 @@ class SignalMonitorService:
                             add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
                         except Exception:
                             pass  # Non-critical, continue
+                        # Record blocked event in throttle state table so it appears in Throttle panel
+                        try:
+                            record_signal_event(
+                                db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="SELL",
+                                price=current_price,
+                                source="blocked",
+                            )
+                        except Exception as state_err:
+                            logger.warning(f"Failed to persist SELL throttle state (blocked) for {symbol}: {state_err}")
                     elif should_send:
                         # Send Telegram alert (only if sell_alert_enabled = true and should_send = true)
                         try:
@@ -3197,24 +3233,16 @@ class SignalMonitorService:
             
             logger.info(f"🔴 Creating automatic SELL order for {symbol}: amount_usd={amount_usd}, margin={use_margin}")
             
-            # Calculate quantity for SELL order
-            qty = amount_usd / current_price
-            # Round quantity based on price
-            if current_price >= 100:
-                qty = round(qty, 4)
-            elif current_price >= 1:
-                qty = round(qty, 6)
-            else:
-                qty = round(qty, 8)
-            
             # Place MARKET SELL order
             side_upper = "SELL"
             
-            # SELL market order: use quantity (not notional)
+            # CRITICAL FIX: Use notional (like BUY orders) instead of calculating quantity manually
+            # This avoids "Invalid quantity format" errors by letting the exchange calculate the exact quantity
+            # based on current price and the symbol's precision requirements
             result = trade_client.place_market_order(
                 symbol=symbol,
                 side=side_upper,
-                qty=qty,  # For SELL, use quantity
+                notional=amount_usd,  # Use notional instead of qty to avoid precision issues
                 is_margin=use_margin,
                 leverage=leverage_value if use_margin else None,
                 dry_run=dry_run_mode
