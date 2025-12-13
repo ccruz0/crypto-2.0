@@ -600,6 +600,131 @@ def get_open_orders(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.post("/orders/verify-stale")
+def verify_and_cleanup_stale_orders(
+    symbol: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """
+    Verify orders in database against exchange and mark stale ones as CANCELLED.
+    
+    Args:
+        symbol: Optional symbol to check (e.g., "BTC_USDT"). If None, checks all symbols.
+    
+    Returns:
+        Dict with verification results and cleanup status
+    """
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+        from datetime import datetime, timezone
+        
+        # Get all active orders from database
+        query = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status.in_([
+                OrderStatusEnum.NEW, 
+                OrderStatusEnum.ACTIVE, 
+                OrderStatusEnum.PARTIALLY_FILLED
+            ])
+        )
+        
+        if symbol:
+            query = query.filter(ExchangeOrder.symbol == symbol.upper())
+        
+        db_orders = query.all()
+        logger.info(f"Found {len(db_orders)} active orders in database" + (f" for {symbol}" if symbol else ""))
+        
+        if not db_orders:
+            return {
+                "ok": True,
+                "message": "No active orders found in database",
+                "valid_orders": 0,
+                "stale_orders": 0,
+                "cleaned_up": 0
+            }
+        
+        # Get actual open orders from exchange
+        logger.info("Fetching open orders from exchange...")
+        try:
+            exchange_response = trade_client.get_open_orders()
+            exchange_orders = exchange_response.get("data", [])
+            
+            # Also get trigger orders
+            trigger_response = trade_client.get_trigger_orders()
+            trigger_orders = trigger_response.get("data", []) if trigger_response else []
+            
+            # Combine all exchange orders
+            all_exchange_orders = exchange_orders + trigger_orders
+            exchange_order_ids = {order.get('order_id') for order in all_exchange_orders if order.get('order_id')}
+            
+            logger.info(f"Found {len(exchange_order_ids)} open orders on exchange")
+            
+        except Exception as e:
+            logger.error(f"Error fetching orders from exchange: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cannot verify orders - exchange API call failed: {str(e)}"
+            )
+        
+        # Check each database order
+        stale_orders = []
+        valid_orders = []
+        
+        for db_order in db_orders:
+            order_id = db_order.exchange_order_id
+            if order_id in exchange_order_ids:
+                valid_orders.append({
+                    "order_id": order_id,
+                    "symbol": db_order.symbol,
+                    "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
+                    "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status)
+                })
+            else:
+                stale_orders.append({
+                    "order_id": order_id,
+                    "symbol": db_order.symbol,
+                    "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
+                    "order_type": db_order.order_type,
+                    "price": float(db_order.price) if db_order.price else None,
+                    "quantity": float(db_order.quantity) if db_order.quantity else None,
+                    "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status)
+                })
+        
+        # Mark stale orders as CANCELLED
+        cleaned_count = 0
+        if stale_orders:
+            for order_info in stale_orders:
+                order = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.exchange_order_id == order_info["order_id"]
+                ).first()
+                
+                if order:
+                    order.status = OrderStatusEnum.CANCELLED
+                    order.exchange_update_time = datetime.now(timezone.utc)
+                    cleaned_count += 1
+                    logger.info(f"✅ Marked order {order_info['order_id']} ({order_info['symbol']}) as CANCELLED")
+            
+            db.commit()
+            logger.info(f"Successfully marked {cleaned_count} orders as CANCELLED")
+        
+        return {
+            "ok": True,
+            "message": f"Verification complete. {len(valid_orders)} valid orders, {len(stale_orders)} stale orders found.",
+            "valid_orders": len(valid_orders),
+            "stale_orders": len(stale_orders),
+            "cleaned_up": cleaned_count,
+            "stale_order_details": stale_orders,
+            "valid_order_details": valid_orders
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error verifying stale orders")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/orders/history")
 def get_order_history(
     limit: int = 100,  # Default to 100 orders per page

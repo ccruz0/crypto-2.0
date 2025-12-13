@@ -255,11 +255,17 @@ class ExchangeSyncService:
                 update_open_orders_cache(unified_orders)
             
             # Mark orders not in response as cancelled/closed
+            # Include both regular orders and trigger orders in the check
+            all_exchange_order_ids = set()
             if orders:
-                order_ids = {order.get('order_id') for order in orders}
+                all_exchange_order_ids.update(order.get('order_id') for order in orders if order.get('order_id'))
+            if trigger_orders:
+                all_exchange_order_ids.update(order.get('order_id') for order in trigger_orders if order.get('order_id'))
+            
+            if all_exchange_order_ids or orders or trigger_orders:  # Check even if exchange returns empty list
                 existing_orders = db.query(ExchangeOrder).filter(
                     and_(
-                        ExchangeOrder.exchange_order_id.notin_(order_ids),
+                        ExchangeOrder.exchange_order_id.notin_(all_exchange_order_ids),
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
                     )
                 ).all()
@@ -710,6 +716,15 @@ class ExchangeSyncService:
         
         if not watchlist_item:
             logger.debug(f"No watchlist item found for {symbol}, skipping SL/TP creation")
+            return
+        
+        # CRITICAL: Check if trading is enabled for this symbol before creating SL/TP orders
+        # This prevents creating orders when trade_enabled=False
+        if not getattr(watchlist_item, 'trade_enabled', False):
+            logger.info(
+                f"🚫 SL/TP creation blocked for {symbol} order {order_id}: "
+                f"trade_enabled=False. Trading is disabled for this symbol."
+            )
             return
         
         # CRITICAL: Determine margin mode and leverage for SL/TP orders
