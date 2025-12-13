@@ -1686,7 +1686,7 @@ class SignalMonitorService:
                     return  # Exit early
                 
                 # Set lock BEFORE creating order to prevent concurrent creation
-                import time
+                # Use time module (already imported at top of file)
                 self.order_creation_locks[symbol] = time.time()
                 logger.info(f"🔒 Lock set for {symbol} order creation")
                 
@@ -2387,7 +2387,7 @@ class SignalMonitorService:
         # ========================================================================
         # Si este símbolo tuvo un error 609 recientemente, forzar SPOT en lugar de MARGIN
         # para evitar reintentos innecesarios que seguirán fallando
-        import time
+        # Use time module (already imported at top of file)
         if symbol in self.margin_error_609_locks:
             lock_timestamp = self.margin_error_609_locks[symbol]
             lock_age_minutes = (time.time() - lock_timestamp) / 60
@@ -2590,7 +2590,7 @@ class SignalMonitorService:
                 # En este caso, intentar automáticamente con SPOT en lugar de MARGIN
                 if use_margin and error_msg and ("609" in error_msg or "INSUFFICIENT_MARGIN" in error_msg.upper()):
                     # Activar bloqueo temporal inmediatamente para evitar reintentos con margen
-                    import time
+                    # Use time module (already imported at top of file)
                     self.margin_error_609_locks[symbol] = time.time()
                     logger.warning(
                         f"🔒 Bloqueo temporal activado para {symbol}: "
@@ -2651,7 +2651,7 @@ class SignalMonitorService:
                                 logger.warning(f"Failed to send Telegram critical notification: {e}")
                             error_msg = f"Error 609 (INSUFFICIENT_MARGIN): MARGIN falló | SPOT falló: {spot_error}"
                             # Activar bloqueo temporal para evitar reintentos con margen
-                            import time
+                            # Use time module (already imported at top of file)
                             self.margin_error_609_locks[symbol] = time.time()
                             logger.warning(
                                 f"🔒 Bloqueo temporal activado para {symbol}: "
@@ -2662,7 +2662,7 @@ class SignalMonitorService:
                         logger.error(f"❌ Excepción durante fallback SPOT para {symbol}: {spot_err}")
                         error_msg = f"Error 609 (INSUFFICIENT_MARGIN): MARGIN falló | SPOT exception: {str(spot_err)}"
                         # Activar bloqueo temporal incluso si el fallback SPOT falló
-                        import time
+                        # Use time module (already imported at top of file)
                         self.margin_error_609_locks[symbol] = time.time()
                         logger.warning(
                             f"🔒 Bloqueo temporal activado para {symbol}: "
@@ -2961,7 +2961,7 @@ class SignalMonitorService:
             # Save order to database (BOTH order_history_db AND ExchangeOrder for immediate visibility)
             try:
                 from app.services.order_history_db import order_history_db
-                import time
+                # Use time module (already imported at top of file)
                 
                 result_status = result.get("status", "").upper()
                 cumulative_qty = float(result.get("cumulative_quantity", 0) or 0)
@@ -3269,7 +3269,7 @@ class SignalMonitorService:
             # Save order to database
             try:
                 from app.services.order_history_db import order_history_db
-                import time
+                # Use time module (already imported at top of file)
                 
                 result_status = result.get("status", "").upper()
                 cumulative_qty = float(result.get("cumulative_quantity", 0) or 0)
