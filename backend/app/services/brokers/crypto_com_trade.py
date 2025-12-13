@@ -1146,6 +1146,12 @@ class CryptoComTradeClient:
             # CRITICAL: Store as string to prevent any float conversion
             params["quantity"] = str(qty_str)
             logger.info(f"🔍 [QUANTITY_FORMAT] Final quantity string for {symbol}: '{params['quantity']}' (type: {type(params['quantity']).__name__})")
+            logger.info(f"🔍 [QUANTITY_FORMAT] Original qty={qty}, Formatted qty_str='{qty_str}', params['quantity']='{params['quantity']}'")
+            
+            # Double-check: Ensure it's a string, not a float
+            if not isinstance(params["quantity"], str):
+                logger.error(f"❌ [QUANTITY_FORMAT] ERROR: params['quantity'] is not a string! Type: {type(params['quantity']).__name__}, Value: {params['quantity']}")
+                params["quantity"] = str(qty_str)  # Force conversion
         
         # MARGIN TRADING: Include leverage parameter when is_margin = True
         # Crypto.com Exchange API: The presence of 'leverage' parameter makes the order a margin order
