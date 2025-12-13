@@ -1018,6 +1018,18 @@ class SignalMonitorService:
                     )
                 except Exception:
                     pass
+                # Record throttled event in throttle state table
+                try:
+                    record_signal_event(
+                        db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        source="throttled",
+                    )
+                except Exception as state_err:
+                    logger.warning(f"Failed to persist BUY throttle state (throttled) for {symbol}: {state_err}")
                 buy_signal = False
                 if current_state == "BUY":
                     current_state = "WAIT"
@@ -1052,10 +1064,8 @@ class SignalMonitorService:
                     f"🔍 [DEBUG] {symbol} SELL throttle check: sell_allowed={sell_allowed}, "
                     f"sell_reason={sell_reason}, sell_signal={sell_signal}"
                 )
-            # CRITICAL FIX: Do NOT set sell_signal = False here!
-            # The throttle check should only log the blocking, but allow the alert section to handle it.
-            # This ensures the SELL alert section (line 2046+) can still execute and log the decision.
-            # The actual alert sending will be throttled in the alert section itself (line 2120+).
+            # CRITICAL: If throttle check blocks the signal, set sell_signal = False to prevent alert sending
+            # This ensures SELL alerts respect the same throttling rules as BUY (cooldown and price change %)
             if not sell_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
                 logger.info(blocked_msg)
@@ -1077,9 +1087,21 @@ class SignalMonitorService:
                     )
                 except Exception:
                     pass
-                # REMOVED: sell_signal = False
-                # Keep sell_signal = True so the alert section can still execute and handle throttling properly
-                # Only update current_state for tracking purposes
+                # Record throttled event in throttle state table
+                try:
+                    record_signal_event(
+                        db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="SELL",
+                        price=current_price,
+                        source="throttled",
+                    )
+                except Exception as state_err:
+                    logger.warning(f"Failed to persist SELL throttle state (throttled) for {symbol}: {state_err}")
+                # CRITICAL: Set sell_signal = False to prevent alert from being sent
+                # This ensures throttling rules (cooldown and price change %) are respected
+                sell_signal = False
                 if current_state == "SELL":
                     current_state = "WAIT"
         
