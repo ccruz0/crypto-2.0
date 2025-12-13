@@ -339,6 +339,9 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         return []
     
     try:
+        from app.models.telegram_message import TelegramMessage
+        import re
+        
         bounded_limit = max(1, min(limit, 500))
         rows = (
             db.query(SignalThrottleState)
@@ -357,6 +360,59 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 if last_time
                 else None
             )
+            
+            # Calculate price difference percentage by finding previous alert
+            price_change_pct = None
+            if row.last_price and row.symbol and row.side:
+                try:
+                    # Query for previous TelegramMessage with same symbol and side
+                    # Look for messages that are not blocked and contain price info
+                    previous_messages = (
+                        db.query(TelegramMessage)
+                        .filter(
+                            TelegramMessage.symbol == row.symbol,
+                            TelegramMessage.timestamp < last_time,
+                            TelegramMessage.blocked == False,
+                        )
+                        .order_by(TelegramMessage.timestamp.desc())
+                        .limit(10)
+                        .all()
+                    )
+                    
+                    # Try to extract price from previous messages
+                    # Look for messages with same side (BUY/SELL) to get accurate comparison
+                    for prev_msg in previous_messages:
+                        # Check if message is for the same side (BUY or SELL)
+                        msg_upper = (prev_msg.message or '').upper()
+                        side_match = row.side.upper() in msg_upper
+                        
+                        # Extract price from message text
+                        # Common formats: "💵 Price: $1234.5678", "Price: $1234.5678", "$1234.5678"
+                        price_patterns = [
+                            r'💵\s*Price[:\s]+\$?([\d,]+\.?\d*)',  # "💵 Price: $1234.5678"
+                            r'Price[:\s]+\$?([\d,]+\.?\d*)',  # "Price: $1234.5678"
+                            r'\$([\d,]+\.?\d{2,4})',  # "$1234.5678" (at least 2 decimals)
+                        ]
+                        for pattern in price_patterns:
+                            match = re.search(pattern, prev_msg.message or '', re.IGNORECASE)
+                            if match:
+                                try:
+                                    prev_price_str = match.group(1).replace(',', '')
+                                    prev_price = float(prev_price_str)
+                                    if prev_price > 0 and row.last_price > 0:
+                                        # Calculate percentage change
+                                        calculated_pct = ((row.last_price - prev_price) / prev_price * 100)
+                                        # Only use if it's a reasonable price (within 50% change)
+                                        if abs(calculated_pct) <= 50:
+                                            price_change_pct = calculated_pct
+                                            break
+                                except (ValueError, AttributeError):
+                                    continue
+                        if price_change_pct is not None:
+                            break
+                except Exception as price_err:
+                    log.debug(f"Could not calculate price change for {row.symbol} {row.side}: {price_err}")
+            
             payload.append(
                 {
                     "symbol": row.symbol,
@@ -365,6 +421,7 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     "last_price": row.last_price,
                     "last_time": last_time.isoformat() if last_time else None,
                     "seconds_since_last": seconds_since,
+                    "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
                 }
             )
         return payload
