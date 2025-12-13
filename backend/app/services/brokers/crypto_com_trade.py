@@ -1346,8 +1346,8 @@ class CryptoComTradeClient:
                     logger.warning(f"[MARGIN_RESPONSE] status_code={response.status_code} (non-JSON response)")
                     logger.warning(f"[MARGIN_RESPONSE] response_text={response.text[:500]}")
                 
-                # Check for 500 errors and extract detailed error message
-                if response.status_code == 500:
+                # Check for error responses (400, 500, etc.) before raise_for_status
+                if response.status_code != 200:
                     try:
                         error_data = response.json()
                         error_code = error_data.get("code", 0)
@@ -1355,6 +1355,71 @@ class CryptoComTradeClient:
                         error_details = f"{response.status_code} Server Error: {error_msg or 'Internal Server Error'}"
                         if error_code:
                             error_details += f" (code: {error_code})"
+                        
+                        # Special handling for error 213 (Invalid quantity format) for SELL orders
+                        if error_code == 213 and side_upper == "SELL" and "quantity" in params:
+                            logger.warning(f"⚠️ Error 213 (Invalid quantity format) for MARKET SELL {symbol}. Trying different precision levels...")
+                            
+                            # Define precision levels to try (same as STOP_LIMIT orders)
+                            import decimal as dec
+                            precision_levels = [
+                                (2, dec.Decimal('0.01')),      # Most common: 2 decimals
+                                (8, dec.Decimal('0.00000001')), # Low-value coins like DOGE
+                                (6, dec.Decimal('0.000001')),   # High-value coins like BTC
+                                (4, dec.Decimal('0.0001')),     # Medium precision
+                                (3, dec.Decimal('0.001')),      # Lower precision
+                                (1, dec.Decimal('0.1')),         # Very low precision
+                                (0, dec.Decimal('1')),          # Whole numbers only
+                            ]
+                            
+                            # Try different precision levels
+                            original_qty = qty
+                            for prec_decimals, prec_tick in precision_levels:
+                                logger.info(f"🔄 Trying MARKET SELL {symbol} with precision {prec_decimals} decimals (tick_size={prec_tick})...")
+                                
+                                # Re-format quantity with new precision using Decimal
+                                qty_decimal = dec.Decimal(str(original_qty))
+                                qty_decimal = (qty_decimal / prec_tick).quantize(dec.Decimal('1'), rounding=dec.ROUND_DOWN) * prec_tick
+                                
+                                # Format with exact precision - keep trailing zeros
+                                if prec_decimals == 0:
+                                    qty_str_new = str(int(qty_decimal))
+                                else:
+                                    qty_str_new = format(qty_decimal, f'.{prec_decimals}f')
+                                
+                                logger.info(f"Quantity formatted: {original_qty} -> '{qty_str_new}' (precision {prec_decimals} decimals)")
+                                
+                                # Update params with new quantity
+                                params_retry = params.copy()
+                                params_retry["quantity"] = qty_str_new
+                                
+                                # Try this precision
+                                try:
+                                    payload_retry = self.sign_request(method, params_retry)
+                                    response_retry = requests.post(url, json=payload_retry, headers={"Content-Type": "application/json"}, timeout=10)
+                                    
+                                    if response_retry.status_code == 200:
+                                        result_retry = response_retry.json()
+                                        logger.info(f"✅ Successfully placed MARKET SELL order with precision {prec_decimals} decimals")
+                                        return result_retry.get("result", {})
+                                    
+                                    # Check if it's still error 213
+                                    try:
+                                        error_data_retry = response_retry.json()
+                                        new_error_code = error_data_retry.get('code', 0)
+                                        if new_error_code != 213:
+                                            # Different error - stop trying precisions
+                                            logger.debug(f"Different error {new_error_code} with precision {prec_decimals}, stopping retry")
+                                            break
+                                    except:
+                                        pass
+                                    
+                                except Exception as retry_err:
+                                    logger.debug(f"Error trying precision {prec_decimals}: {retry_err}")
+                                    continue
+                            
+                            # If all precision levels failed, return original error
+                            logger.error(f"❌ All precision levels failed for MARKET SELL {symbol}. Original error: {error_details}")
                         
                         # Special handling for error 306 (INSUFFICIENT_AVAILABLE_BALANCE)
                         if error_code == 306 or "306" in str(error_code):
@@ -1368,7 +1433,7 @@ class CryptoComTradeClient:
                             logger.error(f"[MARGIN_ERROR_306] Verify: 1) Request payload matches Crypto.com API docs 2) Account has enough margin")
                         else:
                             margin_status = f"MARGIN (leverage={params.get('leverage', 'N/A')})" if is_margin else "SPOT"
-                            logger.error(f"❌ API 500 error placing {margin_status} market order for {symbol}: {error_details}")
+                            logger.error(f"❌ API error placing {margin_status} market order for {symbol}: {error_details}")
                         
                         logger.error(f"📊 Order parameters that failed: {json.dumps(params, indent=2)}")
                         logger.error(f"Full error response: {json.dumps(error_data, indent=2)}")
@@ -1376,7 +1441,7 @@ class CryptoComTradeClient:
                     except (ValueError, KeyError):
                         # If response is not JSON, use status text
                         error_details = f"{response.status_code} Server Error: {response.reason or 'Internal Server Error'}"
-                        logger.error(f"API 500 error placing market order (non-JSON response): {error_details}")
+                        logger.error(f"API error placing market order (non-JSON response): {error_details}")
                         logger.error(f"Response text: {response.text[:500]}")
                         return {"error": error_details}
                 
