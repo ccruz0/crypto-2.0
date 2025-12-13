@@ -309,8 +309,8 @@ class SignalMonitorService:
         # CRITICAL: Check if another thread is already processing this alert
         # This prevents race conditions when multiple cycles run simultaneously
         # Skip lock check if we've already acquired the lock (skip_lock_check=True)
+        lock_key = f"{symbol}_{side}"  # Define lock_key for use in later code
         if not skip_lock_check:
-            lock_key = f"{symbol}_{side}"
             current_time_check = time.time()
             if lock_key in self.alert_sending_locks:
                 lock_timestamp = self.alert_sending_locks[lock_key]
@@ -329,19 +329,21 @@ class SignalMonitorService:
         # If no previous alert for this symbol+side, check lock first to prevent duplicates
         if not last_alert:
             # Double-check lock to ensure we're the first to process this
-            if lock_key in self.alert_sending_locks:
-                lock_timestamp = self.alert_sending_locks[lock_key]
-                lock_age = current_time_check - lock_timestamp
-                if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
-                    remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
-                    return False, (
-                        f"Another thread is already processing first {symbol} {side} alert "
-                        f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
-                    )
-                else:
-                    # Lock expired, remove it
-                    logger.debug(f"🔓 Expired lock removed for first {symbol} {side} alert (age: {lock_age:.2f}s)")
-                    del self.alert_sending_locks[lock_key]
+            if not skip_lock_check:
+                current_time_check = time.time()
+                if lock_key in self.alert_sending_locks:
+                    lock_timestamp = self.alert_sending_locks[lock_key]
+                    lock_age = current_time_check - lock_timestamp
+                    if lock_age < self.ALERT_SENDING_LOCK_SECONDS:
+                        remaining_seconds = self.ALERT_SENDING_LOCK_SECONDS - lock_age
+                        return False, (
+                            f"Another thread is already processing first {symbol} {side} alert "
+                            f"(lock age: {lock_age:.2f}s, remaining: {remaining_seconds:.2f}s{time_info}{price_info})"
+                        )
+                    else:
+                        # Lock expired, remove it
+                        logger.debug(f"🔓 Expired lock removed for first {symbol} {side} alert (age: {lock_age:.2f}s)")
+                        del self.alert_sending_locks[lock_key]
             return True, "First alert for this symbol and side"
         
         last_alert_time = last_alert.get("last_alert_time")
