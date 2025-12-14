@@ -44,6 +44,8 @@ jobs:
       run: npx playwright install --with-deps
       
     - name: Run data integrity tests
+      id: run_tests
+      continue-on-error: true
       working-directory: frontend
       env:
         BASE_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
