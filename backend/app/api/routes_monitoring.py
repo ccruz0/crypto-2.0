@@ -361,55 +361,38 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 else None
             )
             
-            # Calculate price difference percentage by finding previous alert
+            # Calculate price difference percentage by finding previous signal throttle state
             price_change_pct = None
-            if row.last_price and row.symbol and row.side:
+            if row.last_price and row.symbol and row.side and row.strategy_key:
                 try:
-                    # Query for previous TelegramMessage with same symbol and side
-                    # Look for messages that are not blocked and contain price info
-                    previous_messages = (
-                        db.query(TelegramMessage)
+                    # Query for previous SignalThrottleState with same symbol, strategy, and side
+                    # This is more reliable than parsing Telegram messages
+                    previous_state = (
+                        db.query(SignalThrottleState)
                         .filter(
-                            TelegramMessage.symbol == row.symbol,
-                            TelegramMessage.timestamp < last_time,
-                            TelegramMessage.blocked == False,
+                            SignalThrottleState.symbol == row.symbol,
+                            SignalThrottleState.strategy_key == row.strategy_key,
+                            SignalThrottleState.side == row.side,
+                            SignalThrottleState.last_time < last_time,
+                            SignalThrottleState.last_price.isnot(None),
                         )
-                        .order_by(TelegramMessage.timestamp.desc())
-                        .limit(10)
-                        .all()
+                        .order_by(SignalThrottleState.last_time.desc())
+                        .first()
                     )
                     
-                    # Try to extract price from previous messages
-                    # Look for messages with same side (BUY/SELL) to get accurate comparison
-                    for prev_msg in previous_messages:
-                        # Check if message is for the same side (BUY or SELL)
-                        msg_upper = (prev_msg.message or '').upper()
-                        side_match = row.side.upper() in msg_upper
-                        
-                        # Extract price from message text
-                        # Common formats: "💵 Price: $1234.5678", "Price: $1234.5678", "$1234.5678"
-                        price_patterns = [
-                            r'💵\s*Price[:\s]+\$?([\d,]+\.?\d*)',  # "💵 Price: $1234.5678"
-                            r'Price[:\s]+\$?([\d,]+\.?\d*)',  # "Price: $1234.5678"
-                            r'\$([\d,]+\.?\d{2,4})',  # "$1234.5678" (at least 2 decimals)
-                        ]
-                        for pattern in price_patterns:
-                            match = re.search(pattern, prev_msg.message or '', re.IGNORECASE)
-                            if match:
-                                try:
-                                    prev_price_str = match.group(1).replace(',', '')
-                                    prev_price = float(prev_price_str)
-                                    if prev_price > 0 and row.last_price > 0:
-                                        # Calculate percentage change
-                                        calculated_pct = ((row.last_price - prev_price) / prev_price * 100)
-                                        # Only use if it's a reasonable price (within 50% change)
-                                        if abs(calculated_pct) <= 50:
-                                            price_change_pct = calculated_pct
-                                            break
-                                except (ValueError, AttributeError):
-                                    continue
-                        if price_change_pct is not None:
-                            break
+                    if previous_state and previous_state.last_price and row.last_price > 0:
+                        prev_price = previous_state.last_price
+                        if prev_price > 0:
+                            # Calculate percentage change
+                            calculated_pct = ((row.last_price - prev_price) / prev_price * 100)
+                            # Only use if it's a reasonable price change (within 100% change to handle large moves)
+                            if abs(calculated_pct) <= 100:
+                                price_change_pct = calculated_pct
+                            else:
+                                log.debug(
+                                    f"Price change {calculated_pct:.2f}% for {row.symbol} {row.side} "
+                                    f"exceeds reasonable range, skipping"
+                                )
                 except Exception as price_err:
                     log.debug(f"Could not calculate price change for {row.symbol} {row.side}: {price_err}")
             
@@ -536,10 +519,25 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     
                     # Record completion status based on return code
                     if result.returncode == 0:
+                        # Determine report path for watchlist_consistency workflow
+                        report_path = None
+                        if workflow_id == "watchlist_consistency":
+                            from datetime import datetime
+                            date_str = datetime.now().strftime("%Y%m%d")
+                            # Report is generated in docs/monitoring/ relative to project root
+                            # In Docker: /app/docs/monitoring/
+                            # In local: .../backend/../docs/monitoring/
+                            project_root = os.path.dirname(os.path.dirname(backend_root))
+                            report_path = os.path.join("docs", "monitoring", f"watchlist_consistency_report_latest.md")
+                            # Also check if dated report exists
+                            dated_report = os.path.join("docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
+                            if os.path.exists(os.path.join(project_root, dated_report)):
+                                report_path = dated_report
+                        
                         record_workflow_execution(
                             workflow_id, 
                             "success", 
-                            f"Workflow completed successfully. STDOUT: {result.stdout[:500]}"
+                            report_path
                         )
                         log.info(f"Workflow {workflow_id} completed successfully")
                     else:

@@ -199,9 +199,19 @@ class TradingScheduler:
             # Date is already set in async wrapper to prevent concurrent execution
             if result.returncode == 0:
                 logger.info("Nightly consistency check completed")
-                # Record successful execution with correct workflow_id
+                # Record successful execution with correct workflow_id and report path
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("watchlist_consistency", "success", "Nightly consistency check completed successfully")
+                from datetime import datetime
+                import os
+                date_str = datetime.now().strftime("%Y%m%d")
+                # Report is generated in docs/monitoring/ relative to project root
+                project_root = os.path.dirname(backend_root)
+                report_path = os.path.join("docs", "monitoring", f"watchlist_consistency_report_latest.md")
+                # Also check if dated report exists
+                dated_report = os.path.join("docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
+                if os.path.exists(os.path.join(project_root, dated_report)):
+                    report_path = dated_report
+                record_workflow_execution("watchlist_consistency", "success", report_path)
             else:
                 logger.error(f"Nightly consistency check failed with return code {result.returncode}")
                 logger.error(f"STDOUT: {result.stdout}")
