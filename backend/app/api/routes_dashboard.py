@@ -859,12 +859,35 @@ def update_watchlist_item(
     db.commit()
     db.refresh(item)
     
-    # When trade_enabled is toggled to YES, enable buy_alert_enabled and set force_next_signal
+    # When trade_enabled is toggled, reset throttle state and set force_next_signal
     if "trade_enabled" in payload:
         old_value = item.trade_enabled if hasattr(item, '_sa_instance_state') else None
         new_value = payload.get("trade_enabled")
         # Re-check after update to ensure we have the latest value
         db.refresh(item)
+        
+        # CRITICAL: Reset throttle state whenever trade_enabled changes (ON or OFF)
+        # This clears the last_time and last_price so alerts can be sent immediately
+        try:
+            from app.services.strategy_profiles import resolve_strategy_profile
+            from app.services.signal_throttle import build_strategy_key, reset_throttle_state, set_force_next_signal
+            strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+            strategy_key = build_strategy_key(
+                strategy_profile[0],  # strategy_type
+                strategy_profile[1]   # risk_approach
+            )
+            # Reset throttle state to clear last_time and last_price
+            reset_throttle_state(db, symbol=item.symbol, strategy_key=strategy_key)
+            log.info(f"🔄 [TRADE] Reset throttle state for {item.symbol} (trade_enabled={new_value}) - cleared cooldown timers")
+            
+            # Set force flag for both BUY and SELL to allow immediate signals
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="SELL", enabled=True)
+            log.info(f"⚡ [TRADE] Set force_next_signal for {item.symbol} BUY/SELL - next evaluation will bypass throttle")
+        except Exception as throttle_err:
+            log.warning(f"⚠️ [TRADE] Failed to reset throttle state for {item.symbol}: {throttle_err}", exc_info=True)
+        
+        # When trade_enabled is toggled to YES, also enable buy_alert_enabled and sell_alert_enabled
         if new_value and item.trade_enabled:
             # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
             # This ensures alerts are sent when signals are detected
@@ -876,21 +899,6 @@ def update_watchlist_item(
                 log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {item.symbol} (required for SELL alerts)")
             db.commit()
             db.refresh(item)
-            
-            try:
-                from app.services.strategy_profiles import resolve_strategy_profile
-                from app.services.signal_throttle import build_strategy_key, set_force_next_signal
-                strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
-                strategy_key = build_strategy_key(
-                    strategy_profile[0],  # strategy_type
-                    strategy_profile[1]   # risk_approach
-                )
-                # Set force flag for both BUY and SELL to allow immediate signals
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="SELL", enabled=True)
-                log.info(f"⚡ [TRADE] Set force_next_signal for {item.symbol} BUY/SELL - next evaluation will bypass throttle")
-            except Exception as throttle_err:
-                log.warning(f"⚠️ [TRADE] Failed to set force_next_signal for {item.symbol}: {throttle_err}", exc_info=True)
     
     # When strategy (sl_tp_mode) changes, reset throttle state for all strategies and set force_next_signal for new strategy
     if strategy_changed:

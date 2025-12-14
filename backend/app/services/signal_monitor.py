@@ -1990,9 +1990,20 @@ class SignalMonitorService:
                         missing_mas.append("MA50")
                     if ema10 is None:
                         missing_mas.append("EMA10")
-                    error_msg = f"❌ Cannot create BUY order for {symbol}: MAs REQUIRED but missing: {', '.join(missing_mas)}"
+                    error_msg = (
+                        f"❌ ORDEN NO EJECUTADA: {symbol} - MAs REQUIRED but missing: {', '.join(missing_mas)}. "
+                        f"La alerta ya fue enviada, pero la orden de compra no se creará sin los indicadores técnicos necesarios."
+                    )
                     logger.error(error_msg)
-                    # Bloquear silenciosamente - no enviar notificación a Telegram
+                    # Send notification to Telegram since alert was sent but order wasn't created
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(error_msg, symbol=symbol, blocked=False, order_skipped=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    # Remove locks and exit
+                    if symbol in self.order_creation_locks:
+                        del self.order_creation_locks[symbol]
                     return  # Exit - cannot create order without MAs
                 
                 # Log MA values for verification
@@ -2102,7 +2113,17 @@ class SignalMonitorService:
                             logger.warning(f"Failed to send Telegram error notification: {e}")
                 else:
                     # alert_enabled = true but trade_enabled = false - send alert only, no order
-                    logger.info(f"ℹ️ Alert sent for {symbol} but trade_enabled = false - no order created (trade_amount_usd={watchlist_item.trade_amount_usd})")
+                    info_msg = (
+                        f"ℹ️ ORDEN NO EJECUTADA: {symbol} - trade_enabled=False. "
+                        f"La alerta ya fue enviada, pero la orden de compra no se creará porque el trading automático está deshabilitado para este símbolo."
+                    )
+                    logger.info(info_msg)
+                    # Send notification to Telegram since alert was sent but order wasn't created
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(info_msg, symbol=symbol, blocked=False, order_skipped=True)
+                    except Exception:
+                        pass  # Non-critical, continue
             
         # ========================================================================
         # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True y sell_alert_enabled=True

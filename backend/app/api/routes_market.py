@@ -973,11 +973,15 @@ def get_top_coins_with_prices(
                             logger.debug(f"Could not fetch fresh volume for {symbol}: {vol_err}")
                     
                     # Calculate volume_ratio - always recalculate from current values to ensure accuracy
+                    # CRITICAL: If current_volume is 0.0, volume_ratio must be 0.0 (not None) to avoid frontend fallback calculations
                     volume_ratio_value = None
-                    if current_volume_value and current_volume_value > 0 and avg_volume_value and avg_volume_value > 0:
-                        # Always recalculate ratio from current values
-                        volume_ratio_value = current_volume_value / avg_volume_value
-                    elif md and md.volume_ratio and md.volume_ratio > 0:
+                    if current_volume_value is not None and avg_volume_value is not None and avg_volume_value > 0:
+                        # Always recalculate ratio from current values (including when current_volume is 0.0)
+                        volume_ratio_value = current_volume_value / avg_volume_value if current_volume_value > 0 else 0.0
+                    elif current_volume_value is not None and current_volume_value == 0.0:
+                        # Explicitly set to 0.0 when current_volume is 0.0 (even if avg_volume is missing)
+                        volume_ratio_value = 0.0
+                    elif md and md.volume_ratio is not None:
                         # Use stored ratio only if we don't have current values
                         volume_ratio_value = md.volume_ratio
                     
@@ -995,8 +999,9 @@ def get_top_coins_with_prices(
                         "ma10w": ma10w,
                         "atr": atr,
                         # Volume data from MarketData (with fallback to last available volume)
+                        # CRITICAL: Use avg_volume_value (which may have been updated with fresh data) not md.avg_volume
                         "current_volume": current_volume_value,
-                        "avg_volume": md.avg_volume if md else None,
+                        "avg_volume": avg_volume_value,
                         "volume_ratio": volume_ratio_value,
                         # Resistance levels
                         "res_up": res_up,
