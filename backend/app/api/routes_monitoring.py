@@ -415,6 +415,19 @@ def _is_valid_report_path(report: Optional[str]) -> bool:
     # Contains path separator or file extension, likely a valid path
     return True
 
+def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
+    """Record a workflow execution"""
+    global _workflow_executions
+    # Validate report path - if it's not a valid path, set to None
+    # This prevents messages from being stored as report paths
+    validated_report = report if _is_valid_report_path(report) else None
+    _workflow_executions[workflow_id] = {
+        "last_execution": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "report": validated_report,
+        "error": error,
+    }
+    log.info(f"Workflow execution recorded: {workflow_id} - {status}")
 
 @router.get("/monitoring/workflows")
 async def get_workflows(db: Session = Depends(get_db)):
@@ -563,7 +576,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                 # Record that we started the workflow BEFORE creating the task
                 # This prevents race condition where task completes and records final status
                 # before we record "running" status, causing incorrect status overwrite
-                record_workflow_execution(workflow_id, "running", "Workflow execution started")
+                record_workflow_execution(workflow_id, "running", None)
                 
                 # Start the workflow execution (don't wait for completion)
                 # Store task reference to prevent garbage collection before completion
