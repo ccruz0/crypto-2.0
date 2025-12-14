@@ -20,7 +20,7 @@ WORKFLOWS: List[Dict[str, Any]] = [
         "id": "daily_summary",
         "name": "Daily Summary",
         "description": "Envía resumen diario del portfolio y actividad de trading",
-        "run_endpoint": None,  # No manual trigger endpoint yet
+        "run_endpoint": "/monitoring/workflows/daily_summary/run",
         "schedule": "Diario a las 8:00 AM",
         "automated": True,
     },
@@ -28,7 +28,7 @@ WORKFLOWS: List[Dict[str, Any]] = [
         "id": "sell_orders_report",
         "name": "Sell Orders Report",
         "description": "Reporte de órdenes de venta pendientes",
-        "run_endpoint": None,  # No manual trigger endpoint yet
+        "run_endpoint": "/monitoring/workflows/sell_orders_report/run",
         "schedule": "Diario a las 7:00 AM (Bali time)",
         "automated": True,
     },
@@ -36,7 +36,7 @@ WORKFLOWS: List[Dict[str, Any]] = [
         "id": "sl_tp_check",
         "name": "SL/TP Check",
         "description": "Verifica posiciones sin órdenes de Stop Loss o Take Profit",
-        "run_endpoint": None,  # No manual trigger endpoint yet
+        "run_endpoint": "/monitoring/workflows/sl_tp_check/run",
         "schedule": "Diario a las 8:00 AM",
         "automated": True,
     },
@@ -54,6 +54,14 @@ WORKFLOWS: List[Dict[str, Any]] = [
         "description": "Actualiza el snapshot del dashboard para mejorar rendimiento",
         "run_endpoint": None,  # Continuous process, no manual trigger
         "schedule": "Cada 60 segundos",
+        "automated": True,
+    },
+    {
+        "id": "dashboard_data_integrity",
+        "name": "Dashboard Data Integrity",
+        "description": "Validates UI vs backend data integrity for watchlist, portfolio, and monitoring tabs",
+        "run_endpoint": "/monitoring/workflows/dashboard_data_integrity/run",
+        "schedule": "On push/PR to frontend",
         "automated": True,
     },
 ]

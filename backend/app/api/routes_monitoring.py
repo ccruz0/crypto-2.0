@@ -6,6 +6,8 @@ from app.models.signal_throttle import SignalThrottleState
 import logging
 import time
 import asyncio
+import os
+import requests
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 
@@ -603,6 +605,205 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
             record_workflow_execution(workflow_id, "error", None, str(e))
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    elif workflow_id == "daily_summary":
+        try:
+            from app.services.daily_summary import daily_summary_service
+            
+            async def run_daily_summary():
+                try:
+                    # Run in thread to avoid blocking
+                    await asyncio.to_thread(daily_summary_service.send_daily_summary)
+                    record_workflow_execution(workflow_id, "success", None)
+                    log.info(f"Workflow {workflow_id} completed successfully")
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
+                    raise
+            
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
+            async with workflow_lock:
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+                
+                record_workflow_execution(workflow_id, "running", None)
+                task = asyncio.create_task(run_daily_summary())
+                _background_tasks[workflow_id] = task
+                captured_workflow_id = workflow_id
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
+            
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    
+    elif workflow_id == "sell_orders_report":
+        try:
+            from app.services.daily_summary import daily_summary_service
+            
+            async def run_sell_orders_report():
+                try:
+                    # Run in thread to avoid blocking
+                    await asyncio.to_thread(daily_summary_service.send_sell_orders_report, db)
+                    record_workflow_execution(workflow_id, "success", None)
+                    log.info(f"Workflow {workflow_id} completed successfully")
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
+                    raise
+            
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
+            async with workflow_lock:
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+                
+                record_workflow_execution(workflow_id, "running", None)
+                task = asyncio.create_task(run_sell_orders_report())
+                _background_tasks[workflow_id] = task
+                captured_workflow_id = workflow_id
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
+            
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    
+    elif workflow_id == "sl_tp_check":
+        try:
+            from app.services.sl_tp_checker import sl_tp_checker_service
+            
+            async def run_sl_tp_check():
+                try:
+                    # Run in thread to avoid blocking
+                    check_result = await asyncio.to_thread(sl_tp_checker_service.check_positions_for_sl_tp, db)
+                    positions_missing = check_result.get('positions_missing_sl_tp', [])
+                    
+                    # Send reminder if there are positions missing SL/TP
+                    if positions_missing:
+                        await asyncio.to_thread(sl_tp_checker_service.send_sl_tp_reminder, db)
+                    
+                    record_workflow_execution(workflow_id, "success", None)
+                    log.info(f"Workflow {workflow_id} completed successfully: {len(positions_missing)} positions missing SL/TP")
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
+                    raise
+            
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
+            async with workflow_lock:
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+                
+                record_workflow_execution(workflow_id, "running", None)
+                task = asyncio.create_task(run_sl_tp_check())
+                _background_tasks[workflow_id] = task
+                captured_workflow_id = workflow_id
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
+            
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    
+    elif workflow_id == "dashboard_data_integrity":
+        try:
+            async def trigger_github_workflow():
+                try:
+                    # Get GitHub token and repo info from environment
+                    github_token = os.getenv("GITHUB_TOKEN")
+                    github_repo = os.getenv("GITHUB_REPOSITORY", "ccruz0/crypto-2.0")
+                    workflow_file = "dashboard-data-integrity.yml"
+                    
+                    if not github_token:
+                        raise ValueError("GITHUB_TOKEN environment variable is not set")
+                    
+                    # Trigger workflow via GitHub API
+                    url = f"https://api.github.com/repos/{github_repo}/actions/workflows/{workflow_file}/dispatches"
+                    headers = {
+                        "Authorization": f"token {github_token}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                    payload = {
+                        "ref": "main"  # Branch to trigger on
+                    }
+                    
+                    # Run in thread to avoid blocking
+                    response = await asyncio.to_thread(
+                        requests.post, url, json=payload, headers=headers, timeout=10
+                    )
+                    
+                    if response.status_code == 204:
+                        record_workflow_execution(workflow_id, "success", None)
+                        log.info(f"Workflow {workflow_id} triggered successfully via GitHub API")
+                    else:
+                        error_msg = f"GitHub API returned status {response.status_code}: {response.text}"
+                        record_workflow_execution(workflow_id, "error", None, error_msg)
+                        log.error(f"Workflow {workflow_id} trigger failed: {error_msg}")
+                        raise Exception(error_msg)
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
+                    raise
+            
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
+            async with workflow_lock:
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+                
+                record_workflow_execution(workflow_id, "running", None)
+                task = asyncio.create_task(trigger_github_workflow())
+                _background_tasks[workflow_id] = task
+                captured_workflow_id = workflow_id
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
+            
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started (triggered via GitHub Actions)"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+    
     else:
         # For other workflows, return not implemented
         from fastapi import HTTPException
