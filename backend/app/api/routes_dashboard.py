@@ -848,13 +848,24 @@ def update_watchlist_item(
     db.commit()
     db.refresh(item)
     
-    # When trade_enabled is toggled to YES, set force_next_signal to allow immediate signal/order
+    # When trade_enabled is toggled to YES, enable buy_alert_enabled and set force_next_signal
     if "trade_enabled" in payload:
         old_value = item.trade_enabled if hasattr(item, '_sa_instance_state') else None
         new_value = payload.get("trade_enabled")
         # Re-check after update to ensure we have the latest value
         db.refresh(item)
         if new_value and item.trade_enabled:
+            # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
+            # This ensures alerts are sent when signals are detected
+            if not item.buy_alert_enabled:
+                item.buy_alert_enabled = True
+                log.info(f"⚡ [TRADE] Auto-enabled buy_alert_enabled for {item.symbol} (required for BUY alerts)")
+            if not item.sell_alert_enabled:
+                item.sell_alert_enabled = True
+                log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {item.symbol} (required for SELL alerts)")
+            db.commit()
+            db.refresh(item)
+            
             try:
                 from app.services.strategy_profiles import resolve_strategy_profile
                 from app.services.signal_throttle import build_strategy_key, set_force_next_signal
