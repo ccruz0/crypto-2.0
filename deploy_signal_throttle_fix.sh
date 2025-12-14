@@ -111,3 +111,5 @@ echo "Changes:"
 echo "  - Signal events now recorded immediately when detected (not just when alerts sent)"
 echo "  - Fixed duplicate code in signal_throttle.py"
 echo "  - Signal Throttle dashboard will now update in real-time"
+
+

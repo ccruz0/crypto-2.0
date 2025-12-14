@@ -151,3 +151,5 @@ Si el volumen muestra 0.00 pero el ratio es > 0:
 
 
 
+
+

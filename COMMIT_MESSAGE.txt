@@ -1,0 +1,20 @@
+Fix: Telegram SL/TP notifications + Manual signals support + Active orders filter
+
+Changes:
+- Fix: send_sl_tp_orders() ahora pasa origin=get_runtime_origin() explícitamente
+  Esto asegura que las notificaciones de SL/TP se envíen cuando RUNTIME_ORIGIN=AWS
+
+- Feature: Soporte para señales manuales desde dashboard
+  El sistema ahora usa watchlist_item.signals si está disponible, permitiendo
+  forzar buy_signal=True y sell_signal=True desde el dashboard
+
+- Fix: Solo contar órdenes TP activas en dashboard
+  Excluye órdenes CANCELLED, FILLED, REJECTED, EXPIRED del conteo de TP orders
+
+- Config: Agregado RUNTIME_ORIGIN al servicio backend en docker-compose.yml
+
+Files changed:
+- backend/app/services/telegram_notifier.py
+- backend/app/services/signal_monitor.py
+- backend/app/api/routes_dashboard.py
+- docker-compose.yml
