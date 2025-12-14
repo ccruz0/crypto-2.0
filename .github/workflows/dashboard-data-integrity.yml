@@ -29,9 +29,22 @@ jobs:
       with:
         node-version: '20'
         
+    - name: Verify frontend directory
+      run: |
+        if [ ! -d "frontend" ]; then
+          echo "❌ frontend directory not found"
+          exit 1
+        fi
+        echo "✅ frontend directory exists"
+        ls -la frontend/ | head -10
+        
     - name: Install dependencies
       working-directory: frontend
       run: |
+        if [ ! -f package.json ]; then
+          echo "❌ package.json not found in frontend directory"
+          exit 1
+        fi
         if [ -f package-lock.json ]; then
           npm ci
         else
