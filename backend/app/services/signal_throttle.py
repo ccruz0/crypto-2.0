@@ -165,6 +165,9 @@ def record_signal_event(
 
     try:
         if existing:
+            # Save previous price before updating
+            if existing.last_price is not None:
+                existing.previous_price = existing.last_price
             existing.last_price = price
             existing.last_time = now_ts
             existing.last_source = source

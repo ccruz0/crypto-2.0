@@ -22,6 +22,7 @@ class SignalThrottleState(Base):
     strategy_key = Column(String(100), nullable=False, index=True)
     side = Column(String(10), nullable=False, index=True)  # BUY / SELL / INDEX
     last_price = Column(Float, nullable=True)
+    previous_price = Column(Float, nullable=True)  # Price from previous signal event
     last_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_source = Column(String(20), nullable=True)  # alert / order
 

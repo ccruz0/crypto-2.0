@@ -219,12 +219,26 @@ async def simulate_alert(
             # Watchlist item exists - prioritize payload value if provided, otherwise use watchlist value
             # But if neither has value, raise error
             trade_amount_usd_from_payload = payload.get("trade_amount_usd")
+            trade_enabled_from_payload = payload.get("trade_enabled")
             
-            # Priority: 1) Payload value (from dashboard), 2) Watchlist value (from database)
+            # CRITICAL: Refresh watchlist_item from database to get latest values
+            # This ensures we have the most up-to-date trade_enabled value
+            db.refresh(watchlist_item)
+            logger.info(f"Refreshed watchlist_item for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+            
+            # Priority for trade_enabled: 1) Payload value (from dashboard), 2) Watchlist value (from database)
+            if trade_enabled_from_payload is not None:
+                # Use payload value (from dashboard) - update watchlist item to match
+                watchlist_item.trade_enabled = bool(trade_enabled_from_payload)
+                logger.info(f"Using trade_enabled={watchlist_item.trade_enabled} from payload (dashboard) for {symbol}, updated watchlist item")
+            else:
+                # Use watchlist value (from database)
+                logger.info(f"Using trade_enabled={watchlist_item.trade_enabled} from watchlist item (database) for {symbol}")
+            
+            # Priority for trade_amount_usd: 1) Payload value (from dashboard), 2) Watchlist value (from database)
             if trade_amount_usd_from_payload and trade_amount_usd_from_payload > 0:
                 # Use payload value (from dashboard) - update watchlist item to match
                 watchlist_item.trade_amount_usd = trade_amount_usd_from_payload
-                db.commit()
                 logger.info(f"Using trade_amount_usd={trade_amount_usd_from_payload} from payload (dashboard) for {symbol}, updated watchlist item")
             elif watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                 # Use watchlist value (from database) - no update needed
@@ -248,6 +262,11 @@ async def simulate_alert(
                     status_code=400,
                     detail=error_message
                 )
+            
+            # Commit any updates to trade_enabled or trade_amount_usd
+            if trade_enabled_from_payload is not None or (trade_amount_usd_from_payload and trade_amount_usd_from_payload > 0):
+                db.commit()
+                logger.info(f"Committed watchlist updates for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
         
         # Get current price
         try:

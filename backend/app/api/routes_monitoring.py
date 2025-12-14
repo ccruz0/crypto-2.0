@@ -361,38 +361,20 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 else None
             )
             
-            # Calculate price difference percentage by finding previous signal throttle state
+            # Calculate price difference percentage using previous_price field
             price_change_pct = None
-            if row.last_price and row.symbol and row.side and row.strategy_key:
+            if row.last_price and row.previous_price and row.last_price > 0 and row.previous_price > 0:
                 try:
-                    # Query for previous SignalThrottleState with same symbol, strategy, and side
-                    # This is more reliable than parsing Telegram messages
-                    previous_state = (
-                        db.query(SignalThrottleState)
-                        .filter(
-                            SignalThrottleState.symbol == row.symbol,
-                            SignalThrottleState.strategy_key == row.strategy_key,
-                            SignalThrottleState.side == row.side,
-                            SignalThrottleState.last_time < last_time,
-                            SignalThrottleState.last_price.isnot(None),
+                    # Calculate percentage change from previous_price to last_price
+                    calculated_pct = ((row.last_price - row.previous_price) / row.previous_price * 100)
+                    # Only use if it's a reasonable price change (within 100% change to handle large moves)
+                    if abs(calculated_pct) <= 100:
+                        price_change_pct = calculated_pct
+                    else:
+                        log.debug(
+                            f"Price change {calculated_pct:.2f}% for {row.symbol} {row.side} "
+                            f"exceeds reasonable range, skipping"
                         )
-                        .order_by(SignalThrottleState.last_time.desc())
-                        .first()
-                    )
-                    
-                    if previous_state and previous_state.last_price and row.last_price > 0:
-                        prev_price = previous_state.last_price
-                        if prev_price > 0:
-                            # Calculate percentage change
-                            calculated_pct = ((row.last_price - prev_price) / prev_price * 100)
-                            # Only use if it's a reasonable price change (within 100% change to handle large moves)
-                            if abs(calculated_pct) <= 100:
-                                price_change_pct = calculated_pct
-                            else:
-                                log.debug(
-                                    f"Price change {calculated_pct:.2f}% for {row.symbol} {row.side} "
-                                    f"exceeds reasonable range, skipping"
-                                )
                 except Exception as price_err:
                     log.debug(f"Could not calculate price change for {row.symbol} {row.side}: {price_err}")
             
