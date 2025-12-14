@@ -446,7 +446,7 @@ async def get_workflows(db: Session = Depends(get_db)):
             "run_endpoint": registry_wf.get("run_endpoint"),  # Include run_endpoint so frontend knows which can be run
             "last_execution": _workflow_executions.get(workflow_id, {}).get("last_execution"),
             "last_status": _workflow_executions.get(workflow_id, {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get(workflow_id, {}).get("report"),
+            "last_report": _workflow_executions.get(workflow_id, {}).get("report") if _is_valid_report_path(_workflow_executions.get(workflow_id, {}).get("report")) else None,
             "last_error": _workflow_executions.get(workflow_id, {}).get("error"),
         }
         workflows.append(workflow)
