@@ -17,12 +17,27 @@ jobs:
   dashboard-data-integrity:
     runs-on: ubuntu-latest
     name: Dashboard Data Integrity Validation
+    continue-on-error: false
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+      
+    - name: Checkout frontend repository
+      run: |
+        if [ -d "frontend/.git" ]; then
+          echo "✅ Frontend is a git repository, checking out..."
+          cd frontend
+          git fetch origin
+          git checkout main || git checkout master || git checkout $(git branch -r | head -1 | sed 's/origin\///' | xargs)
+          cd ..
+        else
+          echo "⚠️ Frontend is not a git repository, cloning..."
+          rm -rf frontend
+          git clone https://github.com/ccruz0/frontend.git frontend || echo "❌ Failed to clone frontend repository"
+        fi
       
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -37,6 +52,11 @@ jobs:
         fi
         echo "✅ frontend directory exists"
         ls -la frontend/ | head -10
+        if [ ! -f "frontend/package.json" ]; then
+          echo "❌ package.json not found in frontend directory"
+          exit 1
+        fi
+        echo "✅ package.json found"
         
     - name: Install dependencies
       working-directory: frontend
