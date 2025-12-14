@@ -298,9 +298,9 @@ class TradingScheduler:
                 if result.get("success"):
                     self._last_snapshot_update = time.time()
                     logger.info(f"[SCHEDULER] ✅ Dashboard snapshot updated in {result.get('duration_seconds', 0):.2f}s")
-                    # Record successful execution
+                    # Record successful execution (no report file for snapshot workflow)
                     from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("dashboard_snapshot", "success", f"Snapshot updated in {result.get('duration_seconds', 0):.2f}s")
+                    record_workflow_execution("dashboard_snapshot", "success", None)
                 else:
                     logger.warning(f"[SCHEDULER] ⚠️ Dashboard snapshot update failed: {result.get('error')}")
                     from app.api.routes_monitoring import record_workflow_execution
