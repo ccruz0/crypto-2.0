@@ -239,11 +239,48 @@ jobs:
       env:
         BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
         REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
       run: |
-        if [ -f "reports/dashboard-data-integrity.json" ]; then
-          echo "📤 Posting report to backend..."
-          echo "Backend URL: ${BACKEND_URL}"
-          echo "Report file size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
+        set -e  # Exit on error
+        
+        echo "=== POSTING REPORT TO BACKEND ==="
+        echo "Backend URL: ${BACKEND_URL}"
+        echo "GitHub Run ID: ${GITHUB_RUN_ID}"
+        
+        # Check if report file exists
+        if [ ! -f "reports/dashboard-data-integrity.json" ]; then
+          echo "❌ ERROR: Report file not found at reports/dashboard-data-integrity.json"
+          echo "Current directory: $(pwd)"
+          echo "Listing reports directory:"
+          ls -la reports/ 2>&1 || echo "Reports directory does not exist"
+          echo "Listing frontend directory:"
+          ls -la . 2>&1 | head -20
+          exit 1
+        fi
+        
+        # Verify report file is valid JSON
+        echo "Report file size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
+        if ! jq empty reports/dashboard-data-integrity.json 2>/dev/null; then
+          echo "❌ ERROR: Report file is not valid JSON"
+          echo "First 500 chars of file:"
+          head -c 500 reports/dashboard-data-integrity.json
+          exit 1
+        fi
+        
+        # Ensure run_id is set in the report
+        echo "Updating report with GitHub Run ID..."
+        jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' reports/dashboard-data-integrity.json > /tmp/report_updated.json
+        mv /tmp/report_updated.json reports/dashboard-data-integrity.json
+        
+        # Post to backend with retry logic
+        MAX_RETRIES=3
+        RETRY_COUNT=0
+        SUCCESS=false
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          echo ""
+          echo "📤 Attempt $RETRY_COUNT of $MAX_RETRIES: Posting report to backend..."
           
           HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
             -H "Content-Type: application/json" \
@@ -252,7 +289,8 @@ jobs:
             -w "%{http_code}" \
             -s -o /tmp/report_response.json \
             --max-time 30 \
-            --connect-timeout 10)
+            --connect-timeout 10 \
+            --fail-with-body || echo "000")
           
           echo "HTTP Response Code: $HTTP_CODE"
           
@@ -261,18 +299,28 @@ jobs:
             if [ -f /tmp/report_response.json ]; then
               echo "Response: $(cat /tmp/report_response.json)"
             fi
+            SUCCESS=true
           else
-            echo "❌ Failed to post report to backend (HTTP $HTTP_CODE)"
+            echo "❌ Failed to post report (HTTP $HTTP_CODE)"
             if [ -f /tmp/report_response.json ]; then
               echo "Error Response: $(cat /tmp/report_response.json)"
             fi
-            echo "⚠️ Workflow will continue, but report was not posted to backend"
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "⏳ Waiting 5 seconds before retry..."
+              sleep 5
+            fi
           fi
-        else
-          echo "⚠️ No report file found at reports/dashboard-data-integrity.json"
-          echo "Listing reports directory:"
-          ls -la reports/ 2>&1 || echo "Reports directory does not exist"
+        done
+        
+        if [ "$SUCCESS" = false ]; then
+          echo ""
+          echo "❌ ERROR: Failed to post report after $MAX_RETRIES attempts"
+          echo "This is a critical error - the workflow will fail"
+          exit 1
         fi
+        
+        echo ""
+        echo "✅ Report posting completed successfully!"
         
     - name: Generate report summary
       if: always()
