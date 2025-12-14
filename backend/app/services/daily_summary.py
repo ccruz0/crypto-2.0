@@ -25,37 +25,101 @@ class DailySummaryService:
     
     def get_portfolio_summary(self) -> Dict:
         """Get current portfolio summary"""
+        errors = []
+        balance_data = {}
+        open_orders = []
+        recent_orders = []
+        
         try:
             # Get account balance
-            balance_response = self.trade_client.get_account_summary()
-            balance_data = balance_response.get('data', {})
+            try:
+                balance_response = self.trade_client.get_account_summary()
+                if balance_response:
+                    # Handle different response formats
+                    if 'accounts' in balance_response:
+                        # Convert accounts format to balance_data format
+                        accounts = balance_response.get('accounts', [])
+                        balance_data = {}
+                        for acc in accounts:
+                            currency = acc.get('currency', '')
+                            balance_data[currency] = {
+                                'available': acc.get('available', '0'),
+                                'balance': acc.get('balance', '0')
+                            }
+                    elif 'data' in balance_response:
+                        balance_data = balance_response.get('data', {})
+                    elif 'result' in balance_response and 'data' in balance_response['result']:
+                        balance_data = balance_response['result'].get('data', {})
+                    else:
+                        balance_data = balance_response
+                else:
+                    errors.append("get_account_summary returned None")
+            except Exception as e:
+                error_msg = f"Error getting account summary: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
             
             # Get open orders
-            open_orders_response = self.trade_client.get_open_orders()
-            open_orders = open_orders_response.get('data', [])
+            try:
+                open_orders_response = self.trade_client.get_open_orders()
+                if open_orders_response:
+                    open_orders = open_orders_response.get('data', [])
+                else:
+                    errors.append("get_open_orders returned None")
+            except Exception as e:
+                error_msg = f"Error getting open orders: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
             
             # Get executed orders from last 24 hours
-            executed_orders_response = self.trade_client.get_order_history(page_size=100)
-            executed_orders = executed_orders_response.get('data', [])
+            try:
+                executed_orders_response = self.trade_client.get_order_history(page_size=100)
+                if executed_orders_response:
+                    executed_orders = executed_orders_response.get('data', [])
+                    
+                    # Filter orders from last 24 hours
+                    yesterday = datetime.now() - timedelta(days=1)
+                    for order in executed_orders:
+                        try:
+                            # Handle both timestamp formats (seconds or milliseconds)
+                            create_time = order.get('create_time', 0)
+                            if create_time > 1e10:  # milliseconds
+                                create_time = create_time / 1000
+                            order_time = datetime.fromtimestamp(create_time)
+                            if order_time >= yesterday:
+                                recent_orders.append(order)
+                        except (ValueError, TypeError, OSError) as e:
+                            logger.warning(f"Error parsing order time: {e}, order: {order.get('order_id', 'unknown')}")
+                            # Include order anyway if we can't parse time
+                            recent_orders.append(order)
+                else:
+                    errors.append("get_order_history returned None")
+            except Exception as e:
+                error_msg = f"Error getting order history: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
             
-            # Filter orders from last 24 hours
-            yesterday = datetime.now() - timedelta(days=1)
-            recent_orders = []
-            for order in executed_orders:
-                order_time = datetime.fromtimestamp(order.get('create_time', 0))
-                if order_time >= yesterday:
-                    recent_orders.append(order)
-            
-            return {
+            # Return data even if some calls failed, but include errors
+            result = {
                 'balance': balance_data,
                 'open_orders': open_orders,
                 'recent_orders': recent_orders,
                 'total_open_orders': len(open_orders),
-                'total_executed_24h': len(recent_orders)
+                'total_executed_24h': len(recent_orders),
+                'errors': errors
             }
+            
+            # If all calls failed, return None to trigger error message
+            if errors and not balance_data and not open_orders and not recent_orders:
+                logger.error(f"All portfolio summary calls failed: {errors}")
+                return None
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"Error getting portfolio summary: {e}")
-            return {}
+            error_msg = f"Unexpected error getting portfolio summary: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return None
     
     def format_balance_summary(self, balance_data: Dict) -> str:
         """Format balance information"""
@@ -64,19 +128,27 @@ class DailySummaryService:
         
         summary = "💰 **Balance de Cuenta**\n"
         
-        # Get USD balance
+        # Get USD/USDT balance
         usd_balance = 0
         crypto_balances = []
         
-        for currency, data in balance_data.items():
-            if currency == 'USD':
-                usd_balance = float(data.get('available', 0))
-            else:
-                available = float(data.get('available', 0))
-                if available > 0:
+        # Handle different data structures
+        if isinstance(balance_data, dict):
+            for currency, data in balance_data.items():
+                if isinstance(data, dict):
+                    available = float(data.get('available', data.get('balance', 0)))
+                elif isinstance(data, (int, float, str)):
+                    available = float(data)
+                else:
+                    available = 0
+                
+                # Treat USD and USDT as the same
+                if currency in ['USD', 'USDT']:
+                    usd_balance += available
+                elif available > 0:
                     crypto_balances.append(f"• {currency}: {available:.6f}")
         
-        summary += f"💵 USD: ${usd_balance:,.2f}\n"
+        summary += f"💵 USD/USDT: ${usd_balance:,.2f}\n"
         
         if crypto_balances:
             summary += "\n📊 **Criptomonedas:**\n"
@@ -127,9 +199,16 @@ class DailySummaryService:
             # Get portfolio data
             portfolio_data = self.get_portfolio_summary()
             
-            if not portfolio_data:
-                self.telegram.send_message("❌ No se pudo generar el resumen diario")
+            if portfolio_data is None:
+                error_msg = "❌ No se pudo generar el resumen diario"
+                logger.error(error_msg)
+                self.telegram.send_message(error_msg)
                 return
+            
+            # Check if there were errors but we still have some data
+            errors = portfolio_data.get('errors', [])
+            if errors:
+                logger.warning(f"Daily summary generated with some errors: {errors}")
             
             # Create summary message
             message = f"🌅 **Resumen Diario - {datetime.now().strftime('%d/%m/%Y')}**\n\n"
@@ -147,6 +226,12 @@ class DailySummaryService:
             # Add footer
             message += f"\n⏰ Generado: {datetime.now().strftime('%H:%M:%S')}"
             message += "\n🤖 Trading Bot Automático"
+            
+            # Add error warnings if any
+            if errors:
+                message += f"\n\n⚠️ Advertencias: {len(errors)} error(es) durante la obtención de datos"
+                for error in errors[:3]:  # Show first 3 errors
+                    message += f"\n  • {error[:100]}"  # Truncate long errors
             
             # Send message
             success = self.telegram.send_message(message)

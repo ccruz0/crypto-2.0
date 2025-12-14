@@ -754,6 +754,7 @@ class SignalMonitorService:
                                 strategy_type=strategy_type.value.title(),
                                 risk_approach=risk_approach.value.title(),
                                 price_variation=price_variation,
+                                previous_price=prev_buy_price,
                                 throttle_status="SENT",
                                 throttle_reason=reason,
                             )

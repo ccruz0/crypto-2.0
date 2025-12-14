@@ -915,6 +915,7 @@ class TelegramNotifier:
         strategy_type: Optional[str] = None,
         risk_approach: Optional[str] = None,
         price_variation: Optional[str] = None,
+        previous_price: Optional[float] = None,
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
@@ -955,9 +956,25 @@ class TelegramNotifier:
         approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
         
         timestamp = self._format_timestamp()
-        price_line = f"💵 Price: ${price:,.4f}"
+        
+        # Always show price change percentage from last alert
+        price_change_text = ""
         if price_variation:
-            price_line += f" ({price_variation})"
+            # Use provided price_variation if available
+            price_change_text = f"\n📊 Cambio desde última alerta: {price_variation}"
+        elif previous_price is not None and previous_price > 0:
+            # Calculate price change if previous_price is provided
+            try:
+                change_pct = ((price - previous_price) / previous_price) * 100
+                direction = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
+                price_change_text = f"\n📊 Cambio desde última alerta: {direction} {abs(change_pct):.2f}%"
+            except (ZeroDivisionError, ValueError):
+                price_change_text = "\n📊 Cambio desde última alerta: N/A"
+        else:
+            # First alert for this symbol/side
+            price_change_text = "\n📊 Cambio desde última alerta: Primera alerta"
+        
+        price_line = f"💵 Price: ${price:,.4f}"
         
         # Add source indicator
         source_text = ""
@@ -970,7 +987,7 @@ class TelegramNotifier:
 🟢 <b>BUY SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
-{price_line}
+{price_line}{price_change_text}
 ✅ Reason: {reason}{strategy_line}{approach_line}
 📅 Time: {timestamp}
 """
@@ -991,7 +1008,9 @@ class TelegramNotifier:
         if result:
             try:
                 from app.api.routes_monitoring import add_telegram_message
-                sent_message = f"✅ BUY SIGNAL: {symbol} - {reason}"
+                # Include price change in stored message
+                price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
+                sent_message = f"✅ BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
                 add_telegram_message(
                     sent_message,
                     symbol=symbol,
@@ -1013,6 +1032,7 @@ class TelegramNotifier:
         strategy_type: Optional[str] = None,
         risk_approach: Optional[str] = None,
         price_variation: Optional[str] = None,
+        previous_price: Optional[float] = None,
         source: str = "LIVE ALERT",  # "LIVE ALERT" or "TEST"
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
@@ -1053,9 +1073,25 @@ class TelegramNotifier:
         approach_line = f"\n⚖️ Approach: <b>{resolved_approach}</b>"
         
         timestamp = self._format_timestamp()
-        price_line = f"💵 Price: ${price:,.4f}"
+        
+        # Always show price change percentage from last alert
+        price_change_text = ""
         if price_variation:
-            price_line += f" ({price_variation})"
+            # Use provided price_variation if available
+            price_change_text = f"\n📊 Cambio desde última alerta: {price_variation}"
+        elif previous_price is not None and previous_price > 0:
+            # Calculate price change if previous_price is provided
+            try:
+                change_pct = ((price - previous_price) / previous_price) * 100
+                direction = "↑" if change_pct > 0 else "↓" if change_pct < 0 else "→"
+                price_change_text = f"\n📊 Cambio desde última alerta: {direction} {abs(change_pct):.2f}%"
+            except (ZeroDivisionError, ValueError):
+                price_change_text = "\n📊 Cambio desde última alerta: N/A"
+        else:
+            # First alert for this symbol/side
+            price_change_text = "\n📊 Cambio desde última alerta: Primera alerta"
+        
+        price_line = f"💵 Price: ${price:,.4f}"
         
         # Add source indicator
         source_text = ""
@@ -1068,7 +1104,7 @@ class TelegramNotifier:
 🔴 <b>SELL SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
-{price_line}
+{price_line}{price_change_text}
 ✅ Reason: {reason}{strategy_line}{approach_line}
 📅 Time: {timestamp}
 """
@@ -1082,7 +1118,9 @@ class TelegramNotifier:
         if result:
             try:
                 from app.api.routes_monitoring import add_telegram_message
-                sent_message = f"🔴 SELL SIGNAL: {symbol} - {reason}"
+                # Include price change in stored message
+                price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
+                sent_message = f"🔴 SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
                 add_telegram_message(
                     sent_message,
                     symbol=symbol,
