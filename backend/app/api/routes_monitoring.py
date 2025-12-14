@@ -402,20 +402,6 @@ _background_tasks: Dict[str, "asyncio.Task"] = {}
 # Locks for atomic check-and-set operations per workflow_id
 _workflow_locks: Dict[str, asyncio.Lock] = {}
 
-def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
-    """Record a workflow execution"""
-    global _workflow_executions
-    # Validate report path - if it's not a valid path, set to None
-    # This prevents messages from being stored as report paths
-    validated_report = report if _is_valid_report_path(report) else None
-    _workflow_executions[workflow_id] = {
-        "last_execution": datetime.now(timezone.utc).isoformat(),
-        "status": status,
-        "report": validated_report,
-        "error": error,
-    }
-    log.info(f"Workflow execution recorded: {workflow_id} - {status}")
-
 def _is_valid_report_path(report: Optional[str]) -> bool:
     """Check if report path is valid (not a message)"""
     if not report:
