@@ -159,7 +159,11 @@
                     results.push(`   ID: ${item.id}`);
                     results.push(`   is_deleted: ${item.is_deleted || item.deleted}`);
                     results.push(`   alert_enabled: ${item.alert_enabled}`);
-                    results.push(`   trade_enabled: ${item.trade_enabled}`);
+                    
+                    // Show TRADE and MARGIN status in YES/NO format
+                    const tradeStatus = item.trade_enabled ? 'YES' : 'NO';
+                    const marginStatus = item.trade_on_margin ? 'YES' : 'NO';
+                    results.push(`   TRADE: ${tradeStatus} | MARGIN: ${marginStatus}`);
                 } else if (response.status === 404) {
                     results.push(`❌ BTC_USDT NO encontrado en watchlist`);
                 } else {
