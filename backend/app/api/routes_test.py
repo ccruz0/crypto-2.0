@@ -10,9 +10,15 @@ from app.services.sl_tp_checker import sl_tp_checker_service
 import requests
 import logging
 import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Track last test alert time per symbol to prevent duplicates
+# Format: {symbol: timestamp}
+_test_alert_locks: Dict[str, float] = {}
+_TEST_ALERT_COOLDOWN_SECONDS = 30  # Prevent duplicate test alerts within 30 seconds
 
 @router.get("/test-dashboard")
 def get_test_dashboard():
@@ -267,6 +273,31 @@ async def simulate_alert(
             if trade_enabled_from_payload is not None or (trade_amount_usd_from_payload and trade_amount_usd_from_payload > 0):
                 db.commit()
                 logger.info(f"Committed watchlist updates for {symbol}: trade_enabled={watchlist_item.trade_enabled}, trade_amount_usd={watchlist_item.trade_amount_usd}")
+        
+        # Check for cooldown to prevent duplicate test alerts (before fetching price)
+        current_time = time.time()
+        last_alert_time = _test_alert_locks.get(symbol, 0)
+        time_since_last = current_time - last_alert_time
+        
+        if time_since_last < _TEST_ALERT_COOLDOWN_SECONDS:
+            remaining = _TEST_ALERT_COOLDOWN_SECONDS - time_since_last
+            logger.warning(f"⚠️ Test alert for {symbol} blocked: cooldown active ({remaining:.1f}s remaining)")
+            return {
+                "ok": True,
+                "message": f"Test alert blocked: cooldown active ({remaining:.1f}s remaining)",
+                "symbol": symbol,
+                "signal_type": signal_type,
+                "price": 0,
+                "alert_sent": False,
+                "order_created": False,
+                "cooldown_active": True,
+                "cooldown_remaining_seconds": remaining,
+                "note": f"Please wait {remaining:.1f} seconds before sending another test alert for {symbol}"
+            }
+        
+        # Update lock with current time
+        _test_alert_locks[symbol] = current_time
+        logger.info(f"✅ Test alert lock acquired for {symbol} (cooldown: {_TEST_ALERT_COOLDOWN_SECONDS}s)")
         
         # Get current price
         try:
