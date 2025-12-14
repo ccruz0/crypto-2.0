@@ -967,6 +967,12 @@ class SignalMonitorService:
                 )
             except Exception as snapshot_err:
                 logger.warning(f"Failed to load throttle state for {symbol}: {snapshot_err}")
+                # CRITICAL: Rollback the transaction to allow subsequent operations to proceed
+                # This prevents "current transaction is aborted" errors
+                try:
+                    db.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"Failed to rollback transaction after throttle state error: {rollback_err}")
                 signal_snapshots = {}
         last_buy_snapshot = signal_snapshots.get("BUY")
         last_sell_snapshot = signal_snapshots.get("SELL")
