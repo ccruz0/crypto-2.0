@@ -70,8 +70,10 @@ jobs:
         echo "$EC2_KEY" > deploy_key.pem
         chmod 600 deploy_key.pem
         
-        # Add EC2 host to known_hosts
-        ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+        # Create .ssh directory if it doesn't exist and add EC2 host to known_hosts
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
         
         echo "📡 Testing SSH connection..."
         echo "🔍 Attempting to connect to: ubuntu@$EC2_HOST"
