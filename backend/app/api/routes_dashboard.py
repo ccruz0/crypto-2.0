@@ -816,10 +816,33 @@ def update_watchlist_item(
     alert_enabled_was_updated = False  # Track if alert_enabled update was attempted
     
     # Track old strategy before update to reset throttle state if strategy changes
+    # CRITICAL: Strategy is determined by resolve_strategy_profile which reads from trading_config.json
+    # We need to resolve the old strategy BEFORE the update to detect changes
     old_sl_tp_mode = item.sl_tp_mode if hasattr(item, 'sl_tp_mode') else None
     # Also check if preset/risk_mode are changing (frontend may send these instead of sl_tp_mode)
     old_preset = getattr(item, 'preset', None)
     old_risk_mode = getattr(item, 'risk_mode', None)
+    
+    # Resolve old strategy profile BEFORE update (strategy comes from trading_config.json, not just database)
+    # Also check config file modification time to detect if config was recently updated
+    old_strategy_profile = None
+    old_strategy_key = None
+    config_file_mtime_before = None
+    try:
+        from app.services.strategy_profiles import resolve_strategy_profile
+        from app.services.signal_throttle import build_strategy_key
+        from app.services.config_loader import CONFIG_PATH
+        import os
+        
+        # Check config file modification time before update
+        if CONFIG_PATH and CONFIG_PATH.exists():
+            config_file_mtime_before = os.path.getmtime(CONFIG_PATH)
+        
+        old_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+        old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
+    except Exception as old_strategy_err:
+        log.debug(f"Could not resolve old strategy for {item.symbol}: {old_strategy_err}")
+    
     strategy_changed = False
     
     if "trade_enabled" in payload:
@@ -873,6 +896,43 @@ def update_watchlist_item(
     db.commit()
     db.refresh(item)
     
+    # CRITICAL: Also check if strategy changed by comparing resolved strategy profiles
+    # This catches changes in trading_config.json (preset) that aren't in the database payload
+    # The strategy is determined by resolve_strategy_profile which reads from trading_config.json
+    new_strategy_profile = None
+    new_strategy_key = None
+    try:
+        from app.services.strategy_profiles import resolve_strategy_profile
+        from app.services.signal_throttle import build_strategy_key
+        from app.services.config_loader import CONFIG_PATH
+        import os
+        
+        # Check if config file was modified (indicates strategy might have changed)
+        config_file_modified = False
+        if config_file_mtime_before and CONFIG_PATH and CONFIG_PATH.exists():
+            config_file_mtime_after = os.path.getmtime(CONFIG_PATH)
+            if config_file_mtime_after > config_file_mtime_before:
+                config_file_modified = True
+                log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} - strategy may have changed")
+        
+        new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+        new_strategy_key = build_strategy_key(new_strategy_profile[0], new_strategy_profile[1])
+        
+        # If old and new strategy keys are different, strategy changed
+        if old_strategy_key and new_strategy_key and old_strategy_key != new_strategy_key:
+            strategy_changed = True
+            log.info(f"🔄 [STRATEGY] Detected strategy change for {item.symbol}: {old_strategy_key} → {new_strategy_key} (from config comparison)")
+        # FALLBACK: If config file was modified, assume strategy changed (even if keys are same, config might have changed)
+        elif not strategy_changed and config_file_modified:
+            strategy_changed = True
+            log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} - resetting throttle as safety measure")
+        # FALLBACK: If we couldn't detect change via comparison, but payload contains strategy-related fields, assume strategy changed
+        elif not strategy_changed and ("preset" in payload or "risk_mode" in payload or "sl_tp_mode" in payload):
+            strategy_changed = True
+            log.info(f"🔄 [STRATEGY] Assuming strategy change for {item.symbol} (strategy-related fields in payload) - resetting throttle as safety measure")
+    except Exception as new_strategy_err:
+        log.debug(f"Could not resolve new strategy for {item.symbol}: {new_strategy_err}")
+    
     # When trade_enabled is toggled, reset throttle state and set force_next_signal
     if "trade_enabled" in payload:
         old_value = item.trade_enabled if hasattr(item, '_sa_instance_state') else None
@@ -921,44 +981,39 @@ def update_watchlist_item(
             from app.services.signal_throttle import build_strategy_key, reset_throttle_state, set_force_next_signal
             from app.models.signal_throttle import SignalThrottleState
             
-            # Get old strategy_key if we had an old strategy
-            old_strategy_key = None
-            # Try to get old strategy from old_sl_tp_mode, preset, or risk_mode
-            if old_sl_tp_mode or old_preset or old_risk_mode:
+            # Use the strategy keys we already resolved above (before and after update)
+            # If we didn't resolve them above, try to resolve now
+            if not old_strategy_key and old_strategy_profile:
+                old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
+            
+            if not new_strategy_key and new_strategy_profile:
+                new_strategy_key = build_strategy_key(
+                    new_strategy_profile[0],  # strategy_type
+                    new_strategy_profile[1]   # risk_approach
+                )
+            
+            # If still no keys, resolve them now
+            if not old_strategy_key:
                 try:
-                    # First try parsing sl_tp_mode (format: "swing-conservative" or just "conservative")
-                    old_strategy, old_approach = _parse_preset(old_sl_tp_mode)
-                    # If sl_tp_mode didn't parse (e.g., just "conservative"), try using preset/risk_mode
-                    if not old_strategy and old_preset:
-                        from app.services.strategy_profiles import _normalize_strategy
-                        old_strategy = _normalize_strategy(old_preset)
-                    if not old_approach and old_risk_mode:
-                        from app.services.strategy_profiles import _normalize_approach
-                        old_approach = _normalize_approach(old_risk_mode)
-                    # If still no strategy, resolve from old watchlist item
-                    if not old_strategy or not old_approach:
+                    # Try to get old strategy from old_sl_tp_mode, preset, or risk_mode
+                    if old_sl_tp_mode or old_preset or old_risk_mode:
                         # Create a temporary watchlist item with old values to resolve strategy
-                        from app.services.strategy_profiles import resolve_strategy_profile
-                        # Use old values to resolve old strategy
                         old_item = type('obj', (object,), {
                             'sl_tp_mode': old_sl_tp_mode,
                             'preset': old_preset,
                             'risk_mode': old_risk_mode
                         })()
                         old_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=old_item)
-                        old_strategy = old_strategy_profile[0]
-                        old_approach = old_strategy_profile[1]
-                    if old_strategy and old_approach:
-                        old_strategy_key = build_strategy_key(old_strategy, old_approach)
+                        old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
                 except Exception as parse_err:
-                    log.debug(f"Could not parse old strategy (sl_tp_mode={old_sl_tp_mode}, preset={old_preset}, risk_mode={old_risk_mode}): {parse_err}")
+                    log.debug(f"Could not resolve old strategy (sl_tp_mode={old_sl_tp_mode}, preset={old_preset}, risk_mode={old_risk_mode}): {parse_err}")
             
-            # Get new strategy_key
-            new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
-            new_strategy_key = build_strategy_key(
-                new_strategy_profile[0],  # strategy_type
-                new_strategy_profile[1]   # risk_approach
-            )
+            if not new_strategy_key:
+                new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+                new_strategy_key = build_strategy_key(
+                    new_strategy_profile[0],  # strategy_type
+                    new_strategy_profile[1]   # risk_approach
+                )
             
             # Reset throttle state for old strategy (if different from new)
             if old_strategy_key and old_strategy_key != new_strategy_key:
