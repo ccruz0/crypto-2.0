@@ -322,7 +322,16 @@ def evaluate_signal_for_symbol(
         
         # Check throttle for BUY (EXACT same logic as debug script)
         if buy_signal:
-            signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+            try:
+                signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+            except Exception as snapshot_err:
+                logger.warning(f"Failed to load throttle state for {symbol} BUY: {snapshot_err}")
+                # CRITICAL: Rollback the transaction to allow subsequent operations to proceed
+                try:
+                    db.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"Failed to rollback transaction after throttle state error: {rollback_err}")
+                signal_snapshots = {}
             now_utc = datetime.now(timezone.utc)
             buy_allowed, buy_reason = should_emit_signal(
                 symbol=symbol,
@@ -347,7 +356,16 @@ def evaluate_signal_for_symbol(
         
         # Check throttle for SELL (EXACT same logic as debug script)
         if sell_signal:
-            signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+            try:
+                signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+            except Exception as snapshot_err:
+                logger.warning(f"Failed to load throttle state for {symbol} SELL: {snapshot_err}")
+                # CRITICAL: Rollback the transaction to allow subsequent operations to proceed
+                try:
+                    db.rollback()
+                except Exception as rollback_err:
+                    logger.warning(f"Failed to rollback transaction after throttle state error: {rollback_err}")
+                signal_snapshots = {}
             now_utc = datetime.now(timezone.utc)
             sell_allowed, sell_reason = should_emit_signal(
                 symbol=symbol,
