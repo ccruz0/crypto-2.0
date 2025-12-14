@@ -242,23 +242,36 @@ jobs:
       run: |
         if [ -f "reports/dashboard-data-integrity.json" ]; then
           echo "📤 Posting report to backend..."
+          echo "Backend URL: ${BACKEND_URL}"
+          echo "Report file size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
+          
           HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
             -H "Content-Type: application/json" \
             -H "X-Report-Secret: ${REPORT_SECRET}" \
             -d "@reports/dashboard-data-integrity.json" \
             -w "%{http_code}" \
-            -s -o /tmp/report_response.json)
+            -s -o /tmp/report_response.json \
+            --max-time 30 \
+            --connect-timeout 10)
+          
+          echo "HTTP Response Code: $HTTP_CODE"
           
           if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
             echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
-          else
-            echo "⚠️ Failed to post report to backend (HTTP $HTTP_CODE)"
             if [ -f /tmp/report_response.json ]; then
               echo "Response: $(cat /tmp/report_response.json)"
             fi
+          else
+            echo "❌ Failed to post report to backend (HTTP $HTTP_CODE)"
+            if [ -f /tmp/report_response.json ]; then
+              echo "Error Response: $(cat /tmp/report_response.json)"
+            fi
+            echo "⚠️ Workflow will continue, but report was not posted to backend"
           fi
         else
-          echo "⚠️ No report file found to post"
+          echo "⚠️ No report file found at reports/dashboard-data-integrity.json"
+          echo "Listing reports directory:"
+          ls -la reports/ 2>&1 || echo "Reports directory does not exist"
         fi
         
     - name: Generate report summary
