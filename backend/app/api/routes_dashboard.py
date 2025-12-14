@@ -815,6 +815,10 @@ def update_watchlist_item(
     alert_enabled_old_value = None  # Store old value for logging after verification
     alert_enabled_was_updated = False  # Track if alert_enabled update was attempted
     
+    # Track old strategy before update to reset throttle state if strategy changes
+    old_sl_tp_mode = item.sl_tp_mode if hasattr(item, 'sl_tp_mode') else None
+    strategy_changed = False
+    
     if "trade_enabled" in payload:
         old_value = item.trade_enabled
         new_value = payload["trade_enabled"]
@@ -844,6 +848,13 @@ def update_watchlist_item(
         if old_value != new_value:
             updates.append(f"SELL alert: {'YES' if new_value else 'NO'}")
     
+    # Check if strategy (sl_tp_mode) is changing
+    if "sl_tp_mode" in payload:
+        new_sl_tp_mode = payload.get("sl_tp_mode")
+        if old_sl_tp_mode != new_sl_tp_mode:
+            strategy_changed = True
+            updates.append(f"STRATEGY: {old_sl_tp_mode or 'default'} → {new_sl_tp_mode}")
+    
     _apply_watchlist_updates(item, payload)
     db.commit()
     db.refresh(item)
@@ -869,10 +880,10 @@ def update_watchlist_item(
             try:
                 from app.services.strategy_profiles import resolve_strategy_profile
                 from app.services.signal_throttle import build_strategy_key, set_force_next_signal
-                strategy_profile = resolve_strategy_profile(item.sl_tp_mode)
+                strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
                 strategy_key = build_strategy_key(
-                    strategy_profile.strategy_type,
-                    strategy_profile.risk_approach
+                    strategy_profile[0],  # strategy_type
+                    strategy_profile[1]   # risk_approach
                 )
                 # Set force flag for both BUY and SELL to allow immediate signals
                 set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
@@ -880,6 +891,48 @@ def update_watchlist_item(
                 log.info(f"⚡ [TRADE] Set force_next_signal for {item.symbol} BUY/SELL - next evaluation will bypass throttle")
             except Exception as throttle_err:
                 log.warning(f"⚠️ [TRADE] Failed to set force_next_signal for {item.symbol}: {throttle_err}", exc_info=True)
+    
+    # When strategy (sl_tp_mode) changes, reset throttle state for all strategies and set force_next_signal for new strategy
+    if strategy_changed:
+        try:
+            from app.services.strategy_profiles import resolve_strategy_profile, _parse_preset
+            from app.services.signal_throttle import build_strategy_key, reset_throttle_state, set_force_next_signal
+            from app.models.signal_throttle import SignalThrottleState
+            
+            # Get old strategy_key if we had an old strategy
+            old_strategy_key = None
+            if old_sl_tp_mode:
+                try:
+                    # Parse old strategy from sl_tp_mode (format: "swing-conservative" or "scalp-aggressive")
+                    old_strategy, old_approach = _parse_preset(old_sl_tp_mode)
+                    if old_strategy and old_approach:
+                        old_strategy_key = build_strategy_key(old_strategy, old_approach)
+                except Exception as parse_err:
+                    log.debug(f"Could not parse old strategy {old_sl_tp_mode}: {parse_err}")
+            
+            # Get new strategy_key
+            new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+            new_strategy_key = build_strategy_key(
+                new_strategy_profile[0],  # strategy_type
+                new_strategy_profile[1]   # risk_approach
+            )
+            
+            # Reset throttle state for old strategy (if different from new)
+            if old_strategy_key and old_strategy_key != new_strategy_key:
+                reset_throttle_state(db, symbol=item.symbol, strategy_key=old_strategy_key)
+                log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} old strategy: {old_strategy_key}")
+            
+            # Also reset throttle state for new strategy to ensure clean slate
+            reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
+            log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
+            
+            # Set force_next_signal for new strategy to allow immediate signals
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
+            log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
+            
+        except Exception as strategy_err:
+            log.warning(f"⚠️ [STRATEGY] Failed to reset throttle state for {item.symbol}: {strategy_err}", exc_info=True)
     
     # CRITICAL: Verify alert_enabled was actually saved to database
     # Only verify if alert_enabled was actually changed (old_value != new_value)
