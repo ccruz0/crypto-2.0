@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagnóstico de Alertas de Prueba</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #results {
+            margin-top: 30px;
+        }
+        .status-box {
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid;
+        }
+        .status-box.success {
+            background: #e8f5e9;
+            border-color: #4caf50;
+            color: #2e7d32;
+        }
+        .status-box.error {
+            background: #ffebee;
+            border-color: #f44336;
+            color: #c62828;
+        }
+        .status-box.warning {
+            background: #fff3e0;
+            border-color: #ff9800;
+            color: #e65100;
+        }
+        .status-box.info {
+            background: #e3f2fd;
+            border-color: #2196f3;
+            color: #1565c0;
+        }
+        .check-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            margin: 5px 0;
+            background: #f5f5f5;
+            border-radius: 6px;
+        }
+        .check-item.success::before {
+            content: "✅ ";
+            margin-right: 8px;
+        }
+        .check-item.error::before {
+            content: "❌ ";
+            margin-right: 8px;
+        }
+        .check-item.warning::before {
+            content: "⚠️ ";
+            margin-right: 8px;
+        }
+        .check-item.info::before {
+            content: "ℹ️ ";
+            margin-right: 8px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .loading::after {
+            content: "...";
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: "."; }
+            40% { content: ".."; }
+            60%, 100% { content: "..."; }
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        .recommendations {
+            background: #fff9c4;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border-left: 4px solid #fbc02d;
+        }
+        .recommendations h3 {
+            color: #f57f17;
+            margin-bottom: 10px;
+        }
+        .recommendations ul {
+            margin-left: 20px;
+            color: #5d4037;
+        }
+        .recommendations li {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Diagnóstico de Alertas de Prueba</h1>
+        <p class="subtitle">Verifica por qué una alerta de prueba no generó una orden</p>
+        
+        <div class="form-group">
+            <label for="symbol">Símbolo a diagnosticar:</label>
+            <input type="text" id="symbol" value="AAVE_USDT" placeholder="Ej: AAVE_USDT, BTC_USDT">
+        </div>
+        
+        <button onclick="diagnose()" id="diagnoseBtn">🔍 Diagnosticar</button>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        // Detectar automáticamente la URL de la API
+        function getApiUrl() {
+            const hostname = window.location.hostname;
+            
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:8002/api';
+            }
+            
+            if (hostname.includes('54.254.150.31') || hostname.includes('hilovivo') || hostname.includes('ec2')) {
+                if (hostname.includes('hilovivo')) {
+                    return `${window.location.protocol}//${hostname}/api`;
+                }
+                return 'http://54.254.150.31:8002/api';
+            }
+            
+            return `http://${hostname}:8000/api`;
+        }
+        
+        const API_URL = getApiUrl();
+        const API_KEY = 'demo-key';
+        
+        async function diagnose() {
+            const symbol = document.getElementById('symbol').value.toUpperCase().trim();
+            const resultsDiv = document.getElementById('results');
+            const diagnoseBtn = document.getElementById('diagnoseBtn');
+            
+            if (!symbol) {
+                resultsDiv.innerHTML = '<div class="status-box error">❌ Por favor ingresa un símbolo</div>';
+                return;
+            }
+            
+            diagnoseBtn.disabled = true;
+            diagnoseBtn.textContent = 'Diagnosticando...';
+            
+            resultsDiv.innerHTML = '<div class="loading">Verificando configuración</div>';
+            
+            try {
+                // 1. Verificar watchlist item
+                const watchlistResponse = await fetch(`${API_URL}/dashboard/symbol/${symbol}`, {
+                    headers: { 'X-API-Key': API_KEY }
+                });
+                
+                let html = '';
+                
+                if (!watchlistResponse.ok) {
+                    html = `
+                        <div class="status-box error">
+                            <h3>❌ ${symbol} NO encontrado en watchlist</h3>
+                            <p>El símbolo debe estar en la watchlist para poder crear órdenes.</p>
+                            <div class="recommendations">
+                                <h3>💡 Solución:</h3>
+                                <ul>
+                                    <li>Agrega ${symbol} a la watchlist desde el Dashboard</li>
+                                    <li>Configura "Trade" = YES</li>
+                                    <li>Configura "Amount USD" con un valor > 0</li>
+                                </ul>
+                            </div>
+                        </div>
+                    `;
+                    resultsDiv.innerHTML = html;
+                    diagnoseBtn.disabled = false;
+                    diagnoseBtn.textContent = '🔍 Diagnosticar';
+                    return;
+                }
+                
+                const watchlistItem = await watchlistResponse.json();
+                
+                // 2. Llamar al endpoint de diagnóstico
+                const diagnosticResponse = await fetch(`${API_URL}/test/diagnose-alert/${symbol}`, {
+                    headers: { 'X-API-Key': API_KEY }
+                });
+                
+                let diagnosticData = null;
+                if (diagnosticResponse.ok) {
+                    diagnosticData = await diagnosticResponse.json();
+                }
+                
+                // 3. Verificar órdenes abiertas (fallback si diagnóstico falla)
+                const ordersResponse = await fetch(`${API_URL}/orders/open`, {
+                    headers: { 'X-API-Key': API_KEY }
+                });
+                let openOrders = [];
+                if (ordersResponse.ok) {
+                    const ordersData = await ordersResponse.json();
+                    openOrders = (ordersData.orders || []).filter(o => 
+                        o.symbol === symbol && o.side === 'BUY' && 
+                        ['NEW', 'ACTIVE', 'PARTIALLY_FILLED'].includes(o.status)
+                    );
+                }
+                
+                // Construir diagnóstico usando el endpoint de diagnóstico si está disponible
+                html = '<div class="status-box info"><h3>📊 Resultado del Diagnóstico</h3></div>';
+                
+                let checks = [];
+                let hasIssues = false;
+                let recommendations = [];
+                
+                // Si tenemos datos del endpoint de diagnóstico, usarlos
+                if (diagnosticData && diagnosticData.ok) {
+                    checks = diagnosticData.checks || [];
+                    hasIssues = diagnosticData.has_issues || false;
+                    recommendations = diagnosticData.recommendations || [];
+                } else {
+                    // Fallback a verificación manual
+                    // Check 1: trade_enabled
+                    if (!watchlistItem.trade_enabled) {
+                        checks.push({
+                            status: 'error',
+                            message: `Trade está en NO - Las órdenes NO se crearán`
+                        });
+                        hasIssues = true;
+                        recommendations.push(`Habilita 'Trade' = YES para ${symbol} en el Dashboard`);
+                    } else {
+                        checks.push({
+                            status: 'success',
+                            message: `Trade está en YES ✓`
+                        });
+                    }
+                    
+                    // Check 2: trade_amount_usd
+                    if (!watchlistItem.trade_amount_usd || watchlistItem.trade_amount_usd <= 0) {
+                        checks.push({
+                            status: 'error',
+                            message: `Amount USD no configurado (${watchlistItem.trade_amount_usd || 'null'}) - Las órdenes NO se crearán`
+                        });
+                        hasIssues = true;
+                        recommendations.push(`Configura 'Amount USD' > 0 para ${symbol} en el Dashboard`);
+                    } else {
+                        checks.push({
+                            status: 'success',
+                            message: `Amount USD = $${watchlistItem.trade_amount_usd} ✓`
+                        });
+                    }
+                    
+                    // Check 3: alert_enabled
+                    if (!watchlistItem.alert_enabled) {
+                        checks.push({
+                            status: 'warning',
+                            message: `Alertas deshabilitadas (alert_enabled = false)`
+                        });
+                    } else {
+                        checks.push({
+                            status: 'success',
+                            message: `Alertas habilitadas ✓`
+                        });
+                    }
+                    
+                    // Check 4: Órdenes abiertas
+                    if (openOrders.length >= 3) {
+                        checks.push({
+                            status: 'warning',
+                            message: `Máximo de órdenes abiertas alcanzado: ${openOrders.length}/3`
+                        });
+                        hasIssues = true;
+                        recommendations.push(`Espera o cancela algunas órdenes abiertas (${openOrders.length}/3)`);
+                    } else {
+                        checks.push({
+                            status: 'success',
+                            message: `Órdenes abiertas: ${openOrders.length}/3 ✓`
+                        });
+                    }
+                }
+                
+                // Mostrar checks
+                html += '<div class="status-box info"><h4>Verificaciones:</h4>';
+                checks.forEach(check => {
+                    html += `<div class="check-item ${check.status}">${check.message}</div>`;
+                });
+                html += '</div>';
+                
+                // Información adicional
+                html += `
+                    <div class="status-box info">
+                        <h4>📋 Configuración Actual:</h4>
+                        <pre>Symbol: ${watchlistItem.symbol}
+Exchange: ${watchlistItem.exchange}
+Trade Enabled: ${watchlistItem.trade_enabled}
+Amount USD: ${watchlistItem.trade_amount_usd || 'No configurado'}
+Alert Enabled: ${watchlistItem.alert_enabled}
+SL/TP Mode: ${watchlistItem.sl_tp_mode || 'conservative'}
+Órdenes Abiertas: ${openOrders.length}</pre>
+                    </div>
+                `;
+                
+                // Recomendaciones
+                if (hasIssues && recommendations.length > 0) {
+                    html += '<div class="recommendations">';
+                    html += '<h3>💡 Recomendaciones para Solucionar:</h3><ul>';
+                    recommendations.forEach(rec => {
+                        html += `<li>${rec}</li>`;
+                    });
+                    html += '</ul></div>';
+                } else if (!hasIssues) {
+                    html += `
+                        <div class="status-box success">
+                            <h3>✅ Configuración Correcta</h3>
+                            <p>Todos los requisitos están cumplidos. Si la orden aún no se crea, revisa los logs del backend para errores específicos.</p>
+                            <p><strong>Busca en los logs:</strong></p>
+                            <pre>[Background] Error creating order
+[Background] Order creation returned None
+SEGURIDAD 2/2: ... BLOQUEADO
+BLOCKED at final check</pre>
+                        </div>
+                    `;
+                }
+                
+                resultsDiv.innerHTML = html;
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="status-box error">
+                        <h3>❌ Error al diagnosticar</h3>
+                        <p>${error.message}</p>
+                        <pre>${error.stack}</pre>
+                        <p><strong>API URL:</strong> ${API_URL}</p>
+                    </div>
+                `;
+            } finally {
+                diagnoseBtn.disabled = false;
+                diagnoseBtn.textContent = '🔍 Diagnosticar';
+            }
+        }
+        
+        // Auto-detectar API URL
+        window.addEventListener('load', () => {
+            console.log('🌐 API URL detectada:', API_URL);
+        });
+        
+        // Permitir Enter para diagnosticar
+        document.getElementById('symbol').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                diagnose();
+            }
+        });
+    </script>
+</body>
+</html>
+

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body, Depends
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone, timedelta
 from app.database import get_db
 from app.models.watchlist import WatchlistItem
 from app.services.signal_monitor import signal_monitor_service
@@ -287,6 +288,18 @@ async def simulate_alert(
             if not watchlist_item.trade_enabled:
                 order_error_message = f"⚠️ TRADE NO HABILITADO\n\nEl campo 'Trade' está en NO para {symbol}.\n\nPor favor configura 'Trade' = YES en la Watchlist del Dashboard para crear órdenes automáticas."
                 logger.info(f"Trade not enabled for {symbol} - only alert sent, no order created")
+                
+                # Send error notification to Telegram so user knows why order wasn't created
+                try:
+                    telegram_notifier.send_message(
+                        f"⚠️ <b>TEST ALERT: Orden no creada</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🟢 Señal: BUY detectada\n"
+                        f"✅ Alerta enviada\n"
+                        f"❌ Orden no creada: {order_error_message}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram notification: {e}")
             
             # Check if trade_amount_usd is configured - REQUIRED, no default
             elif not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
@@ -350,6 +363,20 @@ async def simulate_alert(
                                 order_id = order_result.get("order_id") or order_result.get("client_order_id")
                                 logger.info(f"✅ [Background] BUY order created successfully for {symbol}: order_id={order_id}")
                                 
+                                # Send success notification to Telegram
+                                try:
+                                    telegram_notifier.send_message(
+                                        f"✅ <b>TEST ALERT: Orden creada exitosamente</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"🟢 Side: BUY\n"
+                                        f"💰 Amount: ${bg_watchlist_item.trade_amount_usd:.2f}\n"
+                                        f"💵 Price: ${current_price:.4f}\n"
+                                        f"🆔 Order ID: {order_id}\n"
+                                        f"📊 Status: {order_result.get('status', 'UNKNOWN')}"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to send Telegram success notification: {e}")
+                                
                                 # If order is immediately filled (MARKET orders usually are), trigger SL/TP creation
                                 filled_price = order_result.get("filled_price") or order_result.get("avg_price") or current_price
                                 filled_qty = order_result.get("filled_quantity")
@@ -391,7 +418,21 @@ async def simulate_alert(
                                 else:
                                     logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
                             else:
+                                error_msg = f"⚠️ La creación de orden retornó None para {symbol}. Esto puede deberse a:\n- Límite de órdenes abiertas alcanzado\n- Verificación de seguridad bloqueó la orden\n- Error interno en la creación de orden"
                                 logger.warning(f"⚠️ [Background] Order creation returned None for {symbol}")
+                                
+                                # Send error notification to Telegram
+                                try:
+                                    telegram_notifier.send_message(
+                                        f"⚠️ <b>TEST ALERT: Orden no creada</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"🟢 Señal: BUY detectada\n"
+                                        f"✅ Alerta enviada\n"
+                                        f"❌ Orden no creada: {error_msg}\n\n"
+                                        f"💡 Revisa los logs del backend para más detalles."
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to send Telegram error notification: {e}")
                                 
                         except Exception as order_err:
                             logger.error(f"❌ [Background] Error creating order for {symbol}: {order_err}", exc_info=True)
@@ -663,6 +704,239 @@ def check_sl_tp(
     except Exception as e:
         logger.error(f"Error checking SL/TP: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error checking SL/TP: {str(e)}")
+
+
+@router.get("/test/diagnose-alert/{symbol}")
+def diagnose_alert_issue(
+    symbol: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Diagnose why a test alert might not be creating orders
+    Returns comprehensive diagnostic information about symbol configuration
+    """
+    try:
+        symbol = symbol.upper()
+        
+        # Get watchlist item
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol
+        ).first()
+        
+        if not watchlist_item:
+            return {
+                "ok": False,
+                "symbol": symbol,
+                "exists": False,
+                "error": f"{symbol} not found in watchlist",
+                "recommendations": [
+                    f"Add {symbol} to watchlist from Dashboard",
+                    "Configure 'Trade' = YES",
+                    "Configure 'Amount USD' > 0"
+                ]
+            }
+        
+        # Get open orders for this symbol
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+        
+        symbol_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.status.in_(open_statuses)
+        ).all()
+        
+        # Get total open orders
+        total_open_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.status.in_(open_statuses)
+        ).count()
+        
+        # Check recent orders (last 5 minutes)
+        from datetime import timedelta
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+        recent_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.side == OrderSideEnum.BUY,
+            ExchangeOrder.created_at >= threshold
+        ).count()
+        
+        # Check portfolio value if possible
+        portfolio_value = None
+        portfolio_exceeds_limit = False
+        try:
+            from app.services.order_position_service import calculate_portfolio_value_for_symbol
+            # Use a dummy price for now
+            current_price = 100.0  # Will be updated if we can fetch it
+            try:
+                from price_fetcher import get_price_with_fallback
+                result = get_price_with_fallback(symbol, "15m")
+                if result.get('price'):
+                    current_price = result.get('price')
+            except:
+                pass
+            
+            portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
+            if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
+                limit_value = 3 * watchlist_item.trade_amount_usd
+                portfolio_exceeds_limit = portfolio_value > limit_value
+        except Exception as e:
+            logger.warning(f"Could not calculate portfolio value: {e}")
+        
+        # Build diagnostic results
+        checks = []
+        issues = []
+        
+        # Check 1: trade_enabled
+        if not watchlist_item.trade_enabled:
+            checks.append({
+                "check": "trade_enabled",
+                "status": "error",
+                "message": "Trade is disabled - orders will NOT be created",
+                "value": False
+            })
+            issues.append("trade_enabled = False")
+        else:
+            checks.append({
+                "check": "trade_enabled",
+                "status": "success",
+                "message": "Trade is enabled",
+                "value": True
+            })
+        
+        # Check 2: trade_amount_usd
+        if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+            checks.append({
+                "check": "trade_amount_usd",
+                "status": "error",
+                "message": f"Amount USD not configured ({watchlist_item.trade_amount_usd}) - orders will NOT be created",
+                "value": watchlist_item.trade_amount_usd
+            })
+            issues.append("trade_amount_usd not configured or <= 0")
+        else:
+            checks.append({
+                "check": "trade_amount_usd",
+                "status": "success",
+                "message": f"Amount USD configured: ${watchlist_item.trade_amount_usd}",
+                "value": watchlist_item.trade_amount_usd
+            })
+        
+        # Check 3: alert_enabled
+        if not watchlist_item.alert_enabled:
+            checks.append({
+                "check": "alert_enabled",
+                "status": "warning",
+                "message": "Alerts are disabled",
+                "value": False
+            })
+        else:
+            checks.append({
+                "check": "alert_enabled",
+                "status": "success",
+                "message": "Alerts are enabled",
+                "value": True
+            })
+        
+        # Check 4: Open orders count
+        if len(symbol_orders) >= 3:
+            checks.append({
+                "check": "open_orders_limit",
+                "status": "warning",
+                "message": f"Maximum open orders reached: {len(symbol_orders)}/3",
+                "value": len(symbol_orders)
+            })
+            issues.append(f"Open orders limit reached: {len(symbol_orders)}/3")
+        else:
+            checks.append({
+                "check": "open_orders_limit",
+                "status": "success",
+                "message": f"Open orders: {len(symbol_orders)}/3",
+                "value": len(symbol_orders)
+            })
+        
+        # Check 5: Recent orders
+        if recent_orders > 0:
+            checks.append({
+                "check": "recent_orders",
+                "status": "warning",
+                "message": f"Recent orders in last 5 minutes: {recent_orders} - may block new orders due to cooldown",
+                "value": recent_orders
+            })
+        else:
+            checks.append({
+                "check": "recent_orders",
+                "status": "success",
+                "message": "No recent orders",
+                "value": recent_orders
+            })
+        
+        # Check 6: Portfolio value
+        if portfolio_value is not None:
+            if portfolio_exceeds_limit:
+                limit_value = 3 * watchlist_item.trade_amount_usd
+                checks.append({
+                    "check": "portfolio_limit",
+                    "status": "warning",
+                    "message": f"Portfolio value ${portfolio_value:.2f} exceeds limit ${limit_value:.2f} (3x trade_amount_usd)",
+                    "value": portfolio_value
+                })
+                issues.append(f"Portfolio value exceeds limit")
+            else:
+                checks.append({
+                    "check": "portfolio_limit",
+                    "status": "success",
+                    "message": f"Portfolio value: ${portfolio_value:.2f}",
+                    "value": portfolio_value
+                })
+        
+        # Build recommendations
+        recommendations = []
+        if not watchlist_item.trade_enabled:
+            recommendations.append(f"Enable 'Trade' = YES for {symbol} in Dashboard")
+        if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+            recommendations.append(f"Configure 'Amount USD' > 0 for {symbol} in Dashboard")
+        if len(symbol_orders) >= 3:
+            recommendations.append(f"Wait for some open orders to complete or cancel them (currently {len(symbol_orders)}/3)")
+        if recent_orders > 0:
+            recommendations.append(f"Wait for cooldown period (recent order created in last 5 minutes)")
+        if portfolio_exceeds_limit:
+            recommendations.append("Wait for portfolio value to decrease or increase trade_amount_usd")
+        
+        if not recommendations:
+            recommendations.append("Configuration looks correct. If orders still don't create, check backend logs for specific errors.")
+        
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "exists": True,
+            "configuration": {
+                "trade_enabled": watchlist_item.trade_enabled,
+                "trade_amount_usd": watchlist_item.trade_amount_usd,
+                "alert_enabled": watchlist_item.alert_enabled,
+                "buy_alert_enabled": getattr(watchlist_item, 'buy_alert_enabled', None),
+                "sell_alert_enabled": getattr(watchlist_item, 'sell_alert_enabled', None),
+                "trade_on_margin": watchlist_item.trade_on_margin,
+                "sl_tp_mode": watchlist_item.sl_tp_mode,
+            },
+            "orders": {
+                "open_for_symbol": len(symbol_orders),
+                "total_open_global": total_open_orders,
+                "recent_count": recent_orders,
+                "max_per_symbol": 3,
+            },
+            "portfolio": {
+                "value": portfolio_value,
+                "exceeds_limit": portfolio_exceeds_limit,
+            } if portfolio_value is not None else None,
+            "checks": checks,
+            "issues": issues,
+            "has_issues": len(issues) > 0,
+            "recommendations": recommendations,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error diagnosing alert issue for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error diagnosing: {str(e)}")
 
 
 @router.post("/test/send-telegram-message")
