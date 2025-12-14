@@ -109,6 +109,10 @@ docker compose --profile aws ps
 echo "Testing backend health..."
 curl -f http://localhost:8000/api/health || echo "Backend health check failed"
 
+# Apply database migrations
+echo "Applying database migrations..."
+docker compose exec -T backend python backend/scripts/apply_migration_previous_price.py || echo "Migration may have already been applied or failed"
+
 # Clean up tar files
 rm -f backend-aws.tar.gz frontend-aws.tar.gz
 
