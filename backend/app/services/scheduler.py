@@ -45,9 +45,9 @@ class TradingScheduler:
         try:
             daily_summary_service.send_daily_summary()
             logger.info("Daily summary sent")
-            # Record successful execution
+            # Record successful execution (no report file for daily summary)
             from app.api.routes_monitoring import record_workflow_execution
-            record_workflow_execution("daily_summary", "success", "Daily summary sent successfully")
+            record_workflow_execution("daily_summary", "success", None)
         except Exception as e:
             logger.error(f"Error sending daily summary: {e}", exc_info=True)
             from app.api.routes_monitoring import record_workflow_execution
@@ -87,9 +87,9 @@ class TradingScheduler:
             try:
                 sl_tp_checker_service.send_sl_tp_reminder(db)
                 logger.info("SL/TP check completed")
-                # Record successful execution
+                # Record successful execution (no report file for SL/TP check)
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sl_tp_check", "success", "SL/TP check completed successfully")
+                record_workflow_execution("sl_tp_check", "success", None)
             finally:
                 db.close()
         except Exception as e:
@@ -131,9 +131,9 @@ class TradingScheduler:
             try:
                 daily_summary_service.send_sell_orders_report(db)
                 logger.info("Sell orders report sent")
-                # Record successful execution
+                # Record successful execution (no report file for sell orders report)
                 from app.api.routes_monitoring import record_workflow_execution
-                record_workflow_execution("sell_orders_report", "success", "Sell orders report sent successfully")
+                record_workflow_execution("sell_orders_report", "success", None)
             finally:
                 db.close()
         except Exception as e:
@@ -267,7 +267,8 @@ class TradingScheduler:
                 self._telegram_commands_count += 1
                 if self._telegram_commands_count % 10 == 0:
                     from app.api.routes_monitoring import record_workflow_execution
-                    record_workflow_execution("telegram_commands", "success", f"Telegram commands check completed (execution #{self._telegram_commands_count})")
+                    # Record periodic status (no report file for telegram commands)
+                    record_workflow_execution("telegram_commands", "success", None)
             finally:
                 db.close()
             logger.debug("[SCHEDULER] Telegram commands check completed")
