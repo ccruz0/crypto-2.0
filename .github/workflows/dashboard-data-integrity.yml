@@ -76,6 +76,149 @@ jobs:
         retention-days: 30
         if-no-files-found: ignore
         
+    - name: Generate consolidated JSON report
+      if: always()
+      working-directory: frontend
+      run: |
+        mkdir -p reports
+        node -e '
+        const fs = require("fs");
+        const path = require("path");
+        
+        const reportsDir = path.join(process.cwd(), "test-results/data-integrity");
+        const outputPath = path.join(process.cwd(), "reports/dashboard-data-integrity.json");
+        
+        const report = {
+          run: {
+            workflow: "Dashboard Data Integrity",
+            run_id: process.env.GITHUB_RUN_ID || "",
+            created_at: new Date().toISOString(),
+            commit: process.env.GITHUB_SHA || "",
+            branch: process.env.GITHUB_REF_NAME || "",
+            status: "PASS"
+          },
+          summary: {
+            inconsistencies_total: 0,
+            blockers: 0,
+            high: 0,
+            medium: 0,
+            low: 0
+          },
+          inconsistencies: [],
+          cursor_prompt: ""
+        };
+        
+        if (fs.existsSync(reportsDir)) {
+          const files = fs.readdirSync(reportsDir).filter(f => f.endsWith("-discrepancies.json"));
+          
+          for (const file of files) {
+            const content = JSON.parse(fs.readFileSync(path.join(reportsDir, file), "utf8"));
+            const tabName = content.tabName || file.replace("-discrepancies.json", "");
+            
+            if (content.discrepancies && Array.isArray(content.discrepancies)) {
+              for (const disc of content.discrepancies) {
+                const severity = disc.field === "row_missing" || disc.field === "trade_enabled" ? "high" : "medium";
+                const entity = tabName === "watchlist" ? "watchlist" : 
+                              tabName === "portfolio" ? "portfolio" : 
+                              tabName === "monitoring" ? "alerts" : "trade";
+                
+                const inconsistency = {
+                  id: "DI-" + String(report.inconsistencies.length + 1).padStart(3, "0"),
+                  severity: severity,
+                  entity: entity,
+                  symbol: disc.symbol || "N/A",
+                  field: disc.field,
+                  dashboard_value: disc.uiValue,
+                  backend_value: disc.apiValue,
+                  source: {
+                    api: disc.apiSourceUrl || "N/A",
+                    backend_module: "app/api/routes_dashboard",
+                    db: "watchlist_items" + (disc.field ? "." + disc.field : "")
+                  },
+                  notes: "UI shows " + JSON.stringify(disc.uiValue) + " but backend API returns " + JSON.stringify(disc.apiValue)
+                };
+                
+                report.inconsistencies.push(inconsistency);
+                
+                if (severity === "high") report.summary.high++;
+                else if (severity === "medium") report.summary.medium++;
+                else report.summary.low++;
+              }
+            }
+          }
+        }
+        
+        report.summary.inconsistencies_total = report.inconsistencies.length;
+        report.summary.blockers = report.inconsistencies.filter(i => i.severity === "high" && i.field === "row_missing").length;
+        
+        if (report.inconsistencies.length > 0) {
+          report.run.status = "FAIL";
+        }
+        
+        // Generate Cursor prompt
+        if (report.inconsistencies.length > 0) {
+          const inconsistenciesList = report.inconsistencies.map(i => {
+            const uiVal = JSON.stringify(i.dashboard_value);
+            const backendVal = JSON.stringify(i.backend_value);
+            return "- " + i.id + ": " + i.entity + "/" + i.symbol + " - " + i.field + " (UI: " + uiVal + ", Backend: " + backendVal + ")";
+          }).join("\\n");
+          
+          report.cursor_prompt = "Fix the following data inconsistencies between the Dashboard UI and backend API:\\n\\n" +
+            inconsistenciesList + "\\n\\n" +
+            "Requirements:\\n" +
+            "1. Fix each inconsistency by aligning the backend API response or frontend rendering logic\\n" +
+            "2. Add a regression test for each fixed inconsistency\\n" +
+            "3. Re-run the Dashboard Data Integrity workflow to verify fixes\\n" +
+            "4. Commit changes with message: \\"fix: resolve dashboard data integrity issues\\"\\n" +
+            "5. Deploy after verification\\n\\n" +
+            "To re-run the workflow:\\n" +
+            "cd /Users/carloscruz/automated-trading-platform\\n" +
+            "git push origin main";
+        } else {
+          report.cursor_prompt = "No inconsistencies found. Dashboard data integrity is valid.";
+        }
+        
+        fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
+        console.log("✅ Consolidated report generated:", outputPath);
+        '
+        
+    - name: Upload consolidated report artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dashboard-data-integrity-report
+        path: frontend/reports/dashboard-data-integrity.json
+        retention-days: 30
+        if-no-files-found: ignore
+        
+    - name: POST report to backend
+      if: always()
+      working-directory: frontend
+      env:
+        BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
+        REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+      run: |
+        if [ -f "reports/dashboard-data-integrity.json" ]; then
+          echo "📤 Posting report to backend..."
+          HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
+            -H "Content-Type: application/json" \
+            -H "X-Report-Secret: ${REPORT_SECRET}" \
+            -d "@reports/dashboard-data-integrity.json" \
+            -w "%{http_code}" \
+            -s -o /tmp/report_response.json)
+          
+          if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+            echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
+          else
+            echo "⚠️ Failed to post report to backend (HTTP $HTTP_CODE)"
+            if [ -f /tmp/report_response.json ]; then
+              echo "Response: $(cat /tmp/report_response.json)"
+            fi
+          fi
+        else
+          echo "⚠️ No report file found to post"
+        fi
+        
     - name: Generate report summary
       if: always()
       working-directory: frontend
@@ -114,6 +257,8 @@ jobs:
         echo "- **Discrepancy Reports**: data-integrity-reports/ (JSON files)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📊 **View Dashboard Report:** [Open Report Page](${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}/reports/dashboard-data-integrity)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "After downloading artifacts:" >> $GITHUB_STEP_SUMMARY
         echo "1. Open \`playwright-report/index.html\` in browser for full test report" >> $GITHUB_STEP_SUMMARY
