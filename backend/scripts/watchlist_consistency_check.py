@@ -45,7 +45,8 @@ def get_throttle_states(db: Session) -> dict:
     throttle_states = {}
     states = db.query(SignalThrottleState).all()
     for state in states:
-        key = f"{state.symbol}_{state.strategy_type}_{state.risk_mode}"
+        # SignalThrottleState uses strategy_key, not strategy_type and risk_mode
+        key = f"{state.symbol}_{state.strategy_key}_{state.side}"
         throttle_states[key] = state
     return throttle_states
 
