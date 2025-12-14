@@ -69,4 +69,94 @@ jobs:
         path: frontend/test-results/data-integrity/*.json
         retention-days: 30
         if-no-files-found: ignore
+        
+    - name: Generate report summary
+      if: always()
+      working-directory: frontend
+      run: |
+        echo "## 📊 Dashboard Data Integrity Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Count discrepancy reports
+        if [ -d "test-results/data-integrity" ]; then
+          REPORT_COUNT=$(find test-results/data-integrity -name "*-discrepancies.json" -type f | wc -l | tr -d ' ')
+          if [ "$REPORT_COUNT" -gt 0 ]; then
+            echo "⚠️ **$REPORT_COUNT discrepancy report(s) generated**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Discrepancy Reports" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            for report in test-results/data-integrity/*-discrepancies.json; do
+              if [ -f "$report" ]; then
+                TAB_NAME=$(basename "$report" | sed 's/-discrepancies.json//')
+                DISCREPANCY_COUNT=$(cat "$report" | grep -o '"discrepancyCount":[0-9]*' | grep -o '[0-9]*' || echo "0")
+                echo "- **$TAB_NAME**: $DISCREPANCY_COUNT discrepancies found" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          else
+            echo "✅ **No discrepancies found**" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Download artifacts to view:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Playwright HTML Report**: playwright-report/" >> $GITHUB_STEP_SUMMARY
+        echo "- **Test Results**: test-results/ (includes screenshots)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Discrepancy Reports**: data-integrity-reports/ (JSON files)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "After downloading artifacts:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Open \`playwright-report/index.html\` in browser for full test report" >> $GITHUB_STEP_SUMMARY
+        echo "2. Check \`data-integrity-reports/*.json\` for detailed discrepancy data" >> $GITHUB_STEP_SUMMARY
+        
+    - name: Comment PR with report link
+      if: github.event_name == 'pull_request' && always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          
+          let comment = '## 📊 Dashboard Data Integrity Test Results\n\n';
+          
+          // Check for discrepancy reports
+          const reportsDir = path.join(process.cwd(), 'frontend/test-results/data-integrity');
+          if (fs.existsSync(reportsDir)) {
+            const reports = fs.readdirSync(reportsDir)
+              .filter(f => f.endsWith('-discrepancies.json'))
+              .map(f => {
+                const content = JSON.parse(fs.readFileSync(path.join(reportsDir, f), 'utf8'));
+                return {
+                  name: f.replace('-discrepancies.json', ''),
+                  count: content.discrepancyCount || 0
+                };
+              });
+            
+            if (reports.length > 0) {
+              comment += '⚠️ **Discrepancies Detected:**\n\n';
+              reports.forEach(r => {
+                comment += `- **${r.name}**: ${r.count} discrepancy(ies)\n`;
+              });
+              comment += '\n';
+            } else {
+              comment += '✅ **No discrepancies found**\n\n';
+            }
+          }
+          
+          comment += '📦 **Artifacts:** Download the workflow artifacts to view:\n';
+          comment += '- Playwright HTML report\n';
+          comment += '- Discrepancy JSON reports\n';
+          comment += '- Screenshots (if any failures)\n\n';
+          comment += `🔗 **View in Actions:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
 

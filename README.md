@@ -2,6 +2,8 @@
 
 A full-stack automated trading platform built with FastAPI (backend) and Next.js (frontend).
 
+[![Dashboard Data Integrity](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml/badge.svg)](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml)
+
 ## Runtime Architecture
 
 **⚠️ IMPORTANT: AWS is the ONLY live production runtime (trading + alerts).**
