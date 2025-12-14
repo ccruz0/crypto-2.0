@@ -6,12 +6,28 @@
 set -e
 
 # Configuration
-EC2_HOST="54.254.150.31"
+EC2_HOST_PRIMARY="54.254.150.31"
+EC2_HOST_ALTERNATIVE="175.41.189.249"
 EC2_USER="ubuntu"
 # Unified SSH
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
 PROJECT_DIR="automated-trading-platform"
 AWS_PROFILE="aws"
+
+# Try to determine which host to use
+EC2_HOST=""
+if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST_PRIMARY" "echo 'Connected'" > /dev/null 2>&1; then
+    EC2_HOST="$EC2_HOST_PRIMARY"
+    echo "✅ Using primary host: $EC2_HOST"
+elif ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST_ALTERNATIVE" "echo 'Connected'" > /dev/null 2>&1; then
+    EC2_HOST="$EC2_HOST_ALTERNATIVE"
+    echo "✅ Using alternative host: $EC2_HOST"
+else
+    echo "❌ Cannot connect to either host"
+    echo "   Tried: $EC2_HOST_PRIMARY and $EC2_HOST_ALTERNATIVE"
+    echo "   Please check AWS Console or try manual connection"
+    exit 1
+fi
 
 echo "========================================="
 echo "AWS Sync and Deploy Script"
@@ -37,10 +53,11 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check SSH connection
-print_status "Testing SSH connection to AWS..."
+# Check SSH connection (already determined EC2_HOST above)
+print_status "Testing SSH connection to AWS ($EC2_HOST)..."
 ssh_cmd "$EC2_USER@$EC2_HOST" "echo 'SSH connection successful'" || {
-    print_error "Cannot connect to AWS instance"
+    print_error "Cannot connect to AWS instance at $EC2_HOST"
+    print_warning "Tried: $EC2_HOST_PRIMARY and $EC2_HOST_ALTERNATIVE"
     exit 1
 }
 
