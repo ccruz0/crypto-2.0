@@ -226,7 +226,7 @@
       "overrides": {}
     },
     "TON_USDT": {
-      "preset": "scalp-aggressive",
+      "preset": "swing-aggressive",
       "overrides": {
         "volumeMinRatio": 0.30
       }
