@@ -124,6 +124,39 @@ class SignalMonitorService:
         except Exception:
             logger.debug("Failed to persist signal monitor status", exc_info=True)
 
+    def clear_order_creation_limitations(self, symbol: str) -> None:
+        """Clear order creation limitations for a symbol (e.g., when strategy changes).
+        
+        This clears:
+        - last_signal_states (last_order_price, orders_count tracking)
+        - order_creation_locks (prevents duplicate orders)
+        - last_alert_states (alert throttling)
+        - alert_sending_locks (alert sending locks)
+        
+        This allows immediate order creation and alerts when strategy changes.
+        """
+        # Clear order creation state
+        if symbol in self.last_signal_states:
+            del self.last_signal_states[symbol]
+            logger.info(f"🔄 [STRATEGY] Cleared last_signal_states for {symbol}")
+        
+        # Clear order creation locks
+        if symbol in self.order_creation_locks:
+            del self.order_creation_locks[symbol]
+            logger.info(f"🔄 [STRATEGY] Cleared order_creation_locks for {symbol}")
+        
+        # Clear alert state for both BUY and SELL
+        if symbol in self.last_alert_states:
+            del self.last_alert_states[symbol]
+            logger.info(f"🔄 [STRATEGY] Cleared last_alert_states for {symbol}")
+        
+        # Clear alert sending locks for both BUY and SELL
+        for side in ["BUY", "SELL"]:
+            lock_key = f"{symbol}_{side}"
+            if lock_key in self.alert_sending_locks:
+                del self.alert_sending_locks[lock_key]
+        logger.info(f"🔄 [STRATEGY] Cleared alert_sending_locks for {symbol} BUY/SELL")
+    
     def _log_symbol_context(
         self,
         symbol: str,

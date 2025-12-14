@@ -817,6 +817,9 @@ def update_watchlist_item(
     
     # Track old strategy before update to reset throttle state if strategy changes
     old_sl_tp_mode = item.sl_tp_mode if hasattr(item, 'sl_tp_mode') else None
+    # Also check if preset/risk_mode are changing (frontend may send these instead of sl_tp_mode)
+    old_preset = getattr(item, 'preset', None)
+    old_risk_mode = getattr(item, 'risk_mode', None)
     strategy_changed = False
     
     if "trade_enabled" in payload:
@@ -854,6 +857,17 @@ def update_watchlist_item(
         if old_sl_tp_mode != new_sl_tp_mode:
             strategy_changed = True
             updates.append(f"STRATEGY: {old_sl_tp_mode or 'default'} → {new_sl_tp_mode}")
+    
+    # Also check if preset or risk_mode are changing (frontend may send these separately)
+    if "preset" in payload or "risk_mode" in payload:
+        new_preset = payload.get("preset")
+        new_risk_mode = payload.get("risk_mode")
+        # If either preset or risk_mode changed, consider strategy changed
+        if (new_preset is not None and new_preset != old_preset) or (new_risk_mode is not None and new_risk_mode != old_risk_mode):
+            strategy_changed = True
+            old_strategy_str = f"{old_preset or 'default'}-{old_risk_mode or 'default'}"
+            new_strategy_str = f"{new_preset or old_preset or 'default'}-{new_risk_mode or old_risk_mode or 'default'}"
+            updates.append(f"STRATEGY: {old_strategy_str} → {new_strategy_str}")
     
     _apply_watchlist_updates(item, payload)
     db.commit()
@@ -909,14 +923,35 @@ def update_watchlist_item(
             
             # Get old strategy_key if we had an old strategy
             old_strategy_key = None
-            if old_sl_tp_mode:
+            # Try to get old strategy from old_sl_tp_mode, preset, or risk_mode
+            if old_sl_tp_mode or old_preset or old_risk_mode:
                 try:
-                    # Parse old strategy from sl_tp_mode (format: "swing-conservative" or "scalp-aggressive")
+                    # First try parsing sl_tp_mode (format: "swing-conservative" or just "conservative")
                     old_strategy, old_approach = _parse_preset(old_sl_tp_mode)
+                    # If sl_tp_mode didn't parse (e.g., just "conservative"), try using preset/risk_mode
+                    if not old_strategy and old_preset:
+                        from app.services.strategy_profiles import _normalize_strategy
+                        old_strategy = _normalize_strategy(old_preset)
+                    if not old_approach and old_risk_mode:
+                        from app.services.strategy_profiles import _normalize_approach
+                        old_approach = _normalize_approach(old_risk_mode)
+                    # If still no strategy, resolve from old watchlist item
+                    if not old_strategy or not old_approach:
+                        # Create a temporary watchlist item with old values to resolve strategy
+                        from app.services.strategy_profiles import resolve_strategy_profile
+                        # Use old values to resolve old strategy
+                        old_item = type('obj', (object,), {
+                            'sl_tp_mode': old_sl_tp_mode,
+                            'preset': old_preset,
+                            'risk_mode': old_risk_mode
+                        })()
+                        old_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=old_item)
+                        old_strategy = old_strategy_profile[0]
+                        old_approach = old_strategy_profile[1]
                     if old_strategy and old_approach:
                         old_strategy_key = build_strategy_key(old_strategy, old_approach)
                 except Exception as parse_err:
-                    log.debug(f"Could not parse old strategy {old_sl_tp_mode}: {parse_err}")
+                    log.debug(f"Could not parse old strategy (sl_tp_mode={old_sl_tp_mode}, preset={old_preset}, risk_mode={old_risk_mode}): {parse_err}")
             
             # Get new strategy_key
             new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
@@ -938,6 +973,16 @@ def update_watchlist_item(
             set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
             set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
             log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
+            
+            # CRITICAL: Clear order creation limitations in SignalMonitorService
+            # This clears last_order_price, orders_count tracking, order_creation_locks, and alert state
+            # so that orders can be created immediately when new strategy signals are detected
+            try:
+                from app.services.signal_monitor import signal_monitor_service
+                signal_monitor_service.clear_order_creation_limitations(item.symbol)
+                log.info(f"🔄 [STRATEGY] Cleared order creation limitations for {item.symbol} - orders can be created immediately")
+            except Exception as clear_err:
+                log.warning(f"⚠️ [STRATEGY] Failed to clear order creation limitations for {item.symbol}: {clear_err}", exc_info=True)
             
         except Exception as strategy_err:
             log.warning(f"⚠️ [STRATEGY] Failed to reset throttle state for {item.symbol}: {strategy_err}", exc_info=True)
