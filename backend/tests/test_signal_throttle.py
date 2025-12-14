@@ -11,11 +11,12 @@ from app.services.signal_throttle import (
 BASE_TIME = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 
-def _snapshot(minutes_ago: float, price: float, side: str = "BUY") -> LastSignalSnapshot:
+def _snapshot(minutes_ago: float, price: float, side: str = "BUY", force_next: bool = False) -> LastSignalSnapshot:
     return LastSignalSnapshot(
         side=side,
         price=price,
         timestamp=BASE_TIME - timedelta(minutes=minutes_ago),
+        force_next_signal=force_next,
     )
 
 
@@ -117,5 +118,80 @@ def test_should_emit_signal_first_call_without_history_allows():
 
     assert allowed is True
     assert reason.startswith("No previous")
+
+
+def test_should_emit_signal_force_flag_bypasses_throttling():
+    """When force_next_signal is True, throttling is bypassed."""
+    config = SignalThrottleConfig(min_price_change_pct=5.0, min_interval_minutes=20.0)
+    # Create a snapshot that would normally be blocked (1 minute ago, 1% price change)
+    last_state = _snapshot(minutes_ago=1.0, price=100.0, force_next=True)
+
+    allowed, reason = should_emit_signal(
+        symbol="BTC_USDT",
+        side="BUY",
+        current_price=101.0,  # Only 1% change (needs 5%)
+        current_time=BASE_TIME,
+        config=config,
+        last_same_side=last_state,
+        last_opposite_side=None,
+    )
+
+    assert allowed is True
+    assert "FORCED_AFTER_TOGGLE_RESET" in reason
+
+
+def test_should_emit_signal_force_flag_works_without_db():
+    """Force flag bypasses throttling even without DB (flag is in snapshot)."""
+    config = SignalThrottleConfig(min_price_change_pct=5.0, min_interval_minutes=20.0)
+    # Create a snapshot that would normally be blocked (1 minute ago, 1% price change)
+    # but has force_next_signal=True
+    last_state = _snapshot(minutes_ago=1.0, price=100.0, force_next=True)
+
+    allowed, reason = should_emit_signal(
+        symbol="BTC_USDT",
+        side="BUY",
+        current_price=101.0,  # Only 1% change (needs 5%)
+        current_time=BASE_TIME,
+        config=config,
+        last_same_side=last_state,
+        last_opposite_side=None,
+    )
+
+    assert allowed is True
+    assert "FORCED_AFTER_TOGGLE_RESET" in reason
+
+
+def test_should_emit_signal_force_flag_only_bypasses_once():
+    """After force flag is used, normal throttling resumes."""
+    config = SignalThrottleConfig(min_price_change_pct=5.0, min_interval_minutes=20.0)
+    
+    # First call with force flag - should be allowed
+    last_state_forced = _snapshot(minutes_ago=1.0, price=100.0, force_next=True)
+    allowed1, reason1 = should_emit_signal(
+        symbol="BTC_USDT",
+        side="BUY",
+        current_price=101.0,
+        current_time=BASE_TIME,
+        config=config,
+        last_same_side=last_state_forced,
+        last_opposite_side=None,
+    )
+    assert allowed1 is True
+    assert "FORCED_AFTER_TOGGLE_RESET" in reason1
+    
+    # Second call without force flag (flag was cleared) - should be blocked
+    last_state_normal = _snapshot(minutes_ago=1.0, price=100.0, force_next=False)
+    allowed2, reason2 = should_emit_signal(
+        symbol="BTC_USDT",
+        side="BUY",
+        current_price=101.0,
+        current_time=BASE_TIME,
+        config=config,
+        last_same_side=last_state_normal,
+        last_opposite_side=None,
+    )
+    # Should be blocked because price change is only 1% (needs 5%)
+    assert allowed2 is False
+    assert "THROTTLED" in reason2
 
 

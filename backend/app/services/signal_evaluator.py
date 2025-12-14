@@ -332,6 +332,8 @@ def evaluate_signal_for_symbol(
                 config=throttle_config,
                 last_same_side=signal_snapshots.get("BUY"),
                 last_opposite_side=signal_snapshots.get("SELL"),
+                db=db,
+                strategy_key=strategy_key,
             )
             result["buy_allowed"] = buy_allowed
             result["throttle_status_buy"] = "SENT" if buy_allowed else "BLOCKED"
@@ -355,6 +357,8 @@ def evaluate_signal_for_symbol(
                 config=throttle_config,
                 last_same_side=signal_snapshots.get("SELL"),
                 last_opposite_side=signal_snapshots.get("BUY"),
+                db=db,
+                strategy_key=strategy_key,
             )
             result["sell_allowed"] = sell_allowed
             result["throttle_status_sell"] = "SENT" if sell_allowed else "BLOCKED"

@@ -999,6 +999,8 @@ class SignalMonitorService:
                 config=throttle_config,
                 last_same_side=signal_snapshots.get("BUY"),
                 last_opposite_side=signal_snapshots.get("SELL"),
+                db=db,
+                strategy_key=strategy_key,
             )
             if not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
@@ -1060,6 +1062,8 @@ class SignalMonitorService:
                 config=throttle_config,
                 last_same_side=signal_snapshots.get("SELL"),
                 last_opposite_side=signal_snapshots.get("BUY"),
+                db=db,
+                strategy_key=strategy_key,
             )
             # DEBUG: Log throttle check result for DOT_USD
             if symbol == "DOT_USD":

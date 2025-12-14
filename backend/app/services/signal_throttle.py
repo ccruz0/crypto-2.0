@@ -24,6 +24,7 @@ class LastSignalSnapshot:
     side: str
     price: Optional[float]
     timestamp: Optional[datetime]
+    force_next_signal: bool = False
 
 
 def _normalize_strategy_key(strategy_type: Optional[str], risk_approach: Optional[str]) -> str:
@@ -57,6 +58,7 @@ def fetch_signal_states(
             side=row.side.upper(),
             price=row.last_price,
             timestamp=row.last_time,
+            force_next_signal=getattr(row, 'force_next_signal', False),
         )
     return snapshots
 
@@ -78,13 +80,43 @@ def should_emit_signal(
     config: SignalThrottleConfig,
     last_same_side: Optional[LastSignalSnapshot],
     last_opposite_side: Optional[LastSignalSnapshot],
+    db: Optional[Session] = None,
+    strategy_key: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """
     Core gate where we decide if a new logical signal (and thus alerts/orders) is allowed
     under the configured price-change and cooldown thresholds.
+    
+    If force_next_signal is set on last_same_side, this function will bypass throttling
+    and return True with reason "FORCED_AFTER_TOGGLE_RESET". If db and strategy_key
+    are provided, it will also clear the force flag.
     """
     side = side.upper()
     now_ts = _normalize_timestamp(current_time) or datetime.now(timezone.utc)
+    
+    # Check for force_next_signal flag first (bypasses all throttling once)
+    if last_same_side and getattr(last_same_side, 'force_next_signal', False):
+        # Clear the force flag from database if db and strategy_key are provided
+        if db and strategy_key:
+            try:
+                existing = (
+                    db.query(SignalThrottleState)
+                    .filter(
+                        SignalThrottleState.symbol == symbol,
+                        SignalThrottleState.strategy_key == strategy_key,
+                        SignalThrottleState.side == side,
+                    )
+                    .one_or_none()
+                )
+                if existing:
+                    existing.force_next_signal = False
+                    db.commit()
+            except Exception as e:
+                # Log but don't fail - throttle check should continue
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to clear force_next_signal for {symbol} {side}: {e}")
+        return True, "FORCED_AFTER_TOGGLE_RESET"
 
     if last_same_side is None or last_same_side.timestamp is None or last_same_side.price is None:
         return True, "No previous same-side signal recorded"
@@ -140,6 +172,86 @@ def should_emit_signal(
     return True, reason
 
 
+def reset_throttle_state(
+    db: Session,
+    *,
+    symbol: str,
+    strategy_key: str,
+    side: Optional[str] = None,
+) -> None:
+    """
+    Reset throttle state for a symbol+strategy combination.
+    If side is provided, only resets that side. Otherwise resets both BUY and SELL.
+    This clears last_price, last_time, and previous_price but preserves the record.
+    """
+    symbol = symbol.upper()
+    filters = [
+        SignalThrottleState.symbol == symbol,
+        SignalThrottleState.strategy_key == strategy_key,
+    ]
+    if side:
+        filters.append(SignalThrottleState.side == side.upper())
+    
+    rows = db.query(SignalThrottleState).filter(*filters).all()
+    
+    try:
+        for row in rows:
+            row.last_price = None
+            row.previous_price = None
+            # Reset last_time to a far past date to effectively clear cooldown
+            row.last_time = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            row.force_next_signal = False
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def set_force_next_signal(
+    db: Session,
+    *,
+    symbol: str,
+    strategy_key: str,
+    side: str,
+    enabled: bool = True,
+) -> None:
+    """
+    Set or clear the force_next_signal flag for a specific symbol+strategy+side.
+    When enabled, the next evaluation will bypass throttling once.
+    """
+    symbol = symbol.upper()
+    side = side.upper()
+    
+    existing = (
+        db.query(SignalThrottleState)
+        .filter(
+            SignalThrottleState.symbol == symbol,
+            SignalThrottleState.strategy_key == strategy_key,
+            SignalThrottleState.side == side,
+        )
+        .one_or_none()
+    )
+    
+    try:
+        if existing:
+            existing.force_next_signal = enabled
+        else:
+            # Create a new record if it doesn't exist
+            db.add(
+                SignalThrottleState(
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side=side,
+                    force_next_signal=enabled,
+                    last_time=datetime(1970, 1, 1, tzinfo=timezone.utc),  # Far past date
+                )
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 def record_signal_event(
     db: Session,
     *,
@@ -171,6 +283,8 @@ def record_signal_event(
             existing.last_price = price
             existing.last_time = now_ts
             existing.last_source = source
+            # Clear force flag when recording a signal (it was used or we're recording new state)
+            existing.force_next_signal = False
         else:
             db.add(
                 SignalThrottleState(
@@ -180,6 +294,7 @@ def record_signal_event(
                     last_price=price,
                     last_time=now_ts,
                     last_source=source,
+                    force_next_signal=False,
                 )
             )
         db.commit()

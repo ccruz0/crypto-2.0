@@ -4,6 +4,7 @@ from sqlalchemy import (
     Float,
     Integer,
     String,
+    Boolean,
     UniqueConstraint,
     Index,
 )
@@ -25,6 +26,7 @@ class SignalThrottleState(Base):
     previous_price = Column(Float, nullable=True)  # Price from previous signal event
     last_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_source = Column(String(20), nullable=True)  # alert / order
+    force_next_signal = Column(Boolean, default=False, nullable=False, server_default=func.false())  # Force bypass throttle on next evaluation
 
     __table_args__ = (
         UniqueConstraint("symbol", "strategy_key", "side", name="uq_signal_throttle_state"),

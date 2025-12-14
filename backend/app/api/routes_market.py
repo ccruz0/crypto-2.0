@@ -24,6 +24,11 @@ for path in [backend_root, app_root]:
 from simple_price_fetcher import price_fetcher
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
+from app.services.signal_throttle import (
+    reset_throttle_state,
+    set_force_next_signal,
+    build_strategy_key,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1170,6 +1175,9 @@ def update_buy_alert(
             WatchlistItem.symbol == symbol_upper
         ).first()
         
+        # Track previous state to detect toggle
+        old_buy_alert_enabled = getattr(watchlist_item, "buy_alert_enabled", False) if watchlist_item else False
+        
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
             logger.info(f"📝 [BUY ALERT] Creating new watchlist item for {symbol_upper}")
@@ -1212,6 +1220,29 @@ def update_buy_alert(
         except Exception as refresh_err:
             logger.warning(f"⚠️ [BUY ALERT] Failed to refresh watchlist item {symbol_upper} after update: {refresh_err}")
         
+        # Reset throttle state when toggling alert status
+        if old_buy_alert_enabled != buy_alert_enabled:
+            try:
+                # Resolve strategy_key for this symbol
+                strategy_type, risk_approach = resolve_strategy_profile(symbol_upper, db, watchlist_item)
+                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                
+                # Reset throttle state for BUY side (always reset on any toggle)
+                reset_throttle_state(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY")
+                logger.info(f"🔄 [BUY ALERT] Reset throttle state for {symbol_upper} BUY (strategy: {strategy_key})")
+                
+                if buy_alert_enabled:
+                    # Enabling: set force flag to allow immediate signal on next evaluation
+                    set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY", enabled=True)
+                    logger.info(f"⚡ [BUY ALERT] Set force_next_signal for {symbol_upper} BUY - next evaluation will bypass throttle")
+                else:
+                    # Disabling: ensure force flag is cleared
+                    set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY", enabled=False)
+                    logger.info(f"🔄 [BUY ALERT] Cleared force_next_signal for {symbol_upper} BUY")
+            except Exception as throttle_err:
+                # Log but don't fail the toggle operation
+                logger.warning(f"⚠️ [BUY ALERT] Failed to reset throttle state for {symbol_upper}: {throttle_err}", exc_info=True)
+        
         logger.info(f"✅ Updated buy_alert_enabled for {symbol_upper}: {buy_alert_enabled}")
         _log_alert_state("BUY ALERT UPDATE", watchlist_item)
         
@@ -1252,6 +1283,9 @@ def update_sell_alert(
         watchlist_item = db.query(WatchlistItem).filter(
             WatchlistItem.symbol == symbol_upper
         ).first()
+        
+        # Track previous state to detect toggle
+        old_sell_alert_enabled = getattr(watchlist_item, "sell_alert_enabled", False) if watchlist_item else False
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
@@ -1294,6 +1328,29 @@ def update_sell_alert(
             db.refresh(watchlist_item)
         except Exception as refresh_err:
             logger.warning(f"⚠️ [SELL ALERT] Failed to refresh watchlist item {symbol_upper} after update: {refresh_err}")
+        
+        # Reset throttle state when toggling alert status
+        if old_sell_alert_enabled != sell_alert_enabled:
+            try:
+                # Resolve strategy_key for this symbol
+                strategy_type, risk_approach = resolve_strategy_profile(symbol_upper, db, watchlist_item)
+                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                
+                # Reset throttle state for SELL side (always reset on any toggle)
+                reset_throttle_state(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL")
+                logger.info(f"🔄 [SELL ALERT] Reset throttle state for {symbol_upper} SELL (strategy: {strategy_key})")
+                
+                if sell_alert_enabled:
+                    # Enabling: set force flag to allow immediate signal on next evaluation
+                    set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL", enabled=True)
+                    logger.info(f"⚡ [SELL ALERT] Set force_next_signal for {symbol_upper} SELL - next evaluation will bypass throttle")
+                else:
+                    # Disabling: ensure force flag is cleared
+                    set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL", enabled=False)
+                    logger.info(f"🔄 [SELL ALERT] Cleared force_next_signal for {symbol_upper} SELL")
+            except Exception as throttle_err:
+                # Log but don't fail the toggle operation
+                logger.warning(f"⚠️ [SELL ALERT] Failed to reset throttle state for {symbol_upper}: {throttle_err}", exc_info=True)
         
         logger.info(f"✅ Updated sell_alert_enabled for {symbol_upper}: {sell_alert_enabled}")
         _log_alert_state("SELL ALERT UPDATE", watchlist_item)
