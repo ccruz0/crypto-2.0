@@ -30,14 +30,22 @@ jobs:
         if [ -d "frontend/.git" ]; then
           echo "✅ Frontend is a git repository, checking out..."
           cd frontend
-          git fetch origin
-          git checkout main || git checkout master || git checkout $(git branch -r | head -1 | sed 's/origin\///' | xargs)
+          git fetch origin || echo "⚠️ Git fetch failed, continuing..."
+          git checkout main || git checkout master || git checkout $(git branch -r | head -1 | sed 's/origin\///' | xargs) || echo "⚠️ Git checkout failed, continuing with current branch..."
           cd ..
         else
           echo "⚠️ Frontend is not a git repository, cloning..."
           rm -rf frontend
-          git clone https://github.com/ccruz0/frontend.git frontend || echo "❌ Failed to clone frontend repository"
+          git clone https://github.com/ccruz0/frontend.git frontend || {
+            echo "❌ Failed to clone frontend repository"
+            echo "⚠️ This might be due to authentication. Checking if frontend directory exists..."
+            if [ ! -d "frontend" ]; then
+              echo "❌ Frontend directory does not exist and clone failed. Exiting."
+              exit 1
+            fi
+          }
         fi
+        echo "✅ Frontend checkout complete"
       
     - name: Setup Node.js
       uses: actions/setup-node@v4
