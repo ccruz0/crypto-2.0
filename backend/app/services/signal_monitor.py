@@ -2050,14 +2050,14 @@ class SignalMonitorService:
                     portfolio_value, net_quantity = calculate_portfolio_value_for_symbol(db, symbol, current_price)
                     if portfolio_value > limit_value:
                         skipped_msg = (
-                            f"⚠️ ORDEN NO EJECUTADA POR VALOR EN CARTERA: {symbol} - "
-                            f"Valor en cartera (${portfolio_value:.2f}) > 3x trade_amount (${limit_value:.2f}). "
-                            f"Net qty: {net_quantity:.4f}, Precio: ${current_price:.4f}. "
-                            f"La alerta ya fue enviada, pero la orden de compra no se creará."
+                            f"🚫 BUY ORDER BLOCKED: {symbol} - "
+                            f"Portfolio value (${portfolio_value:.2f}) exceeds limit (3x trade_amount = ${limit_value:.2f}). "
+                            f"Current position: {net_quantity:.4f} {symbol.split('_')[0]}, Price: ${current_price:.4f}. "
+                            f"The BUY alert was sent, but the BUY order was blocked to prevent over-concentration."
                         )
                         logger.warning(skipped_msg)
-                        # Register message with order_skipped=True, blocked=False
-                        # Alert was already sent, so this is just for monitoring
+                        # Register message to monitoring ONLY (not Telegram) with order_skipped=True, blocked=False
+                        # This is for monitoring/dashboard visibility only - alert was already sent to Telegram
                         try:
                             from app.api.routes_monitoring import add_telegram_message
                             add_telegram_message(skipped_msg, symbol=symbol, blocked=False, order_skipped=True)
