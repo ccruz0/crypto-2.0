@@ -82,7 +82,12 @@ echo ""
 
 # 1. DNS Resolution
 info "1. Checking DNS resolution..."
-ACTUAL_IP=$(dig +short "$DOMAIN" A | head -1)
+# Use Cloudflare DNS (1.1.1.1) which has faster propagation
+ACTUAL_IP=$(dig @1.1.1.1 +short "$DOMAIN" A | head -1)
+if [ -z "$ACTUAL_IP" ]; then
+    # Fallback to default DNS
+    ACTUAL_IP=$(dig +short "$DOMAIN" A | head -1)
+fi
 if [ "$ACTUAL_IP" = "$EXPECTED_IP" ]; then
     echo -e "  $PASS DNS resolves to $ACTUAL_IP"
     ((PASSED++))
