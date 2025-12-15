@@ -1453,8 +1453,10 @@ class SignalMonitorService:
                                 try:
                                     logger.info(f"📝 Recording signal event for {symbol} BUY at {current_price} (strategy: {strategy_key})")
                                     # Build comprehensive reason
+                                    # CRITICAL: Do NOT include buy_reason if it contains "THROTTLED" or "BLOCKED"
+                                    # because this message was successfully sent, so it should not have throttled reasons
                                     emit_reason_parts = []
-                                    if buy_reason:
+                                    if buy_reason and 'throttled' not in buy_reason.lower() and 'blocked' not in buy_reason.lower():
                                         emit_reason_parts.append(buy_reason)
                                     # Check if this is first signal or side changed
                                     if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
