@@ -1013,6 +1013,9 @@ class SignalMonitorService:
         now_utc = datetime.now(timezone.utc)
         buy_state_recorded = False
         sell_state_recorded = False
+        # Store throttle reasons for use in alert messages
+        throttle_buy_reason: Optional[str] = None
+        throttle_sell_reason: Optional[str] = None
 
         if buy_signal:
             self._log_signal_candidate(
@@ -1041,6 +1044,9 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            # Store throttle reason for use in alert message
+            if buy_allowed:
+                throttle_buy_reason = buy_reason
             if not buy_allowed:
                 blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
                 logger.info(blocked_msg)
@@ -1105,6 +1111,9 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            # Store throttle reason for use in alert message
+            if sell_allowed:
+                throttle_sell_reason = sell_reason
             # DEBUG: Log throttle check result for DOT_USD
             if symbol == "DOT_USD":
                 logger.info(
@@ -1418,7 +1427,7 @@ class SignalMonitorService:
                                 previous_price=prev_buy_price,
                                 source="LIVE ALERT",
                             throttle_status="SENT",
-                            throttle_reason=buy_reason,
+                            throttle_reason=throttle_buy_reason or buy_reason,
                             )
                             # Alerts must never be blocked after conditions are met (guardrail compliance)
                             # If send_buy_signal returns False, log as error but do not treat as block
@@ -1980,7 +1989,7 @@ class SignalMonitorService:
                         previous_price=prev_buy_price,
                         source="LIVE ALERT",
                         throttle_status="SENT",
-                        throttle_reason=buy_reason,
+                        throttle_reason=throttle_buy_reason,
                     )
                     # Alerts must never be blocked after conditions are met (guardrail compliance)
                     # If send_buy_signal returns False, log as error but do not treat as block
@@ -2384,7 +2393,7 @@ class SignalMonitorService:
                                     previous_price=prev_sell_price,
                                     source="LIVE ALERT",
                                     throttle_status="SENT",
-                                    throttle_reason=sell_reason,
+                                    throttle_reason=throttle_sell_reason or throttle_reason or sell_reason,
                                 )
                                 # Alerts must never be blocked after conditions are met (guardrail compliance)
                                 # If send_sell_signal returns False, log as error but do not treat as block
