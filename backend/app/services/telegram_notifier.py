@@ -906,6 +906,68 @@ class TelegramNotifier:
         origin = get_runtime_origin()  # Will be "AWS" if RUNTIME_ORIGIN=AWS is set
         return self.send_message(message.strip(), origin=origin)
     
+    def _format_trigger_reason(self, throttle_reason: str) -> str:
+        """Format throttle reason into a user-friendly trigger explanation.
+        
+        Examples:
+        - "No previous same-side signal recorded" -> "🆕 Primera alerta"
+        - "FORCED_AFTER_TOGGLE_RESET" -> "🔄 Estrategia cambiada / Reset manual"
+        - "Opposite-side signal ... resets cooldown" -> "🔄 Cambio de lado (SELL→BUY)"
+        - "Δt=5.23m>= 5.00m & |Δp|=↑ 1.50%>= 1.00%" -> "⏱️ Cooldown cumplido (5.23m) | 💹 Cambio de precio (↑1.50%)"
+        """
+        if not throttle_reason:
+            return ""
+        
+        reason_lower = throttle_reason.lower()
+        
+        # First alert
+        if "no previous" in reason_lower or "first signal" in reason_lower:
+            return "\n🆕 <b>Trigger:</b> Primera alerta para este símbolo/lado"
+        
+        # Strategy change / Force reset
+        if "forced_after_toggle_reset" in reason_lower or "forced" in reason_lower:
+            return "\n🔄 <b>Trigger:</b> Estrategia cambiada o reset manual"
+        
+        # Side change (BUY after SELL or vice versa)
+        if "opposite-side" in reason_lower or "side change" in reason_lower:
+            if "sell" in reason_lower and "buy" in reason_lower:
+                return "\n🔄 <b>Trigger:</b> Cambio de lado (SELL→BUY)"
+            elif "buy" in reason_lower and "sell" in reason_lower:
+                return "\n🔄 <b>Trigger:</b> Cambio de lado (BUY→SELL)"
+            return "\n🔄 <b>Trigger:</b> Cambio de lado"
+        
+        # Price change and/or time elapsed
+        if "Δt=" in throttle_reason or "|Δp|=" in throttle_reason:
+            parts = []
+            # Extract time info
+            if "Δt=" in throttle_reason:
+                import re
+                time_match = re.search(r'Δt=([\d.]+)m', throttle_reason)
+                if time_match:
+                    elapsed = float(time_match.group(1))
+                    parts.append(f"⏱️ Cooldown cumplido ({elapsed:.1f}m)")
+            
+            # Extract price change info
+            if "|Δp|=" in throttle_reason:
+                import re
+                price_match = re.search(r'\|Δp\|=([↑↓→]?)\s*([\d.]+)%', throttle_reason)
+                if price_match:
+                    direction = price_match.group(1) or "→"
+                    change_pct = float(price_match.group(2))
+                    direction_emoji = "↑" if direction == "↑" else "↓" if direction == "↓" else "→"
+                    parts.append(f"💹 Cambio de precio ({direction_emoji}{change_pct:.2f}%)")
+            
+            if parts:
+                return f"\n📊 <b>Trigger:</b> {' | '.join(parts)}"
+        
+        # No previous limits
+        if "no previous limits" in reason_lower:
+            return "\n✅ <b>Trigger:</b> Sin límites previos configurados"
+        
+        # Default: show the reason as-is (simplified)
+        simplified = throttle_reason.replace("THROTTLED_", "").replace("_", " ").title()
+        return f"\n📊 <b>Trigger:</b> {simplified}"
+    
     def send_buy_signal(
         self,
         symbol: str,
@@ -982,13 +1044,18 @@ class TelegramNotifier:
             source_text = "\n🧪 <b>TEST MODE</b> - Simulated alert"
         elif source == "LIVE ALERT":
             source_text = "\n🔴 <b>LIVE ALERT</b> - Real-time signal"
+        
+        # Format trigger reason from throttle_reason
+        trigger_reason_text = ""
+        if throttle_reason:
+            trigger_reason_text = self._format_trigger_reason(throttle_reason)
 
         message = f"""
 🟢 <b>BUY SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
 {price_line}{price_change_text}
-✅ Reason: {reason}{strategy_line}{approach_line}
+✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}
 📅 Time: {timestamp}
 """
         # Log TEST alert signal if origin is TEST
@@ -1099,13 +1166,18 @@ class TelegramNotifier:
             source_text = "\n🧪 <b>TEST MODE</b> - Simulated alert"
         elif source == "LIVE ALERT":
             source_text = "\n🔴 <b>LIVE ALERT</b> - Real-time signal"
+        
+        # Format trigger reason from throttle_reason
+        trigger_reason_text = ""
+        if throttle_reason:
+            trigger_reason_text = self._format_trigger_reason(throttle_reason)
 
         message = f"""
 🔴 <b>SELL SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
 {price_line}{price_change_text}
-✅ Reason: {reason}{strategy_line}{approach_line}
+✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}
 📅 Time: {timestamp}
 """
         # Default to AWS if origin not provided (for backward compatibility)
