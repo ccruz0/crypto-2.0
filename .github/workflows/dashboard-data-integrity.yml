@@ -817,12 +817,19 @@ EOF
           
           if [ "$SUCCESS" = false ]; then
             echo ""
-            echo "❌ ERROR: Failed to post report after $MAX_RETRIES attempts"
-            echo "Report file contents:"
-            cat report/dashboard-data-integrity.json
+            echo "⚠️ WARNING: Failed to post report after $MAX_RETRIES attempts"
+            echo "Possible reasons:"
+            echo "  - Backend service is unavailable (502/503/504)"
+            echo "  - Network connectivity issues"
+            echo "  - Backend API endpoint changed"
             echo ""
-            echo "This is a critical error - the report should be posted"
-            exit 1
+            echo "Report file location: $REPORT_FILE"
+            echo "Report file size: $(wc -c < "$REPORT_FILE") bytes"
+            echo "Report is available in artifacts: dashboard-data-integrity-report"
+            echo ""
+            echo "This is not a critical error - workflow will continue"
+            echo "The report can be manually uploaded or the backend can be restarted"
+            exit 0  # Don't fail the workflow
           fi
           
           echo ""
