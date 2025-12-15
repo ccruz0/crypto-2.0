@@ -446,6 +446,7 @@ EOF
         
     - name: Comment PR with report link
       if: github.event_name == 'pull_request' && always()
+      continue-on-error: true
       uses: actions/github-script@v7
       with:
         script: |
@@ -490,4 +491,11 @@ EOF
             repo: context.repo.repo,
             body: comment
           });
+    
+    - name: Final success step
+      if: always()
+      run: |
+        echo "✅ Workflow completed. Report generation and posting attempted."
+        echo "Job status will reflect the outcome, but report should be available."
+        exit 0
 
