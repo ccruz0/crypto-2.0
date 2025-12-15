@@ -361,10 +361,11 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         # CRITICAL: Exclude any throttle states with "Throttled" in emit_reason (these were NOT sent)
         # Then filter to only include throttle states where there's a matching sent Telegram message
         # Match by symbol and within a reasonable time window (10 minutes)
-        from sqlalchemy import and_, or_, func as sql_func
+        from sqlalchemy import or_, func as sql_func
         
-        # First, get all throttle states excluding those that were throttled
-        all_throttle_states = (
+        # Optimized query: Filter in SQL instead of Python loop for better performance
+        # Exclude throttled states AND only include those with matching sent Telegram messages
+        rows = (
             db.query(SignalThrottleState)
             .filter(
                 # CRITICAL: Exclude throttle states that were actually throttled (not sent)
@@ -375,34 +376,23 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     ~sql_func.lower(
                         sql_func.coalesce(SignalThrottleState.emit_reason, '')
                     ).contains('throttled')
-                )
-            )
-            .all()
-        )
-        
-        # Then filter to only those with matching sent Telegram messages
-        rows = []
-        for throttle_state in all_throttle_states:
-            # Check if there's a matching sent Telegram message
-            matching_message = (
+                ),
+                # Only include throttle states that have a corresponding sent Telegram message
+                # Check if there's a Telegram message for this symbol that was sent (not blocked)
                 db.query(TelegramMessage.id)
                 .filter(
-                    TelegramMessage.symbol == throttle_state.symbol,
+                    TelegramMessage.symbol == SignalThrottleState.symbol,
                     TelegramMessage.blocked == False,  # Only messages that were sent
                     # Match within 10 minutes window to account for processing delays
-                    TelegramMessage.timestamp >= throttle_state.last_time - timedelta(minutes=10),
-                    TelegramMessage.timestamp <= throttle_state.last_time + timedelta(minutes=10)
+                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
+                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
                 )
-                .first()
+                .exists()
             )
-            
-            if matching_message:
-                rows.append(throttle_state)
-        
-        # Sort by last_time descending and limit
-        # Use a safe default datetime for sorting (very old date)
-        default_datetime = datetime(1970, 1, 1, tzinfo=timezone.utc)
-        rows = sorted(rows, key=lambda x: x.last_time or default_datetime, reverse=True)[:bounded_limit]
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
         now = datetime.now(timezone.utc)
         payload = []
         for row in rows:
