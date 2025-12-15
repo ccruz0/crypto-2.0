@@ -49,21 +49,24 @@ jobs:
         
         echo "🔍 Deploying to instance: $INSTANCE_ID"
         
-        # First, copy files to EC2 using rsync via SSM
-        echo "📤 Copying files to EC2 instance..."
-        
-        # Get the EC2 instance public IP or use SSM port forwarding
-        # For now, we'll use git pull on the server to get latest code
-        echo "📥 Pulling latest code from git..."
+        # First, update code on EC2 using git pull
+        echo "📥 Pulling latest code from git on EC2..."
         PULL_COMMAND_ID=$(aws ssm send-command \
           --instance-ids $INSTANCE_ID \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
             "cd ~/automated-trading-platform",
             "git pull origin main || echo \"Git pull failed, continuing...\"",
-            "cd frontend && git pull origin main || echo \"Frontend git pull failed, continuing...\"",
-            "cd ~/automated-trading-platform",
-            "echo \"✅ Code updated\""
+            "if [ -d frontend ]; then",
+            "  cd frontend && git pull origin main || echo \"Frontend git pull failed, continuing...\"",
+            "  cd ~/automated-trading-platform",
+            "else",
+            "  echo \"Frontend directory not found, cloning...\"",
+            "  git clone https://github.com/ccruz0/frontend.git frontend || echo \"Clone failed\"",
+            "fi",
+            "echo \"🔍 Verifying frontend version...\"",
+            "grep -n \"version: '\''0.46'\" frontend/src/app/page.tsx || (echo \"⚠️ Version 0.46 not found in frontend!\" && exit 1)",
+            "echo \"✅ Code updated and verified\""
           ]' \
           --region ap-southeast-1 \
           --output text \
