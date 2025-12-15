@@ -287,7 +287,27 @@ EOF
           echo "❌ Report file was not created even after fallback"
           echo "⚠️ Creating absolute minimal report..."
           mkdir -p reports
-          echo '{"run":{"workflow":"Dashboard Data Integrity","run_id":"'${GITHUB_RUN_ID}'","status":"ERROR"},"summary":{"inconsistencies_total":0},"inconsistencies":[],"cursor_prompt":"Report generation failed"}' > reports/dashboard-data-integrity.json
+          cat > reports/dashboard-data-integrity.json <<EOF
+{
+  "run": {
+    "workflow": "Dashboard Data Integrity",
+    "run_id": "${GITHUB_RUN_ID}",
+    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "commit": "${GITHUB_SHA}",
+    "branch": "${GITHUB_REF_NAME}",
+    "status": "ERROR"
+  },
+  "summary": {
+    "inconsistencies_total": 0,
+    "blockers": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "inconsistencies": [],
+  "cursor_prompt": "Report generation failed. Please check workflow logs."
+}
+EOF
           echo "✅ Minimal report created"
         fi
         
