@@ -595,17 +595,66 @@ EOF
           BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
           REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           echo "=== POSTING REPORT TO BACKEND (Separate Job) ==="
           echo "Backend URL: ${BACKEND_URL}"
           echo "GitHub Run ID: ${GITHUB_RUN_ID}"
+          echo "Current directory: $(pwd)"
+          echo "Report secret set: $([ -n "${REPORT_SECRET}" ] && echo 'yes' || echo 'no')"
+          
+          # Ensure we have a report file
+          if [ ! -f "report/dashboard-data-integrity.json" ]; then
+            echo "⚠️ Report file not found, creating minimal report..."
+            mkdir -p report
+            cat > report/dashboard-data-integrity.json <<EOF
+{
+  "run": {
+    "workflow": "Dashboard Data Integrity",
+    "run_id": "${GITHUB_RUN_ID}",
+    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "commit": "${GITHUB_SHA}",
+    "branch": "${GITHUB_REF_NAME}",
+    "status": "ERROR"
+  },
+  "summary": {
+    "inconsistencies_total": 0,
+    "blockers": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "inconsistencies": [],
+  "cursor_prompt": "Report artifact was not available. Please check workflow logs."
+}
+EOF
+          fi
+          
+          # Validate JSON before posting
+          echo "Validating report JSON..."
+          if ! jq empty report/dashboard-data-integrity.json 2>/dev/null; then
+            echo "❌ Report file is not valid JSON"
+            echo "File contents:"
+            cat report/dashboard-data-integrity.json
+            exit 1
+          fi
           
           # Ensure run_id is set in the report
-          if [ -f "report/dashboard-data-integrity.json" ]; then
-            echo "Updating report with GitHub Run ID..."
-            jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' report/dashboard-data-integrity.json > /tmp/report_updated.json
+          echo "Updating report with GitHub Run ID..."
+          jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' report/dashboard-data-integrity.json > /tmp/report_updated.json
+          mv /tmp/report_updated.json report/dashboard-data-integrity.json
+          
+          # Verify cursor_prompt exists
+          if ! jq -e '.cursor_prompt' report/dashboard-data-integrity.json > /dev/null 2>&1; then
+            echo "⚠️ cursor_prompt missing, adding default..."
+            jq '.cursor_prompt = "Report generated from workflow run."' report/dashboard-data-integrity.json > /tmp/report_updated.json
             mv /tmp/report_updated.json report/dashboard-data-integrity.json
           fi
+          
+          echo "Report file size: $(wc -c < report/dashboard-data-integrity.json) bytes"
+          echo "Report structure:"
+          jq 'keys' report/dashboard-data-integrity.json
           
           # Post to backend with retry logic
           MAX_RETRIES=3
@@ -649,12 +698,12 @@ EOF
           
           if [ "$SUCCESS" = false ]; then
             echo ""
-            echo "⚠️ WARNING: Failed to post report after $MAX_RETRIES attempts"
-            echo "Report file:"
-            cat report/dashboard-data-integrity.json 2>&1 || echo "Could not read report file"
+            echo "❌ ERROR: Failed to post report after $MAX_RETRIES attempts"
+            echo "Report file contents:"
+            cat report/dashboard-data-integrity.json
             echo ""
-            echo "⚠️ This is not a critical error - workflow will continue"
-            exit 0  # Don't fail the workflow
+            echo "This is a critical error - the report should be posted"
+            exit 1
           fi
           
           echo ""
