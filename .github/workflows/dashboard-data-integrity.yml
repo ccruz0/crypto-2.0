@@ -18,9 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     name: Dashboard Data Integrity Validation
     continue-on-error: true
-    outputs:
-      run_id: ${{ github.run_id }}
-    
     steps:
       - name: Install jq
         run: |
