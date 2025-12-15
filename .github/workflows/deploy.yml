@@ -40,7 +40,22 @@ jobs:
       with:
         fetch-depth: 0
         persist-credentials: true
-        submodules: recursive
+        submodules: false  # Disable submodules since frontend is cloned manually
+      
+    - name: Fetch frontend source
+      run: |
+        set -e
+        if [ -d "frontend/.git" ]; then
+          echo "Updating existing frontend repo..."
+          git -C frontend pull --ff-only
+        else
+          echo "Cloning frontend repo..."
+          rm -rf frontend
+          git clone --depth 1 https://github.com/ccruz0/frontend.git frontend
+        fi
+        echo "Frontend HEAD:"
+        git -C frontend rev-parse HEAD
+        git -C frontend log -1 --oneline
       
     - name: Verify checkout
       run: |
