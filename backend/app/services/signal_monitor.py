@@ -2005,30 +2005,30 @@ class SignalMonitorService:
                         # This ensures that if multiple calls happen simultaneously, only the first one will update the state
                         self._update_alert_state(symbol, "BUY", current_price)
                         if not buy_state_recorded:
-                                    try:
-                                        # Build comprehensive reason
-                                        emit_reason_parts = []
-                                        if buy_reason:
-                                            emit_reason_parts.append(buy_reason)
-                                        # Check if this is first signal or side changed
-                                        if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
-                                            emit_reason_parts.append("First signal for this side/strategy")
-                                        elif last_sell_snapshot and last_sell_snapshot.timestamp:
-                                            if last_sell_snapshot.timestamp > last_buy_snapshot.timestamp:
-                                                emit_reason_parts.append("Side change from SELL to BUY")
-                                        emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "Signal emitted"
-                                        record_signal_event(
-                                            db,
-                                            symbol=symbol,
-                                            strategy_key=strategy_key,
-                                            side="BUY",
-                                            price=current_price,
-                                            source="alert",
-                                            emit_reason=emit_reason,
-                                        )
-                                        buy_state_recorded = True
-                                    except Exception as state_err:
-                                        logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                            try:
+                                # Build comprehensive reason
+                                emit_reason_parts = []
+                                if buy_reason:
+                                    emit_reason_parts.append(buy_reason)
+                                # Check if this is first signal or side changed
+                                if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
+                                    emit_reason_parts.append("First signal for this side/strategy")
+                                elif last_sell_snapshot and last_sell_snapshot.timestamp:
+                                    if last_sell_snapshot.timestamp > last_buy_snapshot.timestamp:
+                                        emit_reason_parts.append("Side change from SELL to BUY")
+                                emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "Signal emitted"
+                                record_signal_event(
+                                    db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="BUY",
+                                    price=current_price,
+                                    source="alert",
+                                    emit_reason=emit_reason,
+                                )
+                                buy_state_recorded = True
+                            except Exception as state_err:
+                                logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                     # If sending failed, do NOT update the state - allow retry on next cycle
