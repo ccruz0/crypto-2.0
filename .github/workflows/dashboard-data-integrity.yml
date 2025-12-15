@@ -690,11 +690,22 @@ EOF
           echo "Current directory: $(pwd)"
           echo "Report secret set: $([ -n "${REPORT_SECRET}" ] && echo 'yes' || echo 'no')"
           
-          # Ensure we have a report file
-          if [ ! -f "report/dashboard-data-integrity.json" ]; then
+          # Find the report file
+          REPORT_FILE=""
+          for path in "report/dashboard-data-integrity.json" "report/frontend/reports/dashboard-data-integrity.json" "frontend/reports/dashboard-data-integrity.json"; do
+            if [ -f "$path" ]; then
+              REPORT_FILE="$path"
+              echo "✅ Found report file at: $path"
+              break
+            fi
+          done
+          
+          # If not found, create minimal report
+          if [ -z "$REPORT_FILE" ]; then
             echo "⚠️ Report file not found, creating minimal report..."
             mkdir -p report
-            cat > report/dashboard-data-integrity.json <<EOF
+            REPORT_FILE="report/dashboard-data-integrity.json"
+            cat > "$REPORT_FILE" <<EOF
 {
   "run": {
     "workflow": "Dashboard Data Integrity",
@@ -717,30 +728,32 @@ EOF
 EOF
           fi
           
+          echo "Using report file: $REPORT_FILE"
+          
           # Validate JSON before posting
           echo "Validating report JSON..."
-          if ! jq empty report/dashboard-data-integrity.json 2>/dev/null; then
+          if ! jq empty "$REPORT_FILE" 2>/dev/null; then
             echo "❌ Report file is not valid JSON"
             echo "File contents:"
-            cat report/dashboard-data-integrity.json
+            cat "$REPORT_FILE"
             exit 1
           fi
           
           # Ensure run_id is set in the report
           echo "Updating report with GitHub Run ID..."
-          jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' report/dashboard-data-integrity.json > /tmp/report_updated.json
-          mv /tmp/report_updated.json report/dashboard-data-integrity.json
+          jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' "$REPORT_FILE" > /tmp/report_updated.json
+          mv /tmp/report_updated.json "$REPORT_FILE"
           
           # Verify cursor_prompt exists
-          if ! jq -e '.cursor_prompt' report/dashboard-data-integrity.json > /dev/null 2>&1; then
+          if ! jq -e '.cursor_prompt' "$REPORT_FILE" > /dev/null 2>&1; then
             echo "⚠️ cursor_prompt missing, adding default..."
-            jq '.cursor_prompt = "Report generated from workflow run."' report/dashboard-data-integrity.json > /tmp/report_updated.json
-            mv /tmp/report_updated.json report/dashboard-data-integrity.json
+            jq '.cursor_prompt = "Report generated from workflow run."' "$REPORT_FILE" > /tmp/report_updated.json
+            mv /tmp/report_updated.json "$REPORT_FILE"
           fi
           
-          echo "Report file size: $(wc -c < report/dashboard-data-integrity.json) bytes"
+          echo "Report file size: $(wc -c < "$REPORT_FILE") bytes"
           echo "Report structure:"
-          jq 'keys' report/dashboard-data-integrity.json
+          jq 'keys' "$REPORT_FILE"
           
           # Post to backend with retry logic
           MAX_RETRIES=3
