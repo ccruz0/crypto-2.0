@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     name: Dashboard Data Integrity Validation
     continue-on-error: true
+    outputs:
+      report_exists: ${{ steps.check_report.outputs.exists }}
+      run_id: ${{ github.run_id }}
     
     steps:
     - name: Checkout code
