@@ -361,15 +361,17 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         # We filter to only include throttle states where there's a matching sent Telegram message
         # AND exclude any throttle states that were actually throttled (not sent)
         # Match by symbol and within a reasonable time window (10 minutes)
-        from sqlalchemy import or_
+        from sqlalchemy import and_, or_, func as sql_func
         rows = (
             db.query(SignalThrottleState)
             .filter(
-                # Exclude throttle states that were actually throttled (not sent)
+                # CRITICAL: Exclude throttle states that were actually throttled (not sent)
                 # If emit_reason contains "Throttled", it means the message was NOT sent
+                # Use explicit check: emit_reason must be NULL or NOT contain "Throttled"
                 or_(
                     SignalThrottleState.emit_reason.is_(None),
-                    ~SignalThrottleState.emit_reason.ilike('%Throttled%')
+                    SignalThrottleState.emit_reason == '',
+                    ~sql_func.lower(SignalThrottleState.emit_reason).contains('throttled')
                 ),
                 # Only include throttle states that have a corresponding sent Telegram message
                 # Check if there's a Telegram message for this symbol that was sent (not blocked)
