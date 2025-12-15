@@ -597,6 +597,18 @@ EOF
           name: dashboard-data-integrity-report
           path: ./report
           continue-on-error: true
+        id: download_artifact
+        
+      - name: Debug artifact download
+        if: always()
+        run: |
+          echo "=== ARTIFACT DOWNLOAD DEBUG ==="
+          echo "Artifact download step status: ${{ steps.download_artifact.outcome }}"
+          echo "Current directory: $(pwd)"
+          echo "Listing report directory:"
+          ls -la report/ 2>&1 || echo "Report directory does not exist"
+          echo "Looking for report file:"
+          find . -name "dashboard-data-integrity.json" -type f 2>&1 || echo "Report file not found"
           
       - name: Install jq
         run: |
@@ -606,7 +618,16 @@ EOF
       - name: Create minimal report if missing
         id: create_report
         run: |
-          if [ ! -f "report/dashboard-data-integrity.json" ]; then
+          echo "=== CHECKING FOR REPORT FILE ==="
+          echo "Looking for: report/dashboard-data-integrity.json"
+          if [ -f "report/dashboard-data-integrity.json" ]; then
+            echo "✅ Report file found!"
+            echo "File size: $(wc -c < report/dashboard-data-integrity.json) bytes"
+            echo "First 200 chars:"
+            head -c 200 report/dashboard-data-integrity.json
+            echo ""
+            echo "created=false" >> $GITHUB_OUTPUT
+          else
             echo "⚠️ Report artifact not found, creating minimal report..."
             mkdir -p report
             cat > report/dashboard-data-integrity.json <<EOF
