@@ -523,6 +523,7 @@ EOF
     runs-on: ubuntu-latest
     needs: dashboard-data-integrity
     if: always()
+    continue-on-error: true
     name: Post Report to Backend
     steps:
       - name: Download report artifact
@@ -628,10 +629,12 @@ EOF
           
           if [ "$SUCCESS" = false ]; then
             echo ""
-            echo "❌ ERROR: Failed to post report after $MAX_RETRIES attempts"
+            echo "⚠️ WARNING: Failed to post report after $MAX_RETRIES attempts"
             echo "Report file:"
             cat report/dashboard-data-integrity.json 2>&1 || echo "Could not read report file"
-            exit 1
+            echo ""
+            echo "⚠️ This is not a critical error - workflow will continue"
+            exit 0  # Don't fail the workflow
           fi
           
           echo ""
