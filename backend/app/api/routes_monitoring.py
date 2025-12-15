@@ -399,13 +399,15 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             .all()
         )
         
-        # Now filter out throttle states with "Throttled" in emit_reason (case-insensitive)
+        # Now filter out throttle states with "Throttled" or "BLOCKED" in emit_reason (case-insensitive)
         # This is the PRIMARY filter - exclude entries that were actually throttled
+        # CRITICAL: Any emit_reason containing "throttled" or "blocked" means the message was NOT sent
         rows = []
         for state in throttle_states_with_sent_messages:
             emit_reason = (state.emit_reason or '').lower()
-            # Exclude if emit_reason contains "throttled" (case-insensitive check in Python)
-            if 'throttled' not in emit_reason:
+            # Exclude if emit_reason contains "throttled" OR "blocked" (case-insensitive check in Python)
+            # These indicate the message was throttled/blocked and NOT sent to Telegram
+            if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
                 rows.append(state)
             if len(rows) >= bounded_limit:
                 break
