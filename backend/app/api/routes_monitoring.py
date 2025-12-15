@@ -400,7 +400,9 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 rows.append(throttle_state)
         
         # Sort by last_time descending and limit
-        rows = sorted(rows, key=lambda x: x.last_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:bounded_limit]
+        # Use a safe default datetime for sorting (very old date)
+        default_datetime = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        rows = sorted(rows, key=lambda x: x.last_time or default_datetime, reverse=True)[:bounded_limit]
         now = datetime.now(timezone.utc)
         payload = []
         for row in rows:
