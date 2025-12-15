@@ -10,8 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout API
+    - name: Checkout repository with submodules
       uses: actions/checkout@v4
+      with:
+        submodules: recursive  # ensure frontend submodule is pulled with latest commit
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
