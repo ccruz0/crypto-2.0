@@ -775,6 +775,12 @@ EOF
               --connect-timeout 10 \
               --fail-with-body 2>&1 | tail -1 || echo "000")
             
+            # Check for connection errors
+            if [ "$HTTP_CODE" = "000" ] || [ -z "$HTTP_CODE" ]; then
+              echo "⚠️ Connection error or timeout. Backend may be unavailable."
+              HTTP_CODE="000"
+            fi
+            
             echo "HTTP Response Code: $HTTP_CODE"
             
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
@@ -783,6 +789,20 @@ EOF
                 echo "Response: $(cat /tmp/report_response.json)"
               fi
               SUCCESS=true
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "❌ Connection failed - backend may be unavailable (HTTP $HTTP_CODE)"
+              echo "This is not a critical error - report is available in artifacts"
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⏳ Waiting 10 seconds before retry (longer delay for connection issues)..."
+                sleep 10
+              fi
+            elif [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "504" ]; then
+              echo "❌ Backend service unavailable (HTTP $HTTP_CODE)"
+              echo "This is not a critical error - report is available in artifacts"
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⏳ Waiting 10 seconds before retry..."
+                sleep 10
+              fi
             else
               echo "❌ Failed to post report (HTTP $HTTP_CODE)"
               if [ -f /tmp/report_response.json ]; then
