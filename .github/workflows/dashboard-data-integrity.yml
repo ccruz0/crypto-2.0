@@ -26,6 +26,7 @@ jobs:
         fetch-depth: 0
       
     - name: Checkout frontend repository
+      continue-on-error: true
       run: |
         if [ -d "frontend/.git" ]; then
           echo "✅ Frontend is a git repository, checking out..."
