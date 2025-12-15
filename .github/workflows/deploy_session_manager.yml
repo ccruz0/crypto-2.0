@@ -68,7 +68,7 @@ jobs:
             "  git clone https://github.com/ccruz0/frontend.git frontend || { echo \"⚠️ Clone failed\" && exit 1; }",
             "fi",
             "echo \"🔍 Verifying frontend version...\"",
-            "if ! grep -q \"version: '\''0.46'\" frontend/src/app/page.tsx; then",
+            "if ! grep -q \"version: '0.46'\" frontend/src/app/page.tsx; then",
             "  echo \"⚠️ Version 0.46 not found in frontend! Current version:\"",
             "  grep -n \"version:\" frontend/src/app/page.tsx | head -1",
             "  echo \"Frontend HEAD:\"",
