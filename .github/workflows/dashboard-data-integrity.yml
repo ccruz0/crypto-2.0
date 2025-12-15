@@ -519,3 +519,121 @@ EOF
         echo "Job status will reflect the outcome, but report should be available."
         exit 0
 
+  post-report:
+    runs-on: ubuntu-latest
+    needs: dashboard-data-integrity
+    if: always()
+    name: Post Report to Backend
+    steps:
+      - name: Download report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dashboard-data-integrity-report
+          path: ./report
+          continue-on-error: true
+          
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          
+      - name: Create minimal report if missing
+        id: create_report
+        run: |
+          if [ ! -f "report/dashboard-data-integrity.json" ]; then
+            echo "⚠️ Report artifact not found, creating minimal report..."
+            mkdir -p report
+            cat > report/dashboard-data-integrity.json <<EOF
+{
+  "run": {
+    "workflow": "Dashboard Data Integrity",
+    "run_id": "${{ github.run_id }}",
+    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "commit": "${{ github.sha }}",
+    "branch": "${{ github.ref_name }}",
+    "status": "ERROR"
+  },
+  "summary": {
+    "inconsistencies_total": 0,
+    "blockers": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "inconsistencies": [],
+  "cursor_prompt": "Workflow encountered an error. Report was not generated. Please check workflow logs."
+}
+EOF
+            echo "created=true" >> $GITHUB_OUTPUT
+          else
+            echo "created=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: POST report to backend
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
+          REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "=== POSTING REPORT TO BACKEND (Separate Job) ==="
+          echo "Backend URL: ${BACKEND_URL}"
+          echo "GitHub Run ID: ${GITHUB_RUN_ID}"
+          
+          # Ensure run_id is set in the report
+          if [ -f "report/dashboard-data-integrity.json" ]; then
+            echo "Updating report with GitHub Run ID..."
+            jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' report/dashboard-data-integrity.json > /tmp/report_updated.json
+            mv /tmp/report_updated.json report/dashboard-data-integrity.json
+          fi
+          
+          # Post to backend with retry logic
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo ""
+            echo "📤 Attempt $RETRY_COUNT of $MAX_RETRIES: Posting report to backend..."
+            
+            HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
+              -H "Content-Type: application/json" \
+              -H "X-Report-Secret: ${REPORT_SECRET}" \
+              -d "@report/dashboard-data-integrity.json" \
+              -w "%{http_code}" \
+              -s -o /tmp/report_response.json \
+              --max-time 30 \
+              --connect-timeout 10 \
+              --fail-with-body 2>&1 | tail -1 || echo "000")
+            
+            echo "HTTP Response Code: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
+              if [ -f /tmp/report_response.json ]; then
+                echo "Response: $(cat /tmp/report_response.json)"
+              fi
+              SUCCESS=true
+            else
+              echo "❌ Failed to post report (HTTP $HTTP_CODE)"
+              if [ -f /tmp/report_response.json ]; then
+                echo "Error Response: $(cat /tmp/report_response.json)"
+              fi
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⏳ Waiting 5 seconds before retry..."
+                sleep 5
+              fi
+            fi
+          done
+          
+          if [ "$SUCCESS" = false ]; then
+            echo ""
+            echo "❌ ERROR: Failed to post report after $MAX_RETRIES attempts"
+            echo "Report file:"
+            cat report/dashboard-data-integrity.json 2>&1 || echo "Could not read report file"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ Report posting completed successfully!"
+
