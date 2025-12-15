@@ -302,6 +302,22 @@ EOF
         sudo apt-get update
         sudo apt-get install -y jq
         
+    - name: Diagnostic - Check previous steps
+      if: always()
+      run: |
+        echo "=== DIAGNOSTIC: CHECKING PREVIOUS STEPS ==="
+        echo "Run tests outcome: ${{ steps.run_tests.outcome }}"
+        echo "Generate report outcome: ${{ steps.generate_report.outcome }}"
+        echo "Current directory: $(pwd)"
+        echo "Frontend directory exists: $([ -d frontend ] && echo 'yes' || echo 'no')"
+        if [ -d frontend ]; then
+          echo "Frontend reports directory exists: $([ -d frontend/reports ] && echo 'yes' || echo 'no')"
+          if [ -d frontend/reports ]; then
+            echo "Report files in frontend/reports:"
+            ls -la frontend/reports/ 2>&1 || echo "Cannot list reports directory"
+          fi
+        fi
+        
     - name: POST report to backend
       if: always()
       working-directory: frontend
@@ -314,6 +330,7 @@ EOF
         echo "Backend URL: ${BACKEND_URL}"
         echo "GitHub Run ID: ${GITHUB_RUN_ID}"
         echo "Current directory: $(pwd)"
+        echo "Report secret set: $([ -n "${REPORT_SECRET}" ] && echo 'yes' || echo 'no')"
         
         # Check if report file exists
         if [ ! -f "reports/dashboard-data-integrity.json" ]; then
