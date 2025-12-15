@@ -364,30 +364,35 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         from sqlalchemy import or_, func as sql_func
         
         # Optimized query: Filter in SQL instead of Python loop for better performance
-        # Exclude throttled states AND only include those with matching sent Telegram messages
+        # CRITICAL: Exclude ALL throttle states with "Throttled" in emit_reason (these were NOT sent)
+        # Then only include those with matching sent Telegram messages
+        from sqlalchemy import and_
         rows = (
             db.query(SignalThrottleState)
             .filter(
-                # CRITICAL: Exclude throttle states that were actually throttled (not sent)
-                # If emit_reason contains "Throttled" (case-insensitive), it means the message was NOT sent
-                or_(
-                    SignalThrottleState.emit_reason.is_(None),
-                    SignalThrottleState.emit_reason == '',
-                    ~sql_func.lower(
-                        sql_func.coalesce(SignalThrottleState.emit_reason, '')
-                    ).contains('throttled')
-                ),
-                # Only include throttle states that have a corresponding sent Telegram message
-                # Check if there's a Telegram message for this symbol that was sent (not blocked)
-                db.query(TelegramMessage.id)
-                .filter(
-                    TelegramMessage.symbol == SignalThrottleState.symbol,
-                    TelegramMessage.blocked == False,  # Only messages that were sent
-                    # Match within 10 minutes window to account for processing delays
-                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
-                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
+                and_(
+                    # CRITICAL: Exclude throttle states that were actually throttled (not sent)
+                    # If emit_reason contains "Throttled" (case-insensitive), it means the message was NOT sent
+                    # This MUST be the first condition - if throttled, exclude regardless of Telegram message
+                    or_(
+                        SignalThrottleState.emit_reason.is_(None),
+                        SignalThrottleState.emit_reason == '',
+                        ~sql_func.lower(
+                            sql_func.coalesce(SignalThrottleState.emit_reason, '')
+                        ).contains('throttled')
+                    ),
+                    # Only include throttle states that have a corresponding sent Telegram message
+                    # Check if there's a Telegram message for this symbol that was sent (not blocked)
+                    db.query(TelegramMessage.id)
+                    .filter(
+                        TelegramMessage.symbol == SignalThrottleState.symbol,
+                        TelegramMessage.blocked == False,  # Only messages that were sent
+                        # Match within 10 minutes window to account for processing delays
+                        TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
+                        TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
+                    )
+                    .exists()
                 )
-                .exists()
             )
             .order_by(SignalThrottleState.last_time.desc())
             .limit(bounded_limit)
