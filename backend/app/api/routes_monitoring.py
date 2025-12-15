@@ -374,43 +374,41 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         # 1. emit_reason must NOT contain "Throttled" or "THROTTLED" (case-insensitive) - this is the PRIMARY filter
         # 2. Must have a corresponding sent Telegram message
         # 
-        # We use explicit filtering: exclude entries with "Throttled" in emit_reason, then check for Telegram messages
+        # CRITICAL FIX: The or_() with NOT ILIKE may not be working as expected in SQLAlchemy
+        # We'll use a two-step approach: first get all throttle states with sent Telegram messages,
+        # then filter out those with "Throttled" in emit_reason in Python (more reliable)
         from sqlalchemy import and_
-        rows = (
+        
+        # First, get all throttle states that have corresponding sent Telegram messages
+        throttle_states_with_sent_messages = (
             db.query(SignalThrottleState)
             .filter(
-                and_(
-                    # PRIMARY FILTER: Exclude throttle states with "Throttled" or "THROTTLED" in emit_reason
-                    # This MUST exclude entries where emit_reason contains "Throttled" (any case)
-                    # The or_() means: include if emit_reason is None, empty, OR does NOT contain "Throttled"
-                    or_(
-                        SignalThrottleState.emit_reason.is_(None),
-                        SignalThrottleState.emit_reason == '',
-                        # CRITICAL: Exclude if emit_reason contains "Throttled" (case-insensitive via ilike)
-                        # This should catch:
-                        # - "BLOCKED: Throttled: cooldown..." (mixed case)
-                        # - "BLOCKED: THROTTLED_MIN_TIME..." (uppercase)
-                        # - "BLOCKED: THROTTLED_MIN_CHANGE..." (uppercase)
-                        # ilike is case-insensitive, so '%Throttled%' should match 'THROTTLED', 'Throttled', 'throttled', etc.
-                        ~SignalThrottleState.emit_reason.ilike('%Throttled%')
-                    ),
-                    # SECONDARY FILTER: Only include throttle states that have a corresponding sent Telegram message
-                    # This ensures we only show throttle states for messages that were actually sent
-                    db.query(TelegramMessage.id)
-                    .filter(
-                        TelegramMessage.symbol == SignalThrottleState.symbol,
-                        TelegramMessage.blocked == False,  # Only messages that were sent (not blocked)
-                        # Match within 10 minutes window to account for processing delays
-                        TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
-                        TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
-                    )
-                    .exists()
+                # Only include throttle states that have a corresponding sent Telegram message
+                db.query(TelegramMessage.id)
+                .filter(
+                    TelegramMessage.symbol == SignalThrottleState.symbol,
+                    TelegramMessage.blocked == False,  # Only messages that were sent (not blocked)
+                    # Match within 10 minutes window to account for processing delays
+                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
+                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
                 )
+                .exists()
             )
             .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit)
+            .limit(bounded_limit * 2)  # Get more to account for filtering
             .all()
         )
+        
+        # Now filter out throttle states with "Throttled" in emit_reason (case-insensitive)
+        # This is the PRIMARY filter - exclude entries that were actually throttled
+        rows = []
+        for state in throttle_states_with_sent_messages:
+            emit_reason = (state.emit_reason or '').lower()
+            # Exclude if emit_reason contains "throttled" (case-insensitive check in Python)
+            if 'throttled' not in emit_reason:
+                rows.append(state)
+            if len(rows) >= bounded_limit:
+                break
         now = datetime.now(timezone.utc)
         payload = []
         for row in rows:
