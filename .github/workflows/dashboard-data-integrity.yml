@@ -348,6 +348,7 @@ EOF
         
     - name: POST report to backend
       if: always()
+      continue-on-error: true
       working-directory: frontend
       env:
         BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
