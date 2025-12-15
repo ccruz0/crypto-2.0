@@ -90,7 +90,7 @@ jobs:
             "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || { echo \"❌ Cannot find project directory\" && exit 1; }",
             "echo \"📁 Current directory: $(pwd)\"",
             "echo \"🔍 Verifying frontend version before build...\"",
-            "grep -n \"version: '\''0.46'\" frontend/src/app/page.tsx || { echo \"⚠️ Version 0.46 not found! Current version:\" && grep -n \"version:\" frontend/src/app/page.tsx | head -1 && exit 1; }",
+            "if ! grep -q \"version: '0.46'\" frontend/src/app/page.tsx; then echo \"⚠️ Version 0.46 not found! Current version:\" && grep -n \"version:\" frontend/src/app/page.tsx | head -1 && exit 1; fi",
             "echo \"✅ Frontend version 0.46 verified\"",
             "echo \"🐳 Rebuilding and restarting services with --profile aws...\"",
             "docker compose --profile aws down || true",
