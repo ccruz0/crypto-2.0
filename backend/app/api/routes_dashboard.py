@@ -658,10 +658,16 @@ async def get_dashboard_state(
     """
     FastAPI route handler for /dashboard/state endpoint.
     Delegates to _compute_dashboard_state to avoid circular dependencies.
+    Includes timeout protection to prevent 502 errors from nginx.
     """
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard/state received")
     try:
-        result = await _compute_dashboard_state(db)
+        # Add timeout protection: nginx timeout is 120s, so we use 100s to be safe
+        # This prevents the endpoint from hanging and causing 502 errors
+        result = await asyncio.wait_for(
+            _compute_dashboard_state(db),
+            timeout=100.0  # 100 seconds max - nginx timeout is 120s
+        )
         # FIX: Check portfolio.assets (v4.0 format) instead of portfolio.balances
         # portfolio.balances doesn't exist - balances is at top level for backward compatibility
         # portfolio.assets is the main portfolio data structure
@@ -669,9 +675,62 @@ async def get_dashboard_state(
         has_portfolio = bool(portfolio_assets and len(portfolio_assets) > 0)
         log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 has_portfolio={has_portfolio} assets_count={len(portfolio_assets) if portfolio_assets else 0}")
         return result
+    except asyncio.TimeoutError:
+        log.error(f"[DASHBOARD_STATE_DEBUG] response_status=504 timeout after 100s - returning partial response to prevent 502")
+        # Return partial response instead of raising exception to prevent 502
+        return {
+            "source": "timeout",
+            "total_usd_value": 0.0,
+            "balances": [],
+            "fast_signals": [],
+            "slow_signals": [],
+            "open_orders": [],
+            "open_orders_summary": {"orders": [], "last_updated": None},
+            "last_sync": None,
+            "portfolio_last_updated": None,
+            "portfolio": {
+                "assets": [],
+                "total_value_usd": 0.0,
+                "exchange": "Crypto.com Exchange"
+            },
+            "bot_status": {
+                "is_running": True,
+                "status": "running",
+                "reason": None,
+                "live_trading_enabled": get_live_trading_status(db) if db else False,
+                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
+            },
+            "partial": True,
+            "errors": ["Request timeout - dashboard state computation took too long"]
+        }
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
-        raise
+        # Return error response instead of raising to prevent 502
+        return {
+            "source": "error",
+            "total_usd_value": 0.0,
+            "balances": [],
+            "fast_signals": [],
+            "slow_signals": [],
+            "open_orders": [],
+            "open_orders_summary": {"orders": [], "last_updated": None},
+            "last_sync": None,
+            "portfolio_last_updated": None,
+            "portfolio": {
+                "assets": [],
+                "total_value_usd": 0.0,
+                "exchange": "Crypto.com Exchange"
+            },
+            "bot_status": {
+                "is_running": True,
+                "status": "running",
+                "reason": None,
+                "live_trading_enabled": get_live_trading_status(db) if db else False,
+                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
+            },
+            "partial": True,
+            "errors": [str(e)]
+        }
 
 
 @router.get("/dashboard/open-orders-summary")
@@ -727,16 +786,27 @@ def list_watchlist_items(db: Session = Depends(get_db)):
                 raise
         
         seen = set()
-        result = []
+        trade_enabled_items = []  # Collect ALL trade_enabled items first
+        regular_items = []  # Collect non-trade_enabled items
+        
+        # First pass: collect ALL trade_enabled items (don't break on them)
         for item in items:
             symbol = (item.symbol or "").upper()
             if symbol in seen:
                 continue
             seen.add(symbol)
-            result.append(_serialize_watchlist_item(item))
-            if len(result) >= 100:
-                break
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)}")
+            
+            if item.trade_enabled:
+                trade_enabled_items.append(_serialize_watchlist_item(item))
+            else:
+                regular_items.append(_serialize_watchlist_item(item))
+        
+        # Combine: trade_enabled items first, then regular items
+        # Ensure ALL trade_enabled items are included, then fill remaining slots with regular items
+        max_regular_items = max(0, 100 - len(trade_enabled_items))
+        result = trade_enabled_items + regular_items[:max_regular_items]
+        
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} trade_enabled_count={len(trade_enabled_items)} regular_count={len(regular_items[:max_regular_items])}")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
