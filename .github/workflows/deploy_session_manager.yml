@@ -27,6 +27,12 @@ jobs:
         echo "Frontend HEAD:"
         git -C frontend rev-parse HEAD
         git -C frontend log -1 --oneline
+
+    - name: Show frontend version entry
+      run: |
+        set -e
+        echo "Checking version entry in frontend/src/app/page.tsx"
+        grep -n "version: '0.46'" frontend/src/app/page.tsx || (echo "Version 0.46 not found" && exit 1)
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
