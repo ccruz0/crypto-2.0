@@ -609,6 +609,16 @@ EOF
           ls -la report/ 2>&1 || echo "Report directory does not exist"
           echo "Looking for report file:"
           find . -name "dashboard-data-integrity.json" -type f 2>&1 || echo "Report file not found"
+          echo ""
+          echo "Checking common paths:"
+          for path in "report/dashboard-data-integrity.json" "report/frontend/reports/dashboard-data-integrity.json" "frontend/reports/dashboard-data-integrity.json"; do
+            if [ -f "$path" ]; then
+              echo "✅ Found at: $path"
+              echo "   Size: $(wc -c < "$path") bytes"
+            else
+              echo "❌ Not found at: $path"
+            fi
+          done
           
       - name: Install jq
         run: |
@@ -619,18 +629,24 @@ EOF
         id: create_report
         run: |
           echo "=== CHECKING FOR REPORT FILE ==="
-          echo "Looking for: report/dashboard-data-integrity.json"
-          if [ -f "report/dashboard-data-integrity.json" ]; then
-            echo "✅ Report file found!"
-            echo "File size: $(wc -c < report/dashboard-data-integrity.json) bytes"
-            echo "First 200 chars:"
-            head -c 200 report/dashboard-data-integrity.json
-            echo ""
-            echo "created=false" >> $GITHUB_OUTPUT
-          else
+          REPORT_FILE=""
+          for path in "report/dashboard-data-integrity.json" "report/frontend/reports/dashboard-data-integrity.json" "frontend/reports/dashboard-data-integrity.json"; do
+            if [ -f "$path" ]; then
+              REPORT_FILE="$path"
+              echo "✅ Report file found at: $path"
+              echo "File size: $(wc -c < "$path") bytes"
+              echo "First 200 chars:"
+              head -c 200 "$path"
+              echo ""
+              break
+            fi
+          done
+          
+          if [ -z "$REPORT_FILE" ]; then
             echo "⚠️ Report artifact not found, creating minimal report..."
             mkdir -p report
-            cat > report/dashboard-data-integrity.json <<EOF
+            REPORT_FILE="report/dashboard-data-integrity.json"
+            cat > "$REPORT_FILE" <<EOF
 {
   "run": {
     "workflow": "Dashboard Data Integrity",
@@ -652,9 +668,13 @@ EOF
 }
 EOF
             echo "created=true" >> $GITHUB_OUTPUT
+            echo "report_file=$REPORT_FILE" >> $GITHUB_OUTPUT
           else
             echo "created=false" >> $GITHUB_OUTPUT
+            echo "report_file=$REPORT_FILE" >> $GITHUB_OUTPUT
           fi
+          
+          echo "Using report file: $REPORT_FILE"
           
       - name: POST report to backend
         env:
@@ -735,7 +755,7 @@ EOF
             HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
               -H "Content-Type: application/json" \
               -H "X-Report-Secret: ${REPORT_SECRET}" \
-              -d "@report/dashboard-data-integrity.json" \
+              -d "@${REPORT_FILE}" \
               -w "%{http_code}" \
               -s -o /tmp/report_response.json \
               --max-time 30 \
