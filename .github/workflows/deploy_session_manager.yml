@@ -10,10 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository with submodules
+    - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        submodules: recursive  # ensure frontend submodule is pulled with latest commit
+
+    - name: Fetch frontend source
+      run: |
+        set -e
+        if [ -d "frontend/.git" ]; then
+          echo "Updating existing frontend repo..."
+          git -C frontend pull --ff-only
+        else
+          echo "Cloning frontend repo..."
+          rm -rf frontend
+          git clone --depth 1 https://github.com/ccruz0/frontend.git frontend
+        fi
       
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
