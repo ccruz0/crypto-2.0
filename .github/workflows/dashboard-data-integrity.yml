@@ -233,6 +233,11 @@ jobs:
         retention-days: 30
         if-no-files-found: ignore
         
+    - name: Install jq
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+        
     - name: POST report to backend
       if: always()
       working-directory: frontend
@@ -241,16 +246,14 @@ jobs:
         REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
         GITHUB_RUN_ID: ${{ github.run_id }}
       run: |
-        set -e  # Exit on error
-        
         echo "=== POSTING REPORT TO BACKEND ==="
         echo "Backend URL: ${BACKEND_URL}"
         echo "GitHub Run ID: ${GITHUB_RUN_ID}"
+        echo "Current directory: $(pwd)"
         
         # Check if report file exists
         if [ ! -f "reports/dashboard-data-integrity.json" ]; then
           echo "❌ ERROR: Report file not found at reports/dashboard-data-integrity.json"
-          echo "Current directory: $(pwd)"
           echo "Listing reports directory:"
           ls -la reports/ 2>&1 || echo "Reports directory does not exist"
           echo "Listing frontend directory:"
@@ -263,14 +266,18 @@ jobs:
         if ! jq empty reports/dashboard-data-integrity.json 2>/dev/null; then
           echo "❌ ERROR: Report file is not valid JSON"
           echo "First 500 chars of file:"
-          head -c 500 reports/dashboard-data-integrity.json
+          head -c 500 reports/dashboard-data-integrity.json || cat reports/dashboard-data-integrity.json
           exit 1
         fi
         
         # Ensure run_id is set in the report
         echo "Updating report with GitHub Run ID..."
-        jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' reports/dashboard-data-integrity.json > /tmp/report_updated.json
-        mv /tmp/report_updated.json reports/dashboard-data-integrity.json
+        if ! jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' reports/dashboard-data-integrity.json > /tmp/report_updated.json 2>/dev/null; then
+          echo "⚠️ Warning: Could not update run_id with jq, using original file"
+          cp reports/dashboard-data-integrity.json /tmp/report_updated.json
+        else
+          mv /tmp/report_updated.json reports/dashboard-data-integrity.json
+        fi
         
         # Post to backend with retry logic
         MAX_RETRIES=3
@@ -290,11 +297,11 @@ jobs:
             -s -o /tmp/report_response.json \
             --max-time 30 \
             --connect-timeout 10 \
-            --fail-with-body || echo "000")
+            --fail-with-body 2>&1 | tail -1 || echo "000")
           
           echo "HTTP Response Code: $HTTP_CODE"
           
-          if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
             echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
             if [ -f /tmp/report_response.json ]; then
               echo "Response: $(cat /tmp/report_response.json)"
