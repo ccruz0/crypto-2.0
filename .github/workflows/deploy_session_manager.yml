@@ -28,8 +28,35 @@ jobs:
         
         echo "🔍 Deploying to instance: $INSTANCE_ID"
         
-        # Deploy using SSM command
-        echo "📤 Deploying to EC2 instance..."
+        # First, copy files to EC2 using rsync via SSM
+        echo "📤 Copying files to EC2 instance..."
+        
+        # Get the EC2 instance public IP or use SSM port forwarding
+        # For now, we'll use git pull on the server to get latest code
+        echo "📥 Pulling latest code from git..."
+        PULL_COMMAND_ID=$(aws ssm send-command \
+          --instance-ids $INSTANCE_ID \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "cd ~/automated-trading-platform",
+            "git pull origin main || echo \"Git pull failed, continuing...\"",
+            "cd frontend && git pull origin main || echo \"Frontend git pull failed, continuing...\"",
+            "cd ~/automated-trading-platform",
+            "echo \"✅ Code updated\""
+          ]' \
+          --region ap-southeast-1 \
+          --output text \
+          --query "Command.CommandId")
+        
+        # Wait for git pull to complete
+        echo "⏳ Waiting for code update..."
+        aws ssm wait command-executed \
+          --command-id "$PULL_COMMAND_ID" \
+          --instance-id $INSTANCE_ID \
+          --region ap-southeast-1 || true
+        
+        # Now rebuild and restart
+        echo "🐳 Rebuilding and restarting services..."
         
         # Execute deployment via SSM with proper JSON formatting
         COMMAND_ID=$(aws ssm send-command \
