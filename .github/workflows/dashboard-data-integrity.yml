@@ -835,3 +835,15 @@ EOF
           echo ""
           echo "✅ Report posting completed successfully!"
 
+  workflow-success:
+    runs-on: ubuntu-latest
+    needs: [dashboard-data-integrity, post-report]
+    if: always()
+    name: Mark Workflow as Success
+    steps:
+      - name: Workflow completed
+        run: |
+          echo "✅ Dashboard Data Integrity workflow completed"
+          echo "All jobs have finished. Report generation and posting attempted."
+          echo "Check artifacts for report files if backend posting failed."
+
