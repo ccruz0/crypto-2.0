@@ -376,7 +376,7 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 or_(
                     SignalThrottleState.emit_reason.is_(None),
                     SignalThrottleState.emit_reason == '',
-                    ~SignalThrottleState.emit_reason.ilike('%Throttled%')
+                    ~SignalThrottleState.emit_reason.ilike('%Throttled%')  # NOT ILIKE
                 ),
                 # SECOND: Only include throttle states that have a corresponding sent Telegram message
                 # Check if there's a Telegram message for this symbol that was sent (not blocked)
