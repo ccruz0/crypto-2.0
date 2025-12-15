@@ -9,7 +9,7 @@ import asyncio
 import os
 import requests
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
@@ -257,7 +257,10 @@ def add_telegram_message(
 
 @router.get("/monitoring/telegram-messages")
 async def get_telegram_messages(db: Session = Depends(get_db)):
-    """Get Telegram messages from the last month (blocked and sent)
+    """Get Telegram messages from the last month (BLOCKED messages only)
+    
+    IMPORTANT: This endpoint only returns blocked messages (blocked=True).
+    Sent messages are shown in the Signal Throttle panel instead.
     
     Now reads from database for multi-worker compatibility and persistence.
     """
@@ -269,9 +272,10 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
         if db is not None:
             one_month_ago = datetime.now() - timedelta(days=30)
             
-            # Query from database
+            # Query from database - ONLY blocked messages
             db_messages = db.query(TelegramMessage).filter(
-                TelegramMessage.timestamp >= one_month_ago
+                TelegramMessage.timestamp >= one_month_ago,
+                TelegramMessage.blocked == True  # Only blocked messages
             ).order_by(TelegramMessage.timestamp.desc()).limit(500).all()
             
             # Convert to dict format for API response
@@ -310,7 +314,9 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
     one_month_ago = datetime.now() - timedelta(days=30)
     recent_messages = []
     for msg in _telegram_messages:
-        if datetime.fromisoformat(msg["timestamp"]) >= one_month_ago:
+        # Only include blocked messages
+        if (datetime.fromisoformat(msg["timestamp"]) >= one_month_ago and 
+            msg.get("blocked") == True):
             # Ensure order_skipped is always a boolean
             order_skipped_val = msg.get("order_skipped")
             if order_skipped_val is None:
@@ -335,18 +341,41 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
 
 @router.get("/monitoring/signal-throttle")
 async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
-    """Expose recent signal throttle state for the Monitoring dashboard."""
+    """Expose recent signal throttle state for the Monitoring dashboard.
+    
+    IMPORTANT: Only returns throttle entries that have corresponding Telegram messages
+    that were actually sent (not blocked). This ensures throttled status is only shown
+    for alerts that were sent to Telegram.
+    """
     log.debug("Fetching signal throttle state (limit=%s)", limit)
     if db is None:
         return []
     
     try:
         from app.models.telegram_message import TelegramMessage
-        import re
         
         bounded_limit = max(1, min(limit, 500))
+        
+        # Only return throttle states that have corresponding Telegram messages that were sent
+        # This ensures throttled status is only shown for alerts that were actually sent to Telegram
+        # We filter to only include throttle states where there's a matching sent Telegram message
+        # Match by symbol and within a reasonable time window (10 minutes)
         rows = (
             db.query(SignalThrottleState)
+            .filter(
+                # Only include throttle states that have a corresponding sent Telegram message
+                # Check if there's a Telegram message for this symbol that was sent (not blocked)
+                db.query(TelegramMessage.id)
+                .filter(
+                    TelegramMessage.symbol == SignalThrottleState.symbol,
+                    TelegramMessage.blocked == False,  # Only messages that were sent
+                    # Match within 10 minutes window to account for processing delays
+                    # Use timestamp comparison that works across databases
+                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
+                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
+                )
+                .exists()
+            )
             .order_by(SignalThrottleState.last_time.desc())
             .limit(bounded_limit)
             .all()
@@ -526,14 +555,20 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                             from datetime import datetime
                             date_str = datetime.now().strftime("%Y%m%d")
                             # Report is generated in docs/monitoring/ relative to project root
-                            # In Docker: /app/docs/monitoring/
-                            # In local: .../backend/../docs/monitoring/
-                            project_root = os.path.dirname(os.path.dirname(backend_root))
+                            # Store as relative path for consistency
                             report_path = os.path.join("docs", "monitoring", f"watchlist_consistency_report_latest.md")
                             # Also check if dated report exists
-                            dated_report = os.path.join("docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
-                            if os.path.exists(os.path.join(project_root, dated_report)):
-                                report_path = dated_report
+                            # Calculate absolute path to check existence
+                            if backend_root == "/app":
+                                # Running in Docker container - project root is /app
+                                project_root = "/app"
+                            else:
+                                # Running locally - project root is backend/..
+                                project_root = os.path.dirname(backend_root)
+                            
+                            dated_report_abs = os.path.join(project_root, "docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
+                            if os.path.exists(dated_report_abs):
+                                report_path = os.path.join("docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
                         
                         record_workflow_execution(
                             workflow_id, 
