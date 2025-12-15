@@ -370,27 +370,25 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         rows = (
             db.query(SignalThrottleState)
             .filter(
-                and_(
-                    # CRITICAL: Exclude throttle states that were actually throttled (not sent)
-                    # If emit_reason contains "Throttled" (case-insensitive), it means the message was NOT sent
-                    # Use ilike for case-insensitive pattern matching (more reliable than contains)
-                    or_(
-                        SignalThrottleState.emit_reason.is_(None),
-                        SignalThrottleState.emit_reason == '',
-                        ~SignalThrottleState.emit_reason.ilike('%Throttled%')
-                    ),
-                    # Only include throttle states that have a corresponding sent Telegram message
-                    # Check if there's a Telegram message for this symbol that was sent (not blocked)
-                    db.query(TelegramMessage.id)
-                    .filter(
-                        TelegramMessage.symbol == SignalThrottleState.symbol,
-                        TelegramMessage.blocked == False,  # Only messages that were sent
-                        # Match within 10 minutes window to account for processing delays
-                        TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
-                        TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
-                    )
-                    .exists()
+                # CRITICAL FIRST: Exclude throttle states that were actually throttled (not sent)
+                # If emit_reason contains "Throttled" (case-insensitive), it means the message was NOT sent
+                # This MUST be checked first - if throttled, exclude immediately regardless of Telegram message
+                or_(
+                    SignalThrottleState.emit_reason.is_(None),
+                    SignalThrottleState.emit_reason == '',
+                    ~SignalThrottleState.emit_reason.ilike('%Throttled%')
+                ),
+                # SECOND: Only include throttle states that have a corresponding sent Telegram message
+                # Check if there's a Telegram message for this symbol that was sent (not blocked)
+                db.query(TelegramMessage.id)
+                .filter(
+                    TelegramMessage.symbol == SignalThrottleState.symbol,
+                    TelegramMessage.blocked == False,  # Only messages that were sent
+                    # Match within 10 minutes window to account for processing delays
+                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
+                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
                 )
+                .exists()
             )
             .order_by(SignalThrottleState.last_time.desc())
             .limit(bounded_limit)
