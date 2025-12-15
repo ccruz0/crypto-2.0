@@ -2004,7 +2004,7 @@ class SignalMonitorService:
                         # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
                         # This ensures that if multiple calls happen simultaneously, only the first one will update the state
                         self._update_alert_state(symbol, "BUY", current_price)
-                                if not buy_state_recorded:
+                        if not buy_state_recorded:
                                     try:
                                         # Build comprehensive reason
                                         emit_reason_parts = []
@@ -2111,6 +2111,24 @@ class SignalMonitorService:
                 except Exception as portfolio_check_err:
                     logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with order creation...")
                     # On error, continue (don't block orders if we can't calculate portfolio value)
+                
+                # CRITICAL: Refresh trade_enabled and trade_amount_usd from database before checking
+                # This ensures we use the latest values even if they were just changed in the dashboard
+                db.expire_all()  # Force refresh from database
+                try:
+                    fresh_trade_check = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == symbol
+                    ).first()
+                    if fresh_trade_check:
+                        trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
+                        trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
+                        logger.debug(f"🔄 Última verificación de trade_enabled para {symbol} (BUY): trade_enabled={trade_enabled}, trade_amount_usd={trade_amount_usd}")
+                        # Update watchlist_item with fresh values
+                        watchlist_item.trade_enabled = trade_enabled
+                        watchlist_item.trade_amount_usd = trade_amount_usd
+                except Exception as e:
+                    logger.warning(f"Error en última verificación de trade_enabled para {symbol} (BUY): {e}")
+                    # Use existing values if refresh fails
                 
                 if watchlist_item.trade_enabled:
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
@@ -2442,6 +2460,26 @@ class SignalMonitorService:
                                 # ========================================================================
                                 # CREAR ORDEN SELL AUTOMÁTICA: Si trade_enabled=True y trade_amount_usd > 0
                                 # ========================================================================
+                                # CRITICAL: Refresh trade_enabled and trade_amount_usd from database before checking
+                                # This ensures we use the latest values even if they were just changed in the dashboard
+                                db.expire_all()  # Force refresh from database
+                                try:
+                                    fresh_trade_check = db.query(WatchlistItem).filter(
+                                        WatchlistItem.symbol == symbol
+                                    ).first()
+                                    if fresh_trade_check:
+                                        trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
+                                        trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
+                                        logger.debug(f"🔄 Última verificación de trade_enabled para {symbol}: trade_enabled={trade_enabled}, trade_amount_usd={trade_amount_usd}")
+                                        # Update watchlist_item with fresh values
+                                        watchlist_item.trade_enabled = trade_enabled
+                                        watchlist_item.trade_amount_usd = trade_amount_usd
+                                except Exception as e:
+                                    logger.warning(f"Error en última verificación de trade_enabled para {symbol}: {e}")
+                                    # Use existing values if refresh fails
+                                    trade_enabled = getattr(watchlist_item, 'trade_enabled', False)
+                                    trade_amount_usd = getattr(watchlist_item, 'trade_amount_usd', None)
+                                
                                 if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                                     logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
                                     try:
