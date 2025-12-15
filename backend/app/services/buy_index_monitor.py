@@ -415,6 +415,7 @@ class BuyIndexMonitorService:
                         side=side,
                         price=market_data.price,
                         source="buy_index_monitor",
+                        emit_reason=reason if reason else "Buy index signal",
                     )
                 except Exception as state_err:
                     logger.warning(f"Failed to persist buy index throttle state: {state_err}")

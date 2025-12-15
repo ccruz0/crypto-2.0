@@ -447,6 +447,7 @@ class SignalMonitorService:
                         side="BUY",
                         price=current_price,
                         source="signal_detection",
+                        emit_reason="Signal detected",
                     )
                     logger.debug(f"📝 Recorded BUY signal detection for {symbol} in throttle table")
                 except Exception as record_err:
@@ -466,6 +467,7 @@ class SignalMonitorService:
                         side="SELL",
                         price=current_price,
                         source="signal_detection",
+                        emit_reason="Signal detected",
                     )
                     logger.debug(f"📝 Recorded SELL signal detection for {symbol} in throttle table")
                 except Exception as record_err:
@@ -770,6 +772,7 @@ class SignalMonitorService:
                                     strategy_key=strategy_key,
                                     side="BUY",
                                     price=current_price,
+                                    emit_reason=reason if reason else "Alert sent",
                                     source="alert",
                                 )
                                 logger.debug(f"📝 Recorded BUY signal event for {symbol} in throttle table")
@@ -933,6 +936,7 @@ class SignalMonitorService:
                                     strategy_key=strategy_key,
                                     side="SELL",
                                     price=current_price,
+                                    emit_reason=reason if reason else "Alert sent",
                                     source="alert",
                                 )
                                 logger.debug(f"📝 Recorded SELL signal event for {symbol} in throttle table")

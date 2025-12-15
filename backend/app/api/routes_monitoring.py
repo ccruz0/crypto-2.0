@@ -389,6 +389,7 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     "last_time": last_time.isoformat() if last_time else None,
                     "seconds_since_last": seconds_since,
                     "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
+                    "emit_reason": row.emit_reason,
                 }
             )
         return payload

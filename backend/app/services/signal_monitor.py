@@ -1071,6 +1071,7 @@ class SignalMonitorService:
                         side="BUY",
                         price=current_price,
                         source="throttled",
+                        emit_reason=f"BLOCKED: {buy_reason}",
                     )
                 except Exception as state_err:
                     logger.warning(f"Failed to persist BUY throttle state (throttled) for {symbol}: {state_err}")
@@ -1142,6 +1143,7 @@ class SignalMonitorService:
                         side="SELL",
                         price=current_price,
                         source="throttled",
+                        emit_reason=f"BLOCKED: {sell_reason}",
                     )
                 except Exception as state_err:
                     logger.warning(f"Failed to persist SELL throttle state (throttled) for {symbol}: {state_err}")
@@ -1376,6 +1378,7 @@ class SignalMonitorService:
                                 side="BUY",
                                 price=current_price,
                                 source="throttled",
+                                emit_reason=f"BLOCKED: {buy_reason}",
                             )
                         except Exception as state_err:
                             logger.warning(f"Failed to persist BUY throttle state (throttled) for {symbol}: {state_err}")
@@ -1440,6 +1443,17 @@ class SignalMonitorService:
                                 self._update_alert_state(symbol, "BUY", current_price)
                                 try:
                                     logger.info(f"📝 Recording signal event for {symbol} BUY at {current_price} (strategy: {strategy_key})")
+                                    # Build comprehensive reason
+                                    emit_reason_parts = []
+                                    if buy_reason:
+                                        emit_reason_parts.append(buy_reason)
+                                    # Check if this is first signal or side changed
+                                    if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
+                                        emit_reason_parts.append("First signal for this side/strategy")
+                                    elif last_sell_snapshot and last_sell_snapshot.timestamp:
+                                        if last_sell_snapshot.timestamp > last_buy_snapshot.timestamp:
+                                            emit_reason_parts.append("Side change from SELL to BUY")
+                                    emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "Signal emitted"
                                     record_signal_event(
                                         db,
                                         symbol=symbol,
@@ -1447,6 +1461,7 @@ class SignalMonitorService:
                                         side="BUY",
                                         price=current_price,
                                         source="alert",
+                                        emit_reason=emit_reason,
                                     )
                                     logger.info(f"✅ Signal event recorded successfully for {symbol} BUY")
                                     buy_state_recorded = True
@@ -1980,19 +1995,31 @@ class SignalMonitorService:
                         # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
                         # This ensures that if multiple calls happen simultaneously, only the first one will update the state
                         self._update_alert_state(symbol, "BUY", current_price)
-                        if not buy_state_recorded:
-                            try:
-                                record_signal_event(
-                                    db,
-                                    symbol=symbol,
-                                    strategy_key=strategy_key,
-                                    side="BUY",
-                                    price=current_price,
-                                    source="alert",
-                                )
-                                buy_state_recorded = True
-                            except Exception as state_err:
-                                logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
+                                if not buy_state_recorded:
+                                    try:
+                                        # Build comprehensive reason
+                                        emit_reason_parts = []
+                                        if buy_reason:
+                                            emit_reason_parts.append(buy_reason)
+                                        # Check if this is first signal or side changed
+                                        if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
+                                            emit_reason_parts.append("First signal for this side/strategy")
+                                        elif last_sell_snapshot and last_sell_snapshot.timestamp:
+                                            if last_sell_snapshot.timestamp > last_buy_snapshot.timestamp:
+                                                emit_reason_parts.append("Side change from SELL to BUY")
+                                        emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "Signal emitted"
+                                        record_signal_event(
+                                            db,
+                                            symbol=symbol,
+                                            strategy_key=strategy_key,
+                                            side="BUY",
+                                            price=current_price,
+                                            source="alert",
+                                            emit_reason=emit_reason,
+                                        )
+                                        buy_state_recorded = True
+                                    except Exception as state_err:
+                                        logger.warning(f"Failed to persist BUY throttle state for {symbol}: {state_err}")
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram BUY alert for {symbol}: {e}")
                     # If sending failed, do NOT update the state - allow retry on next cycle
@@ -2112,6 +2139,7 @@ class SignalMonitorService:
                                             side="BUY",
                                             price=persist_price,
                                             source="order",
+                                            emit_reason="Order created",
                                         )
                                         buy_state_recorded = True
                                     except Exception as state_err:
@@ -2262,6 +2290,7 @@ class SignalMonitorService:
                                 side="SELL",
                                 price=current_price,
                                 source="throttled",
+                                emit_reason=f"BLOCKED: {throttle_reason}",
                             )
                         except Exception as state_err:
                             logger.warning(f"Failed to persist SELL throttle state (throttled) for {symbol}: {state_err}")
@@ -2323,6 +2352,7 @@ class SignalMonitorService:
                                     side="SELL",
                                     price=current_price,
                                     source="blocked",
+                                    emit_reason="Blocked: sell_alert_enabled=False",
                                 )
                             except Exception as state_err:
                                 logger.warning(f"Failed to persist SELL throttle state (blocked) for {symbol}: {state_err}")
@@ -2376,6 +2406,17 @@ class SignalMonitorService:
                                     # CRITICAL: Update alert state ONLY after successful send to prevent duplicate alerts
                                     self._update_alert_state(symbol, "SELL", current_price)
                                     try:
+                                        # Build comprehensive reason
+                                        emit_reason_parts = []
+                                        if sell_reason:
+                                            emit_reason_parts.append(sell_reason)
+                                        # Check if this is first signal or side changed
+                                        if last_sell_snapshot is None or last_sell_snapshot.timestamp is None:
+                                            emit_reason_parts.append("First signal for this side/strategy")
+                                        elif last_buy_snapshot and last_buy_snapshot.timestamp:
+                                            if last_buy_snapshot.timestamp > last_sell_snapshot.timestamp:
+                                                emit_reason_parts.append("Side change from BUY to SELL")
+                                        emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "Signal emitted"
                                         record_signal_event(
                                             db,
                                             symbol=symbol,
@@ -2383,6 +2424,7 @@ class SignalMonitorService:
                                             side="SELL",
                                             price=current_price,
                                             source="alert",
+                                            emit_reason=emit_reason,
                                         )
                                         sell_state_recorded = True
                                     except Exception as state_err:
@@ -2411,6 +2453,7 @@ class SignalMonitorService:
                                                         side="SELL",
                                                         price=persist_price,
                                                         source="order",
+                                                        emit_reason="Order created",
                                                     )
                                                     sell_state_recorded = True
                                                 except Exception as state_err:

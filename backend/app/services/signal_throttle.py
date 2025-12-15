@@ -252,6 +252,39 @@ def set_force_next_signal(
         raise
 
 
+def _build_emit_reason(
+    *,
+    throttle_reason: Optional[str],
+    last_same_side: Optional[LastSignalSnapshot],
+    last_opposite_side: Optional[LastSignalSnapshot],
+    current_price: float,
+    previous_price: Optional[float],
+) -> str:
+    """Build a comprehensive reason for why a signal was emitted."""
+    reasons = []
+    
+    # Check if this is the first signal for this side
+    if last_same_side is None or last_same_side.timestamp is None:
+        reasons.append("First signal for this side/strategy")
+    else:
+        # Use the throttle reason if available
+        if throttle_reason:
+            reasons.append(throttle_reason)
+        
+        # Check for side change
+        if last_opposite_side and last_opposite_side.timestamp:
+            if last_opposite_side.timestamp > last_same_side.timestamp:
+                reasons.append(f"Side change from {last_opposite_side.side} to {last_same_side.side}")
+    
+    # Add price change information if available
+    if previous_price and previous_price > 0 and current_price > 0:
+        price_change_pct = ((current_price - previous_price) / previous_price) * 100
+        direction = "↑" if price_change_pct > 0 else "↓"
+        reasons.append(f"Price change: {direction}{abs(price_change_pct):.2f}%")
+    
+    return " | ".join(reasons) if reasons else "Signal emitted"
+
+
 def record_signal_event(
     db: Session,
     *,
@@ -260,6 +293,7 @@ def record_signal_event(
     side: str,
     price: Optional[float],
     source: str,
+    emit_reason: Optional[str] = None,
 ) -> None:
     """Persist the latest emitted signal."""
     side = side.upper()
@@ -283,6 +317,7 @@ def record_signal_event(
             existing.last_price = price
             existing.last_time = now_ts
             existing.last_source = source
+            existing.emit_reason = emit_reason
             # Clear force flag when recording a signal (it was used or we're recording new state)
             existing.force_next_signal = False
         else:
@@ -294,6 +329,7 @@ def record_signal_event(
                     last_price=price,
                     last_time=now_ts,
                     last_source=source,
+                    emit_reason=emit_reason,
                     force_next_signal=False,
                 )
             )
