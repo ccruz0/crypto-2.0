@@ -930,6 +930,12 @@ def update_watchlist_item(
         elif not strategy_changed and ("preset" in payload or "risk_mode" in payload or "sl_tp_mode" in payload):
             strategy_changed = True
             log.info(f"🔄 [STRATEGY] Assuming strategy change for {item.symbol} (strategy-related fields in payload) - resetting throttle as safety measure")
+        
+        # ADDITIONAL SAFETY: Even if strategy keys are the same, if config file was modified, 
+        # the strategy rules might have changed, so reset throttle to be safe
+        if not strategy_changed and config_file_modified and old_strategy_key:
+            strategy_changed = True
+            log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} with same strategy key - resetting throttle as safety measure (rules may have changed)")
     except Exception as new_strategy_err:
         log.debug(f"Could not resolve new strategy for {item.symbol}: {new_strategy_err}")
     
@@ -1021,13 +1027,31 @@ def update_watchlist_item(
                 log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} old strategy: {old_strategy_key}")
             
             # Also reset throttle state for new strategy to ensure clean slate
-            reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
-            log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
-            
-            # Set force_next_signal for new strategy to allow immediate signals
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
-            log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
+            # CRITICAL: Always reset throttle for new strategy, even if old_strategy_key is None
+            if new_strategy_key:
+                reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
+                log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
+                
+                # Set force_next_signal for new strategy to allow immediate signals
+                set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
+                set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
+                log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
+            else:
+                # FALLBACK: If we couldn't resolve strategy key, reset throttle for ALL strategies for this symbol
+                # This ensures throttle is cleared even if strategy resolution fails
+                log.warning(f"⚠️ [STRATEGY] Could not resolve new strategy key for {item.symbol}, resetting throttle for all strategies")
+                try:
+                    from app.models.signal_throttle import SignalThrottleState
+                    all_throttle_states = db.query(SignalThrottleState).filter(
+                        SignalThrottleState.symbol == item.symbol.upper()
+                    ).all()
+                    for state in all_throttle_states:
+                        reset_throttle_state(db, symbol=item.symbol, strategy_key=state.strategy_key)
+                        set_force_next_signal(db, symbol=item.symbol, strategy_key=state.strategy_key, side="BUY", enabled=True)
+                        set_force_next_signal(db, symbol=item.symbol, strategy_key=state.strategy_key, side="SELL", enabled=True)
+                    log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} for all {len(all_throttle_states)} strategy keys")
+                except Exception as fallback_err:
+                    log.error(f"❌ [STRATEGY] Failed to reset throttle via fallback for {item.symbol}: {fallback_err}", exc_info=True)
             
             # CRITICAL: Clear order creation limitations in SignalMonitorService
             # This clears last_order_price, orders_count tracking, order_creation_locks, and alert state
