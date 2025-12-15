@@ -55,17 +55,27 @@ jobs:
           --instance-ids $INSTANCE_ID \
           --document-name "AWS-RunShellScript" \
           --parameters 'commands=[
-            "cd ~/automated-trading-platform",
+            "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || { echo \"❌ Cannot find project directory\" && exit 1; }",
             "git pull origin main || echo \"Git pull failed, continuing...\"",
             "if [ -d frontend ]; then",
-            "  cd frontend && git pull origin main || echo \"Frontend git pull failed, continuing...\"",
-            "  cd ~/automated-trading-platform",
+            "  echo \"Updating existing frontend repo...\"",
+            "  cd frontend",
+            "  git fetch origin main",
+            "  git reset --hard origin/main || { echo \"⚠️ Frontend reset failed\" && exit 1; }",
+            "  cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
             "else",
             "  echo \"Frontend directory not found, cloning...\"",
-            "  git clone https://github.com/ccruz0/frontend.git frontend || echo \"Clone failed\"",
+            "  git clone https://github.com/ccruz0/frontend.git frontend || { echo \"⚠️ Clone failed\" && exit 1; }",
             "fi",
             "echo \"🔍 Verifying frontend version...\"",
-            "grep -n \"version: '0.46'\" frontend/src/app/page.tsx || (echo \"⚠️ Version 0.46 not found in frontend!\" && exit 1)",
+            "if ! grep -q \"version: '\''0.46'\" frontend/src/app/page.tsx; then",
+            "  echo \"⚠️ Version 0.46 not found in frontend! Current version:\"",
+            "  grep -n \"version:\" frontend/src/app/page.tsx | head -1",
+            "  echo \"Frontend HEAD:\"",
+            "  git -C frontend rev-parse HEAD",
+            "  git -C frontend log -1 --oneline",
+            "  exit 1",
+            "fi",
             "echo \"✅ Code updated and verified\""
           ]' \
           --region ap-southeast-1 \
