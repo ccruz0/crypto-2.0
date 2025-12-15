@@ -5,7 +5,7 @@ This guide explains how to configure the trading dashboard to be accessible on y
 ## Quick Setup
 
 1. **Ensure DNS is configured**:
-   - Create an A record: `dashboard.hilovivo.com` → `175.41.189.249`
+   - Create an A record: `dashboard.hilovivo.com` → `47.130.143.159`
    - Wait for DNS propagation (can take up to 24 hours)
 
 2. **Run the setup script**:
@@ -31,7 +31,7 @@ If you prefer to set up manually:
 ### 1. Install Nginx and Certbot
 
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249
+ssh -i ~/.ssh/id_rsa ubuntu@47.130.143.159
 sudo apt-get update
 sudo apt-get install -y nginx certbot python3-certbot-nginx
 ```
@@ -40,7 +40,7 @@ sudo apt-get install -y nginx certbot python3-certbot-nginx
 
 ```bash
 # From your local machine
-scp -i ~/.ssh/id_rsa nginx/dashboard.conf ubuntu@175.41.189.249:/tmp/
+scp -i ~/.ssh/id_rsa nginx/dashboard.conf ubuntu@47.130.143.159:/tmp/
 
 # On the server
 sudo cp /tmp/dashboard.conf /etc/nginx/sites-available/dashboard.conf
@@ -97,7 +97,7 @@ docker compose --profile aws restart backend-aws
 dig dashboard.hilovivo.com
 nslookup dashboard.hilovivo.com
 
-# Should return: 175.41.189.249
+# Should return: 47.130.143.159
 ```
 
 ### SSL Certificate Issues

@@ -11,13 +11,13 @@ set -euo pipefail
 #   ./setup_dashboard_domain.sh
 #
 # Requirements:
-#   - Domain DNS pointing to server IP (175.41.189.249)
+#   - Domain DNS pointing to server IP (47.130.143.159)
 #   - SSH access to server
 #   - Nginx installed on server
 #   - Certbot installed for SSL certificates
 # ============================================
 
-HOST="${HOST:-ubuntu@175.41.189.249}"
+HOST="${HOST:-ubuntu@47.130.143.159}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/automated-trading-platform}"
 # Load unified SSH helper
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
@@ -115,7 +115,7 @@ ssh_cmd "$HOST" << ENDSSH
     sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email admin@hilovivo.com || {
         echo "Failed to obtain SSL certificate"
         echo "Make sure DNS is pointing to this server:"
-        echo "  $DOMAIN -> 175.41.189.249"
+        echo "  $DOMAIN -> 47.130.143.159"
         exit 1
     }
     
@@ -164,7 +164,7 @@ info "Dashboard should now be accessible at:"
 info "  https://$DOMAIN"
 info ""
 info "Next steps:"
-info "  1. Ensure DNS A record points $DOMAIN to 175.41.189.249"
+info "  1. Ensure DNS A record points $DOMAIN to 47.130.143.159"
 info "  2. Wait for DNS propagation (can take up to 24 hours)"
 info "  3. Test SSL: https://www.ssllabs.com/ssltest/analyze.html?d=$DOMAIN"
 info "  4. Access dashboard: https://$DOMAIN"
