@@ -32,7 +32,7 @@ class CryptoComTradeClient:
     
     def __init__(self):
         # Check if we should use the proxy
-        self.use_proxy = os.getenv("USE_CRYPTO_PROXY", "true").lower() == "true"
+        self.use_proxy = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
         self.proxy_url = os.getenv("CRYPTO_PROXY_URL", "http://127.0.0.1:9000")
         self.proxy_token = os.getenv("CRYPTO_PROXY_TOKEN", "CRYPTO_PROXY_SECURE_TOKEN_2024")
         
@@ -1144,13 +1144,24 @@ class CryptoComTradeClient:
                 logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
                 # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
+                # FIX: Based on successful test, BTC_USD requires max 5 decimals for small quantities
                 # Most exchanges require 2 decimals for quantities >= 1
                 if qty >= 1:
                     # For quantities >= 1, use 2 decimals (most common requirement)
                     qty_decimal = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
                     qty_str = f"{qty_decimal:.2f}"
+                elif qty >= 0.001:
+                    # For quantities between 0.001 and 1, use 5 decimals (works for BTC_USD)
+                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00001'), rounding=decimal.ROUND_DOWN)
+                    qty_str = f"{qty_decimal:.5f}"
+                    # Strip trailing zeros but keep at least 2 decimals
+                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
+                    if '.' in qty_str_stripped:
+                        stripped_decimals = len(qty_str_stripped.split('.')[1])
+                        if stripped_decimals >= 2:
+                            qty_str = qty_str_stripped
                 else:
-                    # For quantities < 1, use 8 decimals but round down
+                    # For quantities < 0.001, use 8 decimals but round down
                     # CRITICAL: Don't strip trailing zeros - exchange may require exact format
                     qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
                     # Format with 8 decimals and keep trailing zeros (exchange may require them)

@@ -614,21 +614,8 @@ class ExchangeSyncService:
             # but not yet in our database
             try:
                 logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
-                import asyncio
-                # Run async sync_open_orders in sync context
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # If loop is already running, create a task
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, self.sync_open_orders(db))
-                            future.result(timeout=5)  # 5 second timeout
-                    else:
-                        asyncio.run(self.sync_open_orders(db))
-                except RuntimeError:
-                    # No event loop, create new one
-                    asyncio.run(self.sync_open_orders(db))
+                # sync_open_orders is a regular sync method, not async
+                self.sync_open_orders(db)
                 logger.info(f"✅ Open orders synced successfully")
             except Exception as sync_err:
                 logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
@@ -715,8 +702,19 @@ class ExchangeSyncService:
         ).first()
         
         if not watchlist_item:
-            logger.debug(f"No watchlist item found for {symbol}, skipping SL/TP creation")
-            return
+            logger.info(f"No watchlist item found for {symbol}, creating one with default settings for SL/TP creation")
+            # Create a temporary watchlist_item with default conservative settings
+            watchlist_item = WatchlistItem(
+                symbol=symbol,
+                exchange="CRYPTO_COM",
+                sl_tp_mode="conservative",
+                trade_enabled=True,  # Enable trading to allow SL/TP creation
+                is_deleted=False
+            )
+            db.add(watchlist_item)
+            db.commit()
+            db.refresh(watchlist_item)
+            logger.info(f"✅ Created temporary watchlist_item for {symbol} with conservative SL/TP settings")
         
         # CRITICAL: Check if trading is enabled for this symbol before creating SL/TP orders
         # This prevents creating orders when trade_enabled=False
