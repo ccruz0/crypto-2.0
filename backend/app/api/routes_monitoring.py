@@ -373,13 +373,11 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 and_(
                     # CRITICAL: Exclude throttle states that were actually throttled (not sent)
                     # If emit_reason contains "Throttled" (case-insensitive), it means the message was NOT sent
-                    # This MUST be the first condition - if throttled, exclude regardless of Telegram message
+                    # Use ilike for case-insensitive pattern matching (more reliable than contains)
                     or_(
                         SignalThrottleState.emit_reason.is_(None),
                         SignalThrottleState.emit_reason == '',
-                        ~sql_func.lower(
-                            sql_func.coalesce(SignalThrottleState.emit_reason, '')
-                        ).contains('throttled')
+                        ~SignalThrottleState.emit_reason.ilike('%Throttled%')
                     ),
                     # Only include throttle states that have a corresponding sent Telegram message
                     # Check if there's a Telegram message for this symbol that was sent (not blocked)
