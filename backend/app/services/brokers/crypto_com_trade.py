@@ -315,7 +315,7 @@ class CryptoComTradeClient:
             logger.error("API credentials not configured. Cannot get account summary.")
             raise ValueError("API credentials not configured. Set EXCHANGE_CUSTOM_API_KEY and EXCHANGE_CUSTOM_API_SECRET")
         
-        method = "private/user-balance"
+        method = "private/get-account-summary"
         params = {}
         payload = self.sign_request(method, params)
         
@@ -323,15 +323,10 @@ class CryptoComTradeClient:
         
         try:
             # Crypto.com Exchange v1 API expects the method as the URL path
+            # Use same pattern as get_open_orders which works
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
-            # Disable SSL verification when using IP directly (certificate is for api.crypto.com)
-            verify_ssl = not url.startswith("https://104.")
-            headers = {"Content-Type": "application/json"}
-            # Add Host header when using IP directly (required for SSL/TLS)
-            if url.startswith("https://104."):
-                headers["Host"] = "api.crypto.com"
-            response = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
+            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
             
             # Check if authentication failed
             if response.status_code == 401:
@@ -341,9 +336,23 @@ class CryptoComTradeClient:
                 
                 logger.warning(f"API authentication failed: {error_msg} (code: {error_code})")
                 
-                # If IP not whitelisted or other auth issues, raise error (NO SIMULATED DATA)
+                # If IP not whitelisted or other auth issues, try failover before raising error
                 if error_code in [40101, 40103]:  # Authentication failure or IP illegal
                     logger.error(f"API authentication failed: {error_msg} (code: {error_code})")
+                    
+                    # Try failover to TRADE_BOT if enabled
+                    if _should_failover(401):
+                        logger.info("Attempting failover to TRADE_BOT for account summary...")
+                        try:
+                            fr = self._fallback_balance()
+                            if fr and fr.status_code == 200:
+                                data = fr.json()
+                                logger.info("Successfully retrieved account summary via TRADE_BOT failover")
+                                return {"code": 0, "result": data}
+                        except Exception as failover_error:
+                            logger.warning(f"Failover to TRADE_BOT failed: {failover_error}")
+                    
+                    # If failover didn't work, raise error
                     raise RuntimeError(f"Crypto.com API authentication failed: {error_msg} (code: {error_code}). Check API credentials and IP whitelist.")
             
             response.raise_for_status()
@@ -351,10 +360,28 @@ class CryptoComTradeClient:
             
             logger.debug(f"Response: {result}")
             
-            # Crypto.com returns data in result.data format with position_balances
-            if "result" in result and "data" in result["result"]:
-                data = result["result"]["data"]
-                accounts = []
+            # Crypto.com get-account-summary returns accounts directly in result.accounts
+            # Crypto.com user-balance returns data in result.data format with position_balances
+            if "result" in result:
+                # Try get-account-summary format first (accounts array)
+                if "accounts" in result["result"]:
+                    accounts_data = result["result"]["accounts"]
+                    accounts = []
+                    for acc in accounts_data:
+                        currency = acc.get("currency", "")
+                        if currency:
+                            accounts.append({
+                                "currency": currency,
+                                "balance": str(acc.get("balance", "0")),
+                                "available": str(acc.get("available", acc.get("balance", "0")))
+                            })
+                    logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
+                    return {"accounts": accounts}
+                
+                # Try user-balance format (data array with position_balances)
+                if "data" in result["result"]:
+                    data = result["result"]["data"]
+                    accounts = []
                 
                 # Extract position balances and convert to standard format
                 # Crypto.com API provides: instrument_name, quantity, market_value, max_withdrawal_balance
@@ -900,25 +927,26 @@ class CryptoComTradeClient:
         method = "private/get-order-history"
         
         # Build params - use date range if provided, otherwise get last 30 days
+        # IMPORTANT: Crypto.com API requires all numeric params to be integers, not strings
         params = {}
         if start_time is not None or end_time is not None:
             if start_time is not None:
-                params['start_time'] = start_time
+                params['start_time'] = int(start_time)  # Ensure integer type
             if end_time is not None:
-                params['end_time'] = end_time
+                params['end_time'] = int(end_time)  # Ensure integer type
             if page_size:
-                params['page_size'] = page_size
-            params['page'] = page
+                params['page_size'] = int(page_size)  # Ensure integer type
+            params['page'] = int(page)  # Ensure integer type
         else:
             # Default: Get last 30 days of orders
             from datetime import datetime, timedelta
             end_time_ms = int(time.time() * 1000)
             start_time_ms = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
             params = {
-                'start_time': start_time_ms,
-                'end_time': end_time_ms,
-                'page_size': page_size,
-                'page': page
+                'start_time': int(start_time_ms),  # Ensure integer type
+                'end_time': int(end_time_ms),  # Ensure integer type
+                'page_size': int(page_size),  # Ensure integer type
+                'page': int(page)  # Ensure integer type
             }
         
         payload = self.sign_request(method, params)
