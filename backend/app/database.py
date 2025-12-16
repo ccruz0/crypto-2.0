@@ -24,19 +24,27 @@ elif database_url.startswith("postgresql://"):
     use_sqlite_fallback = False
 
     # Guard: when running outside Docker, host "db" is not resolvable. Fallback to localhost automatically.
-    # Also handle cases where "db" resolves but connection fails (e.g., container not running)
+    # CRITICAL: Only fallback to localhost if we're NOT in a Docker/container environment
+    # Check if we're in Docker by looking for /.dockerenv or checking if we're in a container
     parsed = urlparse(database_url)
     if parsed.hostname == "db":
+        is_docker = os.path.exists("/.dockerenv") or os.environ.get("container") is not None
         try:
             socket.gethostbyname(parsed.hostname)
-            # Hostname resolves, but we should still try to connect to verify accessibility
-            # This will be caught during engine creation if connection fails
+            # Hostname resolves - keep using "db" (correct for Docker environments)
+            logger.debug(f"Database hostname 'db' resolved successfully (Docker: {is_docker})")
         except socket.gaierror:
-            logger.warning("DATABASE_URL host 'db' not resolvable. Falling back to localhost for local execution.")
-            # Rebuild URL with localhost while keeping credentials/port
-            netloc = parsed.netloc.replace("db", "localhost", 1)
-            parsed = parsed._replace(netloc=netloc)
-            database_url = urlunparse(parsed)
+            if not is_docker:
+                # Only fallback to localhost if we're NOT in Docker
+                logger.warning("DATABASE_URL host 'db' not resolvable. Falling back to localhost for local execution.")
+                # Rebuild URL with localhost while keeping credentials/port
+                netloc = parsed.netloc.replace("db", "localhost", 1)
+                parsed = parsed._replace(netloc=netloc)
+                database_url = urlunparse(parsed)
+            else:
+                # In Docker but "db" not resolvable - this is a real problem
+                logger.error("DATABASE_URL host 'db' not resolvable in Docker environment. Check Docker network configuration.")
+                # Don't change the URL - let it fail with a clear error
 
     logger.info(f"Using PostgreSQL database: {database_url.split('@')[-1] if '@' in database_url else database_url}")
 else:
