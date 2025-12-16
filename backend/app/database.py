@@ -24,10 +24,13 @@ elif database_url.startswith("postgresql://"):
     use_sqlite_fallback = False
 
     # Guard: when running outside Docker, host "db" is not resolvable. Fallback to localhost automatically.
+    # Also handle cases where "db" resolves but connection fails (e.g., container not running)
     parsed = urlparse(database_url)
     if parsed.hostname == "db":
         try:
             socket.gethostbyname(parsed.hostname)
+            # Hostname resolves, but we should still try to connect to verify accessibility
+            # This will be caught during engine creation if connection fails
         except socket.gaierror:
             logger.warning("DATABASE_URL host 'db' not resolvable. Falling back to localhost for local execution.")
             # Rebuild URL with localhost while keeping credentials/port
@@ -91,6 +94,30 @@ else:
     logger.warning("SessionLocal is None - database not available")
 
 Base = declarative_base()
+
+
+def test_database_connection() -> tuple[bool, str]:
+    """
+    Test database connection and return (success, message).
+    Useful for diagnostics and health checks.
+    """
+    if engine is None:
+        return False, "Database engine is not configured"
+    
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, "Database connection successful"
+    except Exception as e:
+        error_msg = str(e)
+        if "could not translate host name" in error_msg.lower():
+            parsed = urlparse(database_url)
+            hostname = parsed.hostname
+            return False, f"Database hostname '{hostname}' cannot be resolved. Ensure the database container is running and on the same Docker network."
+        elif "connection refused" in error_msg.lower() or "connection timed out" in error_msg.lower():
+            return False, f"Database connection refused or timed out. Check if the database is running and accessible."
+        else:
+            return False, f"Database connection failed: {error_msg}"
 
 
 def table_has_column(db_engine, table_name: str, column_name: str) -> bool:
@@ -181,7 +208,18 @@ def get_db():
         # Note: If handler completed successfully, it should have explicitly committed
         # If not, db.close() in finally will rollback any uncommitted transactions
     except Exception as e:
-        logger.error(f"Database session error: {e}", exc_info=True)
+        error_msg = str(e)
+        # Check if it's a hostname resolution error
+        if "could not translate host name" in error_msg.lower() or "temporary failure in name resolution" in error_msg.lower():
+            logger.error(f"Database hostname resolution error: {e}")
+            logger.error("This usually means the database container is not running or not on the same Docker network.")
+            logger.error(f"Current DATABASE_URL hostname: {urlparse(database_url).hostname if 'database_url' in globals() else 'unknown'}")
+            # Try to provide helpful error message
+            if "db" in error_msg.lower():
+                logger.error("The hostname 'db' is not resolvable. If running outside Docker, ensure DATABASE_URL uses 'localhost' instead.")
+        else:
+            logger.error(f"Database session error: {e}", exc_info=True)
+        
         if db:
             try:
                 # CRITICAL: Rollback on exception to release transaction locks

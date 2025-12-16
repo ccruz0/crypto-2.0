@@ -1110,21 +1110,34 @@ def update_watchlist_alert(
     symbol: str,
     payload: Dict[str, bool] = Body(...),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(_get_auth_dependency)
 ):
     """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
+    import time
+    start_time = time.time()
+    symbol_upper = symbol.upper()
+    
     try:
-        alert_enabled = payload.get("alert_enabled", False)
+        if db is None:
+            logger.error(f"Database session is None for {symbol_upper}")
+            raise HTTPException(status_code=503, detail="Database connection unavailable")
         
-        # Find or create watchlist item
+        alert_enabled = payload.get("alert_enabled", False)
+        logger.info(f"🔄 [ALERT UPDATE] Starting update for {symbol_upper}: alert_enabled={alert_enabled}")
+        
+        # Find or create watchlist item with timeout protection
+        query_start = time.time()
         watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol.upper()
+            WatchlistItem.symbol == symbol_upper
         ).first()
+        query_elapsed = time.time() - query_start
+        logger.debug(f"Query elapsed for {symbol_upper}: {query_elapsed:.3f}s")
         
         if not watchlist_item:
             # Create new watchlist item if it doesn't exist
+            logger.info(f"Creating new watchlist item for {symbol_upper}")
             watchlist_item = WatchlistItem(
-                symbol=symbol.upper(),
+                symbol=symbol_upper,
                 exchange="CRYPTO_COM",
                 is_deleted=False,
                 alert_enabled=alert_enabled
@@ -1141,24 +1154,44 @@ def update_watchlist_alert(
             if hasattr(watchlist_item, "sell_alert_enabled"):
                 watchlist_item.sell_alert_enabled = alert_enabled
         
+        # Commit with timeout protection
+        commit_start = time.time()
         db.commit()
+        commit_elapsed = time.time() - commit_start
+        logger.debug(f"Commit elapsed for {symbol_upper}: {commit_elapsed:.3f}s")
+        
         try:
             db.refresh(watchlist_item)
         except Exception as refresh_err:
-            logger.warning("Failed to refresh watchlist item %s after alert update: %s", symbol, refresh_err)
+            logger.warning("Failed to refresh watchlist item %s after alert update: %s", symbol_upper, refresh_err)
         
-        logger.info(f"Updated alert_enabled for {symbol}: {alert_enabled}")
+        total_elapsed = time.time() - start_time
+        logger.info(f"✅ [ALERT UPDATE] Updated alert_enabled for {symbol_upper}: {alert_enabled} (took {total_elapsed:.3f}s)")
         _log_alert_state("LEGACY ALERT UPDATE", watchlist_item)
         
         return {
             "ok": True,
-            "symbol": symbol.upper(),
+            "symbol": symbol_upper,
             "alert_enabled": alert_enabled
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error updating alert_enabled for {symbol}: {e}")
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        total_elapsed = time.time() - start_time
+        error_msg = str(e)
+        logger.error(f"❌ [ALERT UPDATE] Error updating alert_enabled for {symbol_upper} after {total_elapsed:.3f}s: {error_msg}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception as rollback_err:
+            logger.warning(f"Failed to rollback for {symbol_upper}: {rollback_err}")
+        
+        # Provide more helpful error messages
+        if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+            raise HTTPException(status_code=504, detail=f"Database operation timed out for {symbol_upper}. Please try again.")
+        elif "lock" in error_msg.lower() or "deadlock" in error_msg.lower():
+            raise HTTPException(status_code=503, detail=f"Database is busy. Please try again in a moment.")
+        else:
+            raise HTTPException(status_code=500, detail=f"Error updating alert for {symbol_upper}: {error_msg}")
 
 
 @router.put("/watchlist/{symbol}/buy-alert")
