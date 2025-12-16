@@ -196,11 +196,20 @@ class CryptoComTradeClient:
         # - sig: HMAC signature
         # Note: Documentation shows id: 1, and get_account_summary (which works) uses id: 1
         request_id = 1  # Use 1 as per documentation and working methods
+        
+        # IMPORTANT: Ensure params dict is ordered alphabetically to match string_to_sign
+        # Some endpoints (like get-order-history) may require params to be in the same order as in string_to_sign
+        # In Python 3.7+, dicts maintain insertion order, but we explicitly sort to match string_to_sign
+        if params:
+            ordered_params = dict(sorted(params.items()))
+        else:
+            ordered_params = {}
+        
         payload = {
             "id": request_id,  # Use 1 as per documentation sample
             "method": method,
             "api_key": self.api_key,
-            "params": params,  # Always include params, even if empty {}
+            "params": ordered_params,  # Use ordered params to match string_to_sign
             "nonce": nonce_ms
         }
         
@@ -965,6 +974,22 @@ class CryptoComTradeClient:
                 error_msg = error_data.get("message", "")
                 
                 logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                
+                # Try fallback if enabled
+                if _should_failover(401, None):
+                    logger.info("Attempting fallback to TRADE_BOT for order history")
+                    try:
+                        fallback_response = self._fallback_history()
+                        if fallback_response.status_code == 200:
+                            fallback_data = fallback_response.json()
+                            logger.info("Successfully retrieved order history from TRADE_BOT fallback")
+                            # TRADE_BOT returns {"orders": [...]} format
+                            if "orders" in fallback_data:
+                                return {"data": fallback_data["orders"]}
+                            return {"data": fallback_data.get("data", [])}
+                    except Exception as fallback_err:
+                        logger.warning(f"Fallback to TRADE_BOT failed: {fallback_err}")
+                
                 return {"data": []}
             
             response.raise_for_status()
