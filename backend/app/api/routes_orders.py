@@ -1050,13 +1050,14 @@ def sync_order_history_manual(
 ):
     """Manually trigger sync of order history from Crypto.com exchange"""
     try:
-        logger.info("Manual order history sync started")
+        logger.info("🔄 Manual order history sync started")
         from app.services.exchange_sync import exchange_sync_service
         
-        # Trigger order history sync
-        exchange_sync_service.sync_order_history(db, page_size=200)
+        # Trigger order history sync with more pages for manual sync
+        # Use larger page_size and more pages to ensure we get all recent orders
+        exchange_sync_service.sync_order_history(db, page_size=200, max_pages=20)
         
-        logger.info("Manual order history sync completed")
+        logger.info("✅ Manual order history sync completed")
         
         return {
             "ok": True,

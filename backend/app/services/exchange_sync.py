@@ -1380,8 +1380,14 @@ class ExchangeSyncService:
         except Exception as e:
             logger.error(f"Error in _notify_already_cancelled_sl_tp for {symbol}: {e}", exc_info=True)
     
-    def sync_order_history(self, db: Session, page_size: int = 200):
-        """Sync order history from Crypto.com - only adds new executed orders"""
+    def sync_order_history(self, db: Session, page_size: int = 200, max_pages: int = 5):
+        """Sync order history from Crypto.com - only adds new executed orders
+        
+        Args:
+            db: Database session
+            page_size: Number of orders per page (default 200)
+            max_pages: Maximum number of pages to fetch (default 5, can be increased for manual sync)
+        """
         try:
             from app.services.telegram_notifier import telegram_notifier
             
@@ -1395,10 +1401,39 @@ class ExchangeSyncService:
             # Crypto.com API supports pagination with page parameter
             # We'll fetch multiple pages to get more historical data
             all_orders = []
-            max_pages = 5  # Fetch up to 5 pages (5 * page_size orders)
+            logger.info(f"Starting order history sync: page_size={page_size}, max_pages={max_pages}")
+            
+            # Try to get the most recent order timestamp from DB to optimize search
+            # This helps us focus on recent orders
+            from app.models.exchange_order import ExchangeOrder
+            from sqlalchemy import func
+            most_recent_order = db.query(ExchangeOrder).filter(
+                ExchangeOrder.status == OrderStatusEnum.FILLED
+            ).order_by(
+                func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()
+            ).first()
+            
+            # Use date range: last 7 days or since most recent order (whichever is more recent)
+            from datetime import timedelta
+            end_time_ms = int(time.time() * 1000)
+            if most_recent_order and most_recent_order.exchange_update_time:
+                # Start from 1 day before most recent order to catch any missed orders
+                start_time = most_recent_order.exchange_update_time - timedelta(days=1)
+                start_time_ms = int(start_time.timestamp() * 1000)
+                logger.info(f"Using date range: {start_time} to now (found most recent order at {most_recent_order.exchange_update_time})")
+            else:
+                # Default: last 7 days
+                start_time = datetime.now(timezone.utc) - timedelta(days=7)
+                start_time_ms = int(start_time.timestamp() * 1000)
+                logger.info(f"Using default date range: last 7 days")
             
             for page_num in range(max_pages):
-                response = trade_client.get_order_history(page_size=page_size, page=page_num)
+                response = trade_client.get_order_history(
+                    page_size=page_size, 
+                    page=page_num,
+                    start_time=start_time_ms,
+                    end_time=end_time_ms
+                )
                 
                 if not response or 'data' not in response:
                     break
@@ -1415,12 +1450,13 @@ class ExchangeSyncService:
                     break
             
             orders = all_orders
-            logger.info(f"Received {len(orders)} total orders from API history (fetched {min(max_pages, len(all_orders) // page_size + 1) if all_orders else 0} pages)")
+            pages_fetched = min(max_pages, len(all_orders) // page_size + 1) if all_orders else 0
+            logger.info(f"📥 Received {len(orders)} total orders from API history (fetched {pages_fetched} pages)")
             
             # Note: private/advanced/get-order-history returns order history (executed orders)
             # These should already be FILLED or other terminal states
             filled_count = sum(1 for o in orders if o.get('status', '').upper() == 'FILLED')
-            logger.debug(f"Found {filled_count} filled orders in API response")
+            logger.info(f"✅ Found {filled_count} FILLED orders in API response (out of {len(orders)} total orders)")
             
             new_orders_count = 0
             
@@ -2053,8 +2089,9 @@ class ExchangeSyncService:
         self.sync_balances(db)
         self.sync_open_orders(db)
         # Sync order history every cycle (every 5 seconds) to catch all new orders
-        # Increased page_size to 200 to get more historical orders
-        self.sync_order_history(db, page_size=200)
+        # Increased page_size to 200 and max_pages to 10 to get more recent orders
+        # This ensures we catch orders from the last ~2000 orders (10 pages * 200 orders)
+        self.sync_order_history(db, page_size=200, max_pages=10)
     
     async def run_sync(self):
         """Run one sync cycle - async wrapper that delegates to thread pool"""
