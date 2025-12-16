@@ -4,6 +4,7 @@ from typing import Optional
 from enum import Enum
 from datetime import timezone
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.database import get_db
 from app.deps.auth import get_current_user
 from app.services.brokers.crypto_com_trade import trade_client
@@ -892,6 +893,122 @@ def get_order_history(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.get("/orders/{order_id}")
+def get_order_details(
+    order_id: str,
+    db: Session = Depends(get_db),
+    # Temporarily disable authentication for local testing
+    # current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Get detailed information about a specific order, including parent/child relationships"""
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        
+        # Find the order
+        order = db.query(ExchangeOrder).filter(
+            ExchangeOrder.exchange_order_id == order_id
+        ).first()
+        
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order {order_id} not found in database")
+        
+        # Build order details
+        order_details = {
+            "order_id": order.exchange_order_id,
+            "symbol": order.symbol,
+            "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+            "order_type": order.order_type,
+            "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+            "order_role": order.order_role,
+            "price": float(order.price) if order.price else None,
+            "quantity": float(order.quantity) if order.quantity else None,
+            "avg_price": float(order.avg_price) if order.avg_price else None,
+            "cumulative_quantity": float(order.cumulative_quantity) if order.cumulative_quantity else None,
+            "cumulative_value": float(order.cumulative_value) if order.cumulative_value else None,
+            "exchange_create_time": order.exchange_create_time.isoformat() if order.exchange_create_time else None,
+            "exchange_update_time": order.exchange_update_time.isoformat() if order.exchange_update_time else None,
+            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+            "parent_order_id": order.parent_order_id,
+            "oco_group_id": order.oco_group_id,
+            "trade_signal_id": order.trade_signal_id,
+        }
+        
+        # Get parent order if exists
+        if order.parent_order_id:
+            parent = db.query(ExchangeOrder).filter(
+                ExchangeOrder.exchange_order_id == order.parent_order_id
+            ).first()
+            if parent:
+                order_details["parent_order"] = {
+                    "order_id": parent.exchange_order_id,
+                    "symbol": parent.symbol,
+                    "side": parent.side.value if hasattr(parent.side, 'value') else str(parent.side),
+                    "order_type": parent.order_type,
+                    "status": parent.status.value if hasattr(parent.status, 'value') else str(parent.status),
+                    "price": float(parent.price) if parent.price else None,
+                    "avg_price": float(parent.avg_price) if parent.avg_price else None,
+                    "quantity": float(parent.quantity) if parent.quantity else None,
+                    "exchange_create_time": parent.exchange_create_time.isoformat() if parent.exchange_create_time else None,
+                    "exchange_update_time": parent.exchange_update_time.isoformat() if parent.exchange_update_time else None,
+                }
+                order_details["origin"] = f"SL/TP order (role: {order.order_role or 'unknown'}) created for parent order {order.parent_order_id}"
+            else:
+                order_details["origin"] = f"SL/TP order (role: {order.order_role or 'unknown'}) but parent order {order.parent_order_id} not found"
+        else:
+            order_details["origin"] = "Manual or primary order (no parent_order_id)"
+        
+        # Get child orders (SL/TP orders created for this order)
+        children = db.query(ExchangeOrder).filter(
+            ExchangeOrder.parent_order_id == order_id
+        ).all()
+        
+        if children:
+            order_details["child_orders"] = []
+            for child in children:
+                order_details["child_orders"].append({
+                    "order_id": child.exchange_order_id,
+                    "symbol": child.symbol,
+                    "side": child.side.value if hasattr(child.side, 'value') else str(child.side),
+                    "order_type": child.order_type,
+                    "order_role": child.order_role,
+                    "status": child.status.value if hasattr(child.status, 'value') else str(child.status),
+                    "price": float(child.price) if child.price else None,
+                    "quantity": float(child.quantity) if child.quantity else None,
+                })
+        
+        # Get related orders in same OCO group
+        if order.oco_group_id:
+            related = db.query(ExchangeOrder).filter(
+                ExchangeOrder.oco_group_id == order.oco_group_id,
+                ExchangeOrder.exchange_order_id != order_id
+            ).all()
+            
+            if related:
+                order_details["oco_related_orders"] = []
+                for related_order in related:
+                    order_details["oco_related_orders"].append({
+                        "order_id": related_order.exchange_order_id,
+                        "symbol": related_order.symbol,
+                        "side": related_order.side.value if hasattr(related_order.side, 'value') else str(related_order.side),
+                        "order_type": related_order.order_type,
+                        "order_role": related_order.order_role,
+                        "status": related_order.status.value if hasattr(related_order.status, 'value') else str(related_order.status),
+                        "price": float(related_order.price) if related_order.price else None,
+                    })
+        
+        return {
+            "ok": True,
+            "order": order_details
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error getting order details for {order_id}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/orders/sync")
 def sync_order_status(
     current_user = None if _should_disable_auth() else Depends(get_current_user)
@@ -924,6 +1041,419 @@ def sync_order_status(
     except Exception as e:
         logger.exception("Error syncing order status")
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/orders/sync-history")
+def sync_order_history_manual(
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Manually trigger sync of order history from Crypto.com exchange"""
+    try:
+        logger.info("Manual order history sync started")
+        from app.services.exchange_sync import exchange_sync_service
+        
+        # Trigger order history sync
+        exchange_sync_service.sync_order_history(db, page_size=200)
+        
+        logger.info("Manual order history sync completed")
+        
+        return {
+            "ok": True,
+            "message": "Order history sync completed",
+            "exchange": "CRYPTO_COM"
+        }
+    except Exception as e:
+        logger.exception("Error syncing order history")
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/orders/{order_id}/sync-from-exchange")
+def sync_order_from_exchange(
+    order_id: str,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Force sync a specific order from Crypto.com exchange to update its data (including timestamps)"""
+    try:
+        from app.models.exchange_order import ExchangeOrder
+        from app.services.exchange_sync import exchange_sync_service
+        from app.services.brokers.crypto_com_trade import trade_client
+        
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Find the order in database
+        order = db.query(ExchangeOrder).filter(
+            ExchangeOrder.exchange_order_id == order_id
+        ).first()
+        
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order {order_id} not found in database")
+        
+        logger.info(f"Syncing order {order_id} from Crypto.com exchange...")
+        
+        # Get order details from Crypto.com API
+        try:
+            # Try to get order from order history API
+            order_history = trade_client.get_order_history(page_size=200, page=0)
+            
+            if not order_history or 'data' not in order_history:
+                raise HTTPException(status_code=404, detail=f"Order {order_id} not found in Crypto.com order history")
+            
+            # Find the specific order in the history
+            order_data = None
+            for o in order_history.get('data', []):
+                if str(o.get('order_id', '')) == order_id:
+                    order_data = o
+                    break
+            
+            if not order_data:
+                raise HTTPException(status_code=404, detail=f"Order {order_id} not found in Crypto.com order history")
+            
+            # Parse timestamps from Crypto.com
+            from datetime import datetime, timezone
+            create_time = None
+            update_time = None
+            
+            if order_data.get('create_time'):
+                try:
+                    create_time = datetime.fromtimestamp(order_data['create_time'] / 1000, tz=timezone.utc)
+                except:
+                    pass
+            
+            if order_data.get('update_time'):
+                try:
+                    update_time = datetime.fromtimestamp(order_data['update_time'] / 1000, tz=timezone.utc)
+                except:
+                    pass
+            
+            # Update order with data from Crypto.com
+            if update_time:
+                order.exchange_update_time = update_time
+                logger.info(f"✅ Updated exchange_update_time for order {order_id} to {update_time} from Crypto.com")
+            elif create_time:
+                order.exchange_update_time = create_time
+                logger.info(f"✅ Updated exchange_update_time for order {order_id} to {create_time} (from create_time) from Crypto.com")
+            
+            if create_time:
+                order.exchange_create_time = create_time
+                logger.info(f"✅ Updated exchange_create_time for order {order_id} to {create_time} from Crypto.com")
+            
+            # Update other fields from Crypto.com
+            if order_data.get('price'):
+                order.price = float(order_data.get('price', 0))
+            if order_data.get('avg_price'):
+                order.avg_price = float(order_data.get('avg_price', 0))
+            if order_data.get('quantity'):
+                order.quantity = float(order_data.get('quantity', 0))
+            if order_data.get('cumulative_quantity'):
+                order.cumulative_quantity = float(order_data.get('cumulative_quantity', 0))
+            if order_data.get('cumulative_value'):
+                order.cumulative_value = float(order_data.get('cumulative_value', 0))
+            
+            order.updated_at = datetime.now(timezone.utc)
+            
+            db.commit()
+            
+            logger.info(f"✅ Successfully synced order {order_id} from Crypto.com")
+            
+            return {
+                "ok": True,
+                "message": f"Order {order_id} synced from Crypto.com successfully",
+                "order": {
+                    "order_id": order_id,
+                    "symbol": order.symbol,
+                    "exchange_update_time": order.exchange_update_time.isoformat() if order.exchange_update_time else None,
+                    "exchange_create_time": order.exchange_create_time.isoformat() if order.exchange_create_time else None,
+                }
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as api_err:
+            logger.exception(f"Error getting order {order_id} from Crypto.com API")
+            raise HTTPException(status_code=502, detail=f"Error syncing from Crypto.com: {str(api_err)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error syncing order {order_id} from exchange")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/orders/{order_id}")
+def delete_order(
+    order_id: str,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Delete an order from the database by order_id"""
+    try:
+        from app.models.exchange_order import ExchangeOrder
+        
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Find the order
+        order = db.query(ExchangeOrder).filter(
+            ExchangeOrder.exchange_order_id == order_id
+        ).first()
+        
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+        
+        # Get order details for logging
+        symbol = order.symbol
+        side = order.side.value if hasattr(order.side, 'value') else str(order.side)
+        status = order.status.value if hasattr(order.status, 'value') else str(order.status)
+        
+        # Delete the order
+        db.delete(order)
+        db.commit()
+        
+        logger.info(f"Deleted order {order_id}: {symbol} {side} {status}")
+        
+        return {
+            "ok": True,
+            "message": f"Order {order_id} deleted successfully",
+            "deleted_order": {
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": side,
+                "status": status
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error deleting order {order_id}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/orders/{order_id}/update-time")
+def update_order_time(
+    order_id: str,
+    update_time: Optional[str] = Body(None, description="New update time in ISO format (e.g., '2025-12-15T11:32:33+08:00')"),
+    create_time: Optional[str] = Body(None, description="New create time in ISO format"),
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Update the timestamp(s) of an order"""
+    try:
+        from app.models.exchange_order import ExchangeOrder
+        from datetime import datetime
+        
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Find the order
+        order = db.query(ExchangeOrder).filter(
+            ExchangeOrder.exchange_order_id == order_id
+        ).first()
+        
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+        
+        updated_fields = []
+        
+        # Update exchange_update_time if provided
+        if update_time:
+            try:
+                # Parse ISO format datetime string
+                if update_time.endswith('GMT+8') or update_time.endswith('GMT-8'):
+                    # Handle format like "12/15/2025, 11:32:33 AM GMT+8"
+                    try:
+                        from dateutil import parser
+                        dt = parser.parse(update_time)
+                    except ImportError:
+                        # Fallback: parse manually
+                        # Format: "12/15/2025, 11:32:33 AM GMT+8"
+                        import re
+                        match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4}),\s+(\d{1,2}):(\d{2}):(\d{2})\s+(AM|PM)\s+GMT([+-]\d+)', update_time)
+                        if match:
+                            month, day, year, hour, minute, second, am_pm, tz_offset = match.groups()
+                            hour = int(hour)
+                            if am_pm == 'PM' and hour != 12:
+                                hour += 12
+                            elif am_pm == 'AM' and hour == 12:
+                                hour = 0
+                            dt = datetime(int(year), int(month), int(day), hour, int(minute), int(second), tzinfo=timezone.utc)
+                        else:
+                            raise ValueError(f"Could not parse date format: {update_time}")
+                else:
+                    # Try ISO format
+                    dt = datetime.fromisoformat(update_time.replace('Z', '+00:00'))
+                
+                # Ensure timezone aware
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                
+                order.exchange_update_time = dt
+                updated_fields.append("exchange_update_time")
+                logger.info(f"Updated exchange_update_time for order {order_id} to {dt}")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid update_time format: {str(e)}")
+        
+        # Update exchange_create_time if provided
+        if create_time:
+            try:
+                # Parse ISO format datetime string
+                if create_time.endswith('GMT+8') or create_time.endswith('GMT-8'):
+                    # Handle format like "12/15/2025, 11:32:33 AM GMT+8"
+                    try:
+                        from dateutil import parser
+                        dt = parser.parse(create_time)
+                    except ImportError:
+                        # Fallback: parse manually
+                        import re
+                        match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4}),\s+(\d{1,2}):(\d{2}):(\d{2})\s+(AM|PM)\s+GMT([+-]\d+)', create_time)
+                        if match:
+                            month, day, year, hour, minute, second, am_pm, tz_offset = match.groups()
+                            hour = int(hour)
+                            if am_pm == 'PM' and hour != 12:
+                                hour += 12
+                            elif am_pm == 'AM' and hour == 12:
+                                hour = 0
+                            dt = datetime(int(year), int(month), int(day), hour, int(minute), int(second), tzinfo=timezone.utc)
+                        else:
+                            raise ValueError(f"Could not parse date format: {create_time}")
+                else:
+                    # Try ISO format
+                    dt = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+                
+                # Ensure timezone aware
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                
+                order.exchange_create_time = dt
+                updated_fields.append("exchange_create_time")
+                logger.info(f"Updated exchange_create_time for order {order_id} to {dt}")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid create_time format: {str(e)}")
+        
+        if not updated_fields:
+            raise HTTPException(status_code=400, detail="At least one of update_time or create_time must be provided")
+        
+        # Update updated_at timestamp
+        order.updated_at = datetime.now(timezone.utc)
+        
+        db.commit()
+        
+        logger.info(f"Updated timestamps for order {order_id}: {', '.join(updated_fields)}")
+        
+        return {
+            "ok": True,
+            "message": f"Order {order_id} timestamps updated successfully",
+            "updated_fields": updated_fields,
+            "order": {
+                "order_id": order_id,
+                "symbol": order.symbol,
+                "exchange_update_time": order.exchange_update_time.isoformat() if order.exchange_update_time else None,
+                "exchange_create_time": order.exchange_create_time.isoformat() if order.exchange_create_time else None,
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error updating order time for {order_id}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/orders/by-criteria")
+def delete_order_by_criteria(
+    symbol: Optional[str] = None,
+    side: Optional[str] = None,
+    price: Optional[float] = None,
+    quantity: Optional[float] = None,
+    date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Delete orders matching specific criteria (symbol, side, price, quantity, date)"""
+    try:
+        from app.models.exchange_order import ExchangeOrder
+        from sqlalchemy import and_
+        from datetime import datetime
+        
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Build query with filters
+        query = db.query(ExchangeOrder)
+        filters = []
+        
+        if symbol:
+            filters.append(ExchangeOrder.symbol == symbol.upper())
+        if side:
+            filters.append(ExchangeOrder.side == side.upper())
+        if price is not None:
+            # Match price within 0.01% tolerance
+            filters.append(ExchangeOrder.price.between(price * 0.9999, price * 1.0001))
+        if quantity is not None:
+            # Match quantity within 0.01% tolerance
+            filters.append(ExchangeOrder.quantity.between(quantity * 0.9999, quantity * 1.0001))
+        if date:
+            try:
+                # Parse date string (format: "12/15/2025, 11:32:33 AM GMT+8")
+                date_obj = datetime.strptime(date, "%m/%d/%Y, %I:%M:%S %p GMT%z")
+                # Match orders on the same day
+                filters.append(
+                    func.date(ExchangeOrder.exchange_update_time) == date_obj.date()
+                )
+            except:
+                logger.warning(f"Could not parse date: {date}")
+        
+        if not filters:
+            raise HTTPException(status_code=400, detail="At least one criteria must be provided")
+        
+        # Find matching orders
+        orders = query.filter(and_(*filters)).all()
+        
+        if not orders:
+            return {
+                "ok": True,
+                "message": "No orders found matching criteria",
+                "deleted_count": 0,
+                "deleted_orders": []
+            }
+        
+        # Get order details before deletion
+        deleted_orders = []
+        for order in orders:
+            deleted_orders.append({
+                "order_id": order.exchange_order_id,
+                "symbol": order.symbol,
+                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "price": float(order.price) if order.price else None,
+                "quantity": float(order.quantity) if order.quantity else None
+            })
+        
+        # Delete all matching orders
+        for order in orders:
+            db.delete(order)
+        
+        db.commit()
+        
+        logger.info(f"Deleted {len(orders)} order(s) matching criteria: symbol={symbol}, side={side}, price={price}, quantity={quantity}, date={date}")
+        
+        return {
+            "ok": True,
+            "message": f"Deleted {len(orders)} order(s) matching criteria",
+            "deleted_count": len(orders),
+            "deleted_orders": deleted_orders
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error deleting orders by criteria")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/orders/quick")

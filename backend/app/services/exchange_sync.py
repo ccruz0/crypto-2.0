@@ -1388,6 +1388,9 @@ class ExchangeSyncService:
             # Purge stale processed order IDs before processing
             self._purge_stale_processed_orders()
             
+            # Track orders processed in this cycle - mark as processed only AFTER successful commit
+            orders_processed_this_cycle = []
+            
             # Get order history with pagination to fetch more historical orders
             # Crypto.com API supports pagination with page parameter
             # We'll fetch multiple pages to get more historical data
@@ -1446,9 +1449,14 @@ class ExchangeSyncService:
                 if not is_executed:
                     continue
                 
-                # Check if this order was already processed in this session
-                if order_id in self.processed_order_ids:
+                # Check if this order was already processed in the current cycle (prevent duplicates within same sync)
+                if order_id in orders_processed_this_cycle:
+                    logger.debug(f"Order {order_id} already processed in this sync cycle, skipping duplicate")
                     continue
+                
+                # NOTE: We allow re-processing orders that were processed in previous sessions
+                # This ensures timestamps and other data are always synced from Crypto.com
+                # The processed_order_ids check is removed to allow updates to existing orders
                 
                 # Extract symbol and side early for use in all code paths
                 symbol = order_data.get('instrument_name', '')
@@ -1519,6 +1527,20 @@ class ExchangeSyncService:
                         needs_telegram = False  # Already FILLED, don't send notification again
                         logger.debug(f"Order {order_id} already FILLED - updating data from API (no notification)")
                     
+                    # CRITICAL: Always update timestamps from Crypto.com if available, even if order already exists
+                    # This ensures orders always reflect the actual dates from the exchange
+                    if status_str == 'FILLED' and (update_time or create_time):
+                        needs_update = True
+                        if not was_filled_before:
+                            needs_telegram = False  # Don't send notification if we're just updating timestamps
+                    
+                    # ALWAYS update timestamps from Crypto.com if available, regardless of other conditions
+                    # This ensures the order reflects what's actually in Crypto.com
+                    if (update_time or create_time) and existing:
+                        needs_update = True
+                        needs_telegram = False  # Don't send notification when just updating timestamps
+                        logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
+                    
                     if needs_update:
                         # Update existing order with new status and execution data from Crypto.com history
                         logger.info(f"Updating order {order_id} from {existing.status.value if existing.status else 'UNKNOWN'} to FILLED with data from Crypto.com")
@@ -1534,24 +1556,38 @@ class ExchangeSyncService:
                         existing.cumulative_value = float(cumulative_val_from_api) if cumulative_val_from_api else 0
                         avg_price_from_api = order_data.get('avg_price', '0') or '0'
                         existing.avg_price = float(avg_price_from_api) if avg_price_from_api else (order_price_float if order_price_float else existing.avg_price)
-                        existing.exchange_update_time = update_time if update_time else datetime.utcnow()
-                        existing.updated_at = datetime.utcnow()
+                        
+                        # CRITICAL: Always update timestamps from Crypto.com if available
+                        # This ensures the order reflects the actual date from the exchange
+                        if update_time:
+                            existing.exchange_update_time = update_time
+                            logger.info(f"Updated exchange_update_time for order {order_id} to {update_time} from Crypto.com")
+                        elif create_time:
+                            # If update_time is not available, use create_time
+                            existing.exchange_update_time = create_time
+                            logger.info(f"Updated exchange_update_time for order {order_id} to {create_time} (from create_time) from Crypto.com")
+                        # Only use datetime.utcnow() as last resort if no timestamp is available from Crypto.com
+                        elif not existing.exchange_update_time:
+                            existing.exchange_update_time = datetime.now(timezone.utc)
+                            logger.warning(f"No timestamp from Crypto.com for order {order_id}, using current time")
+                        
+                        # Always update create_time if available from Crypto.com
+                        if create_time:
+                            existing.exchange_create_time = create_time
+                        
+                        existing.updated_at = datetime.now(timezone.utc)
                         
                         logger.info(f"Order {order_id} updated: cumulative_qty={existing.cumulative_quantity}, cumulative_val={existing.cumulative_value}, avg_price={existing.avg_price}")
                         
                         # Mark that we updated an existing order (counts towards new_orders_count for commit)
                         new_orders_count += 1
                         
-                        # Mark as processed BEFORE sending Telegram to prevent duplicate notifications
-                        # This ensures that if the same order appears in multiple pages, we only process it once
-                        self._mark_order_processed(order_id)
+                        # IMPORTANT: Do NOT mark as processed here - wait until AFTER successful commit
+                        # This prevents orders from being skipped in future syncs if commit fails
+                        # Track for marking as processed after commit succeeds
+                        orders_processed_this_cycle.append(order_id)
                         
-                        # Mark as processed BEFORE sending Telegram to prevent duplicate notifications
-                        # This ensures that if the same order appears in multiple pages, we only process it once
                         if needs_telegram:
-                            # Mark as processed IMMEDIATELY to prevent duplicate processing
-                            self._mark_order_processed(order_id)
-                            
                             try:
                                 from app.services.telegram_notifier import telegram_notifier
                                 
@@ -1632,6 +1668,15 @@ class ExchangeSyncService:
                                     ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
                                 ).count()
                                 
+                                # Infer order_role from order_type if order_role is not set
+                                # This helps identify manually created SL/TP orders
+                                inferred_order_role = existing.order_role
+                                if not inferred_order_role and order_type_upper:
+                                    if order_type_upper == 'STOP_LIMIT':
+                                        inferred_order_role = 'STOP_LOSS'
+                                    elif order_type_upper == 'TAKE_PROFIT_LIMIT':
+                                        inferred_order_role = 'TAKE_PROFIT'
+                                
                                 telegram_notifier.send_executed_order(
                                     symbol=order_symbol,
                                     side=side or (existing.side.value if existing.side else 'BUY'),
@@ -1642,7 +1687,7 @@ class ExchangeSyncService:
                                     order_type=order_type,
                                     entry_price=entry_price,  # Add entry_price for profit/loss calculation
                                     open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                                    order_role=existing.order_role  # Add order_role to show TP/SL in message
+                                    order_role=inferred_order_role  # Use inferred role if order_role is not set
                                 )
                                 logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
                             except Exception as telegram_err:
@@ -1827,8 +1872,8 @@ class ExchangeSyncService:
                     except Exception as cancel_err:
                         logger.warning(f"Error canceling remaining SL/TP for new order {order_id}: {cancel_err}")
                 
-                # Mark as processed
-                self._mark_order_processed(order_id)
+                # Track for marking as processed AFTER successful commit
+                orders_processed_this_cycle.append(order_id)
                 new_orders_count += 1
                 
                 # Create SL/TP for both LIMIT and MARKET orders when they are filled
@@ -1946,6 +1991,15 @@ class ExchangeSyncService:
                         if existing_order:
                             order_role = existing_order.order_role
                     
+                    # Infer order_role from order_type if order_role is not set
+                    # This helps identify manually created SL/TP orders
+                    if not order_role and order_type:
+                        order_type_upper = order_type.upper()
+                        if order_type_upper == 'STOP_LIMIT':
+                            order_role = 'STOP_LOSS'
+                        elif order_type_upper == 'TAKE_PROFIT_LIMIT':
+                            order_role = 'TAKE_PROFIT'
+                    
                     telegram_notifier.send_executed_order(
                         symbol=symbol,
                         side=side,
@@ -1956,7 +2010,7 @@ class ExchangeSyncService:
                         order_type=order_type,
                         entry_price=entry_price,  # Add entry_price for profit/loss calculation
                         open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                        order_role=order_role  # Add order_role to show TP/SL in message
+                        order_role=order_role  # Use inferred role if order_role is not set
                     )
                     logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id}")
                 except Exception as telegram_err:
@@ -1966,8 +2020,13 @@ class ExchangeSyncService:
             # Even if SL/TP creation fails, we want to save the order status update
             try:
                 db.commit()
+                # CRITICAL FIX: Mark orders as processed ONLY AFTER successful commit
+                # This prevents orders from being skipped in future syncs if commit fails
+                for order_id in orders_processed_this_cycle:
+                    self._mark_order_processed(order_id)
+                
                 if new_orders_count > 0:
-                    logger.info(f"✅ Committed: Synced {new_orders_count} executed orders from history (new + updated)")
+                    logger.info(f"✅ Committed: Synced {new_orders_count} executed orders from history (new + updated), marked {len(orders_processed_this_cycle)} as processed")
                 else:
                     if filled_count > 0:
                         logger.debug(f"No new executed orders to sync (all {filled_count} filled orders already in DB or updated)")
@@ -1976,6 +2035,7 @@ class ExchangeSyncService:
             except Exception as commit_err:
                 logger.error(f"Error committing order history updates: {commit_err}", exc_info=True)
                 db.rollback()
+                # Do NOT mark orders as processed if commit failed - they should be retried in next sync
                 raise
             
         except Exception as e:
