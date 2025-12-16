@@ -1,6 +1,7 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 import logging
@@ -343,9 +344,11 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
 async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
     """Expose recent signal throttle state for the Monitoring dashboard.
     
-    IMPORTANT: Only returns throttle entries that have corresponding Telegram messages
-    that were actually sent (not blocked). This ensures throttled status is only shown
-    for alerts that were sent to Telegram.
+    IMPORTANT: Returns throttle entries that were actually sent to Telegram (not blocked).
+    Uses a two-pronged approach:
+    1. Shows throttle states that don't have "throttled" or "blocked" in emit_reason (these were sent)
+    2. Also includes throttle states that have matching sent TelegramMessage records
+    This ensures all sent messages are shown, even if recording failed or matching is imperfect.
     """
     log.debug("Fetching signal throttle state (limit=%s)", limit)
     if db is None:
@@ -356,61 +359,69 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         
         bounded_limit = max(1, min(limit, 500))
         
-        # Only return throttle states that have corresponding Telegram messages that were sent
-        # This ensures throttled status is only shown for alerts that were actually sent to Telegram
-        # CRITICAL: Exclude any throttle states with "Throttled" in emit_reason (these were NOT sent)
-        # Then filter to only include throttle states where there's a matching sent Telegram message
-        # Match by symbol and within a reasonable time window (10 minutes)
-        from sqlalchemy import or_, func as sql_func
+        # Strategy 1: Get all throttle states that were sent (don't have "throttled" or "blocked" in emit_reason)
+        # This is the PRIMARY source - these are messages that were definitely sent
+        all_recent_throttle_states = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit * 3)  # Get more to account for filtering
+            .all()
+        )
         
-        # Optimized query: Filter in SQL instead of Python loop for better performance
-        # CRITICAL: Exclude ALL throttle states with "Throttled" in emit_reason (these were NOT sent)
-        # Then only include those with matching sent Telegram messages
-        from sqlalchemy import and_
-        # CRITICAL: Filter out throttle states that were actually throttled (not sent)
-        # The actual emit_reason format is: "BLOCKED: THROTTLED_MIN_TIME..." or "BLOCKED: Throttled: cooldown..."
-        # These should NOT appear in "Sent Messages" panel
-        # IMPORTANT: The filter uses AND logic - BOTH conditions must be true:
-        # 1. emit_reason must NOT contain "Throttled" or "THROTTLED" (case-insensitive) - this is the PRIMARY filter
-        # 2. Must have a corresponding sent Telegram message
-        # 
-        # CRITICAL FIX: The or_() with NOT ILIKE may not be working as expected in SQLAlchemy
-        # We'll use a two-step approach: first get all throttle states with sent Telegram messages,
-        # then filter out those with "Throttled" in emit_reason in Python (more reliable)
-        from sqlalchemy import and_
+        # Filter to only include states that were sent (not throttled/blocked)
+        sent_throttle_states = []
+        for state in all_recent_throttle_states:
+            emit_reason = (state.emit_reason or '').lower()
+            # Include if emit_reason does NOT contain "throttled" or "blocked"
+            # These are messages that were sent to Telegram
+            if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
+                sent_throttle_states.append(state)
+            if len(sent_throttle_states) >= bounded_limit:
+                break
         
-        # First, get all throttle states that have corresponding sent Telegram messages
+        # Strategy 2: Also get throttle states that have matching sent TelegramMessage records
+        # This catches cases where the emit_reason might be missing or unclear
+        # Use a wider time window (30 minutes) and case-insensitive symbol matching
         throttle_states_with_sent_messages = (
             db.query(SignalThrottleState)
             .filter(
                 # Only include throttle states that have a corresponding sent Telegram message
                 db.query(TelegramMessage.id)
                 .filter(
-                    TelegramMessage.symbol == SignalThrottleState.symbol,
+                    func.upper(TelegramMessage.symbol) == func.upper(SignalThrottleState.symbol),
                     TelegramMessage.blocked == False,  # Only messages that were sent (not blocked)
-                    # Match within 10 minutes window to account for processing delays
-                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=10),
-                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=10)
+                    # Match within 30 minutes window to account for processing delays and timezone issues
+                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=30),
+                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=30)
                 )
                 .exists()
             )
             .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit * 2)  # Get more to account for filtering
+            .limit(bounded_limit * 2)
             .all()
         )
         
-        # Now filter out throttle states with "Throttled" or "BLOCKED" in emit_reason (case-insensitive)
-        # This is the PRIMARY filter - exclude entries that were actually throttled
-        # CRITICAL: Any emit_reason containing "throttled" or "blocked" means the message was NOT sent
-        rows = []
+        # Merge both strategies: combine sent_throttle_states with throttle_states_with_sent_messages
+        # Use a dict keyed by (symbol, side, strategy_key, last_time) to deduplicate
+        merged_states = {}
+        for state in sent_throttle_states:
+            key = (state.symbol, state.side, state.strategy_key, state.last_time)
+            if key not in merged_states:
+                merged_states[key] = state
+        
+        # Add states from Strategy 2 that aren't already in merged_states
         for state in throttle_states_with_sent_messages:
-            emit_reason = (state.emit_reason or '').lower()
-            # Exclude if emit_reason contains "throttled" OR "blocked" (case-insensitive check in Python)
-            # These indicate the message was throttled/blocked and NOT sent to Telegram
-            if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
-                rows.append(state)
-            if len(rows) >= bounded_limit:
-                break
+            key = (state.symbol, state.side, state.strategy_key, state.last_time)
+            if key not in merged_states:
+                # Double-check this one doesn't have "throttled" or "blocked" in emit_reason
+                emit_reason = (state.emit_reason or '').lower()
+                if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
+                    merged_states[key] = state
+        
+        # Convert to list and sort by last_time descending
+        # Handle None last_time by using a very old datetime
+        min_datetime = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        rows = sorted(merged_states.values(), key=lambda s: s.last_time or min_datetime, reverse=True)[:bounded_limit]
         now = datetime.now(timezone.utc)
         payload = []
         for row in rows:
@@ -604,7 +615,8 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                         record_workflow_execution(
                             workflow_id, 
                             "success", 
-                            report_path
+                            report_path,
+                            error=None  # Clear previous error on success
                         )
                         log.info(f"Workflow {workflow_id} completed successfully")
                     else:
@@ -680,7 +692,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                 try:
                     # Run in thread to avoid blocking
                     await asyncio.to_thread(daily_summary_service.send_daily_summary)
-                    record_workflow_execution(workflow_id, "success", None)
+                    record_workflow_execution(workflow_id, "success", None, error=None)
                     log.info(f"Workflow {workflow_id} completed successfully")
                 except Exception as e:
                     record_workflow_execution(workflow_id, "error", None, str(e))
@@ -722,7 +734,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                 try:
                     # Run in thread to avoid blocking
                     await asyncio.to_thread(daily_summary_service.send_sell_orders_report, db)
-                    record_workflow_execution(workflow_id, "success", None)
+                    record_workflow_execution(workflow_id, "success", None, error=None)
                     log.info(f"Workflow {workflow_id} completed successfully")
                 except Exception as e:
                     record_workflow_execution(workflow_id, "error", None, str(e))
@@ -770,7 +782,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     if positions_missing:
                         await asyncio.to_thread(sl_tp_checker_service.send_sl_tp_reminder, db)
                     
-                    record_workflow_execution(workflow_id, "success", None)
+                    record_workflow_execution(workflow_id, "success", None, error=None)
                     log.info(f"Workflow {workflow_id} completed successfully: {len(positions_missing)} positions missing SL/TP")
                 except Exception as e:
                     record_workflow_execution(workflow_id, "error", None, str(e))
@@ -832,7 +844,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     )
                     
                     if response.status_code == 204:
-                        record_workflow_execution(workflow_id, "success", None)
+                        record_workflow_execution(workflow_id, "success", None, error=None)
                         log.info(f"Workflow {workflow_id} triggered successfully via GitHub API")
                     else:
                         error_msg = f"GitHub API returned status {response.status_code}: {response.text}"
