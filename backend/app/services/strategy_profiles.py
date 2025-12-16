@@ -8,7 +8,7 @@ from typing import Any, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.services.config_loader import load_config
+from app.services.config_loader import load_config, CONFIG_PATH
 
 try:
     from app.models.trade_signal import TradeSignal
@@ -35,16 +35,30 @@ class RiskApproach(str, Enum):
 
 _CONFIG_CACHE: Optional[dict[str, Any]] = None
 _CONFIG_MTIME: Optional[float] = None
-_CONFIG_PATH = Path("trading_config.json")
+
+
+def invalidate_config_cache() -> None:
+    """Invalidate the config cache. Call this after updating trading_config.json."""
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    _CONFIG_CACHE = None
+    _CONFIG_MTIME = None
+    logger.debug("Config cache invalidated")
 
 
 def _load_config_cached() -> dict[str, Any]:
+    """Load config with caching based on file modification time."""
     global _CONFIG_CACHE, _CONFIG_MTIME
+    # Use the same CONFIG_PATH as config_loader to ensure consistency
+    config_path = CONFIG_PATH
     try:
-        mtime = _CONFIG_PATH.stat().st_mtime
-    except FileNotFoundError:
+        if config_path and config_path.exists():
+            mtime = config_path.stat().st_mtime
+        else:
+            mtime = None
+    except (FileNotFoundError, OSError, AttributeError):
         mtime = None
     if _CONFIG_CACHE is None or _CONFIG_MTIME != mtime:
+        logger.debug(f"Loading config from {config_path} (cache miss or file changed)")
         _CONFIG_CACHE = load_config()
         _CONFIG_MTIME = mtime
     return _CONFIG_CACHE or {}
@@ -116,6 +130,12 @@ def resolve_strategy_profile(
     coin_cfg = coins_cfg.get(symbol_key) or coins_cfg.get(symbol_key.replace("_USDT", "_USD")) or {}
     preset_name = coin_cfg.get("preset") or cfg.get("defaults", {}).get("preset")
     preset_strategy, preset_approach = _parse_preset(preset_name)
+    
+    # Log config resolution for debugging
+    logger.debug(
+        f"Strategy resolution for {symbol_key}: preset_name={preset_name}, "
+        f"preset_strategy={preset_strategy}, preset_approach={preset_approach}"
+    )
 
     if strategy is None:
         strategy = preset_strategy
@@ -124,6 +144,10 @@ def resolve_strategy_profile(
 
     # 3) Fall back to database trade_signals if still unresolved
     if strategy is None or approach is None:
+        logger.warning(
+            f"Strategy/approach not resolved from config for {symbol_key}, "
+            f"falling back to TradeSignal table. strategy={strategy}, approach={approach}"
+        )
         try:
             if db is not None and TradeSignal is not None:
                 trade_signal = (
@@ -132,18 +156,26 @@ def resolve_strategy_profile(
                     .first()
                 )
                 if trade_signal:
+                    db_strategy = _normalize_strategy(getattr(trade_signal, "preset", None))
+                    db_approach = _normalize_approach(getattr(trade_signal, "sl_profile", None))
                     if strategy is None:
-                        strategy = _normalize_strategy(getattr(trade_signal, "preset", None))
+                        strategy = db_strategy
+                        logger.info(f"Using strategy from TradeSignal DB for {symbol_key}: {strategy}")
                     if approach is None:
-                        approach = _normalize_approach(getattr(trade_signal, "sl_profile", None))
+                        approach = db_approach
+                        logger.info(f"Using approach from TradeSignal DB for {symbol_key}: {approach}")
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not read trade signal for %s: %s", symbol_key, exc)
 
     # 4) Final fallbacks
     if strategy is None:
+        logger.warning(f"No strategy resolved for {symbol_key}, using default SWING")
         strategy = StrategyType.SWING
     if approach is None:
+        logger.warning(f"No approach resolved for {symbol_key}, using default CONSERVATIVE")
         approach = RiskApproach.CONSERVATIVE
+    
+    logger.debug(f"Final strategy resolution for {symbol_key}: strategy={strategy}, approach={approach}")
 
     return strategy, approach
 

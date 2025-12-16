@@ -6,6 +6,7 @@ from app.database import SessionLocal
 from app.models.trade_signal import TradeSignal, PresetEnum, RiskProfileEnum
 from app.models.watchlist import WatchlistItem
 from app.services.config_loader import load_config, save_config, validate_preset, resolve_params
+from app.services.strategy_profiles import invalidate_config_cache
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,10 @@ def put_config(new_cfg: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             logger.debug(f"[CONFIG] About to save config with keys: {list(existing_cfg.keys())}")
             saved_cfg = save_config(existing_cfg)
             logger.info("[CONFIG] Config saved successfully")
+            # CRITICAL: Invalidate strategy_profiles cache after saving config
+            # This ensures alerts use the updated strategy configuration immediately
+            invalidate_config_cache()
+            logger.debug("[CONFIG] Strategy profiles cache invalidated")
         except Exception as e:
             logger.error(f"[CONFIG] Failed to save config: {e}", exc_info=True)
             import traceback
@@ -298,6 +303,10 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     
     cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
     save_config(cfg)  # Return value not needed here
+    # CRITICAL: Invalidate strategy_profiles cache after saving coin config
+    # This ensures alerts use the updated strategy immediately
+    invalidate_config_cache()
+    logger.debug(f"[CONFIG] Strategy profiles cache invalidated after updating coin {symbol}")
 
     # Keep trade_signals table aligned with dashboard selections
     _sync_trade_signal(symbol, preset)
