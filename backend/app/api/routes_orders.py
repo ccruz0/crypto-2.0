@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
@@ -351,26 +351,63 @@ def cancel_sl_tp_orders(
 def create_sl_tp_for_order(
     order_id: str,
     db: Session = Depends(get_db),
-    current_user = None if _should_disable_auth() else Depends(get_current_user)
+    current_user = None if _should_disable_auth() else Depends(get_current_user),
+    sl_percentage: Optional[float] = Query(None),
+    tp_percentage: Optional[float] = Query(None),
+    # Optional parameters to create order if it doesn't exist
+    symbol: Optional[str] = Query(None),
+    side: Optional[str] = Query(None),
+    price: Optional[float] = Query(None),
+    quantity: Optional[float] = Query(None)
 ):
     """Create SL/TP orders for a filled order that doesn't have them
     
     This endpoint will:
-    1. Find the order by order_id
+    1. Find the order by order_id (or create it if provided with symbol/side/price/quantity)
     2. Verify it's FILLED and doesn't have SL/TP
     3. Create SL/TP orders using watchlist configuration or defaults
+    
+    If order doesn't exist and symbol/side/price/quantity are provided, the order will be created first.
     """
     try:
-        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
         from app.services.exchange_sync import exchange_sync_service
+        from datetime import datetime, timezone
         
         # Find the order
         order = db.query(ExchangeOrder).filter(
             ExchangeOrder.exchange_order_id == order_id
         ).first()
         
+        # If order doesn't exist and we have details, create it
         if not order:
-            raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+            if symbol and side and price and quantity:
+                logger.info(f"Order {order_id} not found, creating it with provided details: {symbol} {side} {price} {quantity}")
+                try:
+                    side_enum = OrderSideEnum.BUY if side.upper() == "BUY" else OrderSideEnum.SELL
+                    order = ExchangeOrder(
+                        exchange_order_id=order_id,
+                        symbol=symbol,
+                        side=side_enum,
+                        order_type="LIMIT",
+                        status=OrderStatusEnum.FILLED,
+                        price=price,
+                        quantity=quantity,
+                        cumulative_quantity=quantity,
+                        avg_price=price,
+                        created_at=datetime.now(timezone.utc),
+                        updated_at=datetime.now(timezone.utc)
+                    )
+                    db.add(order)
+                    db.commit()
+                    db.refresh(order)
+                    logger.info(f"✅ Created order record: {order_id}")
+                except Exception as create_err:
+                    logger.error(f"Failed to create order: {create_err}", exc_info=True)
+                    db.rollback()
+                    raise HTTPException(status_code=500, detail=f"Failed to create order: {str(create_err)}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Order {order_id} not found. Provide symbol, side, price, and quantity to create it.")
         
         # Verify order is FILLED
         if order.status != OrderStatusEnum.FILLED:
@@ -429,12 +466,28 @@ def create_sl_tp_for_order(
                 symbol=symbol,
                 exchange=order.exchange or "CRYPTO_COM",
                 sl_tp_mode="conservative",
-                is_deleted=False
+                is_deleted=False,
+                trade_enabled=False  # SL/TP creation doesn't require trade_enabled=True
             )
+            # Set percentages if provided
+            if sl_percentage is not None:
+                watchlist_item.sl_percentage = sl_percentage
+            if tp_percentage is not None:
+                watchlist_item.tp_percentage = tp_percentage
             db.add(watchlist_item)
             db.commit()
             db.refresh(watchlist_item)
-            logger.info(f"Created temporary watchlist_item for {symbol}")
+            logger.info(f"Created temporary watchlist_item for {symbol} with trade_enabled=True")
+        else:
+            # NOTE: SL/TP creation doesn't require trade_enabled=True
+            # We don't modify trade_enabled here - it's not needed for protection orders
+            # Update percentages if provided
+            if sl_percentage is not None:
+                watchlist_item.sl_percentage = sl_percentage
+            if tp_percentage is not None:
+                watchlist_item.tp_percentage = tp_percentage
+            db.commit()
+            db.refresh(watchlist_item)
         
         # Check if original order was created with margin
         # Try to detect from watchlist_item trade_on_margin setting
@@ -489,6 +542,196 @@ def create_sl_tp_for_order(
         raise
     except Exception as e:
         logger.exception(f"Error creating SL/TP for order {order_id}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CreateSLTPForOrderRequest(BaseModel):
+    """Request model for creating SL/TP for an order"""
+    order_id: str
+    symbol: str
+    side: str
+    price: float
+    quantity: float
+    sl_percentage: Optional[float] = None
+    tp_percentage: Optional[float] = None
+
+
+@router.post("/orders/create-sl-tp-with-details")
+def create_sl_tp_with_order_details(
+    request: CreateSLTPForOrderRequest,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Create SL/TP orders for an order, creating the order record if it doesn't exist
+    
+    This endpoint accepts all order details and will:
+    1. Create the order record if it doesn't exist
+    2. Create SL/TP orders using provided percentages or watchlist defaults
+    """
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+        from app.services.exchange_sync import exchange_sync_service
+        from datetime import datetime, timezone
+        
+        order_id = request.order_id
+        symbol = request.symbol
+        side = request.side
+        price = request.price
+        quantity = request.quantity
+        
+        # Find or create the order
+        order = db.query(ExchangeOrder).filter(
+            ExchangeOrder.exchange_order_id == order_id
+        ).first()
+        
+        if not order:
+            logger.info(f"Order {order_id} not found, creating it with provided details: {symbol} {side} {price} {quantity}")
+            try:
+                side_enum = OrderSideEnum.BUY if side.upper() == "BUY" else OrderSideEnum.SELL
+                order = ExchangeOrder(
+                    exchange_order_id=order_id,
+                    symbol=symbol,
+                    side=side_enum,
+                    order_type="LIMIT",
+                    status=OrderStatusEnum.FILLED,
+                    price=price,
+                    quantity=quantity,
+                    cumulative_quantity=quantity,
+                    avg_price=price,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc)
+                )
+                db.add(order)
+                db.commit()
+                db.refresh(order)
+                logger.info(f"✅ Created order record: {order_id}")
+            except Exception as create_err:
+                logger.error(f"Failed to create order: {create_err}", exc_info=True)
+                db.rollback()
+                raise HTTPException(status_code=500, detail=f"Failed to create order: {str(create_err)}")
+        
+        # Verify order is FILLED
+        if order.status != OrderStatusEnum.FILLED:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Order {order_id} is not FILLED (status: {order.status.value}). SL/TP can only be created for FILLED orders."
+            )
+        
+        # Check if SL/TP already exist
+        existing_sl_tp = db.query(ExchangeOrder).filter(
+            ExchangeOrder.parent_order_id == order_id,
+            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+        ).all()
+        
+        if existing_sl_tp:
+            return {
+                "ok": True,
+                "message": f"Order {order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
+                "existing_sl_tp": [
+                    {
+                        "order_id": o.exchange_order_id,
+                        "order_role": o.order_role,
+                        "status": o.status.value
+                    }
+                    for o in existing_sl_tp
+                ]
+            }
+        
+        # Get order details
+        filled_price = float(order.avg_price) if order.avg_price else (float(order.price) if order.price else 0)
+        filled_qty = float(order.cumulative_quantity) if order.cumulative_quantity else (float(order.quantity) if order.quantity else 0)
+        
+        if not filled_price or filled_qty <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Order {order_id} has invalid price ({filled_price}) or quantity ({filled_qty})"
+            )
+        
+        logger.info(f"Creating SL/TP for order {order_id}: {symbol} {side} price={filled_price} qty={filled_qty}")
+        
+        # Check if watchlist_item exists
+        from app.models.watchlist import WatchlistItem
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol
+        ).first()
+        
+        if not watchlist_item:
+            watchlist_item = WatchlistItem(
+                symbol=symbol,
+                exchange=order.exchange or "CRYPTO_COM",
+                sl_tp_mode="conservative",
+                is_deleted=False,
+                trade_enabled=False  # SL/TP creation doesn't require trade_enabled=True
+            )
+            if request.sl_percentage is not None:
+                watchlist_item.sl_percentage = request.sl_percentage
+            if request.tp_percentage is not None:
+                watchlist_item.tp_percentage = request.tp_percentage
+            db.add(watchlist_item)
+            db.commit()
+            db.refresh(watchlist_item)
+            logger.info(f"Created temporary watchlist_item for {symbol} with trade_enabled=True")
+        else:
+            # NOTE: SL/TP creation doesn't require trade_enabled=True
+            # We don't modify trade_enabled here - it's not needed for protection orders
+            # Update percentages if provided
+            if request.sl_percentage is not None:
+                watchlist_item.sl_percentage = request.sl_percentage
+            if request.tp_percentage is not None:
+                watchlist_item.tp_percentage = request.tp_percentage
+            db.commit()
+            db.refresh(watchlist_item)
+        
+        # Create SL/TP
+        try:
+            exchange_sync_service._create_sl_tp_for_filled_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                filled_price=filled_price,
+                filled_qty=filled_qty,
+                order_id=order_id
+            )
+            
+            # Verify SL/TP were created
+            new_sl_tp = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == order_id,
+                ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+            ).all()
+            
+            return {
+                "ok": True,
+                "message": f"Created {len(new_sl_tp)} SL/TP order(s) for order {order_id}",
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": side,
+                "filled_price": filled_price,
+                "filled_qty": filled_qty,
+                "created_sl_tp": [
+                    {
+                        "order_id": o.exchange_order_id,
+                        "order_role": o.order_role,
+                        "status": o.status.value,
+                        "price": float(o.price) if o.price else None,
+                        "quantity": float(o.quantity) if o.quantity else None
+                    }
+                    for o in new_sl_tp
+                ]
+            }
+        except Exception as create_err:
+            logger.error(f"Error creating SL/TP for order {order_id}: {create_err}", exc_info=True)
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create SL/TP orders: {str(create_err)}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error creating SL/TP for order {request.order_id}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1750,20 +1993,29 @@ def get_tp_sl_order_values(
 @router.post("/orders/create-sl-tp-for-last-order")
 def create_sl_tp_for_last_order(
     symbol: str,
+    sl_percentage: Optional[float] = None,
+    tp_percentage: Optional[float] = None,
     db: Session = Depends(get_db),
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
-    """Create SL/TP orders for the last filled order of a symbol that doesn't have SL/TP"""
+    """Create SL/TP orders for the last filled order of a symbol that doesn't have SL/TP
+    
+    Args:
+        symbol: Trading symbol (e.g., BTC_USDT)
+        sl_percentage: Optional custom SL percentage (e.g., 2.0 for 2%)
+        tp_percentage: Optional custom TP percentage (e.g., 2.0 for 2%)
+    """
     try:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+        from app.models.watchlist import WatchlistItem
         from app.services.exchange_sync import exchange_sync_service
         
-        logger.info(f"Creating SL/TP for last order of {symbol}")
+        logger.info(f"Creating SL/TP for last order of {symbol} (SL={sl_percentage}%, TP={tp_percentage}%)")
         
         # Find the last filled BUY order for the symbol
         last_order = db.query(ExchangeOrder).filter(
-            ExchangeOrder.symbol == symbol,
+            ExchangeOrder.symbol == symbol.upper(),
             ExchangeOrder.side == OrderSideEnum.BUY,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.order_type.in_(["MARKET", "LIMIT"])
@@ -1806,33 +2058,78 @@ def create_sl_tp_for_last_order(
                 detail=f"Cannot create SL/TP: invalid price ({filled_price}) or quantity ({filled_qty})"
             )
         
-        logger.info(f"Creating SL/TP for order {last_order.exchange_order_id}: price={filled_price}, qty={filled_qty}")
+        # Update watchlist with custom percentages if provided
+        watchlist_item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol.upper()
+        ).first()
         
-        # Use the same logic as exchange_sync._create_sl_tp_for_filled_order
-        exchange_sync_service._create_sl_tp_for_filled_order(
-            db=db,
-            symbol=symbol,
-            side=last_order.side.value,  # "BUY"
-            filled_price=filled_price,
-            filled_qty=filled_qty,
-            order_id=last_order.exchange_order_id
-        )
+        if not watchlist_item:
+            # Create watchlist item if it doesn't exist
+            watchlist_item = WatchlistItem(
+                symbol=symbol.upper(),
+                exchange="CRYPTO_COM",
+                sl_tp_mode="conservative",
+                is_deleted=False
+            )
+            db.add(watchlist_item)
         
-        logger.info(f"✅ SL/TP orders created successfully for order {last_order.exchange_order_id}")
+        # Temporarily update percentages if provided
+        original_sl_pct = watchlist_item.sl_percentage
+        original_tp_pct = watchlist_item.tp_percentage
         
-        return {
-            "ok": True,
-            "message": f"SL/TP orders created successfully for order {last_order.exchange_order_id}",
-            "order_id": last_order.exchange_order_id,
-            "symbol": symbol,
-            "filled_price": filled_price,
-            "filled_qty": filled_qty
-        }
+        if sl_percentage is not None:
+            watchlist_item.sl_percentage = abs(sl_percentage)
+        if tp_percentage is not None:
+            watchlist_item.tp_percentage = abs(tp_percentage)
+        
+        db.commit()
+        db.refresh(watchlist_item)
+        
+        logger.info(f"Creating SL/TP for order {last_order.exchange_order_id}: price={filled_price}, qty={filled_qty}, SL={watchlist_item.sl_percentage}%, TP={watchlist_item.tp_percentage}%")
+        
+        try:
+            # Use the same logic as exchange_sync._create_sl_tp_for_filled_order
+            exchange_sync_service._create_sl_tp_for_filled_order(
+                db=db,
+                symbol=symbol.upper(),
+                side=last_order.side.value,  # "BUY"
+                filled_price=filled_price,
+                filled_qty=filled_qty,
+                order_id=last_order.exchange_order_id
+            )
+            
+            logger.info(f"✅ SL/TP orders created successfully for order {last_order.exchange_order_id}")
+            
+            return {
+                "ok": True,
+                "message": f"SL/TP orders created successfully for order {last_order.exchange_order_id}",
+                "order_id": last_order.exchange_order_id,
+                "symbol": symbol.upper(),
+                "filled_price": filled_price,
+                "filled_qty": filled_qty,
+                "sl_percentage": watchlist_item.sl_percentage,
+                "tp_percentage": watchlist_item.tp_percentage
+            }
+        finally:
+            # Restore original percentages if they were temporarily changed
+            if sl_percentage is not None or tp_percentage is not None:
+                if original_sl_pct is not None:
+                    watchlist_item.sl_percentage = original_sl_pct
+                elif sl_percentage is not None:
+                    watchlist_item.sl_percentage = None  # Remove if it was None originally
+                
+                if original_tp_pct is not None:
+                    watchlist_item.tp_percentage = original_tp_pct
+                elif tp_percentage is not None:
+                    watchlist_item.tp_percentage = None  # Remove if it was None originally
+                
+                db.commit()
         
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Error creating SL/TP for last order of {symbol}")
+        db.rollback()
         raise HTTPException(status_code=502, detail=str(e))
 
 

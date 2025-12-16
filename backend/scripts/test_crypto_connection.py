@@ -1,105 +1,121 @@
-"""Script to test Crypto.com Exchange connection"""
+#!/usr/bin/env python3
+"""
+Test connection to Crypto.com Exchange
+"""
 import sys
 import os
+from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Load credentials from .env.local BEFORE importing anything
+script_dir = os.path.dirname(os.path.abspath(__file__))
+backend_dir = os.path.dirname(script_dir)
+project_root = os.path.dirname(backend_dir)
+env_file = Path(project_root) / '.env.local'
 
+if env_file.exists():
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ[key] = value
+    print("✅ Loaded credentials from .env.local")
+else:
+    print(f"⚠️  .env.local not found at {env_file}")
+
+# Set LIVE_TRADING before importing
+os.environ['LIVE_TRADING'] = 'true'
+sys.path.insert(0, backend_dir)
+
+# Now import and create client (it will read from environment)
 from app.services.brokers.crypto_com_trade import CryptoComTradeClient
-import logging
+import requests
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Create a NEW client instance (not the singleton)
+client = CryptoComTradeClient()
+# Force enable live trading
+client.live_trading = True
 
-def test_connection():
-    """Test Crypto.com Exchange connection"""
-    print("\n" + "="*60)
-    print("🧪 Testing Crypto.com Exchange Connection")
-    print("="*60 + "\n")
-    
-    # Check environment variables
-    print("📋 Environment Configuration:")
-    print(f"  USE_CRYPTO_PROXY: {os.getenv('USE_CRYPTO_PROXY', 'not set')}")
-    print(f"  CRYPTO_PROXY_URL: {os.getenv('CRYPTO_PROXY_URL', 'not set')}")
-    print(f"  EXCHANGE_CUSTOM_BASE_URL: {os.getenv('EXCHANGE_CUSTOM_BASE_URL', 'not set')}")
-    print(f"  EXCHANGE_CUSTOM_API_KEY: {'✅ Set' if os.getenv('EXCHANGE_CUSTOM_API_KEY') else '❌ Not set'}")
-    print(f"  EXCHANGE_CUSTOM_API_SECRET: {'✅ Set' if os.getenv('EXCHANGE_CUSTOM_API_SECRET') else '❌ Not set'}")
-    print(f"  LIVE_TRADING: {os.getenv('LIVE_TRADING', 'false')}")
-    print()
-    
-    # Initialize client
-    client = CryptoComTradeClient()
-    
-    # Test 1: Get account summary (balances)
-    print("📊 Test 1: Getting account summary (balances)...")
-    try:
-        response = client.get_account_summary()
-        if response:
-            accounts = response.get('accounts', [])
-            if accounts:
-                print(f"✅ Success! Found {len(accounts)} account(s):")
-                for acc in accounts[:5]:  # Show first 5
-                    currency = acc.get('currency', 'N/A')
-                    balance = acc.get('balance', '0')
-                    available = acc.get('available', '0')
-                    print(f"  • {currency}: Balance={balance}, Available={available}")
-            else:
-                print("⚠️  Response received but no accounts found")
-                print(f"   Response: {response}")
-        else:
-            print("❌ No response received")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print()
-    
-    # Test 2: Get open orders
-    print("📋 Test 2: Getting open orders...")
-    try:
-        response = client.get_open_orders()
-        if response:
-            orders = response.get('data', [])
-            print(f"✅ Success! Found {len(orders)} open order(s)")
-            if orders:
-                for order in orders[:3]:  # Show first 3
-                    symbol = order.get('instrument_name', 'N/A')
-                    side = order.get('side', 'N/A')
-                    status = order.get('status', 'N/A')
-                    print(f"  • {symbol}: {side} - {status}")
-        else:
-            print("⚠️  No open orders or empty response")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print()
-    
-    # Test 3: Get order history
-    print("📜 Test 3: Getting order history (last 5)...")
-    try:
-        response = client.get_order_history(page_size=5)
-        if response:
-            orders = response.get('data', [])
-            print(f"✅ Success! Found {len(orders)} order(s) in history")
-            if orders:
-                for order in orders[:3]:  # Show first 3
-                    symbol = order.get('instrument_name', 'N/A')
-                    side = order.get('side', 'N/A')
-                    status = order.get('status', 'N/A')
-                    print(f"  • {symbol}: {side} - {status}")
-        else:
-            print("⚠️  No order history or empty response")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("\n" + "="*60)
-    print("✅ Connection test completed")
-    print("="*60 + "\n")
+print('=' * 60)
+print('Crypto.com Connection Test')
+print('=' * 60)
+print(f'API Key: {"✅ Configured" if client.api_key else "❌ Not configured"}')
+print(f'API Secret: {"✅ Configured" if client.api_secret else "❌ Not configured"}')
+print(f'Base URL: {client.base_url}')
+print(f'Using Proxy: {client.use_proxy}')
+print(f'Proxy URL: {client.proxy_url if client.use_proxy else "N/A"}')
+print(f'Live Trading: {client.live_trading}')
+print()
 
-if __name__ == "__main__":
-    test_connection()
+# Test 1: Public endpoint (no auth needed)
+print('1. Testing public endpoint (no auth)...')
+try:
+    response = requests.get('https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', timeout=5)
+    if response.status_code == 200:
+        data = response.json()
+        if 'result' in data and 'data' in data['result']:
+            ticker = data['result']['data'][0]
+            print(f'   ✅ Public API works! BTC_USDT price: ${float(ticker.get("a", 0)):.2f}')
+        else:
+            print(f'   ⚠️  Public API responded but unexpected format')
+    else:
+        print(f'   ❌ Public API failed: {response.status_code}')
+except Exception as e:
+    print(f'   ❌ Public API error: {e}')
+
+print()
+
+# Test 2: Private endpoint (with auth)
+print('2. Testing private endpoint (get_account_summary)...')
+try:
+    result = client.get_account_summary()
+    if result and 'accounts' in result:
+        accounts = result['accounts']
+        print(f'   ✅ Private API works! Found {len(accounts)} account(s)')
+        if accounts:
+            print(f'   Sample account: {accounts[0].get("currency")} - Balance: {accounts[0].get("balance")}')
+    elif 'error' in result:
+        print(f'   ❌ Private API error: {result.get("error")}')
+    else:
+        print(f'   ⚠️  Private API responded but unexpected format: {list(result.keys())[:5] if result else "None"}')
+except Exception as e:
+    print(f'   ❌ Private API error: {e}')
+
+print()
+
+# Test 3: Get open orders
+print('3. Testing get open orders...')
+try:
+    result = client.get_open_orders()
+    if result and 'data' in result:
+        orders = result['data']
+        print(f'   ✅ Open orders API works! Found {len(orders)} open order(s)')
+        if orders:
+            print(f'   Sample order: {orders[0].get("order_id")} - {orders[0].get("instrument_name")} {orders[0].get("side")}')
+    elif 'error' in result:
+        print(f'   ❌ Open orders API error: {result.get("error")}')
+    else:
+        print(f'   ⚠️  Open orders API responded but unexpected format')
+except Exception as e:
+    print(f'   ❌ Open orders API error: {e}')
+
+print()
+
+# Test 4: Get order history
+print('4. Testing get order history...')
+try:
+    result = client.get_order_history(page_size=10, page=0)
+    if result and 'data' in result:
+        orders = result['data']
+        print(f'   ✅ Order history API works! Found {len(orders)} order(s) in history')
+        if orders:
+            print(f'   Most recent: {orders[0].get("order_id")} - {orders[0].get("instrument_name")} {orders[0].get("side")} {orders[0].get("status")}')
+    elif 'error' in result:
+        print(f'   ❌ Order history API error: {result.get("error")}')
+    else:
+        print(f'   ⚠️  Order history API responded but unexpected format')
+except Exception as e:
+    print(f'   ❌ Order history API error: {e}')
+
+print()
+print('=' * 60)

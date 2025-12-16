@@ -2279,8 +2279,6 @@ class CryptoComTradeClient:
             logger.info(f"🔄 Trying STOP_LIMIT params variation {variation_idx}: {variation_name}")
             
             try:
-                payload = self.sign_request(method, params)
-                
                 # Generate unique request ID for tracking
                 import uuid as uuid_module
                 request_id = str(uuid_module.uuid4())
@@ -2288,6 +2286,54 @@ class CryptoComTradeClient:
                 logger.info(f"Live: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
                 logger.info(f"Params sent: {params}")  # Log params at INFO level for debugging
                 logger.info(f"Price string: '{price_str}', Quantity string: '{qty_str}', Trigger string: '{trigger_str}'")
+                
+                # Use proxy if enabled (same as successful orders)
+                if self.use_proxy:
+                    logger.info(f"[SL_ORDER][{source.upper()}][{request_id}] Using PROXY to place stop loss order")
+                    try:
+                        result = self._call_proxy(method, params)
+                        
+                        # Check if proxy returned a 401
+                        if isinstance(result, dict) and result.get("code") == 40101:
+                            logger.error(f"Authentication failed: 40101 - Authentication failure")
+                            last_error = "Authentication failed: Authentication failure (code: 40101)"
+                            continue  # Try next variation
+                        
+                        # Check if proxy returned an error
+                        if isinstance(result, dict) and "error" in result:
+                            error_code = result.get("code", 0)
+                            error_msg = result.get("message", "Unknown error")
+                            last_error = f"Error {error_code}: {error_msg}"
+                            
+                            # If error 213 (Invalid quantity format), try different precision
+                            if error_code == 213:
+                                logger.warning(f"⚠️ Variation {variation_idx} failed with error 213 (Invalid quantity format). Trying different precision levels...")
+                                # Continue to precision retry logic below
+                            else:
+                                logger.warning(f"⚠️ Variation {variation_idx} failed with error {error_code}: {error_msg}. Trying next variation...")
+                                continue  # Try next variation
+                        
+                        # Success - extract order_id from result
+                        if "result" in result:
+                            order_result = result["result"]
+                            order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                            if order_id:
+                                logger.info(f"✅ Successfully created SL order via PROXY: order_id={order_id}")
+                                return {"order_id": str(order_id), "error": None}
+                        
+                        # If we get here, result format is unexpected
+                        logger.warning(f"Unexpected proxy response format: {result}")
+                        last_error = "Unexpected proxy response format"
+                        continue
+                    except requests.exceptions.RequestException as proxy_err:
+                        logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                        # Fall through to direct API call below
+                    except Exception as proxy_err:
+                        logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                        # Fall through to direct API call below
+                
+                # Direct API call (when proxy is disabled or proxy failed)
+                payload = self.sign_request(method, params)
                 logger.debug(f"Payload: {payload}")
                 
                 url = f"{self.base_url}/{method}"
@@ -2322,6 +2368,47 @@ class CryptoComTradeClient:
                     error_code = error_data.get("code", 0)
                     error_msg = error_data.get("message", "")
                     logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                    
+                    # Try fallback to TRADE_BOT (same as successful orders)
+                    if error_code in [40101, 40103]:  # Authentication failure or IP illegal
+                        logger.warning("Authentication failure for stop loss order - attempting failover to TRADE_BOT")
+                        if _should_failover(401):
+                            # Build order data for TRADE_BOT fallback
+                            order_data = {
+                                "symbol": symbol,
+                                "side": side.upper(),
+                                "type": "STOP_LIMIT",
+                                "qty": qty,
+                                "price": price,
+                                "trigger_price": trigger_price
+                            }
+                            if entry_price:
+                                order_data["entry_price"] = entry_price
+                            if is_margin and leverage:
+                                order_data["is_margin"] = True
+                                order_data["leverage"] = int(leverage)
+                            
+                            try:
+                                logger.info(f"Calling TRADE_BOT fallback for SL order: {order_data}")
+                                fr = self._fallback_place_order(order_data)
+                                logger.info(f"TRADE_BOT fallback response status: {fr.status_code}")
+                                if fr.status_code == 200:
+                                    data = fr.json()
+                                    logger.info(f"TRADE_BOT fallback response: {data}")
+                                    result_data = data.get("result", data)
+                                    order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                    if order_id:
+                                        logger.info(f"✅ Successfully created SL order via TRADE_BOT fallback: order_id={order_id}")
+                                        return {"order_id": str(order_id), "error": None}
+                                    else:
+                                        logger.warning(f"TRADE_BOT fallback succeeded but no order_id in response: {result_data}")
+                                else:
+                                    logger.warning(f"TRADE_BOT fallback failed with status {fr.status_code}: {fr.text[:200]}")
+                            except Exception as fallback_err:
+                                logger.error(f"TRADE_BOT fallback failed: {fallback_err}", exc_info=True)
+                        else:
+                            logger.warning(f"Failover not enabled or TRADEBOT_BASE not configured. FAILOVER_ENABLED={FAILOVER_ENABLED}, TRADEBOT_BASE={TRADEBOT_BASE}")
+                    
                     return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
             
                 # Check for error responses (400, etc.) before raise_for_status
@@ -3035,6 +3122,52 @@ class CryptoComTradeClient:
                     logger.info(f"   📦 FULL PAYLOAD: {params}")
                     logger.debug(f"   Full params: {params}")
                     
+                    # Use proxy if enabled (same as successful orders)
+                    if self.use_proxy:
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Using PROXY to place take profit order")
+                        try:
+                            result = self._call_proxy(method, params)
+                            
+                            # Check if proxy returned a 401
+                            if isinstance(result, dict) and result.get("code") == 40101:
+                                logger.error(f"Authentication failed: 40101 - Authentication failure")
+                                last_error = "Authentication failed: Authentication failure (code: 40101)"
+                                continue  # Try next variation
+                            
+                            # Check if proxy returned an error
+                            if isinstance(result, dict) and "error" in result:
+                                error_code = result.get("code", 0)
+                                error_msg = result.get("message", "Unknown error")
+                                last_error = f"Error {error_code}: {error_msg}"
+                                
+                                # If error 308 (Invalid price format), try next variation
+                                if error_code == 308:
+                                    logger.warning(f"⚠️ Variation {variation_name_full} failed with error 308 (Invalid price format). Trying next variation...")
+                                    continue  # Try next params variation
+                                else:
+                                    logger.warning(f"⚠️ Variation {variation_name_full} failed with error {error_code}: {error_msg}. Trying next variation...")
+                                    continue  # Try next variation
+                            
+                            # Success - extract order_id from result
+                            if "result" in result:
+                                order_result = result["result"]
+                                order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                                if order_id:
+                                    logger.info(f"✅ Successfully created TP order via PROXY: order_id={order_id}")
+                                    return {"order_id": str(order_id), "error": None}
+                            
+                            # If we get here, result format is unexpected
+                            logger.warning(f"Unexpected proxy response format: {result}")
+                            last_error = "Unexpected proxy response format"
+                            continue
+                        except requests.exceptions.RequestException as proxy_err:
+                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                            # Fall through to direct API call below
+                        except Exception as proxy_err:
+                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                            # Fall through to direct API call below
+                    
+                    # Direct API call (when proxy is disabled or proxy failed)
                     # DEBUG: Log before sign_request
                     logger.info(f"[DEBUG][{source.upper()}][{request_id}] About to call sign_request for variation {variation_name_full}")
                     
@@ -3072,6 +3205,47 @@ class CryptoComTradeClient:
                             error_code = error_data.get("code", 0)
                             error_msg = error_data.get("message", "")
                             logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                            
+                            # Try fallback to TRADE_BOT (same as successful orders)
+                            if error_code in [40101, 40103]:  # Authentication failure or IP illegal
+                                logger.warning("Authentication failure for take profit order - attempting failover to TRADE_BOT")
+                                if _should_failover(401):
+                                    # Build order data for TRADE_BOT fallback
+                                    order_data = {
+                                        "symbol": symbol,
+                                        "side": side_fmt.upper(),
+                                        "type": "TAKE_PROFIT_LIMIT",
+                                        "qty": qty,
+                                        "price": price,
+                                        "trigger_price": trigger_price if trigger_price else price
+                                    }
+                                    if entry_price:
+                                        order_data["entry_price"] = entry_price
+                                    if is_margin and leverage:
+                                        order_data["is_margin"] = True
+                                        order_data["leverage"] = int(leverage)
+                                    
+                                    try:
+                                        logger.info(f"Calling TRADE_BOT fallback for TP order: {order_data}")
+                                        fr = self._fallback_place_order(order_data)
+                                        logger.info(f"TRADE_BOT fallback response status: {fr.status_code}")
+                                        if fr.status_code == 200:
+                                            data = fr.json()
+                                            logger.info(f"TRADE_BOT fallback response: {data}")
+                                            result_data = data.get("result", data)
+                                            order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                            if order_id:
+                                                logger.info(f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}")
+                                                return {"order_id": str(order_id), "error": None}
+                                            else:
+                                                logger.warning(f"TRADE_BOT fallback succeeded but no order_id in response: {result_data}")
+                                        else:
+                                            logger.warning(f"TRADE_BOT fallback failed with status {fr.status_code}: {fr.text[:200]}")
+                                    except Exception as fallback_err:
+                                        logger.error(f"TRADE_BOT fallback failed: {fallback_err}", exc_info=True)
+                                else:
+                                    logger.warning(f"Failover not enabled or TRADEBOT_BASE not configured. FAILOVER_ENABLED={FAILOVER_ENABLED}, TRADEBOT_BASE={TRADEBOT_BASE}")
+                            
                             return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
                         
                         # Check for error responses (400, etc.) before raise_for_status

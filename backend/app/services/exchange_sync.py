@@ -708,7 +708,7 @@ class ExchangeSyncService:
                 symbol=symbol,
                 exchange="CRYPTO_COM",
                 sl_tp_mode="conservative",
-                trade_enabled=True,  # Enable trading to allow SL/TP creation
+                trade_enabled=False,  # SL/TP creation doesn't require trade_enabled=True
                 is_deleted=False
             )
             db.add(watchlist_item)
@@ -716,14 +716,15 @@ class ExchangeSyncService:
             db.refresh(watchlist_item)
             logger.info(f"✅ Created temporary watchlist_item for {symbol} with conservative SL/TP settings")
         
-        # CRITICAL: Check if trading is enabled for this symbol before creating SL/TP orders
-        # This prevents creating orders when trade_enabled=False
+        # NOTE: We allow SL/TP creation even if trade_enabled=False
+        # This is because SL/TP orders are protection orders for existing positions,
+        # and should be created regardless of the trading flag (which controls new position entry)
+        # Manual orders and filled orders should always be able to get SL/TP protection
         if not getattr(watchlist_item, 'trade_enabled', False):
             logger.info(
-                f"🚫 SL/TP creation blocked for {symbol} order {order_id}: "
-                f"trade_enabled=False. Trading is disabled for this symbol."
+                f"ℹ️ Creating SL/TP for {symbol} order {order_id} despite trade_enabled=False. "
+                f"This is allowed because SL/TP are protection orders for existing positions."
             )
-            return
         
         # CRITICAL: Determine margin mode and leverage for SL/TP orders
         # SL/TP should match the original order's margin mode and leverage
@@ -1415,6 +1416,7 @@ class ExchangeSyncService:
             
             # Use date range: last 7 days or since most recent order (whichever is more recent)
             from datetime import timedelta
+            # timezone is already imported at module level, use it directly
             end_time_ms = int(time.time() * 1000)
             if most_recent_order and most_recent_order.exchange_update_time:
                 # Start from 1 day before most recent order to catch any missed orders
@@ -1604,14 +1606,18 @@ class ExchangeSyncService:
                             logger.info(f"Updated exchange_update_time for order {order_id} to {create_time} (from create_time) from Crypto.com")
                         # Only use datetime.utcnow() as last resort if no timestamp is available from Crypto.com
                         elif not existing.exchange_update_time:
-                            existing.exchange_update_time = datetime.now(timezone.utc)
+                            # Use timezone from module-level import
+                            from datetime import timezone as tz
+                            existing.exchange_update_time = datetime.now(tz.utc)
                             logger.warning(f"No timestamp from Crypto.com for order {order_id}, using current time")
                         
                         # Always update create_time if available from Crypto.com
                         if create_time:
                             existing.exchange_create_time = create_time
                         
-                        existing.updated_at = datetime.now(timezone.utc)
+                        # Use timezone from module-level import
+                        from datetime import timezone as tz
+                        existing.updated_at = datetime.now(tz.utc)
                         
                         logger.info(f"Order {order_id} updated: cumulative_qty={existing.cumulative_quantity}, cumulative_val={existing.cumulative_value}, avg_price={existing.avg_price}")
                         
