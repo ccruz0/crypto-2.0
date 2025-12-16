@@ -658,16 +658,10 @@ async def get_dashboard_state(
     """
     FastAPI route handler for /dashboard/state endpoint.
     Delegates to _compute_dashboard_state to avoid circular dependencies.
-    Includes timeout protection to prevent 502 errors from nginx.
     """
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard/state received")
     try:
-        # Add timeout protection: nginx timeout is 120s, so we use 100s to be safe
-        # This prevents the endpoint from hanging and causing 502 errors
-        result = await asyncio.wait_for(
-            _compute_dashboard_state(db),
-            timeout=100.0  # 100 seconds max - nginx timeout is 120s
-        )
+        result = await _compute_dashboard_state(db)
         # FIX: Check portfolio.assets (v4.0 format) instead of portfolio.balances
         # portfolio.balances doesn't exist - balances is at top level for backward compatibility
         # portfolio.assets is the main portfolio data structure
@@ -675,62 +669,9 @@ async def get_dashboard_state(
         has_portfolio = bool(portfolio_assets and len(portfolio_assets) > 0)
         log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 has_portfolio={has_portfolio} assets_count={len(portfolio_assets) if portfolio_assets else 0}")
         return result
-    except asyncio.TimeoutError:
-        log.error(f"[DASHBOARD_STATE_DEBUG] response_status=504 timeout after 100s - returning partial response to prevent 502")
-        # Return partial response instead of raising exception to prevent 502
-        return {
-            "source": "timeout",
-            "total_usd_value": 0.0,
-            "balances": [],
-            "fast_signals": [],
-            "slow_signals": [],
-            "open_orders": [],
-            "open_orders_summary": {"orders": [], "last_updated": None},
-            "last_sync": None,
-            "portfolio_last_updated": None,
-            "portfolio": {
-                "assets": [],
-                "total_value_usd": 0.0,
-                "exchange": "Crypto.com Exchange"
-            },
-            "bot_status": {
-                "is_running": True,
-                "status": "running",
-                "reason": None,
-                "live_trading_enabled": get_live_trading_status(db) if db else False,
-                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
-            },
-            "partial": True,
-            "errors": ["Request timeout - dashboard state computation took too long"]
-        }
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
-        # Return error response instead of raising to prevent 502
-        return {
-            "source": "error",
-            "total_usd_value": 0.0,
-            "balances": [],
-            "fast_signals": [],
-            "slow_signals": [],
-            "open_orders": [],
-            "open_orders_summary": {"orders": [], "last_updated": None},
-            "last_sync": None,
-            "portfolio_last_updated": None,
-            "portfolio": {
-                "assets": [],
-                "total_value_usd": 0.0,
-                "exchange": "Crypto.com Exchange"
-            },
-            "bot_status": {
-                "is_running": True,
-                "status": "running",
-                "reason": None,
-                "live_trading_enabled": get_live_trading_status(db) if db else False,
-                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
-            },
-            "partial": True,
-            "errors": [str(e)]
-        }
+        raise
 
 
 @router.get("/dashboard/open-orders-summary")
@@ -786,27 +727,16 @@ def list_watchlist_items(db: Session = Depends(get_db)):
                 raise
         
         seen = set()
-        trade_enabled_items = []  # Collect ALL trade_enabled items first
-        regular_items = []  # Collect non-trade_enabled items
-        
-        # First pass: collect ALL trade_enabled items (don't break on them)
+        result = []
         for item in items:
             symbol = (item.symbol or "").upper()
             if symbol in seen:
                 continue
             seen.add(symbol)
-            
-            if item.trade_enabled:
-                trade_enabled_items.append(_serialize_watchlist_item(item))
-            else:
-                regular_items.append(_serialize_watchlist_item(item))
-        
-        # Combine: trade_enabled items first, then regular items
-        # Ensure ALL trade_enabled items are included, then fill remaining slots with regular items
-        max_regular_items = max(0, 100 - len(trade_enabled_items))
-        result = trade_enabled_items + regular_items[:max_regular_items]
-        
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} trade_enabled_count={len(trade_enabled_items)} regular_count={len(regular_items[:max_regular_items])}")
+            result.append(_serialize_watchlist_item(item))
+            if len(result) >= 100:
+                break
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)}")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
@@ -1000,12 +930,6 @@ def update_watchlist_item(
         elif not strategy_changed and ("preset" in payload or "risk_mode" in payload or "sl_tp_mode" in payload):
             strategy_changed = True
             log.info(f"🔄 [STRATEGY] Assuming strategy change for {item.symbol} (strategy-related fields in payload) - resetting throttle as safety measure")
-        
-        # ADDITIONAL SAFETY: Even if strategy keys are the same, if config file was modified, 
-        # the strategy rules might have changed, so reset throttle to be safe
-        if not strategy_changed and config_file_modified and old_strategy_key:
-            strategy_changed = True
-            log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} with same strategy key - resetting throttle as safety measure (rules may have changed)")
     except Exception as new_strategy_err:
         log.debug(f"Could not resolve new strategy for {item.symbol}: {new_strategy_err}")
     
@@ -1097,31 +1021,13 @@ def update_watchlist_item(
                 log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} old strategy: {old_strategy_key}")
             
             # Also reset throttle state for new strategy to ensure clean slate
-            # CRITICAL: Always reset throttle for new strategy, even if old_strategy_key is None
-            if new_strategy_key:
-                reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
-                log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
-                
-                # Set force_next_signal for new strategy to allow immediate signals
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
-                log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
-            else:
-                # FALLBACK: If we couldn't resolve strategy key, reset throttle for ALL strategies for this symbol
-                # This ensures throttle is cleared even if strategy resolution fails
-                log.warning(f"⚠️ [STRATEGY] Could not resolve new strategy key for {item.symbol}, resetting throttle for all strategies")
-                try:
-                    from app.models.signal_throttle import SignalThrottleState
-                    all_throttle_states = db.query(SignalThrottleState).filter(
-                        SignalThrottleState.symbol == item.symbol.upper()
-                    ).all()
-                    for state in all_throttle_states:
-                        reset_throttle_state(db, symbol=item.symbol, strategy_key=state.strategy_key)
-                        set_force_next_signal(db, symbol=item.symbol, strategy_key=state.strategy_key, side="BUY", enabled=True)
-                        set_force_next_signal(db, symbol=item.symbol, strategy_key=state.strategy_key, side="SELL", enabled=True)
-                    log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} for all {len(all_throttle_states)} strategy keys")
-                except Exception as fallback_err:
-                    log.error(f"❌ [STRATEGY] Failed to reset throttle via fallback for {item.symbol}: {fallback_err}", exc_info=True)
+            reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
+            log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
+            
+            # Set force_next_signal for new strategy to allow immediate signals
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
+            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
+            log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
             
             # CRITICAL: Clear order creation limitations in SignalMonitorService
             # This clears last_order_price, orders_count tracking, order_creation_locks, and alert state
