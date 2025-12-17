@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from app.deps.auth import get_current_user
 from app.database import get_db
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.models.watchlist import WatchlistItem
 from app.schemas.watchlist import WatchlistItemUpdate
 import requests
@@ -24,6 +25,11 @@ for path in [backend_root, app_root]:
 from simple_price_fetcher import price_fetcher
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
+try:
+    # Newer versions export this helper; older deployments may not.
+    from app.services.watchlist_selector import deduplicate_watchlist_items as _deduplicate_watchlist_items  # type: ignore
+except Exception:  # pragma: no cover - defensive for older prod images
+    _deduplicate_watchlist_items = None
 from app.services.signal_throttle import (
     reset_throttle_state,
     set_force_next_signal,
@@ -50,6 +56,99 @@ def _log_alert_state(action: str, watchlist_item: WatchlistItem) -> None:
         )
     except Exception as log_err:
         logger.warning("Failed to log alert state: %s", log_err)
+
+
+def deduplicate_watchlist_items(items: List[WatchlistItem]) -> List[WatchlistItem]:
+    """
+    Collapse duplicate watchlist rows per symbol (best-effort).
+
+    This is used by market endpoints to avoid UI inconsistency when duplicates exist.
+    We keep this local wrapper so older deployments don't crash if the shared helper
+    isn't available.
+    """
+    if _deduplicate_watchlist_items:
+        return _deduplicate_watchlist_items(items)
+
+    if not items:
+        return []
+
+    def _ts(item: WatchlistItem) -> float:
+        value = getattr(item, "updated_at", None) or getattr(item, "modified_at", None) or getattr(item, "created_at", None)
+        try:
+            return value.timestamp() if value else 0.0
+        except Exception:
+            return 0.0
+
+    def _key(item: WatchlistItem) -> tuple[str, str]:
+        symbol = (getattr(item, "symbol", "") or "").upper()
+        exchange = (getattr(item, "exchange", "CRYPTO_COM") or "CRYPTO_COM").upper()
+        return symbol, exchange
+
+    grouped: Dict[tuple[str, str], List[WatchlistItem]] = {}
+    for it in items:
+        k = _key(it)
+        if not k[0]:
+            continue
+        grouped.setdefault(k, []).append(it)
+
+    result: List[WatchlistItem] = []
+    for (symbol, exchange), group in grouped.items():
+        def _priority(it: WatchlistItem):
+            is_deleted = 1 if getattr(it, "is_deleted", False) else 0
+            alert_priority = 0 if getattr(it, "alert_enabled", False) else 1
+            ts_priority = -_ts(it)
+            id_priority = -(getattr(it, "id", 0) or 0)
+            return (is_deleted, alert_priority, ts_priority, id_priority)
+
+        chosen = sorted(group, key=_priority)[0]
+        if len(group) > 1:
+            logger.warning(
+                "[WATCHLIST_DUPLICATE_FALLBACK] symbol=%s exchange=%s rows=%s chosen_id=%s",
+                symbol,
+                exchange,
+                len(group),
+                getattr(chosen, "id", None),
+            )
+        result.append(chosen)
+
+    return result
+
+
+def _select_watchlist_item_for_toggle(db: Session, symbol_upper: str, *, exchange: str = "CRYPTO_COM") -> Optional[WatchlistItem]:
+    """
+    Pick the safest row to mutate for legacy /watchlist/* toggle endpoints.
+
+    Critical behavior:
+    - Prefer ACTIVE row (is_deleted=False) when duplicates exist.
+    - Only return a deleted row if no active row exists (safe to restore).
+    """
+    try:
+        q = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
+        try:
+            q = q.filter(WatchlistItem.exchange == exchange)
+        except Exception:
+            pass
+
+        # Prefer active rows to avoid unique constraint violations when restoring duplicates.
+        try:
+            active = (
+                q.filter(WatchlistItem.is_deleted == False)
+                .order_by(WatchlistItem.created_at.desc(), WatchlistItem.id.desc())
+                .first()
+            )
+            if active:
+                return active
+        except Exception:
+            # If is_deleted/created_at isn't available, fall back below.
+            pass
+
+        try:
+            return q.order_by(WatchlistItem.created_at.desc(), WatchlistItem.id.desc()).first()
+        except Exception:
+            return q.order_by(WatchlistItem.id.desc()).first()
+    except Exception as err:
+        logger.warning("Failed selecting watchlist row for %s: %s", symbol_upper, err, exc_info=True)
+        return None
 
 
 CUSTOM_TOP_COINS_TABLE = """
@@ -809,18 +908,30 @@ def get_top_coins_with_prices(
                 
                 # Get all watchlist items that are NOT deleted (this is the source of truth)
                 # OPTIMIZATION: Query all columns at once to avoid lazy loading
-                all_watchlist_items = db.query(WatchlistItem).filter(
+                watchlist_query = db.query(WatchlistItem).filter(
                     WatchlistItem.is_deleted == False
-                ).all()
+                )
+                all_watchlist_items = watchlist_query.all()
+                canonical_watchlist_items = deduplicate_watchlist_items(all_watchlist_items)
+                if len(canonical_watchlist_items) < len(all_watchlist_items):
+                    logger.warning(
+                        "[TOP_COINS] deduplicated watchlist rows %s -> %s",
+                        len(all_watchlist_items),
+                        len(canonical_watchlist_items),
+                    )
                 
-                logger.debug(f"Found {len(all_watchlist_items)} non-deleted watchlist items")
+                logger.debug(
+                    "Found %s canonical non-deleted watchlist items (raw rows=%s)",
+                    len(canonical_watchlist_items),
+                    len(all_watchlist_items),
+                )
                 
                 # Get all MarketPrice entries for price data - OPTIMIZED: only get what we need
                 market_prices_all = db.query(MarketPrice).all()
                 market_price_map = {mp.symbol: mp for mp in market_prices_all}
                 
                 # Get all MarketData entries for technical indicators - OPTIMIZED: batch query
-                all_symbols = [item.symbol for item in all_watchlist_items]
+                all_symbols = [item.symbol for item in canonical_watchlist_items]
                 market_data_list = []
                 if all_symbols:
                     # Use single query instead of chunks for better performance
@@ -831,7 +942,7 @@ def get_top_coins_with_prices(
                 # Build coins list from watchlist_items (not from MarketPrice)
                 # This ensures ALL non-deleted coins are shown
                 coins = []
-                for watchlist_item in all_watchlist_items:
+                for watchlist_item in canonical_watchlist_items:
                     symbol = watchlist_item.symbol
                     
                     # Get MarketPrice if available (for price and volume)
@@ -888,6 +999,8 @@ def get_top_coins_with_prices(
                     # Calculate trading signal (BUY/WAIT/SELL)
                     signal = "WAIT"
                     strategy_state = None  # FIX: Initialize strategy_state to None
+                    resolved_strategy_type = None
+                    resolved_risk_approach = None
                     try:
                         if current_price and current_price > 0:
                             
@@ -896,13 +1009,27 @@ def get_top_coins_with_prices(
                             last_buy_price = watchlist_item.purchase_price if watchlist_item and watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None
                             
                             strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+                            # Expose backend-resolved profile to frontend for consistent tooltips.
+                            resolved_strategy_type = strategy_type
+                            resolved_risk_approach = risk_approach
 
                             # CRITICAL: Use current_volume (hourly) for signal calculation, not volume_24h
                             # This ensures consistent signal calculation across all endpoints
-                            current_volume_for_signals = md.current_volume if md and md.current_volume is not None and md.current_volume > 0 else None
-                            if not current_volume_for_signals and volume_24h and volume_24h > 0:
+                            # IMPORTANT: Keep displayed volume and signal volume consistent.
+                            # If MarketData has stale/zero current_volume, fall back to volume_24h/24 for BOTH signal + UI.
+                            current_volume_for_signals = None
+                            if md and md.current_volume is not None and md.current_volume > 0:
+                                current_volume_for_signals = md.current_volume
+                            elif volume_24h and volume_24h > 0:
                                 # Fallback: approximate current_volume from volume_24h / 24
                                 current_volume_for_signals = volume_24h / 24.0
+
+                            avg_volume_for_signals = None
+                            if md and md.avg_volume is not None and md.avg_volume > 0:
+                                avg_volume_for_signals = md.avg_volume
+                            elif volume_24h and volume_24h > 0:
+                                # Fallback: approximate avg_volume when MarketData is missing (keeps volume_ratio consistent)
+                                avg_volume_for_signals = volume_24h / 24.0
 
                             signals = calculate_trading_signals(
                                 symbol=symbol,
@@ -914,7 +1041,7 @@ def get_top_coins_with_prices(
                                 ema10=ema10,
                                 ma10w=ma10w,
                                 volume=current_volume_for_signals,  # CRITICAL: Use current_volume (hourly), not volume_24h
-                                avg_volume=md.avg_volume if md else None,
+                                avg_volume=avg_volume_for_signals,
                                 resistance_up=res_up,
                                 buy_target=buy_target,
                                 last_buy_price=last_buy_price,
@@ -943,12 +1070,22 @@ def get_top_coins_with_prices(
                     # OPTIMIZATION: Use MarketData values directly instead of fetching OHLCV for each symbol
                     # This avoids making 20+ external API calls per request, which was causing 5+ second timeouts
                     # The market_updater service already updates MarketData with fresh volume data every 60 seconds
-                    current_volume_value = md.current_volume if md else None
-                    avg_volume_value = md.avg_volume if md else None
+                    # Keep volume fields consistent with signal fallbacks (prevents "0.00x volume but BUY signal").
+                    current_volume_value = None
+                    if md and md.current_volume is not None and md.current_volume > 0:
+                        current_volume_value = md.current_volume
+                    elif volume_24h and volume_24h > 0:
+                        current_volume_value = volume_24h / 24.0
+
+                    avg_volume_value = None
+                    if md and md.avg_volume is not None and md.avg_volume > 0:
+                        avg_volume_value = md.avg_volume
+                    elif volume_24h and volume_24h > 0:
+                        avg_volume_value = volume_24h / 24.0
                     
                     # Only fetch fresh volume if MarketData is missing or stale (>5 minutes old)
                     # This is a rare fallback case, not the common path
-                    if (not md or not md.current_volume or not md.avg_volume) and len(all_watchlist_items) < 10:
+                    if (current_volume_value is None or avg_volume_value is None) and len(canonical_watchlist_items) < 10:
                         # Only fetch for small watchlists to avoid timeouts
                         try:
                             from market_updater import fetch_ohlcv_data
@@ -978,9 +1115,6 @@ def get_top_coins_with_prices(
                     if current_volume_value is not None and avg_volume_value is not None and avg_volume_value > 0:
                         # Always recalculate ratio from current values (including when current_volume is 0.0)
                         volume_ratio_value = current_volume_value / avg_volume_value if current_volume_value > 0 else 0.0
-                    elif current_volume_value is not None and current_volume_value == 0.0:
-                        # Explicitly set to 0.0 when current_volume is 0.0 (even if avg_volume is missing)
-                        volume_ratio_value = 0.0
                     elif md and md.volume_ratio is not None:
                         # Use stored ratio only if we don't have current values
                         volume_ratio_value = md.volume_ratio
@@ -1010,15 +1144,30 @@ def get_top_coins_with_prices(
                         "signal": signal,
                         # FIX: Include strategy_state with buy_volume_ok for frontend
                         "strategy_state": strategy_state,
+                        # CANONICAL: expose backend-resolved strategy profile for UI consistency
+                        "strategy_profile": {
+                            "preset": getattr(resolved_strategy_type, "value", None),
+                            "approach": getattr(resolved_risk_approach, "value", None),
+                        },
                         # Mark as custom if user-added to watchlist
                         "is_custom": is_custom,
-                        # Alert enabled status
+                        # Alert enabled status - include all alert flags for frontend
                         "alert_enabled": watchlist_item.alert_enabled if watchlist_item else False,
+                        "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False) if watchlist_item else False,
+                        "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False) if watchlist_item else False,
                     }
                     coins.append(coin)
                 
                 elapsed_time = time_module.time() - start_time
-                logger.info(f"✅ Built {len(coins)} coins from {len(all_watchlist_items)} non-deleted watchlist items (enriched with {len(market_price_map)} MarketPrice entries, {len(market_data_list)} MarketData entries) in {elapsed_time:.3f}s")
+                logger.info(
+                    "✅ Built %s coins from %s canonical watchlist items (raw_rows=%s, enriched with %s MarketPrice entries, %s MarketData entries) in %.3fs",
+                    len(coins),
+                    len(canonical_watchlist_items),
+                    len(all_watchlist_items),
+                    len(market_price_map),
+                    len(market_data_list),
+                    elapsed_time,
+                )
                 
                 # Check if we're taking too long
                 if elapsed_time > MAX_EXECUTION_TIME:
@@ -1125,11 +1274,10 @@ def update_watchlist_alert(
         alert_enabled = payload.get("alert_enabled", False)
         logger.info(f"🔄 [ALERT UPDATE] Starting update for {symbol_upper}: alert_enabled={alert_enabled}")
         
-        # Find or create watchlist item with timeout protection
+        # Find or create watchlist item with timeout protection.
+        # IMPORTANT: Prefer active row to avoid restoring a deleted duplicate (unique violation).
         query_start = time.time()
-        watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol_upper
-        ).first()
+        watchlist_item = _select_watchlist_item_for_toggle(db, symbol_upper)
         query_elapsed = time.time() - query_start
         logger.debug(f"Query elapsed for {symbol_upper}: {query_elapsed:.3f}s")
         
@@ -1144,8 +1292,8 @@ def update_watchlist_alert(
             )
             db.add(watchlist_item)
         else:
-            # If item is deleted, reactivate it first
-            if watchlist_item.is_deleted:
+            # If item is deleted, reactivate it first (safe: we only select deleted when no active exists).
+            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
                 watchlist_item.is_deleted = False
             # Update existing item - set both buy and sell to match legacy behavior
             watchlist_item.alert_enabled = alert_enabled
@@ -1156,7 +1304,27 @@ def update_watchlist_alert(
         
         # Commit with timeout protection
         commit_start = time.time()
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as ie:
+            # Duplicate restore attempt: fallback to canonical active row and retry update.
+            db.rollback()
+            err_text = str(getattr(ie, "orig", ie))
+            if "uq_watchlist_symbol_exchange_active" in err_text or "watchlist_symbol_exchange_active" in err_text or "duplicate key" in err_text:
+                logger.warning("⚠️ [ALERT UPDATE] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
+                canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
+                if canonical and not getattr(canonical, "is_deleted", False):
+                    canonical.alert_enabled = alert_enabled
+                    if hasattr(canonical, "buy_alert_enabled"):
+                        canonical.buy_alert_enabled = alert_enabled
+                    if hasattr(canonical, "sell_alert_enabled"):
+                        canonical.sell_alert_enabled = alert_enabled
+                    db.commit()
+                    watchlist_item = canonical
+                else:
+                    raise HTTPException(status_code=409, detail=f"Duplicate active watchlist row exists for {symbol_upper}; toggle rejected.")
+            else:
+                raise
         commit_elapsed = time.time() - commit_start
         logger.debug(f"Commit elapsed for {symbol_upper}: {commit_elapsed:.3f}s")
         
@@ -1208,10 +1376,8 @@ def update_buy_alert(
     try:
         buy_alert_enabled = payload.get("buy_alert_enabled", False)
         
-        # Find or create watchlist item
-        watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol_upper
-        ).first()
+        # Find or create watchlist item (prefer active canonical row).
+        watchlist_item = _select_watchlist_item_for_toggle(db, symbol_upper)
         
         # Track previous state to detect toggle
         old_buy_alert_enabled = getattr(watchlist_item, "buy_alert_enabled", False) if watchlist_item else False
@@ -1237,9 +1403,9 @@ def update_buy_alert(
                 pass  # Column doesn't exist yet, will be added by migration
             db.add(watchlist_item)
         else:
-            # If item is deleted, reactivate it first
+            # If item is deleted, reactivate it first (safe: selected only if no active exists).
             if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
-                logger.info(f"♻️ [BUY ALERT] Reactivating deleted watchlist item for {symbol_upper}")
+                logger.info(f"♻️ [BUY ALERT] Reactivating deleted watchlist item for {symbol_upper} (no active row existed)")
                 watchlist_item.is_deleted = False
             # Update existing item
             if hasattr(watchlist_item, "buy_alert_enabled"):
@@ -1250,7 +1416,27 @@ def update_buy_alert(
             else:
                 watchlist_item.alert_enabled = buy_alert_enabled
         
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as ie:
+            db.rollback()
+            err_text = str(getattr(ie, "orig", ie))
+            if "uq_watchlist_symbol_exchange_active" in err_text or "watchlist_symbol_exchange_active" in err_text or "duplicate key" in err_text:
+                logger.warning("⚠️ [BUY ALERT] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
+                canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
+                if canonical and not getattr(canonical, "is_deleted", False):
+                    if hasattr(canonical, "buy_alert_enabled"):
+                        canonical.buy_alert_enabled = buy_alert_enabled
+                    if hasattr(canonical, "sell_alert_enabled"):
+                        canonical.alert_enabled = buy_alert_enabled or bool(getattr(canonical, "sell_alert_enabled", False))
+                    else:
+                        canonical.alert_enabled = buy_alert_enabled
+                    db.commit()
+                    watchlist_item = canonical
+                else:
+                    raise HTTPException(status_code=409, detail=f"Duplicate active watchlist row exists for {symbol_upper}; toggle rejected.")
+            else:
+                raise
         logger.debug(f"✅ [BUY ALERT] Database commit successful for {symbol_upper}")
         
         try:
@@ -1317,10 +1503,8 @@ def update_sell_alert(
     try:
         sell_alert_enabled = payload.get("sell_alert_enabled", False)
         
-        # Find or create watchlist item
-        watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol_upper
-        ).first()
+        # Find or create watchlist item (prefer active canonical row).
+        watchlist_item = _select_watchlist_item_for_toggle(db, symbol_upper)
         
         # Track previous state to detect toggle
         old_sell_alert_enabled = getattr(watchlist_item, "sell_alert_enabled", False) if watchlist_item else False
@@ -1346,9 +1530,9 @@ def update_sell_alert(
                 pass  # Column doesn't exist yet, will be added by migration
             db.add(watchlist_item)
         else:
-            # If item is deleted, reactivate it first
+            # If item is deleted, reactivate it first (safe: selected only if no active exists).
             if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
-                logger.info(f"♻️ [SELL ALERT] Reactivating deleted watchlist item for {symbol_upper}")
+                logger.info(f"♻️ [SELL ALERT] Reactivating deleted watchlist item for {symbol_upper} (no active row existed)")
                 watchlist_item.is_deleted = False
             # Update existing item
             if hasattr(watchlist_item, "sell_alert_enabled"):
@@ -1359,7 +1543,27 @@ def update_sell_alert(
             else:
                 watchlist_item.alert_enabled = sell_alert_enabled
         
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as ie:
+            db.rollback()
+            err_text = str(getattr(ie, "orig", ie))
+            if "uq_watchlist_symbol_exchange_active" in err_text or "watchlist_symbol_exchange_active" in err_text or "duplicate key" in err_text:
+                logger.warning("⚠️ [SELL ALERT] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
+                canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
+                if canonical and not getattr(canonical, "is_deleted", False):
+                    if hasattr(canonical, "sell_alert_enabled"):
+                        canonical.sell_alert_enabled = sell_alert_enabled
+                    if hasattr(canonical, "buy_alert_enabled"):
+                        canonical.alert_enabled = bool(getattr(canonical, "buy_alert_enabled", False)) or sell_alert_enabled
+                    else:
+                        canonical.alert_enabled = sell_alert_enabled
+                    db.commit()
+                    watchlist_item = canonical
+                else:
+                    raise HTTPException(status_code=409, detail=f"Duplicate active watchlist row exists for {symbol_upper}; toggle rejected.")
+            else:
+                raise
         logger.debug(f"✅ [SELL ALERT] Database commit successful for {symbol_upper}")
         
         try:
