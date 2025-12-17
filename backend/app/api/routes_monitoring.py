@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import requests
+from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone, timedelta
 
@@ -543,6 +544,24 @@ _background_tasks: Dict[str, "asyncio.Task"] = {}
 # Locks for atomic check-and-set operations per workflow_id
 _workflow_locks: Dict[str, asyncio.Lock] = {}
 
+def _resolve_project_root_from_backend_root(backend_root: str) -> str:
+    """
+    Resolve the *filesystem* project root from a backend root path.
+
+    Local dev layout:
+      <repo>/backend/app/api/routes_monitoring.py  => backend_root=<repo>/backend, project_root=<repo>
+
+    Some containers mount only the backend at /backend:
+      /backend/app/api/... => backend_root=/backend, project_root=/backend (NOT "/")
+    """
+    br = Path(backend_root).resolve()
+    if (br / "docs").exists():
+        return str(br)
+    if (br.parent / "docs").exists():
+        return str(br.parent)
+    # Fallback: keep it close to where the backend lives
+    return str(br)
+
 def _is_valid_report_path(report: Optional[str]) -> bool:
     """Check if report path is valid (not a message)"""
     if not report:
@@ -581,6 +600,7 @@ async def get_workflows(db: Session = Depends(get_db)):
     
     workflow_ids = [
         "watchlist_consistency",
+        "watchlist_dedup",
         "daily_summary",
         "sell_orders_report",
         "sl_tp_check",
@@ -668,12 +688,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                             report_path = os.path.join("docs", "monitoring", f"watchlist_consistency_report_latest.md")
                             # Also check if dated report exists
                             # Calculate absolute path to check existence
-                            if backend_root == "/app":
-                                # Running in Docker container - project root is /app
-                                project_root = "/app"
-                            else:
-                                # Running locally - project root is backend/..
-                                project_root = os.path.dirname(backend_root)
+                            project_root = _resolve_project_root_from_backend_root(backend_root)
                             
                             dated_report_abs = os.path.join(project_root, "docs", "monitoring", f"watchlist_consistency_report_{date_str}.md")
                             if os.path.exists(dated_report_abs):
@@ -872,6 +887,49 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                 captured_workflow_id = workflow_id
                 task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
             
+            return {
+                "workflow_id": workflow_id,
+                "started": True,
+                "message": f"Workflow '{workflow_id}' execution started"
+            }
+        except Exception as e:
+            log.error(f"Error starting workflow {workflow_id}: {e}", exc_info=True)
+            record_workflow_execution(workflow_id, "error", None, str(e))
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Error starting workflow: {str(e)}")
+
+    elif workflow_id == "watchlist_dedup":
+        try:
+            from app.services.watchlist_selector import cleanup_watchlist_duplicates
+
+            async def run_watchlist_dedup():
+                try:
+                    # Run in thread to avoid blocking the event loop
+                    result = await asyncio.to_thread(cleanup_watchlist_duplicates, db, dry_run=False, soft_delete=True)
+                    # Success should NOT set last_error (UI treats it as an error even if status=success)
+                    record_workflow_execution(workflow_id, "success", None, error=None)
+                    log.info("Workflow %s completed successfully (duplicates=%s)", workflow_id, result.get("duplicates", 0))
+                except Exception as e:
+                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    log.error("Workflow %s error: %s", workflow_id, e, exc_info=True)
+                    raise
+
+            workflow_lock = _workflow_locks.setdefault(workflow_id, asyncio.Lock())
+            async with workflow_lock:
+                existing_task = _background_tasks.get(workflow_id)
+                if existing_task and not existing_task.done():
+                    from fastapi import HTTPException
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
+                    )
+
+                record_workflow_execution(workflow_id, "running", None)
+                task = asyncio.create_task(run_watchlist_dedup())
+                _background_tasks[workflow_id] = task
+                captured_workflow_id = workflow_id
+                task.add_done_callback(lambda t: _background_tasks.pop(captured_workflow_id, None))
+
             return {
                 "workflow_id": workflow_id,
                 "started": True,

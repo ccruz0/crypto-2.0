@@ -81,6 +81,38 @@ jobs:
           echo "❌ Error: EC2_KEY secret is not set."
           exit 1
         fi
+
+        # --------------------------------------------------------------------
+        # Resilient host selection (fixes SSH timeouts when the old EC2 IP changes)
+        # --------------------------------------------------------------------
+        # Try the configured EC2_HOST first, then fall back to known AWS hosts.
+        # We test TCP port 22 directly because ping may be blocked by security groups.
+        CANDIDATES=(
+          "$EC2_HOST"
+          "47.130.143.159"
+          "175.41.189.249"
+          "54.254.150.31"
+        )
+
+        EC2_TARGET_HOST=""
+        for H in "${CANDIDATES[@]}"; do
+          if [ -z "$H" ]; then
+            continue
+          fi
+          echo "🔍 Checking SSH port 22 on: $H"
+          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$H/22" 2>/dev/null; then
+            EC2_TARGET_HOST="$H"
+            break
+          fi
+        done
+
+        if [ -z "$EC2_TARGET_HOST" ]; then
+          echo "❌ No reachable EC2 host found on port 22."
+          echo "💡 Check Security Group inbound rules for SSH (22) and the current Elastic IP."
+          exit 1
+        fi
+
+        echo "✅ Using EC2 host: $EC2_TARGET_HOST"
         
         echo "🔑 Setting up SSH key..."
         echo "$EC2_KEY" > deploy_key.pem
@@ -89,18 +121,18 @@ jobs:
         # Create .ssh directory if it doesn't exist and add EC2 host to known_hosts
         mkdir -p ~/.ssh
         chmod 700 ~/.ssh
-        ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H $EC2_TARGET_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
         
         echo "📡 Testing SSH connection..."
-        echo "🔍 Attempting to connect to: ubuntu@$EC2_HOST"
-        echo "🔍 Using IP: $EC2_HOST"
+        echo "🔍 Attempting to connect to: ubuntu@$EC2_TARGET_HOST"
+        echo "🔍 Using IP: $EC2_TARGET_HOST"
         
         # Test basic connectivity first
         echo "🌐 Testing basic connectivity..."
-        ping -c 3 $EC2_HOST || echo "⚠️ Ping failed, but continuing with SSH test..."
+        ping -c 3 $EC2_TARGET_HOST || echo "⚠️ Ping failed, but continuing with SSH test..."
         
         # Test SSH connection
-        ssh -i deploy_key.pem -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$EC2_HOST "echo 'SSH connection successful'"
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$EC2_TARGET_HOST "echo 'SSH connection successful'"
         
         if [ $? -ne 0 ]; then
           echo "❌ SSH connection failed. Checking common issues..."
@@ -111,17 +143,42 @@ jobs:
           exit 1
         fi
         
+        # Pre-sync: Ensure destination directory exists and has correct permissions
+        echo "🔧 Pre-sync checks: Ensuring destination directory permissions..."
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
+          "mkdir -p ~/automated-trading-platform && \
+           chmod 755 ~/automated-trading-platform && \
+           test -w ~/automated-trading-platform" || {
+          echo "❌ Failed to set up destination directory permissions"
+          exit 1
+        }
+        
         echo "📁 Copying files to EC2..."
-        rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
+        rsync -avz \
+          --chmod=Du=rwx,go=rx,Fu=rw,go=r \
+          -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
           --exclude='.git' \
           --exclude='node_modules' \
           --exclude='.next' \
           --exclude='__pycache__' \
-          ./ ubuntu@$EC2_HOST:~/automated-trading-platform/
+          ./ ubuntu@$EC2_TARGET_HOST:~/automated-trading-platform/
+        
+        # Post-sync: Fix permissions for Docker compatibility
+        echo "🔧 Post-sync: Ensuring Docker-compatible permissions..."
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
+          "cd ~/automated-trading-platform && \
+           find . -type d ! -perm 755 -exec chmod 755 {} \; 2>/dev/null || true && \
+           find . -type f ! -perm -u+r -exec chmod u+r {} \; 2>/dev/null || true && \
+           ([ -d backend ] && find backend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
+           ([ -d backend ] && find backend -type f -exec chmod 644 {} \; 2>/dev/null || true) && \
+           ([ -d frontend ] && find frontend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
+           ([ -d frontend ] && find frontend -type f -exec chmod 644 {} \; 2>/dev/null || true) && \
+           find . -type f \\( -name '*.sh' -o -name '*.bash' \\) -exec chmod +x {} \\; 2>/dev/null || true && \
+           echo '✅ Permissions fixed for Docker compatibility'"
         
         echo "🐳 Restarting services..."
         # Fixed: Use docker compose (new syntax) with --profile aws flag to only manage AWS profile services
-        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
           "cd ~/automated-trading-platform && docker compose --profile aws down && docker compose --profile aws up -d --build"
         
         echo "⏳ Waiting for services to start..."
@@ -129,7 +186,7 @@ jobs:
         
         echo "✅ Verifying deployment..."
         # Fixed: Use docker compose (new syntax) with --profile aws flag
-        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST \
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
           "cd ~/automated-trading-platform && docker compose --profile aws ps"
         
         echo "🧹 Cleaning up..."
