@@ -18,6 +18,100 @@ from datetime import datetime, timezone, timedelta
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
 
+# ---------------------------------------------------------------------------
+# Helpers for parsing TelegramMessage text into structured throttle events.
+# The Monitoring UI "Throttle (Mensajes Enviados)" expects BUY/SELL signal events,
+# not generic Telegram notifications (orders, workflows, etc).
+# ---------------------------------------------------------------------------
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t]+")
+_SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,15}_[A-Z0-9]{2,15})\b")
+
+# Matches a price formatted as "$12.34" or "$1,234.56", and the "@ $12.34" shorthand.
+_PRICE_RE = re.compile(
+    r"(?:@\s*\$|PRICE\s*:\s*\$|💵\s*PRICE\s*:\s*\$|\$)\s*([0-9][0-9,]*\.?[0-9]*)",
+    re.IGNORECASE,
+)
+
+_REASON_LINE_RE = re.compile(r"(?:✅\s*)?REASON\s*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+_SHORT_REASON_RE = re.compile(r"\)\s*-\s*(.+)$")  # e.g. "... (+1.23%) - <reason>"
+_STRATEGY_LINE_RE = re.compile(r"STRATEGY\s*:\s*([^\n]+)", re.IGNORECASE)
+_APPROACH_LINE_RE = re.compile(r"APPROACH\s*:\s*([^\n]+)", re.IGNORECASE)
+
+
+def _strip_html(text: str) -> str:
+    if not text:
+        return ""
+    # Keep newlines but remove tags and normalize excessive whitespace.
+    cleaned = _TAG_RE.sub("", text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = _WS_RE.sub(" ", cleaned)
+    return cleaned.strip()
+
+
+def _infer_side_from_message(message_text: str) -> str:
+    """Infer BUY/SELL from a Telegram message. Returns 'UNKNOWN' when ambiguous."""
+    if not message_text:
+        return "UNKNOWN"
+    upper = message_text.upper()
+    # Keep it signal-focused: the throttle panel is about signal alerts.
+    if "BUY SIGNAL" in upper or "🟢" in message_text:
+        return "BUY"
+    if "SELL SIGNAL" in upper or "🟥" in message_text or "🔴" in message_text:
+        return "SELL"
+    return "UNKNOWN"
+
+
+def _extract_price_from_message(message_text: str) -> Optional[float]:
+    if not message_text:
+        return None
+    m = _PRICE_RE.search(message_text)
+    if not m:
+        return None
+    raw = (m.group(1) or "").replace(",", "").strip()
+    try:
+        value = float(raw)
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def _extract_reason_from_message(message_text: str) -> Optional[str]:
+    if not message_text:
+        return None
+    m = _REASON_LINE_RE.search(message_text)
+    if m:
+        reason = (m.group(1) or "").strip()
+        return reason or None
+    m2 = _SHORT_REASON_RE.search(message_text)
+    if m2:
+        reason = (m2.group(1) or "").strip()
+        return reason or None
+    return None
+
+
+def _normalize_key_part(part: Optional[str]) -> Optional[str]:
+    if not part:
+        return None
+    normalized = part.strip().lower()
+    normalized = re.sub(r"[^\w\s-]", "", normalized)
+    normalized = normalized.replace("-", "_").replace(" ", "_")
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized or None
+
+
+def _extract_strategy_key_from_message(message_text: str) -> Optional[str]:
+    """Best-effort parse of strategy_key as '<strategy>:<approach>' from message body."""
+    if not message_text:
+        return None
+    strat_m = _STRATEGY_LINE_RE.search(message_text)
+    appr_m = _APPROACH_LINE_RE.search(message_text)
+    strategy = _normalize_key_part((strat_m.group(1) if strat_m else None))
+    approach = _normalize_key_part((appr_m.group(1) if appr_m else None))
+    if strategy and approach:
+        return f"{strategy}:{approach}"
+    return None
+
 # Prevent browser/proxy caching for monitoring endpoints that must be "real-time".
 # This fixes stale workflow status/errors being shown in the dashboard.
 _NO_CACHE_HEADERS = {
@@ -369,167 +463,219 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         bounded_limit = max(1, min(limit, 500))
         now = datetime.now(timezone.utc)
         
-        # PRIMARY STRATEGY: Query sent Telegram messages (blocked=False)
-        # Use TelegramMessage as source of truth so the panel shows what was actually sent.
+        # PRIMARY STRATEGY: Query sent Telegram messages (blocked=False).
+        # Then filter to *signal* messages only. The throttle panel is for BUY/SELL signal alerts,
+        # not generic Telegram notifications (orders/workflows/etc) which cause UNKNOWN side / empty fields.
         sent_messages = (
             db.query(TelegramMessage)
             .filter(TelegramMessage.blocked == False)  # Only messages that were sent
             .order_by(TelegramMessage.timestamp.desc())
-            .limit(bounded_limit * 5)  # Get more to account for filtering
+            .limit(bounded_limit * 15)  # Get more to account for filtering + dedup
             .all()
         )
-        
-        # Build a map of throttle states by (symbol, side) for enrichment
-        # Query all recent throttle states
-        all_throttle_states = (
-            db.query(SignalThrottleState)
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit * 3)
-            .all()
-        )
-        
-        # Create lookup: (symbol, side) -> throttle state (most recent)
-        throttle_lookup = {}
-        for state in all_throttle_states:
-            if state.symbol and state.side:
-                key = (state.symbol.upper(), state.side.upper())
-                # Keep the most recent state for each (symbol, side) pair
-                if key not in throttle_lookup or (
-                    state.last_time and throttle_lookup[key].last_time and
-                    state.last_time > throttle_lookup[key].last_time
-                ):
-                    throttle_lookup[key] = state
-        
-        # Process sent messages and enrich with throttle data
-        payload_map = {}  # Key: (symbol, side, timestamp) to deduplicate
-        
-        symbol_pattern = re.compile(r"\b([A-Z0-9]{2,15}_[A-Z0-9]{2,15})\b")
+
+        # 1) Parse & filter to signal messages, then deduplicate within minute buckets.
+        # We keep the "best" message per (symbol, side, minute) to avoid duplicates caused by
+        # multiple storage call paths (full Telegram body + summary row).
+        best_by_bucket: Dict[tuple, Dict[str, Any]] = {}
 
         for msg in sent_messages:
-            message_text = msg.message or ""
+            raw_text = msg.message or ""
+            parsed_text = _strip_html(raw_text)
+            upper = parsed_text.upper()
 
-            # Resolve symbol: use stored symbol when present; otherwise try to parse from message body.
             symbol_value = (msg.symbol or "").strip().upper()
             if not symbol_value:
-                m = symbol_pattern.search(message_text.upper())
-                if m:
-                    symbol_value = m.group(1).upper()
-
-            # If we still can't determine a symbol, this is likely a command/system message; skip it.
-            if not symbol_value:
+                sm = _SYMBOL_RE.search(upper)
+                if sm:
+                    symbol_value = sm.group(1).upper()
+            if not symbol_value or _SYMBOL_RE.fullmatch(symbol_value) is None:
                 continue
 
-            # Guardrail: only accept canonical Crypto.com style symbols (e.g. BTC_USDT).
-            # This prevents junk rows if some code path mistakenly stored side/status in `symbol`.
-            if symbol_pattern.fullmatch(symbol_value) is None:
+            side = _infer_side_from_message(parsed_text)
+
+            # Only keep actual signal alerts.
+            if side not in {"BUY", "SELL"}:
+                continue
+            if "SIGNAL" not in upper:
                 continue
 
-            upper_msg = message_text.upper()
+            msg_time = msg.timestamp
+            if msg_time and msg_time.tzinfo is None:
+                msg_time = msg_time.replace(tzinfo=timezone.utc)
 
-            # Extract side from message content (keep it strict to avoid false positives).
-            side = "UNKNOWN"
-            if "BUY SIGNAL" in upper_msg or "🟢" in message_text:
-                side = "BUY"
-            elif "SELL SIGNAL" in upper_msg or "🟥" in message_text or "🔴" in message_text:
-                side = "SELL"
-            elif "BUY INDEX" in upper_msg or " INDEX" in upper_msg:
-                side = "INDEX"
-            
-            # Extract strategy from message or throttle state
-            strategy_key = "unknown:unknown"
-            
-            # Try to find matching throttle state
-            throttle_state = throttle_lookup.get((symbol_value, side))
-            
-            # If we found a throttle state, try to match it with this message
-            if throttle_state:
-                throttle_emit_reason_lower = (throttle_state.emit_reason or "").lower()
-                throttle_looks_blocked = ("throttled" in throttle_emit_reason_lower) or ("blocked" in throttle_emit_reason_lower)
+            price = _extract_price_from_message(parsed_text)
+            parsed_reason = _extract_reason_from_message(parsed_text)
+            parsed_strategy_key = _extract_strategy_key_from_message(parsed_text)
 
-                # Check if this message timestamp is close to the throttle state timestamp
-                msg_time = msg.timestamp
-                throttle_time = throttle_state.last_time
-                
-                if msg_time and throttle_time:
-                    # Normalize timezones
-                    if msg_time.tzinfo is None:
-                        msg_time = msg_time.replace(tzinfo=timezone.utc)
-                    if throttle_time.tzinfo is None:
-                        throttle_time = throttle_time.replace(tzinfo=timezone.utc)
-                    
-                    # Match if within 30 minutes (same alert)
-                    time_diff = abs((msg_time - throttle_time).total_seconds())
-                    if time_diff <= 1800 and not throttle_looks_blocked:  # same alert and throttle state looks like a SENT event
-                        strategy_key = throttle_state.strategy_key or "unknown:unknown"
-                        last_price = throttle_state.last_price
-                        last_time = throttle_time  # Use throttle time as it's more accurate
-                        emit_reason = throttle_state.emit_reason
-                        
-                        # Calculate price change
-                        price_change_pct = None
-                        if throttle_state.last_price and throttle_state.previous_price:
-                            if throttle_state.last_price > 0 and throttle_state.previous_price > 0:
-                                try:
-                                    calculated_pct = ((throttle_state.last_price - throttle_state.previous_price) / throttle_state.previous_price * 100)
-                                    if abs(calculated_pct) <= 100:
-                                        price_change_pct = calculated_pct
-                                except Exception:
-                                    pass
-                    else:
-                        # Timestamps don't match - this might be a different alert
-                        # Use message timestamp but still try to enrich with throttle data if available
-                        strategy_key = throttle_state.strategy_key or "unknown:unknown"
-                        last_price = throttle_state.last_price
-                        last_time = msg_time  # Use message time as it's the actual send time
-                        emit_reason = msg.throttle_reason or (None if throttle_looks_blocked else throttle_state.emit_reason) or "Sent to Telegram"
-                        price_change_pct = None
-                else:
-                    # No timestamps to match, use throttle state data if available
-                    strategy_key = throttle_state.strategy_key or "unknown:unknown"
-                    last_price = throttle_state.last_price
-                    last_time = throttle_state.last_time or msg_time
-                    emit_reason = (None if throttle_looks_blocked else throttle_state.emit_reason) or msg.throttle_reason or "Sent to Telegram"
+            minute_bucket = int(msg_time.timestamp() // 60) if msg_time else int(msg.id or 0)
+            bucket_key = (symbol_value, side, minute_bucket)
+
+            # Score: prefer explicit throttle_reason, then parsed reason, then more detailed body.
+            score = 0
+            if getattr(msg, "throttle_reason", None):
+                score += 10
+            if parsed_reason:
+                score += 5
+            if "SIGNAL DETECTED" in upper:
+                score += 3
+            if parsed_strategy_key:
+                score += 2
+            if price:
+                score += 1
+
+            existing = best_by_bucket.get(bucket_key)
+            if not existing or score > existing.get("_score", -1):
+                best_by_bucket[bucket_key] = {
+                    "_score": score,
+                    "msg": msg,
+                    "symbol": symbol_value,
+                    "side": side,
+                    "msg_time": msg_time,
+                    "parsed_text": parsed_text,
+                    "price": price,
+                    "parsed_reason": parsed_reason,
+                    "parsed_strategy_key": parsed_strategy_key,
+                }
+
+        events = list(best_by_bucket.values())
+        # Sort newest first for output, but we'll compute price deltas in chronological order below.
+        events.sort(key=lambda e: (e.get("msg_time") or datetime(1970, 1, 1, tzinfo=timezone.utc)), reverse=True)
+        if not events:
+            return []
+
+        # 2) Load throttle state rows for symbols in view (enrichment source of truth).
+        symbols = sorted({e["symbol"] for e in events if e.get("symbol")})
+        states = (
+            db.query(SignalThrottleState)
+            .filter(SignalThrottleState.symbol.in_(symbols))
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(max(200, bounded_limit * 10))
+            .all()
+        )
+        states_by_key: Dict[tuple, list] = {}
+        for st in states:
+            if not st.symbol or not st.side:
+                continue
+            k = (st.symbol.upper(), st.side.upper())
+            states_by_key.setdefault(k, []).append(st)
+
+        # 3) Compute message-based price change fallback (when previous_price is missing in throttle state).
+        events_chrono = [e for e in events if e.get("msg_time")]
+        events_chrono.sort(key=lambda e: e["msg_time"])
+        prev_price_by_symbol_side: Dict[tuple, float] = {}
+        prev_price_by_msg_id: Dict[int, float] = {}
+        for e in events_chrono:
+            msg_obj = e.get("msg")
+            msg_id = int(getattr(msg_obj, "id", 0) or 0)
+            key = (e["symbol"], e["side"])
+            current_price = e.get("price")
+            if current_price and current_price > 0:
+                if key in prev_price_by_symbol_side:
+                    prev_price_by_msg_id[msg_id] = prev_price_by_symbol_side[key]
+                prev_price_by_symbol_side[key] = current_price
+
+        # 4) Build final payload (reason, last_price, price_change_pct always best-effort).
+        payload: list[Dict[str, Any]] = []
+        for e in events[: bounded_limit * 3]:
+            msg_obj = e.get("msg")
+            msg_id = int(getattr(msg_obj, "id", 0) or 0)
+            symbol_value = e["symbol"]
+            side = e["side"]
+            msg_time = e.get("msg_time")
+            parsed_reason = e.get("parsed_reason")
+            parsed_strategy_key = e.get("parsed_strategy_key")
+            msg_throttle_reason = (getattr(msg_obj, "throttle_reason", None) or "").strip() or None
+
+            # Choose the best matching throttle state for this event:
+            # - Prefer a state close in time (<=30m) that doesn't look "blocked".
+            candidate_states = states_by_key.get((symbol_value, side), []) or []
+            chosen_state = None
+            if msg_time and candidate_states:
+                for st in candidate_states:
+                    st_time = st.last_time
+                    if st_time and st_time.tzinfo is None:
+                        st_time = st_time.replace(tzinfo=timezone.utc)
+                    if not st_time:
+                        continue
+                    diff = abs((msg_time - st_time).total_seconds())
+                    looks_blocked = ("throttled" in (st.emit_reason or "").lower()) or ("blocked" in (st.emit_reason or "").lower())
+                    if diff <= 1800 and not looks_blocked:
+                        chosen_state = st
+                        break
+            if not chosen_state and candidate_states:
+                chosen_state = candidate_states[0]
+
+            strategy_key = (
+                (chosen_state.strategy_key if chosen_state and chosen_state.strategy_key else None)
+                or parsed_strategy_key
+                or "unknown:unknown"
+            )
+
+            # last_price: prefer throttle-state price (source of truth), else parse from message.
+            last_price = None
+            if chosen_state and chosen_state.last_price and chosen_state.last_price > 0:
+                last_price = float(chosen_state.last_price)
+            elif e.get("price") and e["price"] > 0:
+                last_price = float(e["price"])
+
+            # Compute price change: prefer throttle-state previous_price, else use message-history previous price.
+            price_change_pct = None
+            previous_price = None
+            if chosen_state and chosen_state.previous_price and chosen_state.previous_price > 0:
+                previous_price = float(chosen_state.previous_price)
+            elif msg_id in prev_price_by_msg_id:
+                previous_price = float(prev_price_by_msg_id[msg_id])
+
+            if last_price and previous_price and previous_price > 0:
+                try:
+                    price_change_pct = ((last_price - previous_price) / previous_price) * 100.0
+                except Exception:
                     price_change_pct = None
-            else:
-                # No matching throttle state, use message data only
-                last_price = None
-                last_time = msg.timestamp
-                emit_reason = msg.throttle_reason or "Sent to Telegram"
-                price_change_pct = None
-            
-            # Normalize last_time
-            if last_time and last_time.tzinfo is None:
-                last_time = last_time.replace(tzinfo=timezone.utc)
-            
+
+            # Reason: never return placeholder "Sent to Telegram".
+            emit_reason = (
+                msg_throttle_reason
+                or (chosen_state.emit_reason if chosen_state and chosen_state.emit_reason else None)
+                or parsed_reason
+                or "Signal sent"
+            )
+
+            event_time = msg_time
+            if chosen_state and chosen_state.last_time:
+                # Use throttle state's last_time when it matches closely; otherwise keep msg_time (actual send time).
+                if msg_time is None:
+                    event_time = chosen_state.last_time
+                else:
+                    st_time = chosen_state.last_time
+                    if st_time and st_time.tzinfo is None:
+                        st_time = st_time.replace(tzinfo=timezone.utc)
+                    if st_time and abs((msg_time - st_time).total_seconds()) <= 1800:
+                        event_time = st_time
+
+            if event_time and event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+
             seconds_since = (
-                max(0, int((now - last_time).total_seconds()))
-                if last_time
+                max(0, int((now - event_time).total_seconds()))
+                if event_time
                 else None
             )
-            
-            # Create deduplication key - use message ID to ensure uniqueness
-            # This prevents missing alerts that happen at the same time
-            dedup_key = (symbol_value, side, str(msg.id))
-            
-            # Only add if not already in map (deduplicate by message ID)
-            # If same message ID already exists, skip (shouldn't happen but be safe)
-            if dedup_key not in payload_map:
-                payload_map[dedup_key] = {
+
+            payload.append(
+                {
                     "symbol": symbol_value,
                     "strategy_key": strategy_key,
                     "side": side,
                     "last_price": last_price,
-                    "last_time": last_time.isoformat() if last_time else None,
+                    "last_time": event_time.isoformat() if event_time else None,
                     "seconds_since_last": seconds_since,
                     "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
                     "emit_reason": emit_reason,
                 }
-        
-        # Convert to list and sort by timestamp descending
-        payload = list(payload_map.values())
+            )
+
         payload.sort(key=lambda x: x["last_time"] or "", reverse=True)
-        
-        # Limit results
         return payload[:bounded_limit]
         
     except Exception as exc:
