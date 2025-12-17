@@ -83,6 +83,11 @@ ssh_cmd "$HOST" "mkdir -p $REMOTE_DIR && chmod 755 $REMOTE_DIR && test -w $REMOT
     exit 1
 }
 
+# Step 5b: Ensure the deploy directory is owned by the SSH user
+# This prevents rsync permission errors when previous deploys created root-owned files.
+info "Ensuring remote directory ownership..."
+ssh_cmd "$HOST" "sudo chown -R \"\$(whoami)\":\"\$(id -gn)\" \"$REMOTE_DIR\" 2>/dev/null || true" || true
+
 # Step 6: Synchronize files to server
 info "Synchronizing docker-compose.yml and .env..."
 scp_cmd docker-compose.yml .env "$HOST:$REMOTE_DIR/" || {
@@ -102,6 +107,10 @@ if command -v rsync >/dev/null 2>&1; then
     rsync_cmd --delete \
         --exclude 'node_modules' \
         --exclude '.next' \
+        --exclude 'out' \
+        --exclude 'playwright-report' \
+        --exclude 'artifacts' \
+        --exclude 'test-results' \
         --exclude '.git' \
         --exclude 'dist' \
         --exclude 'build' \
