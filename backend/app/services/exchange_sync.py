@@ -1404,30 +1404,20 @@ class ExchangeSyncService:
             all_orders = []
             logger.info(f"Starting order history sync: page_size={page_size}, max_pages={max_pages}")
             
-            # Try to get the most recent order timestamp from DB to optimize search
-            # This helps us focus on recent orders
-            from app.models.exchange_order import ExchangeOrder
-            from sqlalchemy import func
-            most_recent_order = db.query(ExchangeOrder).filter(
-                ExchangeOrder.status == OrderStatusEnum.FILLED
-            ).order_by(
-                func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()
-            ).first()
-            
-            # Use date range: last 7 days or since most recent order (whichever is more recent)
+            # IMPORTANT: Use a stable wide window for history sync.
+            #
+            # We previously optimized by starting from (most recent FILLED - 1 day) which can
+            # cause missing orders on the same day (or after DB resets) and create discrepancies
+            # between Crypto.com "Order History" and the dashboard.
+            #
+            # Crypto.com UI supports up to ~180d, but fetching that on every sync is expensive.
+            # A 30-day rolling window is a good balance and matches the default behavior in
+            # crypto_com_trade.get_order_history() when no range is provided.
             from datetime import timedelta
-            # timezone is already imported at module level, use it directly
             end_time_ms = int(time.time() * 1000)
-            if most_recent_order and most_recent_order.exchange_update_time:
-                # Start from 1 day before most recent order to catch any missed orders
-                start_time = most_recent_order.exchange_update_time - timedelta(days=1)
-                start_time_ms = int(start_time.timestamp() * 1000)
-                logger.info(f"Using date range: {start_time} to now (found most recent order at {most_recent_order.exchange_update_time})")
-            else:
-                # Default: last 7 days
-                start_time = datetime.now(timezone.utc) - timedelta(days=7)
-                start_time_ms = int(start_time.timestamp() * 1000)
-                logger.info(f"Using default date range: last 7 days")
+            start_time = datetime.now(timezone.utc) - timedelta(days=30)
+            start_time_ms = int(start_time.timestamp() * 1000)
+            logger.info(f"Using order history date range: last 30 days ({start_time} to now)")
             
             for page_num in range(max_pages):
                 response = trade_client.get_order_history(
@@ -1806,7 +1796,7 @@ class ExchangeSyncService:
                         if is_main_order and is_executed:
                             # Check if order was filled within the last hour
                             # This prevents creating SL/TP for old orders where prices may have changed significantly
-                            from datetime import timedelta, timezone
+                            from datetime import timedelta
                             # Use update_time or create_time from API (now timezone-aware UTC), or fallback to database time
                             order_filled_time = update_time or create_time
                             if not order_filled_time:

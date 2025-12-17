@@ -973,6 +973,7 @@ def verify_and_cleanup_stale_orders(
 def get_order_history(
     limit: int = 100,  # Default to 100 orders per page
     offset: int = 0,   # Default to start from beginning
+    sync: bool = Query(False, description="If true, sync latest history from Crypto.com before returning"),
     db: Session = Depends(get_db),
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
@@ -980,6 +981,22 @@ def get_order_history(
     """Get order history (executed orders) from database with pagination"""
     try:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+
+        # Optional: sync with exchange on-demand (used by dashboard Refresh).
+        # This keeps the dashboard aligned with Crypto.com without forcing a sync on every request.
+        if sync and db is not None:
+            try:
+                from app.services.exchange_sync import exchange_sync_service
+                logger.info("🔄 /orders/history sync=true - syncing order history from exchange before query")
+                exchange_sync_service.sync_order_history(db, page_size=200, max_pages=10)
+                db.commit()
+            except Exception as sync_err:
+                # Don't fail the history endpoint if the exchange is temporarily unreachable.
+                logger.warning(f"⚠️ /orders/history sync failed, continuing with DB data: {sync_err}", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
         
         if db is None:
             logger.warning("Database not available, returning empty history")
