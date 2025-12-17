@@ -1,6 +1,7 @@
 """Dashboard state endpoint - returns portfolio, balances, and dashboard data"""
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.database import get_db, table_has_column, engine as db_engine
 import logging
 import time
@@ -8,6 +9,11 @@ import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 from app.models.watchlist import WatchlistItem
+from app.services.watchlist_selector import (
+    deduplicate_watchlist_items,
+    get_canonical_watchlist_item,
+    select_preferred_watchlist_item,
+)
 from app.services.open_orders_cache import get_open_orders_cache
 from app.services.open_orders import (
     calculate_portfolio_order_metrics,
@@ -50,6 +56,11 @@ def _soft_delete_supported(db: Optional[Session]) -> bool:
 
 def _filter_active_watchlist(query, db: Optional[Session]):
     """Apply is_deleted filter when the column exists."""
+    # Prefer filtering by model attribute (safer than relying on cached schema detection).
+    # If the column doesn't exist in a legacy DB, callers already catch "undefined column"
+    # and retry without the filter.
+    if hasattr(WatchlistItem, "is_deleted"):
+        return query.filter(WatchlistItem.is_deleted == False)
     if _soft_delete_supported(db):
         return query.filter(WatchlistItem.is_deleted == False)
     return query
@@ -83,9 +94,9 @@ def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
         "id": item.id,
         "symbol": (item.symbol or "").upper(),
         "exchange": item.exchange,
-        "alert_enabled": item.alert_enabled,
-        "buy_alert_enabled": getattr(item, "buy_alert_enabled", False),
-        "sell_alert_enabled": getattr(item, "sell_alert_enabled", False),
+        "alert_enabled": item.alert_enabled if item.alert_enabled is not None else False,
+        "buy_alert_enabled": getattr(item, "buy_alert_enabled", None) if getattr(item, "buy_alert_enabled", None) is not None else False,
+        "sell_alert_enabled": getattr(item, "sell_alert_enabled", None) if getattr(item, "sell_alert_enabled", None) is not None else False,
         "trade_enabled": item.trade_enabled,
         "trade_amount_usd": item.trade_amount_usd,
         "trade_on_margin": item.trade_on_margin,
@@ -124,11 +135,25 @@ def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
 
 def _apply_watchlist_updates(item: WatchlistItem, data: Dict[str, Any]) -> None:
     """Apply incoming partial updates to a WatchlistItem."""
+    # Boolean fields that should never be None - convert None to False
+    boolean_fields = {
+        "alert_enabled", "buy_alert_enabled", "sell_alert_enabled",
+        "trade_enabled", "trade_on_margin", "sold", "skip_sl_tp_reminder"
+    }
+    
     for field, value in data.items():
+        # Avoid accidental restores/soft-delete changes via generic update endpoint.
+        # Use the dedicated DELETE/restore endpoints for is_deleted transitions.
+        if field == "is_deleted":
+            continue
         if not hasattr(item, field):
             continue
         if field == "symbol" and value:
             value = value.upper()
+        # CRITICAL: Prevent NULL values for boolean fields
+        # If frontend sends null/undefined, convert to False to maintain data integrity
+        if field in boolean_fields and value is None:
+            value = False
         setattr(item, field, value)
 
 @router.get("/dashboard/snapshot")
@@ -726,13 +751,16 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             else:
                 raise
         
-        seen = set()
         result = []
-        for item in items:
-            symbol = (item.symbol or "").upper()
-            if symbol in seen:
-                continue
-            seen.add(symbol)
+        canonical_items = deduplicate_watchlist_items(items)
+        if len(canonical_items) < len(items):
+            log.warning(
+                "[DASHBOARD_STATE_DEBUG] deduplicated watchlist rows %s -> %s",
+                len(items),
+                len(canonical_items),
+            )
+
+        for item in canonical_items:
             result.append(_serialize_watchlist_item(item))
             if len(result) >= 100:
                 break
@@ -753,20 +781,103 @@ def create_watchlist_item(
     symbol = (payload.get("symbol") or "").upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="symbol is required")
-    
+
+    exchange = (payload.get("exchange") or "CRYPTO_COM").upper()
+
+    # CRITICAL: Prevent duplicates.
+    # If a row already exists for (symbol, exchange), treat this as an upsert/restore instead of inserting a new row.
+    existing_rows = (
+        db.query(WatchlistItem)
+        .filter(WatchlistItem.symbol == symbol, WatchlistItem.exchange == exchange)
+        .order_by(WatchlistItem.id.desc())
+        .all()
+    )
+    existing_item = select_preferred_watchlist_item(existing_rows, symbol) if existing_rows else None
+
+    # Normalize boolean fields: convert explicit nulls to False to avoid NULLs in DB
+    boolean_fields = [
+        "alert_enabled",
+        "buy_alert_enabled",
+        "sell_alert_enabled",
+        "trade_enabled",
+        "trade_on_margin",
+        "sold",
+        "is_deleted",
+        "skip_sl_tp_reminder",
+    ]
+    for field in boolean_fields:
+        if field in payload and payload[field] is None:
+            payload[field] = False
+
+    if existing_item:
+        # Restore if needed
+        if hasattr(existing_item, "is_deleted"):
+            existing_item.is_deleted = False
+        # Always enforce normalized identity fields
+        existing_item.symbol = symbol
+        existing_item.exchange = exchange
+
+        # Apply only fields explicitly provided to avoid accidentally overwriting existing settings.
+        updatable_fields = {
+            "alert_enabled",
+            "buy_alert_enabled",
+            "sell_alert_enabled",
+            "trade_enabled",
+            "trade_amount_usd",
+            "trade_on_margin",
+            "sl_tp_mode",
+            "min_price_change_pct",
+            "alert_cooldown_minutes",
+            "sl_percentage",
+            "tp_percentage",
+            "sl_price",
+            "tp_price",
+            "buy_target",
+            "take_profit",
+            "stop_loss",
+            "price",
+            "rsi",
+            "atr",
+            "ma50",
+            "ma200",
+            "ema10",
+            "res_up",
+            "res_down",
+            "order_status",
+            "order_date",
+            "purchase_price",
+            "quantity",
+            "sold",
+            "sell_price",
+            "notes",
+            "signals",
+            "skip_sl_tp_reminder",
+        }
+        for field in updatable_fields:
+            if field in payload and hasattr(existing_item, field):
+                setattr(existing_item, field, payload[field])
+
+        db.commit()
+        db.refresh(existing_item)
+        return _serialize_watchlist_item(existing_item)
+
+    # No existing row: create a new item.
     item = WatchlistItem(
         symbol=symbol,
-        exchange=payload.get("exchange") or "CRYPTO_COM",
+        exchange=exchange,
         # BEHAVIOR CHANGE: Default alert_enabled to False (was True previously)
         # This prevents unwanted alerts for coins added via API.
         # To enable alerts, the caller MUST explicitly set alert_enabled=True in the request payload.
         # This is a security/safety measure to prevent alert spam from accidentally added coins.
         alert_enabled=payload.get("alert_enabled", False),
+        buy_alert_enabled=payload.get("buy_alert_enabled", False),
+        sell_alert_enabled=payload.get("sell_alert_enabled", False),
         trade_enabled=payload.get("trade_enabled", False),
         trade_amount_usd=payload.get("trade_amount_usd"),
         trade_on_margin=payload.get("trade_on_margin", False),
         sl_tp_mode=payload.get("sl_tp_mode"),
         min_price_change_pct=payload.get("min_price_change_pct"),
+        alert_cooldown_minutes=payload.get("alert_cooldown_minutes"),
         sl_percentage=payload.get("sl_percentage"),
         tp_percentage=payload.get("tp_percentage"),
         sl_price=payload.get("sl_price"),
@@ -809,6 +920,65 @@ def update_watchlist_item(
     item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
+
+    # SAFETY: The dashboard sometimes sends is_deleted in the payload when toggling alerts.
+    # If this hits a deleted duplicate row, flipping is_deleted=False can violate the
+    # unique constraint (uq_watchlist_symbol_exchange_active). We:
+    # - Never apply is_deleted via this endpoint (handled by dedicated endpoints)
+    # - If the requested row is deleted but an active canonical row exists, we update the
+    #   canonical row instead of restoring the duplicate.
+    payload = dict(payload or {})
+    requested_restore = ("is_deleted" in payload and payload.get("is_deleted") is False)
+    payload.pop("is_deleted", None)
+
+    # If the row we are updating is deleted, redirect the update to an active canonical row
+    # for the same (symbol, exchange) to avoid constraint violations.
+    try:
+        symbol_upper = (getattr(item, "symbol", "") or "").upper()
+        exchange_upper = (getattr(item, "exchange", "CRYPTO_COM") or "CRYPTO_COM").upper()
+    except Exception:
+        symbol_upper = None
+        exchange_upper = None
+
+    if symbol_upper and hasattr(item, "is_deleted") and getattr(item, "is_deleted", False):
+        canonical = None
+        try:
+            q = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
+            if hasattr(WatchlistItem, "exchange") and exchange_upper:
+                q = q.filter(WatchlistItem.exchange == exchange_upper)
+            try:
+                q = q.filter(WatchlistItem.is_deleted == False)
+            except Exception:
+                pass
+            canonical = q.order_by(WatchlistItem.created_at.desc(), WatchlistItem.id.desc()).first()
+        except Exception:
+            canonical = None
+
+        if canonical and canonical.id != item.id:
+            log.warning(
+                "[WATCHLIST_UPDATE_REDIRECT] Requested update for deleted duplicate id=%s symbol=%s exchange=%s -> canonical_id=%s",
+                item.id,
+                symbol_upper,
+                exchange_upper,
+                canonical.id,
+            )
+            item = canonical
+            item_id = canonical.id
+        elif requested_restore:
+            # No active canonical row exists: allow restore explicitly requested by payload.
+            # (Still safer to prefer the dedicated restore endpoint.)
+            try:
+                item.is_deleted = False
+            except Exception:
+                pass
+    
+    # CRITICAL: Normalize boolean fields - convert None to False to prevent NULL in database
+    # This ensures data integrity even if frontend sends null/undefined values
+    boolean_fields = ["alert_enabled", "buy_alert_enabled", "sell_alert_enabled", 
+                      "trade_enabled", "trade_on_margin", "sold", "skip_sl_tp_reminder"]
+    for field in boolean_fields:
+        if field in payload and payload[field] is None:
+            payload[field] = False
     
     # Track what was updated for the message
     updates = []
@@ -893,7 +1063,45 @@ def update_watchlist_item(
             updates.append(f"STRATEGY: {old_strategy_str} → {new_strategy_str}")
     
     _apply_watchlist_updates(item, payload)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as ie:
+        # Handle unique constraint when a deleted duplicate row is being restored implicitly.
+        db.rollback()
+        err_text = str(getattr(ie, "orig", ie))
+        if "uq_watchlist_symbol_exchange_active" in err_text or "watchlist_symbol_exchange_active" in err_text:
+            # Try to update canonical active row instead of restoring/updating a duplicate.
+            if symbol_upper:
+                q = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol_upper)
+                if hasattr(WatchlistItem, "exchange") and exchange_upper:
+                    q = q.filter(WatchlistItem.exchange == exchange_upper)
+                try:
+                    q = q.filter(WatchlistItem.is_deleted == False)
+                except Exception:
+                    pass
+                canonical = q.order_by(WatchlistItem.created_at.desc(), WatchlistItem.id.desc()).first()
+                if canonical:
+                    log.warning(
+                        "[WATCHLIST_UNIQUE_VIOLATION] Retrying update on canonical id=%s symbol=%s exchange=%s (requested_id=%s)",
+                        canonical.id,
+                        symbol_upper,
+                        exchange_upper,
+                        item_id,
+                    )
+                    _apply_watchlist_updates(canonical, payload)
+                    db.commit()
+                    item = canonical
+                    item_id = canonical.id
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Duplicate active watchlist row exists for {symbol_upper}; cannot restore/update this row.",
+                    )
+            else:
+                raise HTTPException(status_code=409, detail="Duplicate active watchlist row exists; update rejected.")
+        else:
+            raise
+
     db.refresh(item)
     
     # CRITICAL: Also check if strategy changed by comparing resolved strategy profiles
@@ -1097,12 +1305,15 @@ def delete_watchlist_item(item_id: int, db: Session = Depends(get_db)):
 def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     """Get a watchlist item by symbol (includes deleted items)."""
     symbol = (symbol or "").upper()
-    item = (
+    # Deterministic selection when duplicates exist:
+    # - Prefer active rows; if all are deleted, return the "best" deleted row.
+    items = (
         db.query(WatchlistItem)
         .filter(WatchlistItem.symbol == symbol)
-        .order_by(WatchlistItem.created_at.desc())
-        .first()
+        .order_by(WatchlistItem.id.desc())
+        .all()
     )
+    item = select_preferred_watchlist_item(items, symbol)
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
     return _serialize_watchlist_item(item)
@@ -1112,12 +1323,14 @@ def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
 def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     """Restore a deleted watchlist item by symbol (set is_deleted=False)."""
     symbol = (symbol or "").upper()
-    item = (
+    # Include deleted rows in lookup so restore works even if the only row is deleted.
+    items = (
         db.query(WatchlistItem)
         .filter(WatchlistItem.symbol == symbol)
-        .order_by(WatchlistItem.created_at.desc())
-        .first()
+        .order_by(WatchlistItem.id.desc())
+        .all()
     )
+    item = select_preferred_watchlist_item(items, symbol)
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
     
@@ -1134,9 +1347,9 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
     try:
         if _soft_delete_supported(db) and hasattr(item, "is_deleted"):
             item.is_deleted = False
-            # Optionally restore some default settings
-            if not item.alert_enabled:
-                item.alert_enabled = False
+            # Preserve existing alert_enabled value instead of resetting
+            # This prevents alerts from being deactivated when items are restored
+            # item.alert_enabled is preserved (not reset)
             db.commit()
             db.refresh(item)
             log.info(f"✅ Restored watchlist item {symbol} (ID: {item.id})")
@@ -1157,12 +1370,9 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
 def delete_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     """Delete watchlist item by symbol."""
     symbol = (symbol or "").upper()
-    item = (
-        db.query(WatchlistItem)
-        .filter(WatchlistItem.symbol == symbol)
-        .order_by(WatchlistItem.created_at.desc())
-        .first()
-    )
+    # CRITICAL: Use get_canonical_watchlist_item to handle duplicate entries correctly
+    # This ensures we always get the same canonical entry when there are duplicates
+    item = get_canonical_watchlist_item(db, symbol)
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
     

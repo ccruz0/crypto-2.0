@@ -470,10 +470,11 @@ def calculate_trading_signals(
     
     # Volume check: require minVolumeRatio (configurable from Signal Config, default 0.5x).
     # CRITICAL: Volume data must be available and meet the minimum ratio threshold.
-    # If volume data is missing or unavailable, block BUY signals (volume_ok = False).
+    # If volume data is missing, zero, or unavailable, block BUY signals (volume_ok = False).
     volume_ok = False  # Default to False if volume data not available - block BUY when no volume
     volume_ratio_val: Optional[float] = None
-    if volume is not None and avg_volume is not None and avg_volume > 0:
+    # CRITICAL FIX: Check that volume is not None AND volume > 0 (zero volume is invalid)
+    if volume is not None and volume > 0 and avg_volume is not None and avg_volume > 0:
         volume_ratio_val = volume / avg_volume
         # CANONICAL: Use configured min_volume_ratio from Signal Config (strategy_rules)
         # Ensure both values are floats for accurate comparison
@@ -482,8 +483,8 @@ def calculate_trading_signals(
         
         strategy_state["reasons"]["buy_volume_ok"] = volume_ok
     else:
-        # CRITICAL FIX: Block BUY signals when volume data is unavailable or missing
-        # This prevents green BUY buttons when there's no volume data (e.g., TRX with empty volume)
+        # CRITICAL FIX: Block BUY signals when volume data is unavailable, missing, or zero
+        # This prevents green BUY buttons when there's no volume data (e.g., volume=0.0)
         strategy_state["reasons"]["buy_volume_ok"] = False
     
     # Price check: ensure price is valid (always True for valid price data)
@@ -687,15 +688,16 @@ def calculate_trading_signals(
     
     # Volume check: require minVolumeRatio (configurable, default 0.5x).
     # CRITICAL: Volume data must be available and meet the minimum ratio threshold.
-    # If volume data is missing or unavailable, block SELL signals (sell_volume_ok = False).
+    # If volume data is missing, zero, or unavailable, block SELL signals (sell_volume_ok = False).
     sell_volume_ok = False  # Default to False if volume data not available - block SELL when no volume
     sell_volume_ratio = None
-    if volume is not None and avg_volume is not None and avg_volume > 0:
+    # CRITICAL FIX: Check that volume is not None AND volume > 0 (zero volume is invalid)
+    if volume is not None and volume > 0 and avg_volume is not None and avg_volume > 0:
         sell_volume_ratio = volume / avg_volume
         sell_volume_ok = sell_volume_ratio >= min_volume_ratio
         strategy_state["reasons"]["sell_volume_ok"] = sell_volume_ok
     else:
-        # CRITICAL FIX: Block SELL signals when volume data is unavailable or missing
+        # CRITICAL FIX: Block SELL signals when volume data is unavailable, missing, or zero
         # This prevents SELL signals when there's no volume data (consistent with BUY fix)
         strategy_state["reasons"]["sell_volume_ok"] = False
     
