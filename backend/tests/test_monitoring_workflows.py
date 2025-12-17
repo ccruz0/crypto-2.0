@@ -18,6 +18,14 @@ def test_get_workflows_returns_list():
     """Test that GET /api/monitoring/workflows returns a list of workflows"""
     response = client.get("/api/monitoring/workflows")
     assert response.status_code == 200
+    # Ensure monitoring workflow status is never cached by browsers/proxies
+    cache_control = (response.headers.get("cache-control") or "").lower()
+    pragma = (response.headers.get("pragma") or "").lower()
+    expires = (response.headers.get("expires") or "").lower()
+    assert "no-store" in cache_control
+    assert "no-cache" in cache_control
+    assert "no-cache" in pragma
+    assert expires in ("0", "")
     data = response.json()
     assert "workflows" in data
     assert isinstance(data["workflows"], list)

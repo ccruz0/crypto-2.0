@@ -418,6 +418,11 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             if not symbol_value:
                 continue
 
+            # Guardrail: only accept canonical Crypto.com style symbols (e.g. BTC_USDT).
+            # This prevents junk rows if some code path mistakenly stored side/status in `symbol`.
+            if symbol_pattern.fullmatch(symbol_value) is None:
+                continue
+
             upper_msg = message_text.upper()
 
             # Extract side from message content (keep it strict to avoid false positives).
@@ -437,6 +442,9 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             
             # If we found a throttle state, try to match it with this message
             if throttle_state:
+                throttle_emit_reason_lower = (throttle_state.emit_reason or "").lower()
+                throttle_looks_blocked = ("throttled" in throttle_emit_reason_lower) or ("blocked" in throttle_emit_reason_lower)
+
                 # Check if this message timestamp is close to the throttle state timestamp
                 msg_time = msg.timestamp
                 throttle_time = throttle_state.last_time
@@ -450,7 +458,7 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     
                     # Match if within 30 minutes (same alert)
                     time_diff = abs((msg_time - throttle_time).total_seconds())
-                    if time_diff <= 1800:  # 30 minutes - this is the same alert
+                    if time_diff <= 1800 and not throttle_looks_blocked:  # same alert and throttle state looks like a SENT event
                         strategy_key = throttle_state.strategy_key or "unknown:unknown"
                         last_price = throttle_state.last_price
                         last_time = throttle_time  # Use throttle time as it's more accurate
@@ -472,14 +480,14 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                         strategy_key = throttle_state.strategy_key or "unknown:unknown"
                         last_price = throttle_state.last_price
                         last_time = msg_time  # Use message time as it's the actual send time
-                        emit_reason = msg.throttle_reason or throttle_state.emit_reason or "Sent to Telegram"
+                        emit_reason = msg.throttle_reason or (None if throttle_looks_blocked else throttle_state.emit_reason) or "Sent to Telegram"
                         price_change_pct = None
                 else:
                     # No timestamps to match, use throttle state data if available
                     strategy_key = throttle_state.strategy_key or "unknown:unknown"
                     last_price = throttle_state.last_price
                     last_time = throttle_state.last_time or msg_time
-                    emit_reason = throttle_state.emit_reason or msg.throttle_reason or "Sent to Telegram"
+                    emit_reason = (None if throttle_looks_blocked else throttle_state.emit_reason) or msg.throttle_reason or "Sent to Telegram"
                     price_change_pct = None
             else:
                 # No matching throttle state, use message data only
