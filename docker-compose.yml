@@ -139,7 +139,7 @@ services:
       - local
 
   # ============================================
-  # BACKEND - AWS Profile (Via Gluetun)
+  # BACKEND - AWS Profile (Direct Connection)
   # ============================================
   backend-aws:
     build:
@@ -160,6 +160,7 @@ services:
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
+      # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
       - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
@@ -177,7 +178,7 @@ services:
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
-    # NOTE: Backend AWS uses gluetun network for outbound traffic via VPN
+    # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
     # Ports are exposed for external API access (health checks, frontend calls)
     ports:
       - "8002:8002"
@@ -185,7 +186,8 @@ services:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
+    # Use >1 worker so /ping_fast stays responsive even during slow endpoints.
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
@@ -199,8 +201,6 @@ services:
           cpus: "1.0"
           memory: "1G"
     depends_on:
-      gluetun:
-        condition: service_healthy
       db:
         condition: service_healthy
     profiles:
@@ -260,9 +260,12 @@ services:
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=AWS
       - LIVE_TRADING=${LIVE_TRADING:-true}
+      # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
       - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+      - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
+      - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
     depends_on:
       db:
@@ -326,7 +329,7 @@ services:
       - local
 
   # ============================================
-  # FRONTEND - AWS Profile (Via Gluetun)
+  # FRONTEND - AWS Profile
   # ============================================
   frontend-aws:
     build:
@@ -338,7 +341,9 @@ services:
       - .env.aws
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://backend-aws:8002/api
+      # Use relative path for client-side - environment.ts will detect hostname at runtime
+      # Empty string can cause issues, so use relative path which works in both SSR and browser
+      - NEXT_PUBLIC_API_URL=/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-aws}
     ports:
       - "3000:3000"
