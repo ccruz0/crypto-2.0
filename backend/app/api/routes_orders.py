@@ -354,6 +354,10 @@ def create_sl_tp_for_order(
     current_user = None if _should_disable_auth() else Depends(get_current_user),
     sl_percentage: Optional[float] = Query(None),
     tp_percentage: Optional[float] = Query(None),
+    force: bool = Query(False, description="If true, bypass rejected/cooldown protections and attempt to place SL/TP again"),
+    place_live: bool = Query(True, description="If true, temporarily set LIVE_TRADING=true for this request, then restore previous value"),
+    use_proxy: Optional[bool] = Query(None, description="If set, temporarily override USE_CRYPTO_PROXY for this request"),
+    strict: bool = Query(True, description="If true, use exact % SL/TP without ATR blending"),
     # Optional parameters to create order if it doesn't exist
     symbol: Optional[str] = Query(None),
     side: Optional[str] = Query(None),
@@ -369,11 +373,50 @@ def create_sl_tp_for_order(
     
     If order doesn't exist and symbol/side/price/quantity are provided, the order will be created first.
     """
+    # Defaults so we can safely restore in finally
+    prev_use_proxy = None
+    prev_live = False
+    live_toggled = False
+
     try:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
         from app.services.exchange_sync import exchange_sync_service
         from datetime import datetime, timezone
+        from app.utils.live_trading import get_live_trading_status
+        from app.models.trading_settings import TradingSettings
         
+        # Optional per-request override for proxy usage
+        prev_use_proxy = getattr(trade_client, "use_proxy", None)
+        if use_proxy is not None:
+            trade_client.use_proxy = bool(use_proxy)
+
+        # Temporarily toggle LIVE_TRADING in DB if requested
+        prev_live = get_live_trading_status(db)
+        if place_live and not prev_live:
+            try:
+                setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+                if setting:
+                    setting.setting_value = "true"
+                    setting.updated_at = func.now()
+                else:
+                    setting = TradingSettings(
+                        setting_key="LIVE_TRADING",
+                        setting_value="true",
+                        description="Enable/disable live trading (real orders vs dry run)"
+                    )
+                    db.add(setting)
+                db.commit()
+                os.environ["LIVE_TRADING"] = "true"
+                live_toggled = True
+                logger.info("✅ Temporarily enabled LIVE_TRADING for create-sl-tp request")
+            except Exception as e:
+                logger.error(f"Failed to enable LIVE_TRADING for request: {e}", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=500, detail=f"Failed to enable LIVE_TRADING: {str(e)}")
+
         # Find the order
         order = db.query(ExchangeOrder).filter(
             ExchangeOrder.exchange_order_id == order_id
@@ -464,7 +507,7 @@ def create_sl_tp_for_order(
             # But we need to ensure the watchlist_item exists, so create a minimal one
             watchlist_item = WatchlistItem(
                 symbol=symbol,
-                exchange=order.exchange or "CRYPTO_COM",
+                exchange="CRYPTO_COM",
                 sl_tp_mode="conservative",
                 is_deleted=False,
                 trade_enabled=False  # SL/TP creation doesn't require trade_enabled=True
@@ -477,7 +520,7 @@ def create_sl_tp_for_order(
             db.add(watchlist_item)
             db.commit()
             db.refresh(watchlist_item)
-            logger.info(f"Created temporary watchlist_item for {symbol} with trade_enabled=True")
+            logger.info(f"Created temporary watchlist_item for {symbol} with trade_enabled=False")
         else:
             # NOTE: SL/TP creation doesn't require trade_enabled=True
             # We don't modify trade_enabled here - it's not needed for protection orders
@@ -502,14 +545,22 @@ def create_sl_tp_for_order(
                 side=side,
                 filled_price=filled_price,
                 filled_qty=filled_qty,
-                order_id=order_id
+                order_id=order_id,
+                force=force,
+                source="manual",
+                strict_percentages=strict,
             )
             
             # Verify SL/TP were created
             new_sl_tp = db.query(ExchangeOrder).filter(
                 ExchangeOrder.parent_order_id == order_id,
                 ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                ExchangeOrder.status.in_([
+                    OrderStatusEnum.NEW,
+                    OrderStatusEnum.ACTIVE,
+                    OrderStatusEnum.PARTIALLY_FILLED,
+                    OrderStatusEnum.REJECTED,
+                ])
             ).all()
             
             return {
@@ -520,6 +571,12 @@ def create_sl_tp_for_order(
                 "side": side,
                 "filled_price": filled_price,
                 "filled_qty": filled_qty,
+                "force": force,
+                "place_live": place_live,
+                "strict": strict,
+                "live_was_enabled": prev_live,
+                "live_temporarily_enabled": live_toggled,
+                "use_proxy": trade_client.use_proxy if hasattr(trade_client, "use_proxy") else None,
                 "created_sl_tp": [
                     {
                         "order_id": o.exchange_order_id,
@@ -544,6 +601,32 @@ def create_sl_tp_for_order(
         logger.exception(f"Error creating SL/TP for order {order_id}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Restore LIVE_TRADING if we toggled it for this request
+        if place_live and live_toggled:
+            try:
+                from app.models.trading_settings import TradingSettings
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+                if setting:
+                    setting.setting_value = "true" if prev_live else "false"
+                    setting.updated_at = func.now()
+                    db.commit()
+                os.environ["LIVE_TRADING"] = "true" if prev_live else "false"
+                logger.info(f"✅ Restored LIVE_TRADING to {prev_live} after create-sl-tp request")
+            except Exception as restore_err:
+                logger.error(f"❌ Failed to restore LIVE_TRADING after create-sl-tp request: {restore_err}", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+        # Restore proxy override if set
+        if use_proxy is not None and prev_use_proxy is not None:
+            trade_client.use_proxy = prev_use_proxy
 
 
 class CreateSLTPForOrderRequest(BaseModel):

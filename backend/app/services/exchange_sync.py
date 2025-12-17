@@ -558,7 +558,10 @@ class ExchangeSyncService:
         side: str,
         filled_price: float,
         filled_qty: float,
-        order_id: str
+        order_id: str,
+        force: bool = False,
+        source: str = "auto",
+        strict_percentages: bool = False,
     ):
         """Create SL and TP orders automatically when a LIMIT or MARKET order is filled"""
         from app.models.watchlist import WatchlistItem
@@ -568,18 +571,16 @@ class ExchangeSyncService:
             logger.warning(f"Cannot create SL/TP for order {order_id}: invalid price ({filled_price}) or quantity ({filled_qty})")
             return
         
-        # CRITICAL: First check if SL/TP already exist for this order (quick check before lock)
-        # This prevents duplicate creation even if the function is called multiple times
-        existing_sl_tp_check = db.query(ExchangeOrder).filter(
+        # If any protection order has already been FILLED, do not recreate protection orders.
+        existing_sl_tp_filled = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == order_id,
             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED, OrderStatusEnum.FILLED])
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
         ).count()
-        
-        if existing_sl_tp_check > 0:
+        if existing_sl_tp_filled > 0:
             logger.info(
-                f"⚠️ SL/TP orders already exist for order {order_id} ({symbol}): found {existing_sl_tp_check} existing order(s). "
-                f"Skipping duplicate creation."
+                f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
+                f"Skipping SL/TP creation."
             )
             return
         
@@ -608,6 +609,9 @@ class ExchangeSyncService:
         # Set lock
         self._sl_tp_creation_locks[lock_key] = time.time()
         
+        # Track existing active orders so we can create missing side only
+        existing_sl_active = None
+        existing_tp_active = []
         try:
             # CRITICAL: Sync open orders from exchange FIRST to get latest status
             # This ensures we see any orders that were created/rejected on the exchange
@@ -649,7 +653,7 @@ class ExchangeSyncService:
             # Also check for RECENT REJECTED TP orders for this symbol (last 10 minutes)
             # If a TP was recently rejected, don't try to create another immediately
             # This prevents rapid-fire creation attempts that all get rejected
-            from datetime import timedelta, timezone
+            from datetime import timedelta
             recent_rejected_threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
             recent_rejected_tp = db.query(ExchangeOrder).filter(
                 ExchangeOrder.symbol == symbol,
@@ -658,28 +662,35 @@ class ExchangeSyncService:
                 ExchangeOrder.created_at >= recent_rejected_threshold
             ).first()
             
-            if existing_sl_active or len(existing_tp_active) > 0:
+            # If BOTH protection orders already exist and are active, do nothing.
+            if existing_sl_active and len(existing_tp_active) > 0:
                 logger.info(
                     f"⚠️ SL/TP orders already exist (ACTIVE) for order {order_id} ({symbol}): "
-                    f"SL={'exists' if existing_sl_active else 'none'}, TP={len(existing_tp_active)} order(s). "
-                    f"Skipping duplicate creation to avoid REJECTED orders."
+                    f"SL=exists, TP={len(existing_tp_active)} order(s). Skipping duplicate creation."
                 )
                 if len(existing_tp_active) > 1:
                     logger.warning(
                         f"⚠️ WARNING: Found {len(existing_tp_active)} TP orders for order {order_id} ({symbol})! "
                         f"This indicates duplicate creation. TP IDs: {[tp.exchange_order_id for tp in existing_tp_active]}"
                     )
+                # Release lock before returning early
+                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
                 return
-            
-            if existing_tp_rejected:
+
+            # If TP is missing and a TP was rejected recently, respect cooldown unless forced.
+            if len(existing_tp_active) == 0 and existing_tp_rejected and not force:
                 logger.warning(
                     f"⚠️ TP order was REJECTED for order {order_id} ({symbol}). "
                     f"Not creating another TP to avoid DUPLICATE_CLORDID error. "
                     f"Rejected TP order ID: {existing_tp_rejected.exchange_order_id}"
                 )
+                # Release lock before returning early
+                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
                 return
             
-            if recent_rejected_tp:
+            if len(existing_tp_active) == 0 and recent_rejected_tp and not force:
                 logger.warning(
                     f"⚠️ Recent REJECTED TP order exists for {symbol} (created {recent_rejected_tp.created_at}): "
                     f"TP order ID: {recent_rejected_tp.exchange_order_id}, "
@@ -687,11 +698,14 @@ class ExchangeSyncService:
                     f"Not creating another TP immediately to avoid repeated REJECTED orders. "
                     f"Will retry after cooldown period."
                 )
+                # Release lock before returning early
+                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
                 return
         finally:
-            # Always remove lock when done (even if we return early)
-            if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                del self._sl_tp_creation_locks[lock_key]
+            # Keep lock for the full SL/TP creation flow.
+            # Early-return paths above explicitly release the lock.
+            pass
         
         # Log the quantity being used for SL/TP
         logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
@@ -809,8 +823,9 @@ class ExchangeSyncService:
             sl_price = filled_price * (1 + effective_sl_pct / 100)
             tp_price = filled_price * (1 - effective_tp_pct / 100)
 
-        # Blend with ATR-based levels if ATR is available (gives strategy-derived safety margins)
-        if atr > 0:
+        # Blend with ATR-based levels if ATR is available (gives strategy-derived safety margins).
+        # For manual/explicit requests we can opt into strict % levels.
+        if atr > 0 and not strict_percentages:
             calculated = calculate_stop_loss_and_take_profit(filled_price, atr)
             if sl_tp_mode == "aggressive":
                 atr_sl = calculated["stop_loss"]["aggressive"]["value"]
@@ -850,63 +865,84 @@ class ExchangeSyncService:
             db.rollback()
 
         # Round values if necessary (post-persistence) to match exchange requirements
-            if filled_price >= 100:
-                sl_price = round(sl_price)
-                tp_price = round(tp_price)
-            else:
-                sl_price = round(sl_price, 4)
-                tp_price = round(tp_price, 4)
+        if filled_price >= 100:
+            sl_price = round(sl_price)
+            tp_price = round(tp_price)
+        else:
+            sl_price = round(sl_price, 4)
+            tp_price = round(tp_price, 4)
         
         from app.utils.live_trading import get_live_trading_status
         live_trading = get_live_trading_status(db)
         
         # Generate OCO group ID for linking SL and TP orders
         import uuid
-        oco_group_id = f"oco_{order_id}_{int(datetime.utcnow().timestamp())}"
+        # If we're only creating one side, try to reuse existing OCO group to keep the pair linked.
+        oco_group_id = None
+        try:
+            if existing_sl_active and getattr(existing_sl_active, "oco_group_id", None):
+                oco_group_id = existing_sl_active.oco_group_id
+            elif existing_tp_active and getattr(existing_tp_active[0], "oco_group_id", None):
+                oco_group_id = existing_tp_active[0].oco_group_id
+        except Exception:
+            oco_group_id = None
+        if not oco_group_id:
+            oco_group_id = f"oco_{order_id}_{int(datetime.utcnow().timestamp())}"
         logger.info(f"Creating SL/TP pair with OCO group: {oco_group_id}")
         
         # Use the reusable TP/SL order creator functions
         from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
         
-        # Create SL order using shared logic
-        sl_result = create_stop_loss_order(
-            db=db,
-            symbol=symbol,
-            side=side,
-            sl_price=sl_price,
-            quantity=filled_qty,
-            entry_price=filled_price,
-            parent_order_id=order_id,
-            oco_group_id=oco_group_id,
-            is_margin=is_margin,
-            leverage=leverage,
-            dry_run=not live_trading,
-            source="auto"
-        )
+        # Create SL order using shared logic (only if missing)
+        if existing_sl_active:
+            logger.info(f"ℹ️ SL already exists for {symbol} order {order_id} (active: {existing_sl_active.exchange_order_id}). Skipping SL creation.")
+            sl_result = {"order_id": str(existing_sl_active.exchange_order_id), "error": None}
+        else:
+            sl_result = create_stop_loss_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                sl_price=sl_price,
+                quantity=filled_qty,
+                entry_price=filled_price,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                is_margin=is_margin,
+                leverage=leverage,
+                dry_run=not live_trading,
+                source=source
+            )
+
         sl_order_id = sl_result.get("order_id")
         sl_order_error = sl_result.get("error")
-        
-        # Log SL order result
+
         if sl_order_id:
-            logger.info(f"✅ SL order created successfully for {symbol} order {order_id}: order_id={sl_order_id}")
+            logger.info(f"✅ SL order ready for {symbol} order {order_id}: order_id={sl_order_id}")
         else:
             logger.error(f"❌ SL order creation failed for {symbol} order {order_id}: {sl_order_error}")
-        
-        # Create TP order using shared logic
-        tp_result = create_take_profit_order(
-            db=db,
-            symbol=symbol,
-            side=side,
-            tp_price=tp_price,
-            quantity=filled_qty,
-            entry_price=filled_price,
-            parent_order_id=order_id,
-            oco_group_id=oco_group_id,
-            is_margin=is_margin,
-            leverage=leverage,
-            dry_run=not live_trading,
-            source="auto"
-        )
+
+        # Create TP order using shared logic (only if missing)
+        if len(existing_tp_active) > 0:
+            logger.info(
+                f"ℹ️ TP already exists for {symbol} order {order_id} "
+                f"(active count: {len(existing_tp_active)}). Skipping TP creation."
+            )
+            tp_result = {"order_id": str(existing_tp_active[0].exchange_order_id), "error": None}
+        else:
+            tp_result = create_take_profit_order(
+                db=db,
+                symbol=symbol,
+                side=side,
+                tp_price=tp_price,
+                quantity=filled_qty,
+                entry_price=filled_price,
+                parent_order_id=order_id,
+                oco_group_id=oco_group_id,
+                is_margin=is_margin,
+                leverage=leverage,
+                dry_run=not live_trading,
+                source=source
+            )
         tp_order_id = tp_result.get("order_id")
         tp_order_error = tp_result.get("error")
         
@@ -996,6 +1032,10 @@ class ExchangeSyncService:
                     logger.error(f"❌ Failed to send Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
         except Exception as telegram_err:
             logger.error(f"❌ Exception sending Telegram notification for SL/TP: {telegram_err}", exc_info=True)
+
+        # Release lock at end of flow (success path).
+        if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+            del self._sl_tp_creation_locks[lock_key]
     
     def _cancel_remaining_sl_tp(self, db: Session, symbol: str, executed_order_type: str, executed_order_id: str):
         """Cancel the remaining SL or TP order when one is executed"""
