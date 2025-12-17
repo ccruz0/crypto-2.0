@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # Requirements:
 #   - SSH key must be at ~/.ssh/id_rsa
-#   - Server must be accessible at ubuntu@175.41.189.249
+#   - Server must be accessible at ubuntu@47.130.143.159 (or override HOST env var)
 #   - .env file must exist in the project root (not modified by this script)
 #   - Scripts are non-interactive; id_rsa must not prompt for passphrase
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 # ============================================
 
 # Configuration
-HOST="${HOST:-ubuntu@175.41.189.249}"
+HOST="${HOST:-ubuntu@47.130.143.159}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/automated-trading-platform}"
 # Load unified SSH helper
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
@@ -76,10 +76,10 @@ if ! ssh_cmd "$HOST" "echo 'SSH connection OK'" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Step 5: Create remote directory if it doesn't exist
-info "Creating remote directory if needed..."
-ssh_cmd "$HOST" "mkdir -p $REMOTE_DIR" || {
-    error "Failed to create remote directory"
+# Step 5: Create remote directory if it doesn't exist and ensure permissions
+info "Creating remote directory if needed and setting permissions..."
+ssh_cmd "$HOST" "mkdir -p $REMOTE_DIR && chmod 755 $REMOTE_DIR && test -w $REMOTE_DIR" || {
+    error "Failed to create remote directory or set permissions"
     exit 1
 }
 
@@ -145,6 +145,24 @@ else
 fi
 
 info "Files synchronized successfully ✓"
+
+# Post-sync: Fix permissions for Docker compatibility
+info "Fixing permissions for Docker compatibility..."
+ssh_cmd "$HOST" << 'PERM_FIX'
+  cd /home/ubuntu/automated-trading-platform || exit 1
+  # Ensure directories are traversable (755)
+  find . -type d ! -perm 755 -exec chmod 755 {} \; 2>/dev/null || true
+  # Ensure files are readable (preserve executable bits for scripts)
+  find . -type f ! -perm -u+r -exec chmod u+r {} \; 2>/dev/null || true
+  # Ensure backend and frontend directories have correct permissions
+  [ -d backend ] && find backend -type d -exec chmod 755 {} \; 2>/dev/null || true
+  [ -d backend ] && find backend -type f -exec chmod 644 {} \; 2>/dev/null || true
+  [ -d frontend ] && find frontend -type d -exec chmod 755 {} \; 2>/dev/null || true
+  [ -d frontend ] && find frontend -type f -exec chmod 644 {} \; 2>/dev/null || true
+  # Ensure shell scripts are executable
+  find . -type f \( -name '*.sh' -o -name '*.bash' \) -exec chmod +x {} \; 2>/dev/null || true
+  echo "✅ Permissions fixed for Docker compatibility"
+PERM_FIX
 
 # Step 7: Deploy services on remote server
 info "Deploying services on remote server..."
