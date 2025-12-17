@@ -1,5 +1,6 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
@@ -8,12 +9,21 @@ import logging
 import time
 import asyncio
 import os
+import re
 import requests
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
+
+# Prevent browser/proxy caching for monitoring endpoints that must be "real-time".
+# This fixes stale workflow status/errors being shown in the dashboard.
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 # In-memory alert storage (simple implementation)
 _active_alerts: List[Dict[str, Any]] = []
@@ -344,11 +354,9 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
 async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
     """Expose recent signal throttle state for the Monitoring dashboard.
     
-    IMPORTANT: Returns throttle entries that were actually sent to Telegram (not blocked).
-    Uses a two-pronged approach:
-    1. Shows throttle states that don't have "throttled" or "blocked" in emit_reason (these were sent)
-    2. Also includes throttle states that have matching sent TelegramMessage records
-    This ensures all sent messages are shown, even if recording failed or matching is imperfect.
+    IMPORTANT: Returns ALL alerts that were sent to Telegram (not blocked).
+    Uses TelegramMessage table as the primary source to ensure we show ALL sent messages,
+    then enriches with throttle state data when available.
     """
     log.debug("Fetching signal throttle state (limit=%s)", limit)
     if db is None:
@@ -358,112 +366,163 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         from app.models.telegram_message import TelegramMessage
         
         bounded_limit = max(1, min(limit, 500))
-        
-        # Strategy 1: Get all throttle states that were sent (don't have "throttled" or "blocked" in emit_reason)
-        # This is the PRIMARY source - these are messages that were definitely sent
-        all_recent_throttle_states = (
-            db.query(SignalThrottleState)
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit * 3)  # Get more to account for filtering
-            .all()
-        )
-        
-        # Filter to only include states that were sent (not throttled/blocked)
-        sent_throttle_states = []
-        for state in all_recent_throttle_states:
-            emit_reason = (state.emit_reason or '').lower()
-            # Include if emit_reason does NOT contain "throttled" or "blocked"
-            # These are messages that were sent to Telegram
-            if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
-                sent_throttle_states.append(state)
-            if len(sent_throttle_states) >= bounded_limit:
-                break
-        
-        # Strategy 2: Also get throttle states that have matching sent TelegramMessage records
-        # This catches cases where the emit_reason might be missing or unclear
-        # Use a wider time window (30 minutes) and case-insensitive symbol matching
-        throttle_states_with_sent_messages = (
-            db.query(SignalThrottleState)
-            .filter(
-                # Only include throttle states that have a corresponding sent Telegram message
-                db.query(TelegramMessage.id)
-                .filter(
-                    func.upper(TelegramMessage.symbol) == func.upper(SignalThrottleState.symbol),
-                    TelegramMessage.blocked == False,  # Only messages that were sent (not blocked)
-                    # Match within 30 minutes window to account for processing delays and timezone issues
-                    TelegramMessage.timestamp >= SignalThrottleState.last_time - timedelta(minutes=30),
-                    TelegramMessage.timestamp <= SignalThrottleState.last_time + timedelta(minutes=30)
-                )
-                .exists()
-            )
-            .order_by(SignalThrottleState.last_time.desc())
-            .limit(bounded_limit * 2)
-            .all()
-        )
-        
-        # Merge both strategies: combine sent_throttle_states with throttle_states_with_sent_messages
-        # Use a dict keyed by (symbol, side, strategy_key, last_time) to deduplicate
-        merged_states = {}
-        for state in sent_throttle_states:
-            key = (state.symbol, state.side, state.strategy_key, state.last_time)
-            if key not in merged_states:
-                merged_states[key] = state
-        
-        # Add states from Strategy 2 that aren't already in merged_states
-        for state in throttle_states_with_sent_messages:
-            key = (state.symbol, state.side, state.strategy_key, state.last_time)
-            if key not in merged_states:
-                # Double-check this one doesn't have "throttled" or "blocked" in emit_reason
-                emit_reason = (state.emit_reason or '').lower()
-                if 'throttled' not in emit_reason and 'blocked' not in emit_reason:
-                    merged_states[key] = state
-        
-        # Convert to list and sort by last_time descending
-        # Handle None last_time by using a very old datetime
-        min_datetime = datetime(1970, 1, 1, tzinfo=timezone.utc)
-        rows = sorted(merged_states.values(), key=lambda s: s.last_time or min_datetime, reverse=True)[:bounded_limit]
         now = datetime.now(timezone.utc)
-        payload = []
-        for row in rows:
-            last_time = row.last_time
+        
+        # PRIMARY STRATEGY: Query sent Telegram messages (blocked=False)
+        # Use TelegramMessage as source of truth so the panel shows what was actually sent.
+        sent_messages = (
+            db.query(TelegramMessage)
+            .filter(TelegramMessage.blocked == False)  # Only messages that were sent
+            .order_by(TelegramMessage.timestamp.desc())
+            .limit(bounded_limit * 5)  # Get more to account for filtering
+            .all()
+        )
+        
+        # Build a map of throttle states by (symbol, side) for enrichment
+        # Query all recent throttle states
+        all_throttle_states = (
+            db.query(SignalThrottleState)
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit * 3)
+            .all()
+        )
+        
+        # Create lookup: (symbol, side) -> throttle state (most recent)
+        throttle_lookup = {}
+        for state in all_throttle_states:
+            if state.symbol and state.side:
+                key = (state.symbol.upper(), state.side.upper())
+                # Keep the most recent state for each (symbol, side) pair
+                if key not in throttle_lookup or (
+                    state.last_time and throttle_lookup[key].last_time and
+                    state.last_time > throttle_lookup[key].last_time
+                ):
+                    throttle_lookup[key] = state
+        
+        # Process sent messages and enrich with throttle data
+        payload_map = {}  # Key: (symbol, side, timestamp) to deduplicate
+        
+        symbol_pattern = re.compile(r"\b([A-Z0-9]{2,15}_[A-Z0-9]{2,15})\b")
+
+        for msg in sent_messages:
+            message_text = msg.message or ""
+
+            # Resolve symbol: use stored symbol when present; otherwise try to parse from message body.
+            symbol_value = (msg.symbol or "").strip().upper()
+            if not symbol_value:
+                m = symbol_pattern.search(message_text.upper())
+                if m:
+                    symbol_value = m.group(1).upper()
+
+            # If we still can't determine a symbol, this is likely a command/system message; skip it.
+            if not symbol_value:
+                continue
+
+            upper_msg = message_text.upper()
+
+            # Extract side from message content (keep it strict to avoid false positives).
+            side = "UNKNOWN"
+            if "BUY SIGNAL" in upper_msg or "🟢" in message_text:
+                side = "BUY"
+            elif "SELL SIGNAL" in upper_msg or "🟥" in message_text or "🔴" in message_text:
+                side = "SELL"
+            elif "BUY INDEX" in upper_msg or " INDEX" in upper_msg:
+                side = "INDEX"
+            
+            # Extract strategy from message or throttle state
+            strategy_key = "unknown:unknown"
+            
+            # Try to find matching throttle state
+            throttle_state = throttle_lookup.get((symbol_value, side))
+            
+            # If we found a throttle state, try to match it with this message
+            if throttle_state:
+                # Check if this message timestamp is close to the throttle state timestamp
+                msg_time = msg.timestamp
+                throttle_time = throttle_state.last_time
+                
+                if msg_time and throttle_time:
+                    # Normalize timezones
+                    if msg_time.tzinfo is None:
+                        msg_time = msg_time.replace(tzinfo=timezone.utc)
+                    if throttle_time.tzinfo is None:
+                        throttle_time = throttle_time.replace(tzinfo=timezone.utc)
+                    
+                    # Match if within 30 minutes (same alert)
+                    time_diff = abs((msg_time - throttle_time).total_seconds())
+                    if time_diff <= 1800:  # 30 minutes - this is the same alert
+                        strategy_key = throttle_state.strategy_key or "unknown:unknown"
+                        last_price = throttle_state.last_price
+                        last_time = throttle_time  # Use throttle time as it's more accurate
+                        emit_reason = throttle_state.emit_reason
+                        
+                        # Calculate price change
+                        price_change_pct = None
+                        if throttle_state.last_price and throttle_state.previous_price:
+                            if throttle_state.last_price > 0 and throttle_state.previous_price > 0:
+                                try:
+                                    calculated_pct = ((throttle_state.last_price - throttle_state.previous_price) / throttle_state.previous_price * 100)
+                                    if abs(calculated_pct) <= 100:
+                                        price_change_pct = calculated_pct
+                                except Exception:
+                                    pass
+                    else:
+                        # Timestamps don't match - this might be a different alert
+                        # Use message timestamp but still try to enrich with throttle data if available
+                        strategy_key = throttle_state.strategy_key or "unknown:unknown"
+                        last_price = throttle_state.last_price
+                        last_time = msg_time  # Use message time as it's the actual send time
+                        emit_reason = msg.throttle_reason or throttle_state.emit_reason or "Sent to Telegram"
+                        price_change_pct = None
+                else:
+                    # No timestamps to match, use throttle state data if available
+                    strategy_key = throttle_state.strategy_key or "unknown:unknown"
+                    last_price = throttle_state.last_price
+                    last_time = throttle_state.last_time or msg_time
+                    emit_reason = throttle_state.emit_reason or msg.throttle_reason or "Sent to Telegram"
+                    price_change_pct = None
+            else:
+                # No matching throttle state, use message data only
+                last_price = None
+                last_time = msg.timestamp
+                emit_reason = msg.throttle_reason or "Sent to Telegram"
+                price_change_pct = None
+            
+            # Normalize last_time
             if last_time and last_time.tzinfo is None:
                 last_time = last_time.replace(tzinfo=timezone.utc)
+            
             seconds_since = (
                 max(0, int((now - last_time).total_seconds()))
                 if last_time
                 else None
             )
             
-            # Calculate price difference percentage using previous_price field
-            price_change_pct = None
-            if row.last_price and row.previous_price and row.last_price > 0 and row.previous_price > 0:
-                try:
-                    # Calculate percentage change from previous_price to last_price
-                    calculated_pct = ((row.last_price - row.previous_price) / row.previous_price * 100)
-                    # Only use if it's a reasonable price change (within 100% change to handle large moves)
-                    if abs(calculated_pct) <= 100:
-                        price_change_pct = calculated_pct
-                    else:
-                        log.debug(
-                            f"Price change {calculated_pct:.2f}% for {row.symbol} {row.side} "
-                            f"exceeds reasonable range, skipping"
-                        )
-                except Exception as price_err:
-                    log.debug(f"Could not calculate price change for {row.symbol} {row.side}: {price_err}")
+            # Create deduplication key - use message ID to ensure uniqueness
+            # This prevents missing alerts that happen at the same time
+            dedup_key = (symbol_value, side, str(msg.id))
             
-            payload.append(
-                {
-                    "symbol": row.symbol,
-                    "strategy_key": row.strategy_key,
-                    "side": row.side,
-                    "last_price": row.last_price,
+            # Only add if not already in map (deduplicate by message ID)
+            # If same message ID already exists, skip (shouldn't happen but be safe)
+            if dedup_key not in payload_map:
+                payload_map[dedup_key] = {
+                    "symbol": symbol_value,
+                    "strategy_key": strategy_key,
+                    "side": side,
+                    "last_price": last_price,
                     "last_time": last_time.isoformat() if last_time else None,
                     "seconds_since_last": seconds_since,
                     "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
-                    "emit_reason": row.emit_reason,
+                    "emit_reason": emit_reason,
                 }
-            )
-        return payload
+        
+        # Convert to list and sort by timestamp descending
+        payload = list(payload_map.values())
+        payload.sort(key=lambda x: x["last_time"] or "", reverse=True)
+        
+        # Limit results
+        return payload[:bounded_limit]
+        
     except Exception as exc:
         log.warning("Failed to load signal throttle state: %s", exc, exc_info=True)
         return []
@@ -538,7 +597,7 @@ async def get_workflows(db: Session = Depends(get_db)):
         }
         workflows.append(workflow)
     
-    return {"workflows": workflows}
+    return JSONResponse({"workflows": workflows}, headers=_NO_CACHE_HEADERS)
 
 @router.post("/monitoring/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
