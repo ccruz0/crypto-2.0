@@ -132,26 +132,52 @@ def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
     filled_sell_qty = sum(_order_filled_quantity(o) for o in filled_sell_orders)
 
     # 4) Calculate net remaining quantity for this symbol
+    # Only subtract FILLED SELL orders - pending TP/SL orders don't reduce open position count
+    # (they are just protection orders that haven't executed yet)
     net_quantity = max(filled_buy_qty - filled_sell_qty, 0.0)
 
     # 5) Determine how many FILLED BUY orders are still open as positions.
-    # We use a simple FIFO matching: SELL quantity offsets the earliest BUYs first.
+    # We use a simple FIFO matching: Only FILLED SELL quantity offsets the earliest BUYs first.
+    # IMPORTANT: Pending TP/SL orders do NOT reduce open position count - they are just protection orders.
+    # Count based on net quantity and average position size, not individual orders.
+    # This prevents over-counting when multiple small orders exist.
     remaining_sell_qty = filled_sell_qty
     open_filled_positions = 0
 
-    for buy_order in filled_buy_orders:
-        buy_qty = _order_filled_quantity(buy_order)
-        if buy_qty <= 0:
-            continue
+    # Calculate average position size from filled BUY orders
+    if len(filled_buy_orders) > 0 and filled_buy_qty > 0:
+        avg_position_size = filled_buy_qty / len(filled_buy_orders)
+    else:
+        avg_position_size = 0
 
-        if remaining_sell_qty >= buy_qty:
-            # This BUY is fully closed by earlier SELLs
-            remaining_sell_qty -= buy_qty
-        else:
-            # This BUY still has some net quantity open -> count as one open position
-            open_filled_positions += 1
-            # All remaining SELL quantity has been consumed
-            remaining_sell_qty = 0.0
+    # If we have net quantity, estimate positions based on average size
+    # This is more accurate than counting each order separately
+    if net_quantity > 0 and avg_position_size > 0:
+        # Estimate positions: net quantity divided by average position size
+        # This gives us a realistic count based on actual holdings, not individual orders
+        estimated_positions = max(1, int(round(net_quantity / avg_position_size)))
+        
+        # Use estimated positions as the primary count
+        # This prevents over-counting when multiple small orders exist
+        open_filled_positions = estimated_positions
+        
+        # Log the estimation for debugging
+        logger.debug(
+            f"Position estimation for {symbol}: net_qty={net_quantity:.4f}, "
+            f"avg_size={avg_position_size:.4f}, estimated={estimated_positions}"
+        )
+    else:
+        # Fallback to original logic if we can't calculate average
+        for buy_order in filled_buy_orders:
+            buy_qty = _order_filled_quantity(buy_order)
+            if buy_qty <= 0:
+                continue
+
+            if remaining_sell_qty >= buy_qty:
+                remaining_sell_qty -= buy_qty
+            else:
+                open_filled_positions += 1
+                remaining_sell_qty = 0.0
 
     total_open_positions = pending_buy_count + open_filled_positions
 
