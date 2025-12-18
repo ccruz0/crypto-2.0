@@ -988,7 +988,10 @@ class ExchangeSyncService:
         # Use precision matching crypto_com_trade.py place_limit_order logic:
         # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
         # - Prices >= 1: 4-6 decimal places  
-        # - Prices < 1: 8 decimal places (for small coins like ALGO_USDT at $0.11)
+        # - Prices < 1: 4 decimal places with 0.0001 tick size (for coins like ALGO_USDT)
+        # Note: The actual formatting with tick size will be done in place_stop_loss_order/place_take_profit_order,
+        # but we round here to avoid passing excessive precision
+        import decimal
         if filled_price >= 100:
             sl_price = round(sl_price, 2)
             tp_price = round(tp_price, 2)
@@ -996,9 +999,15 @@ class ExchangeSyncService:
             sl_price = round(sl_price, 6)
             tp_price = round(tp_price, 6)
         else:
-            # For small prices (< $1), use 8 decimal places to maintain precision
-            sl_price = round(sl_price, 8)
-            tp_price = round(tp_price, 8)
+            # For small prices (< $1), use 4 decimals with 0.0001 tick size for proper rounding
+            # This matches the fix in crypto_com_trade.py for ALGO_USDT and similar coins
+            tick_decimal = decimal.Decimal('0.0001')
+            sl_price_decimal = decimal.Decimal(str(sl_price))
+            sl_price_decimal = (sl_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+            sl_price = float(sl_price_decimal)
+            tp_price_decimal = decimal.Decimal(str(tp_price))
+            tp_price_decimal = (tp_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+            tp_price = float(tp_price_decimal)
         
         from app.utils.live_trading import get_live_trading_status
         live_trading = get_live_trading_status(db)
