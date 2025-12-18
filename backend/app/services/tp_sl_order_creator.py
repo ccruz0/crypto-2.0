@@ -72,10 +72,11 @@ def create_take_profit_order(
     entry_side = side.upper()  # Ensure uppercase
     tp_side = get_closing_side_from_entry(entry_side)
     
-    # CRITICAL: Verify TP price is valid for current market conditions
-    # For SELL TP orders (after BUY): TP price must be ABOVE current market price
-    # For BUY TP orders (after SELL): TP price must be BELOW current market price
-    if not dry_run:
+    # CRITICAL: Verify TP price is valid for current market conditions (AUTO mode only).
+    #
+    # For manual/explicit SL/TP requests we must respect the exact requested percentage/price.
+    # Auto flows can adjust slightly to avoid creating an immediately-invalid TP (e.g. TP <= market for SELL TP).
+    if (not dry_run) and str(source).lower() != "manual":
         try:
             import requests
             ticker_url = "https://api.crypto.com/v2/public/get-ticker"
@@ -112,10 +113,17 @@ def create_take_profit_order(
             logger.warning(f"Could not verify TP price against current market: {price_check_err}. Proceeding with calculated TP price.")
     
     # Round TP price if necessary (same logic as automatic creation)
+    # Use precision matching crypto_com_trade.py place_limit_order logic:
+    # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
+    # - Prices >= 1: 6 decimal places  
+    # - Prices < 1: 8 decimal places (for small coins like ALGO_USDT at $0.11)
     if entry_price >= 100:
-        tp_price = round(tp_price)
+        tp_price = round(tp_price, 2)
+    elif entry_price >= 1:
+        tp_price = round(tp_price, 6)
     else:
-        tp_price = round(tp_price, 4)
+        # For small prices (< $1), use 8 decimal places to maintain precision
+        tp_price = round(tp_price, 8)
     
     # For TAKE_PROFIT_LIMIT: both trigger_price and price must equal tp_price
     tp_trigger = tp_price
@@ -238,10 +246,17 @@ def create_stop_loss_order(
         Dict with 'order_id' (if successful) or 'error' (if failed)
     """
     # Round SL price if necessary (same logic as automatic creation)
+    # Use precision matching crypto_com_trade.py place_limit_order logic:
+    # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
+    # - Prices >= 1: 6 decimal places  
+    # - Prices < 1: 8 decimal places (for small coins like ALGO_USDT at $0.11)
     if entry_price >= 100:
-        sl_price = round(sl_price)
+        sl_price = round(sl_price, 2)
+    elif entry_price >= 1:
+        sl_price = round(sl_price, 6)
     else:
-        sl_price = round(sl_price, 4)
+        # For small prices (< $1), use 8 decimal places to maintain precision
+        sl_price = round(sl_price, 8)
     
     # IMPORTANT: trigger_price must be equal to sl_price for STOP_LIMIT orders
     sl_trigger = sl_price  # trigger_price equals sl_price

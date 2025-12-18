@@ -356,6 +356,9 @@ class ExchangeSyncService:
                     existing.exchange_create_time = create_time
                     existing.exchange_update_time = update_time
                     existing.updated_at = datetime.utcnow()
+                    # CRITICAL: Preserve parent_order_id and order_role if they exist
+                    # These are set when SL/TP orders are created and should not be overwritten
+                    # Do NOT update parent_order_id or order_role from exchange sync
                     
                     # Auto-cancel REJECTED TP orders (they should be removed automatically)
                     if status == OrderStatusEnum.REJECTED:
@@ -377,6 +380,44 @@ class ExchangeSyncService:
                             
                             logger.info(f"🗑️ REJECTED TP order {order_id} ({symbol}) detected - marked for cleanup")
                 else:
+                    # For new orders from exchange sync, try to infer parent_order_id and order_role
+                    # if this looks like an SL/TP order (STOP_LIMIT or TAKE_PROFIT_LIMIT)
+                    order_type_str = order_data.get('order_type', 'LIMIT')
+                    inferred_order_role = None
+                    inferred_parent_order_id = None
+                    
+                    if order_type_str in ['STOP_LIMIT', 'STOP_LOSS_LIMIT']:
+                        inferred_order_role = 'STOP_LOSS'
+                        # Try to find a recent FILLED BUY order for this symbol that might be the parent
+                        # Look for orders filled within the last 24 hours
+                        from datetime import timedelta
+                        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+                        if side == 'SELL':  # SL after BUY
+                            parent_candidate = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.symbol == symbol,
+                                ExchangeOrder.side == OrderSideEnum.BUY,
+                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                ExchangeOrder.order_type.in_(['MARKET', 'LIMIT']),
+                                ExchangeOrder.exchange_update_time >= recent_threshold
+                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                            if parent_candidate:
+                                inferred_parent_order_id = parent_candidate.exchange_order_id
+                    elif order_type_str in ['TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']:
+                        inferred_order_role = 'TAKE_PROFIT'
+                        # Try to find a recent FILLED BUY order for this symbol that might be the parent
+                        from datetime import timedelta
+                        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+                        if side == 'SELL':  # TP after BUY
+                            parent_candidate = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.symbol == symbol,
+                                ExchangeOrder.side == OrderSideEnum.BUY,
+                                ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                ExchangeOrder.order_type.in_(['MARKET', 'LIMIT']),
+                                ExchangeOrder.exchange_update_time >= recent_threshold
+                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                            if parent_candidate:
+                                inferred_parent_order_id = parent_candidate.exchange_order_id
+                    
                     new_order = ExchangeOrder(
                         exchange_order_id=order_id,
                         client_oid=order_data.get('client_oid'),
@@ -390,9 +431,13 @@ class ExchangeSyncService:
                         cumulative_value=float(order_data.get('cumulative_value', 0)) if order_data.get('cumulative_value') else 0,
                         avg_price=float(order_data.get('avg_price')) if order_data.get('avg_price') else None,
                         exchange_create_time=create_time,
-                        exchange_update_time=update_time
+                        exchange_update_time=update_time,
+                        order_role=inferred_order_role,  # Set inferred role if available
+                        parent_order_id=inferred_parent_order_id  # Set inferred parent if available
                     )
                     db.add(new_order)
+                    if inferred_order_role:
+                        logger.info(f"Inferred order_role={inferred_order_role} and parent_order_id={inferred_parent_order_id} for order {order_id} ({symbol}) from exchange sync")
                 
                 # Update trade signal status if linked
                 if order_id:
@@ -562,6 +607,8 @@ class ExchangeSyncService:
         force: bool = False,
         source: str = "auto",
         strict_percentages: bool = False,
+        sl_price_override: Optional[float] = None,
+        tp_price_override: Optional[float] = None,
     ):
         """Create SL and TP orders automatically when a LIMIT or MARKET order is filled"""
         from app.models.watchlist import WatchlistItem
@@ -570,6 +617,53 @@ class ExchangeSyncService:
         if not filled_price or filled_qty <= 0:
             logger.warning(f"Cannot create SL/TP for order {order_id}: invalid price ({filled_price}) or quantity ({filled_qty})")
             return
+
+        # Manual/explicit TP/SL overrides must be validated early (fail fast with clear errors).
+        # This is ONLY about the user-provided numbers; it does not change auth/client behavior.
+        side_upper = (side or "").upper()
+        if side_upper not in {"BUY", "SELL"}:
+            raise ValueError(f"Invalid side '{side}'. Expected BUY or SELL.")
+        try:
+            filled_price_f = float(filled_price)
+        except Exception:
+            raise ValueError(f"Invalid filled_price '{filled_price}'. Must be a number.")
+
+        def _validate_override_price(name: str, value: Optional[float]) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                v = float(value)
+            except Exception:
+                raise ValueError(f"Invalid {name} '{value}'. Must be a number.")
+            if not (v > 0):
+                raise ValueError(f"Invalid {name} '{v}'. Must be > 0.")
+            return v
+
+        sl_price_override_f = _validate_override_price("sl_price", sl_price_override)
+        tp_price_override_f = _validate_override_price("tp_price", tp_price_override)
+
+        if sl_price_override_f is not None:
+            if side_upper == "BUY" and not (sl_price_override_f < filled_price_f):
+                raise ValueError(
+                    f"Invalid sl_price for BUY: sl_price must be < filled_price "
+                    f"(sl_price={sl_price_override_f}, filled_price={filled_price_f})."
+                )
+            if side_upper == "SELL" and not (sl_price_override_f > filled_price_f):
+                raise ValueError(
+                    f"Invalid sl_price for SELL: sl_price must be > filled_price "
+                    f"(sl_price={sl_price_override_f}, filled_price={filled_price_f})."
+                )
+        if tp_price_override_f is not None:
+            if side_upper == "BUY" and not (tp_price_override_f > filled_price_f):
+                raise ValueError(
+                    f"Invalid tp_price for BUY: tp_price must be > filled_price "
+                    f"(tp_price={tp_price_override_f}, filled_price={filled_price_f})."
+                )
+            if side_upper == "SELL" and not (tp_price_override_f < filled_price_f):
+                raise ValueError(
+                    f"Invalid tp_price for SELL: tp_price must be < filled_price "
+                    f"(tp_price={tp_price_override_f}, filled_price={filled_price_f})."
+                )
         
         # If any protection order has already been FILLED, do not recreate protection orders.
         existing_sl_tp_filled = db.query(ExchangeOrder).filter(
@@ -612,6 +706,9 @@ class ExchangeSyncService:
         # Track existing active orders so we can create missing side only
         existing_sl_active = None
         existing_tp_active = []
+        # If TP creation is temporarily blocked (cooldown / rejected), we still want to create SL.
+        skip_tp_creation = False
+        skip_tp_reason = None
         try:
             # CRITICAL: Sync open orders from exchange FIRST to get latest status
             # This ensures we see any orders that were created/rejected on the exchange
@@ -673,39 +770,47 @@ class ExchangeSyncService:
                         f"⚠️ WARNING: Found {len(existing_tp_active)} TP orders for order {order_id} ({symbol})! "
                         f"This indicates duplicate creation. TP IDs: {[tp.exchange_order_id for tp in existing_tp_active]}"
                     )
-                # Release lock before returning early
+                # Best-effort cleanup of in-memory lock (also expires automatically)
                 if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
                     del self._sl_tp_creation_locks[lock_key]
                 return
 
             # If TP is missing and a TP was rejected recently, respect cooldown unless forced.
+            # IMPORTANT: This must NOT block SL creation.
             if len(existing_tp_active) == 0 and existing_tp_rejected and not force:
-                logger.warning(
-                    f"⚠️ TP order was REJECTED for order {order_id} ({symbol}). "
-                    f"Not creating another TP to avoid DUPLICATE_CLORDID error. "
-                    f"Rejected TP order ID: {existing_tp_rejected.exchange_order_id}"
+                skip_tp_creation = True
+                skip_tp_reason = (
+                    f"TP was REJECTED for this parent order (tp_id={existing_tp_rejected.exchange_order_id}). "
+                    f"Use force=true to retry."
                 )
-                # Release lock before returning early
-                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
-                return
-            
-            if len(existing_tp_active) == 0 and recent_rejected_tp and not force:
-                logger.warning(
-                    f"⚠️ Recent REJECTED TP order exists for {symbol} (created {recent_rejected_tp.created_at}): "
-                    f"TP order ID: {recent_rejected_tp.exchange_order_id}, "
-                    f"Parent: {recent_rejected_tp.parent_order_id}. "
-                    f"Not creating another TP immediately to avoid repeated REJECTED orders. "
-                    f"Will retry after cooldown period."
+
+            # Also apply a short cooldown for AUTO flows only (symbol-wide), to avoid rapid-fire TP rejections.
+            # Manual endpoints should not be blocked by a rejection from another order unless the user requests it.
+            if (
+                len(existing_tp_active) == 0
+                and (not skip_tp_creation)
+                and recent_rejected_tp
+                and not force
+                and str(source).lower() != "manual"
+            ):
+                skip_tp_creation = True
+                skip_tp_reason = (
+                    f"Recent REJECTED TP exists for {symbol} "
+                    f"(tp_id={recent_rejected_tp.exchange_order_id}, parent={recent_rejected_tp.parent_order_id}, "
+                    f"created={recent_rejected_tp.created_at}). Cooldown active; use force=true to override."
                 )
-                # Release lock before returning early
-                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
-                return
-        finally:
-            # Keep lock for the full SL/TP creation flow.
-            # Early-return paths above explicitly release the lock.
-            pass
+
+            if skip_tp_creation:
+                logger.warning(
+                    f"⚠️ Skipping TP creation for {symbol} order {order_id}: {skip_tp_reason} "
+                    f"(SL creation will proceed if missing)."
+                )
+        except Exception as precheck_err:
+            # Don't allow pre-check failures to block protection creation attempts entirely.
+            logger.warning(
+                f"⚠️ Pre-check failed while preparing SL/TP for {symbol} order {order_id}: {precheck_err}. "
+                f"Continuing with DB-only creation attempt."
+            )
         
         # Log the quantity being used for SL/TP
         logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
@@ -825,7 +930,8 @@ class ExchangeSyncService:
 
         # Blend with ATR-based levels if ATR is available (gives strategy-derived safety margins).
         # For manual/explicit requests we can opt into strict % levels.
-        if atr > 0 and not strict_percentages:
+        # If the caller provided explicit SL/TP prices, do NOT blend/adjust them.
+        if atr > 0 and not strict_percentages and sl_price_override_f is None and tp_price_override_f is None:
             calculated = calculate_stop_loss_and_take_profit(filled_price, atr)
             if sl_tp_mode == "aggressive":
                 atr_sl = calculated["stop_loss"]["aggressive"]["value"]
@@ -840,6 +946,20 @@ class ExchangeSyncService:
             else:
                 sl_price = max(sl_price, atr_sl)
                 tp_price = min(tp_price, atr_tp)
+
+        # Apply explicit overrides AFTER any optional ATR blending (overrides win).
+        if sl_price_override_f is not None:
+            logger.info(
+                f"[{source.upper()}_SLTP] Using explicit sl_price override for {symbol} order {order_id}: "
+                f"{sl_price_override_f} (filled_price={filled_price_f}, side={side_upper})"
+            )
+            sl_price = sl_price_override_f
+        if tp_price_override_f is not None:
+            logger.info(
+                f"[{source.upper()}_SLTP] Using explicit tp_price override for {symbol} order {order_id}: "
+                f"{tp_price_override_f} (filled_price={filled_price_f}, side={side_upper})"
+            )
+            tp_price = tp_price_override_f
 
         logger.info(
             f"✅ Calculated SL/TP dynamically for {symbol} order {order_id}: "
@@ -865,12 +985,20 @@ class ExchangeSyncService:
             db.rollback()
 
         # Round values if necessary (post-persistence) to match exchange requirements
+        # Use precision matching crypto_com_trade.py place_limit_order logic:
+        # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
+        # - Prices >= 1: 4-6 decimal places  
+        # - Prices < 1: 8 decimal places (for small coins like ALGO_USDT at $0.11)
         if filled_price >= 100:
-            sl_price = round(sl_price)
-            tp_price = round(tp_price)
+            sl_price = round(sl_price, 2)
+            tp_price = round(tp_price, 2)
+        elif filled_price >= 1:
+            sl_price = round(sl_price, 6)
+            tp_price = round(tp_price, 6)
         else:
-            sl_price = round(sl_price, 4)
-            tp_price = round(tp_price, 4)
+            # For small prices (< $1), use 8 decimal places to maintain precision
+            sl_price = round(sl_price, 8)
+            tp_price = round(tp_price, 8)
         
         from app.utils.live_trading import get_live_trading_status
         live_trading = get_live_trading_status(db)
@@ -921,13 +1049,18 @@ class ExchangeSyncService:
         else:
             logger.error(f"❌ SL order creation failed for {symbol} order {order_id}: {sl_order_error}")
 
-        # Create TP order using shared logic (only if missing)
+        # Create TP order using shared logic (only if missing and not blocked by cooldown/rejection policy)
         if len(existing_tp_active) > 0:
             logger.info(
                 f"ℹ️ TP already exists for {symbol} order {order_id} "
                 f"(active count: {len(existing_tp_active)}). Skipping TP creation."
             )
             tp_result = {"order_id": str(existing_tp_active[0].exchange_order_id), "error": None}
+        elif skip_tp_creation:
+            tp_result = {
+                "order_id": None,
+                "error": f"Skipped TP creation: {skip_tp_reason}",
+            }
         else:
             tp_result = create_take_profit_order(
                 db=db,
@@ -982,14 +1115,22 @@ class ExchangeSyncService:
                     error_details.append(f"TP: {tp_order_error}")
                 error_summary = " | ".join(error_details) if error_details else "Unknown error"
                 
+                # Format prices with appropriate decimal precision for display
+                if filled_price >= 100:
+                    price_fmt = "{:.4f}"
+                elif filled_price >= 1:
+                    price_fmt = "{:.6f}"
+                else:
+                    price_fmt = "{:.8f}"
+                
                 telegram_notifier.send_message(
                     f"⚠️ <b>SL/TP ORDER CREATION FAILED</b>\n\n"
                     f"📊 Symbol: <b>{symbol}</b>\n"
                     f"📋 Order ID: {order_id}\n"
-                    f"💵 Filled Price: ${filled_price:.2f}\n"
+                    f"💵 Filled Price: ${price_fmt.format(filled_price)}\n"
                     f"📦 Quantity: {filled_qty}\n"
-                    f"🔴 SL Price: ${sl_price:.2f}\n"
-                    f"🟢 TP Price: ${tp_price:.2f}\n"
+                    f"🔴 SL Price: ${price_fmt.format(sl_price)}\n"
+                    f"🟢 TP Price: ${price_fmt.format(tp_price)}\n"
                     f"❌ Error: {error_summary}\n\n"
                     f"Por favor revisa los logs del backend para más detalles."
                 )
@@ -1033,9 +1174,31 @@ class ExchangeSyncService:
         except Exception as telegram_err:
             logger.error(f"❌ Exception sending Telegram notification for SL/TP: {telegram_err}", exc_info=True)
 
-        # Release lock at end of flow (success path).
-        if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-            del self._sl_tp_creation_locks[lock_key]
+        # Best-effort cleanup of in-memory lock (also expires automatically)
+        try:
+            if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                del self._sl_tp_creation_locks[lock_key]
+        except Exception:
+            pass
+
+        # Return a structured result for API endpoints / callers that want to surface details.
+        # (Existing callers that ignore the return value remain compatible.)
+        try:
+            return {
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+                "live_trading": bool(live_trading),
+                "oco_group_id": oco_group_id,
+                "sl_price": float(sl_price) if sl_price is not None else None,
+                "tp_price": float(tp_price) if tp_price is not None else None,
+                "sl_result": sl_result,
+                "tp_result": tp_result,
+                "skip_tp_creation": bool(skip_tp_creation),
+                "skip_tp_reason": skip_tp_reason,
+            }
+        except Exception:
+            return None
     
     def _cancel_remaining_sl_tp(self, db: Session, symbol: str, executed_order_type: str, executed_order_id: str):
         """Cancel the remaining SL or TP order when one is executed"""
