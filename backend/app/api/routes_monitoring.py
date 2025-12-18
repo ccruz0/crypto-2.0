@@ -12,7 +12,7 @@ import os
 import re
 import requests
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
@@ -124,6 +124,8 @@ _NO_CACHE_HEADERS = {
 _active_alerts: List[Dict[str, Any]] = []
 _scheduler_ticks = 0
 _last_backend_restart: Optional[float] = None
+_backend_restart_status: Optional[str] = None  # 'restarting', 'restarted', 'failed', None
+_backend_restart_timestamp: Optional[float] = None
 
 # In-memory Telegram message storage (last 50 messages - blocked and sent)
 _telegram_messages: List[Dict[str, Any]] = []
@@ -221,6 +223,64 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         # Clean old alerts
         clear_old_alerts()
         
+        # Also populate active alerts from recent Telegram messages (sent alerts only)
+        # This ensures alerts persist across backend restarts and are always up-to-date
+        try:
+            from app.models.telegram_message import TelegramMessage
+            from datetime import timedelta
+            
+            # Get recent sent alerts from the last hour
+            one_hour_ago = datetime.now() - timedelta(hours=1)
+            from sqlalchemy import or_
+            recent_sent_alerts = (
+                db.query(TelegramMessage)
+                .filter(
+                    TelegramMessage.blocked == False,
+                    TelegramMessage.timestamp >= one_hour_ago,
+                    or_(
+                        TelegramMessage.message.like('%BUY SIGNAL%'),
+                        TelegramMessage.message.like('%SELL SIGNAL%')
+                    )
+                )
+                .order_by(TelegramMessage.timestamp.desc())
+                .limit(50)
+                .all()
+            )
+            
+            # Add recent alerts to _active_alerts if not already present
+            # Use a set to track existing alerts by (symbol, type, timestamp) to avoid duplicates
+            existing_alert_keys = {
+                (alert.get("symbol"), alert.get("type"), alert.get("timestamp"))
+                for alert in _active_alerts
+            }
+            
+            for msg in recent_sent_alerts:
+                # Determine alert type from message
+                alert_type = "BUY_SIGNAL" if "BUY SIGNAL" in msg.message.upper() else "SELL_SIGNAL" if "SELL SIGNAL" in msg.message.upper() else "SIGNAL"
+                alert_key = (msg.symbol, alert_type, msg.timestamp.isoformat() if msg.timestamp else "")
+                
+                if alert_key not in existing_alert_keys:
+                    # Extract reason from message if available
+                    reason = msg.throttle_reason or "Signal detected"
+                    if len(reason) > 100:
+                        reason = reason[:100] + "..."
+                    
+                    _active_alerts.append({
+                        "type": alert_type,
+                        "symbol": msg.symbol or "UNKNOWN",
+                        "message": f"{alert_type.replace('_', ' ')}: {reason}",
+                        "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
+                        "severity": "INFO"
+                    })
+                    existing_alert_keys.add(alert_key)
+            
+            # Keep only last 100 alerts
+            if len(_active_alerts) > 100:
+                _active_alerts = _active_alerts[-100:]
+        except Exception as e:
+            log.debug(f"Could not populate active alerts from database: {e}")
+            pass  # Non-critical, continue with in-memory alerts only
+        
         # Get active alerts count
         active_alerts_count = len(_active_alerts)
         
@@ -234,6 +294,8 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             "scheduler_ticks": _scheduler_ticks,
             "errors": dashboard_state.get("errors", []),
             "last_backend_restart": _last_backend_restart,
+            "backend_restart_status": _backend_restart_status,
+            "backend_restart_timestamp": _backend_restart_timestamp,
             "alerts": _active_alerts[-50:]  # Return last 50 alerts
         }
         
@@ -249,6 +311,8 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             "scheduler_ticks": _scheduler_ticks,
             "errors": [str(e)],
             "last_backend_restart": _last_backend_restart,
+            "backend_restart_status": _backend_restart_status,
+            "backend_restart_timestamp": _backend_restart_timestamp,
             "alerts": _active_alerts[-50:]
         }
 
@@ -586,9 +650,14 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             parsed_reason = e.get("parsed_reason")
             parsed_strategy_key = e.get("parsed_strategy_key")
             msg_throttle_reason = (getattr(msg_obj, "throttle_reason", None) or "").strip() or None
+            msg_throttle_status = (getattr(msg_obj, "throttle_status", None) or "").strip() or None
+            
+            # Check if message was actually sent (not blocked)
+            msg_was_sent = not getattr(msg_obj, "blocked", True)  # Default to True if attribute missing (conservative)
 
             # Choose the best matching throttle state for this event:
             # - Prefer a state close in time (<=30m) that doesn't look "blocked".
+            # - CRITICAL: If message was sent, never use throttle state with blocked/throttled emit_reason
             candidate_states = states_by_key.get((symbol_value, side), []) or []
             chosen_state = None
             if msg_time and candidate_states:
@@ -600,11 +669,24 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                         continue
                     diff = abs((msg_time - st_time).total_seconds())
                     looks_blocked = ("throttled" in (st.emit_reason or "").lower()) or ("blocked" in (st.emit_reason or "").lower())
+                    # If message was sent, exclude blocked throttle states
+                    if msg_was_sent and looks_blocked:
+                        continue
                     if diff <= 1800 and not looks_blocked:
                         chosen_state = st
                         break
+            # Only fallback to first candidate if message wasn't sent OR if we didn't find a non-blocked state
             if not chosen_state and candidate_states:
-                chosen_state = candidate_states[0]
+                # For sent messages, try to find any non-blocked state
+                if msg_was_sent:
+                    for st in candidate_states:
+                        looks_blocked = ("throttled" in (st.emit_reason or "").lower()) or ("blocked" in (st.emit_reason or "").lower())
+                        if not looks_blocked:
+                            chosen_state = st
+                            break
+                # If still no match or message was blocked, use first candidate
+                if not chosen_state:
+                    chosen_state = candidate_states[0]
 
             strategy_key = (
                 (chosen_state.strategy_key if chosen_state and chosen_state.strategy_key else None)
@@ -634,12 +716,28 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     price_change_pct = None
 
             # Reason: never return placeholder "Sent to Telegram".
-            emit_reason = (
-                msg_throttle_reason
-                or (chosen_state.emit_reason if chosen_state and chosen_state.emit_reason else None)
-                or parsed_reason
-                or "Signal sent"
-            )
+            # CRITICAL: If message was sent (not blocked), never use a throttle reason that indicates blocking
+            # Only use chosen_state.emit_reason if message was blocked OR if it doesn't look blocked
+            emit_reason = None
+            if msg_throttle_reason:
+                # Check if throttle_reason indicates blocking (shouldn't happen for sent messages, but check anyway)
+                if msg_was_sent and ("throttled" in msg_throttle_reason.lower() or "blocked" in msg_throttle_reason.lower()):
+                    # Message was sent but has blocked reason - this shouldn't happen, use fallback
+                    emit_reason = None
+                else:
+                    emit_reason = msg_throttle_reason
+            
+            if not emit_reason and chosen_state and chosen_state.emit_reason:
+                # Only use chosen_state.emit_reason if:
+                # 1. Message was blocked (msg_was_sent=False), OR
+                # 2. The emit_reason doesn't indicate blocking
+                state_emit_reason = chosen_state.emit_reason
+                looks_blocked_in_state = ("throttled" in state_emit_reason.lower()) or ("blocked" in state_emit_reason.lower())
+                if not msg_was_sent or not looks_blocked_in_state:
+                    emit_reason = state_emit_reason
+            
+            if not emit_reason:
+                emit_reason = parsed_reason or "Signal sent"
 
             event_time = msg_time
             if chosen_state and chosen_state.last_time:
@@ -690,6 +788,58 @@ _background_tasks: Dict[str, "asyncio.Task"] = {}
 # Locks for atomic check-and-set operations per workflow_id
 _workflow_locks: Dict[str, asyncio.Lock] = {}
 
+# Latest SL/TP check report (in-memory).
+# We keep it lightweight and JSON-serializable so the dashboard can render it.
+_sl_tp_check_report_cache: Optional[Dict[str, Any]] = None
+
+
+def _to_iso(dt_value: Any) -> Optional[str]:
+    """Best-effort datetime -> ISO string (UTC if naive)."""
+    if not dt_value:
+        return None
+    try:
+        if hasattr(dt_value, "isoformat"):
+            # If naive datetime, assume UTC
+            if getattr(dt_value, "tzinfo", None) is None:
+                return dt_value.replace(tzinfo=timezone.utc).isoformat()
+            return dt_value.isoformat()
+        if isinstance(dt_value, str):
+            return dt_value
+    except Exception:
+        return None
+    return None
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _serialize_sl_tp_position(pos: Any) -> Dict[str, Any]:
+    """Return a JSON-safe dict for a SL/TP missing position row."""
+    if not isinstance(pos, dict):
+        return {}
+    symbol = (pos.get("symbol") or "").upper()
+    currency = (pos.get("currency") or "").upper()
+    balance = _safe_float(pos.get("balance")) or 0.0
+    has_sl = bool(pos.get("has_sl", False))
+    has_tp = bool(pos.get("has_tp", False))
+    sl_price = _safe_float(pos.get("sl_price"))
+    tp_price = _safe_float(pos.get("tp_price"))
+    return {
+        "symbol": symbol,
+        "currency": currency,
+        "balance": balance,
+        "has_sl": has_sl,
+        "has_tp": has_tp,
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+    }
+
 def _resolve_project_root_from_backend_root(backend_root: str) -> str:
     """
     Resolve the *filesystem* project root from a backend root path.
@@ -721,6 +871,79 @@ def _is_valid_report_path(report: Optional[str]) -> bool:
     # Contains path separator or file extension, likely a valid path
     return True
 
+def _find_existing_report(workflow_id: str, backend_root: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Find existing report file for a workflow if no execution record exists.
+    Returns (report_path, last_execution_iso) where last_execution_iso is the file's mtime as ISO string.
+    """
+    if not backend_root:
+        # Try to detect backend root from current file location
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+    
+    project_root = _resolve_project_root_from_backend_root(backend_root)
+    docs_monitoring = Path(project_root) / "docs" / "monitoring"
+    
+    # Map workflow IDs to their report file patterns
+    report_patterns = {
+        "watchlist_consistency": "watchlist_consistency_report_latest.md",
+        "watchlist_dedup": "watchlist_dedup_report_latest.md",
+        "daily_summary": None,  # No reports for this workflow
+        "sell_orders_report": None,  # No reports for this workflow
+        "sl_tp_check": None,  # Uses in-memory cache instead
+        "telegram_commands": None,  # No reports for this workflow
+        "dashboard_snapshot": None,  # No reports for this workflow
+    }
+    
+    pattern = report_patterns.get(workflow_id)
+    if not pattern:
+        return None, None
+    
+    report_path = docs_monitoring / pattern
+    if report_path.exists() and report_path.is_file():
+        # Return relative path from project root
+        relative_path = report_path.relative_to(Path(project_root))
+        report_path_str = str(relative_path).replace("\\", "/")  # Normalize path separators
+        
+        # Try to get file modification time as last execution estimate
+        try:
+            mtime = report_path.stat().st_mtime
+            last_execution = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except Exception:
+            last_execution = None
+        
+        return report_path_str, last_execution
+    
+    return None, None
+
+def _initialize_workflow_state_from_reports(backend_root: Optional[str] = None):
+    """Initialize workflow execution state from existing reports on disk"""
+    global _workflow_executions
+    
+    workflow_ids = [
+        "watchlist_consistency",
+        "watchlist_dedup",
+        "daily_summary",
+        "sell_orders_report",
+        "sl_tp_check",
+        "telegram_commands",
+        "dashboard_snapshot",
+    ]
+    
+    for workflow_id in workflow_ids:
+        # Only initialize if not already set (preserve existing state)
+        if workflow_id not in _workflow_executions:
+            report_path, last_execution = _find_existing_report(workflow_id, backend_root)
+            if report_path:
+                # Initialize with unknown status but with report link and estimated execution time
+                _workflow_executions[workflow_id] = {
+                    "last_execution": last_execution,  # Use file mtime as estimate
+                    "status": "unknown",
+                    "report": report_path,
+                    "error": None,
+                }
+                log.info(f"Initialized workflow {workflow_id} with existing report: {report_path} (last_execution: {last_execution})")
+
 def record_workflow_execution(workflow_id: str, status: str = "success", report: Optional[str] = None, error: Optional[str] = None):
     """Record a workflow execution"""
     global _workflow_executions
@@ -740,6 +963,16 @@ async def get_workflows(db: Session = Depends(get_db)):
     """Get list of all workflows with their automation status and last execution report"""
     from app.monitoring.workflows_registry import get_all_workflows
     
+    # Initialize workflow state from existing reports if needed (on-demand initialization)
+    # This helps recover state after server restart
+    try:
+        # Try to detect backend root
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+        _initialize_workflow_state_from_reports(backend_root)
+    except Exception as e:
+        log.warning(f"Failed to initialize workflow state from reports: {e}", exc_info=True)
+    
     # Get workflow definitions from registry to include run_endpoint
     registry_workflows = get_all_workflows()
     registry_map = {wf["id"]: wf for wf in registry_workflows}
@@ -757,6 +990,28 @@ async def get_workflows(db: Session = Depends(get_db)):
     workflows = []
     for workflow_id in workflow_ids:
         registry_wf = registry_map.get(workflow_id, {})
+        
+        # Get stored execution state
+        execution_state = _workflow_executions.get(workflow_id, {})
+        stored_report = execution_state.get("report")
+        
+        # If no stored report but workflow has a known report location, check filesystem
+        report_path = stored_report if _is_valid_report_path(stored_report) else None
+        last_execution_fallback = execution_state.get("last_execution")
+        
+        if not report_path:
+            try:
+                current_file = Path(__file__).resolve()
+                backend_root = str(current_file.parent.parent.parent)
+                found_report, found_last_execution = _find_existing_report(workflow_id, backend_root)
+                if found_report:
+                    report_path = found_report
+                    # Use file mtime as last_execution if we don't have one from execution state
+                    if not last_execution_fallback and found_last_execution:
+                        last_execution_fallback = found_last_execution
+            except Exception:
+                report_path = None
+        
         workflow = {
             "id": workflow_id,
             "name": registry_wf.get("name", workflow_id),
@@ -764,14 +1019,44 @@ async def get_workflows(db: Session = Depends(get_db)):
             "automated": registry_wf.get("automated", True),
             "schedule": registry_wf.get("schedule", ""),
             "run_endpoint": registry_wf.get("run_endpoint"),  # Include run_endpoint so frontend knows which can be run
-            "last_execution": _workflow_executions.get(workflow_id, {}).get("last_execution"),
-            "last_status": _workflow_executions.get(workflow_id, {}).get("status", "unknown"),
-            "last_report": _workflow_executions.get(workflow_id, {}).get("report") if _is_valid_report_path(_workflow_executions.get(workflow_id, {}).get("report")) else None,
-            "last_error": _workflow_executions.get(workflow_id, {}).get("error"),
+            "last_execution": execution_state.get("last_execution") or last_execution_fallback,
+            "last_status": execution_state.get("status", "unknown"),
+            "last_report": report_path,
+            "last_error": execution_state.get("error"),
         }
+        # Always expose the SL/TP report link in the dashboard, even before the first run.
+        # The report page will show "not found" until the workflow stores a report.
+        if workflow_id == "sl_tp_check" and not workflow.get("last_report"):
+            workflow["last_report"] = "reports/sl-tp-check"
         workflows.append(workflow)
     
     return JSONResponse({"workflows": workflows}, headers=_NO_CACHE_HEADERS)
+
+
+@router.get("/monitoring/reports/sl-tp-check/latest")
+async def get_latest_sl_tp_check_report(db: Session = Depends(get_db)):
+    """
+    Get the latest SL/TP check report captured by the workflow.
+
+    This is an in-memory report meant for the dashboard "Open report" link.
+    """
+    global _sl_tp_check_report_cache
+    if not _sl_tp_check_report_cache:
+        return JSONResponse(
+            {
+                "status": "not_found",
+                "message": "No SL/TP Check report available yet. Run the workflow first.",
+            },
+            headers=_NO_CACHE_HEADERS,
+        )
+    return JSONResponse(
+        {
+            "status": "success",
+            "report": _sl_tp_check_report_cache.get("report"),
+            "stored_at": _sl_tp_check_report_cache.get("stored_at"),
+        },
+        headers=_NO_CACHE_HEADERS,
+    )
 
 @router.post("/monitoring/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
@@ -1001,19 +1286,69 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
             from app.services.sl_tp_checker import sl_tp_checker_service
             
             async def run_sl_tp_check():
+                global _sl_tp_check_report_cache
                 try:
                     # Run in thread to avoid blocking
                     check_result = await asyncio.to_thread(sl_tp_checker_service.check_positions_for_sl_tp, db)
-                    positions_missing = check_result.get('positions_missing_sl_tp', [])
+                    positions_missing = check_result.get('positions_missing_sl_tp', []) if isinstance(check_result, dict) else []
+                    oco_issues = check_result.get("oco_issues", {}) if isinstance(check_result, dict) else {}
+                    checked_at = _to_iso(check_result.get("checked_at")) if isinstance(check_result, dict) else None
+                    total_positions = int(check_result.get("total_positions") or 0) if isinstance(check_result, dict) else 0
+                    check_error = (check_result.get("error") if isinstance(check_result, dict) else None) or None
+
+                    # Build + store dashboard report (JSON-safe)
+                    report_path = "reports/sl-tp-check"
+                    serialized_positions = []
+                    try:
+                        if isinstance(positions_missing, list):
+                            serialized_positions = [_serialize_sl_tp_position(p) for p in positions_missing]
+                            serialized_positions = [p for p in serialized_positions if p and p.get("symbol")]
+                    except Exception:
+                        serialized_positions = []
+
+                    reminder_sent = False
                     
                     # Send reminder if there are positions missing SL/TP
                     if positions_missing:
                         await asyncio.to_thread(sl_tp_checker_service.send_sl_tp_reminder, db)
+                        reminder_sent = True
+
+                    _sl_tp_check_report_cache = {
+                        "stored_at": datetime.now(timezone.utc).isoformat(),
+                        "report": {
+                            "workflow": "sl_tp_check",
+                            "checked_at": checked_at,
+                            "total_positions": total_positions,
+                            "missing_count": len(serialized_positions),
+                            "positions_missing": serialized_positions,
+                            "oco_issues": oco_issues if isinstance(oco_issues, dict) else {},
+                            "reminder_sent": reminder_sent,
+                            "error": check_error,
+                        },
+                    }
                     
-                    record_workflow_execution(workflow_id, "success", None, error=None)
+                    if check_error:
+                        record_workflow_execution(workflow_id, "error", report_path, str(check_error))
+                    else:
+                        record_workflow_execution(workflow_id, "success", report_path, error=None)
                     log.info(f"Workflow {workflow_id} completed successfully: {len(positions_missing)} positions missing SL/TP")
                 except Exception as e:
-                    record_workflow_execution(workflow_id, "error", None, str(e))
+                    # Still provide a report link so the dashboard can show details.
+                    report_path = "reports/sl-tp-check"
+                    _sl_tp_check_report_cache = {
+                        "stored_at": datetime.now(timezone.utc).isoformat(),
+                        "report": {
+                            "workflow": "sl_tp_check",
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                            "total_positions": 0,
+                            "missing_count": 0,
+                            "positions_missing": [],
+                            "oco_issues": {},
+                            "reminder_sent": False,
+                            "error": str(e),
+                        },
+                    }
+                    record_workflow_execution(workflow_id, "error", report_path, str(e))
                     log.error(f"Workflow {workflow_id} error: {e}", exc_info=True)
                     raise
             
@@ -1027,7 +1362,7 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                         detail=f"Workflow '{workflow_id}' is already running. Please wait for it to complete."
                     )
                 
-                record_workflow_execution(workflow_id, "running", None)
+                record_workflow_execution(workflow_id, "running", "reports/sl-tp-check")
                 task = asyncio.create_task(run_sl_tp_check())
                 _background_tasks[workflow_id] = task
                 captured_workflow_id = workflow_id
@@ -1051,9 +1386,28 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
             async def run_watchlist_dedup():
                 try:
                     # Run in thread to avoid blocking the event loop
-                    result = await asyncio.to_thread(cleanup_watchlist_duplicates, db, dry_run=False, soft_delete=True)
+                    result = await asyncio.to_thread(cleanup_watchlist_duplicates, db, dry_run=False, soft_delete=True, generate_report=True)
+                    
+                    # Determine report path (same logic as scheduler)
+                    report_path = None
+                    try:
+                        from datetime import datetime
+                        date_str = datetime.now().strftime("%Y%m%d")
+                        # Report is generated in docs/monitoring/ relative to project root
+                        report_path = os.path.join("docs", "monitoring", "watchlist_dedup_report_latest.md")
+                        # Also check if dated report exists
+                        # Calculate backend_root from current file location
+                        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                        backend_root = os.path.dirname(os.path.dirname(current_file_dir))
+                        project_root = _resolve_project_root_from_backend_root(backend_root)
+                        dated_report_abs = os.path.join(project_root, "docs", "monitoring", f"watchlist_dedup_report_{date_str}.md")
+                        if os.path.exists(dated_report_abs):
+                            report_path = os.path.join("docs", "monitoring", f"watchlist_dedup_report_{date_str}.md")
+                    except Exception as path_err:
+                        log.warning(f"Could not determine report path: {path_err}")
+                    
                     # Success should NOT set last_error (UI treats it as an error even if status=success)
-                    record_workflow_execution(workflow_id, "success", None, error=None)
+                    record_workflow_execution(workflow_id, "success", report_path, error=None)
                     log.info("Workflow %s completed successfully (duplicates=%s)", workflow_id, result.get("duplicates", 0))
                 except Exception as e:
                     record_workflow_execution(workflow_id, "error", None, str(e))
@@ -1158,3 +1512,110 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
         # For other workflows, return not implemented
         from fastapi import HTTPException
         raise HTTPException(status_code=501, detail=f"Manual execution of workflow '{workflow_id}' is not yet implemented")
+
+@router.post("/monitoring/backend/restart")
+async def restart_backend():
+    """
+    Trigger a backend restart.
+    This endpoint initiates a graceful restart of the backend server.
+    """
+    global _backend_restart_status, _backend_restart_timestamp
+    
+    import subprocess
+    import sys
+    import os
+    
+    try:
+        # Set status to restarting
+        _backend_restart_status = "restarting"
+        _backend_restart_timestamp = time.time()
+        log.info("Backend restart initiated via API")
+        
+        # Schedule restart in background (don't block the response)
+        async def _restart_background():
+            try:
+                # Wait a moment to allow the response to be sent
+                await asyncio.sleep(2)
+                
+                # Get the script path for restarting
+                # In Docker: scripts are at /app/scripts/
+                # In local: scripts are at .../backend/scripts/
+                current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                backend_root = os.path.dirname(os.path.dirname(current_file_dir))
+                restart_script = os.path.join(backend_root, "scripts", "restart_backend.sh")
+                
+                # If script doesn't exist, try alternative methods
+                if not os.path.exists(restart_script):
+                    # Try to find restart script in project root
+                    project_root = os.path.dirname(backend_root) if os.path.basename(backend_root) == "backend" else backend_root
+                    restart_script = os.path.join(project_root, "restart_backend_aws.sh")
+                
+                if os.path.exists(restart_script):
+                    # Execute restart script
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        ["bash", restart_script],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0:
+                        _backend_restart_status = "restarted"
+                        log.info("Backend restart script executed successfully")
+                    else:
+                        _backend_restart_status = "failed"
+                        log.error(f"Backend restart script failed: {result.stderr}")
+                else:
+                    # Fallback: Use systemd or supervisorctl if available
+                    # Try systemd first (common on Linux)
+                    try:
+                        result = await asyncio.to_thread(
+                            subprocess.run,
+                            ["systemctl", "restart", "trading-backend"],
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                        if result.returncode == 0:
+                            _backend_restart_status = "restarted"
+                            log.info("Backend restarted via systemd")
+                        else:
+                            raise Exception(f"systemctl failed: {result.stderr}")
+                    except (FileNotFoundError, Exception):
+                        # Try supervisorctl as fallback
+                        try:
+                            result = await asyncio.to_thread(
+                                subprocess.run,
+                                ["supervisorctl", "restart", "trading-backend"],
+                                capture_output=True,
+                                text=True,
+                                timeout=30
+                            )
+                            if result.returncode == 0:
+                                _backend_restart_status = "restarted"
+                                log.info("Backend restarted via supervisorctl")
+                            else:
+                                raise Exception(f"supervisorctl failed: {result.stderr}")
+                        except (FileNotFoundError, Exception):
+                            # Last resort: log that manual restart is needed
+                            _backend_restart_status = "failed"
+                            log.warning("No restart method available. Manual restart required.")
+                            log.warning(f"Tried: {restart_script}, systemctl, supervisorctl")
+            except Exception as e:
+                _backend_restart_status = "failed"
+                log.error(f"Error during backend restart: {e}", exc_info=True)
+        
+        # Start restart in background
+        asyncio.create_task(_restart_background())
+        
+        # Return immediately
+        return {
+            "ok": True,
+            "status": "restarting",
+            "message": "Backend restart initiated. The server will restart shortly."
+        }
+    except Exception as e:
+        _backend_restart_status = "failed"
+        log.error(f"Error initiating backend restart: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Failed to initiate backend restart: {str(e)}")
