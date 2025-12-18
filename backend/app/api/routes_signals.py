@@ -131,6 +131,10 @@ def calculate_volume_index(volumes: List[float], period: int = 5) -> dict:
     
     IMPROVED: Also checks if multiple recent periods (last 3-4) are above average to detect
     sustained volume increases even if the EMA average is "dragged down" by earlier low volumes.
+    
+    FIX: Use volumes[-2] (last completed period) instead of volumes[-1] (potentially incomplete current period)
+    to avoid showing stale high volume ratios when the high volume "already passed some time ago".
+    This ensures we compare completed periods, which should reflect actual volume that has occurred.
     """
     # Minimum period reduced to 3 for faster detection
     min_period = 3
@@ -142,36 +146,48 @@ def calculate_volume_index(volumes: List[float], period: int = 5) -> dict:
             "signal": None
         }
     
-    # Get current volume
-    current_volume = volumes[-1]
+    # FIX: Use the second-to-last period as current_volume to avoid using potentially incomplete current period
+    # This ensures we're always using a completed period, which should reflect actual volume that has passed
+    # If the high volume "already passed some time ago", the most recent completed period should have lower volume
+    if len(volumes) >= 2:
+        current_volume = volumes[-2]  # Use last completed period (exclude potentially incomplete current)
+    else:
+        current_volume = volumes[-1]  # Fallback if only one period available
     
     # Use EMA (Exponential Moving Average) for more reactive volume average
     # EMA gives more weight to recent volumes, making it faster to detect changes
-    if len(volumes) >= period + 1:
-        # Calculate EMA of volumes for more reactive average
-        recent_volumes = volumes[-(period+1):-1]  # Last N periods excluding current
+    # FIX: Calculate average excluding the potentially incomplete current period (volumes[-1])
+    if len(volumes) >= period + 2:
+        # Calculate EMA using last N completed periods (excluding potentially incomplete current)
+        recent_volumes = volumes[-(period+2):-1]  # Last N completed periods (exclude volumes[-1])
         # Use EMA with multiplier 2/(period+1) for faster reaction
         ema_multiplier = 2 / (period + 1)
         average_volume = recent_volumes[0]  # Start with oldest value
         for vol in recent_volumes[1:]:
             average_volume = (vol * ema_multiplier) + (average_volume * (1 - ema_multiplier))
-    else:
-        # Fallback to simple average if not enough data
-        recent_volumes = volumes[-(len(volumes)-1):-1]  # All except current
+    elif len(volumes) >= 2:
+        # Fallback: use all completed periods except the potentially incomplete current one
+        recent_volumes = volumes[-(len(volumes)-1):-1]  # All except potentially incomplete current period
         average_volume = np.mean(recent_volumes) if recent_volumes else 0
+    else:
+        # Only one period available, use it as fallback
+        average_volume = volumes[0] if volumes else 0
     
     # IMPROVED: Also calculate a "baseline average" using a longer period (up to 10)
     # to detect when multiple recent periods are above the longer-term average
-    baseline_period = min(10, len(volumes) - 1)  # Use up to 10 periods for baseline
-    if len(volumes) >= baseline_period + 1:
-        baseline_volumes = volumes[-(baseline_period+1):-1]  # Last 10 periods excluding current
+    # FIX: Calculate baseline using completed periods only (exclude potentially incomplete current)
+    baseline_period = min(10, len(volumes) - 2) if len(volumes) >= 2 else min(10, len(volumes) - 1)
+    if len(volumes) >= baseline_period + 2:
+        baseline_volumes = volumes[-(baseline_period+2):-1]  # Last N completed periods (exclude volumes[-1])
         baseline_average = np.mean(baseline_volumes) if baseline_volumes else average_volume
         
-        # Check if last 3-4 periods are consistently above baseline
-        recent_count = min(4, len(volumes) - 1)
-        recent_above_baseline = sum(1 for v in volumes[-recent_count:] if v > baseline_average * 1.5)
+        # Check if last 3-4 completed periods are consistently above baseline
+        recent_count = min(4, len(volumes) - 2) if len(volumes) >= 2 else min(4, len(volumes) - 1)
+        # Use completed periods only (exclude potentially incomplete current)
+        completed_periods_for_check = volumes[-(recent_count+1):-1] if len(volumes) >= 2 else volumes[-recent_count:]
+        recent_above_baseline = sum(1 for v in completed_periods_for_check if v > baseline_average * 1.5)
         
-        # If 3+ of the last 4 periods are 1.5x above baseline, use baseline for ratio
+        # If 3+ of the last 4 completed periods are 1.5x above baseline, use baseline for ratio
         # This detects sustained volume increases even if EMA is "dragged down"
         if recent_above_baseline >= 3 and baseline_average > 0:
             # Use the higher of EMA average or baseline average to avoid false negatives
@@ -432,7 +448,9 @@ def get_signals(
                                 
                                 try:
                                     with ThreadPoolExecutor(max_workers=1) as executor:
-                                        future = executor.submit(fetch_ohlcv_data, symbol, "1h", 6)
+                                        # Use 5-minute data for volume calculation (more responsive)
+                                        # Fetch ~72 periods = 6 hours of 5-minute data
+                                        future = executor.submit(fetch_ohlcv_data, symbol, "5m", 72)
                                         ohlcv_data = future.result(timeout=volume_timeout)
                                 except FuturesTimeoutError:
                                     logger.warning(f"⏱️ [SIGNALS] {symbol}: Volume fetch timed out after {volume_timeout:.2f}s, using DB values")

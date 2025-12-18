@@ -144,7 +144,7 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
         
         # Map interval to Binance format
         interval_map = {
-            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1m": "1m", "5m": "5m", "10m": "10m", "15m": "15m", "30m": "30m",
             "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
         }
         binance_interval = interval_map.get(interval, "1h")
@@ -184,12 +184,13 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
         logger.warning(f"Binance error for {symbol} (Binance symbol: {binance_symbol}): {e}")
         return None
 
-def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float, ohlcv_data_daily: Optional[List[Dict]] = None) -> Dict[str, float]:
+def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float, ohlcv_data_daily: Optional[List[Dict]] = None, ohlcv_data_volume: Optional[List[Dict]] = None) -> Dict[str, float]:
     """Calculate all technical indicators from OHLCV data
     Args:
         ohlcv_data: Hourly OHLCV data for most indicators (RSI, MA50, MA200, EMA10, ATR)
         current_price: Current market price
         ohlcv_data_daily: Optional daily OHLCV data for accurate MA10w calculation (10-week MA = 70 days)
+        ohlcv_data_volume: Optional OHLCV data with shorter timeframe (e.g., 10m) for volume calculation
     """
     if not ohlcv_data or len(ohlcv_data) < 50:
         # Return default values if insufficient data
@@ -258,10 +259,21 @@ def calculate_technical_indicators(ohlcv_data: List[Dict], current_price: float,
         # Calculate ATR with adaptive precision based on current price
         atr = calculate_atr(highs, lows, closes, period=14, current_price=current_price)
         
-        # Volume indicators - using period=5 for faster reaction to volume changes
-        volume_index = calculate_volume_index(volumes, period=5)
-        volume_24h = sum(volumes[-24:]) if len(volumes) >= 24 else sum(volumes)
-        current_volume = volume_index.get("current_volume", volumes[-1] if volumes else 0)
+        # Volume indicators - use shorter timeframe data if available (e.g., 5m), otherwise use hourly data
+        # Using period=5 means: 5 periods of the selected timeframe (5*5m = 25min with 5m data, or 5h with 1h data)
+        if ohlcv_data_volume and len(ohlcv_data_volume) >= 3:
+            # Use shorter timeframe data (e.g., 5m) for more responsive volume calculation
+            volume_data = [candle["v"] for candle in ohlcv_data_volume]
+            volume_index = calculate_volume_index(volume_data, period=5)
+            # For volume_24h, sum last 24 hours worth of periods (e.g., 288 periods for 5m = 24h)
+            periods_per_24h = 288 if len(ohlcv_data_volume) >= 288 else len(ohlcv_data_volume)
+            volume_24h = sum(volume_data[-periods_per_24h:]) if len(volume_data) >= periods_per_24h else sum(volume_data)
+            current_volume = volume_index.get("current_volume", volume_data[-1] if volume_data else 0)
+        else:
+            # Fallback to hourly data for volume
+            volume_index = calculate_volume_index(volumes, period=5)
+            volume_24h = sum(volumes[-24:]) if len(volumes) >= 24 else sum(volumes)
+            current_volume = volume_index.get("current_volume", volumes[-1] if volumes else 0)
         
         return {
             "rsi": float(rsi),
@@ -579,19 +591,23 @@ async def update_market_data():
                             # Fetch daily data for MA10w (10-week MA = 70 days)
                             ohlcv_data_1d = fetch_ohlcv_data(symbol, interval="1d", limit=75)  # Get 75 daily candles for 10-week MA (70 days + buffer)
                             
+                            # Fetch 5-minute data for volume calculation (more responsive)
+                            # Get ~288 periods = 24 hours of 5-minute data
+                            ohlcv_data_5m = fetch_ohlcv_data(symbol, interval="5m", limit=288)
+                            
                             if ohlcv_data_1h:
-                                indicators = calculate_technical_indicators(ohlcv_data_1h, current_price, ohlcv_data_daily=ohlcv_data_1d)
-                                logger.debug(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}")
+                                indicators = calculate_technical_indicators(ohlcv_data_1h, current_price, ohlcv_data_daily=ohlcv_data_1d, ohlcv_data_volume=ohlcv_data_5m)
+                                logger.debug(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}, Volume ratio={indicators.get('volume_ratio', 0):.2f}x")
                             else:
                                 logger.debug(f"⚠️ No OHLCV data for {symbol}, using defaults")
                                 # Use defaults
-                                indicators = calculate_technical_indicators([], current_price, ohlcv_data_daily=None)
+                                indicators = calculate_technical_indicators([], current_price, ohlcv_data_daily=None, ohlcv_data_volume=None)
                         except Exception as e:
                             logger.warning(f"Error calculating indicators for {symbol}: {e}")
-                            indicators = calculate_technical_indicators([], current_price, ohlcv_data_daily=None)
+                            indicators = calculate_technical_indicators([], current_price, ohlcv_data_daily=None, ohlcv_data_volume=None)
                     else:
                         # No price, use defaults
-                        indicators = calculate_technical_indicators([], 0.0, ohlcv_data_daily=None)
+                        indicators = calculate_technical_indicators([], 0.0, ohlcv_data_daily=None, ohlcv_data_volume=None)
                     
                     indicators_map[symbol] = indicators
                     
@@ -603,7 +619,7 @@ async def update_market_data():
                     logger.warning(f"Error fetching data for {symbol}: {e}")
                     price_results[symbol] = None
                     if symbol not in indicators_map:
-                        indicators_map[symbol] = calculate_technical_indicators([], prices_map.get(symbol, 0.0), ohlcv_data_daily=None)
+                                indicators_map[symbol] = calculate_technical_indicators([], prices_map.get(symbol, 0.0), ohlcv_data_daily=None, ohlcv_data_volume=None)
             
             logger.info(f"Finished price fetch for {len(symbols)} symbols, got {len(price_results)} results")
             
@@ -624,7 +640,7 @@ async def update_market_data():
                         volume_map[symbol] = indicators.get("volume_24h", existing_volumes.get(symbol, 0.0))
                     if symbol not in indicators_map:
                         # Ensure indicators_map has an entry for later use
-                        indicators_map[symbol] = existing_indicators.get(symbol, calculate_technical_indicators([], prices_map[symbol], ohlcv_data_daily=None))
+                        indicators_map[symbol] = existing_indicators.get(symbol, calculate_technical_indicators([], prices_map[symbol], ohlcv_data_daily=None, ohlcv_data_volume=None))
             
             # Keep price_results and indicators_map in scope for database saving
             # They are now available for the database update section below

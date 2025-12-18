@@ -1090,7 +1090,9 @@ def get_top_coins_with_prices(
                         try:
                             from market_updater import fetch_ohlcv_data
                             from app.api.routes_signals import calculate_volume_index
-                            ohlcv_data = fetch_ohlcv_data(symbol, "1h", limit=11)
+                            # Use 5-minute data for volume calculation (more responsive)
+                            # Fetch ~132 periods = ~11 hours of 5-minute data
+                            ohlcv_data = fetch_ohlcv_data(symbol, "5m", limit=132)
                             if ohlcv_data and len(ohlcv_data) > 0:
                                 volumes = [candle.get("v", 0) for candle in ohlcv_data if candle.get("v", 0) > 0]
                                 if len(volumes) >= 11:
