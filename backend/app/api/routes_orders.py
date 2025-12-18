@@ -354,6 +354,8 @@ def create_sl_tp_for_order(
     current_user = None if _should_disable_auth() else Depends(get_current_user),
     sl_percentage: Optional[float] = Query(None),
     tp_percentage: Optional[float] = Query(None),
+    sl_price: Optional[float] = Query(None, description="Exact SL price override (optional)"),
+    tp_price: Optional[float] = Query(None, description="Exact TP price override (optional)"),
     force: bool = Query(False, description="If true, bypass rejected/cooldown protections and attempt to place SL/TP again"),
     place_live: bool = Query(True, description="If true, temporarily set LIVE_TRADING=true for this request, then restore previous value"),
     use_proxy: Optional[bool] = Query(None, description="If set, temporarily override USE_CRYPTO_PROXY for this request"),
@@ -459,7 +461,9 @@ def create_sl_tp_for_order(
                 detail=f"Order {order_id} is not FILLED (status: {order.status.value}). SL/TP can only be created for FILLED orders."
             )
         
-        # Check if SL/TP already exist
+        # Check if SL/TP already exist (ACTIVE).
+        # IMPORTANT: Do NOT return early if only one side exists.
+        # We want idempotency (no duplicates) *and* the ability to create the missing side.
         existing_sl_tp = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == order_id,
             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
@@ -467,18 +471,21 @@ def create_sl_tp_for_order(
         ).all()
         
         if existing_sl_tp:
-            return {
-                "ok": True,
-                "message": f"Order {order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
-                "existing_sl_tp": [
-                    {
-                        "order_id": o.exchange_order_id,
-                        "order_role": o.order_role,
-                        "status": o.status.value
-                    }
-                    for o in existing_sl_tp
-                ]
-            }
+            has_sl = any(o.order_role == "STOP_LOSS" for o in existing_sl_tp)
+            has_tp = any(o.order_role == "TAKE_PROFIT" for o in existing_sl_tp)
+            if has_sl and has_tp:
+                return {
+                    "ok": True,
+                    "message": f"Order {order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
+                    "existing_sl_tp": [
+                        {
+                            "order_id": o.exchange_order_id,
+                            "order_role": o.order_role,
+                            "status": o.status.value
+                        }
+                        for o in existing_sl_tp
+                    ]
+                }
         
         # Get order details
         symbol = order.symbol
@@ -539,7 +546,7 @@ def create_sl_tp_for_order(
         # Create SL/TP using the exchange_sync_service method
         # The method will use watchlist_item.trade_on_margin to determine if SL/TP should use margin
         try:
-            exchange_sync_service._create_sl_tp_for_filled_order(
+            creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
                 db=db,
                 symbol=symbol,
                 side=side,
@@ -549,6 +556,8 @@ def create_sl_tp_for_order(
                 force=force,
                 source="manual",
                 strict_percentages=strict,
+                sl_price_override=sl_price,
+                tp_price_override=tp_price,
             )
             
             # Verify SL/TP were created
@@ -562,10 +571,15 @@ def create_sl_tp_for_order(
                     OrderStatusEnum.REJECTED,
                 ])
             ).all()
-            
+
+            ok = len(new_sl_tp) > 0
             return {
-                "ok": True,
-                "message": f"Created {len(new_sl_tp)} SL/TP order(s) for order {order_id}",
+                "ok": ok,
+                "message": (
+                    f"Created {len(new_sl_tp)} SL/TP order(s) for order {order_id}"
+                    if ok
+                    else f"SL/TP creation attempted for order {order_id} but none were created. Check backend logs."
+                ),
                 "order_id": order_id,
                 "symbol": symbol,
                 "side": side,
@@ -577,13 +591,16 @@ def create_sl_tp_for_order(
                 "live_was_enabled": prev_live,
                 "live_temporarily_enabled": live_toggled,
                 "use_proxy": trade_client.use_proxy if hasattr(trade_client, "use_proxy") else None,
+                "creation_result": creation_result,
                 "created_sl_tp": [
                     {
                         "order_id": o.exchange_order_id,
                         "order_role": o.order_role,
+                        "order_type": o.order_type,
                         "status": o.status.value,
                         "price": float(o.price) if o.price else None,
-                        "quantity": float(o.quantity) if o.quantity else None
+                        "quantity": float(o.quantity) if o.quantity else None,
+                        "oco_group_id": o.oco_group_id,
                     }
                     for o in new_sl_tp
                 ]
@@ -624,9 +641,14 @@ def create_sl_tp_for_order(
                 except Exception:
                     pass
 
-        # Restore proxy override if set
-        if use_proxy is not None and prev_use_proxy is not None:
-            trade_client.use_proxy = prev_use_proxy
+        # Restore proxy override if set (ContextVar-safe; avoids leaking across background tasks)
+        if use_proxy is not None:
+            try:
+                trade_client.clear_use_proxy_override()
+            except Exception:
+                # Fallback for older client implementations
+                if prev_use_proxy is not None:
+                    trade_client.use_proxy = prev_use_proxy
 
 
 class CreateSLTPForOrderRequest(BaseModel):
@@ -701,7 +723,8 @@ def create_sl_tp_with_order_details(
                 detail=f"Order {order_id} is not FILLED (status: {order.status.value}). SL/TP can only be created for FILLED orders."
             )
         
-        # Check if SL/TP already exist
+        # Check if SL/TP already exist (ACTIVE).
+        # IMPORTANT: Do NOT return early if only one side exists.
         existing_sl_tp = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == order_id,
             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
@@ -709,18 +732,21 @@ def create_sl_tp_with_order_details(
         ).all()
         
         if existing_sl_tp:
-            return {
-                "ok": True,
-                "message": f"Order {order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
-                "existing_sl_tp": [
-                    {
-                        "order_id": o.exchange_order_id,
-                        "order_role": o.order_role,
-                        "status": o.status.value
-                    }
-                    for o in existing_sl_tp
-                ]
-            }
+            has_sl = any(o.order_role == "STOP_LOSS" for o in existing_sl_tp)
+            has_tp = any(o.order_role == "TAKE_PROFIT" for o in existing_sl_tp)
+            if has_sl and has_tp:
+                return {
+                    "ok": True,
+                    "message": f"Order {order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
+                    "existing_sl_tp": [
+                        {
+                            "order_id": o.exchange_order_id,
+                            "order_role": o.order_role,
+                            "status": o.status.value
+                        }
+                        for o in existing_sl_tp
+                    ]
+                }
         
         # Get order details
         filled_price = float(order.avg_price) if order.avg_price else (float(order.price) if order.price else 0)
@@ -767,39 +793,54 @@ def create_sl_tp_with_order_details(
             db.commit()
             db.refresh(watchlist_item)
         
-        # Create SL/TP
+        # Create SL/TP (manual path must behave like the auto path, but with source="manual")
         try:
-            exchange_sync_service._create_sl_tp_for_filled_order(
+            creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
                 db=db,
                 symbol=symbol,
                 side=side,
                 filled_price=filled_price,
                 filled_qty=filled_qty,
-                order_id=order_id
+                order_id=order_id,
+                source="manual",
+                strict_percentages=True,
             )
             
-            # Verify SL/TP were created
+            # Verify SL/TP were created (or at least recorded as REJECTED)
             new_sl_tp = db.query(ExchangeOrder).filter(
                 ExchangeOrder.parent_order_id == order_id,
                 ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                ExchangeOrder.status.in_([
+                    OrderStatusEnum.NEW,
+                    OrderStatusEnum.ACTIVE,
+                    OrderStatusEnum.PARTIALLY_FILLED,
+                    OrderStatusEnum.REJECTED,
+                ])
             ).all()
             
+            ok = len(new_sl_tp) > 0
             return {
-                "ok": True,
-                "message": f"Created {len(new_sl_tp)} SL/TP order(s) for order {order_id}",
+                "ok": ok,
+                "message": (
+                    f"Created {len(new_sl_tp)} SL/TP order(s) for order {order_id}"
+                    if ok
+                    else f"SL/TP creation attempted for order {order_id} but none were created. Check backend logs."
+                ),
                 "order_id": order_id,
                 "symbol": symbol,
                 "side": side,
                 "filled_price": filled_price,
                 "filled_qty": filled_qty,
+                "creation_result": creation_result,
                 "created_sl_tp": [
                     {
                         "order_id": o.exchange_order_id,
                         "order_role": o.order_role,
                         "status": o.status.value,
                         "price": float(o.price) if o.price else None,
-                        "quantity": float(o.quantity) if o.quantity else None
+                        "quantity": float(o.quantity) if o.quantity else None,
+                        "oco_group_id": getattr(o, "oco_group_id", None),
+                        "order_type": getattr(o, "order_type", None),
                     }
                     for o in new_sl_tp
                 ]
@@ -1199,6 +1240,7 @@ def get_order_history(
                 "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
                 "order_type": order.order_type or "LIMIT",
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "order_role": order.order_role,  # Include order_role for SL/TP identification
                 "quantity": str(float(order.quantity)) if order.quantity else "0",
                 "price": str(float(order.price)) if order.price else "0",
                 "avg_price": str(float(order.avg_price)) if order.avg_price else None,
@@ -2046,29 +2088,41 @@ def get_tp_sl_order_values(
         
         # Process TP orders
         for order in tp_orders:
-            if order.symbol and order.price and order.quantity:
+            if order.symbol:
                 # Extract base currency from symbol (e.g., "BTC_USDT" -> "BTC")
                 base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
-                # Calculate USD value: quantity * price
+                # Calculate USD value: prefer cumulative_value, then price * quantity
                 try:
-                    qty = float(order.quantity)
-                    price = float(order.price)
-                    usd_value = qty * price
-                    tp_values[base_currency] += usd_value
+                    usd_value = 0
+                    if order.cumulative_value and float(order.cumulative_value) > 0:
+                        usd_value = float(order.cumulative_value)
+                    elif order.price and order.quantity:
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        usd_value = qty * price
+                    
+                    if usd_value > 0:
+                        tp_values[base_currency] += usd_value
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Error calculating TP value for {order.symbol}: {e}")
         
         # Process SL orders
         for order in sl_orders:
-            if order.symbol and order.price and order.quantity:
+            if order.symbol:
                 # Extract base currency from symbol
                 base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
-                # Calculate USD value: quantity * price
+                # Calculate USD value: prefer cumulative_value, then price * quantity
                 try:
-                    qty = float(order.quantity)
-                    price = float(order.price)
-                    usd_value = qty * price
-                    sl_values[base_currency] += usd_value
+                    usd_value = 0
+                    if order.cumulative_value and float(order.cumulative_value) > 0:
+                        usd_value = float(order.cumulative_value)
+                    elif order.price and order.quantity:
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        usd_value = qty * price
+                    
+                    if usd_value > 0:
+                        sl_values[base_currency] += usd_value
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Error calculating SL value for {order.symbol}: {e}")
         
@@ -2092,9 +2146,13 @@ def get_tp_sl_order_values(
 
 @router.post("/orders/create-sl-tp-for-last-order")
 def create_sl_tp_for_last_order(
-    symbol: str,
-    sl_percentage: Optional[float] = None,
-    tp_percentage: Optional[float] = None,
+    symbol: str = Query(..., description="Trading symbol (e.g., BTC_USDT, BTC_USD)"),
+    sl_percentage: Optional[float] = Query(None, description="Custom SL % (e.g., 10.0 for 10%)"),
+    tp_percentage: Optional[float] = Query(None, description="Custom TP % (e.g., 3.0 for 3%)"),
+    force: bool = Query(False, description="Bypass rejected/cooldown protections and attempt to place SL/TP again"),
+    place_live: bool = Query(True, description="Temporarily enable LIVE_TRADING for this request, then restore previous value"),
+    use_proxy: Optional[bool] = Query(None, description="Temporarily override USE_CRYPTO_PROXY for this request"),
+    strict: bool = Query(True, description="If true, use exact % SL/TP without ATR blending"),
     db: Session = Depends(get_db),
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
@@ -2106,20 +2164,70 @@ def create_sl_tp_for_last_order(
         sl_percentage: Optional custom SL percentage (e.g., 2.0 for 2%)
         tp_percentage: Optional custom TP percentage (e.g., 2.0 for 2%)
     """
+    # Defaults so we can safely restore in finally
+    prev_use_proxy = None
+    prev_live = False
+    live_toggled = False
+
     try:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
         from app.models.watchlist import WatchlistItem
         from app.services.exchange_sync import exchange_sync_service
+        from app.utils.live_trading import get_live_trading_status
+        from app.models.trading_settings import TradingSettings
+        from datetime import timezone, datetime
         
-        logger.info(f"Creating SL/TP for last order of {symbol} (SL={sl_percentage}%, TP={tp_percentage}%)")
+        # Optional per-request override for proxy usage
+        prev_use_proxy = getattr(trade_client, "use_proxy", None)
+        if use_proxy is not None:
+            trade_client.use_proxy = bool(use_proxy)
+
+        # Temporarily toggle LIVE_TRADING in DB if requested
+        prev_live = get_live_trading_status(db)
+        if place_live and not prev_live:
+            try:
+                setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+                if setting:
+                    setting.setting_value = "true"
+                    setting.updated_at = func.now()
+                else:
+                    setting = TradingSettings(
+                        setting_key="LIVE_TRADING",
+                        setting_value="true",
+                        description="Enable/disable live trading (real orders vs dry run)"
+                    )
+                    db.add(setting)
+                db.commit()
+                os.environ["LIVE_TRADING"] = "true"
+                live_toggled = True
+                logger.info("✅ Temporarily enabled LIVE_TRADING for create-sl-tp-for-last-order request")
+            except Exception as e:
+                logger.error(f"Failed to enable LIVE_TRADING for request: {e}", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=500, detail=f"Failed to enable LIVE_TRADING: {str(e)}")
+
+        symbol_upper = symbol.upper()
+        logger.info(
+            f"Creating SL/TP for last order of {symbol_upper} "
+            f"(SL={sl_percentage}%, TP={tp_percentage}%, force={force}, strict={strict}, place_live={place_live})"
+        )
         
         # Find the last filled BUY order for the symbol
         last_order = db.query(ExchangeOrder).filter(
-            ExchangeOrder.symbol == symbol.upper(),
+            ExchangeOrder.symbol == symbol_upper,
             ExchangeOrder.side == OrderSideEnum.BUY,
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.order_type.in_(["MARKET", "LIMIT"])
-        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+        ).order_by(
+            func.coalesce(
+                ExchangeOrder.exchange_update_time,
+                ExchangeOrder.exchange_create_time,
+                ExchangeOrder.created_at
+            ).desc()
+        ).first()
         
         if not last_order:
             raise HTTPException(
@@ -2127,27 +2235,57 @@ def create_sl_tp_for_last_order(
                 detail=f"No filled BUY orders found for {symbol}"
             )
         
-        # Check if this order already has SL/TP orders
+        # Check if this order already has SL/TP orders (ACTIVE).
+        # IMPORTANT: Do NOT return early if only one side exists.
         existing_sl_tp = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == last_order.exchange_order_id,
-            ExchangeOrder.order_type.in_(["STOP_LIMIT", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"]),
+            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
         ).all()
         
         if existing_sl_tp:
-            return {
-                "ok": True,
-                "message": f"Order {last_order.exchange_order_id} already has {len(existing_sl_tp)} SL/TP order(s)",
-                "order_id": last_order.exchange_order_id,
-                "existing_sl_tp": [
-                    {
-                        "order_id": o.exchange_order_id,
-                        "order_type": o.order_type,
-                        "status": o.status.value
-                    } for o in existing_sl_tp
-                ]
-            }
-        
+            # If we are explicitly trying to place LIVE orders and only have DRY placeholder orders in DB,
+            # delete the placeholders and proceed with real creation.
+            try:
+                if place_live:
+                    is_all_dry = all(str(o.exchange_order_id or "").startswith("dry_") for o in existing_sl_tp)
+                    if is_all_dry:
+                        logger.warning(
+                            f"Found {len(existing_sl_tp)} DRY placeholder SL/TP order(s) for {last_order.exchange_order_id}. "
+                            f"Removing placeholders and proceeding with LIVE creation."
+                        )
+                        for o in existing_sl_tp:
+                            try:
+                                db.delete(o)
+                            except Exception:
+                                pass
+                        db.commit()
+                        existing_sl_tp = []
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to cleanup DRY placeholder SL/TP orders: {cleanup_err}", exc_info=True)
+
+        if existing_sl_tp:
+            has_sl = any(o.order_role == "STOP_LOSS" for o in existing_sl_tp)
+            has_tp = any(o.order_role == "TAKE_PROFIT" for o in existing_sl_tp)
+            if has_sl and has_tp:
+                return {
+                    "ok": True,
+                    "message": (
+                        f"Order {last_order.exchange_order_id} already has "
+                        f"{len(existing_sl_tp)} SL/TP order(s)"
+                    ),
+                    "order_id": last_order.exchange_order_id,
+                    "existing_sl_tp": [
+                        {
+                            "order_id": o.exchange_order_id,
+                            "order_role": o.order_role,
+                            "order_type": o.order_type,
+                            "status": o.status.value,
+                        }
+                        for o in existing_sl_tp
+                    ],
+                }
+
         # Get filled price and quantity
         filled_price = float(last_order.avg_price) if last_order.avg_price else float(last_order.price) if last_order.price else None
         filled_qty = float(last_order.cumulative_quantity) if last_order.cumulative_quantity else float(last_order.quantity) if last_order.quantity else None
@@ -2185,30 +2323,81 @@ def create_sl_tp_for_last_order(
         db.commit()
         db.refresh(watchlist_item)
         
-        logger.info(f"Creating SL/TP for order {last_order.exchange_order_id}: price={filled_price}, qty={filled_qty}, SL={watchlist_item.sl_percentage}%, TP={watchlist_item.tp_percentage}%")
+        logger.info(
+            f"Creating SL/TP for order {last_order.exchange_order_id}: "
+            f"price={filled_price}, qty={filled_qty}, SL={watchlist_item.sl_percentage}%, TP={watchlist_item.tp_percentage}%"
+        )
         
         try:
             # Use the same logic as exchange_sync._create_sl_tp_for_filled_order
-            exchange_sync_service._create_sl_tp_for_filled_order(
+            creation_result = exchange_sync_service._create_sl_tp_for_filled_order(
                 db=db,
-                symbol=symbol.upper(),
+                symbol=symbol_upper,
                 side=last_order.side.value,  # "BUY"
                 filled_price=filled_price,
                 filled_qty=filled_qty,
-                order_id=last_order.exchange_order_id
+                order_id=last_order.exchange_order_id,
+                force=force,
+                source="manual",
+                strict_percentages=strict,
             )
             
-            logger.info(f"✅ SL/TP orders created successfully for order {last_order.exchange_order_id}")
+            # Verify SL/TP were created (or at least recorded as REJECTED)
+            created_sl_tp = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == last_order.exchange_order_id,
+                ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                ExchangeOrder.status.in_([
+                    OrderStatusEnum.NEW,
+                    OrderStatusEnum.ACTIVE,
+                    OrderStatusEnum.PARTIALLY_FILLED,
+                    OrderStatusEnum.REJECTED,
+                ])
+            ).all()
+
+            ok = len(created_sl_tp) > 0
+            if ok:
+                logger.info(
+                    f"✅ SL/TP creation completed for order {last_order.exchange_order_id} "
+                    f"(created/updated {len(created_sl_tp)} protection order(s))"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ SL/TP creation attempted for order {last_order.exchange_order_id} "
+                    f"but no protection orders were found in DB afterwards."
+                )
             
             return {
-                "ok": True,
-                "message": f"SL/TP orders created successfully for order {last_order.exchange_order_id}",
+                "ok": ok,
+                "message": (
+                    f"SL/TP orders created successfully for order {last_order.exchange_order_id}"
+                    if ok
+                    else f"SL/TP creation attempted for order {last_order.exchange_order_id} but none were created. Check backend logs."
+                ),
                 "order_id": last_order.exchange_order_id,
-                "symbol": symbol.upper(),
+                "symbol": symbol_upper,
                 "filled_price": filled_price,
                 "filled_qty": filled_qty,
                 "sl_percentage": watchlist_item.sl_percentage,
-                "tp_percentage": watchlist_item.tp_percentage
+                "tp_percentage": watchlist_item.tp_percentage,
+                "force": force,
+                "strict": strict,
+                "place_live": place_live,
+                "live_was_enabled": prev_live,
+                "live_temporarily_enabled": live_toggled,
+                "use_proxy": trade_client.use_proxy if hasattr(trade_client, "use_proxy") else None,
+                "creation_result": creation_result,
+                "created_sl_tp": [
+                    {
+                        "order_id": o.exchange_order_id,
+                        "order_role": o.order_role,
+                        "order_type": o.order_type,
+                        "status": o.status.value,
+                        "price": float(o.price) if o.price is not None else None,
+                        "quantity": float(o.quantity) if o.quantity is not None else None,
+                        "oco_group_id": o.oco_group_id,
+                    }
+                    for o in created_sl_tp
+                ],
             }
         finally:
             # Restore original percentages if they were temporarily changed
@@ -2224,12 +2413,46 @@ def create_sl_tp_for_last_order(
                     watchlist_item.tp_percentage = None  # Remove if it was None originally
                 
                 db.commit()
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Error creating SL/TP for last order of {symbol}")
         db.rollback()
         raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        # Restore LIVE_TRADING if we toggled it for this request
+        if place_live and live_toggled:
+            try:
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    db.rollback()
+                from app.models.trading_settings import TradingSettings
+                setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
+                if setting:
+                    setting.setting_value = "true" if prev_live else "false"
+                    setting.updated_at = func.now()
+                    db.commit()
+                os.environ["LIVE_TRADING"] = "true" if prev_live else "false"
+                logger.info(f"✅ Restored LIVE_TRADING to {prev_live} after create-sl-tp-for-last-order request")
+            except Exception as restore_err:
+                logger.error(
+                    f"❌ Failed to restore LIVE_TRADING after create-sl-tp-for-last-order request: {restore_err}",
+                    exc_info=True
+                )
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    db.rollback()
+
+        # Restore proxy override if set (ContextVar-safe; avoids leaking across background tasks)
+        if use_proxy is not None:
+            try:
+                trade_client.clear_use_proxy_override()
+            except Exception:
+                # Fallback for older client implementations
+                if prev_use_proxy is not None:
+                    trade_client.use_proxy = prev_use_proxy
 
 
