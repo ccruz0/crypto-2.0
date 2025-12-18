@@ -155,27 +155,47 @@ def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
     if net_quantity > 0 and avg_position_size > 0:
         # Estimate positions: net quantity divided by average position size
         # This gives us a realistic count based on actual holdings, not individual orders
-        estimated_positions = max(1, int(round(net_quantity / avg_position_size)))
+        
+        # Add minimum threshold: only count as a position if net quantity is significant
+        # (at least 1% of average position size to avoid counting tiny remnants)
+        MIN_POSITION_THRESHOLD = avg_position_size * 0.01
+        
+        if net_quantity >= MIN_POSITION_THRESHOLD:
+            estimated_positions = max(1, int(round(net_quantity / avg_position_size)))
+        else:
+            # Net quantity is too small to count as a meaningful position
+            estimated_positions = 0
+            logger.debug(
+                f"Position too small for {symbol}: net_qty={net_quantity:.4f} < threshold={MIN_POSITION_THRESHOLD:.4f}"
+            )
         
         # Use estimated positions as the primary count
         # This prevents over-counting when multiple small orders exist
         open_filled_positions = estimated_positions
         
-        # Log the estimation for debugging
-        logger.debug(
-            f"Position estimation for {symbol}: net_qty={net_quantity:.4f}, "
-            f"avg_size={avg_position_size:.4f}, estimated={estimated_positions}"
+        # Log the estimation for visibility (info level so it appears in production logs)
+        logger.info(
+            f"[POSITION_ESTIMATION] {symbol}: net_qty={net_quantity:.4f}, "
+            f"avg_size={avg_position_size:.4f}, estimated={estimated_positions}, "
+            f"threshold={MIN_POSITION_THRESHOLD:.4f}"
         )
     else:
-        # Fallback to original logic if we can't calculate average
+        # Fallback to FIFO logic if we can't calculate average (edge case)
+        # This should rarely happen, but provides a safety net
+        logger.debug(
+            f"Using FIFO fallback for {symbol}: net_qty={net_quantity:.4f}, "
+            f"avg_size={avg_position_size:.4f}, filled_buy_orders={len(filled_buy_orders)}"
+        )
         for buy_order in filled_buy_orders:
             buy_qty = _order_filled_quantity(buy_order)
             if buy_qty <= 0:
                 continue
 
             if remaining_sell_qty >= buy_qty:
+                # This BUY is fully closed by SELLs
                 remaining_sell_qty -= buy_qty
             else:
+                # This BUY still has some net quantity open
                 open_filled_positions += 1
                 remaining_sell_qty = 0.0
 
@@ -198,13 +218,14 @@ def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
         pass
 
     logger.info(
-        "[OPEN_POSITION_COUNT] symbol=%s pending_buy=%s filled_buy=%s filled_sell=%s net_qty=%s final_positions=%s",
+        "[OPEN_POSITION_COUNT] symbol=%s pending_buy=%s filled_buy=%s filled_sell=%s net_qty=%s final_positions=%s (avg_size=%s)",
         symbol,
         pending_buy_count,
         round(filled_buy_qty, 8),
         round(filled_sell_qty, 8),
         round(net_quantity, 8),
         total_open_positions,
+        round(avg_position_size, 4) if avg_position_size > 0 else 0,
     )
 
     return total_open_positions
