@@ -83,15 +83,20 @@ def _mark_item_deleted(item: WatchlistItem):
         item.skip_sl_tp_reminder = True
 
 
-def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
-    """Convert WatchlistItem SQLAlchemy object into JSON-serializable dict."""
+def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = None) -> Dict[str, Any]:
+    """Convert WatchlistItem SQLAlchemy object into JSON-serializable dict.
+    
+    Args:
+        item: WatchlistItem to serialize
+        market_data: Optional MarketData object to enrich the item with computed values
+    """
     if not item:
         return {}
     
     def _iso(dt):
         return dt.isoformat() if dt else None
     
-    return {
+    serialized = {
         "id": item.id,
         "symbol": (item.symbol or "").upper(),
         "exchange": item.exchange,
@@ -132,6 +137,36 @@ def _serialize_watchlist_item(item: WatchlistItem) -> Dict[str, Any]:
         "is_deleted": getattr(item, "is_deleted", False),
         "deleted": bool(getattr(item, "is_deleted", False)),
     }
+    
+    # Enrich with MarketData if provided (ensures computed values are included)
+    if market_data:
+        if serialized.get("price") is None and market_data.price is not None:
+            serialized["price"] = market_data.price
+        if serialized.get("rsi") is None and market_data.rsi is not None:
+            serialized["rsi"] = market_data.rsi
+        if serialized.get("ma50") is None and market_data.ma50 is not None:
+            serialized["ma50"] = market_data.ma50
+        if serialized.get("ma200") is None and market_data.ma200 is not None:
+            serialized["ma200"] = market_data.ma200
+        if serialized.get("ema10") is None and market_data.ema10 is not None:
+            serialized["ema10"] = market_data.ema10
+        if serialized.get("atr") is None and market_data.atr is not None:
+            serialized["atr"] = market_data.atr
+        if serialized.get("res_up") is None and market_data.res_up is not None:
+            serialized["res_up"] = market_data.res_up
+        if serialized.get("res_down") is None and market_data.res_down is not None:
+            serialized["res_down"] = market_data.res_down
+    
+    return serialized
+
+
+def _get_market_data_for_symbol(db: Session, symbol: str) -> Optional[Any]:
+    """Get MarketData for a single symbol."""
+    try:
+        from app.models.market_price import MarketData
+        return db.query(MarketData).filter(MarketData.symbol == symbol).first()
+    except Exception:
+        return None
 
 
 def _apply_watchlist_updates(item: WatchlistItem, data: Dict[str, Any]) -> None:
@@ -750,7 +785,11 @@ def get_open_orders_summary():
 
 @router.get("/dashboard")
 def list_watchlist_items(db: Session = Depends(get_db)):
-    """Return watchlist items (limited to 100, deduplicated by symbol)."""
+    """Return watchlist items (limited to 100, deduplicated by symbol).
+    
+    Enriches items with MarketData (price, rsi, ma50, ma200, ema10, atr) before returning.
+    This ensures the frontend receives computed values instead of NULL.
+    """
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received")
     try:
         query = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc())
@@ -774,8 +813,26 @@ def list_watchlist_items(db: Session = Depends(get_db)):
                 len(canonical_items),
             )
 
+        # CRITICAL FIX: Enrich watchlist items with MarketData before serializing
+        # This ensures price, rsi, ma50, ma200, ema10, atr are populated from MarketData
+        # instead of returning NULL values from watchlist_items table
+        try:
+            from app.models.market_price import MarketData
+            all_symbols = [item.symbol for item in canonical_items]
+            if all_symbols:
+                # Batch query MarketData for all symbols at once (optimized)
+                market_data_list = db.query(MarketData).filter(MarketData.symbol.in_(all_symbols)).all()
+                market_data_map = {md.symbol: md for md in market_data_list}
+            else:
+                market_data_map = {}
+        except Exception as md_err:
+            log.warning(f"Failed to fetch MarketData for enrichment: {md_err}")
+            market_data_map = {}
+
         for item in canonical_items:
-            result.append(_serialize_watchlist_item(item))
+            # Enrich with MarketData if available
+            md = market_data_map.get(item.symbol)
+            result.append(_serialize_watchlist_item(item, market_data=md))
             if len(result) >= 100:
                 break
         log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)}")
@@ -927,7 +984,9 @@ def create_watchlist_item(
             except Exception as throttle_err:
                 log.warning(f"⚠️ [PARAMS] Failed to reset throttle state for {existing_item.symbol}: {throttle_err}", exc_info=True)
         
-        return _serialize_watchlist_item(existing_item)
+        # Enrich with MarketData before returning
+        md = _get_market_data_for_symbol(db, existing_item.symbol)
+        return _serialize_watchlist_item(existing_item, market_data=md)
 
     # No existing row: create a new item.
     item = WatchlistItem(
@@ -975,7 +1034,10 @@ def create_watchlist_item(
     db.add(item)
     db.commit()
     db.refresh(item)
-    return _serialize_watchlist_item(item)
+    
+    # Enrich with MarketData before returning
+    md = _get_market_data_for_symbol(db, item.symbol)
+    return _serialize_watchlist_item(item, market_data=md)
 
 
 @router.put("/dashboard/{item_id}")
@@ -1383,7 +1445,9 @@ def update_watchlist_item(
                 # Log successful update only after verification confirms it was saved correctly
                 log.info(f"✅ Updated trade_enabled for {item.symbol} ({item_id}): {trade_enabled_old_value} -> {expected_value}")
     
-    result = _serialize_watchlist_item(item)
+    # Enrich with MarketData before returning
+    md = _get_market_data_for_symbol(db, item.symbol)
+    result = _serialize_watchlist_item(item, market_data=md)
     
     # Add success message if updates were made
     if updates:
@@ -1416,7 +1480,10 @@ def delete_watchlist_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/dashboard/symbol/{symbol}")
 def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
-    """Get a watchlist item by symbol (includes deleted items)."""
+    """Get a watchlist item by symbol (includes deleted items).
+    
+    Enriches the item with MarketData (price, rsi, ma50, ma200, ema10, atr) before returning.
+    """
     symbol = (symbol or "").upper()
     # Deterministic selection when duplicates exist:
     # - Prefer active rows; if all are deleted, return the "best" deleted row.
@@ -1429,7 +1496,10 @@ def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     item = select_preferred_watchlist_item(items, symbol)
     if not item:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
-    return _serialize_watchlist_item(item)
+    
+    # Enrich with MarketData
+    md = _get_market_data_for_symbol(db, symbol)
+    return _serialize_watchlist_item(item, market_data=md)
 
 
 @router.put("/dashboard/symbol/{symbol}/restore")
@@ -1450,10 +1520,12 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
     # Check if already active
     is_deleted = getattr(item, "is_deleted", False)
     if not is_deleted:
+        # Enrich with MarketData before returning
+        md = _get_market_data_for_symbol(db, symbol)
         return {
             "ok": True,
             "message": f"{symbol} is already active (not deleted)",
-            "item": _serialize_watchlist_item(item)
+            "item": _serialize_watchlist_item(item, market_data=md)
         }
     
     # Restore the item
@@ -1466,10 +1538,13 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
             db.commit()
             db.refresh(item)
             log.info(f"✅ Restored watchlist item {symbol} (ID: {item.id})")
+            
+            # Enrich with MarketData before returning
+            md = _get_market_data_for_symbol(db, item.symbol)
             return {
                 "ok": True,
                 "message": f"{symbol} has been restored",
-                "item": _serialize_watchlist_item(item)
+                "item": _serialize_watchlist_item(item, market_data=md)
             }
         else:
             raise HTTPException(status_code=400, detail="Soft delete not supported on this database")

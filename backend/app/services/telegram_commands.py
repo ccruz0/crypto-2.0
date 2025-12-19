@@ -41,6 +41,9 @@ PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent 
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
 CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
+# CRITICAL: Track processed text commands to prevent duplicates when multiple instances (local/AWS) process same command
+PROCESSED_TEXT_COMMANDS: Dict[str, float] = {}  # {chat_id:command: timestamp}
+TEXT_COMMAND_TTL = 3.0  # 3 seconds - ignore duplicate text commands within this window
 WATCHLIST_PAGE_SIZE = 9
 MAX_SYMBOLS_PER_ROW = 3
 PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
@@ -2204,6 +2207,25 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
 
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
+    update_id = update.get("update_id", 0)
+    
+    # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
+    # This is the most reliable deduplication since update_id is unique per update
+    # Store in a set with TTL-like cleanup
+    global PROCESSED_UPDATE_IDS
+    if not hasattr(handle_telegram_update, 'processed_update_ids'):
+        handle_telegram_update.processed_update_ids = set()
+    
+    if update_id in handle_telegram_update.processed_update_ids:
+        logger.debug(f"[TG] Skipping duplicate update_id={update_id}")
+        return
+    
+    # Mark as processed (keep only last 1000 to prevent memory leak)
+    handle_telegram_update.processed_update_ids.add(update_id)
+    if len(handle_telegram_update.processed_update_ids) > 1000:
+        # Simple cleanup: remove oldest 500 (we can't track age easily, so just keep recent ones)
+        handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
+    
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
     if callback_query:
@@ -2470,6 +2492,23 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     
     # Parse command
     text = text.strip()
+    
+    # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
+    # This prevents the same /start command from being processed by both local and AWS instances
+    if text and text.startswith("/"):
+        command_key = f"{chat_id}:{text}"
+        now = time.time()
+        if command_key in PROCESSED_TEXT_COMMANDS:
+            last_processed = PROCESSED_TEXT_COMMANDS[command_key]
+            if now - last_processed < TEXT_COMMAND_TTL:
+                logger.debug(f"[TG] Skipping duplicate text command {text} for chat {chat_id} (processed {now - last_processed:.2f}s ago)")
+                return
+        # Mark this command as processed
+        PROCESSED_TEXT_COMMANDS[command_key] = now
+        # Clean up old entries (keep only last 500)
+        if len(PROCESSED_TEXT_COMMANDS) > 500:
+            cutoff_time = now - TEXT_COMMAND_TTL
+            PROCESSED_TEXT_COMMANDS = {k: v for k, v in PROCESSED_TEXT_COMMANDS.items() if v > cutoff_time}
 
     # If waiting for a manual input, process it first
     if PENDING_VALUE_INPUTS.get(chat_id) and db:
