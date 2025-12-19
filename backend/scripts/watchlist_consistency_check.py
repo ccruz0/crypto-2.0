@@ -43,18 +43,31 @@ def get_watchlist_items(db: Session) -> list:
 def get_throttle_states(db: Session) -> dict:
     """Get throttle states for all symbols/strategies"""
     throttle_states = {}
-    states = db.query(SignalThrottleState).all()
-    for state in states:
-        # SignalThrottleState uses strategy_key, not strategy_type and risk_mode
-        key = f"{state.symbol}_{state.strategy_key}_{state.side}"
-        throttle_states[key] = state
+    try:
+        # Query only columns that exist in the database
+        # Use raw SQL to avoid schema mismatch issues (previous_price column may not exist)
+        from sqlalchemy import text
+        result = db.execute(text("""
+            SELECT symbol, strategy_key, side 
+            FROM signal_throttle_states
+        """))
+        for row in result:
+            key = f"{row.symbol}_{row.strategy_key}_{row.side}"
+            throttle_states[key] = {"symbol": row.symbol, "strategy_key": row.strategy_key, "side": row.side}
+    except Exception as e:
+        logger.warning(f"Could not fetch throttle states (schema may be outdated): {e}")
+        # Return empty dict if query fails - this is non-critical for the consistency check
     return throttle_states
 
 
 def check_consistency(db: Session) -> dict:
     """Check watchlist consistency and return report data"""
     watchlist_items = get_watchlist_items(db)
-    throttle_states = get_throttle_states(db)
+    try:
+        throttle_states = get_throttle_states(db)
+    except Exception as e:
+        logger.warning(f"Could not fetch throttle states, continuing without them: {e}")
+        throttle_states = {}
     
     report_data = {
         "timestamp": datetime.now().isoformat(),
@@ -188,13 +201,34 @@ def main():
             # Generate markdown report
             markdown_content = generate_markdown_report(report_data)
             
-            # Determine report paths
-            # Script is in backend/scripts/, so project root is backend/../ (two levels up)
+            # Determine report paths using same logic as routes_monitoring.py
+            # Script is in backend/scripts/, so backend root is scripts/../
             script_dir = Path(__file__).parent
-            backend_root = script_dir.parent
-            project_root = backend_root.parent
-            docs_dir = project_root / "docs" / "monitoring"
-            docs_dir.mkdir(parents=True, exist_ok=True)
+            backend_root = script_dir.parent.resolve()
+            
+            # Resolve project root: check if backend_root/docs exists, otherwise go up one level
+            # This handles both Docker (/app) and local dev (backend/) cases
+            if (backend_root / "docs").exists():
+                project_root = backend_root
+            else:
+                # Go up one level (backend/ -> project_root/)
+                project_root = backend_root.parent
+            
+            # If project_root is still "/", fall back to backend_root/docs
+            if str(project_root) == "/" or not (project_root / "docs").exists():
+                docs_dir = backend_root / "docs" / "monitoring"
+            else:
+                docs_dir = project_root / "docs" / "monitoring"
+            
+            # Ensure directory exists (create if needed)
+            try:
+                docs_dir.mkdir(parents=True, exist_ok=True)
+            except PermissionError as pe:
+                # If we can't write to docs, try /tmp as fallback
+                logger.warning(f"Cannot write to {docs_dir}: {pe}. Using /tmp as fallback.")
+                docs_dir = Path("/tmp") / "watchlist_consistency_reports"
+                docs_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Using fallback directory: {docs_dir}")
             
             # Write latest report
             latest_report_path = docs_dir / "watchlist_consistency_report_latest.md"

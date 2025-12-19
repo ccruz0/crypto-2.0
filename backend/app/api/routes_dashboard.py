@@ -799,11 +799,15 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         try:
             items = query.limit(200).all()
         except Exception as query_err:
+            # CRITICAL: Always rollback on database errors to prevent "transaction aborted" errors
+            log.warning(f"Watchlist query failed: {query_err}, rolling back transaction")
+            db.rollback()
             if "undefined column" in str(query_err).lower():
-                log.warning("Watchlist query failed due to missing column, retrying without filter: %s", query_err)
-                db.rollback()
+                # Retry without filter if it's a column error
+                log.warning("Retrying watchlist query without filter due to missing column")
                 items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()
             else:
+                # For other errors, re-raise after rollback
                 raise
         
         result = []
@@ -828,7 +832,9 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             else:
                 market_data_map = {}
         except Exception as md_err:
-            log.warning(f"Failed to fetch MarketData for enrichment: {md_err}")
+            # CRITICAL: Rollback on MarketData query errors to prevent transaction issues
+            log.warning(f"Failed to fetch MarketData for enrichment: {md_err}, rolling back")
+            db.rollback()
             market_data_map = {}
 
         for item in canonical_items:
