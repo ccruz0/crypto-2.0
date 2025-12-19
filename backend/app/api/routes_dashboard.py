@@ -161,11 +161,30 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
 
 
 def _get_market_data_for_symbol(db: Session, symbol: str) -> Optional[Any]:
-    """Get MarketData for a single symbol."""
+    """Get MarketData for a single symbol.
+    
+    Args:
+        db: Database session
+        symbol: Symbol to fetch MarketData for (case-insensitive)
+    
+    Returns:
+        MarketData object if found, None otherwise
+    """
     try:
         from app.models.market_price import MarketData
-        return db.query(MarketData).filter(MarketData.symbol == symbol).first()
-    except Exception:
+        import sqlalchemy.exc
+        
+        # Normalize symbol to uppercase for consistency
+        symbol_upper = symbol.upper() if symbol else ""
+        if not symbol_upper:
+            return None
+            
+        return db.query(MarketData).filter(MarketData.symbol == symbol_upper).first()
+    except sqlalchemy.exc.SQLAlchemyError as e:
+        log.warning(f"Database error fetching MarketData for {symbol}: {e}")
+        return None
+    except Exception as e:
+        log.error(f"Unexpected error fetching MarketData for {symbol}: {e}", exc_info=True)
         return None
 
 
