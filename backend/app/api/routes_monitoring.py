@@ -171,6 +171,7 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
     Get monitoring summary with KPIs and alerts.
     Lightweight endpoint that uses snapshot data to avoid heavy computation.
     """
+    global _active_alerts, _scheduler_ticks, _last_backend_restart, _backend_restart_status, _backend_restart_timestamp
     import asyncio
     
     start_time = time.time()
@@ -179,8 +180,10 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         # Use snapshot data instead of full dashboard state (much faster)
         # Bug 3 Fix: get_dashboard_snapshot is a blocking sync function, so we run it in a thread pool
         # to avoid blocking the async event loop
+        # IMPORTANT: Don't pass db session to thread pool - SQLAlchemy sessions are not thread-safe
+        # Let get_dashboard_snapshot create its own session when called from thread pool
         from app.services.dashboard_snapshot import get_dashboard_snapshot
-        snapshot = await asyncio.to_thread(get_dashboard_snapshot, db)
+        snapshot = await asyncio.to_thread(get_dashboard_snapshot, None)
         
         if snapshot and not snapshot.get("empty"):
             dashboard_state = snapshot.get("data", {})
@@ -284,37 +287,45 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         # Get active alerts count
         active_alerts_count = len(_active_alerts)
         
-        return {
-            "active_alerts": active_alerts_count,
-            "backend_health": backend_health,
-            "last_sync_seconds": last_sync_seconds,
-            "portfolio_state_duration": round(portfolio_state_duration, 2),
-            "open_orders": len(dashboard_state.get("open_orders", [])),
-            "balances": len(dashboard_state.get("balances", [])),
-            "scheduler_ticks": _scheduler_ticks,
-            "errors": dashboard_state.get("errors", []),
-            "last_backend_restart": _last_backend_restart,
-            "backend_restart_status": _backend_restart_status,
-            "backend_restart_timestamp": _backend_restart_timestamp,
-            "alerts": _active_alerts[-50:]  # Return last 50 alerts
-        }
+        return JSONResponse(
+            content={
+                "active_alerts": active_alerts_count,
+                "backend_health": backend_health,
+                "last_sync_seconds": last_sync_seconds,
+                "portfolio_state_duration": round(portfolio_state_duration, 2),
+                "open_orders": len(dashboard_state.get("open_orders", [])),
+                "balances": len(dashboard_state.get("balances", [])),
+                "scheduler_ticks": _scheduler_ticks,
+                "errors": dashboard_state.get("errors", []),
+                "last_backend_restart": _last_backend_restart,
+                "backend_restart_status": _backend_restart_status,
+                "backend_restart_timestamp": _backend_restart_timestamp,
+                "alerts": _active_alerts[-50:]  # Return last 50 alerts
+            },
+            headers=_NO_CACHE_HEADERS
+        )
         
     except Exception as e:
         log.error(f"Error in monitoring summary: {e}", exc_info=True)
-        return {
-            "active_alerts": len(_active_alerts),
-            "backend_health": "error",
-            "last_sync_seconds": None,
-            "portfolio_state_duration": round(time.time() - start_time, 2),
-            "open_orders": 0,
-            "balances": 0,
-            "scheduler_ticks": _scheduler_ticks,
-            "errors": [str(e)],
-            "last_backend_restart": _last_backend_restart,
-            "backend_restart_status": _backend_restart_status,
-            "backend_restart_timestamp": _backend_restart_timestamp,
-            "alerts": _active_alerts[-50:]
-        }
+        # Return error response instead of raising exception to avoid 500
+        return JSONResponse(
+            status_code=200,  # Return 200 with error status in body
+            content={
+                "active_alerts": len(_active_alerts),
+                "backend_health": "error",
+                "last_sync_seconds": None,
+                "portfolio_state_duration": round(time.time() - start_time, 2),
+                "open_orders": 0,
+                "balances": 0,
+                "scheduler_ticks": _scheduler_ticks,
+                "errors": [str(e)],
+                "last_backend_restart": _last_backend_restart,
+                "backend_restart_status": _backend_restart_status,
+                "backend_restart_timestamp": _backend_restart_timestamp,
+                "alerts": _active_alerts[-50:]
+            },
+            headers=_NO_CACHE_HEADERS
+        )
 
 def add_telegram_message(
     message: str,
