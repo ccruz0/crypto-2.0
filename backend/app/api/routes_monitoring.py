@@ -1060,11 +1060,13 @@ async def get_latest_sl_tp_check_report(db: Session = Depends(get_db)):
 
 
 @router.get("/monitoring/reports/watchlist-consistency/latest")
+@router.head("/monitoring/reports/watchlist-consistency/latest")
 async def get_watchlist_consistency_report_latest():
     """
     Serve the latest watchlist consistency report as markdown.
     
     This endpoint serves the file at docs/monitoring/watchlist_consistency_report_latest.md
+    Supports both GET and HEAD methods.
     """
     try:
         # Resolve project root
