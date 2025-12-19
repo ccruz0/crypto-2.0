@@ -2638,6 +2638,14 @@ def process_telegram_commands(db: Session = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID
     
+    # CRITICAL: Only process Telegram commands on AWS, not on local
+    # This prevents duplicate processing when both local and AWS instances are running
+    app_env = (os.getenv("APP_ENV") or "").strip().lower()
+    if app_env != "aws":
+        # Skip processing on local to avoid duplicate messages
+        logger.debug(f"[TG] Skipping Telegram command processing on local (APP_ENV={app_env})")
+        return
+    
     try:
         # Long polling: Telegram will wait up to 30 seconds for new messages
         # This allows immediate processing when a command is sent
