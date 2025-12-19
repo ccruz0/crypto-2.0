@@ -428,6 +428,10 @@ async def _compute_dashboard_state(db: Session) -> dict:
         # Note: PENDING is used by some exchanges/APIs as equivalent to ACTIVE
         tp_orders_by_symbol: Dict[str, int] = {}
         active_statuses = {"NEW", "ACTIVE", "PARTIALLY_FILLED", "PENDING"}
+        
+        # Track order IDs from cache to avoid duplicates when merging with database
+        cached_tp_order_ids: set = set()
+        
         for order in unified_open_orders:
             order_type = (order.order_type or "").upper()
             order_status = (order.status or "").upper()
@@ -435,23 +439,32 @@ async def _compute_dashboard_state(db: Session) -> dict:
                 base_symbol = order.base_symbol
                 if base_symbol:
                     tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
+                    # Track this order ID to avoid counting it again from database
+                    if order.order_id:
+                        cached_tp_order_ids.add(str(order.order_id))
         
-        # If cache is empty, also check database for TP orders
-        if not tp_orders_by_symbol:
-            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-            from app.services.open_orders import _extract_base_symbol
-            
-            open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
-            db_tp_orders = db.query(ExchangeOrder).filter(
-                ExchangeOrder.status.in_(open_statuses),
-                ExchangeOrder.order_type.like('%TAKE_PROFIT%')
-            ).all()
-            
-            for order in db_tp_orders:
-                symbol = order.symbol or ""
-                base_symbol = _extract_base_symbol(symbol)
-                if base_symbol:
-                    tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
+        # Always check database for TP orders to ensure we have complete data
+        # This is important because the cache might not have all TP orders
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from app.services.open_orders import _extract_base_symbol
+        
+        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+        db_tp_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status.in_(open_statuses),
+            ExchangeOrder.order_type.like('%TAKE_PROFIT%')
+        ).all()
+        
+        for order in db_tp_orders:
+            # Skip if this order was already counted from cache
+            order_id_str = str(order.exchange_order_id) if order.exchange_order_id else None
+            if order_id_str and order_id_str in cached_tp_order_ids:
+                continue
+                
+            symbol = order.symbol or ""
+            base_symbol = _extract_base_symbol(symbol)
+            if base_symbol:
+                # Add to count (avoiding duplicates from cache)
+                tp_orders_by_symbol[base_symbol] = tp_orders_by_symbol.get(base_symbol, 0) + 1
         
         open_position_counts = tp_orders_by_symbol
         
@@ -1070,7 +1083,11 @@ def update_watchlist_item(
     
     strategy_changed = False
     
+    # CRITICAL: Store old trade_enabled value BEFORE applying updates
+    # This is needed for the throttle reset logic later
+    trade_enabled_old_value = None
     if "trade_enabled" in payload:
+        trade_enabled_old_value = item.trade_enabled
         old_value = item.trade_enabled
         new_value = payload["trade_enabled"]
         if old_value != new_value:
@@ -1198,7 +1215,9 @@ def update_watchlist_item(
     
     # When trade_enabled is toggled, reset throttle state and set force_next_signal
     if "trade_enabled" in payload:
-        old_value = item.trade_enabled if hasattr(item, '_sa_instance_state') else None
+        # CRITICAL: Use the old value we stored BEFORE applying updates
+        # Don't get it from item.trade_enabled after update - it's already changed!
+        old_value = trade_enabled_old_value if trade_enabled_old_value is not None else False
         new_value = payload.get("trade_enabled")
         # Re-check after update to ensure we have the latest value
         db.refresh(item)
@@ -1231,7 +1250,9 @@ def update_watchlist_item(
             log.warning(f"⚠️ [TRADE] Failed to reset throttle state for {item.symbol}: {throttle_err}", exc_info=True)
         
         # When trade_enabled is toggled to YES, also enable buy_alert_enabled and sell_alert_enabled
-        if new_value and item.trade_enabled:
+        # CRITICAL: Use new_value directly (from payload) instead of item.trade_enabled
+        # This ensures we enable alerts even if item.trade_enabled hasn't been refreshed yet
+        if new_value:
             # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
             # This ensures alerts are sent when signals are detected
             if not item.buy_alert_enabled:
@@ -1341,6 +1362,26 @@ def update_watchlist_item(
             else:
                 # Log successful update only after verification confirms it was saved correctly
                 log.info(f"✅ Updated alert_enabled for {item.symbol} ({item_id}): {alert_enabled_old_value} -> {expected_value}")
+    
+    # CRITICAL: Verify trade_enabled was actually saved to database
+    # This prevents the issue where trade_enabled gets deactivated immediately after activation
+    if "trade_enabled" in payload and trade_enabled_old_value is not None:
+        expected_value = payload["trade_enabled"]
+        # Only verify and log if the value actually changed
+        if trade_enabled_old_value != expected_value:
+            db.refresh(item)  # Ensure we have latest from DB
+            actual_value = item.trade_enabled
+            if actual_value != expected_value:
+                log.error(f"❌ SYNC ERROR: trade_enabled mismatch for {item.symbol} ({item_id}): "
+                         f"Expected {expected_value}, but DB has {actual_value}. "
+                         f"This is the bug causing immediate deactivation! Attempting to fix...")
+                item.trade_enabled = expected_value
+                db.commit()
+                db.refresh(item)
+                log.info(f"✅ Fixed trade_enabled sync issue for {item.symbol}")
+            else:
+                # Log successful update only after verification confirms it was saved correctly
+                log.info(f"✅ Updated trade_enabled for {item.symbol} ({item_id}): {trade_enabled_old_value} -> {expected_value}")
     
     result = _serialize_watchlist_item(item)
     
