@@ -38,6 +38,15 @@ scp_cmd "$CONFIG_FILE" "$USER@$SERVER:/tmp/dashboard.conf" || {
     echo "❌ Failed to copy config"
     exit 1
 }
+
+# Copy rate limiting zones config if it exists
+if [ -f "nginx/rate_limiting_zones.conf" ]; then
+    echo "📋 Copying rate limiting zones config..."
+    scp_cmd "nginx/rate_limiting_zones.conf" "$USER@$SERVER:/tmp/rate_limiting_zones.conf" || {
+        echo "⚠️  Failed to copy rate limiting zones config (will continue without it)"
+    }
+fi
+
 echo "✅ Config copied"
 echo ""
 
@@ -50,6 +59,19 @@ set -e
 if [ -f /etc/nginx/sites-available/dashboard.conf ]; then
     echo "   Backing up existing config..."
     sudo cp /etc/nginx/sites-available/dashboard.conf /etc/nginx/sites-available/dashboard.conf.backup.$(date +%Y%m%d-%H%M%S)
+fi
+
+# Copy rate limiting zones config (if it exists)
+if [ -f /tmp/rate_limiting_zones.conf ]; then
+    echo "   Installing rate limiting zones config..."
+    sudo cp /tmp/rate_limiting_zones.conf /etc/nginx/rate_limiting_zones.conf
+    
+    # Check if zones are already in nginx.conf, if not add them
+    if ! grep -q "limit_req_zone.*api_limit" /etc/nginx/nginx.conf && ! grep -q "rate_limiting_zones.conf" /etc/nginx/nginx.conf; then
+        echo "   Adding rate limiting zones to nginx.conf..."
+        # Add include before 'include servers/*;' in http block
+        sudo sed -i '/include servers\/\*;/i\    # Rate limiting zones\n    include /etc/nginx/rate_limiting_zones.conf;' /etc/nginx/nginx.conf
+    fi
 fi
 
 # Copy new config
