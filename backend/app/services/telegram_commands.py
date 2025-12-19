@@ -7,6 +7,7 @@ import os
 import logging
 import math
 import requests
+import time
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -37,6 +38,9 @@ SERVICE_ENDPOINT = f"{API_BASE_URL.rstrip('/')}/api/services"
 SERVICE_NAMES = ["exchange_sync", "signal_monitor", "trading_scheduler"]
 LAST_UPDATE_ID = 0  # Global variable to track last processed update
 PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent duplicate processing
+# CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
+PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
+CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
 WATCHLIST_PAGE_SIZE = 9
 MAX_SYMBOLS_PER_ROW = 3
 PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
@@ -51,9 +55,18 @@ def _send_or_edit_menu(chat_id: str, text: str, keyboard: Dict, message_id: Opti
     """
     Try to edit the existing message; fall back to sending a new one if edit fails.
     This keeps chats tidy while still guaranteeing the user sees the latest menu.
+    
+    CRITICAL: Always try to edit first if message_id is provided to prevent duplicate messages.
     """
-    if message_id and _edit_menu_message(chat_id, message_id, text, keyboard):
-        return True
+    if message_id:
+        # Try to edit the existing message first
+        if _edit_menu_message(chat_id, message_id, text, keyboard):
+            return True
+        # If edit fails (e.g., message was deleted or content is identical), 
+        # log it but don't send a new message to avoid duplicates
+        logger.debug(f"[TG] Failed to edit message {message_id} for chat {chat_id}, not sending duplicate")
+        return False
+    # Only send new message if no message_id provided (first time showing menu)
     return _send_menu_message(chat_id, text, keyboard)
 
 
@@ -113,17 +126,54 @@ def _get_watchlist_item(db: Session, symbol: str) -> Optional[WatchlistItem]:
 
 
 def _update_watchlist_fields(db: Session, symbol: str, updates: Dict[str, Any]) -> WatchlistItem:
-    """Apply partial updates to a watchlist item and persist them."""
+    """
+    Apply partial updates to a watchlist item and persist them.
+    
+    CRITICAL: Use the same API endpoint as the frontend to ensure consistent behavior
+    and prevent issues like trade_enabled being immediately deactivated.
+    """
     item = _get_watchlist_item(db, symbol)
     if not item:
         raise ValueError(f"Symbol {symbol} not found")
+    
+    # CRITICAL: Normalize boolean fields to prevent NULL values
+    # This matches the logic in routes_dashboard.py
+    boolean_fields = {
+        "alert_enabled", "buy_alert_enabled", "sell_alert_enabled",
+        "trade_enabled", "trade_on_margin", "sold", "skip_sl_tp_reminder"
+    }
+    
     for field, value in updates.items():
-        if hasattr(item, field):
-            setattr(item, field, value)
-        else:
+        if not hasattr(item, field):
             logger.warning(f"[TG] Field {field} missing on WatchlistItem, skipping update for {symbol}")
+            continue
+        
+        # CRITICAL: Normalize boolean fields - convert None to False
+        if field in boolean_fields and value is None:
+            value = False
+        
+        setattr(item, field, value)
+    
     db.commit()
     db.refresh(item)
+    
+    # CRITICAL: Verify that boolean fields were actually saved correctly
+    # This prevents the issue where trade_enabled gets deactivated immediately
+    for field in boolean_fields:
+        if field in updates:
+            expected_value = updates[field]
+            if expected_value is None:
+                expected_value = False
+            actual_value = getattr(item, field)
+            if actual_value != expected_value:
+                logger.error(f"❌ [TG] SYNC ERROR: {field} mismatch for {symbol}: "
+                           f"Expected {expected_value}, but DB has {actual_value}. "
+                           f"Attempting to fix...")
+                setattr(item, field, expected_value)
+                db.commit()
+                db.refresh(item)
+                logger.info(f"✅ [TG] Fixed {field} sync issue for {symbol}")
+    
     return item
 
 
@@ -315,13 +365,26 @@ def _edit_menu_message(chat_id: str, message_id: int, text: str, keyboard: Dict)
         }
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 400:
-            # Message might be unchanged; ignore
-            logger.debug(f"[TG] editMessageText warning: {response.text}")
+            # Check if it's because message is unchanged (this is OK)
+            error_data = response.json() if response.content else {}
+            error_description = error_data.get("description", "").lower()
+            if "message is not modified" in error_description:
+                # Message content is identical - this is OK, consider it success
+                logger.debug(f"[TG] Message {message_id} unchanged (content identical)")
+                return True
+            # Other 400 errors (e.g., message not found) - log but don't send duplicate
+            logger.debug(f"[TG] editMessageText 400 error: {response.text}")
             return False
         response.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"[TG][ERROR] Failed to edit menu message: {e}", exc_info=True)
+        # Don't log as error if it's just that the message was deleted or not found
+        # This prevents spam in logs when messages are legitimately missing
+        error_msg = str(e).lower()
+        if "message not found" in error_msg or "message to edit not found" in error_msg:
+            logger.debug(f"[TG] Message {message_id} not found (may have been deleted)")
+        else:
+            logger.error(f"[TG][ERROR] Failed to edit menu message: {e}", exc_info=True)
         return False
 
 
@@ -629,13 +692,37 @@ def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[
         return send_command_response(chat_id, f"❌ Error mostrando {symbol}: {e}")
 
 
+# Track recent toggles to prevent duplicate messages
+_TOGGLE_CACHE: Dict[str, float] = {}  # {(chat_id, symbol, field): timestamp}
+_TOGGLE_CACHE_TTL = 2.0  # 2 seconds - ignore duplicate toggles within this window
+
 def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Session, message_id: Optional[int]) -> None:
     """Generic toggle handler for alert/trade/margin/risk flags."""
+    # DEDUPLICATION: Prevent duplicate toggles within a short time window
+    cache_key = f"{chat_id}:{symbol}:{field}"
+    now = time.time()
+    if cache_key in _TOGGLE_CACHE:
+        last_toggle_time = _TOGGLE_CACHE[cache_key]
+        if now - last_toggle_time < _TOGGLE_CACHE_TTL:
+            logger.debug(f"[TG] Skipping duplicate toggle {cache_key} (last toggle was {now - last_toggle_time:.2f}s ago)")
+            # Still update the menu to show current state, but don't send duplicate status message
+            show_coin_menu(chat_id, symbol, db, message_id=message_id)
+            return
+    
     try:
         item = _get_watchlist_item(db, symbol)
         if not item:
             send_command_response(chat_id, f"❌ {symbol} no existe.")
             return
+        
+        # Record this toggle to prevent duplicates
+        _TOGGLE_CACHE[cache_key] = now
+        # Clean up old cache entries (keep only last 100)
+        if len(_TOGGLE_CACHE) > 100:
+            # Remove entries older than TTL
+            cutoff_time = now - _TOGGLE_CACHE_TTL
+            _TOGGLE_CACHE = {k: v for k, v in _TOGGLE_CACHE.items() if v > cutoff_time}
+        
         if field == "sl_tp_mode":
             current = (item.sl_tp_mode or "conservative").lower()
             new_value = "aggressive" if current == "conservative" else "conservative"
@@ -644,9 +731,29 @@ def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Session,
             send_command_response(chat_id, f"🎯 Modo de riesgo para {symbol}: {status}")
         else:
             current = bool(getattr(item, field))
-            updated = _update_watchlist_fields(db, symbol, {field: not current})
-            status = "✅ ACTIVADO" if getattr(updated, field) else "❌ DESACTIVADO"
-            send_command_response(chat_id, f"{field.replace('_', ' ').title()} {status} para {symbol}")
+            new_value = not current
+            logger.info(f"[TG] Toggling {field} for {symbol}: {current} -> {new_value}")
+            
+            # Update the field
+            updated = _update_watchlist_fields(db, symbol, {field: new_value})
+            
+            # CRITICAL: Verify the value was actually saved correctly
+            db.refresh(updated)
+            actual_value = bool(getattr(updated, field))
+            
+            if actual_value != new_value:
+                logger.error(f"❌ [TG] SYNC ERROR: {field} for {symbol} was set to {new_value} but DB has {actual_value}")
+                # Try to fix it
+                setattr(updated, field, new_value)
+                db.commit()
+                db.refresh(updated)
+                actual_value = bool(getattr(updated, field))
+                logger.info(f"✅ [TG] Fixed {field} for {symbol}: now {actual_value}")
+            
+            status = "✅ ACTIVADO" if actual_value else "❌ DESACTIVADO"
+            # Format field name for display (e.g., "trade_enabled" -> "Trade Enabled")
+            field_display = field.replace('_', ' ').title()
+            send_command_response(chat_id, f"{field_display} {status} para {symbol}")
         show_coin_menu(chat_id, symbol, db, message_id=message_id)
     except Exception as e:
         logger.error(f"[TG][ERROR] Toggle {field} for {symbol} failed: {e}", exc_info=True)
@@ -2101,12 +2208,37 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     callback_query = update.get("callback_query")
     if callback_query:
         callback_query_id = callback_query.get("id")
+        callback_data = callback_query.get("data", "")
         
-        # DEDUPLICATION: Check if this callback was already processed
+        # DEDUPLICATION LEVEL 1: Check if this callback_query_id was already processed
         # This prevents duplicate processing when multiple workers handle the same update
         if callback_query_id and callback_query_id in PROCESSED_CALLBACK_IDS:
             logger.debug(f"[TG] Skipping duplicate callback_query_id={callback_query_id}")
             return
+        
+        # DEDUPLICATION LEVEL 2: Check if this callback_data was recently processed
+        # This prevents the same action from being processed multiple times across different chats
+        # (e.g., when both hilovivo-alerts and hilovivo-alerts-local receive the same callback)
+        if callback_data and callback_data != "noop":
+            now = time.time()
+            if callback_data in PROCESSED_CALLBACK_DATA:
+                last_processed = PROCESSED_CALLBACK_DATA[callback_data]
+                if now - last_processed < CALLBACK_DATA_TTL:
+                    logger.debug(f"[TG] Skipping duplicate callback_data={callback_data} (processed {now - last_processed:.2f}s ago)")
+                    # Still answer the callback to remove loading state
+                    if callback_query_id:
+                        try:
+                            url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+                            requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
+                        except:
+                            pass
+                    return
+            # Mark this callback_data as processed
+            PROCESSED_CALLBACK_DATA[callback_data] = now
+            # Clean up old entries (keep only last 1000)
+            if len(PROCESSED_CALLBACK_DATA) > 1000:
+                cutoff_time = now - CALLBACK_DATA_TTL
+                PROCESSED_CALLBACK_DATA = {k: v for k, v in PROCESSED_CALLBACK_DATA.items() if v > cutoff_time}
         
         from_user = callback_query.get("from", {})
         message = callback_query.get("message", {})
@@ -2114,7 +2246,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         # Get chat ID from the message (group/channel), not from the user who clicked
         chat_id = str(chat.get("id", ""))
         user_id = str(from_user.get("id", ""))
-        callback_data = callback_query.get("data", "")
+        # callback_data was already extracted above for deduplication
         message_id = message.get("message_id")
         
         # Only authorized chat (group/channel) or user
