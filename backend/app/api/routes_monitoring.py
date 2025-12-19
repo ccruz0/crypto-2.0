@@ -1,6 +1,6 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
@@ -1057,6 +1057,46 @@ async def get_latest_sl_tp_check_report(db: Session = Depends(get_db)):
         },
         headers=_NO_CACHE_HEADERS,
     )
+
+
+@router.get("/monitoring/reports/watchlist-consistency/latest")
+async def get_watchlist_consistency_report_latest():
+    """
+    Serve the latest watchlist consistency report as markdown.
+    
+    This endpoint serves the file at docs/monitoring/watchlist_consistency_report_latest.md
+    """
+    try:
+        # Resolve project root
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+        project_root = _resolve_project_root_from_backend_root(backend_root)
+        
+        # Build file path
+        report_path = Path(project_root) / "docs" / "monitoring" / "watchlist_consistency_report_latest.md"
+        
+        if not report_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Report not found at {report_path}. Run the watchlist_consistency workflow first."
+            )
+        
+        # Read and return the file
+        content = report_path.read_text(encoding='utf-8')
+        
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'inline; filename="watchlist_consistency_report_latest.md"',
+                **{k: v for k, v in _NO_CACHE_HEADERS.items()}
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error serving watchlist consistency report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error serving report: {str(e)}")
 
 @router.post("/monitoring/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
