@@ -1,4 +1,5 @@
 """Dashboard state endpoint - returns portfolio, balances, and dashboard data"""
+
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -853,12 +854,66 @@ def create_watchlist_item(
             "signals",
             "skip_sl_tp_reminder",
         }
+        # Track parameter changes for throttle state reset
+        throttle_parameter_changes = []
+        strategy_parameter_changes = []
+        
         for field in updatable_fields:
             if field in payload and hasattr(existing_item, field):
+                old_value = getattr(existing_item, field)
+                new_value = payload[field]
+                
+                # Track changes to throttle-related parameters
+                if field == "alert_cooldown_minutes" and old_value != new_value:
+                    old_val_str = f"{old_value}" if old_value is not None else "default"
+                    new_val_str = f"{new_value}" if new_value is not None else "default"
+                    throttle_parameter_changes.append(f"alert_cooldown_minutes ({old_val_str} → {new_val_str})")
+                elif field == "min_price_change_pct" and old_value != new_value:
+                    old_val_str = f"{old_value}%" if old_value is not None else "default"
+                    new_val_str = f"{new_value}%" if new_value is not None else "default"
+                    throttle_parameter_changes.append(f"min_price_change_pct ({old_val_str} → {new_val_str})")
+                # Track changes to strategy parameters (SL/TP percentages)
+                # Note: sl_tp_mode changes are handled separately via strategy_changed detection
+                elif field == "sl_percentage" and old_value != new_value:
+                    old_val_str = f"{old_value}%" if old_value is not None else "default"
+                    new_val_str = f"{new_value}%" if new_value is not None else "default"
+                    strategy_parameter_changes.append(f"sl_percentage ({old_val_str} → {new_val_str})")
+                elif field == "tp_percentage" and old_value != new_value:
+                    old_val_str = f"{old_value}%" if old_value is not None else "default"
+                    new_val_str = f"{new_value}%" if new_value is not None else "default"
+                    strategy_parameter_changes.append(f"tp_percentage ({old_val_str} → {new_val_str})")
+                
                 setattr(existing_item, field, payload[field])
 
         db.commit()
         db.refresh(existing_item)
+        
+        # Reset throttle state if throttle or strategy parameters changed
+        # But only if strategy fields (sl_tp_mode, preset, risk_mode) didn't change
+        # (those are handled by strategy_changed check later)
+        all_parameter_changes = throttle_parameter_changes + strategy_parameter_changes
+        strategy_fields_in_payload = "sl_tp_mode" in payload or "preset" in payload or "risk_mode" in payload
+        if all_parameter_changes and not strategy_fields_in_payload:
+            try:
+                from app.services.strategy_profiles import resolve_strategy_profile
+                from app.services.signal_throttle import build_strategy_key, reset_throttle_state
+                strategy_profile = resolve_strategy_profile(existing_item.symbol, db=db, watchlist_item=existing_item)
+                strategy_key = build_strategy_key(
+                    strategy_profile[0],  # strategy_type
+                    strategy_profile[1]   # risk_approach
+                )
+                # Create a reason string with all changed parameters
+                change_reason = ", ".join(all_parameter_changes)
+                reset_throttle_state(
+                    db, 
+                    symbol=existing_item.symbol, 
+                    strategy_key=strategy_key,
+                    parameter_change_reason=change_reason
+                )
+                log.info(f"🔄 [PARAMS] Reset throttle state for {existing_item.symbol} - {change_reason}")
+            except Exception as throttle_err:
+                log.warning(f"⚠️ [PARAMS] Failed to reset throttle state for {existing_item.symbol}: {throttle_err}", exc_info=True)
+        
         return _serialize_watchlist_item(existing_item)
 
     # No existing row: create a new item.
@@ -1159,7 +1214,13 @@ def update_watchlist_item(
                 strategy_profile[1]   # risk_approach
             )
             # Reset throttle state to clear last_time and last_price
-            reset_throttle_state(db, symbol=item.symbol, strategy_key=strategy_key)
+            trade_status = "enabled" if new_value else "disabled"
+            reset_throttle_state(
+                db, 
+                symbol=item.symbol, 
+                strategy_key=strategy_key,
+                parameter_change_reason=f"trade_enabled ({'NO' if not old_value else 'YES'} → {'YES' if new_value else 'NO'})"
+            )
             log.info(f"🔄 [TRADE] Reset throttle state for {item.symbol} (trade_enabled={new_value}) - cleared cooldown timers")
             
             # Set force flag for both BUY and SELL to allow immediate signals
@@ -1225,11 +1286,22 @@ def update_watchlist_item(
             
             # Reset throttle state for old strategy (if different from new)
             if old_strategy_key and old_strategy_key != new_strategy_key:
-                reset_throttle_state(db, symbol=item.symbol, strategy_key=old_strategy_key)
+                reset_throttle_state(
+                    db, 
+                    symbol=item.symbol, 
+                    strategy_key=old_strategy_key,
+                    parameter_change_reason=f"strategy changed (old: {old_strategy_key})"
+                )
                 log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} old strategy: {old_strategy_key}")
             
             # Also reset throttle state for new strategy to ensure clean slate
-            reset_throttle_state(db, symbol=item.symbol, strategy_key=new_strategy_key)
+            strategy_change_reason = f"strategy changed ({old_strategy_key or 'unknown'} → {new_strategy_key})"
+            reset_throttle_state(
+                db, 
+                symbol=item.symbol, 
+                strategy_key=new_strategy_key,
+                parameter_change_reason=strategy_change_reason
+            )
             log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
             
             # Set force_next_signal for new strategy to allow immediate signals
