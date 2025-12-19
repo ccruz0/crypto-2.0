@@ -98,12 +98,13 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
             normalized_symbol = symbol.replace("_USD", "_USDT")
             logger.debug(f"Normalized symbol {symbol} to {normalized_symbol} for Crypto.com API")
         
-        url = "https://api.crypto.com/v2/public/get-candlestick"
+        # Use Crypto.com Exchange API v1 (not v2)
+        url = "https://api.crypto.com/exchange/v1/public/get-candlestick"
         params = {
             "instrument_name": normalized_symbol,
-            "timeframe": interval,
-            "count": limit
+            "timeframe": interval
         }
+        # Note: v1 API doesn't use "count" parameter, it returns default amount
         
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
@@ -140,7 +141,17 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
     # Fallback to Binance for pairs Crypto.com doesn't support (e.g., BNB_USDT)
     try:
         # Convert symbol format for Binance: BTC_USDT -> BTCUSDT, BNB_USD -> BNBUSDT
-        binance_symbol = symbol.replace("_USD", "USDT").replace("_USDT", "USDT").replace("_", "")
+        # IMPORTANT: Check for _USDT first (before _USD) to avoid creating "USDTUSDT"
+        # This prevents creating invalid symbols like "BNBUSDTT"
+        if symbol.endswith("_USDT"):
+            # Remove _USDT and append USDT: BTC_USDT -> BTC + USDT = BTCUSDT
+            binance_symbol = symbol[:-5] + "USDT"  # Remove last 5 chars (_USDT) and add USDT
+        elif symbol.endswith("_USD"):
+            # Remove _USD and append USDT: BNB_USD -> BNB + USDT = BNBUSDT
+            binance_symbol = symbol[:-4] + "USDT"  # Remove last 4 chars (_USD) and add USDT
+        else:
+            # For other formats, just remove underscore: BTC_ETH -> BTCETH
+            binance_symbol = symbol.replace("_", "")
         
         # Map interval to Binance format
         interval_map = {
