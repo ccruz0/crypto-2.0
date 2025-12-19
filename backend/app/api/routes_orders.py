@@ -1278,6 +1278,105 @@ def get_order_history(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.get("/orders/tp-sl-values")
+def get_tp_sl_order_values(
+    db: Session = Depends(get_db),
+    # Temporarily disable authentication for local testing
+    # current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """Get total USD values of TP/SL orders grouped by base currency"""
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from sqlalchemy import or_
+        from collections import defaultdict
+        
+        if db is None:
+            logger.warning("Database not available, returning empty TP/SL values")
+            return {}
+        
+        # Get open TP/SL orders
+        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+        
+        # TP orders: TAKE_PROFIT, TAKE_PROFIT_LIMIT, or order_role = TAKE_PROFIT
+        tp_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status.in_(open_statuses),
+            or_(
+                ExchangeOrder.order_type.in_(['TAKE_PROFIT', 'TAKE_PROFIT_LIMIT']),
+                ExchangeOrder.order_role == 'TAKE_PROFIT'
+            )
+        ).all()
+        
+        # SL orders: STOP_LOSS, STOP_LOSS_LIMIT, STOP_LIMIT, or order_role = STOP_LOSS
+        sl_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status.in_(open_statuses),
+            or_(
+                ExchangeOrder.order_type.in_(['STOP_LOSS', 'STOP_LOSS_LIMIT', 'STOP_LIMIT']),
+                ExchangeOrder.order_role == 'STOP_LOSS'
+            )
+        ).all()
+        
+        # Group by base currency and calculate total USD value
+        tp_values = defaultdict(float)
+        sl_values = defaultdict(float)
+        
+        # Process TP orders
+        for order in tp_orders:
+            if order.symbol:
+                # Extract base currency from symbol (e.g., "BTC_USDT" -> "BTC")
+                base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
+                # Calculate USD value: prefer cumulative_value, then price * quantity
+                try:
+                    usd_value = 0
+                    if order.cumulative_value and float(order.cumulative_value) > 0:
+                        usd_value = float(order.cumulative_value)
+                    elif order.price and order.quantity:
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        usd_value = qty * price
+                    
+                    if usd_value > 0:
+                        tp_values[base_currency] += usd_value
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error calculating TP value for {order.symbol}: {e}")
+        
+        # Process SL orders
+        for order in sl_orders:
+            if order.symbol:
+                # Extract base currency from symbol
+                base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
+                # Calculate USD value: prefer cumulative_value, then price * quantity
+                try:
+                    usd_value = 0
+                    if order.cumulative_value and float(order.cumulative_value) > 0:
+                        usd_value = float(order.cumulative_value)
+                    elif order.price and order.quantity:
+                        qty = float(order.quantity)
+                        price = float(order.price)
+                        usd_value = qty * price
+                    
+                    if usd_value > 0:
+                        sl_values[base_currency] += usd_value
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error calculating SL value for {order.symbol}: {e}")
+        
+        # Combine into result format
+        result = {}
+        all_currencies = set(list(tp_values.keys()) + list(sl_values.keys()))
+        
+        for currency in all_currencies:
+            result[currency] = {
+                'tp_value_usd': round(tp_values.get(currency, 0.0), 2),
+                'sl_value_usd': round(sl_values.get(currency, 0.0), 2)
+            }
+        
+        logger.info(f"Calculated TP/SL values for {len(result)} currencies")
+        return result
+        
+    except Exception as e:
+        logger.exception("Error calculating TP/SL order values")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/orders/{order_id}")
 def get_order_details(
     order_id: str,
@@ -2043,105 +2142,6 @@ def quick_order(
     except Exception as e:
         logger.exception("Error placing quick order")
         raise HTTPException(status_code=502, detail=str(e))
-
-
-@router.get("/orders/tp-sl-values")
-def get_tp_sl_order_values(
-    db: Session = Depends(get_db),
-    # Temporarily disable authentication for local testing
-    # current_user = None if _should_disable_auth() else Depends(get_current_user)
-):
-    """Get total USD values of TP/SL orders grouped by base currency"""
-    try:
-        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-        from sqlalchemy import or_
-        from collections import defaultdict
-        
-        if db is None:
-            logger.warning("Database not available, returning empty TP/SL values")
-            return {}
-        
-        # Get open TP/SL orders
-        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
-        
-        # TP orders: TAKE_PROFIT, TAKE_PROFIT_LIMIT, or order_role = TAKE_PROFIT
-        tp_orders = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_(open_statuses),
-            or_(
-                ExchangeOrder.order_type.in_(['TAKE_PROFIT', 'TAKE_PROFIT_LIMIT']),
-                ExchangeOrder.order_role == 'TAKE_PROFIT'
-            )
-        ).all()
-        
-        # SL orders: STOP_LOSS, STOP_LOSS_LIMIT, STOP_LIMIT, or order_role = STOP_LOSS
-        sl_orders = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_(open_statuses),
-            or_(
-                ExchangeOrder.order_type.in_(['STOP_LOSS', 'STOP_LOSS_LIMIT', 'STOP_LIMIT']),
-                ExchangeOrder.order_role == 'STOP_LOSS'
-            )
-        ).all()
-        
-        # Group by base currency and calculate total USD value
-        tp_values = defaultdict(float)
-        sl_values = defaultdict(float)
-        
-        # Process TP orders
-        for order in tp_orders:
-            if order.symbol:
-                # Extract base currency from symbol (e.g., "BTC_USDT" -> "BTC")
-                base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
-                # Calculate USD value: prefer cumulative_value, then price * quantity
-                try:
-                    usd_value = 0
-                    if order.cumulative_value and float(order.cumulative_value) > 0:
-                        usd_value = float(order.cumulative_value)
-                    elif order.price and order.quantity:
-                        qty = float(order.quantity)
-                        price = float(order.price)
-                        usd_value = qty * price
-                    
-                    if usd_value > 0:
-                        tp_values[base_currency] += usd_value
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Error calculating TP value for {order.symbol}: {e}")
-        
-        # Process SL orders
-        for order in sl_orders:
-            if order.symbol:
-                # Extract base currency from symbol
-                base_currency = order.symbol.split('_')[0].upper() if '_' in order.symbol else order.symbol.upper()
-                # Calculate USD value: prefer cumulative_value, then price * quantity
-                try:
-                    usd_value = 0
-                    if order.cumulative_value and float(order.cumulative_value) > 0:
-                        usd_value = float(order.cumulative_value)
-                    elif order.price and order.quantity:
-                        qty = float(order.quantity)
-                        price = float(order.price)
-                        usd_value = qty * price
-                    
-                    if usd_value > 0:
-                        sl_values[base_currency] += usd_value
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Error calculating SL value for {order.symbol}: {e}")
-        
-        # Combine into result format
-        result = {}
-        all_currencies = set(list(tp_values.keys()) + list(sl_values.keys()))
-        
-        for currency in all_currencies:
-            result[currency] = {
-                'tp_value_usd': round(tp_values.get(currency, 0.0), 2),
-                'sl_value_usd': round(sl_values.get(currency, 0.0), 2)
-            }
-        
-        logger.info(f"Calculated TP/SL values for {len(result)} currencies")
-        return result
-        
-    except Exception as e:
-        logger.exception("Error calculating TP/SL order values")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/orders/create-sl-tp-for-last-order")
