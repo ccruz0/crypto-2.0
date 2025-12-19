@@ -2210,21 +2210,74 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     update_id = update.get("update_id", 0)
     
     # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
-    # This is the most reliable deduplication since update_id is unique per update
-    # Store in a set with TTL-like cleanup
-    global PROCESSED_UPDATE_IDS
-    if not hasattr(handle_telegram_update, 'processed_update_ids'):
-        handle_telegram_update.processed_update_ids = set()
-    
-    if update_id in handle_telegram_update.processed_update_ids:
-        logger.debug(f"[TG] Skipping duplicate update_id={update_id}")
-        return
-    
-    # Mark as processed (keep only last 1000 to prevent memory leak)
-    handle_telegram_update.processed_update_ids.add(update_id)
-    if len(handle_telegram_update.processed_update_ids) > 1000:
-        # Simple cleanup: remove oldest 500 (we can't track age easily, so just keep recent ones)
-        handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
+    # Use database for cross-instance deduplication (works between local and AWS)
+    # CRITICAL: This prevents the same update from being processed by both local and AWS instances
+    if db and update_id > 0:
+        try:
+            from app.models.telegram_message import TelegramMessage
+            update_marker = f"UPDATE_{update_id}"
+            
+            # Check if this update was already processed by another instance
+            existing = db.query(TelegramMessage).filter(
+                TelegramMessage.symbol == update_marker,
+                TelegramMessage.message == "update_deduplication"
+            ).first()
+            
+            if existing:
+                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (already processed by another instance)")
+                return
+            
+            # Mark as processed in database - this instance will process it
+            # Use symbol field to store update_id marker
+            processed_marker = TelegramMessage(
+                symbol=update_marker,
+                message="update_deduplication",
+                blocked=False,
+                order_skipped=False
+            )
+            db.add(processed_marker)
+            db.commit()
+            logger.debug(f"[TG] Marked update_id={update_id} as processed in DB")
+            
+            # Clean up old markers periodically (keep only last 1000)
+            # Only do this occasionally to avoid overhead
+            import random
+            if random.random() < 0.1:  # 10% chance to cleanup
+                try:
+                    old_markers = db.query(TelegramMessage).filter(
+                        TelegramMessage.message == "update_deduplication"
+                    ).order_by(TelegramMessage.id.desc()).offset(1000).all()
+                    for marker in old_markers:
+                        db.delete(marker)
+                    db.commit()
+                except Exception as cleanup_err:
+                    logger.debug(f"[TG] Cleanup of old update markers failed: {cleanup_err}")
+                    db.rollback()
+        except Exception as db_err:
+            # If database check fails, fall back to in-memory deduplication
+            logger.debug(f"[TG] Database deduplication failed, using in-memory: {db_err}")
+            if not hasattr(handle_telegram_update, 'processed_update_ids'):
+                handle_telegram_update.processed_update_ids = set()
+            
+            if update_id in handle_telegram_update.processed_update_ids:
+                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (in-memory)")
+                return
+            
+            handle_telegram_update.processed_update_ids.add(update_id)
+            if len(handle_telegram_update.processed_update_ids) > 1000:
+                handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
+    else:
+        # No database available, use in-memory deduplication
+        if not hasattr(handle_telegram_update, 'processed_update_ids'):
+            handle_telegram_update.processed_update_ids = set()
+        
+        if update_id in handle_telegram_update.processed_update_ids:
+            logger.debug(f"[TG] Skipping duplicate update_id={update_id} (in-memory, no DB)")
+            return
+        
+        handle_telegram_update.processed_update_ids.add(update_id)
+        if len(handle_telegram_update.processed_update_ids) > 1000:
+            handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
     
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
@@ -2494,8 +2547,11 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     text = text.strip()
     
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
+    # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)
     # This prevents the same /start command from being processed by both local and AWS instances
     if text and text.startswith("/"):
+        # Primary deduplication: update_id (already handled above)
+        # Secondary deduplication: command + chat_id + timestamp (backup for edge cases)
         command_key = f"{chat_id}:{text}"
         now = time.time()
         if command_key in PROCESSED_TEXT_COMMANDS:
