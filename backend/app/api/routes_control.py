@@ -267,3 +267,84 @@ def update_telegram_commands():
         log.error(f"Error updating Telegram commands: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/health/fix")
+async def fix_backend_health():
+    """Fix backend health issues by restarting services and clearing errors"""
+    try:
+        log.info("🔧 Fixing backend health - restarting services...")
+        
+        # Stop all services first
+        try:
+            exchange_sync_service.stop()
+            signal_monitor_service.stop()
+            trading_scheduler.stop()
+            log.info("✅ Services stopped")
+        except Exception as e:
+            log.warning(f"Error stopping services (may already be stopped): {e}")
+        
+        # Wait a moment for clean shutdown
+        await asyncio.sleep(1)
+        
+        # Restart all services
+        results = {
+            "exchange_sync": {"status": "restarting"},
+            "signal_monitor": {"status": "restarting"},
+            "trading_scheduler": {"status": "restarting"}
+        }
+        
+        # Start Exchange Sync
+        try:
+            asyncio.create_task(exchange_sync_service.start())
+            results["exchange_sync"]["status"] = "restarted"
+            log.info("✅ Exchange sync service restarted")
+        except Exception as e:
+            results["exchange_sync"]["status"] = "error"
+            results["exchange_sync"]["error"] = str(e)
+            log.error(f"❌ Failed to restart exchange sync: {e}")
+        
+        # Start Signal Monitor
+        try:
+            asyncio.create_task(signal_monitor_service.start())
+            results["signal_monitor"]["status"] = "restarted"
+            log.info("✅ Signal monitor service restarted")
+        except Exception as e:
+            results["signal_monitor"]["status"] = "error"
+            results["signal_monitor"]["error"] = str(e)
+            log.error(f"❌ Failed to restart signal monitor: {e}")
+        
+        # Start Trading Scheduler
+        try:
+            await trading_scheduler.start()
+            results["trading_scheduler"]["status"] = "restarted"
+            log.info("✅ Trading scheduler restarted")
+        except Exception as e:
+            results["trading_scheduler"]["status"] = "error"
+            results["trading_scheduler"]["error"] = str(e)
+            log.error(f"❌ Failed to restart trading scheduler: {e}")
+        
+        # Wait for services to initialize
+        await asyncio.sleep(2)
+        
+        # Check final status
+        final_status = {
+            "ok": True,
+            "message": "Backend health fix attempted - services restarted",
+            "exchange_sync_running": exchange_sync_service.is_running,
+            "signal_monitor_running": signal_monitor_service.is_running,
+            "trading_scheduler_running": trading_scheduler.running,
+            "results": results
+        }
+        
+        log.info(f"📊 Health fix completed: {final_status}")
+        
+        return final_status
+        
+    except Exception as e:
+        log.error(f"Error fixing backend health: {e}", exc_info=True)
+        return {
+            "ok": False,
+            "error": str(e),
+            "message": "Failed to fix backend health"
+        }
+
