@@ -473,13 +473,20 @@ def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
         # If webhook is still configured elsewhere Telegram returns 409. Log once as warning.
         # NOTE: In production, this usually means another instance (local dev, old server) is using the same bot token.
         # FIX: Ensure only the AWS backend is using the bot token - stop any local bots or old servers.
+        # IMPROVED: Also handle case where multiple gunicorn workers are polling simultaneously
         status = getattr(http_err.response, 'status_code', None)
         if status == 409:
-            logger.warning(
-                "[TG] getUpdates conflict (409). Another webhook or polling client is active. "
-                "This usually means another instance (local dev, old server) is using the same bot token. "
-                "FIX: Ensure only AWS backend uses the bot token. Skipping this cycle."
-            )
+            # Only log warning occasionally to avoid spam (every 10th occurrence)
+            if not hasattr(get_telegram_updates, '_409_count'):
+                get_telegram_updates._409_count = 0
+            get_telegram_updates._409_count += 1
+            if get_telegram_updates._409_count % 10 == 0:
+                logger.warning(
+                    f"[TG] getUpdates conflict (409) - {get_telegram_updates._409_count} occurrences. "
+                    "Another webhook or polling client is active. This may be due to multiple gunicorn workers. "
+                    "Skipping this cycle but will retry."
+                )
+            # Return empty list but don't block - allow retry on next cycle
             return []
         logger.error(f"[TG] getUpdates HTTP error: {http_err}")
         return []
