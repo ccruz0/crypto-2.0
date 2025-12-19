@@ -222,16 +222,42 @@ def calculate_portfolio_order_metrics(
 
         market_price = market_prices.get(base)
         order_type = order.order_type.upper()
+        trigger_type = (order.trigger_type or "").upper()
+        
+        # Check metadata for order_role (from database orders)
+        order_role = None
+        if order.metadata:
+            order_role = (order.metadata.get("order_role") or order.metadata.get("role") or "").upper()
+
+        # Identify TP orders: check order_type, trigger_type, and order_role
+        is_tp = (
+            "TAKE_PROFIT" in order_type or
+            "TAKE_PROFIT" in trigger_type or
+            order_role == "TAKE_PROFIT"
+        )
+        
+        # Identify SL orders: check order_type, trigger_type, and order_role
+        is_sl = (
+            "STOP_LOSS" in order_type or
+            "STOP_LOSS" in trigger_type or
+            order_role == "STOP_LOSS" or
+            ("STOP" in order_type and "LOSS" not in order_type and "LIMIT" not in order_type) or
+            ("STOP" in trigger_type and "LOSS" not in trigger_type)
+        )
 
         if market_price is not None:
+            # Use market price comparison as primary method
             if price > market_price:
+                # Above market = TP
                 entry["tp"] = price if entry["tp"] is None else max(entry["tp"], price)
             elif price < market_price:
+                # Below market = SL
                 entry["sl"] = price if entry["sl"] is None else min(entry["sl"], price)
         else:
-            if "TAKE_PROFIT" in order_type:
+            # Fallback to order type/role identification when market price unavailable
+            if is_tp:
                 entry["tp"] = price if entry["tp"] is None else max(entry["tp"], price)
-            elif "STOP" in order_type:
+            elif is_sl:
                 entry["sl"] = price if entry["sl"] is None else min(entry["sl"], price)
 
     return metrics

@@ -379,7 +379,7 @@ async def _compute_dashboard_state(db: Session) -> dict:
                         created_at=_format_timestamp(create_time),
                         updated_at=_format_timestamp(update_time),
                         source="database",
-                        metadata={},
+                        metadata={"order_role": db_order.order_role} if db_order.order_role else {},
                     )
                     unified_open_orders.append(db_unified)
                     cached_order_ids.add(db_unified.order_id)
@@ -589,8 +589,10 @@ async def _compute_dashboard_state(db: Session) -> dict:
                 sl_price = metrics.get("sl")
 
                 # Ensure all numeric values are JSON-serializable (float, not Decimal)
+                currency = balance.get("currency", "")
                 portfolio_assets.append({
-                    "currency": balance.get("currency", ""),
+                    "currency": currency,
+                    "coin": currency,  # Add coin field for frontend compatibility
                     "balance": float(balance_amount) if balance_amount is not None else 0.0,
                     "usd_value": float(usd_value) if usd_value is not None else 0.0,
                     "open_orders_count": open_orders_count,
