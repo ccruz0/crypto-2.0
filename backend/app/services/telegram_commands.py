@@ -2237,7 +2237,23 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             )
             db.add(processed_marker)
             db.commit()
-            logger.debug(f"[TG] Marked update_id={update_id} as processed in DB")
+            
+            # CRITICAL: Double-check after commit to handle race conditions
+            # If another instance inserted between our check and commit, we should skip
+            db.refresh(processed_marker)
+            # Verify we're the first by checking if there are multiple entries
+            # (should only be 1 if we were first)
+            count = db.query(TelegramMessage).filter(
+                TelegramMessage.symbol == update_marker,
+                TelegramMessage.message == "update_deduplication"
+            ).count()
+            
+            if count > 1:
+                # Another instance also inserted - we're not the first, skip processing
+                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (race condition detected, {count} instances processed)")
+                return
+            
+            logger.debug(f"[TG] Marked update_id={update_id} as processed in DB (this instance will process)")
             
             # Clean up old markers periodically (keep only last 1000)
             # Only do this occasionally to avoid overhead
