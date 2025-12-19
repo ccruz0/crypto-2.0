@@ -44,7 +44,7 @@ class SignalMonitorService:
         self.ORDER_CREATION_LOCK_SECONDS = 10  # Lock for 10 seconds after creating an order
         # Alert throttling state: {symbol: {side: {last_alert_time: datetime, last_alert_price: float}}}
         self.last_alert_states: Dict[str, Dict[str, Dict]] = {}  # Track last alert per symbol and side
-        self.ALERT_COOLDOWN_MINUTES = 5  # default fallback
+        self.ALERT_COOLDOWN_MINUTES = 0.1667  # default fallback (10 seconds)
         self.ALERT_MIN_PRICE_CHANGE_PCT = 1.0
         self.alert_sending_locks: Dict[str, float] = {}  # Track when we're sending alerts: {symbol_side: timestamp}
         self.ALERT_SENDING_LOCK_SECONDS = 2  # Lock for 2 seconds after checking/sending alert to prevent race conditions

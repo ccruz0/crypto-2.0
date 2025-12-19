@@ -33,26 +33,26 @@ _DEFAULT_CONFIG = {
     "defaults": {
         "timeframe": "4h",
         "preset": "swing",
-        "alert_cooldown_minutes": 5,
+        "alert_cooldown_minutes": 0.1667,
         "alert_min_price_change_pct": 1.0
     },
     "presets": {
         "swing":   {
             "RSI_PERIOD":14, "RSI_BUY":38, "RSI_SELL":68, "MA50":50, "EMA10":9,
             "MA10W":70, "ATR":14, "VOL":10,
-            "ALERT_COOLDOWN_MINUTES": 5,
+            "ALERT_COOLDOWN_MINUTES": 0.1667,
             "ALERT_MIN_PRICE_CHANGE_PCT": 1.0
         },
         "intraday":{
             "RSI_PERIOD":10, "RSI_BUY":42, "RSI_SELL":65, "MA50":25, "EMA10":7,
             "MA10W":30, "ATR":10, "VOL":20,
-            "ALERT_COOLDOWN_MINUTES": 3,
+            "ALERT_COOLDOWN_MINUTES": 0.1667,
             "ALERT_MIN_PRICE_CHANGE_PCT": 0.8
         },
         "scalp":   {
             "RSI_PERIOD":7,  "RSI_BUY":45, "RSI_SELL":60, "MA50":20, "EMA10":5,
             "MA10W":15, "ATR":7,  "VOL":15,
-            "ALERT_COOLDOWN_MINUTES": 2,
+            "ALERT_COOLDOWN_MINUTES": 0.1667,
             "ALERT_MIN_PRICE_CHANGE_PCT": 0.5
         }
     },
@@ -84,7 +84,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"rr": 1.5},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 },
                 "Aggressive": {
                     "rsi": {"buyBelow": 45, "sellAbove": 68},
@@ -93,7 +93,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"rr": 1.2},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 }
             }
         },
@@ -107,7 +107,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"rr": 1.2},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 },
                 "Aggressive": {
                     "rsi": {"buyBelow": 50, "sellAbove": 65},
@@ -116,7 +116,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"rr": 1.0},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 }
             }
         },
@@ -130,7 +130,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"pct": 0.8},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 },
                 "Aggressive": {
                     "rsi": {"buyBelow": 55, "sellAbove": 65},
@@ -139,7 +139,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                     "tp": {"pct": 0.5},
                     "volumeMinRatio": 0.5,
                     "minPriceChangePct": 1.0,
-                    "alertCooldownMinutes": 5.0,
+                    "alertCooldownMinutes": 0.1667,
                 }
             }
         }
@@ -187,7 +187,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                                 "tp": {"rr": 1.5},
                                 "volumeMinRatio": 0.5,
                                 "minPriceChangePct": 1.0,
-                                "alertCooldownMinutes": 5.0,
+                                "alertCooldownMinutes": 0.1667,
                             },
                             "Aggressive": {
                                 "rsi": {"buyBelow": 45, "sellAbove": 68},
@@ -196,7 +196,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
                                 "tp": {"rr": 1.2},
                                 "volumeMinRatio": 0.5,
                                 "minPriceChangePct": 1.0,
-                                "alertCooldownMinutes": 5.0,
+                                "alertCooldownMinutes": 0.1667,
                             }
                         }
                     }
@@ -508,5 +508,5 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
         },
         "volumeMinRatio": 0.5,  # Default
         "minPriceChangePct": preset_cfg.get("ALERT_MIN_PRICE_CHANGE_PCT", 1.0),
-        "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 5),
+        "alertCooldownMinutes": preset_cfg.get("ALERT_COOLDOWN_MINUTES", 0.1667),
     }

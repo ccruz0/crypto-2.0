@@ -16,6 +16,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
+from app.core.runtime import get_runtime_origin
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import (
@@ -61,7 +62,7 @@ class SignalMonitorService:
         self.ORDER_CREATION_LOCK_SECONDS = 10  # Lock for 10 seconds after creating an order
         # Alert throttling state: {symbol: {side: {last_alert_time: datetime, last_alert_price: float}}}
         self.last_alert_states: Dict[str, Dict[str, Dict]] = {}  # Track last alert per symbol and side
-        self.ALERT_COOLDOWN_MINUTES = 5  # 5 minutes cooldown between same-side alerts
+        self.ALERT_COOLDOWN_MINUTES = 0.1667  # 10 seconds cooldown between same-side alerts
         self.ALERT_MIN_PRICE_CHANGE_PCT = 1.0  # Minimum 1% price change for same-side alerts
         self.alert_sending_locks: Dict[str, float] = {}  # Track when we're sending alerts: {symbol_side: timestamp}
         self.ALERT_SENDING_LOCK_SECONDS = 300  # Lock for 5 minutes (300 seconds) after checking/sending alert to prevent duplicate alerts and race conditions
@@ -1273,30 +1274,34 @@ class SignalMonitorService:
         
         # Log alert decision with all flags for clarity
         if buy_signal:
-            if buy_alert_enabled:
+            alert_enabled = watchlist_item.alert_enabled
+            if alert_enabled and buy_alert_enabled:
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
-                    f"DECISION: SENT (buy_alert_enabled enabled)"
+                    f"alert_enabled={alert_enabled}, buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
+                    f"DECISION: SENT (both flags enabled)"
                 )
             else:
                 skip_reason = []
+                if not alert_enabled:
+                    skip_reason.append("alert_enabled=False")
                 if not buy_alert_enabled:
                     skip_reason.append("buy_alert_enabled=False")
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
-                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
+                    f"alert_enabled={alert_enabled}, buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
                     f"DECISION: SKIPPED ({', '.join(skip_reason)})"
                 )
                 self._log_signal_rejection(
                     symbol,
                     "BUY",
                     "DISABLED_BUY_SELL_FLAG",
-                    {"buy_alert_enabled": buy_alert_enabled},
+                    {"alert_enabled": alert_enabled, "buy_alert_enabled": buy_alert_enabled},
                 )
         
-        if buy_signal and buy_alert_enabled:
-            logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert")
+        # CRITICAL: Verify BOTH alert_enabled (master switch) AND buy_alert_enabled (BUY-specific) before processing
+        if buy_signal and watchlist_item.alert_enabled and buy_alert_enabled:
+            logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert (alert_enabled=True, buy_alert_enabled=True)")
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             # This ensures only one thread can check and send an alert at a time
@@ -1459,6 +1464,10 @@ class SignalMonitorService:
                     
                     # Apply throttling logic: check if alert should be sent based on price change and cooldown
                     min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    logger.info(
+                        f"🔍 {symbol} BUY throttling check: min_price_change_pct={min_pct}%, cooldown={cooldown} min, "
+                        f"current_price=${current_price:.4f}"
+                    )
                     should_send, buy_reason = self.should_send_alert(
                         symbol=symbol,
                         side="BUY",
@@ -1468,7 +1477,10 @@ class SignalMonitorService:
                         cooldown_minutes=cooldown,
                     )
                     if not should_send:
-                        logger.info(f"⏭️  BUY alert throttled for {symbol}: {buy_reason}")
+                        logger.warning(
+                            f"⏭️  BUY alert BLOCKED for {symbol} (throttling): {buy_reason}. "
+                            f"Flags: alert_enabled={watchlist_item.alert_enabled}, buy_alert_enabled={buy_alert_enabled}"
+                        )
                         # Remove lock and skip sending alert (but continue processing coin)
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
@@ -1517,6 +1529,9 @@ class SignalMonitorService:
                                 f"EMA10={ema10_text}, "
                                 f"MA200={ma200_text}"
                             )
+                            # Explicitly pass origin to ensure alerts are sent
+                            # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
+                            alert_origin = get_runtime_origin()
                             result = telegram_notifier.send_buy_signal(
                                 symbol=symbol,
                                 price=current_price,
@@ -1526,8 +1541,9 @@ class SignalMonitorService:
                                 price_variation=price_variation,
                                 previous_price=prev_buy_price,
                                 source="LIVE ALERT",
-                            throttle_status="SENT",
-                            throttle_reason=throttle_buy_reason or buy_reason,
+                                throttle_status="SENT",
+                                throttle_reason=throttle_buy_reason or buy_reason,
+                                origin=alert_origin,
                             )
                             # Alerts must never be blocked after conditions are met (guardrail compliance)
                             # If send_buy_signal returns False, log as error but do not treat as block
@@ -2109,26 +2125,29 @@ class SignalMonitorService:
         
         # Log alert decision with all flags for clarity
         if sell_signal:
-            if sell_alert_enabled:
+            alert_enabled = watchlist_item.alert_enabled
+            if alert_enabled and sell_alert_enabled:
                 logger.info(
                     f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
-                    f"DECISION: SENT (sell_alert_enabled enabled)"
+                    f"alert_enabled={alert_enabled}, buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
+                    f"DECISION: SENT (both flags enabled)"
                 )
             else:
                 skip_reason = []
+                if not alert_enabled:
+                    skip_reason.append("alert_enabled=False")
                 if not sell_alert_enabled:
                     skip_reason.append("sell_alert_enabled=False")
-                    logger.info(
-                        f"🔍 {symbol} SELL alert decision: sell_signal=True, "
-                        f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
-                        f"DECISION: SKIPPED ({', '.join(skip_reason)})"
-                    )
+                logger.info(
+                    f"🔍 {symbol} SELL alert decision: sell_signal=True, "
+                    f"alert_enabled={alert_enabled}, buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
+                    f"DECISION: SKIPPED ({', '.join(skip_reason)})"
+                )
                 self._log_signal_rejection(
                     symbol,
                     "SELL",
                     "DISABLED_BUY_SELL_FLAG",
-                    {"sell_alert_enabled": sell_alert_enabled},
+                    {"alert_enabled": alert_enabled, "sell_alert_enabled": sell_alert_enabled},
                 )
         
         # DEBUG: Log before final SELL alert check for DOT_USD
@@ -2137,8 +2156,9 @@ class SignalMonitorService:
                 f"🔍 [DEBUG] {symbol} final SELL alert check: "
                 f"sell_signal={sell_signal}, sell_alert_enabled={sell_alert_enabled}"
             )
-        if sell_signal and sell_alert_enabled:
-            logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert")
+        # CRITICAL: Verify BOTH alert_enabled (master switch) AND sell_alert_enabled (SELL-specific) before processing
+        if sell_signal and watchlist_item.alert_enabled and sell_alert_enabled:
+            logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert (alert_enabled=True, sell_alert_enabled=True)")
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             lock_key = f"{symbol}_SELL"
@@ -2171,6 +2191,10 @@ class SignalMonitorService:
                     # Apply throttling logic: check if alert should be sent based on price change and cooldown
                     # NOTE: We've already set the lock, so should_send_alert will skip the lock check
                     min_pct, cooldown = self._resolve_alert_thresholds(watchlist_item)
+                    logger.info(
+                        f"🔍 {symbol} SELL throttling check: min_price_change_pct={min_pct}%, cooldown={cooldown} min, "
+                        f"current_price=${current_price:.4f}"
+                    )
                     # CRITICAL: Pass skip_lock_check=True since we've already acquired the lock
                     should_send, throttle_reason = self.should_send_alert(
                         symbol=symbol,
@@ -2182,7 +2206,10 @@ class SignalMonitorService:
                         skip_lock_check=True,  # We already have the lock, don't check again
                     )
                     if not should_send:
-                        logger.info(f"⏭️  SELL alert throttled for {symbol}: {throttle_reason}")
+                        logger.warning(
+                            f"⏭️  SELL alert BLOCKED for {symbol} (throttling): {throttle_reason}. "
+                            f"Flags: alert_enabled={watchlist_item.alert_enabled}, sell_alert_enabled={sell_alert_enabled}"
+                        )
                         self._log_signal_rejection(
                             symbol,
                             "SELL",
@@ -2282,6 +2309,9 @@ class SignalMonitorService:
                                     f"EMA10={ema10_text}, "
                                     f"MA200={ma200_text}"
                                 )
+                                # Explicitly pass origin to ensure alerts are sent
+                                # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
+                                alert_origin = get_runtime_origin()
                                 result = telegram_notifier.send_sell_signal(
                                     symbol=symbol,
                                     price=current_price,
@@ -2293,6 +2323,7 @@ class SignalMonitorService:
                                     source="LIVE ALERT",
                                     throttle_status="SENT",
                                     throttle_reason=throttle_sell_reason or throttle_reason or sell_reason,
+                                    origin=alert_origin,
                                 )
                                 # Alerts must never be blocked after conditions are met (guardrail compliance)
                                 # If send_sell_signal returns False, log as error but do not treat as block

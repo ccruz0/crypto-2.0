@@ -137,7 +137,7 @@ def evaluate_signal_for_symbol(
         if min_price_change_pct is None:
             min_price_change_pct = 1.0
         if alert_cooldown_minutes is None:
-            alert_cooldown_minutes = 5.0
+            alert_cooldown_minutes = 0.1667
         
         throttle_config = SignalThrottleConfig(
             min_price_change_pct=min_price_change_pct,

@@ -3,7 +3,7 @@
   "defaults": {
     "timeframe": "4h",
     "preset": "swing",
-    "alert_cooldown_minutes": 5,
+    "alert_cooldown_minutes": 0.1667,
     "alert_min_price_change_pct": 1.0
   },
   "presets": {
@@ -28,7 +28,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "Operaciones multi-d\u00eda",
             "Confirmaci\u00f3n MA50/MA200"
@@ -52,7 +52,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "Entrada m\u00e1s temprana",
             "SL m\u00e1s estrecho"
@@ -81,7 +81,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "Cierra en el d\u00eda",
             "Evita overnight"
@@ -105,7 +105,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "M\u00e1s se\u00f1ales",
             "M\u00e1s ruido"
@@ -134,7 +134,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "Movimientos muy cortos",
             "Slippage importa"
@@ -158,7 +158,7 @@
           },
           "volumeMinRatio": 0.5,
           "minPriceChangePct": 1.0,
-          "alertCooldownMinutes": 5.0,
+          "alertCooldownMinutes": 0.1667,
           "notes": [
             "Entradas anticipadas",
             "Muchas micro-salidas"
