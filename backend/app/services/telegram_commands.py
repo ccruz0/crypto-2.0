@@ -2657,7 +2657,15 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         pass  # Not a number, continue with normal command parsing
     
     if text.startswith("/start"):
-        send_welcome_message(chat_id)
+        logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
+        try:
+            result = send_welcome_message(chat_id)
+            if result:
+                logger.info(f"[TG][CMD] /start command processed successfully for chat_id={chat_id}")
+            else:
+                logger.warning(f"[TG][CMD] /start command returned False for chat_id={chat_id}")
+        except Exception as e:
+            logger.error(f"[TG][ERROR] Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
         show_main_menu(chat_id, db)
     elif text.startswith("/help"):
