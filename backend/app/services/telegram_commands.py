@@ -2714,14 +2714,20 @@ def process_telegram_commands(db: Session = None) -> None:
         logger.debug(f"[TG] Skipping Telegram command processing on local (APP_ENV={app_env})")
         return
     
+    logger.debug(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
+    
     try:
         # Long polling: Telegram will wait up to 30 seconds for new messages
         # This allows immediate processing when a command is sent
         offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
+        logger.debug(f"[TG] Calling get_telegram_updates with offset={offset}")
         updates = get_telegram_updates(offset=offset)
+        
+        logger.debug(f"[TG] get_telegram_updates returned {len(updates) if updates else 0} updates")
         
         if not updates:
             # No new updates (this is normal with long polling timeout)
+            logger.debug(f"[TG] No updates received (normal with long polling timeout)")
             return
         
         logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
