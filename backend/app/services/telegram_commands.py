@@ -8,6 +8,7 @@ import logging
 import math
 import requests
 import time
+import tempfile
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -18,6 +19,14 @@ from sqlalchemy.orm import Session
 from app.models.watchlist import WatchlistItem
 
 logger = logging.getLogger(__name__)
+
+# File locking for preventing multiple processes from polling Telegram
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+    logger.warning("[TG] fcntl not available - file locking disabled (may cause 409 conflicts)")
 
 # Constants
 # Use environment variables only (no repo defaults)
@@ -437,10 +446,13 @@ def setup_bot_commands():
 
 
 def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
-    """Get updates from Telegram API using long polling
+    """Get updates from Telegram API using long polling with file lock to prevent 409 conflicts
     
     RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
     LOCAL runtime should not poll, as AWS is already polling.
+    
+    LOCK MECHANISM: Uses file-based lock to ensure only one process polls at a time,
+    preventing 409 conflicts when multiple workers/processes try to poll simultaneously.
     """
     # RUNTIME GUARD: Only AWS should poll Telegram
     if not is_aws_runtime():
@@ -449,50 +461,89 @@ def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
     
     if not TELEGRAM_ENABLED:
         return []
+    
+    # Use file-based lock to ensure only one process polls at a time
+    lock_file_path = os.path.join(tempfile.gettempdir(), "telegram_updates.lock")
+    lock_file = None
+    lock_acquired = False
+    
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        params = {}
-        if offset is not None:
-            params["offset"] = offset
-        # Use long polling: Telegram will wait up to 30 seconds for new messages
-        # This allows real-time command processing
-        params["timeout"] = 30
+        if HAS_FCNTL:
+            # Try to acquire lock (non-blocking)
+            lock_file = open(lock_file_path, 'w')
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_acquired = True
+            except BlockingIOError:
+                # Another process is already polling - skip this cycle
+                logger.debug("[TG] Another process is polling Telegram - skipping this cycle")
+                return []
+        else:
+            # No file locking available - proceed without lock (may cause 409 conflicts)
+            lock_acquired = True
         
-        # Increase timeout to 35 seconds to account for network delay
-        response = requests.get(url, params=params, timeout=35)
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get("ok"):
-            return data.get("result", [])
-        return []
-    except requests.exceptions.Timeout:
-        # Timeout is expected when no new messages - return empty list
-        return []
-    except requests.exceptions.HTTPError as http_err:
-        # If webhook is still configured elsewhere Telegram returns 409. Log once as warning.
-        # NOTE: In production, this usually means another instance (local dev, old server) is using the same bot token.
-        # FIX: Ensure only the AWS backend is using the bot token - stop any local bots or old servers.
-        # IMPROVED: Also handle case where multiple gunicorn workers are polling simultaneously
-        status = getattr(http_err.response, 'status_code', None)
-        if status == 409:
-            # Only log warning occasionally to avoid spam (every 10th occurrence)
-            if not hasattr(get_telegram_updates, '_409_count'):
-                get_telegram_updates._409_count = 0
-            get_telegram_updates._409_count += 1
-            if get_telegram_updates._409_count % 10 == 0:
-                logger.warning(
-                    f"[TG] getUpdates conflict (409) - {get_telegram_updates._409_count} occurrences. "
-                    "Another webhook or polling client is active. This may be due to multiple gunicorn workers. "
-                    "Skipping this cycle but will retry."
-                )
-            # Return empty list but don't block - allow retry on next cycle
-            return []
-        logger.error(f"[TG] getUpdates HTTP error: {http_err}")
-        return []
+        # Lock acquired (or no locking available) - proceed with polling
+        if lock_acquired:
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+                params = {}
+                if offset is not None:
+                    params["offset"] = offset
+                # Use long polling: Telegram will wait up to 30 seconds for new messages
+                # This allows real-time command processing
+                params["timeout"] = 30
+                
+                # Increase timeout to 35 seconds to account for network delay
+                response = requests.get(url, params=params, timeout=35)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get("ok"):
+                    return data.get("result", [])
+                return []
+            except requests.exceptions.Timeout:
+                # Timeout is expected when no new messages - return empty list
+                return []
+            except requests.exceptions.HTTPError as http_err:
+                # If webhook is still configured elsewhere Telegram returns 409. Log once as warning.
+                # NOTE: In production, this usually means another instance (local dev, old server) is using the same bot token.
+                # FIX: Ensure only the AWS backend is using the bot token - stop any local bots or old servers.
+                status = getattr(http_err.response, 'status_code', None)
+                if status == 409:
+                    # Only log warning occasionally to avoid spam (every 10th occurrence)
+                    if not hasattr(get_telegram_updates, '_409_count'):
+                        get_telegram_updates._409_count = 0
+                    get_telegram_updates._409_count += 1
+                    if get_telegram_updates._409_count % 10 == 0:
+                        logger.warning(
+                            f"[TG] getUpdates conflict (409) - {get_telegram_updates._409_count} occurrences. "
+                            "Another webhook or polling client is active. This may be due to multiple gunicorn workers. "
+                            "Skipping this cycle but will retry."
+                        )
+                    # Return empty list but don't block - allow retry on next cycle
+                    return []
+                logger.error(f"[TG] getUpdates HTTP error: {http_err}")
+                return []
+            except Exception as e:
+                logger.error(f"[TG] getUpdates failed: {e}")
+                return []
+            finally:
+                # Release lock
+                if HAS_FCNTL and lock_file:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
     except Exception as e:
-        logger.error(f"[TG] getUpdates failed: {e}")
+        logger.error(f"[TG] Error acquiring lock for getUpdates: {e}")
         return []
+    finally:
+        # Close lock file
+        if lock_file:
+            try:
+                lock_file.close()
+            except Exception:
+                pass
 
 
 def send_command_response(chat_id: str, message: str) -> bool:
