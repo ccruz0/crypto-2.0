@@ -28,3 +28,4 @@ if [ -n "$FRONTEND_CONTAINER" ]; then
 fi
 echo "✅ Deployment complete!"
 DEPLOY
+
