@@ -2613,9 +2613,11 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     
     # Only authorized user
     if chat_id != AUTH_CHAT_ID:
-        logger.warning(f"[TG][DENY] chat_id={chat_id}")
+        logger.warning(f"[TG][DENY] chat_id={chat_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, command={text[:50]}")
         send_command_response(chat_id, "⛔ Not authorized")
         return
+    else:
+        logger.debug(f"[TG][AUTH] Authorized chat_id={chat_id} for command={text[:50]}")
     
     # Parse command
     text = text.strip()
