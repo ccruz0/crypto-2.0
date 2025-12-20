@@ -138,24 +138,35 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         "deleted": bool(getattr(item, "is_deleted", False)),
     }
     
-    # Enrich with MarketData if provided (ensures computed values are included)
+    # Enrich with MarketData if provided (ALWAYS prefer live computed values over DB values)
+    # MarketData contains the live computed values (price, rsi, ma50, ma200, ema10, atr, volume fields)
+    # while DB values may be stale, so we should always prefer market_data when available
     if market_data:
-        if serialized.get("price") is None and market_data.price is not None:
+        if market_data.price is not None:
             serialized["price"] = market_data.price
-        if serialized.get("rsi") is None and market_data.rsi is not None:
+        if market_data.rsi is not None:
             serialized["rsi"] = market_data.rsi
-        if serialized.get("ma50") is None and market_data.ma50 is not None:
+        if market_data.ma50 is not None:
             serialized["ma50"] = market_data.ma50
-        if serialized.get("ma200") is None and market_data.ma200 is not None:
+        if market_data.ma200 is not None:
             serialized["ma200"] = market_data.ma200
-        if serialized.get("ema10") is None and market_data.ema10 is not None:
+        if market_data.ema10 is not None:
             serialized["ema10"] = market_data.ema10
-        if serialized.get("atr") is None and market_data.atr is not None:
+        if market_data.atr is not None:
             serialized["atr"] = market_data.atr
-        if serialized.get("res_up") is None and market_data.res_up is not None:
+        if market_data.res_up is not None:
             serialized["res_up"] = market_data.res_up
-        if serialized.get("res_down") is None and market_data.res_down is not None:
+        if market_data.res_down is not None:
             serialized["res_down"] = market_data.res_down
+        # Volume fields from MarketData
+        if market_data.volume_ratio is not None:
+            serialized["volume_ratio"] = market_data.volume_ratio
+        if market_data.current_volume is not None:
+            serialized["current_volume"] = market_data.current_volume
+        if market_data.avg_volume is not None:
+            serialized["avg_volume"] = market_data.avg_volume
+        if market_data.volume_24h is not None:
+            serialized["volume_24h"] = market_data.volume_24h
     
     return serialized
 
