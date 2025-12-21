@@ -748,47 +748,52 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
 
 
 def send_welcome_message(chat_id: str) -> bool:
-    """Send welcome message with menu and custom keyboard"""
+    """Send welcome message with custom keyboard (persistent buttons at bottom)"""
+    if not TELEGRAM_ENABLED:
+        return False
     try:
-        # Set up custom keyboard first
-        _setup_custom_keyboard(chat_id)
+        # Create custom keyboard (ReplyKeyboardMarkup - persistent buttons at bottom)
+        keyboard = {
+            "keyboard": [
+                [{"text": "🚀 Start"}],
+                [{"text": "📊 Status"}, {"text": "💰 Portfolio"}],
+                [{"text": "📈 Signals"}, {"text": "📋 Watchlist"}],
+                [{"text": "⚙️ Menu"}, {"text": "❓ Help"}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False  # Keep keyboard persistent
+        }
         
-        # Show the main menu
-        return show_main_menu(chat_id, db=None)
-    except Exception as e:
-        logger.error(f"[TG][ERROR] Error in welcome message: {e}", exc_info=True)
-        # Fallback to text message with custom keyboard
-        try:
-            keyboard = {
-                "keyboard": [
-                    [{"text": "🚀 Start"}],
-                    [{"text": "📊 Status"}, {"text": "💰 Portfolio"}],
-                    [{"text": "📈 Signals"}, {"text": "📋 Watchlist"}],
-                    [{"text": "⚙️ Menu"}, {"text": "❓ Help"}]
-                ],
-                "resize_keyboard": True,
-                "one_time_keyboard": False
-            }
-            
-            message = """🎉 <b>Welcome to Trading Bot</b>
+        message = """🎉 <b>Welcome to Trading Bot</b>
 
-Use the buttons below or type commands to interact.
+Use the buttons below to interact with the bot.
+
+<b>Available Commands:</b>
+/start - Show this welcome message
+/status - Get bot status
+/portfolio - View portfolio
+/signals - View recent signals
+/watchlist - View watchlist
+/alerts - View alerts
+/menu - Show main menu
+/help - Show help
 
 <b>Note:</b> Only authorized users can use these commands."""
-            
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML",
-                "reply_markup": keyboard
-            }
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
-            return True
-        except Exception as e2:
-            logger.error(f"[TG][ERROR] Failed to send fallback welcome message: {e2}", exc_info=True)
-            return False
+        
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"[TG] Welcome message with custom keyboard sent to chat_id={chat_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to send welcome message: {e}", exc_info=True)
+        return False
 
 
 def send_help_message(chat_id: str) -> bool:
