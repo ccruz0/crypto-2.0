@@ -165,6 +165,15 @@ async def startup_event():
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, init_db)
                 logger.info("Database initialization completed")
+            
+            # Telegram startup diagnostics (run once on startup)
+            try:
+                from app.services.telegram_commands import _run_startup_diagnostics
+                logger.info("🔧 Running Telegram startup diagnostics...")
+                await loop.run_in_executor(None, _run_startup_diagnostics)
+                logger.info("✅ Telegram startup diagnostics completed")
+            except Exception as e:
+                logger.error(f"❌ Telegram startup diagnostics failed: {e}", exc_info=True)
         
             # Services            
             if not DEBUG_DISABLE_TRADING_SCHEDULER:
@@ -209,14 +218,15 @@ async def startup_event():
             else:
                 logger.warning("PERF: Signal monitor service DISABLED for performance testing")
             
-            # Buy Index Monitor Service
-            try:
-                logger.info("🔧 Starting Buy Index Monitor service...")
-                from app.services.buy_index_monitor import buy_index_monitor
-                asyncio.create_task(buy_index_monitor.run())
-                logger.info("✅ Buy Index Monitor service started")
-            except Exception as e:
-                logger.error(f"❌ Failed to start buy index monitor: {e}", exc_info=True)
+            # Buy Index Monitor Service - DISABLED
+            # try:
+            #     logger.info("🔧 Starting Buy Index Monitor service...")
+            #     from app.services.buy_index_monitor import buy_index_monitor
+            #     asyncio.create_task(buy_index_monitor.run())
+            #     logger.info("✅ Buy Index Monitor service started")
+            # except Exception as e:
+            #     logger.error(f"❌ Failed to start buy index monitor: {e}", exc_info=True)
+            logger.info("⚠️ Buy Index Monitor service is DISABLED")
             
             if not DEBUG_DISABLE_TELEGRAM:
                 try:

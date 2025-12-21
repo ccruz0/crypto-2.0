@@ -52,3 +52,8 @@ echo "Si nginx no puede conectarse, intenta:"
 echo "  sudo systemctl restart nginx"
 echo "  sudo systemctl restart docker  # Si el backend está en Docker"
 
+
+
+
+
+

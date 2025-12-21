@@ -60,3 +60,8 @@ You should see `previous_price` in the column list.
 - No data will be lost
 - The system will continue working during migration
 
+
+
+
+
+

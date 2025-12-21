@@ -74,3 +74,8 @@ curl http://localhost:8002/api/dashboard/state | jq '.watchlist[] | select(.symb
 - **El campo `signals` se puede actualizar** desde el dashboard mediante la API
 - **Los cambios se aplican inmediatamente** en el próximo ciclo del Signal Monitor (cada 30 segundos)
 
+
+
+
+
+

@@ -64,3 +64,8 @@ La orden SELL ahora se crea correctamente cuando:
 
 El sistema ya intenta obtener la información del instrumento desde la API de Crypto.com para usar el formato correcto. El fallback mejorado solo se usa cuando no se puede obtener esa información.
 
+
+
+
+
+

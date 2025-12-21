@@ -91,3 +91,8 @@ docker compose --profile aws logs -f backend-aws | grep -i "sl/tp\|telegram"
 ```
 
 
+
+
+
+
+

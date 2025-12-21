@@ -53,3 +53,8 @@ Aunque `sell_alert_enabled=True` ahora está habilitado, las señales SELL solo 
 - ✅ El throttling permita emitir la señal (cooldown y cambio de precio)
 
 Si no ves señales SELL inmediatamente, es porque las condiciones técnicas aún no se cumplen (comportamiento esperado).
+
+
+
+
+

@@ -59,3 +59,8 @@ echo "The BUY alert throttling check has been added to signal_monitor.py"
 echo "TRX_USDT and other symbols should now properly send buy alerts when conditions are met."
 
 
+
+
+
+
+

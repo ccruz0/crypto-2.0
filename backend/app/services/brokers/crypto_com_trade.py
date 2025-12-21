@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
+from contextvars import ContextVar
 
 from .crypto_com_constants import REST_BASE, CONTENT_TYPE_JSON
 from app.core.failover_config import (
@@ -18,6 +19,30 @@ from app.core.failover_config import (
 from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
 
 logger = logging.getLogger(__name__)
+
+_USE_CRYPTO_PROXY_OVERRIDE: ContextVar[Optional[bool]] = ContextVar(
+    "USE_CRYPTO_PROXY_OVERRIDE",
+    default=None,
+)
+
+def _clean_env_secret(value: str) -> str:
+    """
+    Normalize secrets/keys loaded from env.
+    - Strip whitespace/newlines
+    - Remove wrapping single/double quotes (common in .env files)
+    """
+    v = (value or "").strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1].strip()
+    return v
+
+def _preview_secret(value: str, left: int = 4, right: int = 4) -> str:
+    v = value or ""
+    if not v:
+        return "<NOT_SET>"
+    if len(v) <= left + right:
+        return "<SET>"
+    return f"{v[:left]}....{v[-right:]}"
 
 def _should_failover(status, exc=None):
     """Determine if we should failover to TRADE_BOT"""
@@ -32,7 +57,7 @@ class CryptoComTradeClient:
     
     def __init__(self):
         # Check if we should use the proxy
-        self.use_proxy = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
+        self._use_proxy_default = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
         self.proxy_url = os.getenv("CRYPTO_PROXY_URL", "http://127.0.0.1:9000")
         self.proxy_token = os.getenv("CRYPTO_PROXY_TOKEN", "CRYPTO_PROXY_SECURE_TOKEN_2024")
         
@@ -47,25 +72,76 @@ class CryptoComTradeClient:
                 # Default to Crypto.com Exchange v1 API endpoint
                 self.base_url = REST_BASE
         
-        self.api_key = os.getenv("EXCHANGE_CUSTOM_API_KEY", "").strip()
-        self.api_secret = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "").strip()
+        self.api_key = _clean_env_secret(os.getenv("EXCHANGE_CUSTOM_API_KEY", ""))
+        self.api_secret = _clean_env_secret(os.getenv("EXCHANGE_CUSTOM_API_SECRET", ""))
         self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+        self.crypto_auth_diag = os.getenv("CRYPTO_AUTH_DIAG", "false").lower() == "true"
         
-        # [CRYPTO_AUTH_DIAG] Enhanced credential logging
-        logger.info(f"[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED ===")
-        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY repr: {repr(self.api_key)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY length: {len(self.api_key)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] API_KEY preview: {self.api_key[:4]}....{self.api_key[-4:] if len(self.api_key) >= 4 else ''}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY length: {len(self.api_secret)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY starts with: {self.api_secret[:6] if len(self.api_secret) >= 6 else 'N/A'}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] SECRET_KEY has whitespace: {any(c.isspace() for c in self.api_secret) if self.api_secret else False}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] =========================")
+        # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
+        if self.crypto_auth_diag:
+            logger.info("[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED (SAFE) ===")
+            logger.info("[CRYPTO_AUTH_DIAG] api_key=%s len=%s", _preview_secret(self.api_key), len(self.api_key or ""))
+            logger.info("[CRYPTO_AUTH_DIAG] api_secret=<SET> len=%s whitespace=%s", len(self.api_secret or ""), any(c.isspace() for c in (self.api_secret or "")))
+            logger.info("[CRYPTO_AUTH_DIAG] use_proxy=%s proxy_url=%s", self.use_proxy, self.proxy_url)
+            logger.info("[CRYPTO_AUTH_DIAG] =================================")
         
         logger.info(f"CryptoComTradeClient initialized - Live Trading: {self.live_trading}")
         if self.use_proxy:
             logger.info(f"Using PROXY: {self.proxy_url}")
         else:
             logger.info(f"Using base URL: {self.base_url}")
+
+    @property
+    def use_proxy(self) -> bool:
+        """
+        Effective proxy flag.
+        Uses a per-request/per-task override (ContextVar) when set, otherwise the env default.
+        This prevents one request (or background task) from accidentally affecting others.
+        """
+        override = _USE_CRYPTO_PROXY_OVERRIDE.get()
+        if override is None:
+            return bool(getattr(self, "_use_proxy_default", False))
+        return bool(override)
+
+    @use_proxy.setter
+    def use_proxy(self, value: bool) -> None:
+        # Sets override for the current execution context only.
+        _USE_CRYPTO_PROXY_OVERRIDE.set(bool(value))
+
+    def clear_use_proxy_override(self) -> None:
+        _USE_CRYPTO_PROXY_OVERRIDE.set(None)
+
+    def _refresh_runtime_flags(self) -> None:
+        """
+        Refresh runtime flags from environment.
+
+        The client instance is long-lived, but some endpoints toggle LIVE_TRADING /
+        proxy behavior dynamically (e.g. for one-off SL/TP creation). We must re-read
+        env flags at call time rather than caching only at __init__.
+        """
+        try:
+            self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+        except Exception:
+            pass
+
+        # Keep the current runtime proxy flag (it may be overridden per-request by endpoints),
+        # but refresh proxy config values and ensure base_url is always available when proxy is off.
+        try:
+            self.proxy_url = os.getenv("CRYPTO_PROXY_URL", getattr(self, "proxy_url", "http://127.0.0.1:9000"))
+            self.proxy_token = os.getenv("CRYPTO_PROXY_TOKEN", getattr(self, "proxy_token", "CRYPTO_PROXY_SECURE_TOKEN_2024"))
+        except Exception:
+            pass
+
+        # IMPORTANT: If the client was initialized with proxy enabled, base_url may not exist.
+        # When endpoints temporarily disable proxy (trade_client.use_proxy = False), direct calls
+        # must still work.
+        try:
+            if not getattr(self, "use_proxy", False):
+                if not getattr(self, "base_url", None):
+                    custom_base = (os.getenv("EXCHANGE_CUSTOM_BASE_URL", "") or "").strip()
+                    self.base_url = custom_base or REST_BASE
+        except Exception:
+            pass
     
     def _call_proxy(self, method: str, params: dict) -> dict:
         """Call Crypto.com API through the proxy"""
@@ -196,11 +272,20 @@ class CryptoComTradeClient:
         # - sig: HMAC signature
         # Note: Documentation shows id: 1, and get_account_summary (which works) uses id: 1
         request_id = 1  # Use 1 as per documentation and working methods
+        
+        # IMPORTANT: Ensure params dict is ordered alphabetically to match string_to_sign
+        # Some endpoints (like get-order-history) may require params to be in the same order as in string_to_sign
+        # In Python 3.7+, dicts maintain insertion order, but we explicitly sort to match string_to_sign
+        if params:
+            ordered_params = dict(sorted(params.items()))
+        else:
+            ordered_params = {}
+        
         payload = {
             "id": request_id,  # Use 1 as per documentation sample
             "method": method,
             "api_key": self.api_key,
-            "params": params,  # Always include params, even if empty {}
+            "params": ordered_params,  # Use ordered params to match string_to_sign
             "nonce": nonce_ms
         }
         
@@ -208,19 +293,19 @@ class CryptoComTradeClient:
         # Format: method + id + api_key + params_str + nonce
         string_to_sign = method + str(request_id) + self.api_key + params_str + str(nonce_ms)
         
-        # [CRYPTO_AUTH_DIAG] Complete signing process logging
-        current_utc = datetime.now(timezone.utc).isoformat()
-        current_time = time.time()
-        logger.info(f"[CRYPTO_AUTH_DIAG] === SIGNING PROCESS ===")
-        logger.info(f"[CRYPTO_AUTH_DIAG] method={method}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] params={json.dumps(params)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] request_id={request_id} (type={type(request_id).__name__})")
-        logger.info(f"[CRYPTO_AUTH_DIAG] nonce={nonce_ms} (type={type(nonce_ms).__name__})")
-        logger.info(f"[CRYPTO_AUTH_DIAG] server_time_utc={current_utc}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] server_time_epoch={current_time}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] params_str_len={len(params_str)}, params_str_repr={repr(params_str)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] string_to_sign_length={len(string_to_sign)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] string_to_sign={string_to_sign}")
+        # Security: signing diagnostics are OFF by default.
+        if getattr(self, "crypto_auth_diag", False):
+            current_utc = datetime.now(timezone.utc).isoformat()
+            current_time = time.time()
+            logger.info("[CRYPTO_AUTH_DIAG] === SIGNING PROCESS (SAFE) ===")
+            logger.info("[CRYPTO_AUTH_DIAG] method=%s", method)
+            logger.info("[CRYPTO_AUTH_DIAG] request_id=%s (type=%s)", request_id, type(request_id).__name__)
+            logger.info("[CRYPTO_AUTH_DIAG] nonce=%s (type=%s)", nonce_ms, type(nonce_ms).__name__)
+            logger.info("[CRYPTO_AUTH_DIAG] server_time_utc=%s", current_utc)
+            logger.info("[CRYPTO_AUTH_DIAG] server_time_epoch=%s", current_time)
+            logger.info("[CRYPTO_AUTH_DIAG] params_str_len=%s", len(params_str))
+            # Do NOT log string_to_sign or signature in full (sensitive).
+            logger.info("[CRYPTO_AUTH_DIAG] string_to_sign_len=%s", len(string_to_sign))
         
         # Generate HMAC-SHA256 signature
         signature = hmac.new(
@@ -228,10 +313,13 @@ class CryptoComTradeClient:
             msg=bytes(string_to_sign, 'utf-8'),
             digestmod=hashlib.sha256
         ).hexdigest()
-        
-        logger.info(f"[CRYPTO_AUTH_DIAG] signature={signature}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] payload={json.dumps({k: v if k != 'sig' else signature[:10] + '...' + signature[-10:] for k, v in payload.items()}, indent=2)}")
-        logger.info(f"[CRYPTO_AUTH_DIAG] ====================")
+        if getattr(self, "crypto_auth_diag", False):
+            logger.info("[CRYPTO_AUTH_DIAG] signature_preview=%s...%s", signature[:10], signature[-10:])
+            safe_payload = dict(payload)
+            safe_payload["api_key"] = _preview_secret(self.api_key)
+            safe_payload["sig"] = f"{signature[:10]}...{signature[-10:]}"
+            logger.info("[CRYPTO_AUTH_DIAG] payload=%s", json.dumps(safe_payload, indent=2))
+            logger.info("[CRYPTO_AUTH_DIAG] ============================")
         
         payload["sig"] = signature
         
@@ -551,26 +639,11 @@ class CryptoComTradeClient:
     
     def get_open_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get all open/pending orders"""
-        if not self.live_trading:
-            logger.info("DRY_RUN: get_open_orders - returning simulated data")
-            return {
-                "data": [
-                    {
-                        "order_id": "dry_123456",
-                        "client_oid": "dry_123456",
-                        "status": "ACTIVE",
-                        "side": "BUY",
-                        "order_type": "LIMIT",
-                        "instrument_name": "BTC_USDT",
-                        "quantity": "0.001",
-                        "limit_price": "50000.00",
-                        "order_value": "50.00",
-                        "create_time": int(time.time() * 1000),
-                        "update_time": int(time.time() * 1000)
-                    }
-                ]
-            }
-        
+        # NOTE: Reading open orders must NOT depend on LIVE_TRADING. We still need real-time
+        # exchange state even when order placement is disabled. Keep LIVE_TRADING gating only
+        # for write operations (place/cancel).
+        self._refresh_runtime_flags()
+
         method = "private/get-open-orders"
         params = {
             "page": page,
@@ -627,10 +700,10 @@ class CryptoComTradeClient:
         
         # Check if API credentials are configured
         if not self.api_key or not self.api_secret:
-            logger.warning("API credentials not configured. Returning simulated data.")
-            return {
-                "orders": []
-            }
+            logger.warning("API credentials not configured. Cannot fetch open orders.")
+            # IMPORTANT: return without 'data' so callers treat this as API failure
+            # and preserve existing cache/state (avoid marking everything CANCELLED).
+            return {"error": "API credentials not configured"}
         
         payload = self.sign_request(method, params)
         
@@ -648,7 +721,7 @@ class CryptoComTradeClient:
                 error_msg = error_data.get("message", "")
                 
                 logger.error(f"Authentication failed: {error_code} - {error_msg}")
-                return {"orders": []}
+                return {"error": f"Authentication failed: {error_code} - {error_msg}"}
             
             response.raise_for_status()
             result = response.json()
@@ -662,16 +735,15 @@ class CryptoComTradeClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Network error getting open orders: {e}")
-            return {"orders": []}
+            return {"error": str(e)}
         except Exception as e:
             logger.error(f"Error getting open orders: {e}")
-            return {"orders": []}
+            return {"error": str(e)}
 
     def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get trigger-based (TP/SL) open orders."""
-        if not self.live_trading:
-            logger.info("DRY_RUN: get_trigger_orders - returning simulated data")
-            return {"data": []}
+        # NOTE: Reading trigger orders must NOT depend on LIVE_TRADING.
+        self._refresh_runtime_flags()
 
         method = "private/get-trigger-orders"
         params = {
@@ -872,28 +944,8 @@ class CryptoComTradeClient:
         # - page: page number (optional)
         # Without params, it only returns 1 order. We need to use date filters to get all orders.
         
-        if not self.live_trading:
-            logger.info("DRY_RUN: get_order_history - returning simulated data")
-            return {
-                "data": [
-                    {
-                        "order_id": "dry_789012",
-                        "client_oid": "dry_789012",
-                        "status": "FILLED",
-                        "side": "BUY",
-                        "order_type": "MARKET",
-                        "instrument_name": "BTC_USDT",
-                        "quantity": "0.001",
-                        "limit_price": "50000.00",
-                        "price": "50000.00",
-                        "avg_price": "50000.00",
-                        "order_value": "50.00",
-                        "exec_inst": [],
-                        "create_time": int(time.time() * 1000) - 3600000,
-                        "update_time": int(time.time() * 1000) - 3500000
-                    }
-                ]
-            }
+        # NOTE: Reading order history must NOT depend on LIVE_TRADING.
+        self._refresh_runtime_flags()
         
         # Use proxy if enabled
         if self.use_proxy:
@@ -918,9 +970,10 @@ class CryptoComTradeClient:
             return {"data": []}
         
         # Check if API credentials are configured
+        # NOTE: Do NOT return simulated data here; it hides operational issues and can mask missing SL/TP.
         if not self.api_key or not self.api_secret:
-            logger.warning("API credentials not configured. Returning simulated data.")
-            return {"data": []}
+            logger.error("API credentials not configured. Cannot get order history from Crypto.com.")
+            raise RuntimeError("Crypto.com API credentials not configured (EXCHANGE_CUSTOM_API_KEY/SECRET).")
         
         # Use private/get-order-history endpoint (not advanced - for regular orders)
         # IMPORTANT: Without params, it only returns 1 order. We need date filters to get all orders.
@@ -965,6 +1018,22 @@ class CryptoComTradeClient:
                 error_msg = error_data.get("message", "")
                 
                 logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                
+                # Try fallback if enabled
+                if _should_failover(401, None):
+                    logger.info("Attempting fallback to TRADE_BOT for order history")
+                    try:
+                        fallback_response = self._fallback_history()
+                        if fallback_response.status_code == 200:
+                            fallback_data = fallback_response.json()
+                            logger.info("Successfully retrieved order history from TRADE_BOT fallback")
+                            # TRADE_BOT returns {"orders": [...]} format
+                            if "orders" in fallback_data:
+                                return {"data": fallback_data["orders"]}
+                            return {"data": fallback_data.get("data", [])}
+                    except Exception as fallback_err:
+                        logger.warning(f"Fallback to TRADE_BOT failed: {fallback_err}")
+                
                 return {"data": []}
             
             response.raise_for_status()
@@ -1037,6 +1106,7 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
+        self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
         # Validate parameters based on side
@@ -1374,6 +1444,57 @@ class CryptoComTradeClient:
                     error_code = error_data.get("code", 0)
                     error_msg = error_data.get("message", "")
                     logger.error(f"Authentication failed: {error_code} - {error_msg}")
+
+                    # If env default says "use proxy", but this call ended up direct (likely due to a
+                    # per-request override), try proxy once before failing over to TRADE_BOT.
+                    try:
+                        if getattr(self, "_use_proxy_default", False) and not self.use_proxy:
+                            logger.warning(
+                                "Direct auth failed but USE_CRYPTO_PROXY default is enabled. "
+                                "Attempting proxy fallback for MARKET order..."
+                            )
+                            proxy_result = self._call_proxy(method, params)
+                            if isinstance(proxy_result, dict) and "result" in proxy_result:
+                                logger.info("Successfully placed MARKET order via PROXY fallback")
+                                return proxy_result["result"]
+                    except Exception as proxy_fallback_err:
+                        logger.warning(f"Proxy fallback exception for MARKET order: {proxy_fallback_err}")
+
+                    # Attempt failover to TRADE_BOT for MARKET orders (parity with LIMIT create-order)
+                    # This is especially useful for AWS IP whitelist issues (40103) or signature/key issues (40101).
+                    if error_code in [40101, 40103]:
+                        if _should_failover(401):
+                            try:
+                                order_data = {
+                                    "symbol": symbol,
+                                    "side": side_upper,
+                                    "type": "MARKET",
+                                }
+                                if side_upper == "BUY":
+                                    order_data["notional"] = notional
+                                else:
+                                    order_data["qty"] = qty
+                                if is_margin:
+                                    order_data["is_margin"] = True
+                                    order_data["leverage"] = int(leverage) if leverage else 10
+                                fr = self._fallback_place_order(order_data)
+                                if fr and fr.status_code == 200:
+                                    data = fr.json()
+                                    logger.info("Successfully placed MARKET order via TRADE_BOT failover")
+                                    return data.get("result", data)
+                                else:
+                                    logger.warning(
+                                        f"TRADE_BOT failover failed for MARKET order: "
+                                        f"status={getattr(fr, 'status_code', None)}"
+                                    )
+                            except Exception as failover_err:
+                                logger.warning(f"TRADE_BOT failover exception for MARKET order: {failover_err}")
+                        else:
+                            logger.warning(
+                                f"Failover not enabled or TRADEBOT_BASE not configured. "
+                                f"FAILOVER_ENABLED={FAILOVER_ENABLED}, TRADEBOT_BASE={TRADEBOT_BASE}"
+                            )
+
                     return {"error": f"Authentication failed: {error_msg}"}
                 
                 # Log the response from Crypto.com (before processing)
@@ -1528,6 +1649,7 @@ class CryptoComTradeClient:
         dry_run: bool = True
     ) -> dict:
         """Place limit order"""
+        self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
         if actual_dry_run:
@@ -1819,6 +1941,7 @@ class CryptoComTradeClient:
     
     def cancel_order(self, order_id: str) -> dict:
         """Cancel order by order_id"""
+        self._refresh_runtime_flags()
         if not self.live_trading:
             logger.info(f"DRY_RUN: cancel_order - {order_id}")
             return {"order_id": order_id, "status": "CANCELLED"}
@@ -1903,6 +2026,7 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place stop loss order (STOP_LIMIT)"""
+        self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
         if actual_dry_run:
@@ -1975,19 +2099,19 @@ class CryptoComTradeClient:
             logger.info(f"✅ Formatted price for STOP_LIMIT {symbol} with precision {price_decimals}: {price} -> {price_str}")
         else:
             # Fallback: Use default precision based on price range
+            # For low-price coins like ALGO_USDT, 4 decimals (0.0001 tick) is most common
             if price >= 100:
                 price_str = f"{price:.2f}" if price % 1 == 0 else f"{price:.4f}".rstrip('0').rstrip('.')
             elif price >= 1:
                 price_str = f"{price:.4f}".rstrip('0').rstrip('.')
             else:
-                # For prices < 1, use more decimals but ensure at least 6 decimals for low-price coins
-                price_str = f"{price:.6f}".rstrip('0').rstrip('.')
-                # If still less than 6 decimals after stripping, pad to 6
-                if '.' in price_str:
-                    decimal_part = price_str.split('.')[1]
-                    if len(decimal_part) < 6:
-                        price_str = f"{price:.6f}"
-            logger.debug(f"Formatted price for STOP_LIMIT {symbol} with default precision: {price} -> {price_str}")
+                # For prices < 1, try 4 decimals first (most common for coins like ALGO_USDT)
+                # Use tick size 0.0001 for proper rounding
+                tick_decimal = decimal.Decimal('0.0001')
+                price_decimal = decimal.Decimal(str(price))
+                price_decimal = (price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+                price_str = f"{price_decimal:.4f}"
+                logger.debug(f"Formatted price for STOP_LIMIT {symbol} with default precision (4 decimals, 0.0001 tick): {price} -> {price_str}")
         
         # Format quantity according to Crypto.com API requirements for STOP_LIMIT
         # Different instruments have different quantity_decimals (e.g., APT_USDT=2, DOGE_USDT=8)
@@ -2057,18 +2181,18 @@ class CryptoComTradeClient:
             logger.info(f"✅ Formatted trigger_price for STOP_LIMIT {symbol} with precision {price_decimals}: {trigger_price} -> {trigger_str}")
         else:
             # Fallback: Use default precision
+            # For low-price coins like ALGO_USDT, 4 decimals (0.0001 tick) is most common
             if trigger_price >= 100:
                 trigger_str = f"{trigger_price:.2f}" if trigger_price % 1 == 0 else f"{trigger_price:.4f}".rstrip('0').rstrip('.')
             elif trigger_price >= 1:
                 trigger_str = f"{trigger_price:.4f}".rstrip('0').rstrip('.')
             else:
-                # For prices < 1, use more decimals
-                trigger_str = f"{trigger_price:.6f}".rstrip('0').rstrip('.')
-                if '.' in trigger_str:
-                    decimal_part = trigger_str.split('.')[1]
-                    if len(decimal_part) < 6:
-                        trigger_str = f"{trigger_price:.6f}"
-            logger.debug(f"Formatted trigger_price for STOP_LIMIT {symbol} with default precision: {trigger_price} -> {trigger_str}")
+                # For prices < 1, use 4 decimals with 0.0001 tick size (most common)
+                tick_decimal = decimal.Decimal('0.0001')
+                trigger_decimal = decimal.Decimal(str(trigger_price))
+                trigger_decimal = (trigger_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+                trigger_str = f"{trigger_decimal:.4f}"
+                logger.debug(f"Formatted trigger_price for STOP_LIMIT {symbol} with default precision (4 decimals, 0.0001 tick): {trigger_price} -> {trigger_str}")
         
         # For STOP_LIMIT orders, ref_price should be the LAST BUY PRICE (entry price) from order history
         # However, Crypto.com uses ref_price for the Trigger Condition display
@@ -2122,13 +2246,17 @@ class CryptoComTradeClient:
                 ref_price_str = f"{ref_decimal:.{price_decimals}f}"
             logger.info(f"✅ Formatted ref_price for STOP_LIMIT {symbol} with precision {price_decimals}: {ref_price} -> {ref_price_str} (should match trigger_str: {trigger_str})")
         else:
-            # Fallback: Use same format as trigger_price
+            # Fallback: Use same format as trigger_price (4 decimals with 0.0001 tick for prices < $1)
             if ref_price >= 100:
                 ref_price_str = f"{ref_price:.2f}" if ref_price % 1 == 0 else f"{ref_price:.4f}".rstrip('0').rstrip('.')
             elif ref_price >= 1:
                 ref_price_str = f"{ref_price:.4f}".rstrip('0').rstrip('.')
             else:
-                ref_price_str = f"{ref_price:.8f}".rstrip('0').rstrip('.')
+                # For prices < $1, use 4 decimals with 0.0001 tick size to match trigger_price
+                tick_decimal = decimal.Decimal('0.0001')
+                ref_decimal = decimal.Decimal(str(ref_price))
+                ref_decimal = (ref_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+                ref_price_str = f"{ref_decimal:.4f}"
             logger.info(f"✅ Formatted ref_price for STOP_LIMIT {symbol} with default precision: {ref_price} -> {ref_price_str} (should match trigger_str: {trigger_str})")
         
         # CRITICAL: Ensure ref_price_str equals trigger_str exactly (both represent SL price)
@@ -2254,8 +2382,6 @@ class CryptoComTradeClient:
             logger.info(f"🔄 Trying STOP_LIMIT params variation {variation_idx}: {variation_name}")
             
             try:
-                payload = self.sign_request(method, params)
-                
                 # Generate unique request ID for tracking
                 import uuid as uuid_module
                 request_id = str(uuid_module.uuid4())
@@ -2263,6 +2389,76 @@ class CryptoComTradeClient:
                 logger.info(f"Live: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
                 logger.info(f"Params sent: {params}")  # Log params at INFO level for debugging
                 logger.info(f"Price string: '{price_str}', Quantity string: '{qty_str}', Trigger string: '{trigger_str}'")
+                
+                # Use proxy if enabled (same as successful orders)
+                if self.use_proxy:
+                    logger.info(f"[SL_ORDER][{source.upper()}][{request_id}] Using PROXY to place stop loss order")
+                    try:
+                        result = self._call_proxy(method, params)
+                        if not isinstance(result, dict):
+                            logger.warning(f"Unexpected proxy response type: {type(result)}")
+                            last_error = "Unexpected proxy response type"
+                            continue
+
+                        # Proxy returns Crypto.com body: {"code": <int>, "result": {...}} on success
+                        code = result.get("code", 0)
+                        if code != 0:
+                            msg = result.get("message", "Unknown error")
+                            last_error = f"Error {code}: {msg}"
+                            # If proxy returns an auth/IP error, try the existing TRADE_BOT failover path.
+                            # This reuses the same failover system already used elsewhere (e.g. market orders).
+                            if code in [40101, 40103]:
+                                logger.warning(
+                                    f"⚠️ Proxy SL order auth failure (code={code}). Attempting failover to TRADE_BOT."
+                                )
+                                if _should_failover(401):
+                                    order_data = {
+                                        "symbol": symbol,
+                                        "side": side.upper(),
+                                        "type": "STOP_LIMIT",
+                                        "qty": qty,
+                                        "price": price,
+                                        "trigger_price": trigger_price,
+                                    }
+                                    if entry_price:
+                                        order_data["entry_price"] = entry_price
+                                    if is_margin and leverage:
+                                        order_data["is_margin"] = True
+                                        order_data["leverage"] = int(leverage)
+                                    try:
+                                        fr = self._fallback_place_order(order_data)
+                                        if fr.status_code == 200:
+                                            data = fr.json()
+                                            result_data = data.get("result", data)
+                                            order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                            if order_id:
+                                                logger.info(
+                                                    f"✅ Successfully created SL order via TRADE_BOT fallback: order_id={order_id}"
+                                                )
+                                                return {"order_id": str(order_id), "error": None}
+                                    except Exception as fallback_err:
+                                        logger.error(f"TRADE_BOT fallback failed for SL order: {fallback_err}", exc_info=True)
+                            logger.warning(f"⚠️ Proxy SL order failed: {last_error}")
+                            continue
+
+                        order_result = result.get("result") or {}
+                        order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                        if order_id:
+                            logger.info(f"✅ Successfully created SL order via PROXY: order_id={order_id}")
+                            return {"order_id": str(order_id), "error": None}
+
+                        logger.warning(f"Proxy SL order success but missing order_id: {result}")
+                        last_error = "Proxy success missing order_id"
+                        continue
+                    except requests.exceptions.RequestException as proxy_err:
+                        logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                        # Fall through to direct API call below
+                    except Exception as proxy_err:
+                        logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                        # Fall through to direct API call below
+                
+                # Direct API call (when proxy is disabled or proxy failed)
+                payload = self.sign_request(method, params)
                 logger.debug(f"Payload: {payload}")
                 
                 url = f"{self.base_url}/{method}"
@@ -2297,6 +2493,47 @@ class CryptoComTradeClient:
                     error_code = error_data.get("code", 0)
                     error_msg = error_data.get("message", "")
                     logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                    
+                    # Try fallback to TRADE_BOT (same as successful orders)
+                    if error_code in [40101, 40103]:  # Authentication failure or IP illegal
+                        logger.warning("Authentication failure for stop loss order - attempting failover to TRADE_BOT")
+                        if _should_failover(401):
+                            # Build order data for TRADE_BOT fallback
+                            order_data = {
+                                "symbol": symbol,
+                                "side": side.upper(),
+                                "type": "STOP_LIMIT",
+                                "qty": qty,
+                                "price": price,
+                                "trigger_price": trigger_price
+                            }
+                            if entry_price:
+                                order_data["entry_price"] = entry_price
+                            if is_margin and leverage:
+                                order_data["is_margin"] = True
+                                order_data["leverage"] = int(leverage)
+                            
+                            try:
+                                logger.info(f"Calling TRADE_BOT fallback for SL order: {order_data}")
+                                fr = self._fallback_place_order(order_data)
+                                logger.info(f"TRADE_BOT fallback response status: {fr.status_code}")
+                                if fr.status_code == 200:
+                                    data = fr.json()
+                                    logger.info(f"TRADE_BOT fallback response: {data}")
+                                    result_data = data.get("result", data)
+                                    order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                    if order_id:
+                                        logger.info(f"✅ Successfully created SL order via TRADE_BOT fallback: order_id={order_id}")
+                                        return {"order_id": str(order_id), "error": None}
+                                    else:
+                                        logger.warning(f"TRADE_BOT fallback succeeded but no order_id in response: {result_data}")
+                                else:
+                                    logger.warning(f"TRADE_BOT fallback failed with status {fr.status_code}: {fr.text[:200]}")
+                            except Exception as fallback_err:
+                                logger.error(f"TRADE_BOT fallback failed: {fallback_err}", exc_info=True)
+                        else:
+                            logger.warning(f"Failover not enabled or TRADEBOT_BASE not configured. FAILOVER_ENABLED={FAILOVER_ENABLED}, TRADEBOT_BASE={TRADEBOT_BASE}")
+                    
                     return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
             
                 # Check for error responses (400, etc.) before raise_for_status
@@ -2411,23 +2648,62 @@ class CryptoComTradeClient:
                             logger.warning(f"⚠️ Variation {variation_idx} failed with error 308 (Invalid price format). Trying different price precision...")
                             last_error = f"Error {error_code}: {error_msg}"
                             
-                            # Try different price precision levels automatically
-                            # Include more precision options, especially for low-price coins like ALGO
-                            price_precision_levels = [
-                                (5, 0.00001),   # 5 decimals (common for coins like ALGO around $0.17-0.21)
-                                (4, 0.0001),    # 4 decimals
+                            # Try to fetch instrument info again if we didn't get it initially
+                            # This helps us use the correct tick size for the symbol
+                            retry_price_decimals = None
+                            retry_price_tick_size = None
+                            if not got_instrument_info:
+                                try:
+                                    import requests as req
+                                    inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
+                                    inst_response = req.get(inst_url, timeout=3)
+                                    if inst_response.status_code == 200:
+                                        inst_data = inst_response.json()
+                                        if "result" in inst_data and "instruments" in inst_data["result"]:
+                                            for inst in inst_data["result"]["instruments"]:
+                                                inst_name = inst.get("instrument_name", "") or inst.get("symbol", "")
+                                                if inst_name.upper() == symbol.upper():
+                                                    retry_price_decimals = inst.get("price_decimals")
+                                                    price_tick_size_str = inst.get("price_tick_size", "0.01")
+                                                    try:
+                                                        retry_price_tick_size = float(price_tick_size_str) if price_tick_size_str else None
+                                                    except:
+                                                        retry_price_tick_size = None
+                                                    logger.info(f"✅ Retry: Got instrument info for {symbol}: price_decimals={retry_price_decimals}, price_tick_size={retry_price_tick_size}")
+                                                    break
+                                except Exception as retry_inst_err:
+                                    logger.debug(f"Could not fetch instrument info on retry for {symbol}: {retry_inst_err}")
+                            
+                            # Build price precision levels - prioritize common tick sizes
+                            # For low-price coins like ALGO_USDT, 4 decimals (0.0001) is most common
+                            price_precision_levels = []
+                            
+                            # If we have instrument info, use it first
+                            if retry_price_decimals is not None and retry_price_tick_size is not None:
+                                price_precision_levels.append((retry_price_decimals, retry_price_tick_size))
+                                logger.info(f"🔄 Will try instrument-specific precision first: {retry_price_decimals} decimals, tick_size={retry_price_tick_size}")
+                            
+                            # Add common precision levels, prioritizing 4 decimals for low-price coins
+                            common_levels = [
+                                (4, 0.0001),    # 4 decimals - most common for coins like ALGO_USDT
+                                (5, 0.00001),   # 5 decimals
                                 (6, 0.000001),  # 6 decimals
                                 (3, 0.001),     # 3 decimals
                                 (2, 0.01),      # 2 decimals
                                 (1, 0.1),       # 1 decimal
                             ]
                             
+                            # Add common levels, avoiding duplicates
+                            for prec_decimals, prec_tick in common_levels:
+                                if (prec_decimals, prec_tick) not in price_precision_levels:
+                                    price_precision_levels.append((prec_decimals, prec_tick))
+                            
                             # Try different price precisions
                             price_precision_success = False
                             for prec_decimals, prec_tick in price_precision_levels:
                                 logger.info(f"🔄 Trying variation {variation_idx} with price precision {prec_decimals} decimals (tick_size={prec_tick})...")
                                 
-                                # Re-format price with new precision
+                                # Re-format price with new precision using proper tick size rounding
                                 price_decimal_new = decimal.Decimal(str(price))
                                 tick_decimal_new = decimal.Decimal(str(prec_tick))
                                 price_decimal_new = (price_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal_new
@@ -2508,6 +2784,40 @@ class CryptoComTradeClient:
                 # Success!
                 response.raise_for_status()
                 result = response.json()
+
+                # Crypto.com may return HTTP 200 with auth failure in the JSON body.
+                if isinstance(result, dict) and result.get("code") in [40101, 40103]:
+                    error_code = result.get("code", 0)
+                    error_msg = result.get("message", "Authentication failure")
+                    logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                    if _should_failover(401):
+                        order_data = {
+                            "symbol": symbol,
+                            "side": side.upper(),
+                            "type": "STOP_LIMIT",
+                            "qty": qty,
+                            "price": price,
+                            "trigger_price": trigger_price,
+                        }
+                        if entry_price:
+                            order_data["entry_price"] = entry_price
+                        if is_margin and leverage:
+                            order_data["is_margin"] = True
+                            order_data["leverage"] = int(leverage)
+                        try:
+                            fr = self._fallback_place_order(order_data)
+                            if fr.status_code == 200:
+                                data = fr.json()
+                                result_data = data.get("result", data)
+                                order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                if order_id:
+                                    logger.info(
+                                        f"✅ Successfully created SL order via TRADE_BOT fallback: order_id={order_id}"
+                                    )
+                                    return {"order_id": str(order_id), "error": None}
+                        except Exception as fallback_err:
+                            logger.error(f"TRADE_BOT fallback failed for SL order: {fallback_err}", exc_info=True)
+                    return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
                 
                 logger.info(f"✅ Successfully placed stop loss order with variation {variation_idx}: {variation_name}")
                 logger.debug(f"Response: {result}")
@@ -2542,6 +2852,7 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
+        self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
         if actual_dry_run:
@@ -2977,14 +3288,14 @@ class CryptoComTradeClient:
                 
                 # Variation set: WITH side field (required)
                 params_with_side = params_base.copy()
+                # CRITICAL: Always include client_oid to avoid DUPLICATE_CLORDID errors
+                # Crypto.com uses id: 1 as client_oid when client_oid is missing, causing duplicates
                 params_variations_list.extend([
-                    # Variation 1: Minimal params with side
-                    params_with_side.copy(),
-                    # Variation 2: With client_oid only
+                    # Variation 1: Minimal params with side AND client_oid (required to avoid DUPLICATE_CLORDID)
                     {**params_with_side, "client_oid": str(uuid.uuid4())},
-                    # Variation 3: With time_in_force only
-                    {**params_with_side, "time_in_force": "GOOD_TILL_CANCEL"},
-                    # Variation 4: All params with client_oid and time_in_force
+                    # Variation 2: With client_oid and time_in_force
+                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
+                    # Variation 3: With time_in_force only (fallback, but should include client_oid)
                     {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
                 ])
             
@@ -3010,6 +3321,75 @@ class CryptoComTradeClient:
                     logger.info(f"   📦 FULL PAYLOAD: {params}")
                     logger.debug(f"   Full params: {params}")
                     
+                    # Use proxy if enabled (same as successful orders)
+                    if self.use_proxy:
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Using PROXY to place take profit order")
+                        try:
+                            result = self._call_proxy(method, params)
+                            if not isinstance(result, dict):
+                                logger.warning(f"Unexpected proxy response type: {type(result)}")
+                                last_error = "Unexpected proxy response type"
+                                continue
+
+                            code = result.get("code", 0)
+                            if code != 0:
+                                msg = result.get("message", "Unknown error")
+                                last_error = f"Error {code}: {msg}"
+                                # If proxy returns an auth/IP error, try the existing TRADE_BOT failover path.
+                                if code in [40101, 40103]:
+                                    logger.warning(
+                                        f"⚠️ Proxy TP order auth failure (code={code}). Attempting failover to TRADE_BOT."
+                                    )
+                                    if _should_failover(401):
+                                        order_data = {
+                                            "symbol": symbol,
+                                            "side": side_fmt.upper(),
+                                            "type": "TAKE_PROFIT_LIMIT",
+                                            "qty": qty,
+                                            "price": price,
+                                            "trigger_price": trigger_price if trigger_price else price,
+                                        }
+                                        if entry_price:
+                                            order_data["entry_price"] = entry_price
+                                        if is_margin and leverage:
+                                            order_data["is_margin"] = True
+                                            order_data["leverage"] = int(leverage)
+                                        try:
+                                            fr = self._fallback_place_order(order_data)
+                                            if fr.status_code == 200:
+                                                data = fr.json()
+                                                result_data = data.get("result", data)
+                                                order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                                if order_id:
+                                                    logger.info(
+                                                        f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}"
+                                                    )
+                                                    return {"order_id": str(order_id), "error": None}
+                                        except Exception as fallback_err:
+                                            logger.error(
+                                                f"TRADE_BOT fallback failed for TP order: {fallback_err}",
+                                                exc_info=True,
+                                            )
+                                logger.warning(f"⚠️ Proxy TP order failed: {last_error}")
+                                continue
+
+                            order_result = result.get("result") or {}
+                            order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                            if order_id:
+                                logger.info(f"✅ Successfully created TP order via PROXY: order_id={order_id}")
+                                return {"order_id": str(order_id), "error": None}
+
+                            logger.warning(f"Proxy TP order success but missing order_id: {result}")
+                            last_error = "Proxy success missing order_id"
+                            continue
+                        except requests.exceptions.RequestException as proxy_err:
+                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                            # Fall through to direct API call below
+                        except Exception as proxy_err:
+                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                            # Fall through to direct API call below
+                    
+                    # Direct API call (when proxy is disabled or proxy failed)
                     # DEBUG: Log before sign_request
                     logger.info(f"[DEBUG][{source.upper()}][{request_id}] About to call sign_request for variation {variation_name_full}")
                     
@@ -3047,6 +3427,47 @@ class CryptoComTradeClient:
                             error_code = error_data.get("code", 0)
                             error_msg = error_data.get("message", "")
                             logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                            
+                            # Try fallback to TRADE_BOT (same as successful orders)
+                            if error_code in [40101, 40103]:  # Authentication failure or IP illegal
+                                logger.warning("Authentication failure for take profit order - attempting failover to TRADE_BOT")
+                                if _should_failover(401):
+                                    # Build order data for TRADE_BOT fallback
+                                    order_data = {
+                                        "symbol": symbol,
+                                        "side": side_fmt.upper(),
+                                        "type": "TAKE_PROFIT_LIMIT",
+                                        "qty": qty,
+                                        "price": price,
+                                        "trigger_price": trigger_price if trigger_price else price
+                                    }
+                                    if entry_price:
+                                        order_data["entry_price"] = entry_price
+                                    if is_margin and leverage:
+                                        order_data["is_margin"] = True
+                                        order_data["leverage"] = int(leverage)
+                                    
+                                    try:
+                                        logger.info(f"Calling TRADE_BOT fallback for TP order: {order_data}")
+                                        fr = self._fallback_place_order(order_data)
+                                        logger.info(f"TRADE_BOT fallback response status: {fr.status_code}")
+                                        if fr.status_code == 200:
+                                            data = fr.json()
+                                            logger.info(f"TRADE_BOT fallback response: {data}")
+                                            result_data = data.get("result", data)
+                                            order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                            if order_id:
+                                                logger.info(f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}")
+                                                return {"order_id": str(order_id), "error": None}
+                                            else:
+                                                logger.warning(f"TRADE_BOT fallback succeeded but no order_id in response: {result_data}")
+                                        else:
+                                            logger.warning(f"TRADE_BOT fallback failed with status {fr.status_code}: {fr.text[:200]}")
+                                    except Exception as fallback_err:
+                                        logger.error(f"TRADE_BOT fallback failed: {fallback_err}", exc_info=True)
+                                else:
+                                    logger.warning(f"Failover not enabled or TRADEBOT_BASE not configured. FAILOVER_ENABLED={FAILOVER_ENABLED}, TRADEBOT_BASE={TRADEBOT_BASE}")
+                            
                             return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
                         
                         # Check for error responses (400, etc.) before raise_for_status
@@ -3098,6 +3519,43 @@ class CryptoComTradeClient:
                         # Success!
                         response.raise_for_status()
                         result = response.json()
+
+                        # Crypto.com may return HTTP 200 with auth failure in the JSON body.
+                        if isinstance(result, dict) and result.get("code") in [40101, 40103]:
+                            error_code = result.get("code", 0)
+                            error_msg = result.get("message", "Authentication failure")
+                            logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                            if _should_failover(401):
+                                order_data = {
+                                    "symbol": symbol,
+                                    "side": side_fmt.upper(),
+                                    "type": "TAKE_PROFIT_LIMIT",
+                                    "qty": qty,
+                                    "price": price,
+                                    "trigger_price": trigger_price if trigger_price else price,
+                                }
+                                if entry_price:
+                                    order_data["entry_price"] = entry_price
+                                if is_margin and leverage:
+                                    order_data["is_margin"] = True
+                                    order_data["leverage"] = int(leverage)
+                                try:
+                                    fr = self._fallback_place_order(order_data)
+                                    if fr.status_code == 200:
+                                        data = fr.json()
+                                        result_data = data.get("result", data)
+                                        order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                        if order_id:
+                                            logger.info(
+                                                f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}"
+                                            )
+                                            return {"order_id": str(order_id), "error": None}
+                                except Exception as fallback_err:
+                                    logger.error(
+                                        f"TRADE_BOT fallback failed for TP order: {fallback_err}",
+                                        exc_info=True,
+                                    )
+                            return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
                         
                         order_result = result.get("result", {})
                         order_id = order_result.get("order_id") or order_result.get("id")

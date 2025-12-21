@@ -89,3 +89,7 @@ echo "✅ Deploy complete!"
 DEPLOY_SCRIPT
 
 echo "🎉 TP/SL price display fixes deployed successfully!"
+
+
+
+

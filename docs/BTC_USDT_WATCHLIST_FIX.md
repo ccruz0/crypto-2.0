@@ -99,3 +99,8 @@ O simplemente revisa la interfaz web - BTC_USDT debería aparecer en la pestaña
 - La restauración solo funciona si la base de datos soporta soft delete (columna `is_deleted`)
 
 
+
+
+
+
+

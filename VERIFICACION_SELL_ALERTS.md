@@ -50,3 +50,8 @@ db.close()
 - `sell_alert_enabled` controla si se envían alertas SELL cuando se detecta una señal SELL
 - `alert_enabled` es el switch maestro (debe ser True)
 - `buy_alert_enabled` controla alertas BUY (independiente de sell_alert_enabled)
+
+
+
+
+

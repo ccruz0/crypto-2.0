@@ -52,3 +52,8 @@ Si el build anterior aún está en progreso, esperar a que termine y luego hacer
 - ✅ `routes_dashboard.py`: Compila sin errores
 - ✅ `signal_monitor.py`: Compila sin errores
 - ✅ Linter: Sin errores
+
+
+
+
+

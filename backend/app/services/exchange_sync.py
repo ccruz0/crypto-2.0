@@ -1111,8 +1111,54 @@ class ExchangeSyncService:
         
         # Send Telegram notification when SL/TP orders are created (ALWAYS, even if orders failed)
         # Always send Telegram notifications (even if alert_enabled is false for that coin)
+        # CRITICAL: Check if notification was already sent for this order to avoid duplicates
+        # This prevents duplicate notifications when _create_sl_tp_for_filled_order is called multiple times
         try:
             from app.services.telegram_notifier import telegram_notifier
+            
+            # Check if we already sent a notification for this order (within last 5 minutes)
+            # This prevents duplicate notifications when the function is called multiple times
+            notification_sent_key = f"sl_tp_notification_sent_{order_id}"
+            if hasattr(self, '_sl_tp_notification_sent'):
+                if notification_sent_key in self._sl_tp_notification_sent:
+                    notification_timestamp = self._sl_tp_notification_sent[notification_sent_key]
+                    time_since_notification = time.time() - notification_timestamp
+                    if time_since_notification < 300:  # 5 minutes
+                        logger.info(
+                            f"📢 Notification already sent for order {order_id} ({symbol}) "
+                            f"{time_since_notification:.1f}s ago. Skipping duplicate notification."
+                        )
+                        # Best-effort cleanup of in-memory lock
+                        if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                            del self._sl_tp_creation_locks[lock_key]
+                        return
+            else:
+                self._sl_tp_notification_sent = {}
+            
+            # Also check if SL/TP orders already exist in database (double-check before sending notification)
+            # This catches cases where orders were created but notification wasn't tracked
+            db.expire_all()  # Force refresh to see latest orders
+            existing_sl_check = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == order_id,
+                ExchangeOrder.order_role == "STOP_LOSS",
+                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+            ).first()
+            existing_tp_check = db.query(ExchangeOrder).filter(
+                ExchangeOrder.parent_order_id == order_id,
+                ExchangeOrder.order_role == "TAKE_PROFIT",
+                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+            ).first()
+            
+            # If both SL and TP already exist and we're not creating new ones, skip notification
+            if existing_sl_check and existing_tp_check and not sl_order_id and not tp_order_id:
+                logger.info(
+                    f"📢 SL/TP orders already exist for order {order_id} ({symbol}) and no new orders created. "
+                    f"Skipping duplicate notification."
+                )
+                # Best-effort cleanup of in-memory lock
+                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                    del self._sl_tp_creation_locks[lock_key]
+                return
             
             # If orders failed, send error notification with detailed error messages
             if not sl_order_id and not tp_order_id and live_trading:
@@ -1178,6 +1224,8 @@ class ExchangeSyncService:
                 )
                 if result:
                     logger.info(f"✅ Sent Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
+                    # Mark notification as sent to prevent duplicates
+                    self._sl_tp_notification_sent[notification_sent_key] = time.time()
                 else:
                     logger.error(f"❌ Failed to send Telegram notification for SL/TP orders: {symbol} - SL: {sl_order_id}, TP: {tp_order_id}")
         except Exception as telegram_err:
@@ -2006,9 +2054,13 @@ class ExchangeSyncService:
                         # This ensures SL/TP are created even if the order was already FILLED in the database
                         # The _create_sl_tp_for_filled_order function already checks for duplicates, so it's safe to call multiple times
                         if is_main_order and is_executed:
-                            # Check if order was filled within the last hour
-                            # This prevents creating SL/TP for old orders where prices may have changed significantly
+                            # Check if order was created by this system (has trade_signal_id or was created recently by this system)
+                            # Only create SL/TP for orders that:
+                            # 1. Were created by this system (have trade_signal_id), OR
+                            # 2. Are very recent (filled within last hour) - allowing for manual orders that need protection
                             from datetime import timedelta
+                            was_created_by_system = existing.trade_signal_id is not None if existing else False
+                            
                             # Use update_time or create_time from API (now timezone-aware UTC), or fallback to database time
                             order_filled_time = update_time or create_time
                             if not order_filled_time:
@@ -2019,11 +2071,17 @@ class ExchangeSyncService:
                             # Using datetime.now() as fallback would make old orders appear freshly filled,
                             # bypassing the 1-hour check and always creating SL/TP
                             if not order_filled_time:
-                                logger.warning(
-                                    f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
-                                    f"No timestamp available (update_time, create_time, exchange_update_time, exchange_create_time all None). "
-                                    f"Cannot verify if order was filled within 1 hour. Skipping to prevent creating SL/TP for old orders."
-                                )
+                                if not was_created_by_system:
+                                    logger.info(
+                                        f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
+                                        f"Order was not created by this system (no trade_signal_id) and no timestamp available. "
+                                        f"Likely an old/synced order that doesn't need automatic SL/TP creation."
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
+                                        f"No timestamp available. Cannot verify if order was filled within 1 hour."
+                                    )
                             else:
                                 # Ensure timezone is UTC (should already be UTC from fromtimestamp fix, but handle database times)
                                 if order_filled_time.tzinfo is None:
@@ -2036,7 +2094,16 @@ class ExchangeSyncService:
                                 now_utc = datetime.now(timezone.utc)
                                 time_since_filled = (now_utc - order_filled_time).total_seconds() / 3600  # hours
                                 
-                                if time_since_filled > 1.0:
+                                # Only create SL/TP if:
+                                # 1. Order was created by this system (has trade_signal_id), OR
+                                # 2. Order was filled within the last hour (allowing for recent manual orders)
+                                if time_since_filled > 1.0 and not was_created_by_system:
+                                    logger.info(
+                                        f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
+                                        f"Order was not created by this system and was filled {time_since_filled:.2f} hours ago (limit: 1 hour). "
+                                        f"This is likely an old order synced from Crypto.com history that doesn't need automatic SL/TP."
+                                    )
+                                elif time_since_filled > 1.0 and was_created_by_system:
                                     logger.info(
                                         f"⏰ Skipping SL/TP creation for order {order_id} ({symbol or existing.symbol}): "
                                         f"Order was filled {time_since_filled:.2f} hours ago (limit: 1 hour). "
@@ -2153,14 +2220,18 @@ class ExchangeSyncService:
                         now_utc = datetime.now(timezone.utc)
                         time_since_filled = (now_utc - order_filled_time).total_seconds() / 3600  # hours
                         
+                        # For new orders being synced from Crypto.com history:
+                        # Only create SL/TP if they were filled very recently (within 1 hour)
+                        # This prevents creating SL/TP for old orders that were synced from history
                         if time_since_filled > 1.0:
                             logger.info(
                                 f"⏰ Skipping SL/TP creation for new order {order_id} ({symbol}): "
                                 f"Order was filled {time_since_filled:.2f} hours ago (limit: 1 hour). "
-                                f"Price may have changed significantly."
+                                f"This appears to be an old order from Crypto.com history. "
+                                f"Only creating SL/TP for very recent orders to avoid rejections."
                             )
                         else:
-                            # Try to create SL/TP automatically
+                            # Try to create SL/TP automatically for recent orders
                             # Use side from order_data which is the original order's side
                             logger.info(f"Creating SL/TP for new main order {order_id}: side={side}, order_type={order_type}, filled {time_since_filled:.2f} hours ago")
                             try:

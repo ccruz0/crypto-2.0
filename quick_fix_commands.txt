@@ -1,0 +1,127 @@
+# Comandos Rápidos para Arreglar el Deployment
+# Copiar y pegar estos comandos en el servidor AWS
+
+# ============================================
+# OPCIÓN 1: Script Automático (Recomendado)
+# ============================================
+# Subir el script al servidor y ejecutarlo:
+scp fix_deployment.sh hilovivo-aws:~/automated-trading-platform/
+ssh hilovivo-aws "cd ~/automated-trading-platform && chmod +x fix_deployment.sh && ./fix_deployment.sh"
+
+# ============================================
+# OPCIÓN 2: Comandos Manuales (Paso a Paso)
+# ============================================
+
+# 1. Conectarse al servidor
+ssh hilovivo-aws
+
+# 2. Ir al directorio del proyecto
+cd ~/automated-trading-platform
+
+# 3. Verificar estado actual
+docker compose --profile aws ps
+
+# 4. Verificar que db está corriendo
+docker compose --profile aws ps | grep db
+
+# 5. Si db no está corriendo, iniciarlo
+docker compose --profile aws up -d db
+sleep 10
+
+# 6. Verificar red Docker
+docker network ls
+docker network inspect automated-trading-platform_default 2>/dev/null || docker network inspect $(docker compose --profile aws config | grep -A 5 "networks:" | tail -1 | awk '{print $1}')
+
+# 7. Probar resolución DNS desde backend-aws
+BACKEND_ID=$(docker compose --profile aws ps -q backend-aws)
+docker exec $BACKEND_ID ping -c 3 db
+
+# 8. Actualizar código desde git
+git fetch origin
+git pull origin main
+
+# 9. Reiniciar servicios (método rápido)
+docker compose --profile aws restart db backend-aws
+sleep 15
+
+# 10. O reconstruir completamente (si el reinicio no funciona)
+# docker compose --profile aws down
+# docker compose --profile aws up -d --build
+# sleep 30
+
+# 11. Verificar logs
+docker compose --profile aws logs db --tail=20
+docker compose --profile aws logs backend-aws --tail=20
+
+# 12. Probar endpoints localmente
+curl http://localhost:8002/health
+curl "http://localhost:8002/api/orders/history?limit=1&offset=0"
+
+# 13. Verificar estado final
+docker compose --profile aws ps
+
+# ============================================
+# OPCIÓN 3: Solo Reiniciar Servicios
+# ============================================
+# Si solo necesitas reiniciar los servicios rápidamente:
+
+ssh hilovivo-aws "cd ~/automated-trading-platform && \
+  docker compose --profile aws restart db backend-aws && \
+  sleep 15 && \
+  docker compose --profile aws ps"
+
+# ============================================
+# OPCIÓN 4: Deployment Manual Completo
+# ============================================
+# Si necesitas desplegar cambios manualmente:
+
+# Desde tu máquina local:
+cd /Users/carloscruz/automated-trading-platform
+
+# Sincronizar código (excluyendo node_modules y .git)
+rsync -avz --exclude='.git' --exclude='node_modules' --exclude='.next' \
+  ./ hilovivo-aws:~/automated-trading-platform/
+
+# O usar git pull en el servidor:
+ssh hilovivo-aws "cd ~/automated-trading-platform && git pull origin main"
+
+# Reconstruir y reiniciar en el servidor:
+ssh hilovivo-aws "cd ~/automated-trading-platform && \
+  docker compose --profile aws down && \
+  docker compose --profile aws up -d --build && \
+  sleep 30 && \
+  docker compose --profile aws ps"
+
+# ============================================
+# VERIFICACIÓN POST-DEPLOYMENT
+# ============================================
+
+# 1. Verificar que los servicios están corriendo
+ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws ps"
+
+# 2. Verificar health check
+curl https://dashboard.hilovivo.com/api/health
+
+# 3. Verificar order history
+curl "https://dashboard.hilovivo.com/api/orders/history?limit=3&offset=0"
+
+# 4. Probar sync endpoint
+curl -X POST https://dashboard.hilovivo.com/api/orders/sync-history
+
+# 5. Monitorear logs en tiempo real
+ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

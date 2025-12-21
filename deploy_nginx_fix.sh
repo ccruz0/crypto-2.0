@@ -69,8 +69,23 @@ if [ -f /tmp/rate_limiting_zones.conf ]; then
     # Check if zones are already in nginx.conf, if not add them
     if ! grep -q "limit_req_zone.*api_limit" /etc/nginx/nginx.conf && ! grep -q "rate_limiting_zones.conf" /etc/nginx/nginx.conf; then
         echo "   Adding rate limiting zones to nginx.conf..."
-        # Add include before 'include servers/*;' in http block
-        sudo sed -i '/include servers\/\*;/i\    # Rate limiting zones\n    include /etc/nginx/rate_limiting_zones.conf;' /etc/nginx/nginx.conf
+        # Find the http block and add include before 'include servers/*;'
+        # Use a more robust approach with a temporary file
+        HTTP_BLOCK_START=$(grep -n "^http {" /etc/nginx/nginx.conf | head -1 | cut -d: -f1)
+        SERVERS_INCLUDE_LINE=$(grep -n "include servers/\*;" /etc/nginx/nginx.conf | head -1 | cut -d: -f1)
+        
+        if [ -n "$HTTP_BLOCK_START" ] && [ -n "$SERVERS_INCLUDE_LINE" ]; then
+            # Create backup
+            sudo cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.backup.$(date +%Y%m%d-%H%M%S)
+            # Insert rate limiting include before servers include
+            sudo sed -i "${SERVERS_INCLUDE_LINE}i\    # Rate limiting zones\n    include /etc/nginx/rate_limiting_zones.conf;" /etc/nginx/nginx.conf
+        else
+            echo "   ⚠️  Could not find http block or servers include, adding zones manually..."
+            # Fallback: add directly to http block
+            sudo sed -i '/^http {/a\    # Rate limiting zones\n    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;\n    limit_req_zone $binary_remote_addr zone=monitoring_limit:10m rate=5r/s;' /etc/nginx/nginx.conf
+        fi
+    else
+        echo "   ✅ Rate limiting zones already configured in nginx.conf"
     fi
 fi
 
@@ -139,3 +154,7 @@ echo "🌐 Test the dashboard:"
 echo "   curl -k https://dashboard.hilovivo.com/api/health"
 echo "   curl -k https://dashboard.hilovivo.com/"
 echo ""
+
+
+
+

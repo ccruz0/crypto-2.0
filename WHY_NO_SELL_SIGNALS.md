@@ -107,3 +107,8 @@ PUT /api/dashboard/{item_id}
 - Verifica y habilita `sell_alert_enabled=True` en la watchlist
 - Verifica que hay datos de volumen disponibles
 - Usa señales manuales desde el dashboard si necesitas forzar SELL
+
+
+
+
+

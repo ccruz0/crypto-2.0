@@ -81,3 +81,7 @@ Run the diagnostic script to verify:
 ```bash
 python3 backend/scripts/diagnose_sell_alerts.py
 ```
+
+
+
+

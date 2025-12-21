@@ -232,3 +232,7 @@ If issues occur:
 2. Check nginx logs: `sudo tail -f /var/log/nginx/error.log`
 3. Test nginx config: `sudo nginx -t`
 4. Verify rate limiting: Check for 429 responses in access.log
+
+
+
+

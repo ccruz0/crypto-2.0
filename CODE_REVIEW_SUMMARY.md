@@ -1,155 +1,84 @@
-# Code Review Summary - December 14, 2025
+# Code Review Summary: check_btc_usd_sell_alert.sh
 
-## Overview
-This review covers all fixes implemented to resolve duplicate SELL alerts and missing order creation issues.
+## ✅ Syntax Review: PASSED
 
-## Issues Fixed
+The script syntax is correct and follows the same pattern as the working `enable_sell_alerts_ultra_simple.sh`.
 
-### 1. Duplicate SELL Alerts Issue
-**Problem:** Multiple duplicate SELL alerts were being sent for the same signal (e.g., UNI_USDT at 11:27:43, 11:28:46, 11:31:19).
+## ⚠️ Issues Found
 
-**Root Cause:** 
-- Missing `previous_price` column in `signal_throttle_states` table
-- Database queries failing with: `column signal_throttle_states.previous_price does not exist`
-- Transaction aborted errors preventing throttle state tracking
-- Each cycle treated alerts as "first alert" due to failed state tracking
+### 1. **Container Execution Error**
 
-**Solution:**
-- Created migration script: `backend/scripts/apply_migration_previous_price.py`
-- Created SQL migration: `backend/migrations/add_previous_price_to_signal_throttle.sql`
-- Added transaction rollback handling in all throttle state fetch locations
-- Updated deployment script to auto-apply migrations
+**Error:** `Error response from daemon: No such container: python3`
 
-**Files Modified:**
-- `backend/app/services/signal_monitor.py` - Added rollback on throttle state error
-- `backend/app/services/buy_index_monitor.py` - Added rollback on throttle state error
-- `backend/app/services/signal_evaluator.py` - Added rollback on throttle state error
-- `backend/scripts/apply_migration_previous_price.py` - New migration script
-- `backend/migrations/add_previous_price_to_signal_throttle.sql` - SQL migration
-- `sync_to_aws.sh` - Added automatic migration step
-- `apply_migration_aws.sh` - Standalone migration script
+**Root Cause:** The `docker exec -i $CONTAINER python3` command is being parsed incorrectly. The `-i` flag might be causing issues with the command structure.
 
-### 2. Missing Sell Order Creation
-**Problem:** SELL alerts were sent but no sell orders were created.
+**Solution:** The working script uses the exact same pattern, so this might be a transient issue. However, we can improve it by:
 
-**Root Cause:**
-- Transaction aborted errors from missing `previous_price` column
-- Order creation code never executed due to aborted transaction
-- Even though `trade_enabled=True` and `trade_amount_usd` was configured
+1. **Adding container validation:**
+```bash
+CONTAINER=$(docker ps --format "{{.Names}}" | grep -i backend | head -1)
+if [ -z "$CONTAINER" ]; then
+  echo "❌ Backend container not found"
+  exit 1
+fi
+```
 
-**Solution:**
-- Added transaction rollback handling (same as issue #1)
-- This allows order creation to proceed even if throttle state query fails
+2. **Using `docker exec` without `-i` flag** (since we're using `-c` for inline Python):
+```bash
+docker exec $CONTAINER python3 -c "..."
+```
 
-**Files Modified:**
-- Same as issue #1 (transaction rollback fixes)
+### 2. **Quote Escaping Complexity**
 
-### 3. Missing Buy Signal/Order After Trade Toggle
-**Problem:** Toggling `trade_enabled` YES/NO/YES didn't trigger buy signals/orders even when BUY signal was detected.
+The script uses complex nested quotes which work but are hard to maintain. The current approach is acceptable since it matches the working pattern.
 
-**Root Cause:**
-- `force_next_signal` not set when `trade_enabled` is toggled
-- `buy_alert_enabled` might be `False` even when `trade_enabled=True`
-- Throttling blocking signals after toggle
+### 3. **Error Handling**
 
-**Solution:**
-- Auto-enable `buy_alert_enabled` and `sell_alert_enabled` when `trade_enabled=YES`
-- Set `force_next_signal=True` for both BUY and SELL when trade is enabled
-- Ensures immediate signal triggering on next evaluation
+✅ **Good:** Added check for empty/invalid Command ID
+⚠️ **Could improve:** Add validation for AWS CLI availability
 
-**Files Modified:**
-- `backend/app/api/routes_dashboard.py` - Added auto-enable logic and force_next_signal
+## Recommendations
 
-## Code Quality Review
+### Option 1: Fix Container Execution (Recommended)
 
-### ✅ Strengths
+```bash
+# Add explicit container check
+CONTAINER=$(docker ps --format "{{.Names}}" | grep -i backend | head -1 || docker ps -q | head -1)
+if [ -z "$CONTAINER" ]; then
+  echo "❌ Backend container not found"
+  exit 1
+fi
 
-1. **Defensive Error Handling:**
-   - All throttle state fetches wrapped in try-except
-   - Transaction rollback prevents cascading failures
-   - Graceful degradation (empty snapshots dict on error)
+# Use docker exec without -i flag
+docker exec $CONTAINER python3 -c "..."
+```
 
-2. **Idempotent Migrations:**
-   - Migration scripts check if column exists before adding
-   - Safe to run multiple times
-   - Clear error messages
+### Option 2: Use Base64 Encoding (More Reliable)
 
-3. **Comprehensive Logging:**
-   - Clear log messages for debugging
-   - Logs include context (symbol, flags, reasons)
-   - Warning logs for non-critical errors
+Encode the Python script to base64 and decode on the server (like other working scripts):
 
-4. **Consistent Patterns:**
-   - Same rollback pattern used across all services
-   - Consistent error handling approach
-   - Clear separation of concerns
+```bash
+PYTHON_SCRIPT='import sys
+sys.path.insert(0, "/app")
+...'
+ENCODED=$(echo "$PYTHON_SCRIPT" | base64)
+# Then use: echo '$ENCODED' | base64 -d | python3
+```
 
-### ⚠️ Potential Improvements
+## Current Status
 
-1. **Migration Timing:**
-   - Migration should ideally be applied before code that uses the column
-   - Current approach: code handles missing column gracefully, then migration fixes it
-   - Consider: Add migration check on startup
+- ✅ **Syntax:** Valid
+- ✅ **Pattern:** Matches working script
+- ⚠️ **Execution:** Container lookup may need adjustment
+- ✅ **Error Handling:** Basic validation present
 
-2. **Error Recovery:**
-   - Could add retry logic for throttle state queries
-   - Could cache throttle state to reduce database queries
-   - Consider: Background job to apply migrations automatically
+## Testing
 
-3. **Testing:**
-   - No unit tests for migration scripts
-   - No integration tests for toggle behavior
-   - Consider: Add tests for edge cases
+The script was tested and:
+- ✅ Command ID is generated successfully
+- ⚠️ Container execution fails (needs investigation)
 
-## Files Changed Summary
-
-### New Files
-1. `backend/scripts/apply_migration_previous_price.py` - Migration script
-2. `backend/migrations/add_previous_price_to_signal_throttle.sql` - SQL migration
-3. `apply_migration_aws.sh` - Standalone migration script
-4. `MIGRATION_INSTRUCTIONS.md` - Migration documentation
-5. `CODE_REVIEW_SUMMARY.md` - This file
-
-### Modified Files
-1. `backend/app/services/signal_monitor.py` - Added rollback handling
-2. `backend/app/services/buy_index_monitor.py` - Added rollback handling
-3. `backend/app/services/signal_evaluator.py` - Added rollback handling
-4. `backend/app/api/routes_dashboard.py` - Added auto-enable and force_next_signal logic
-5. `sync_to_aws.sh` - Added automatic migration step
-
-## Deployment Checklist
-
-- [x] All code committed to git
-- [x] All code pushed to remote repository
-- [ ] Migration applied to AWS database
-- [ ] Code deployed to AWS
-- [ ] Verify duplicate alerts are fixed
-- [ ] Verify orders are created when trade_enabled=YES
-- [ ] Verify toggle behavior works correctly
-
-## Testing Recommendations
-
-1. **Test Duplicate Alert Fix:**
-   - Wait for SELL signal
-   - Verify only one alert is sent
-   - Check logs for throttle state tracking
-
-2. **Test Order Creation:**
-   - Toggle trade_enabled: NO → YES
-   - Wait for BUY signal
-   - Verify alert is sent
-   - Verify order is created
-
-3. **Test Toggle Behavior:**
-   - Toggle trade_enabled: NO → YES
-   - Verify buy_alert_enabled and sell_alert_enabled are auto-enabled
-   - Verify force_next_signal is set
-   - Verify next signal triggers immediately
-
-## Notes
-
-- All changes are backward compatible
-- Migration is safe to apply to production
-- Code handles missing column gracefully until migration is applied
-- No breaking changes to API or database schema (only additions)
-
+**Next Steps:**
+1. Check if backend container is running on AWS
+2. Verify container name format
+3. Consider using base64 encoding for more reliable execution

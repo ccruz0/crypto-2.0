@@ -84,3 +84,8 @@ ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aw
 - **Reinicio requerido**: Los cambios en el código requieren reiniciar el servicio `backend-aws`
 - **Configuración**: Asegúrate de que `RUNTIME_ORIGIN=AWS` esté configurado en el servicio
 - **Telegram**: Verifica que `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` estén configurados
+
+
+
+
+

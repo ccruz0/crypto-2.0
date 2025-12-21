@@ -98,3 +98,8 @@ Las alertas aparecerán cuando:
 - Pase el cooldown del throttling
 - El precio cambie lo suficiente
 
+
+
+
+
+

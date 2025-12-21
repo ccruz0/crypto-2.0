@@ -31,3 +31,7 @@ echo -e "${YELLOW}[2/4] Deploying to AWS...${NC}"
 ssh "$EC2_USER@$EC2_HOST" 'cd ~/automated-trading-platform && git pull && docker compose --profile aws build --no-cache backend-aws market-updater-aws && docker compose --profile aws up -d backend-aws market-updater-aws && sleep 15 && docker compose --profile aws ps'
 
 echo -e "${GREEN}✅ Deploy completed${NC}"
+
+
+
+

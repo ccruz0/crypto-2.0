@@ -1141,9 +1141,11 @@ def get_order_history(
         
         logger.info(f"get_order_history called - fetching from database (limit={limit}, offset={offset})")
         
-        # RESTORED v4.0: Get executed orders: FILLED, CANCELLED, REJECTED, EXPIRED
+        # RESTORED v4.0: Get completed/terminal orders (all order states that are no longer active)
+        # Includes: FILLED (executed), CANCELLED, REJECTED (not executed - exchange rejected the order), EXPIRED
+        # Note: REJECTED orders have 0 filled amounts and were never executed - they appear for audit purposes
         # Use COALESCE to handle NULL exchange_update_time (fallback to updated_at)
-        # This ensures ALL executed orders are returned, even if exchange_update_time is NULL
+        # This ensures ALL completed orders are returned, even if exchange_update_time is NULL
         executed_statuses = [OrderStatusEnum.FILLED, OrderStatusEnum.CANCELLED, OrderStatusEnum.REJECTED, OrderStatusEnum.EXPIRED]
         from sqlalchemy import func
         query = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).order_by(

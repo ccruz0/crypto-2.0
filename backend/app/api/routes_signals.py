@@ -193,8 +193,33 @@ def calculate_volume_index(volumes: List[float], period: int = 5) -> dict:
             # Use the higher of EMA average or baseline average to avoid false negatives
             average_volume = max(average_volume, baseline_average * 0.8)  # Slight discount on baseline
     
+    # Calculate ratio with safeguards to prevent unrealistic values
+    # FIX: Add minimum threshold for average_volume to prevent division by very small numbers
+    # This prevents unrealistic ratios like 2165.1x when average_volume is near zero
+    MIN_AVERAGE_VOLUME_THRESHOLD = 0.0001  # Minimum average volume to consider valid
+    MAX_VOLUME_RATIO = 100.0  # Maximum realistic volume ratio (cap at 100x)
+    
+    # Handle cases where average_volume is too small (likely due to insufficient data)
+    if average_volume < MIN_AVERAGE_VOLUME_THRESHOLD:
+        # If average volume is too small, it's likely due to insufficient data or data quality issues
+        # Use a fallback: assume average_volume is at least 10% of current_volume to get a reasonable ratio
+        if current_volume > 0:
+            # Fallback: use 10% of current_volume as minimum average
+            average_volume = max(average_volume, current_volume * 0.1)
+            logger.debug(f"⚠️ Volume ratio calculation: average_volume too small, using fallback minimum ({average_volume:.6f})")
+        else:
+            # Both are zero or very small, return zero ratio
+            average_volume = 0.0
+    
     # Calculate ratio
-    volume_ratio = current_volume / average_volume if average_volume > 0 else 0
+    if average_volume > 0:
+        volume_ratio = current_volume / average_volume
+        # Cap the ratio at a maximum realistic value to prevent unrealistic displays
+        if volume_ratio > MAX_VOLUME_RATIO:
+            logger.warning(f"⚠️ Volume ratio {volume_ratio:.2f}x exceeds maximum {MAX_VOLUME_RATIO}x, capping to {MAX_VOLUME_RATIO}x (symbol may have insufficient volume data)")
+            volume_ratio = MAX_VOLUME_RATIO
+    else:
+        volume_ratio = 0.0
     
     # Generate signal if volume is more than 2x the average
     signal = None

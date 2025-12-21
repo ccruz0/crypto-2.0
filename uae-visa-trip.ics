@@ -1,0 +1,17 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Carlos Cruz//UAE Visa Trip//EN
+CALSCALE:GREGORIAN
+
+BEGIN:VEVENT
+UID:uae-visa-abu-dhabi-20260115@hilovivo
+DTSTAMP:20251215T090000Z
+DTSTART;VALUE=DATE:20260115
+DTEND;VALUE=DATE:20260119
+SUMMARY:Abu Dhabi – Free Zone Visa, Medical & Bank
+LOCATION:Abu Dhabi, UAE
+DESCRIPTION:UAE residency process (Free Zone).\n\nPlan:\n• Day 1: Arrival + VIP medical + biometrics\n• Day 2: Medical results + visa issuance\n• Day 3: Bank account appointment\n\nFlights:\n• Etihad EY473 – Jakarta (CGK) → Abu Dhabi (AUH)\n• Etihad EY476 – Abu Dhabi (AUH) → Bali (DPS)\n\nNotes:\n• VIP service\n• Medical triggered after entry
+END:VEVENT
+
+END:VCALENDAR
+

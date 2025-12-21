@@ -9,6 +9,7 @@ import math
 import requests
 import time
 import tempfile
+import sys
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -16,7 +17,10 @@ import pytz
 from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import is_aws_runtime
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from app.models.watchlist import WatchlistItem
+from app.models.telegram_state import TelegramState
+from app.database import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +49,10 @@ API_BASE_URL = (
 )
 SERVICE_ENDPOINT = f"{API_BASE_URL.rstrip('/')}/api/services"
 SERVICE_NAMES = ["exchange_sync", "signal_monitor", "trading_scheduler"]
-LAST_UPDATE_ID = 0  # Global variable to track last processed update
+LAST_UPDATE_ID = 0  # Global variable to track last processed update (loaded from DB on startup)
 PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent duplicate processing
+_POLLER_LOCK_ACQUIRED = False  # Track if this process has the poller lock
+_NO_UPDATE_COUNT = 0  # Track consecutive cycles with no updates
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
 CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
@@ -56,6 +62,166 @@ TEXT_COMMAND_TTL = 3.0  # 3 seconds - ignore duplicate text commands within this
 WATCHLIST_PAGE_SIZE = 9
 MAX_SYMBOLS_PER_ROW = 3
 PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
+
+
+# PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
+TELEGRAM_POLLER_LOCK_ID = 1234567890
+
+
+def _acquire_poller_lock(db: Session) -> bool:
+    """Acquire PostgreSQL advisory lock for single poller enforcement.
+    Returns True if lock acquired, False if another poller is active.
+    """
+    global _POLLER_LOCK_ACQUIRED
+    if not db or not engine:
+        logger.warning("[TG] Database not available for poller lock")
+        return False
+    
+    try:
+        # Try to acquire advisory lock (non-blocking)
+        result = db.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
+        acquired = result.scalar()
+        if acquired:
+            _POLLER_LOCK_ACQUIRED = True
+            logger.info("[TG] Poller lock acquired")
+            return True
+        else:
+            logger.warning("[TG] Another poller is active, cannot acquire lock")
+            return False
+    except Exception as e:
+        logger.error(f"[TG] Error acquiring poller lock: {e}")
+        return False
+
+
+def _release_poller_lock(db: Session) -> None:
+    """Release PostgreSQL advisory lock."""
+    global _POLLER_LOCK_ACQUIRED
+    if not db or not engine or not _POLLER_LOCK_ACQUIRED:
+        return
+    
+    try:
+        db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
+        _POLLER_LOCK_ACQUIRED = False
+        logger.debug("[TG] Poller lock released")
+    except Exception as e:
+        logger.error(f"[TG] Error releasing poller lock: {e}")
+
+
+def _load_last_update_id(db: Session) -> int:
+    """Load LAST_UPDATE_ID from database."""
+    global LAST_UPDATE_ID
+    if not db:
+        return 0
+    
+    try:
+        state = db.query(TelegramState).filter(TelegramState.id == 1).first()
+        if state:
+            LAST_UPDATE_ID = state.last_update_id
+            logger.info(f"[TG] Loaded LAST_UPDATE_ID from DB: {LAST_UPDATE_ID}")
+            return LAST_UPDATE_ID
+        else:
+            # Create initial state
+            state = TelegramState(id=1, last_update_id=0)
+            db.add(state)
+            db.commit()
+            LAST_UPDATE_ID = 0
+            logger.info("[TG] Created initial TelegramState with LAST_UPDATE_ID=0")
+            return 0
+    except Exception as e:
+        logger.error(f"[TG] Error loading LAST_UPDATE_ID from DB: {e}")
+        return 0
+
+
+def _save_last_update_id(db: Session, update_id: int) -> None:
+    """Save LAST_UPDATE_ID to database."""
+    global LAST_UPDATE_ID
+    if not db:
+        return
+    
+    try:
+        state = db.query(TelegramState).filter(TelegramState.id == 1).first()
+        if state:
+            state.last_update_id = update_id
+            state.updated_at = datetime.now(pytz.UTC)
+        else:
+            state = TelegramState(id=1, last_update_id=update_id)
+            db.add(state)
+        db.commit()
+        LAST_UPDATE_ID = update_id
+        logger.debug(f"[TG] Saved LAST_UPDATE_ID to DB: {update_id}")
+    except Exception as e:
+        logger.error(f"[TG] Error saving LAST_UPDATE_ID to DB: {e}")
+        db.rollback()
+
+
+def _run_startup_diagnostics() -> None:
+    """Run startup diagnostics: getMe and getWebhookInfo, delete webhook if present."""
+    if not TELEGRAM_ENABLED or not BOT_TOKEN:
+        logger.warning("[TG] Startup diagnostics skipped: Telegram not enabled")
+        return
+    
+    try:
+        # 1. Call getMe
+        logger.info("[TG] Running startup diagnostics...")
+        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5)
+        response.raise_for_status()
+        bot_info = response.json()
+        if bot_info.get("ok"):
+            bot_data = bot_info.get("result", {})
+            bot_username = bot_data.get("username", "N/A")
+            bot_id = bot_data.get("id", "N/A")
+            logger.info(f"[TG] Bot identity: username={bot_username}, id={bot_id}")
+        else:
+            logger.error(f"[TG] getMe failed: {bot_info}")
+        
+        # 2. Call getWebhookInfo
+        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo", timeout=5)
+        response.raise_for_status()
+        webhook_info = response.json()
+        if webhook_info.get("ok"):
+            webhook_data = webhook_info.get("result", {})
+            webhook_url = webhook_data.get("url", "")
+            pending_count = webhook_data.get("pending_update_count", 0)
+            logger.info(f"[TG] Webhook info: url={webhook_url or 'None'}, pending_updates={pending_count}")
+            
+            # 3. Delete webhook if present
+            if webhook_url:
+                logger.warning(f"[TG] Webhook detected at {webhook_url}, deleting it...")
+                response = requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
+                    json={"drop_pending_updates": True},
+                    timeout=5
+                )
+                response.raise_for_status()
+                delete_result = response.json()
+                if delete_result.get("ok"):
+                    logger.info("[TG] Webhook deleted successfully")
+                else:
+                    logger.error(f"[TG] Failed to delete webhook: {delete_result}")
+        else:
+            logger.error(f"[TG] getWebhookInfo failed: {webhook_info}")
+            
+    except Exception as e:
+        logger.error(f"[TG] Startup diagnostics failed: {e}", exc_info=True)
+
+
+def _probe_updates_without_offset() -> List[Dict]:
+    """Probe Telegram for updates without offset to detect missed updates."""
+    if not TELEGRAM_ENABLED or not BOT_TOKEN:
+        return []
+    
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        params = {"limit": 50}  # Get up to 50 updates
+        response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("ok"):
+            return data.get("result", [])
+        return []
+    except Exception as e:
+        logger.error(f"[TG] Probe updates failed: {e}")
+        return []
 
 
 def _build_keyboard(rows: List[List[Dict[str, str]]]) -> Dict[str, List[List[Dict[str, str]]]]:
@@ -445,14 +611,14 @@ def setup_bot_commands():
         return False
 
 
-def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optional[int] = None) -> List[Dict]:
-    """Get updates from Telegram API using long polling with file lock to prevent 409 conflicts
+def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optional[int] = None, db: Optional[Session] = None) -> List[Dict]:
+    """Get updates from Telegram API using long polling with PostgreSQL advisory lock.
     
     RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
     LOCAL runtime should not poll, as AWS is already polling.
     
-    LOCK MECHANISM: Uses file-based lock to ensure only one process polls at a time,
-    preventing 409 conflicts when multiple workers/processes try to poll simultaneously.
+    LOCK MECHANISM: Uses PostgreSQL advisory lock to ensure only one poller across all instances.
+    If lock cannot be acquired, returns empty list (another poller is active).
     """
     # RUNTIME GUARD: Only AWS should poll Telegram
     if not is_aws_runtime():
@@ -462,90 +628,64 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
     if not TELEGRAM_ENABLED:
         return []
     
-    # Use file-based lock to ensure only one process polls at a time
-    lock_file_path = os.path.join(tempfile.gettempdir(), "telegram_updates.lock")
-    lock_file = None
-    lock_acquired = False
+    # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
+    if db:
+        if not _acquire_poller_lock(db):
+            logger.debug("[TG] Another poller is active, skipping this cycle")
+            return []
+    elif not _POLLER_LOCK_ACQUIRED:
+        # If no DB session provided and lock not already acquired, try to get one
+        try:
+            temp_db = SessionLocal()
+            try:
+                if not _acquire_poller_lock(temp_db):
+                    logger.debug("[TG] Another poller is active, skipping this cycle")
+                    return []
+            finally:
+                temp_db.close()
+        except Exception as e:
+            logger.error(f"[TG] Error acquiring poller lock: {e}")
+            return []
     
     try:
-        if HAS_FCNTL:
-            # Try to acquire lock (non-blocking)
-            lock_file = open(lock_file_path, 'w')
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lock_acquired = True
-            except BlockingIOError:
-                # Another process is already polling - skip this cycle
-                logger.debug("[TG] Another process is polling Telegram - skipping this cycle")
-                return []
-        else:
-            # No file locking available - proceed without lock (may cause 409 conflicts)
-            lock_acquired = True
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        params = {}
+        if offset is not None:
+            params["offset"] = offset
+        # TODO: Re-enable update filtering later for efficiency
+        # For now, remove allowed_updates to ensure we receive all update types
+        # params["allowed_updates"] = ["message", "my_chat_member"]
         
-        # Lock acquired (or no locking available) - proceed with polling
-        if lock_acquired:
-            try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-                params = {}
-                if offset is not None:
-                    params["offset"] = offset
-                # Use long polling: Telegram will wait up to 30 seconds for new messages
-                # This allows real-time command processing
-                # Allow timeout override for quick checks
-                params["timeout"] = timeout_override if timeout_override is not None else 30
-                
-                # Increase timeout to account for network delay
-                request_timeout = (timeout_override + 5) if timeout_override else 35
-                response = requests.get(url, params=params, timeout=request_timeout)
-                response.raise_for_status()
-                
-                data = response.json()
-                if data.get("ok"):
-                    return data.get("result", [])
-                return []
-            except requests.exceptions.Timeout:
-                # Timeout is expected when no new messages - return empty list
-                return []
-            except requests.exceptions.HTTPError as http_err:
-                # If webhook is still configured elsewhere Telegram returns 409. Log once as warning.
-                # NOTE: In production, this usually means another instance (local dev, old server) is using the same bot token.
-                # FIX: Ensure only the AWS backend is using the bot token - stop any local bots or old servers.
-                status = getattr(http_err.response, 'status_code', None)
-                if status == 409:
-                    # Only log warning occasionally to avoid spam (every 10th occurrence)
-                    if not hasattr(get_telegram_updates, '_409_count'):
-                        get_telegram_updates._409_count = 0
-                    get_telegram_updates._409_count += 1
-                    if get_telegram_updates._409_count % 10 == 0:
-                        logger.warning(
-                            f"[TG] getUpdates conflict (409) - {get_telegram_updates._409_count} occurrences. "
-                            "Another webhook or polling client is active. This may be due to multiple gunicorn workers. "
-                            "Skipping this cycle but will retry."
-                        )
-                    # Return empty list but don't block - allow retry on next cycle
-                    return []
-                logger.error(f"[TG] getUpdates HTTP error: {http_err}")
-                return []
-            except Exception as e:
-                logger.error(f"[TG] getUpdates failed: {e}")
-                return []
-            finally:
-                # Release lock
-                if HAS_FCNTL and lock_file:
-                    try:
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-    except Exception as e:
-        logger.error(f"[TG] Error acquiring lock for getUpdates: {e}")
+        # Use long polling: Telegram will wait up to 30 seconds for new messages
+        # This allows real-time command processing
+        # Allow timeout override for quick checks
+        params["timeout"] = timeout_override if timeout_override is not None else 30
+        
+        # Increase timeout to account for network delay
+        request_timeout = (timeout_override + 5) if timeout_override else 35
+        response = requests.get(url, params=params, timeout=request_timeout)
+        response.raise_for_status()
+        
+        data = response.json()
+        if data.get("ok"):
+            return data.get("result", [])
         return []
-    finally:
-        # Close lock file
-        if lock_file:
-            try:
-                lock_file.close()
-            except Exception:
-                pass
+    except requests.exceptions.Timeout:
+        # Timeout is expected when no new messages - return empty list
+        return []
+    except requests.exceptions.HTTPError as http_err:
+        status = getattr(http_err.response, 'status_code', None)
+        if status == 409:
+            logger.warning(
+                "[TG] getUpdates conflict (409) - Another webhook or polling client is active. "
+                "This may be due to another instance using the same bot token."
+            )
+            return []
+        logger.error(f"[TG] getUpdates HTTP error: {http_err}")
+        return []
+    except Exception as e:
+        logger.error(f"[TG] getUpdates failed: {e}")
+        return []
 
 
 def send_command_response(chat_id: str, message: str) -> bool:
@@ -2719,7 +2859,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
 
 def process_telegram_commands(db: Session = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
-    global LAST_UPDATE_ID
+    global LAST_UPDATE_ID, _NO_UPDATE_COUNT
     
     # CRITICAL: Only process Telegram commands on AWS, not on local
     # This prevents duplicate processing when both local and AWS instances are running
@@ -2729,73 +2869,69 @@ def process_telegram_commands(db: Session = None) -> None:
         logger.debug(f"[TG] Skipping Telegram command processing on local (APP_ENV={app_env})")
         return
     
-    logger.info(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
+    # Ensure we have a DB session
+    if not db:
+        try:
+            db = SessionLocal()
+            db_created = True
+        except Exception as e:
+            logger.error(f"[TG] Cannot create DB session: {e}")
+            return
+    else:
+        db_created = False
     
     try:
-        # Long polling: Telegram will wait up to 30 seconds for new messages
-        # This allows immediate processing when a command is sent
+        # Load LAST_UPDATE_ID from DB on first call or if not loaded
+        if LAST_UPDATE_ID == 0:
+            _load_last_update_id(db)
+        
+        logger.info(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
+        
+        # Normal polling: use offset = LAST_UPDATE_ID + 1
         offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
         logger.info(f"[TG] Calling get_telegram_updates with offset={offset} (LAST_UPDATE_ID={LAST_UPDATE_ID})")
         
-        # If LAST_UPDATE_ID is very high, there might be a gap - try getting updates without offset first
-        # to see if Telegram has any pending updates
-        if LAST_UPDATE_ID > 1000000:  # If update ID is very high, check for pending updates
-            logger.info(f"[TG] High LAST_UPDATE_ID detected ({LAST_UPDATE_ID}), checking for pending updates without offset")
-            pending_updates = get_telegram_updates(offset=None)
-            if pending_updates:
-                logger.warning(f"[TG] Found {len(pending_updates)} pending updates without offset! This suggests updates were missed.")
-                # Process these updates
-                updates = pending_updates
-            else:
-                updates = get_telegram_updates(offset=offset)
-        else:
-            updates = get_telegram_updates(offset=offset)
+        # Get updates (this will acquire PostgreSQL advisory lock)
+        updates = get_telegram_updates(offset=offset, db=db)
         
         update_count = len(updates) if updates else 0
         logger.info(f"[TG] get_telegram_updates returned {update_count} updates")
         
         if not updates:
-            # No new updates (this is normal with long polling timeout)
-            # ALTERNATIVE APPROACH: If no updates with offset, try without offset to catch missed updates
-            # This helps when LAST_UPDATE_ID is ahead of what Telegram has
-            logger.info(f"[TG] No updates received with offset={offset}, trying without offset to catch missed updates...")
-            try:
-                # Get updates without offset to see if Telegram has any pending
-                # Use a short timeout (1 second) to avoid blocking
-                logger.info(f"[TG] Checking for pending updates without offset (quick check)...")
-                pending_check = get_telegram_updates(offset=None, timeout_override=1)
-                if pending_check:
-                    # Found pending updates! Process them and update LAST_UPDATE_ID
-                    logger.warning(f"[TG] Found {len(pending_check)} pending updates without offset! Processing them now.")
-                    updates = pending_check
-                else:
-                    # No pending updates found either
-                    # If LAST_UPDATE_ID is very high and we haven't received updates in a while,
-                    # there might be a gap. Reset to 0 to start fresh on next cycle.
-                    if LAST_UPDATE_ID > 1000000:
-                        # Track consecutive failures
-                        if not hasattr(process_telegram_commands, '_no_update_count'):
-                            process_telegram_commands._no_update_count = 0
-                        process_telegram_commands._no_update_count += 1
-                        
-                        # After 10 consecutive failures with high LAST_UPDATE_ID, reset it
-                        if process_telegram_commands._no_update_count >= 10:
-                            logger.warning(f"[TG] Resetting LAST_UPDATE_ID from {LAST_UPDATE_ID} to 0 after {process_telegram_commands._no_update_count} consecutive no-update cycles")
-                            global LAST_UPDATE_ID
-                            LAST_UPDATE_ID = 0
-                            process_telegram_commands._no_update_count = 0
-                    
-                    logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
-                    return
-            except Exception as pending_err:
-                logger.debug(f"[TG] Error checking pending updates: {pending_err}")
+            # No updates received - increment counter
+            _NO_UPDATE_COUNT += 1
+            
+            # After N consecutive cycles (10) with no updates, probe without offset
+            if _NO_UPDATE_COUNT >= 10:
+                logger.warning(f"[TG] No updates for {_NO_UPDATE_COUNT} consecutive cycles, probing without offset...")
+                probe_updates = _probe_updates_without_offset()
+                
+                if probe_updates:
+                    # Found updates older than LAST_UPDATE_ID - adjust offset
+                    max_probe_id = max(u.get("update_id", 0) for u in probe_updates)
+                    if max_probe_id > 0 and max_probe_id < LAST_UPDATE_ID:
+                        new_last_id = max_probe_id - 1
+                        logger.warning(f"[TG] Probe found updates older than LAST_UPDATE_ID. Adjusting from {LAST_UPDATE_ID} to {new_last_id}")
+                        _save_last_update_id(db, new_last_id)
+                        LAST_UPDATE_ID = new_last_id
+                        # Retry with corrected offset
+                        offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
+                        updates = get_telegram_updates(offset=offset, db=db)
+                        if updates:
+                            _NO_UPDATE_COUNT = 0
+                            logger.info(f"[TG] Probe recovery successful, received {len(updates)} updates")
+                
+                # Reset counter after probe
+                _NO_UPDATE_COUNT = 0
+            
+            if not updates:
+                logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
                 return
         
-        logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
+        # Reset counter when we receive updates
+        _NO_UPDATE_COUNT = 0
         
-        # Reset no-update counter when we receive updates
-        if hasattr(process_telegram_commands, '_no_update_count'):
-            process_telegram_commands._no_update_count = 0
+        logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
         
         for update in updates:
             update_id = update.get("update_id", 0)
@@ -2814,6 +2950,7 @@ def process_telegram_commands(db: Session = None) -> None:
             else:
                 logger.debug(f"[TG] Update {update_id} has no message or callback_query (might be other type)")
                 # Update ID anyway to skip this update
+                _save_last_update_id(db, update_id)
                 LAST_UPDATE_ID = update_id
                 continue
             
@@ -2825,12 +2962,20 @@ def process_telegram_commands(db: Session = None) -> None:
             except Exception as handle_error:
                 logger.error(f"[TG] Error handling update {update_id}: {handle_error}", exc_info=True)
             
-            # Update last processed ID
+            # Update last processed ID in DB
+            _save_last_update_id(db, update_id)
             LAST_UPDATE_ID = update_id
             logger.info(f"[TG] Updated LAST_UPDATE_ID to {LAST_UPDATE_ID}")
+        
+        # Release poller lock after processing
+        _release_poller_lock(db)
             
     except Exception as e:
         logger.error(f"[TG] Error processing commands: {e}", exc_info=True)
+        _release_poller_lock(db)
+    finally:
+        if db_created and db:
+            db.close()
 
 
 def _handle_setting_callback(chat_id: str, callback_data: str, message_id: Optional[int], db: Session) -> None:

@@ -26,3 +26,8 @@ echo ""
 echo "✅ Deployment complete!"
 echo "The backend now calculates weighted average buy price from all purchase orders."
 
+
+
+
+
+

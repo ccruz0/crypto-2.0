@@ -91,3 +91,8 @@ ssh hilovivo-aws 'docker compose --profile aws exec backend-aws python3 -c "from
 # 3. Logs sin errores
 ssh hilovivo-aws 'docker compose --profile aws logs backend-aws --tail 50'
 ```
+
+
+
+
+

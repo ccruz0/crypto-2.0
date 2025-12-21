@@ -147,3 +147,8 @@ docker compose --profile aws logs backend-aws | grep -i "SELL.*alert decision\|S
 1. **Habilitar `sell_alert_enabled=True`** en la watchlist para los símbolos que quieres monitorear
 2. **Verificar que hay datos de volumen** disponibles
 3. **Usar señales manuales** desde el dashboard si necesitas forzar SELL para pruebas
+
+
+
+
+

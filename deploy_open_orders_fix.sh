@@ -62,3 +62,8 @@ echo ""
 echo "The fix ensures only active TP orders (NEW, ACTIVE, PARTIALLY_FILLED) are counted."
 echo "This should resolve the inflated open orders count (e.g., ALGO showing 36 instead of actual active orders)."
 
+
+
+
+
+

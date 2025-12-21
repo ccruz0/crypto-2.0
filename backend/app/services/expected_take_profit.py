@@ -1022,6 +1022,12 @@ def get_expected_take_profit_details(
     """
     Get detailed expected take profit data for a specific symbol.
     
+    IMPORTANT: portfolio_balance should be the actual balance from the portfolio,
+    not just the sum of lots. This ensures uncovered_qty is calculated correctly.
+    """
+    """
+    Get detailed expected take profit data for a specific symbol.
+    
     Args:
         db: Database session
         symbol: Symbol to get details for
@@ -1384,11 +1390,55 @@ def get_expected_take_profit_details(
             }
             matched_lot_details.append(grouped_entry)
     
-    # Calculate uncovered quantity
-    uncovered_qty = sum(float(lot.lot_qty) for lot in unmatched)
+    # Calculate uncovered quantity from unmatched lots (lots without TP orders)
+    uncovered_from_lots = sum(float(lot.lot_qty) for lot in unmatched)
     
     # Calculate net quantity and position value
-    net_qty = sum(float(lot.lot_qty) for lot in open_lots)
+    # IMPORTANT: Use the same logic as summary - use portfolio balance if available, otherwise sum of lots
+    # This ensures consistency between summary table and details modal
+    total_lot_qty = sum(float(lot.lot_qty) for lot in open_lots)
+    
+    # Always use portfolio_balance if provided (it's the source of truth)
+    # If not provided, try to get it from portfolio_summary
+    actual_balance = float(portfolio_balance) if portfolio_balance > 0 else 0.0
+    
+    if actual_balance <= 0 and portfolio_summary:
+        # Try to get balance from portfolio_summary
+        balances = portfolio_summary.get("balances", [])
+        assets = portfolio_summary.get("assets", [])
+        
+        for bal in balances:
+            currency = bal.get("currency", "").upper()
+            if currency == symbol or currency == symbol.split('_')[0]:
+                actual_balance = float(bal.get("balance", 0) or 0)
+                break
+        
+        if actual_balance <= 0:
+            for asset in assets:
+                coin = asset.get("coin", "").upper()
+                if coin == symbol or coin == symbol.split('_')[0]:
+                    actual_balance = float(asset.get("balance", 0) or 0)
+                    break
+    
+    if actual_balance > 0:
+        # Use portfolio balance (which includes all holdings, not just lots with TP orders)
+        net_qty = max(actual_balance, total_lot_qty)
+        # Uncovered quantity = lots without TP + any portfolio balance not in lots
+        # If net_qty > total_lot_qty, there's portfolio balance not accounted for in any lot
+        uncovered_qty = uncovered_from_lots + max(0, net_qty - total_lot_qty)
+        logger.info(f"Expected TP Details: {symbol} - Balance={actual_balance}, TotalLots={total_lot_qty}, NetQty={net_qty}, UncoveredFromLots={uncovered_from_lots}, UncoveredQty={uncovered_qty}")
+    else:
+        # Fallback to lot quantity if balance not provided
+        net_qty = total_lot_qty
+        uncovered_qty = uncovered_from_lots
+        logger.warning(f"Expected TP Details: {symbol} - No balance provided, using lot quantity only. NetQty={net_qty}, UncoveredQty={uncovered_qty}")
+    
+    # Verify: covered_qty + uncovered_qty should equal net_qty (portfolio balance)
+    # This ensures the breakdown is correct
+    calculated_total = float(total_covered_qty) + uncovered_qty
+    if abs(calculated_total - net_qty) > 0.01:  # Allow small floating point differences
+        logger.warning(f"Expected TP Details: Sum mismatch for {symbol}. Covered ({total_covered_qty}) + Uncovered ({uncovered_qty}) = {calculated_total}, but Net Qty = {net_qty}")
+    
     position_value = net_qty * current_price
     
     # Use calculated actual position value from matched lots

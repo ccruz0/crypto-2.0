@@ -164,3 +164,7 @@ curl http://localhost:8002/api/dashboard | jq '.[0] | {symbol, price, rsi, ma50,
 # Run consistency report
 docker compose exec -T backend-aws python scripts/watchlist_consistency_check.py
 ```
+
+
+
+

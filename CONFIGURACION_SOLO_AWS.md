@@ -125,3 +125,8 @@ Después de la configuración, deberías tener:
    docker compose --profile aws exec backend-aws python3 -c "from app.services.telegram_notifier import TelegramNotifier; import inspect; print(inspect.getsource(TelegramNotifier.send_sl_tp_orders))" | grep -i "origin"
    ```
 
+
+
+
+
+

@@ -7,6 +7,7 @@ from app.models.trading_settings import TradingSettings
 from app.models.dashboard_cache import DashboardCache
 from app.models.telegram_message import TelegramMessage
 from app.models.signal_throttle import SignalThrottleState
+from app.models.telegram_state import TelegramState
 
 __all__ = [
     "WatchlistItem",
@@ -24,6 +25,7 @@ __all__ = [
     "DashboardCache",
     "TelegramMessage",
     "SignalThrottleState",
+    "TelegramState",
 ]
 
 

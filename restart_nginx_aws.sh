@@ -86,3 +86,8 @@ echo "🌐 Verifica el dashboard en: https://dashboard.hilovivo.com"
 echo "   El problema 502 debería estar resuelto ahora."
 echo ""
 
+
+
+
+
+

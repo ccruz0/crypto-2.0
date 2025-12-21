@@ -93,3 +93,8 @@ curl "http://localhost:8002/api/monitoring/telegram-messages?limit=50" | jq '.me
 - Se generen señales BUY que cumplan condiciones técnicas
 - El throttling las bloquee por cooldown o cambio de precio insuficiente
 
+
+
+
+
+

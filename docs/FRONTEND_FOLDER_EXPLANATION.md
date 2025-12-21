@@ -118,3 +118,8 @@ Para evitar confusión, considera:
 - Cambios fuera del directorio `frontend/`
 
 
+
+
+
+
+

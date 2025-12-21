@@ -150,3 +150,8 @@ if not watchlist_item:
 - Los cambios mejoran la robustez del sistema
 - El sistema ahora maneja mejor casos edge (símbolos nuevos, formatos de cantidad)
 
+
+
+
+
+

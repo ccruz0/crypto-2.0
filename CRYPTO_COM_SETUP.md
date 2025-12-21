@@ -2,6 +2,8 @@
 
 Esta guía explica cómo configurar la conexión a Crypto.com Exchange API.
 
+> **📌 IMPORTANTE PARA AWS**: Si estás desplegando en AWS, consulta primero [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AWS_CRYPTO_COM_CONNECTION.md) para la configuración estándar de producción.
+
 ## 📋 Opciones de Conexión
 
 Hay tres formas de conectar a Crypto.com Exchange:

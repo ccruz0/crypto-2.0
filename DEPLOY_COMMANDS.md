@@ -76,3 +76,7 @@ docker compose --profile aws exec backend-aws curl -f http://localhost:8002/ping
 3. **Transaction rollback fixes** (already committed):
    - Explicit rollback on database query errors
    - Prevents "transaction aborted" errors
+
+
+
+

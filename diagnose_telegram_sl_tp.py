@@ -161,3 +161,8 @@ print("📋 Para verificar los logs del backend:")
 print("   docker compose logs backend-aws | grep -i 'sl/tp\|telegram\|notification'")
 
 
+
+
+
+
+

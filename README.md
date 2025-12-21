@@ -65,6 +65,9 @@ cd /Users/carloscruz/automated-trading-platform
 bash scripts/aws_backend_logs.sh --tail 200
 ```
 
+**📌 AWS → Crypto.com Connection:**
+For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AWS_CRYPTO_COM_CONNECTION.md) for the standard connection configuration.
+
 ### Local Development (Dev Only - NOT Production)
 
 **⚠️ WARNING: Local setup is for development only. Do NOT use for production trading.**

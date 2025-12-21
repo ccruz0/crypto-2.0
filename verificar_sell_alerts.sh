@@ -23,3 +23,8 @@ db.commit()
 print(f'✅ Habilitado sell_alert_enabled para {len(items)} símbolos')
 db.close()
 \""
+
+
+
+
+

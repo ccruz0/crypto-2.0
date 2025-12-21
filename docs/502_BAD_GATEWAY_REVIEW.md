@@ -290,3 +290,8 @@ After resolving the 502 error:
 **Last Updated**: Based on current nginx configuration and docker-compose setup
 **Environment**: AWS production (hilovivo-aws)
 
+
+
+
+
+

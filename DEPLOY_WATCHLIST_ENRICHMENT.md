@@ -122,3 +122,7 @@ If issues occur:
 1. Check backend logs: `docker compose logs backend-aws`
 2. Run diagnostic: `python3 test_watchlist_enrichment.py`
 3. Check monitoring: `curl http://localhost:8002/api/monitoring/summary`
+
+
+
+

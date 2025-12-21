@@ -92,3 +92,8 @@ docker compose --profile aws logs -f backend-aws | grep -i "sl/tp\|telegram\|not
 - **Asegúrate de usar el servicio correcto** (`backend-aws` para producción con Telegram)
 
 
+
+
+
+
+

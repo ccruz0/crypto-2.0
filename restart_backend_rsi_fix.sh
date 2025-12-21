@@ -62,3 +62,8 @@ echo "💡 The RSI validation fix should now be active."
 echo "💡 SUI_USDT with RSI=47.93 should now show WAIT (not BUY) when threshold is 40."
 
 
+
+
+
+
+

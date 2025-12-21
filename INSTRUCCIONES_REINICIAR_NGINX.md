@@ -72,3 +72,8 @@ Este script verificará:
 - El problema es que nginx necesita reconectarse después de reinicios del backend
 - Reiniciar nginx es seguro y no afecta otras conexiones activas
 
+
+
+
+
+

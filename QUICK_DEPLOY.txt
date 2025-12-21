@@ -1,0 +1,12 @@
+# Quick Deploy - Copy and paste on AWS server
+
+cd /home/ubuntu/automated-trading-platform && \
+export HOME=/home/ubuntu && \
+git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null && \
+git pull origin main && \
+CONTAINER=$(docker ps --filter "name=market-updater" --format "{{.Names}}" | head -1) && \
+echo "Container: $CONTAINER" && \
+docker cp backend/app/services/signal_monitor.py $CONTAINER:/app/app/services/signal_monitor.py && \
+docker exec $CONTAINER grep "alert_origin = get_runtime_origin()" /app/app/services/signal_monitor.py && \
+docker compose --profile aws restart market-updater-aws && \
+echo "✅ Deployed!"

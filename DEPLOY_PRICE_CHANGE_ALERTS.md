@@ -79,3 +79,8 @@ git push origin main
 2. Verificar en el Dashboard que los mensajes almacenados incluyan el cambio porcentual
 3. Verificar que las alertas subsiguientes calculen correctamente el cambio desde la anterior
 
+
+
+
+
+

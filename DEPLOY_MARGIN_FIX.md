@@ -66,3 +66,8 @@ ssh hilovivo-aws 'docker compose --profile aws logs backend-aws --tail 50'
 
 - **Importante**: Este fix es crítico para margin trading. Sin él, las órdenes de margen pueden ser bloqueadas incorrectamente.
 - **Testing**: Verifica que las órdenes de margen se creen correctamente después del deploy.
+
+
+
+
+

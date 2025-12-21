@@ -84,3 +84,6 @@ gh run view <run-id> --log
 - All deployments use AWS EC2 Session Manager for secure access
 - Frontend is deployed from separate repository (ccruz0/frontend)
 
+
+
+

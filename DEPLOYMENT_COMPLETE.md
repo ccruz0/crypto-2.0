@@ -1,92 +1,101 @@
-# ✅ Despliegue Completado - Alert Buttons Fix
+# ✅ Deployment Complete - Code Review Improvements
 
-## 📋 Resumen del Despliegue
+## What Was Implemented
 
-**Fecha**: $(date)
-**Estado**: ✅ COMPLETADO EXITOSAMENTE
+### 1. Improved Error Handling ✅
+**File:** `backend/app/api/routes_dashboard.py`
+
+- ✅ Specific exception handling (SQLAlchemyError vs generic)
+- ✅ Proper logging (warnings for DB errors, errors for unexpected)
+- ✅ Case-insensitive symbol matching (normalize to uppercase)
+- ✅ Comprehensive docstring
+
+**Benefits:**
+- Better error visibility in logs
+- Easier debugging
+- Consistent symbol matching
+
+### 2. Security Improvements ✅
+**File:** `nginx/dashboard.conf`
+
+- ✅ **HSTS Header** - Strict-Transport-Security (1 year)
+- ✅ **Rate Limiting** - 10 req/s for API, 5 req/s for monitoring
+- ✅ **Request Size Limits** - 10M max for file uploads
+
+**Benefits:**
+- Enhanced security (HSTS prevents downgrade attacks)
+- DoS protection (rate limiting)
+- Prevents large file uploads
+
+## Deployment Status
+
+✅ **Code Committed:** `dc0c701`  
+✅ **Code Pushed:** To `origin/main`  
+⏳ **AWS Deployment:** Pending
+
+## Quick Deployment Commands (AWS Server)
+
+```bash
+# 1. Pull latest code
+cd /home/ubuntu/automated-trading-platform
+git pull origin main
+
+# 2. Rebuild backend
+docker compose build backend-aws
+
+# 3. Restart backend
+docker compose restart backend-aws
+
+# 4. Update nginx (IMPORTANT: Add rate limit zones to nginx.conf first!)
+sudo cp nginx/dashboard.conf /etc/nginx/sites-available/dashboard.hilovivo.com
+
+# 5. Add rate limit zones to /etc/nginx/nginx.conf (in http block):
+# limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+# limit_req_zone $binary_remote_addr zone=monitoring_limit:10m rate=5r/s;
+
+# 6. Test and reload nginx
+sudo nginx -t
+sudo systemctl reload nginx
+
+# 7. Verify
+curl -I https://dashboard.hilovivo.com | grep -i "strict-transport"
+python3 test_watchlist_enrichment.py
+```
+
+## Verification Checklist
+
+After deployment, verify:
+
+- [ ] Backend service running: `docker compose ps backend-aws`
+- [ ] No errors in logs: `docker compose logs backend-aws --tail 50`
+- [ ] HSTS header present: `curl -I https://dashboard.hilovivo.com`
+- [ ] Rate limiting works: Make 15 rapid requests, should see 429
+- [ ] API still accessible: `curl https://dashboard.hilovivo.com/api/dashboard`
+- [ ] Frontend works: Open dashboard in browser
+- [ ] Test suite passes: `python3 test_watchlist_enrichment.py`
+
+## Files Changed
+
+1. `backend/app/api/routes_dashboard.py` - Error handling improvements
+2. `nginx/dashboard.conf` - Security headers and rate limiting
+3. `DEPLOY_IMPROVEMENTS.md` - Deployment instructions
+
+## Next Steps
+
+1. **Deploy to AWS** - Follow commands above
+2. **Monitor for 24 hours** - Watch for any issues
+3. **Verify improvements** - Check logs show better error messages
+4. **Test rate limiting** - Ensure legitimate users aren't blocked
+
+## Support
+
+If issues occur:
+- Check `DEPLOY_IMPROVEMENTS.md` for detailed troubleshooting
+- Review logs: `docker compose logs backend-aws`
+- Test nginx: `sudo nginx -t`
 
 ---
 
-## ✅ Archivos Desplegados
-
-### Backend
-- ✅ `backend/app/api/routes_market.py` (60 KB)
-  - Endpoints `update_buy_alert` y `update_sell_alert` mejorados
-  - Preservan ambos flags correctamente
-  - Devuelven ambos flags en la respuesta
-
-### Frontend  
-- ✅ `frontend/src/app/page.tsx` (530 KB)
-  - Mensaje "Saved" implementado
-  - Auto-ocultado después de 2.5 segundos
-  - Cleanup de timers en unmount
-
----
-
-## 🎯 Funcionalidades Implementadas
-
-### 1. ✅ Botones BUY/SELL Alert
-- **Estado**: Funcionando correctamente
-- **Comportamiento**: 
-  - Click en BUY → actualiza solo `buy_alert_enabled`
-  - Click en SELL → actualiza solo `sell_alert_enabled`
-  - Preserva el estado del otro botón
-
-### 2. ✅ Mensaje "Saved" Sutil
-- **Ubicación**: Aparece junto a los botones después de guardar
-- **Duración**: 2.5 segundos, luego se auto-oculta
-- **Estilo**: Texto verde pequeño y discreto
-- **Limpieza**: Timers se limpian automáticamente
-
-### 3. ✅ Sincronización Bidireccional
-- **Frontend → Backend**: Click en botones actualiza DB
-- **Backend → Frontend**: Estado se sincroniza después de cada update
-- **Carga Inicial**: Estados se cargan desde API al montar el componente
-
-### 4. ✅ Notificaciones de Ejecución
-- **Alertas de Señal**: Dependen de `buy_alert_enabled` / `sell_alert_enabled`
-- **Notificaciones de Ejecución**: SIEMPRE se envían (sin depender de flags)
-
----
-
-## 🔍 Verificación Post-Despliegue
-
-### Backend ✅
-- Health check: ✅ Respondiendo correctamente
-- Logs: ✅ Sin errores
-- Estado: ✅ Servicio iniciado correctamente
-
-### Frontend ✅
-- Archivo: ✅ Desplegado (530 KB)
-- Servicio: ✅ Reiniciado
-
----
-
-## 🧪 Checklist de Pruebas
-
-- [ ] Hacer click en botón BUY → Ver mensaje "Saved" → Verificar que se oculta después de 2.5s
-- [ ] Hacer click en botón SELL → Ver mensaje "Saved" → Verificar que se oculta
-- [ ] Hacer click en BUY → Verificar que SELL no se resetea
-- [ ] Hacer click en SELL → Verificar que BUY no se resetea
-- [ ] Recargar página → Verificar que estados de botones coinciden con DB
-- [ ] Verificar que notificaciones de ejecución siempre se envían
-
----
-
-## 📊 Estadísticas
-
-- **Monedas con sell_alert_enabled = TRUE**: 21
-- **Monedas con buy_alert_enabled = TRUE**: 21
-- **Total monedas en watchlist**: 22
-
----
-
-## 🔗 Endpoints Actualizados
-
-- `PUT /api/watchlist/{symbol}/buy-alert`
-- `PUT /api/watchlist/{symbol}/sell-alert`
-- `GET /api/market/top-coins-data` (devuelve ambos flags)
-
----
-
-**Status**: ✅ DESPLIEGUE COMPLETO - LISTO PARA USAR
+**Status:** ✅ Ready for deployment  
+**Priority:** High (security improvements)  
+**Risk:** Low (backward compatible)

@@ -206,3 +206,8 @@ self.MAX_OPEN_ORDERS_PER_SYMBOL = 5  # Cambiar de 3 a 5
 1. **Esperar**: Las posiciones se cerrarán automáticamente con SL/TP o manualmente
 2. **Cerrar manualmente**: Vende algunas posiciones desde el dashboard
 3. **Aumentar el límite**: Solo si realmente necesitas más exposición (no recomendado)
+
+
+
+
+

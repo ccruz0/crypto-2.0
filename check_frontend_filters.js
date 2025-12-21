@@ -25,3 +25,8 @@ console.log('📋 Watchlist order:', Object.keys(watchlistOrder).length, 'coins'
 console.log('💡 Tip: Check the Network tab to see if BTC_USDT is in the /api/market/top-coins-data response');
 
 
+
+
+
+
+
