@@ -2612,14 +2612,18 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     
     chat_id = str(message["chat"]["id"])
     text = message.get("text", "")
+    from_user = message.get("from", {})
+    user_id = str(from_user.get("id", "")) if from_user else ""
     
-    # Only authorized user
-    if chat_id != AUTH_CHAT_ID:
-        logger.warning(f"[TG][DENY] chat_id={chat_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, command={text[:50]}")
+    # Only authorized user - check both chat_id (for private chats) and user_id (for groups)
+    # In groups, chat_id is the group ID, so we need to check user_id
+    is_authorized = (chat_id == AUTH_CHAT_ID) or (user_id == AUTH_CHAT_ID)
+    if not is_authorized:
+        logger.warning(f"[TG][DENY] chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, command={text[:50]}")
         send_command_response(chat_id, "⛔ Not authorized")
         return
     else:
-        logger.debug(f"[TG][AUTH] Authorized chat_id={chat_id} for command={text[:50]}")
+        logger.debug(f"[TG][AUTH] Authorized chat_id={chat_id}, user_id={user_id} for command={text[:50]}")
     
     # Parse command
     text = text.strip()
