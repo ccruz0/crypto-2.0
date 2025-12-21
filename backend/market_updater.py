@@ -130,8 +130,14 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
                         "c": float(candle.get("c", 0)),  # close
                         "v": float(candle.get("v", 0))   # volume
                     })
-                logger.debug(f"✅ Fetched {len(ohlcv_data)} candles from Crypto.com for {symbol} (normalized: {normalized_symbol})")
-                return ohlcv_data
+                # CRITICAL: Crypto.com API v1 only returns ~25 candles by default
+                # If we need more than 50 candles (for RSI/MA calculations), use Binance fallback
+                if len(ohlcv_data) < 50 and limit >= 50:
+                    logger.debug(f"⚠️ Crypto.com only returned {len(ohlcv_data)} candles for {symbol} (need {limit}), trying Binance fallback for more data")
+                    # Fall through to Binance fallback to get more candles
+                else:
+                    logger.debug(f"✅ Fetched {len(ohlcv_data)} candles from Crypto.com for {symbol} (normalized: {normalized_symbol})")
+                    return ohlcv_data
     except requests.exceptions.HTTPError as e:
         # HTTP error (404, 400, etc.) - Crypto.com doesn't have this pair
         logger.debug(f"Crypto.com HTTP error for {symbol}: {e}, trying Binance fallback...")
@@ -184,6 +190,9 @@ def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Opt
                     "v": float(kline[5])   # volume
                 })
             logger.info(f"✅ Fetched {len(ohlcv_data)} candles from Binance for {symbol} (Binance symbol: {binance_symbol})")
+            # Warn if insufficient data for proper RSI calculation
+            if len(ohlcv_data) < 50:
+                logger.warning(f"⚠️ Only {len(ohlcv_data)} candles for {symbol} (need 50+ for reliable RSI calculation)")
             return ohlcv_data
         else:
             logger.warning(f"No OHLCV data from Binance for {symbol} (Binance symbol: {binance_symbol})")
@@ -608,9 +617,10 @@ async def update_market_data():
                             
                             if ohlcv_data_1h:
                                 indicators = calculate_technical_indicators(ohlcv_data_1h, current_price, ohlcv_data_daily=ohlcv_data_1d, ohlcv_data_volume=ohlcv_data_5m)
-                                logger.debug(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}, Volume ratio={indicators.get('volume_ratio', 0):.2f}x")
+                                # Log at INFO level so it's visible in production logs
+                                logger.info(f"✅ Indicators for {symbol}: RSI={indicators.get('rsi', 0):.1f}, MA50={indicators.get('ma50', 0):.2f}, MA10w={indicators.get('ma10w', 0):.2f}, Volume ratio={indicators.get('volume_ratio', 0):.2f}x (candles: {len(ohlcv_data_1h)})")
                             else:
-                                logger.debug(f"⚠️ No OHLCV data for {symbol}, using defaults")
+                                logger.warning(f"⚠️ No OHLCV data for {symbol}, using defaults (price={current_price})")
                                 # Use defaults
                                 indicators = calculate_technical_indicators([], current_price, ohlcv_data_daily=None, ohlcv_data_volume=None)
                         except Exception as e:
