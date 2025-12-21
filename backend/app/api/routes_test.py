@@ -409,7 +409,18 @@ async def simulate_alert(
                             )
                             logger.info(f"🔍 [Background] _create_buy_order returned: {order_result}")
                             
-                            if order_result:
+                            # Check if this is an authentication error (already handled with specific message)
+                            is_auth_error = (
+                                order_result and 
+                                isinstance(order_result, dict) and 
+                                order_result.get("error_type") == "authentication"
+                            )
+                            
+                            if is_auth_error:
+                                # Authentication error was already handled with a specific message in _create_buy_order
+                                # Don't send redundant generic message
+                                logger.info(f"🔐 [Background] Authentication error detected for {symbol} - specific error message already sent, skipping generic message")
+                            elif order_result and (order_result.get("order_id") or order_result.get("client_order_id")):
                                 order_id = order_result.get("order_id") or order_result.get("client_order_id")
                                 logger.info(f"✅ [Background] BUY order created successfully for {symbol}: order_id={order_id}")
                                 
@@ -468,6 +479,7 @@ async def simulate_alert(
                                 else:
                                     logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
                             else:
+                                # Order creation failed for non-authentication reasons
                                 error_msg = f"⚠️ La creación de orden retornó None para {symbol}. Esto puede deberse a:\n- Límite de órdenes abiertas alcanzado\n- Verificación de seguridad bloqueó la orden\n- Error interno en la creación de orden"
                                 logger.warning(f"⚠️ [Background] Order creation returned None for {symbol}")
                                 
@@ -624,7 +636,18 @@ async def simulate_alert(
                             )
                             logger.info(f"🔍 [Background] _create_sell_order returned: {order_result}")
                             
-                            if order_result:
+                            # Check if this is an authentication error (already handled with specific message)
+                            is_auth_error = (
+                                order_result and 
+                                isinstance(order_result, dict) and 
+                                order_result.get("error_type") == "authentication"
+                            )
+                            
+                            if is_auth_error:
+                                # Authentication error was already handled with a specific message in _create_sell_order
+                                # Don't send redundant generic message
+                                logger.info(f"🔐 [Background] Authentication error detected for SELL {symbol} - specific error message already sent, skipping generic message")
+                            elif order_result and (order_result.get("order_id") or order_result.get("client_order_id")):
                                 order_id = order_result.get("order_id") or order_result.get("client_order_id")
                                 logger.info(f"✅ [Background] SELL order created successfully for {symbol}: order_id={order_id}")
                                 
@@ -644,7 +667,7 @@ async def simulate_alert(
                                 else:
                                     logger.info(f"ℹ️ [Background] Order {order_id} status={order_status} - SL/TP will be created when order is filled")
                             else:
-                                logger.warning(f"⚠️ [Background] SELL order creation returned None for {symbol}")
+                                logger.warning(f"⚠️ [Background] SELL order creation returned None or failed for {symbol}")
                                 
                         except Exception as order_err:
                             logger.error(f"❌ [Background] Error creating SELL order for {symbol}: {order_err}", exc_info=True)

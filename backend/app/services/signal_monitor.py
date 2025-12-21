@@ -2725,6 +2725,50 @@ class SignalMonitorService:
                 logger.error(f"📊 FAILED ORDER DETAILS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}, dry_run={dry_run_mode}")
                 
                 # ========================================================================
+                # AUTHENTICATION ERROR HANDLING: Do NOT attempt fallbacks for auth errors
+                # ========================================================================
+                # Authentication errors (401, 40101, 40103) indicate API credential or IP whitelist issues
+                # These cannot be fixed by trying SPOT instead of MARGIN or reducing leverage
+                # We should fail immediately with a clear error message
+                error_msg_str = str(error_msg).upper() if error_msg else ""
+                is_auth_error = (
+                    "401" in error_msg_str or
+                    "40101" in error_msg_str or
+                    "40103" in error_msg_str or
+                    "AUTHENTICATION FAILED" in error_msg_str or
+                    "AUTHENTICATION FAILURE" in error_msg_str
+                )
+                
+                if is_auth_error:
+                    logger.error(
+                        f"🔐 AUTHENTICATION ERROR detected for {symbol}: {error_msg}. "
+                        f"This is a configuration issue (API keys, IP whitelist) and cannot be fixed by fallbacks."
+                    )
+                    # Send specific authentication error notification
+                    try:
+                        telegram_notifier.send_message(
+                            f"🔐 <b>AUTOMATIC ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"🟢 Side: BUY\n"
+                            f"💰 Amount: ${amount_usd:,.2f}\n"
+                            f"📊 Type: {'MARGIN' if use_margin else 'SPOT'}\n"
+                            f"❌ Error: <b>Authentication failed: {error_msg}</b>\n\n"
+                            f"⚠️ <b>This is a configuration issue:</b>\n"
+                            f"• Check API credentials (API key and secret)\n"
+                            f"• Verify IP address is whitelisted in Crypto.com Exchange\n"
+                            f"• Ensure API key has trading permissions\n"
+                            f"• Check if API key is expired or revoked\n\n"
+                            f"📊 Trade enabled status: True (order was attempted because trade_enabled=True at that time)\n\n"
+                            f"⚠️ The symbol remains in your watchlist. Please fix the authentication configuration and try again."
+                        )
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send Telegram authentication error notification: {notify_err}")
+                    
+                    # Return error details instead of None so callers can detect authentication errors
+                    # and skip sending redundant generic error messages
+                    return {"error": "authentication", "error_type": "authentication", "message": error_msg}
+                
+                # ========================================================================
                 # FALLBACK 1: Error 609 (INSUFFICIENT_MARGIN) - No hay suficiente margen disponible
                 # ========================================================================
                 # Si falla con error 609, significa que la cuenta no tiene suficiente margen
@@ -3380,6 +3424,47 @@ class SignalMonitorService:
                 error_msg = result.get("error", "Unknown error") if result else "No response"
                 logger.error(f"❌ SELL order creation failed for {symbol}: {error_msg}")
                 
+                # ========================================================================
+                # AUTHENTICATION ERROR HANDLING: Do NOT attempt fallbacks for auth errors
+                # ========================================================================
+                error_msg_str = str(error_msg).upper() if error_msg else ""
+                is_auth_error = (
+                    "401" in error_msg_str or
+                    "40101" in error_msg_str or
+                    "40103" in error_msg_str or
+                    "AUTHENTICATION FAILED" in error_msg_str or
+                    "AUTHENTICATION FAILURE" in error_msg_str
+                )
+                
+                if is_auth_error:
+                    logger.error(
+                        f"🔐 AUTHENTICATION ERROR detected for SELL {symbol}: {error_msg}. "
+                        f"This is a configuration issue (API keys, IP whitelist) and cannot be fixed by fallbacks."
+                    )
+                    # Send specific authentication error notification
+                    try:
+                        telegram_notifier.send_message(
+                            f"🔐 <b>AUTOMATIC SELL ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"🔴 Side: SELL\n"
+                            f"💰 Amount: ${amount_usd:,.2f}\n"
+                            f"📦 Quantity: {qty:.8f}\n"
+                            f"📊 Type: {'MARGIN' if use_margin else 'SPOT'}\n"
+                            f"❌ Error: <b>Authentication failed: {error_msg}</b>\n\n"
+                            f"⚠️ <b>This is a configuration issue:</b>\n"
+                            f"• Check API credentials (API key and secret)\n"
+                            f"• Verify IP address is whitelisted in Crypto.com Exchange\n"
+                            f"• Ensure API key has trading permissions\n"
+                            f"• Check if API key is expired or revoked\n\n"
+                            f"⚠️ The symbol remains in your watchlist. Please fix the authentication configuration and try again."
+                        )
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send Telegram authentication error notification: {notify_err}")
+                    
+                    # Return error details instead of None so callers can detect authentication errors
+                    return {"error": "authentication", "error_type": "authentication", "message": error_msg}
+                
+                # For non-authentication errors, send generic error notification
                 try:
                     telegram_notifier.send_message(
                         f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
