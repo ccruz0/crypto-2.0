@@ -925,6 +925,7 @@ def get_open_orders(
                 "client_oid": order.client_oid,
                 "instrument_name": order.symbol,
                 "order_type": order.order_type or "LIMIT",
+                "order_role": order.order_role,  # CRITICAL: Include order_role for TP/SL identification
                 "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
                 "quantity": float(order.quantity) if order.quantity else 0.0,
