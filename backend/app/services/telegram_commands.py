@@ -2720,8 +2720,21 @@ def process_telegram_commands(db: Session = None) -> None:
         # Long polling: Telegram will wait up to 30 seconds for new messages
         # This allows immediate processing when a command is sent
         offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
-        logger.info(f"[TG] Calling get_telegram_updates with offset={offset}")
-        updates = get_telegram_updates(offset=offset)
+        logger.info(f"[TG] Calling get_telegram_updates with offset={offset} (LAST_UPDATE_ID={LAST_UPDATE_ID})")
+        
+        # If LAST_UPDATE_ID is very high, there might be a gap - try getting updates without offset first
+        # to see if Telegram has any pending updates
+        if LAST_UPDATE_ID > 1000000:  # If update ID is very high, check for pending updates
+            logger.info(f"[TG] High LAST_UPDATE_ID detected ({LAST_UPDATE_ID}), checking for pending updates without offset")
+            pending_updates = get_telegram_updates(offset=None)
+            if pending_updates:
+                logger.warning(f"[TG] Found {len(pending_updates)} pending updates without offset! This suggests updates were missed.")
+                # Process these updates
+                updates = pending_updates
+            else:
+                updates = get_telegram_updates(offset=offset)
+        else:
+            updates = get_telegram_updates(offset=offset)
         
         update_count = len(updates) if updates else 0
         logger.info(f"[TG] get_telegram_updates returned {update_count} updates")
