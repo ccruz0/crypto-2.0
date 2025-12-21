@@ -714,23 +714,81 @@ def send_command_response(chat_id: str, message: str) -> bool:
         return False
 
 
-def send_welcome_message(chat_id: str) -> bool:
-    """Send welcome message with menu"""
+def _setup_custom_keyboard(chat_id: str) -> bool:
+    """Set up custom keyboard with persistent buttons at the bottom of the chat"""
+    if not TELEGRAM_ENABLED:
+        return False
     try:
-        # Show the main menu instead of just text commands
+        # Create custom keyboard with buttons
+        keyboard = {
+            "keyboard": [
+                [{"text": "🚀 Start"}],
+                [{"text": "📊 Status"}, {"text": "💰 Portfolio"}],
+                [{"text": "📈 Signals"}, {"text": "📋 Watchlist"}],
+                [{"text": "⚙️ Menu"}, {"text": "❓ Help"}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False  # Keep keyboard persistent
+        }
+        
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": "🎉 <b>Welcome! Use the buttons below to interact with the bot.</b>",
+            "parse_mode": "HTML",
+            "reply_markup": keyboard
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"[TG] Custom keyboard set up for chat_id={chat_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to setup custom keyboard: {e}", exc_info=True)
+        return False
+
+
+def send_welcome_message(chat_id: str) -> bool:
+    """Send welcome message with menu and custom keyboard"""
+    try:
+        # Set up custom keyboard first
+        _setup_custom_keyboard(chat_id)
+        
+        # Show the main menu
         return show_main_menu(chat_id, db=None)
     except Exception as e:
         logger.error(f"[TG][ERROR] Error in welcome message: {e}", exc_info=True)
-        # Fallback to text message with menu button
-        message = """🎉 <b>Welcome to Trading Bot</b>
+        # Fallback to text message with custom keyboard
+        try:
+            keyboard = {
+                "keyboard": [
+                    [{"text": "🚀 Start"}],
+                    [{"text": "📊 Status"}, {"text": "💰 Portfolio"}],
+                    [{"text": "📈 Signals"}, {"text": "📋 Watchlist"}],
+                    [{"text": "⚙️ Menu"}, {"text": "❓ Help"}]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": False
+            }
+            
+            message = """🎉 <b>Welcome to Trading Bot</b>
 
-Use the menu below to access all features.
+Use the buttons below or type commands to interact.
 
 <b>Note:</b> Only authorized users can use these commands."""
-        keyboard = _build_keyboard([
-            [{"text": "📋 Open Main Menu", "callback_data": "menu:main"}]
-        ])
-        return _send_menu_message(chat_id, message, keyboard)
+            
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "reply_markup": keyboard
+            }
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            return True
+        except Exception as e2:
+            logger.error(f"[TG][ERROR] Failed to send fallback welcome message: {e2}", exc_info=True)
+            return False
 
 
 def send_help_message(chat_id: str) -> bool:
@@ -2782,6 +2840,22 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     if PENDING_VALUE_INPUTS.get(chat_id) and db:
         if _handle_pending_value_message(chat_id, text, db):
             return
+    
+    # Handle custom keyboard button presses
+    if text == "🚀 Start" or text == "Start":
+        text = "/start"
+    elif text == "📊 Status" or text == "Status":
+        text = "/status"
+    elif text == "💰 Portfolio" or text == "Portfolio":
+        text = "/portfolio"
+    elif text == "📈 Signals" or text == "Signals":
+        text = "/signals"
+    elif text == "📋 Watchlist" or text == "Watchlist":
+        text = "/watchlist"
+    elif text == "⚙️ Menu" or text == "Menu":
+        text = "/menu"
+    elif text == "❓ Help" or text == "Help":
+        text = "/help"
     
     # Check if user is entering a value for a pending strategy setting
     # Try to parse as number - if successful, check if there's a pending strategy selection
