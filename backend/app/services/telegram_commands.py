@@ -2723,11 +2723,13 @@ def process_telegram_commands(db: Session = None) -> None:
         logger.info(f"[TG] Calling get_telegram_updates with offset={offset}")
         updates = get_telegram_updates(offset=offset)
         
-        logger.info(f"[TG] get_telegram_updates returned {len(updates) if updates else 0} updates")
+        update_count = len(updates) if updates else 0
+        logger.info(f"[TG] get_telegram_updates returned {update_count} updates")
         
         if not updates:
             # No new updates (this is normal with long polling timeout)
-            logger.info(f"[TG] No updates received (normal with long polling timeout)")
+            # But also check if there are pending updates that we're missing
+            logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
             return
         
         logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
@@ -2754,12 +2756,15 @@ def process_telegram_commands(db: Session = None) -> None:
             
             # Process update immediately
             try:
+                logger.info(f"[TG] Calling handle_telegram_update for update_id={update_id}")
                 handle_telegram_update(update, db)
+                logger.info(f"[TG] Successfully processed update_id={update_id}")
             except Exception as handle_error:
                 logger.error(f"[TG] Error handling update {update_id}: {handle_error}", exc_info=True)
             
             # Update last processed ID
             LAST_UPDATE_ID = update_id
+            logger.info(f"[TG] Updated LAST_UPDATE_ID to {LAST_UPDATE_ID}")
             
     except Exception as e:
         logger.error(f"[TG] Error processing commands: {e}", exc_info=True)
