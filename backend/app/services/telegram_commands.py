@@ -2622,6 +2622,13 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     # Parse command
     text = text.strip()
     
+    # Handle commands with @botname in groups (e.g., "/start@Hilovivolocal_bot")
+    # Strip the @botname part to get the actual command
+    if "@" in text and text.startswith("/"):
+        # Extract command part before @
+        text = text.split("@")[0].strip()
+        logger.debug(f"[TG] Stripped @botname from command, new text: {text}")
+    
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
     # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)
     # This prevents the same /start command from being processed by both local and AWS instances
