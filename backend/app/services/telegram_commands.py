@@ -445,7 +445,7 @@ def setup_bot_commands():
         return False
 
 
-def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
+def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optional[int] = None) -> List[Dict]:
     """Get updates from Telegram API using long polling with file lock to prevent 409 conflicts
     
     RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
@@ -491,10 +491,12 @@ def get_telegram_updates(offset: Optional[int] = None) -> List[Dict]:
                     params["offset"] = offset
                 # Use long polling: Telegram will wait up to 30 seconds for new messages
                 # This allows real-time command processing
-                params["timeout"] = 30
+                # Allow timeout override for quick checks
+                params["timeout"] = timeout_override if timeout_override is not None else 30
                 
-                # Increase timeout to 35 seconds to account for network delay
-                response = requests.get(url, params=params, timeout=35)
+                # Increase timeout to account for network delay
+                request_timeout = (timeout_override + 5) if timeout_override else 35
+                response = requests.get(url, params=params, timeout=request_timeout)
                 response.raise_for_status()
                 
                 data = response.json()
@@ -2748,9 +2750,23 @@ def process_telegram_commands(db: Session = None) -> None:
         
         if not updates:
             # No new updates (this is normal with long polling timeout)
-            # But also check if there are pending updates that we're missing
-            logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
-            return
+            # ALTERNATIVE APPROACH: If no updates with offset, try without offset to catch missed updates
+            # This helps when LAST_UPDATE_ID is ahead of what Telegram has
+            logger.info(f"[TG] No updates received with offset={offset}, trying without offset to catch missed updates...")
+            try:
+                # Get updates without offset to see if Telegram has any pending
+                # Use a short timeout (1 second) to avoid blocking
+                logger.info(f"[TG] Checking for pending updates without offset (quick check)...")
+                pending_check = get_telegram_updates(offset=None, timeout_override=1)
+                if pending_check:
+                    logger.warning(f"[TG] Found {len(pending_check)} pending updates without offset! Processing them now.")
+                    updates = pending_check
+                else:
+                    logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
+                    return
+            except Exception as pending_err:
+                logger.debug(f"[TG] Error checking pending updates: {pending_err}")
+                return
         
         logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
         
