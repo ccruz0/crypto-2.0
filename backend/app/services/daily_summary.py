@@ -109,10 +109,12 @@ class DailySummaryService:
                 'errors': errors
             }
             
-            # If all calls failed, return None to trigger error message
+            # Always return result, even if all calls failed
+            # The send_daily_summary method will handle empty data gracefully
             if errors and not balance_data and not open_orders and not recent_orders:
-                logger.error(f"All portfolio summary calls failed: {errors}")
-                return None
+                logger.warning(f"All portfolio summary calls failed: {errors}")
+                # Still return the result structure so send_daily_summary can show a helpful message
+                return result
             
             return result
             
@@ -199,29 +201,48 @@ class DailySummaryService:
             # Get portfolio data
             portfolio_data = self.get_portfolio_summary()
             
-            if portfolio_data is None:
-                error_msg = "❌ No se pudo generar el resumen diario"
-                logger.error(error_msg)
-                self.telegram.send_message(error_msg)
-                return
-            
             # Check if there were errors but we still have some data
-            errors = portfolio_data.get('errors', [])
-            if errors:
-                logger.warning(f"Daily summary generated with some errors: {errors}")
+            errors = portfolio_data.get('errors', []) if portfolio_data else []
             
             # Create summary message
             message = f"🌅 **Resumen Diario - {datetime.now().strftime('%d/%m/%Y')}**\n\n"
             
-            # Add balance summary
-            message += self.format_balance_summary(portfolio_data.get('balance', {}))
+            # If we have no data at all, send a minimal summary with error info
+            if portfolio_data is None:
+                message += "⚠️ **No se pudo obtener datos del portfolio**\n\n"
+                message += "Posibles causas:\n"
+                message += "• Problemas de conexión con el exchange\n"
+                message += "• Error de autenticación\n"
+                message += "• El servicio de trading no está disponible\n\n"
+                message += f"⏰ Generado: {datetime.now().strftime('%H:%M:%S')}\n"
+                message += "🤖 Trading Bot Automático"
+                
+                logger.warning("Daily summary: No portfolio data available, sending minimal summary")
+                success = self.telegram.send_message(message)
+                if success:
+                    logger.info("Daily summary (minimal) sent successfully")
+                else:
+                    logger.error("Failed to send daily summary")
+                return
+            
+            # Add balance summary (handle empty balance gracefully)
+            balance = portfolio_data.get('balance', {})
+            if balance:
+                message += self.format_balance_summary(balance)
+            else:
+                message += "💰 **Balance de Cuenta**\n"
+                message += "❌ No se pudo obtener el balance\n"
             message += "\n"
             
             # Add orders summary
-            message += self.format_orders_summary(
-                portfolio_data.get('open_orders', []),
-                portfolio_data.get('recent_orders', [])
-            )
+            open_orders = portfolio_data.get('open_orders', [])
+            recent_orders = portfolio_data.get('recent_orders', [])
+            
+            if open_orders or recent_orders:
+                message += self.format_orders_summary(open_orders, recent_orders)
+            else:
+                message += "📋 **Órdenes**\n"
+                message += "ℹ️ No hay órdenes activas o recientes para mostrar\n"
             
             # Add footer
             message += f"\n⏰ Generado: {datetime.now().strftime('%H:%M:%S')}"
@@ -231,7 +252,9 @@ class DailySummaryService:
             if errors:
                 message += f"\n\n⚠️ Advertencias: {len(errors)} error(es) durante la obtención de datos"
                 for error in errors[:3]:  # Show first 3 errors
-                    message += f"\n  • {error[:100]}"  # Truncate long errors
+                    # Truncate long errors and remove newlines
+                    error_clean = error[:100].replace('\n', ' ')
+                    message += f"\n  • {error_clean}"
             
             # Send message
             success = self.telegram.send_message(message)
@@ -242,8 +265,12 @@ class DailySummaryService:
                 logger.error("Failed to send daily summary")
                 
         except Exception as e:
-            logger.error(f"Error sending daily summary: {e}")
-            self.telegram.send_message(f"❌ Error en resumen diario: {str(e)}")
+            error_msg = f"Error sending daily summary: {e}"
+            logger.error(error_msg, exc_info=True)
+            try:
+                self.telegram.send_message(f"❌ Error en resumen diario: {str(e)[:200]}")
+            except Exception as e2:
+                logger.error(f"Failed to send error message: {e2}", exc_info=True)
 
     def send_sell_orders_report(self, db: Session = None):
         """
