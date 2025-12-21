@@ -612,13 +612,13 @@ def setup_bot_commands():
 
 
 def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optional[int] = None, db: Optional[Session] = None) -> List[Dict]:
-    """Get updates from Telegram API using long polling with PostgreSQL advisory lock.
+    """Get updates from Telegram API using long polling.
     
     RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
     LOCAL runtime should not poll, as AWS is already polling.
     
-    LOCK MECHANISM: Uses PostgreSQL advisory lock to ensure only one poller across all instances.
-    If lock cannot be acquired, returns empty list (another poller is active).
+    NOTE: Lock acquisition is handled by the caller (process_telegram_commands).
+    This function assumes the lock is already held.
     """
     # RUNTIME GUARD: Only AWS should poll Telegram
     if not is_aws_runtime():
@@ -627,25 +627,6 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
     
     if not TELEGRAM_ENABLED:
         return []
-    
-    # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
-    if db:
-        if not _acquire_poller_lock(db):
-            logger.debug("[TG] Another poller is active, skipping this cycle")
-            return []
-    elif not _POLLER_LOCK_ACQUIRED:
-        # If no DB session provided and lock not already acquired, try to get one
-        try:
-            temp_db = SessionLocal()
-            try:
-                if not _acquire_poller_lock(temp_db):
-                    logger.debug("[TG] Another poller is active, skipping this cycle")
-                    return []
-            finally:
-                temp_db.close()
-        except Exception as e:
-            logger.error(f"[TG] Error acquiring poller lock: {e}")
-            return []
     
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
@@ -2881,97 +2862,106 @@ def process_telegram_commands(db: Session = None) -> None:
         db_created = False
     
     try:
-        # Load LAST_UPDATE_ID from DB on first call or if not loaded
-        if LAST_UPDATE_ID == 0:
-            _load_last_update_id(db)
+        # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
+        # If lock cannot be acquired, another poller is active - skip this cycle
+        if not _acquire_poller_lock(db):
+            logger.debug("[TG] Another poller is active, skipping this cycle")
+            return
         
-        logger.info(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
-        
-        # Normal polling: use offset = LAST_UPDATE_ID + 1
-        offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
-        logger.info(f"[TG] Calling get_telegram_updates with offset={offset} (LAST_UPDATE_ID={LAST_UPDATE_ID})")
-        
-        # Get updates (this will acquire PostgreSQL advisory lock)
-        updates = get_telegram_updates(offset=offset, db=db)
-        
-        update_count = len(updates) if updates else 0
-        logger.info(f"[TG] get_telegram_updates returned {update_count} updates")
-        
-        if not updates:
-            # No updates received - increment counter
-            _NO_UPDATE_COUNT += 1
+        try:
+            # Load LAST_UPDATE_ID from DB on first call or if not loaded
+            if LAST_UPDATE_ID == 0:
+                _load_last_update_id(db)
             
-            # After N consecutive cycles (10) with no updates, probe without offset
-            if _NO_UPDATE_COUNT >= 10:
-                logger.warning(f"[TG] No updates for {_NO_UPDATE_COUNT} consecutive cycles, probing without offset...")
-                probe_updates = _probe_updates_without_offset()
-                
-                if probe_updates:
-                    # Found updates older than LAST_UPDATE_ID - adjust offset
-                    max_probe_id = max(u.get("update_id", 0) for u in probe_updates)
-                    if max_probe_id > 0 and max_probe_id < LAST_UPDATE_ID:
-                        new_last_id = max_probe_id - 1
-                        logger.warning(f"[TG] Probe found updates older than LAST_UPDATE_ID. Adjusting from {LAST_UPDATE_ID} to {new_last_id}")
-                        _save_last_update_id(db, new_last_id)
-                        LAST_UPDATE_ID = new_last_id
-                        # Retry with corrected offset
-                        offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
-                        updates = get_telegram_updates(offset=offset, db=db)
-                        if updates:
-                            _NO_UPDATE_COUNT = 0
-                            logger.info(f"[TG] Probe recovery successful, received {len(updates)} updates")
-                
-                # Reset counter after probe
-                _NO_UPDATE_COUNT = 0
+            logger.info(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
+            
+            # Normal polling: use offset = LAST_UPDATE_ID + 1
+            offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
+            logger.info(f"[TG] Calling get_telegram_updates with offset={offset} (LAST_UPDATE_ID={LAST_UPDATE_ID})")
+            
+            # Get updates (lock is already held)
+            updates = get_telegram_updates(offset=offset, db=db)
+            
+            update_count = len(updates) if updates else 0
+            logger.info(f"[TG] get_telegram_updates returned {update_count} updates")
             
             if not updates:
-                logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
-                return
-        
-        # Reset counter when we receive updates
-        _NO_UPDATE_COUNT = 0
-        
-        logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
-        
-        for update in updates:
-            update_id = update.get("update_id", 0)
-            message = update.get("message") or update.get("edited_message")
-            callback_query = update.get("callback_query")
+                # No updates received - increment counter
+                _NO_UPDATE_COUNT += 1
+                
+                # After N consecutive cycles (10) with no updates, probe without offset
+                if _NO_UPDATE_COUNT >= 10:
+                    logger.warning(f"[TG] No updates for {_NO_UPDATE_COUNT} consecutive cycles, probing without offset...")
+                    probe_updates = _probe_updates_without_offset()
+                    
+                    if probe_updates:
+                        # Found updates older than LAST_UPDATE_ID - adjust offset
+                        max_probe_id = max(u.get("update_id", 0) for u in probe_updates)
+                        if max_probe_id > 0 and max_probe_id < LAST_UPDATE_ID:
+                            new_last_id = max_probe_id - 1
+                            logger.warning(f"[TG] Probe found updates older than LAST_UPDATE_ID. Adjusting from {LAST_UPDATE_ID} to {new_last_id}")
+                            _save_last_update_id(db, new_last_id)
+                            LAST_UPDATE_ID = new_last_id
+                            # Retry with corrected offset
+                            offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
+                            updates = get_telegram_updates(offset=offset, db=db)
+                            if updates:
+                                _NO_UPDATE_COUNT = 0
+                                logger.info(f"[TG] Probe recovery successful, received {len(updates)} updates")
+                    
+                    # Reset counter after probe
+                    _NO_UPDATE_COUNT = 0
+                
+                if not updates:
+                    logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
+                    return
             
-            if callback_query:
-                callback_data = callback_query.get("data", "")
-                from_user = callback_query.get("from", {})
-                chat_id = from_user.get("id", "")
-                logger.info(f"[TG] ⚡ Processing callback_query: '{callback_data}' from chat_id={chat_id}, update_id={update_id}")
-            elif message:
-                text = message.get("text", "")
-                chat_id = message.get("chat", {}).get("id", "")
-                logger.info(f"[TG] ⚡ Processing command: '{text}' from chat_id={chat_id}, update_id={update_id}")
-            else:
-                logger.debug(f"[TG] Update {update_id} has no message or callback_query (might be other type)")
-                # Update ID anyway to skip this update
+            # Reset counter when we receive updates
+            _NO_UPDATE_COUNT = 0
+            
+            logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
+            
+            for update in updates:
+                update_id = update.get("update_id", 0)
+                message = update.get("message") or update.get("edited_message")
+                callback_query = update.get("callback_query")
+                
+                if callback_query:
+                    callback_data = callback_query.get("data", "")
+                    from_user = callback_query.get("from", {})
+                    chat_id = from_user.get("id", "")
+                    logger.info(f"[TG] ⚡ Processing callback_query: '{callback_data}' from chat_id={chat_id}, update_id={update_id}")
+                elif message:
+                    text = message.get("text", "")
+                    chat_id = message.get("chat", {}).get("id", "")
+                    logger.info(f"[TG] ⚡ Processing command: '{text}' from chat_id={chat_id}, update_id={update_id}")
+                else:
+                    logger.debug(f"[TG] Update {update_id} has no message or callback_query (might be other type)")
+                    # Update ID anyway to skip this update
+                    _save_last_update_id(db, update_id)
+                    LAST_UPDATE_ID = update_id
+                    continue
+                
+                # Process update immediately
+                try:
+                    logger.info(f"[TG] Calling handle_telegram_update for update_id={update_id}")
+                    handle_telegram_update(update, db)
+                    logger.info(f"[TG] Successfully processed update_id={update_id}")
+                except Exception as handle_error:
+                    logger.error(f"[TG] Error handling update {update_id}: {handle_error}", exc_info=True)
+                
+                # Update last processed ID in DB
                 _save_last_update_id(db, update_id)
                 LAST_UPDATE_ID = update_id
-                continue
-            
-            # Process update immediately
-            try:
-                logger.info(f"[TG] Calling handle_telegram_update for update_id={update_id}")
-                handle_telegram_update(update, db)
-                logger.info(f"[TG] Successfully processed update_id={update_id}")
-            except Exception as handle_error:
-                logger.error(f"[TG] Error handling update {update_id}: {handle_error}", exc_info=True)
-            
-            # Update last processed ID in DB
-            _save_last_update_id(db, update_id)
-            LAST_UPDATE_ID = update_id
-            logger.info(f"[TG] Updated LAST_UPDATE_ID to {LAST_UPDATE_ID}")
+                logger.info(f"[TG] Updated LAST_UPDATE_ID to {LAST_UPDATE_ID}")
         
-        # Release poller lock after processing
-        _release_poller_lock(db)
+        finally:
+            # Always release poller lock after processing cycle
+            _release_poller_lock(db)
             
     except Exception as e:
         logger.error(f"[TG] Error processing commands: {e}", exc_info=True)
+        # Ensure lock is released on error
         _release_poller_lock(db)
     finally:
         if db_created and db:
