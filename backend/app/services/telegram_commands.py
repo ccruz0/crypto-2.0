@@ -2759,9 +2759,26 @@ def process_telegram_commands(db: Session = None) -> None:
                 logger.info(f"[TG] Checking for pending updates without offset (quick check)...")
                 pending_check = get_telegram_updates(offset=None, timeout_override=1)
                 if pending_check:
+                    # Found pending updates! Process them and update LAST_UPDATE_ID
                     logger.warning(f"[TG] Found {len(pending_check)} pending updates without offset! Processing them now.")
                     updates = pending_check
                 else:
+                    # No pending updates found either
+                    # If LAST_UPDATE_ID is very high and we haven't received updates in a while,
+                    # there might be a gap. Reset to 0 to start fresh on next cycle.
+                    if LAST_UPDATE_ID > 1000000:
+                        # Track consecutive failures
+                        if not hasattr(process_telegram_commands, '_no_update_count'):
+                            process_telegram_commands._no_update_count = 0
+                        process_telegram_commands._no_update_count += 1
+                        
+                        # After 10 consecutive failures with high LAST_UPDATE_ID, reset it
+                        if process_telegram_commands._no_update_count >= 10:
+                            logger.warning(f"[TG] Resetting LAST_UPDATE_ID from {LAST_UPDATE_ID} to 0 after {process_telegram_commands._no_update_count} consecutive no-update cycles")
+                            global LAST_UPDATE_ID
+                            LAST_UPDATE_ID = 0
+                            process_telegram_commands._no_update_count = 0
+                    
                     logger.info(f"[TG] No updates received (normal with long polling timeout), LAST_UPDATE_ID={LAST_UPDATE_ID}, offset={offset}")
                     return
             except Exception as pending_err:
@@ -2769,6 +2786,10 @@ def process_telegram_commands(db: Session = None) -> None:
                 return
         
         logger.info(f"[TG] ⚡ Received {len(updates)} update(s) - processing immediately")
+        
+        # Reset no-update counter when we receive updates
+        if hasattr(process_telegram_commands, '_no_update_count'):
+            process_telegram_commands._no_update_count = 0
         
         for update in updates:
             update_id = update.get("update_id", 0)
