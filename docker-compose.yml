@@ -157,7 +157,8 @@ services:
       - RUNTIME_ORIGIN=AWS
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
-      - API_BASE_URL=${API_BASE_URL:-http://backend-aws:8002}
+      # Force internal API URL for Docker service-to-service communication
+      - API_BASE_URL=http://backend-aws:8002
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
