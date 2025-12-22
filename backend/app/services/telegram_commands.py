@@ -10,6 +10,7 @@ import requests
 import time
 import tempfile
 import sys
+import json
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -211,7 +212,7 @@ def _run_startup_diagnostics() -> None:
                     logger.info(f"{log_prefix} Webhook deleted successfully")
                 else:
                     logger.error(f"{log_prefix} Failed to delete webhook: {delete_result}")
-            else:
+        else:
                 logger.info(f"{log_prefix} No webhook configured (polling mode)")
         else:
             logger.error(f"{log_prefix} getWebhookInfo failed: {webhook_info}")
@@ -701,9 +702,12 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
     except requests.exceptions.HTTPError as http_err:
         status = getattr(http_err.response, 'status_code', None)
         if status == 409:
-            logger.warning(
+            # 409 conflict - another client is polling or webhook is active
+            # This is expected when multiple pollers try to poll simultaneously
+            # The lock should prevent this, but if it happens, just skip this cycle
+            logger.debug(
                 "[TG] getUpdates conflict (409) - Another webhook or polling client is active. "
-                "This may be due to another instance using the same bot token."
+                "This may be due to race condition between pollers. Skipping this cycle."
             )
             return []
         logger.error(f"[TG] getUpdates HTTP error: {http_err}")
@@ -878,17 +882,20 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
     try:
         text = "📋 <b>Main Menu</b>\n\nSelect a section:"
         keyboard = _build_keyboard([
-            [{"text": "💼 Portfolio", "callback_data": "cmd:portfolio"}],
+            [{"text": "💼 Portfolio", "callback_data": "menu:portfolio"}],
             [{"text": "📊 Watchlist", "callback_data": "menu:watchlist"}],
-            [{"text": "📋 Open Orders", "callback_data": "cmd:open_orders"}],
-            [{"text": "🎯 Expected Take Profit", "callback_data": "cmd:expected_tp"}],
-            [{"text": "✅ Executed Orders", "callback_data": "cmd:executed_orders"}],
+            [{"text": "📋 Open Orders", "callback_data": "menu:open_orders"}],
+            [{"text": "🎯 Expected Take Profit", "callback_data": "menu:expected_tp"}],
+            [{"text": "✅ Executed Orders", "callback_data": "menu:executed_orders"}],
             [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
             [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
         logger.info(f"[TG][MENU] Building main menu for chat_id={chat_id}, keyboard structure: {keyboard}")
+        logger.info(f"[TG][MENU] Keyboard JSON: {json.dumps(keyboard, indent=2)}")
         result = _send_menu_message(chat_id, text, keyboard)
         logger.info(f"[TG][MENU] Main menu send result: {result}")
+        if not result:
+            logger.error(f"[TG][MENU] Failed to send main menu! chat_id={chat_id}")
         return result
     except Exception as e:
         logger.error(f"[TG][ERROR] Error showing main menu: {e}", exc_info=True)
@@ -1233,15 +1240,15 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                     
                     # Only add if we haven't seen this symbol before (deduplication)
                     if symbol not in auto_trading_dict:
-                        margin = "✅" if coin.trade_on_margin else "❌"
+                    margin = "✅" if coin.trade_on_margin else "❌"
                         auto_trading_dict[symbol] = f"{symbol} (Margin: {margin})"
                     
                     # Only add trade amount if we haven't seen this symbol before
                     if symbol not in trade_amounts_dict:
-                        amount = coin.trade_amount_usd or 0
-                        if amount > 0:
+                    amount = coin.trade_amount_usd or 0
+                    if amount > 0:
                             trade_amounts_dict[symbol] = f"{symbol}: ${amount:,.2f}"
-                        else:
+                    else:
                             trade_amounts_dict[symbol] = f"{symbol}: N/A"
                 
                 # Convert dictionaries to lists (sorted by symbol for consistency)
@@ -1396,12 +1403,12 @@ Check if exchange sync is running."""
                 # Get open orders count per symbol
                 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
                 open_orders_by_symbol = {}
-                open_orders = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.status.in_([
-                        OrderStatusEnum.NEW,
-                        OrderStatusEnum.ACTIVE,
-                        OrderStatusEnum.PARTIALLY_FILLED
-                    ])
+        open_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status.in_([
+                OrderStatusEnum.NEW,
+                OrderStatusEnum.ACTIVE,
+                OrderStatusEnum.PARTIALLY_FILLED
+            ])
                 ).all()
                 for order in open_orders:
                     symbol = order.symbol or "N/A"
@@ -1420,7 +1427,7 @@ Check if exchange sync is running."""
                         balance_str = f"{balance:,.4f}"
                     elif balance >= 0.000001:
                         balance_str = f"{balance:,.6f}"
-                    else:
+        else:
                         balance_str = f"{balance:.8f}"
                     
                     # Get open orders count
@@ -1429,8 +1436,8 @@ Check if exchange sync is running."""
                     # TP/SL values (placeholder - should calculate from orders)
                     tp_value = 0.0  # TODO: Calculate from TP orders
                     sl_value = 0.0  # TODO: Calculate from SL orders
-                    
-                    message += f"""
+                
+                message += f"""
 
 🪙 <b>{coin}</b>
   Position Value: ${usd_value:,.2f}
@@ -2070,6 +2077,70 @@ No open positions with take profit orders found."""
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build expected take profit: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error building expected take profit: {str(e)}")
+
+
+def show_portfolio_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show portfolio sub-menu with options"""
+    try:
+        logger.info(f"[TG][MENU] show_portfolio_menu called for chat_id={chat_id}, message_id={message_id}")
+        text = "💼 <b>Portfolio</b>\n\nSelect an option:"
+        keyboard = _build_keyboard([
+            [{"text": "📊 View Portfolio", "callback_data": "cmd:portfolio"}],
+            [{"text": "🔄 Refresh", "callback_data": "cmd:portfolio"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        logger.info(f"[TG][MENU] Portfolio menu keyboard: {json.dumps(keyboard, indent=2)}")
+        result = _send_or_edit_menu(chat_id, text, keyboard, message_id)
+        logger.info(f"[TG][MENU] Portfolio menu send result: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing portfolio menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing portfolio menu: {str(e)}")
+
+
+def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show open orders sub-menu with options"""
+    try:
+        text = "📋 <b>Open Orders</b>\n\nSelect an option:"
+        keyboard = _build_keyboard([
+            [{"text": "📊 View Open Orders", "callback_data": "cmd:open_orders"}],
+            [{"text": "🔄 Refresh", "callback_data": "cmd:open_orders"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing open orders menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing open orders menu: {str(e)}")
+
+
+def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show expected take profit sub-menu with options"""
+    try:
+        text = "🎯 <b>Expected Take Profit</b>\n\nSelect an option:"
+        keyboard = _build_keyboard([
+            [{"text": "📊 View Expected TP", "callback_data": "cmd:expected_tp"}],
+            [{"text": "🔄 Refresh", "callback_data": "cmd:expected_tp"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing expected TP menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing expected TP menu: {str(e)}")
+
+
+def show_executed_orders_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show executed orders sub-menu with options"""
+    try:
+        text = "✅ <b>Executed Orders</b>\n\nSelect an option:"
+        keyboard = _build_keyboard([
+            [{"text": "📊 View Executed Orders", "callback_data": "cmd:executed_orders"}],
+            [{"text": "🔄 Refresh", "callback_data": "cmd:executed_orders"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing executed orders menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing executed orders menu: {str(e)}")
 
 
 def show_monitoring_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
@@ -2867,8 +2938,9 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
 
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
-    global PROCESSED_TEXT_COMMANDS
+    global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA
     update_id = update.get("update_id", 0)
+    logger.info(f"[TG][HANDLER] handle_telegram_update called for update_id={update_id}")
     
     # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
     # Use database for cross-instance deduplication (works between local and AWS)
@@ -2998,6 +3070,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         # Get chat ID from the message (group/channel), not from the user who clicked
         chat_id = str(chat.get("id", ""))
         user_id = str(from_user.get("id", ""))
+        message_id = message.get("message_id")
+        logger.info(f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, message_id={message_id}")
         # callback_data was already extracted above for deduplication
         message_id = message.get("message_id")
         
@@ -3197,6 +3271,20 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_alerts_list_message(chat_id, db)
             elif cmd == "help":
                 send_help_message(chat_id)
+        elif callback_data == "menu:portfolio":
+            # Show portfolio sub-menu
+            logger.info(f"[TG][MENU] Portfolio menu requested from chat_id={chat_id}, message_id={message_id}")
+            result = show_portfolio_menu(chat_id, db, message_id)
+            logger.info(f"[TG][MENU] Portfolio menu result: {result}")
+        elif callback_data == "menu:open_orders":
+            # Show open orders sub-menu
+            show_open_orders_menu(chat_id, db, message_id)
+        elif callback_data == "menu:expected_tp":
+            # Show expected take profit sub-menu
+            show_expected_tp_menu(chat_id, db, message_id)
+        elif callback_data == "menu:executed_orders":
+            # Show executed orders sub-menu
+            show_executed_orders_menu(chat_id, db, message_id)
         elif callback_data == "menu:monitoring":
             # Show monitoring sub-menu
             show_monitoring_menu(chat_id, db, message_id)
@@ -3310,22 +3398,23 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
         try:
             # Send welcome message with persistent keyboard buttons
-            logger.info(f"[TG][CMD] Sending welcome message to chat_id={chat_id}")
+            logger.info(f"[TG][CMD][START] Step 1: Sending welcome message to chat_id={chat_id}")
             result1 = send_welcome_message(chat_id)
-            logger.info(f"[TG][CMD] Welcome message result: {result1}")
+            logger.info(f"[TG][CMD][START] Step 1 result: welcome={result1}")
             # Small delay to ensure welcome message is sent before menu
             import time
+            logger.info(f"[TG][CMD][START] Step 2: Waiting 0.5 seconds before showing menu")
             time.sleep(0.5)
             # Also show the main menu with inline buttons
-            logger.info(f"[TG][CMD] Showing main menu to chat_id={chat_id}")
+            logger.info(f"[TG][CMD][START] Step 3: Showing main menu to chat_id={chat_id}")
             result2 = show_main_menu(chat_id, db)
-            logger.info(f"[TG][CMD] Main menu result: {result2}")
+            logger.info(f"[TG][CMD][START] Step 3 result: menu={result2}")
             if result1 and result2:
-                logger.info(f"[TG][CMD] /start command processed successfully for chat_id={chat_id}")
+                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
             else:
-                logger.warning(f"[TG][CMD] /start command returned False (welcome={result1}, menu={result2}) for chat_id={chat_id}")
+                logger.warning(f"[TG][CMD][START] ⚠️ /start command returned False (welcome={result1}, menu={result2}) for chat_id={chat_id}")
         except Exception as e:
-            logger.error(f"[TG][ERROR] Error processing /start command: {e}", exc_info=True)
+            logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
         show_main_menu(chat_id, db)
     elif text.startswith("/help"):

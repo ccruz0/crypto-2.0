@@ -608,8 +608,14 @@ class TelegramNotifier:
     def send_order_created(self, symbol: str, side: str, price: float, 
                           quantity: float, order_id: str, 
                           margin: bool = False, leverage: Optional[int] = None,
-                          dry_run: bool = False, order_type: str = "MARKET"):
-        """Send notification when an order is created (BUY or SELL)"""
+                          dry_run: bool = False, order_type: str = "MARKET",
+                          origin: Optional[str] = None):
+        """Send notification when an order is created (BUY or SELL)
+        
+        Args:
+            origin: Origin identifier ("AWS" or "LOCAL"). If None, uses get_runtime_origin().
+                   Only "AWS" origin will actually send to Telegram.
+        """
         side_emoji = "🟢" if side.upper() == "BUY" else "🔴"
         side_text = "BUY" if side.upper() == "BUY" else "SELL"
         margin_text = f"🚀 On Margin ({leverage}x)" if margin else "💰 Spot"
@@ -662,7 +668,10 @@ class TelegramNotifier:
 📋 Type: {order_type}
 🆔 Order ID: {order_id}
 """
-        return self.send_message(message.strip())
+        # Pass origin to send_message so gatekeeper can block local notifications
+        if origin is None:
+            origin = get_runtime_origin()
+        return self.send_message(message.strip(), origin=origin)
     
     def send_executed_order(self, symbol: str, side: str, price: float, 
                            quantity: float, total_usd: float, order_id: Optional[str] = None,
