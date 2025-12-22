@@ -13,8 +13,8 @@ services:
     environment:
       - VPN_SERVICE_PROVIDER=nordvpn
       - SERVER_COUNTRIES=Netherlands
-      - OPENVPN_USER=Jy4gvM3reuQn4FywkvSdfDBq
-      - OPENVPN_PASSWORD=VJy8dMvnvjdNERQQar8v5ESm
+      - OPENVPN_USER=${OPENVPN_USER}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
       # NOTE: FIREWALL_VPN_INPUT_PORTS is for incoming connections through VPN
       # Backend AWS exposes port 8002 directly, gluetun only handles outbound traffic
       - FIREWALL_OUTBOUND_SUBNETS=172.0.0.0/8,104.19.0.0/16,149.154.0.0/16,91.108.0.0/16
@@ -111,8 +111,8 @@ services:
       - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
       - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:--5033055655}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     ports:
       - "8002:8002"
     volumes:
@@ -157,7 +157,7 @@ services:
       - RUNTIME_ORIGIN=AWS
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
-      - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
+      - API_BASE_URL=${API_BASE_URL:-http://backend-aws:8002}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
       # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
