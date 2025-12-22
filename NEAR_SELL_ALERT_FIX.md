@@ -42,13 +42,38 @@ ADD COLUMN previous_price FLOAT NULL;
 - ✅ **Se detecta señal SELL**: Logs muestran `🔴 SELL signal detected for NEAR_USDT`
 - ✅ **Columna agregada**: `previous_price` ahora existe en la tabla
 
+## ✅ Correcciones Aplicadas
+
+### 1. Columna `previous_price`
+```sql
+ALTER TABLE signal_throttle_states ADD COLUMN previous_price FLOAT NULL;
+```
+
+### 2. Columna `emit_reason`
+```sql
+ALTER TABLE signal_throttle_states ADD COLUMN emit_reason VARCHAR(500);
+```
+
+### 3. Columna `force_next_signal`
+```sql
+ALTER TABLE signal_throttle_states ADD COLUMN force_next_signal BOOLEAN DEFAULT FALSE;
+```
+
 ## 🔄 Próximos Pasos
 
 1. **Esperar el próximo ciclo** del SignalMonitorService (cada 30 segundos)
 2. **Verificar logs** para confirmar que:
-   - Ya no hay errores de `previous_price`
+   - Ya no hay errores de columnas faltantes
    - Se carga correctamente el throttle state
    - Se procesa la alerta SELL
+
+## 📊 Estado Actual de NEAR_USDT
+
+- ✅ **Flags habilitados**: `alert_enabled=True`, `sell_alert_enabled=True`
+- ✅ **RSI > 70**: RSI=74.26 (cumple condición SELL)
+- ✅ **Última señal SELL**: Hace 12,571 minutos (cooldown cumplido)
+- ✅ **Cambio de precio**: Verificar si cumple mínimo requerido
+- ✅ **Columnas agregadas**: Todas las columnas necesarias ahora existen
 
 ## 📝 Script de Verificación
 
