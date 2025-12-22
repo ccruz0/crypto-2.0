@@ -685,7 +685,8 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         # Use long polling: Telegram will wait up to 30 seconds for new messages
         # This allows real-time command processing
         # Allow timeout override for quick checks
-        params["timeout"] = timeout_override if timeout_override is not None else 30
+        # NOTE: Using shorter timeout (10s) to release lock more frequently and allow other pollers
+        params["timeout"] = timeout_override if timeout_override is not None else 10
         
         # Increase timeout to account for network delay
         request_timeout = (timeout_override + 5) if timeout_override else 35
@@ -2938,7 +2939,7 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
 
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
-    global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA
+    global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
     logger.info(f"[TG][HANDLER] handle_telegram_update called for update_id={update_id}")
     
@@ -3062,7 +3063,10 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             # Clean up old entries (keep only last 1000)
             if len(PROCESSED_CALLBACK_DATA) > 1000:
                 cutoff_time = now - CALLBACK_DATA_TTL
-                PROCESSED_CALLBACK_DATA = {k: v for k, v in PROCESSED_CALLBACK_DATA.items() if v > cutoff_time}
+                # Use dict comprehension but assign to a temporary variable first, then update
+                filtered = {k: v for k, v in PROCESSED_CALLBACK_DATA.items() if v > cutoff_time}
+                PROCESSED_CALLBACK_DATA.clear()
+                PROCESSED_CALLBACK_DATA.update(filtered)
         
         from_user = callback_query.get("from", {})
         message = callback_query.get("message", {})
@@ -3397,22 +3401,15 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     if text.startswith("/start"):
         logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
         try:
-            # Send welcome message with persistent keyboard buttons
-            logger.info(f"[TG][CMD][START] Step 1: Sending welcome message to chat_id={chat_id}")
-            result1 = send_welcome_message(chat_id)
-            logger.info(f"[TG][CMD][START] Step 1 result: welcome={result1}")
-            # Small delay to ensure welcome message is sent before menu
-            import time
-            logger.info(f"[TG][CMD][START] Step 2: Waiting 0.5 seconds before showing menu")
-            time.sleep(0.5)
-            # Also show the main menu with inline buttons
-            logger.info(f"[TG][CMD][START] Step 3: Showing main menu to chat_id={chat_id}")
-            result2 = show_main_menu(chat_id, db)
-            logger.info(f"[TG][CMD][START] Step 3 result: menu={result2}")
-            if result1 and result2:
+            # Show the main menu with inline buttons (as per specification)
+            # The main menu is the primary interface, not the welcome message
+            logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id}")
+            result = show_main_menu(chat_id, db)
+            logger.info(f"[TG][CMD][START] Main menu result: {result}")
+            if result:
                 logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
             else:
-                logger.warning(f"[TG][CMD][START] ⚠️ /start command returned False (welcome={result1}, menu={result2}) for chat_id={chat_id}")
+                logger.warning(f"[TG][CMD][START] ⚠️ /start command returned False for chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
@@ -3584,7 +3581,12 @@ def process_telegram_commands(db: Session = None) -> None:
         
         finally:
             # Always release poller lock after processing cycle
-            _release_poller_lock(db)
+            # CRITICAL: Release lock even if there was an error
+            try:
+                _release_poller_lock(db)
+                logger.debug("[TG] Poller lock released in finally block")
+            except Exception as release_err:
+                logger.error(f"[TG] Error releasing poller lock: {release_err}")
             
     except Exception as e:
         logger.error(f"[TG] Error processing commands: {e}", exc_info=True)
