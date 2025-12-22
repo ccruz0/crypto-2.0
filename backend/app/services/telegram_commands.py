@@ -155,14 +155,25 @@ def _save_last_update_id(db: Session, update_id: int) -> None:
 
 
 def _run_startup_diagnostics() -> None:
-    """Run startup diagnostics: getMe and getWebhookInfo, delete webhook if present."""
+    """Run startup diagnostics: getMe, getWebhookInfo, delete webhook if present, and getUpdates probe.
+    
+    Can be enabled with TELEGRAM_DIAGNOSTICS=1 environment variable.
+    When enabled, also performs a no-offset getUpdates probe to check for pending updates.
+    """
+    # Check if diagnostics mode is enabled
+    diagnostics_enabled = os.getenv("TELEGRAM_DIAGNOSTICS", "0").strip() == "1"
+    
     if not TELEGRAM_ENABLED or not BOT_TOKEN:
         logger.warning("[TG] Startup diagnostics skipped: Telegram not enabled")
         return
     
     try:
         # 1. Call getMe
-        logger.info("[TG] Running startup diagnostics...")
+        log_prefix = "[TG_DIAG]" if diagnostics_enabled else "[TG]"
+        if diagnostics_enabled:
+            logger.info(f"{log_prefix} Running startup diagnostics (TELEGRAM_DIAGNOSTICS=1)...")
+        else:
+            logger.info(f"{log_prefix} Running startup diagnostics...")
         response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5)
         response.raise_for_status()
         bot_info = response.json()
@@ -170,9 +181,9 @@ def _run_startup_diagnostics() -> None:
             bot_data = bot_info.get("result", {})
             bot_username = bot_data.get("username", "N/A")
             bot_id = bot_data.get("id", "N/A")
-            logger.info(f"[TG] Bot identity: username={bot_username}, id={bot_id}")
+            logger.info(f"{log_prefix} Bot identity: username={bot_username}, id={bot_id}")
         else:
-            logger.error(f"[TG] getMe failed: {bot_info}")
+            logger.error(f"{log_prefix} getMe failed: {bot_info}")
         
         # 2. Call getWebhookInfo
         response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo", timeout=5)
@@ -182,11 +193,13 @@ def _run_startup_diagnostics() -> None:
             webhook_data = webhook_info.get("result", {})
             webhook_url = webhook_data.get("url", "")
             pending_count = webhook_data.get("pending_update_count", 0)
-            logger.info(f"[TG] Webhook info: url={webhook_url or 'None'}, pending_updates={pending_count}")
+            last_error = webhook_data.get("last_error_message", "")
+            last_error_date = webhook_data.get("last_error_date", 0)
+            logger.info(f"{log_prefix} Webhook info: url={webhook_url or 'None'}, pending_updates={pending_count}, last_error={last_error or 'None'}")
             
-            # 3. Delete webhook if present
+            # 3. Delete webhook if present (always delete on startup to ensure polling works)
             if webhook_url:
-                logger.warning(f"[TG] Webhook detected at {webhook_url}, deleting it...")
+                logger.warning(f"{log_prefix} Webhook detected at {webhook_url}, deleting it...")
                 response = requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
                     json={"drop_pending_updates": True},
@@ -195,14 +208,39 @@ def _run_startup_diagnostics() -> None:
                 response.raise_for_status()
                 delete_result = response.json()
                 if delete_result.get("ok"):
-                    logger.info("[TG] Webhook deleted successfully")
+                    logger.info(f"{log_prefix} Webhook deleted successfully")
                 else:
-                    logger.error(f"[TG] Failed to delete webhook: {delete_result}")
+                    logger.error(f"{log_prefix} Failed to delete webhook: {delete_result}")
+            else:
+                logger.info(f"{log_prefix} No webhook configured (polling mode)")
         else:
-            logger.error(f"[TG] getWebhookInfo failed: {webhook_info}")
+            logger.error(f"{log_prefix} getWebhookInfo failed: {webhook_info}")
+        
+        # 4. Diagnostics mode: Probe getUpdates without offset
+        if diagnostics_enabled:
+            logger.info(f"{log_prefix} Probing getUpdates (no offset, limit=10, timeout=0)...")
+            try:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+                params = {"limit": 10, "timeout": 0}
+                response = requests.get(url, params=params, timeout=5)
+                response.raise_for_status()
+                data = response.json()
+                if data.get("ok"):
+                    updates = data.get("result", [])
+                    update_count = len(updates)
+                    if update_count > 0:
+                        update_ids = [u.get("update_id", 0) for u in updates]
+                        max_id = max(update_ids) if update_ids else 0
+                        logger.info(f"{log_prefix} getUpdates probe: found {update_count} pending updates, max update_id={max_id}, ids={update_ids[:5]}")
+                    else:
+                        logger.info(f"{log_prefix} getUpdates probe: no pending updates")
+                else:
+                    logger.warning(f"{log_prefix} getUpdates probe failed: {data}")
+            except Exception as probe_err:
+                logger.error(f"{log_prefix} getUpdates probe error: {probe_err}")
             
     except Exception as e:
-        logger.error(f"[TG] Startup diagnostics failed: {e}", exc_info=True)
+        logger.error(f"{log_prefix} Startup diagnostics failed: {e}", exc_info=True)
 
 
 def _probe_updates_without_offset() -> List[Dict]:
@@ -633,9 +671,9 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         params = {}
         if offset is not None:
             params["offset"] = offset
-        # TODO: Re-enable update filtering later for efficiency
-        # For now, remove allowed_updates to ensure we receive all update types
-        # params["allowed_updates"] = ["message", "my_chat_member"]
+        # Include message and my_chat_member updates to ensure /start works in both private and group chats
+        # my_chat_member is needed for bot being added to groups
+        params["allowed_updates"] = ["message", "my_chat_member", "edited_message", "callback_query"]
         
         # Use long polling: Telegram will wait up to 30 seconds for new messages
         # This allows real-time command processing
@@ -3004,6 +3042,7 @@ def process_telegram_commands(db: Session = None) -> None:
                 update_id = update.get("update_id", 0)
                 message = update.get("message") or update.get("edited_message")
                 callback_query = update.get("callback_query")
+                my_chat_member = update.get("my_chat_member")
                 
                 if callback_query:
                     callback_data = callback_query.get("data", "")
@@ -3014,8 +3053,23 @@ def process_telegram_commands(db: Session = None) -> None:
                     text = message.get("text", "")
                     chat_id = message.get("chat", {}).get("id", "")
                     logger.info(f"[TG] ⚡ Processing command: '{text}' from chat_id={chat_id}, update_id={update_id}")
+                elif my_chat_member:
+                    # Handle bot being added/removed from groups
+                    chat = my_chat_member.get("chat", {})
+                    chat_id = str(chat.get("id", ""))
+                    new_status = my_chat_member.get("new_chat_member", {}).get("status", "")
+                    old_status = my_chat_member.get("old_chat_member", {}).get("status", "")
+                    logger.info(f"[TG] ⚡ Processing my_chat_member: chat_id={chat_id}, status: {old_status} -> {new_status}, update_id={update_id}")
+                    # If bot was added to group, send welcome message
+                    if new_status == "member" or new_status == "administrator":
+                        logger.info(f"[TG] Bot added to group {chat_id}, sending welcome message")
+                        send_welcome_message(chat_id)
+                    # Update ID to skip this update
+                    _save_last_update_id(db, update_id)
+                    LAST_UPDATE_ID = update_id
+                    continue
                 else:
-                    logger.debug(f"[TG] Update {update_id} has no message or callback_query (might be other type)")
+                    logger.debug(f"[TG] Update {update_id} has no message, callback_query, or my_chat_member (might be other type)")
                     # Update ID anyway to skip this update
                     _save_last_update_id(db, update_id)
                     LAST_UPDATE_ID = update_id
