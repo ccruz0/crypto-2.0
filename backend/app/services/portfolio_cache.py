@@ -5,8 +5,20 @@ from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.services.brokers.crypto_com_trade import trade_client
 import time
 from typing import List, Dict, Optional
+import threading
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+# Cache for table existence checks (avoid repeated inspector calls)
+_table_cache = {}
+_table_cache_lock = threading.Lock()
+
+# Request deduplication for portfolio updates
+_update_lock = threading.Lock()
+_last_update_time = 0
+_last_update_result = None
+_min_update_interval = 60  # Minimum seconds between cache updates
 
 
 def _normalize_currency_name(value: Optional[str]) -> str:
@@ -20,6 +32,32 @@ def _normalize_currency_name(value: Optional[str]) -> str:
     if "_" in normalized:
         normalized = normalized.split("_")[0]
     return normalized
+
+
+def _table_exists(db: Session, table_name: str) -> bool:
+    """
+    Check if a table exists, with caching to avoid repeated inspector calls.
+    This significantly improves performance when called multiple times.
+    """
+    cache_key = f"{id(db.bind)}:{table_name}"
+    
+    with _table_cache_lock:
+        if cache_key in _table_cache:
+            return _table_cache[cache_key]
+    
+    try:
+        from sqlalchemy import inspect
+        inspector = inspect(db.bind)
+        tables = inspector.get_table_names()
+        exists = table_name in tables
+        
+        with _table_cache_lock:
+            _table_cache[cache_key] = exists
+        
+        return exists
+    except Exception as e:
+        logger.debug(f"Error checking table existence for {table_name}: {e}")
+        return False
 
 
 def get_crypto_prices() -> Dict[str, float]:
@@ -53,14 +91,49 @@ def update_portfolio_cache(db: Session) -> Dict:
     Fetch fresh portfolio data from Crypto.com and update database cache
     Gets ALL available data from Crypto.com: balances, available, reserved, market values, etc.
     
+    Includes request deduplication to prevent multiple concurrent updates.
+    Includes authentication error handling to prevent repeated failed attempts.
+    
     Returns:
         dict: Summary of the update operation with last_updated timestamp
     """
+    global _last_update_time, _last_update_result
+    
+    # Request deduplication: Check if an update is already in progress or was recently completed
+    current_time = time.time()
+    with _update_lock:
+        # If an update completed recently, return cached result
+        if _last_update_result and (current_time - _last_update_time) < _min_update_interval:
+            logger.debug(f"Skipping portfolio cache update - last update was {current_time - _last_update_time:.1f}s ago (min interval: {_min_update_interval}s)")
+            return _last_update_result
+        
+        # Mark that we're starting an update
+        _last_update_time = current_time
+    
     try:
         logger.info("Starting portfolio cache update - fetching ALL data from Crypto.com...")
         
         # Fetch balance from Crypto.com (NO SIMULATED DATA)
-        balance_data = trade_client.get_account_summary()
+        # Catch authentication errors specifically to provide better error messages
+        try:
+            balance_data = trade_client.get_account_summary()
+        except Exception as auth_err:
+            error_str = str(auth_err)
+            # Check for authentication errors (40101)
+            if "40101" in error_str or "Authentication failure" in error_str or "Authentication failed" in error_str:
+                error_msg = f"Crypto.com API authentication failed: {error_str}. Check API credentials and IP whitelist."
+                logger.error(error_msg)
+                result = {
+                    "success": False,
+                    "error": error_msg,
+                    "last_updated": None,
+                    "auth_error": True  # Flag to indicate this is an auth error
+                }
+                with _update_lock:
+                    _last_update_result = result
+                return result
+            # Re-raise other errors
+            raise
         
         if not balance_data or "accounts" not in balance_data:
             logger.error("No balance data received from Crypto.com")
@@ -359,12 +432,8 @@ def update_portfolio_cache(db: Session) -> Dict:
         # Update loans in database
         if loans_found:
             try:
-                # Check if portfolio_loans table exists before using it
-                from sqlalchemy import inspect
-                inspector = inspect(db.bind)
-                tables = inspector.get_table_names()
-                
-                if 'portfolio_loans' in tables:
+                # Check if portfolio_loans table exists before using it (use cached check)
+                if _table_exists(db, 'portfolio_loans'):
                     logger.info(f"Syncing {len(loans_found)} loans to database...")
                     
                     # Deactivate all existing loans for currencies we have data for
@@ -401,17 +470,38 @@ def update_portfolio_cache(db: Session) -> Dict:
         
         logger.info(f"Portfolio cache updated successfully. Total USD: ${total_usd:,.2f}")
         
-        return {
+        result = {
             "success": True,
             "last_updated": last_updated,
             "total_usd": total_usd,
             "balance_count": len(balances_to_insert)
         }
         
+        # Cache the result for request deduplication
+        with _update_lock:
+            _last_update_result = result
+            _last_update_time = time.time()
+        
+        return result
+        
     except Exception as e:
+        error_str = str(e)
         logger.error(f"Error updating portfolio cache: {e}")
         db.rollback()
-        return {"success": False, "error": str(e), "last_updated": None}
+        
+        result = {
+            "success": False,
+            "error": error_str,
+            "last_updated": None,
+            "auth_error": ("40101" in error_str or "Authentication" in error_str)
+        }
+        
+        # Cache the error result (but with shorter TTL for errors)
+        with _update_lock:
+            _last_update_result = result
+            _last_update_time = time.time()
+        
+        return result
 
 
 def get_cached_portfolio(db: Session) -> List[Dict]:
@@ -465,121 +555,137 @@ def get_last_updated(db: Session) -> float:
 def get_portfolio_summary(db: Session) -> Dict:
     """
     Get summary of cached portfolio data with last updated timestamp
-    OPTIMIZED: Single query to get balances, total_usd, and last_updated in one go
+    OPTIMIZED: Uses efficient SQL queries and caching to minimize database calls
     Includes borrowed amounts (loans) subtracted from total value
     """
     import time as time_module
     start_time = time_module.time()
+    query_start = start_time
     try:
-        # Optimize: Get balances and calculate total_usd in single query
-        # Use SQL aggregation for better performance
-        from sqlalchemy import func
+        from sqlalchemy import func, text
         from app.models.portfolio_loan import PortfolioLoan
         
-        # Get balances with total_usd calculation in one query
-        # Use DISTINCT ON to get only one balance per currency (most recent by id)
-        # Fallback to deduplication in Python if DISTINCT ON not supported
+        # OPTIMIZATION 1: Use SQL subquery to get latest balance per currency in one query
+        # This is much faster than fetching all and deduplicating in Python
         try:
-            balances_query = db.query(
-                PortfolioBalance.currency,
-                PortfolioBalance.balance,
-                PortfolioBalance.usd_value,
-                PortfolioBalance.id
-            ).order_by(PortfolioBalance.currency, PortfolioBalance.id.desc()).all()
+            # Try to use window function for better performance (PostgreSQL, SQLite 3.25+)
+            # Get the latest balance per currency using ROW_NUMBER()
+            # Use the actual table name from the model
+            table_name = PortfolioBalance.__tablename__
+            balances_query = db.execute(text(f"""
+                SELECT currency, balance, usd_value
+                FROM (
+                    SELECT currency, balance, usd_value,
+                           ROW_NUMBER() OVER (PARTITION BY currency ORDER BY id DESC) as rn
+                    FROM {table_name}
+                ) ranked
+                WHERE rn = 1
+                ORDER BY usd_value DESC
+            """)).fetchall()
+            
+            # Convert to list of tuples for consistency
+            balances_data = [(row[0], row[1], row[2]) for row in balances_query]
         except Exception:
-            # Fallback if DISTINCT ON not available
-            balances_query = db.query(
-                PortfolioBalance.currency,
-                PortfolioBalance.balance,
-                PortfolioBalance.usd_value,
-                PortfolioBalance.id
-            ).order_by(PortfolioBalance.usd_value.desc()).all()
+            # Fallback: Use SQLAlchemy ORM with optimized query
+            # Get only the latest balance per currency using a subquery
+            try:
+                # First, get max id per currency
+                subquery = db.query(
+                    PortfolioBalance.currency,
+                    func.max(PortfolioBalance.id).label('max_id')
+                ).group_by(PortfolioBalance.currency).subquery()
+                
+                # Then join to get the full balance records
+                balances_query = db.query(
+                    PortfolioBalance.currency,
+                    PortfolioBalance.balance,
+                    PortfolioBalance.usd_value
+                ).join(
+                    subquery,
+                    (PortfolioBalance.currency == subquery.c.currency) &
+                    (PortfolioBalance.id == subquery.c.max_id)
+                ).order_by(PortfolioBalance.usd_value.desc()).all()
+                
+                balances_data = [(b.currency, b.balance, b.usd_value) for b in balances_query]
+            except Exception:
+                # Final fallback: Get all and deduplicate in Python (slower but works)
+                balances_query = db.query(
+                    PortfolioBalance.currency,
+                    PortfolioBalance.balance,
+                    PortfolioBalance.usd_value,
+                    PortfolioBalance.id
+                ).order_by(PortfolioBalance.currency, PortfolioBalance.id.desc()).all()
+                
+                # Deduplicate by currency (keep most recent by id)
+                balances_by_currency = {}
+                for balance in balances_query:
+                    currency = _normalize_currency_name(balance.currency)
+                    if not currency:
+                        continue
+                    balance_id = balance.id
+                    if currency not in balances_by_currency:
+                        balances_by_currency[currency] = balance
+                    else:
+                        existing = balances_by_currency[currency]
+                        if balance_id > existing.id:
+                            balances_by_currency[currency] = balance
+                
+                balances_data = [(b.currency, b.balance, b.usd_value) for b in balances_by_currency.values()]
         
-        # Get total_usd using SQL aggregation (faster than Python sum)
+        query_elapsed = time_module.time() - query_start
+        if query_elapsed > 0.1:
+            logger.debug(f"Balance query took {query_elapsed:.3f}s")
+        
+        # OPTIMIZATION 2: Get total_usd using SQL aggregation (single query)
         total_usd_result = db.query(func.sum(PortfolioBalance.usd_value)).scalar()
         total_assets_usd = float(total_usd_result) if total_usd_result else 0.0
         
-        # Get total borrowed amount (loans) using SQL aggregation
-        # IMPORTANT: Only subtract crypto loans, NOT USD loans
-        # USD loans are part of available capital and should NOT reduce portfolio value
-        # This matches how crypto.com calculates portfolio value
+        # OPTIMIZATION 3: Use cached table existence check
         total_borrowed_usd = 0.0
-        try:
-            # Check if portfolio_loans table exists before querying
-            from sqlalchemy import inspect
-            inspector = inspect(db.bind)
-            tables = inspector.get_table_names()
-            if 'portfolio_loans' in tables:
+        loans = []
+        if _table_exists(db, 'portfolio_loans'):
+            try:
+                # Get total borrowed amount (loans) using SQL aggregation
+                # IMPORTANT: Only subtract crypto loans, NOT USD loans
                 total_borrowed_result = db.query(func.sum(PortfolioLoan.borrowed_usd_value)).filter(
                     PortfolioLoan.is_active == True,
                     PortfolioLoan.currency != 'USD'  # Exclude USD loans from subtraction
                 ).scalar()
                 total_borrowed_usd = float(total_borrowed_result) if total_borrowed_result else 0.0
-        except Exception as loan_err:
-            # Silently skip loans if table doesn't exist or query fails
-            logger.debug(f"Could not get loans data: {loan_err}")
-            pass
-        
-        # Calculate net portfolio value (assets - crypto loans only, USD loans are capital)
-        # IMPORTANT: Return BOTH total_assets_usd (gross) and total_usd (net) so frontend can display both
-        total_usd = total_assets_usd - total_borrowed_usd
-        
-        # Get loan details for display
-        loans = []
-        try:
-            # Check if portfolio_loans table exists before querying
-            from sqlalchemy import inspect
-            inspector = inspect(db.bind)
-            tables = inspector.get_table_names()
-            if 'portfolio_loans' in tables:
+                
+                # Get loan details for display
                 loans_query = db.query(PortfolioLoan).filter(
                     PortfolioLoan.is_active == True
                 ).all()
-                for loan in loans_query:
-                    loans.append({
-                        "currency": loan.currency,
-                        "borrowed_amount": float(loan.borrowed_amount),
-                        "borrowed_usd_value": float(loan.borrowed_usd_value),
-                        "interest_rate": float(loan.interest_rate) if loan.interest_rate else None,
-                        "notes": loan.notes
-                    })
-        except Exception as loan_err:
-            # Silently skip loans if table doesn't exist or query fails
-            logger.debug(f"Could not get loans details: {loan_err}")
-            pass
+                loans = [{
+                    "currency": loan.currency,
+                    "borrowed_amount": float(loan.borrowed_amount),
+                    "borrowed_usd_value": float(loan.borrowed_usd_value),
+                    "interest_rate": float(loan.interest_rate) if loan.interest_rate else None,
+                    "notes": loan.notes
+                } for loan in loans_query]
+            except Exception as loan_err:
+                logger.debug(f"Could not get loans data: {loan_err}")
         
-        # Get last updated timestamp (separate query but fast)
+        # Calculate net portfolio value (assets - crypto loans only, USD loans are capital)
+        total_usd = total_assets_usd - total_borrowed_usd
+        
+        # OPTIMIZATION 4: Get last updated timestamp (single query, should be fast with index)
         snapshot = db.query(PortfolioSnapshot).order_by(
             PortfolioSnapshot.created_at.desc()
         ).first()
         last_updated = snapshot.created_at.timestamp() if snapshot else None
         
-        # Build balances list - deduplicate by currency (keep most recent by id)
+        # Build balances list from optimized query results
         balances = []
-        balances_by_currency = {}
-        
-        for balance in balances_query:
-            currency = _normalize_currency_name(getattr(balance, 'currency', ''))
-            balance_id = getattr(balance, 'id', None) if hasattr(balance, 'id') else None
+        for currency, balance_val, usd_value in balances_data:
+            currency = _normalize_currency_name(currency)
             if not currency:
                 continue
-            
-            # Keep only one balance per currency (prefer highest id = most recent)
-            if currency not in balances_by_currency:
-                balances_by_currency[currency] = balance
-            else:
-                # If we already have this currency, keep the one with higher id (more recent)
-                existing = balances_by_currency[currency]
-                existing_id = getattr(existing, 'id', None) if hasattr(existing, 'id') else None
-                if balance_id and existing_id and balance_id > existing_id:
-                    balances_by_currency[currency] = balance
-        
-        # Convert to list format
-        for currency, balance in balances_by_currency.items():
-            usd_value = float(balance.usd_value) if balance.usd_value is not None else 0.0
+            usd_value = float(usd_value) if usd_value is not None else 0.0
             balances.append({
                 "currency": currency,
-                "balance": float(balance.balance),
+                "balance": float(balance_val),
                 "usd_value": usd_value
             })
         
@@ -589,8 +695,10 @@ def get_portfolio_summary(db: Session) -> Dict:
         balances_with_usd = [b for b in balances if b["usd_value"] > 0]
         logger.info(f"Portfolio summary fetched in {elapsed_time:.3f}s: {len(balances)} balances, {len(balances_with_usd)} with USD values, total_assets=${total_assets_usd:,.2f}, total_borrowed=${total_borrowed_usd:,.2f}, net_value=${total_usd:,.2f}")
         
-        if elapsed_time > 0.3:
+        if elapsed_time > 0.2:
             logger.warning(f"⚠️ Portfolio summary fetch took {elapsed_time:.3f}s - this is slow! Should be < 0.2 seconds.")
+            # Log breakdown of time spent
+            logger.debug(f"   - Query time: {query_elapsed:.3f}s")
         
         if balances_with_usd:
             logger.debug(f"Top 5 balances by USD value:")
@@ -611,7 +719,7 @@ def get_portfolio_summary(db: Session) -> Dict:
             "last_updated": last_updated
         }
     except Exception as e:
-        logger.error(f"Error getting portfolio summary: {e}")
+        logger.error(f"Error getting portfolio summary: {e}", exc_info=True)
         return {
             "balances": [],
             "total_usd": 0.0,

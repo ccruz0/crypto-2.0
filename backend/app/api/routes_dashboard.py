@@ -702,9 +702,20 @@ async def _compute_dashboard_state(db: Session) -> dict:
                                     pass
                         log.info(f"   - After cache update: {len(portfolio_assets)} assets loaded")
                     else:
-                        log.error(f"   - Portfolio cache update failed: {update_result.get('error')}")
+                        error_msg = update_result.get('error', 'Unknown error')
+                        # Check if this is an authentication error
+                        if update_result.get('auth_error') or '40101' in error_msg or 'Authentication' in error_msg:
+                            log.error(f"   - Portfolio cache update failed: {error_msg}")
+                            log.warning("   - ⚠️ Authentication error detected - will not retry immediately. Check API credentials and IP whitelist.")
+                        else:
+                            log.error(f"   - Portfolio cache update failed: {error_msg}")
                 except Exception as update_err:
-                    log.error(f"   - Error updating portfolio cache: {update_err}", exc_info=True)
+                    error_str = str(update_err)
+                    if '40101' in error_str or 'Authentication' in error_str:
+                        log.error(f"   - Error updating portfolio cache (authentication): {update_err}")
+                        log.warning("   - ⚠️ Authentication error - check API credentials and IP whitelist")
+                    else:
+                        log.error(f"   - Error updating portfolio cache: {update_err}", exc_info=True)
         
         return {
             "source": "portfolio_cache",
