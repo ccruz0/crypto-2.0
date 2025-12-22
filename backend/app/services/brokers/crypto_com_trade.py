@@ -408,17 +408,19 @@ class CryptoComTradeClient:
             logger.error("API credentials not configured. Cannot get account summary.")
             raise ValueError("API credentials not configured. Set EXCHANGE_CUSTOM_API_KEY and EXCHANGE_CUSTOM_API_SECRET")
         
-        method = "private/get-account-summary"
+        # Try private/user-balance first (same as proxy uses, and it works for get_open_orders)
+        # If that fails, try private/get-account-summary
+        method = "private/user-balance"
         params = {}
         payload = self.sign_request(method, params)
         
-        logger.info(f"Live: Calling {method}")
+        logger.info(f"Live: Calling {method} (same as proxy and get_open_orders)")
         
         try:
-            # Crypto.com Exchange v1 API expects the method as the URL path
             # Use same pattern as get_open_orders which works
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
+            logger.debug(f"Payload keys: {list(payload.keys())}")
             response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
             
             # Check if authentication failed
