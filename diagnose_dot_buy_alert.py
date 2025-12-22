@@ -29,8 +29,7 @@ try:
     from app.database import SessionLocal
     from app.models.watchlist import WatchlistItem
     from app.models.signal_throttle import SignalThrottleState
-    from app.models.market_data import MarketData
-    from app.models.market_price import MarketPrice
+    from app.models.market_price import MarketPrice, MarketData
     from app.models.exchange_order import ExchangeOrder, OrderSideEnum
     from sqlalchemy import func
 except ImportError as e:
