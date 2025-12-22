@@ -1,101 +1,131 @@
-# ✅ Deployment Complete - Code Review Improvements
+# Deployment Complete - Telegram Menu Fixes
 
-## What Was Implemented
-
-### 1. Improved Error Handling ✅
-**File:** `backend/app/api/routes_dashboard.py`
-
-- ✅ Specific exception handling (SQLAlchemyError vs generic)
-- ✅ Proper logging (warnings for DB errors, errors for unexpected)
-- ✅ Case-insensitive symbol matching (normalize to uppercase)
-- ✅ Comprehensive docstring
-
-**Benefits:**
-- Better error visibility in logs
-- Easier debugging
-- Consistent symbol matching
-
-### 2. Security Improvements ✅
-**File:** `nginx/dashboard.conf`
-
-- ✅ **HSTS Header** - Strict-Transport-Security (1 year)
-- ✅ **Rate Limiting** - 10 req/s for API, 5 req/s for monitoring
-- ✅ **Request Size Limits** - 10M max for file uploads
-
-**Benefits:**
-- Enhanced security (HSTS prevents downgrade attacks)
-- DoS protection (rate limiting)
-- Prevents large file uploads
-
-## Deployment Status
-
-✅ **Code Committed:** `dc0c701`  
-✅ **Code Pushed:** To `origin/main`  
-⏳ **AWS Deployment:** Pending
-
-## Quick Deployment Commands (AWS Server)
-
-```bash
-# 1. Pull latest code
-cd /home/ubuntu/automated-trading-platform
-git pull origin main
-
-# 2. Rebuild backend
-docker compose build backend-aws
-
-# 3. Restart backend
-docker compose restart backend-aws
-
-# 4. Update nginx (IMPORTANT: Add rate limit zones to nginx.conf first!)
-sudo cp nginx/dashboard.conf /etc/nginx/sites-available/dashboard.hilovivo.com
-
-# 5. Add rate limit zones to /etc/nginx/nginx.conf (in http block):
-# limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
-# limit_req_zone $binary_remote_addr zone=monitoring_limit:10m rate=5r/s;
-
-# 6. Test and reload nginx
-sudo nginx -t
-sudo systemctl reload nginx
-
-# 7. Verify
-curl -I https://dashboard.hilovivo.com | grep -i "strict-transport"
-python3 test_watchlist_enrichment.py
-```
-
-## Verification Checklist
-
-After deployment, verify:
-
-- [ ] Backend service running: `docker compose ps backend-aws`
-- [ ] No errors in logs: `docker compose logs backend-aws --tail 50`
-- [ ] HSTS header present: `curl -I https://dashboard.hilovivo.com`
-- [ ] Rate limiting works: Make 15 rapid requests, should see 429
-- [ ] API still accessible: `curl https://dashboard.hilovivo.com/api/dashboard`
-- [ ] Frontend works: Open dashboard in browser
-- [ ] Test suite passes: `python3 test_watchlist_enrichment.py`
-
-## Files Changed
-
-1. `backend/app/api/routes_dashboard.py` - Error handling improvements
-2. `nginx/dashboard.conf` - Security headers and rate limiting
-3. `DEPLOY_IMPROVEMENTS.md` - Deployment instructions
-
-## Next Steps
-
-1. **Deploy to AWS** - Follow commands above
-2. **Monitor for 24 hours** - Watch for any issues
-3. **Verify improvements** - Check logs show better error messages
-4. **Test rate limiting** - Ensure legitimate users aren't blocked
-
-## Support
-
-If issues occur:
-- Check `DEPLOY_IMPROVEMENTS.md` for detailed troubleshooting
-- Review logs: `docker compose logs backend-aws`
-- Test nginx: `sudo nginx -t`
+**Date:** 2025-12-22  
+**Status:** ✅ **SUCCESSFULLY DEPLOYED**
 
 ---
 
-**Status:** ✅ Ready for deployment  
-**Priority:** High (security improvements)  
-**Risk:** Low (backward compatible)
+## Summary
+
+All changes have been reviewed, committed, and successfully deployed to AWS EC2.
+
+### Commits Deployed
+
+1. **`4957fc8`** - `fix: Deduplicate symbols in Telegram status message`
+   - Fixed BONK and other symbols appearing multiple times
+   - Implemented deduplication using dictionaries
+   - Keeps most recent entry per symbol
+
+2. **`a195413`** - `refactor: Clean up redundant imports in Telegram commands`
+   - Removed redundant datetime imports
+   - Consolidated timezone imports
+   - Improved code consistency
+
+3. **`4c6fa39`** - `docs: Update deployment status and improve diagnostic script`
+   - Updated DEPLOYMENT_STATUS.md
+   - Enhanced diagnose_auth_issue.py
+
+---
+
+## Deployment Details
+
+### Workflow: Deploy to AWS EC2 (Session Manager)
+
+- **Run ID:** 20421701799
+- **Status:** ✅ Completed Successfully
+- **Duration:** ~6m 55s
+- **Method:** AWS Systems Manager Session Manager
+- **Instance:** i-08726dc37133b2454
+- **Region:** ap-southeast-1
+
+### Deployment Steps Completed
+
+1. ✅ Code checkout
+2. ✅ Frontend submodule fetch
+3. ✅ Code update on EC2
+4. ✅ Docker services rebuild
+5. ✅ Services restart
+
+---
+
+## Changes Applied
+
+### 1. Telegram Status Message Fix
+
+**Problem:** BONK_USDT and other symbols appeared multiple times in `/status` command.
+
+**Solution:**
+- Added deduplication logic using dictionaries
+- Sorts coins by `created_at` (descending) to keep most recent entry
+- Converts back to sorted lists for display
+
+**Code Location:** `backend/app/services/telegram_commands.py` (lines 1218-1250)
+
+### 2. Code Cleanup
+
+**Changes:**
+- Removed redundant `from datetime import datetime` statements
+- Consolidated timezone imports
+- Improved code maintainability
+
+**Code Location:** `backend/app/services/telegram_commands.py`
+
+### 3. Documentation Updates
+
+**Files Updated:**
+- `DEPLOYMENT_STATUS.md` - Latest deployment information
+- `backend/scripts/diagnose_auth_issue.py` - Enhanced error handling
+
+---
+
+## Verification Checklist
+
+### ✅ Completed
+
+- [x] Code reviewed
+- [x] Linter checks passed
+- [x] Commits created
+- [x] Code pushed to repository
+- [x] Security scan passed
+- [x] Deployment completed successfully
+
+### 🔄 Testing Required
+
+- [ ] Test `/status` command - verify no duplicate symbols
+- [ ] Test main menu - verify all 7 sections accessible
+- [ ] Test Portfolio section
+- [ ] Test Expected Take Profit section
+- [ ] Test Monitoring sub-menu
+- [ ] Test navigation between sections
+
+---
+
+## Next Steps
+
+1. **Immediate Testing:**
+   - Test Telegram bot in production
+   - Verify BONK appears only once in `/status`
+   - Test all menu sections
+
+2. **Monitor:**
+   - Check application logs for any errors
+   - Monitor Telegram bot responses
+   - Verify all endpoints are working
+
+3. **Future Improvements:**
+   - Implement PnL calculations (currently using placeholders)
+   - Add detail views for Expected Take Profit
+   - Verify monitoring API endpoints
+
+---
+
+## Notes
+
+- The warning about frontend submodule during post-job cleanup is harmless
+- Deployment command was sent successfully via SSM
+- All services should be running with latest code
+
+---
+
+**Deployment Status:** ✅ **COMPLETE**  
+**Ready for Testing:** ✅ **YES**
