@@ -1249,13 +1249,13 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                     
                     # Only add if we haven't seen this symbol before (deduplication)
                     if symbol not in auto_trading_dict:
-                    margin = "✅" if coin.trade_on_margin else "❌"
+                        margin = "✅" if coin.trade_on_margin else "❌"
                         auto_trading_dict[symbol] = f"{symbol} (Margin: {margin})"
                     
                     # Only add trade amount if we haven't seen this symbol before
                     if symbol not in trade_amounts_dict:
-                    amount = coin.trade_amount_usd or 0
-                    if amount > 0:
+                        amount = coin.trade_amount_usd or 0
+                        if amount > 0:
                             trade_amounts_dict[symbol] = f"{symbol}: ${amount:,.2f}"
                     else:
                             trade_amounts_dict[symbol] = f"{symbol}: N/A"
