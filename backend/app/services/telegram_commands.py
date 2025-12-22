@@ -1424,7 +1424,7 @@ Check if exchange sync is running."""
                     open_orders_by_symbol[symbol] = open_orders_by_symbol.get(symbol, 0) + 1
                 
                 # Get TP/SL values (simplified - would need to calculate from orders)
-                for asset in sorted_assets[:15]:  # Show top 15
+                for asset in sorted_assets:  # Show all positions
                     coin = asset.get("currency", "N/A")
                     balance = asset.get("balance", 0.0)
                     usd_value = asset.get("usd_value", 0.0)
@@ -1445,8 +1445,9 @@ Check if exchange sync is running."""
                     # TP/SL values (placeholder - should calculate from orders)
                     tp_value = 0.0  # TODO: Calculate from TP orders
                     sl_value = 0.0  # TODO: Calculate from SL orders
-                
-                message += f"""
+                    
+                    # Add each position to the message
+                    message += f"""
 
 🪙 <b>{coin}</b>
   Position Value: ${usd_value:,.2f}
@@ -1454,9 +1455,6 @@ Check if exchange sync is running."""
   Available: {available:,.4f} | Reserved: {reserved:,.4f}
   Open Orders: {order_count}
   TP Value: ${tp_value:,.2f} | SL Value: ${sl_value:,.2f}"""
-                
-                if len(sorted_assets) > 15:
-                    message += f"\n\n... and {len(sorted_assets) - 15} more positions"
             else:
                 message += "\n\nNo positions found."
         
