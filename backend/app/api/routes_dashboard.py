@@ -620,11 +620,18 @@ async def _compute_dashboard_state(db: Session) -> dict:
 
                 # Ensure all numeric values are JSON-serializable (float, not Decimal)
                 currency = balance.get("currency", "")
+                # Frontend expects 'asset' field (DashboardBalance interface)
+                # Also include currency/coin for backward compatibility
                 portfolio_assets.append({
+                    "asset": currency,  # Frontend DashboardBalance expects 'asset' field
                     "currency": currency,
                     "coin": currency,  # Add coin field for frontend compatibility
                     "balance": float(balance_amount) if balance_amount is not None else 0.0,
+                    "total": float(balance_amount) if balance_amount is not None else 0.0,  # Frontend expects 'total'
+                    "free": float(balance.get("available", balance_amount)) if balance_amount is not None else 0.0,  # Frontend expects 'free'
+                    "locked": float(balance.get("reserved", 0)) if balance_amount is not None else 0.0,  # Frontend expects 'locked'
                     "usd_value": float(usd_value) if usd_value is not None else 0.0,
+                    "market_value": float(usd_value) if usd_value is not None else 0.0,  # Also include market_value for compatibility
                     "open_orders_count": open_orders_count,
                     "tp": float(tp_price) if tp_price is not None else None,
                     "sl": float(sl_price) if sl_price is not None else None,
