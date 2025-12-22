@@ -187,7 +187,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Use >1 worker so /ping_fast stays responsive even during slow endpoints.
-    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]

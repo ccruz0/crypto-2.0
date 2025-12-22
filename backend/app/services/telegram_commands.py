@@ -1176,13 +1176,21 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 
                 # Count active positions (coins with Trade=YES)
                 active_positions = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True
+                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.deleted_at.is_(None)
                 ).count()
                 
-                # Count tracked coins (coins with Trade=YES)
+                # Count tracked coins (all coins, not just Trade=YES)
                 tracked_coins = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol.isnot(None),
+                    WatchlistItem.deleted_at.is_(None)
+                ).count()
+                
+                # Count coins with Trade=YES separately
+                tracked_coins_with_trade = db.query(WatchlistItem).filter(
                     WatchlistItem.trade_enabled == True,
-                    WatchlistItem.symbol.isnot(None)
+                    WatchlistItem.symbol.isnot(None),
+                    WatchlistItem.deleted_at.is_(None)
                 ).count()
                 
                 # Get coins with Trade=YES for auto trading and trade amounts
@@ -1279,7 +1287,8 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
 📈 <b>Trading Status:</b>
 
 • Active Positions (Trade=YES): {active_positions}
-• Tracked Coins (Trade=YES): {tracked_coins}
+• Tracked Coins (Total): {tracked_coins}
+• Tracked Coins (Trade=YES): {tracked_coins_with_trade}
 • Last 24h Signals: {last_24h_signals}
 • Last 24h Trades: {last_24h_trades}
 
@@ -2489,6 +2498,7 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
 
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
+    global PROCESSED_TEXT_COMMANDS
     update_id = update.get("update_id", 0)
     
     # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
