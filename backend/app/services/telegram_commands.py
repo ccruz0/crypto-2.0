@@ -558,8 +558,14 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
             "parse_mode": "HTML",
             "reply_markup": keyboard,
         }
+        logger.debug(f"[TG] Sending menu message to chat_id={chat_id}, keyboard keys: {list(keyboard.keys())}")
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
+        result = response.json()
+        if result.get("ok"):
+            logger.info(f"[TG] Menu message sent successfully to chat_id={chat_id}, message_id={result.get('result', {}).get('message_id')}")
+        else:
+            logger.warning(f"[TG] Menu message API returned not OK: {result}")
         return True
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to send menu message: {e}", exc_info=True)
@@ -880,7 +886,10 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
             [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
             [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
-        return _send_menu_message(chat_id, text, keyboard)
+        logger.info(f"[TG][MENU] Building main menu for chat_id={chat_id}, keyboard structure: {keyboard}")
+        result = _send_menu_message(chat_id, text, keyboard)
+        logger.info(f"[TG][MENU] Main menu send result: {result}")
+        return result
     except Exception as e:
         logger.error(f"[TG][ERROR] Error showing main menu: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error showing menu: {str(e)}")
@@ -1212,8 +1221,7 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 
                 # Sort by created_at descending to keep most recent entry for each symbol
                 # Handle None created_at by using a default datetime
-                from datetime import datetime as dt
-                min_datetime = dt(1970, 1, 1)
+                min_datetime = datetime(1970, 1, 1)
                 sorted_coins = sorted(
                     active_trade_coins, 
                     key=lambda c: c.created_at if c.created_at else min_datetime, 
@@ -1263,7 +1271,6 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
         last_24h_trades = 0
         if db:
             try:
-                from datetime import datetime, timedelta
                 since = datetime.utcnow() - timedelta(hours=24)
                 
                 # Count orders placed in last 24h (using order_date)
@@ -1878,7 +1885,7 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
             return send_command_response(chat_id, "❌ Database not available")
         
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
-        from datetime import datetime, timedelta, timezone
+        from datetime import timezone
         
         # Get executed orders (FILLED status) from last 24 hours
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -2001,10 +2008,10 @@ No open positions with take profit orders found."""
             # Format last updated time
             if last_updated:
                 try:
-                    from datetime import datetime
                     if isinstance(last_updated, str):
                         ts = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
                     else:
+                        from datetime import timezone
                         ts = datetime.fromtimestamp(last_updated, tz=timezone.utc)
                     tz = pytz.timezone("Asia/Makassar")
                     ts_local = ts.astimezone(tz)
@@ -3302,11 +3309,21 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     if text.startswith("/start"):
         logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
         try:
-            result = send_welcome_message(chat_id)
-            if result:
+            # Send welcome message with persistent keyboard buttons
+            logger.info(f"[TG][CMD] Sending welcome message to chat_id={chat_id}")
+            result1 = send_welcome_message(chat_id)
+            logger.info(f"[TG][CMD] Welcome message result: {result1}")
+            # Small delay to ensure welcome message is sent before menu
+            import time
+            time.sleep(0.5)
+            # Also show the main menu with inline buttons
+            logger.info(f"[TG][CMD] Showing main menu to chat_id={chat_id}")
+            result2 = show_main_menu(chat_id, db)
+            logger.info(f"[TG][CMD] Main menu result: {result2}")
+            if result1 and result2:
                 logger.info(f"[TG][CMD] /start command processed successfully for chat_id={chat_id}")
             else:
-                logger.warning(f"[TG][CMD] /start command returned False for chat_id={chat_id}")
+                logger.warning(f"[TG][CMD] /start command returned False (welcome={result1}, menu={result2}) for chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[TG][ERROR] Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
