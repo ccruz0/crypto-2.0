@@ -377,11 +377,16 @@ class CryptoComTradeClient:
                                 
                                 # Only include balances > 0
                                 if quantity > 0:
-                                    accounts.append({
+                                    # Include market_value from Crypto.com if available
+                                    market_value = balance.get("market_value") or balance.get("usd_value")
+                                    account_entry = {
                                         "currency": currency,
                                         "balance": str(quantity),
                                         "available": str(balance.get("max_withdrawal_balance", quantity))
-                                    })
+                                    }
+                                    if market_value:
+                                        account_entry["market_value"] = str(market_value)
+                                    accounts.append(account_entry)
                     
                     logger.info(f"Retrieved {len(accounts)} account balances via proxy")
                     return {"accounts": accounts}
@@ -458,11 +463,16 @@ class CryptoComTradeClient:
                     for acc in accounts_data:
                         currency = acc.get("currency", "")
                         if currency:
-                            accounts.append({
+                            # Include market_value from Crypto.com if available
+                            market_value = acc.get("market_value") or acc.get("usd_value")
+                            account_entry = {
                                 "currency": currency,
                                 "balance": str(acc.get("balance", "0")),
                                 "available": str(acc.get("available", acc.get("balance", "0")))
-                            })
+                            }
+                            if market_value:
+                                account_entry["market_value"] = str(market_value)
+                            accounts.append(account_entry)
                     logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
                     return {"accounts": accounts}
                 

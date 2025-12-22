@@ -127,7 +127,7 @@ def refresh_account_balance(
     # Temporarily disable auth for testing
     # current_user = Depends(get_current_user)
 ):
-    """Manually refresh the cached account balance"""
+    """Manually refresh the cached account balance from Crypto.com"""
     if exchange != "CRYPTO_COM":
         raise HTTPException(status_code=400, detail="Only CRYPTO_COM supported")
     
