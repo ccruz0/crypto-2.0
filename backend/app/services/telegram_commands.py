@@ -212,7 +212,7 @@ def _run_startup_diagnostics() -> None:
                     logger.info(f"{log_prefix} Webhook deleted successfully")
                 else:
                     logger.error(f"{log_prefix} Failed to delete webhook: {delete_result}")
-        else:
+            else:
                 logger.info(f"{log_prefix} No webhook configured (polling mode)")
         else:
             logger.error(f"{log_prefix} getWebhookInfo failed: {webhook_info}")
@@ -3401,15 +3401,29 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     if text.startswith("/start"):
         logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
         try:
-            # Show the main menu with inline buttons (as per specification)
-            # The main menu is the primary interface, not the welcome message
+            # Send welcome message with persistent keyboard buttons first
+            # This provides the user with quick access buttons at the bottom
+            logger.info(f"[TG][CMD][START] Sending welcome message with persistent keyboard to chat_id={chat_id}")
+            welcome_result = send_welcome_message(chat_id)
+            logger.info(f"[TG][CMD][START] Welcome message result: {welcome_result}")
+            
+            # Small delay to ensure welcome message is sent before main menu
+            time.sleep(0.5)
+            
+            # Also show the main menu with inline buttons (as per specification)
+            # This provides the full menu structure with all sections
             logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id}")
-            result = show_main_menu(chat_id, db)
-            logger.info(f"[TG][CMD][START] Main menu result: {result}")
-            if result:
-                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
+            menu_result = show_main_menu(chat_id, db)
+            logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
+            
+            if welcome_result and menu_result:
+                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id} (both messages sent)")
+            elif welcome_result:
+                logger.warning(f"[TG][CMD][START] ⚠️ Welcome sent but main menu failed for chat_id={chat_id}")
+            elif menu_result:
+                logger.warning(f"[TG][CMD][START] ⚠️ Main menu sent but welcome failed for chat_id={chat_id}")
             else:
-                logger.warning(f"[TG][CMD][START] ⚠️ /start command returned False for chat_id={chat_id}")
+                logger.error(f"[TG][CMD][START] ❌ Both welcome and main menu failed for chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
