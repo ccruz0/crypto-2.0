@@ -1,77 +1,85 @@
-# Telegram Alerts Fix - Deployment Status
+# Deployment Status - Telegram Menu Update
 
-## ✅ Changes Committed and Pushed
+**Date:** 2025-01-27  
+**Commit:** `8e9342d` - "feat: Update Telegram menu to match Reference Specification v1.0"  
+**Workflow:** Deploy to AWS EC2 (Session Manager)  
+**Run ID:** 20421221066
 
-The fix has been committed and pushed to the repository:
-- **Commit**: Fix: Add explicit origin parameter to Telegram alerts
-- **Status**: Pushed to `origin/main`
+## Deployment Summary
 
-## 📋 Deployment Options
+✅ **Status:** Deployment Completed Successfully
 
-### Option 1: Automatic Deployment (SSM)
+### Workflow Steps Completed
 
-The SSM deployment script has been executed. Check status with:
+1. ✅ Set up job
+2. ✅ Checkout repository
+3. ✅ Fetch frontend source
+4. ✅ Show frontend version entry
+5. ✅ Configure AWS credentials
+6. ✅ Deploy to EC2 using Session Manager
+7. ✅ Post Configure AWS credentials
+8. ✅ Post Checkout repository
+9. ✅ Complete job
 
-```bash
-# Get latest command status
-aws ssm list-commands --instance-id i-08726dc37133b2454 --region ap-southeast-1 --max-items 1
-```
+### Deployment Duration
 
-### Option 2: Manual Deployment (Recommended)
+- **Total Time:** ~6 minutes 13 seconds
+- **Started:** 2025-12-22T03:55:00Z
+- **Completed:** 2025-12-22T04:01:13Z
 
-SSH into your AWS server and run:
+### Changes Deployed
 
-```bash
-cd /home/ubuntu/automated-trading-platform && \
-export HOME=/home/ubuntu && \
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null && \
-git pull origin main && \
-CONTAINER=$(docker ps --filter "name=market-updater" --format "{{.Names}}" | head -1) && \
-echo "Container: $CONTAINER" && \
-docker cp backend/app/services/signal_monitor.py $CONTAINER:/app/app/services/signal_monitor.py && \
-docker exec $CONTAINER grep "alert_origin = get_runtime_origin()" /app/app/services/signal_monitor.py && \
-docker compose --profile aws restart market-updater-aws && \
-echo "✅ Deployed!"
-```
+1. **Main Menu Restructure**
+   - Updated to 7 sections in exact order per specification
+   - Portfolio, Watchlist, Open Orders, Expected Take Profit, Executed Orders, Monitoring, Version History
 
-## ✅ What Was Fixed
+2. **New Functions Added**
+   - `send_expected_take_profit_message()` - Expected TP section
+   - `show_monitoring_menu()` - Monitoring sub-menu
+   - `send_system_monitoring_message()` - System health
+   - `send_throttle_message()` - Recent messages
+   - `send_workflows_monitoring_message()` - Workflow status
+   - `send_blocked_messages_message()` - Blocked messages
 
-1. **Added import**: `from app.core.runtime import get_runtime_origin`
-2. **Modified `send_buy_signal()`**: Now explicitly passes `origin=alert_origin`
-3. **Modified `send_sell_signal()`**: Now explicitly passes `origin=alert_origin`
+3. **Portfolio Section Enhanced**
+   - Added PnL breakdown (Realized, Potential, Total)
+   - Updated to use Dashboard API endpoints
 
-This ensures alerts explicitly pass `origin="AWS"` so the Telegram gatekeeper allows them to be sent.
+4. **Menu Override Fix**
+   - Fixed `TelegramNotifier` initialization to prevent menu override
 
-## 🔍 Verification Steps
+### Files Changed
 
-After deployment:
+- `backend/app/services/telegram_commands.py` - Main implementation
+- `backend/app/services/telegram_notifier.py` - Menu override fix
+- `TELEGRAM_MENU_REFERENCE_SPECIFICATION.md` - New specification document
+- `TELEGRAM_MENU_FIX_APPLIED.md` - Fix documentation
+- `TELEGRAM_MENU_ANALYSIS_REPORT.md` - Analysis report
 
-1. **Check service status**:
-   ```bash
-   docker compose --profile aws ps market-updater-aws
-   ```
+### Notes
 
-2. **Monitor logs**:
-   ```bash
-   docker compose --profile aws logs -f market-updater-aws | grep TELEGRAM
-   ```
+- ⚠️ Minor warning: Git process exit code 128 (non-critical, deployment still succeeded)
+- All code changes have been deployed to AWS EC2 instance
+- Backend service should be running with new menu structure
 
-3. **Look for**:
-   - `[TELEGRAM_INVOKE] origin_param=AWS` ✅
-   - `[TELEGRAM_GATEKEEPER] ... RESULT=ALLOW` ✅
-   - `[TELEGRAM_SUCCESS]` ✅
+### Next Steps
 
-4. **Wait for next alert** and verify it's received in Telegram
+1. **Verify Deployment:**
+   - Test Telegram menu in production
+   - Verify all 7 sections are accessible
+   - Check that Expected Take Profit section works
+   - Test Monitoring sub-sections
 
-## 📝 Files Changed
+2. **Monitor Backend:**
+   - Check backend logs for any errors
+   - Verify Telegram bot is responding correctly
+   - Test menu navigation flow
 
-- ✅ `backend/app/services/signal_monitor.py` - Added explicit origin parameter
-- ✅ `backend/scripts/diagnose_telegram_alerts.py` - Diagnostic script
+3. **User Testing:**
+   - Send `/start` command in Telegram
+   - Navigate through all menu sections
+   - Verify data matches Dashboard
 
-## 🎯 Expected Result
+---
 
-After deployment, when the next trading signal triggers, the alert should:
-1. Be generated by signal monitor
-2. Pass the Telegram gatekeeper (origin="AWS")
-3. Be sent to Telegram API
-4. Appear in your Telegram chat
+**Deployment Status:** ✅ **COMPLETE**
