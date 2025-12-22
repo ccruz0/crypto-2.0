@@ -1257,7 +1257,7 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                         amount = coin.trade_amount_usd or 0
                         if amount > 0:
                             trade_amounts_dict[symbol] = f"{symbol}: ${amount:,.2f}"
-                    else:
+                        else:
                             trade_amounts_dict[symbol] = f"{symbol}: N/A"
                 
                 # Convert dictionaries to lists (sorted by symbol for consistency)
@@ -1412,12 +1412,12 @@ Check if exchange sync is running."""
                 # Get open orders count per symbol
                 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
                 open_orders_by_symbol = {}
-        open_orders = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_([
-                OrderStatusEnum.NEW,
-                OrderStatusEnum.ACTIVE,
-                OrderStatusEnum.PARTIALLY_FILLED
-            ])
+                open_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status.in_([
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED
+                    ])
                 ).all()
                 for order in open_orders:
                     symbol = order.symbol or "N/A"
@@ -1436,7 +1436,7 @@ Check if exchange sync is running."""
                         balance_str = f"{balance:,.4f}"
                     elif balance >= 0.000001:
                         balance_str = f"{balance:,.6f}"
-        else:
+                    else:
                         balance_str = f"{balance:.8f}"
                     
                     # Get open orders count
