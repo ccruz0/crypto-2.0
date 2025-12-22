@@ -559,17 +559,25 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
             "parse_mode": "HTML",
             "reply_markup": keyboard,
         }
-        logger.debug(f"[TG] Sending menu message to chat_id={chat_id}, keyboard keys: {list(keyboard.keys())}")
+        logger.info(f"[TG] Sending menu message to chat_id={chat_id}, text_preview={text[:50]}..., keyboard_type={list(keyboard.keys())}")
+        logger.debug(f"[TG] Full keyboard structure: {json.dumps(keyboard, indent=2)}")
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         result = response.json()
         if result.get("ok"):
-            logger.info(f"[TG] Menu message sent successfully to chat_id={chat_id}, message_id={result.get('result', {}).get('message_id')}")
+            message_id = result.get('result', {}).get('message_id')
+            logger.info(f"[TG] Menu message sent successfully to chat_id={chat_id}, message_id={message_id}")
+            return True
         else:
-            logger.warning(f"[TG] Menu message API returned not OK: {result}")
-        return True
+            error_desc = result.get('description', 'Unknown error')
+            logger.error(f"[TG] Menu message API returned not OK: {error_desc}, full response: {result}")
+            return False
+    except requests.exceptions.HTTPError as e:
+        error_body = e.response.text if hasattr(e, 'response') and e.response else str(e)
+        logger.error(f"[TG][ERROR] HTTP error sending menu message to chat_id={chat_id}: {e}, response: {error_body}")
+        return False
     except Exception as e:
-        logger.error(f"[TG][ERROR] Failed to send menu message: {e}", exc_info=True)
+        logger.error(f"[TG][ERROR] Failed to send menu message to chat_id={chat_id}: {e}", exc_info=True)
         return False
 
 
@@ -3407,14 +3415,29 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             welcome_result = send_welcome_message(chat_id)
             logger.info(f"[TG][CMD][START] Welcome message result: {welcome_result}")
             
+            if not welcome_result:
+                logger.error(f"[TG][CMD][START] ❌ Failed to send welcome message to chat_id={chat_id}")
+            
             # Small delay to ensure welcome message is sent before main menu
-            time.sleep(0.5)
+            # This prevents Telegram from potentially merging the messages
+            time.sleep(1.0)
             
             # Also show the main menu with inline buttons (as per specification)
             # This provides the full menu structure with all sections
             logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id}")
-            menu_result = show_main_menu(chat_id, db)
-            logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
+            try:
+                menu_result = show_main_menu(chat_id, db)
+                logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
+                
+                if not menu_result:
+                    logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
+                    # Try sending a simple message to verify we can send messages
+                    logger.info(f"[TG][CMD][START] Attempting to send test message to verify connectivity...")
+                    test_result = send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
+                    logger.info(f"[TG][CMD][START] Test message result: {test_result}")
+            except Exception as menu_error:
+                logger.error(f"[TG][ERROR][START] ❌ Exception in show_main_menu: {menu_error}", exc_info=True)
+                menu_result = False
             
             if welcome_result and menu_result:
                 logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id} (both messages sent)")
