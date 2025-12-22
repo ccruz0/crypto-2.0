@@ -1190,29 +1190,55 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 ).count()
                 
                 # Count coins with Trade=YES separately
-                tracked_coins_with_trade = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True,
-                    WatchlistItem.symbol.isnot(None),
-                    WatchlistItem.is_deleted == False
-                ).count()
-                
-                # Get coins with Trade=YES for auto trading and trade amounts
+                # IMPORTANT: Get all coins first to log them for debugging
                 active_trade_coins = db.query(WatchlistItem).filter(
                     WatchlistItem.trade_enabled == True,
                     WatchlistItem.symbol.isnot(None),
                     WatchlistItem.is_deleted == False
                 ).all()
                 
-                for coin in active_trade_coins:
+                tracked_coins_with_trade = len(active_trade_coins)
+                
+                # Log all coins with Trade=YES for debugging
+                if tracked_coins_with_trade > 0:
+                    trade_yes_symbols = [coin.symbol for coin in active_trade_coins]
+                    logger.debug(f"[TG][STATUS] Found {tracked_coins_with_trade} coins with Trade=YES: {', '.join(trade_yes_symbols)}")
+                else:
+                    logger.debug("[TG][STATUS] No coins found with Trade=YES")
+                
+                # Use dictionaries to deduplicate by symbol (keep most recent entry)
+                auto_trading_dict = {}
+                trade_amounts_dict = {}
+                
+                # Sort by created_at descending to keep most recent entry for each symbol
+                # Handle None created_at by using a default datetime
+                from datetime import datetime as dt
+                min_datetime = dt(1970, 1, 1)
+                sorted_coins = sorted(
+                    active_trade_coins, 
+                    key=lambda c: c.created_at if c.created_at else min_datetime, 
+                    reverse=True
+                )
+                
+                for coin in sorted_coins:
                     symbol = coin.symbol or "N/A"
-                    margin = "✅" if coin.trade_on_margin else "❌"
-                    auto_trading_coins.append(f"{symbol} (Margin: {margin})")
                     
-                    amount = coin.trade_amount_usd or 0
-                    if amount > 0:
-                        trade_amounts_list.append(f"{symbol}: ${amount:,.2f}")
-                    else:
-                        trade_amounts_list.append(f"{symbol}: N/A")
+                    # Only add if we haven't seen this symbol before (deduplication)
+                    if symbol not in auto_trading_dict:
+                        margin = "✅" if coin.trade_on_margin else "❌"
+                        auto_trading_dict[symbol] = f"{symbol} (Margin: {margin})"
+                    
+                    # Only add trade amount if we haven't seen this symbol before
+                    if symbol not in trade_amounts_dict:
+                        amount = coin.trade_amount_usd or 0
+                        if amount > 0:
+                            trade_amounts_dict[symbol] = f"{symbol}: ${amount:,.2f}"
+                        else:
+                            trade_amounts_dict[symbol] = f"{symbol}: N/A"
+                
+                # Convert dictionaries to lists (sorted by symbol for consistency)
+                auto_trading_coins = [auto_trading_dict[s] for s in sorted(auto_trading_dict.keys())]
+                trade_amounts_list = [trade_amounts_dict[s] for s in sorted(trade_amounts_dict.keys())]
                 
                 # Get last update from any coin (use created_at if last_updated doesn't exist)
                 try:
