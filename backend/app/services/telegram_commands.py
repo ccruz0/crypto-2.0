@@ -858,24 +858,27 @@ def send_help_message(chat_id: str) -> bool:
 
 
 def show_main_menu(chat_id: str, db: Session = None) -> bool:
-    """Show main menu with buttons matching dashboard layout"""
+    """Show main menu with buttons matching dashboard layout - Reference Specification v1.0
+    
+    Menu structure (exact order per specification):
+    1. Portfolio
+    2. Watchlist
+    3. Open Orders
+    4. Expected Take Profit
+    5. Executed Orders
+    6. Monitoring
+    7. Version History
+    """
     try:
-        text = "📋 <b>Main Menu</b>\n\nSelecciona una sección:"
+        text = "📋 <b>Main Menu</b>\n\nSelect a section:"
         keyboard = _build_keyboard([
-            [{"text": "⚙️ Watchlist Control", "callback_data": "menu:watchlist"}],
-            [
-                {"text": "💼 Portfolio", "callback_data": "cmd:portfolio"},
-                {"text": "📋 Open Orders", "callback_data": "cmd:open_orders"},
-            ],
-            [
-                {"text": "👀 Alerts", "callback_data": "cmd:alerts"},
-                {"text": "✅ Executed", "callback_data": "cmd:executed_orders"},
-            ],
-            [
-                {"text": "📊 Status", "callback_data": "cmd:status"},
-                {"text": "📝 Version", "callback_data": "cmd:version"},
-            ],
-            [{"text": "❓ Help", "callback_data": "cmd:help"}],
+            [{"text": "💼 Portfolio", "callback_data": "cmd:portfolio"}],
+            [{"text": "📊 Watchlist", "callback_data": "menu:watchlist"}],
+            [{"text": "📋 Open Orders", "callback_data": "cmd:open_orders"}],
+            [{"text": "🎯 Expected Take Profit", "callback_data": "cmd:expected_tp"}],
+            [{"text": "✅ Executed Orders", "callback_data": "cmd:executed_orders"}],
+            [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
+            [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
         return _send_menu_message(chat_id, text, keyboard)
     except Exception as e:
@@ -1177,26 +1180,27 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 # Count active positions (coins with Trade=YES)
                 active_positions = db.query(WatchlistItem).filter(
                     WatchlistItem.trade_enabled == True,
-                    WatchlistItem.deleted_at.is_(None)
+                    WatchlistItem.is_deleted == False
                 ).count()
                 
                 # Count tracked coins (all coins, not just Trade=YES)
                 tracked_coins = db.query(WatchlistItem).filter(
                     WatchlistItem.symbol.isnot(None),
-                    WatchlistItem.deleted_at.is_(None)
+                    WatchlistItem.is_deleted == False
                 ).count()
                 
                 # Count coins with Trade=YES separately
                 tracked_coins_with_trade = db.query(WatchlistItem).filter(
                     WatchlistItem.trade_enabled == True,
                     WatchlistItem.symbol.isnot(None),
-                    WatchlistItem.deleted_at.is_(None)
+                    WatchlistItem.is_deleted == False
                 ).count()
                 
                 # Get coins with Trade=YES for auto trading and trade amounts
                 active_trade_coins = db.query(WatchlistItem).filter(
                     WatchlistItem.trade_enabled == True,
-                    WatchlistItem.symbol.isnot(None)
+                    WatchlistItem.symbol.isnot(None),
+                    WatchlistItem.is_deleted == False
                 ).all()
                 
                 for coin in active_trade_coins:
@@ -1309,107 +1313,114 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
 
 
 def send_portfolio_message(chat_id: str, db: Session = None) -> bool:
-    """Send portfolio with exchange balances and open orders"""
+    """Send portfolio with PnL breakdown - Reference Specification Section 3"""
     try:
         if not db:
             return send_command_response(chat_id, "❌ Database not available")
         
-        # Import ExchangeBalance and ExchangeOrder models
-        from app.models.exchange_balance import ExchangeBalance
-        from app.models.exchange_order import ExchangeOrder
-        from app.models.trade_signal import TradeSignal
+        # Get portfolio data from API endpoint (same as Dashboard)
+        try:
+            from app.services.portfolio_cache import get_portfolio_summary
+            portfolio_data = get_portfolio_summary(db)
+        except Exception as api_err:
+            logger.error(f"[TG][ERROR] Failed to fetch portfolio from API: {api_err}", exc_info=True)
+            return send_command_response(chat_id, f"❌ Error fetching portfolio: {str(api_err)}")
         
-        # Get exchange balances
-        balances = db.query(ExchangeBalance).filter(
-            ExchangeBalance.total > 0
-        ).order_by(ExchangeBalance.total.desc()).all()
-        
-        # Get open orders
-        from app.models.exchange_order import OrderStatusEnum
-        open_orders = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_([
-                OrderStatusEnum.NEW,
-                OrderStatusEnum.ACTIVE,
-                OrderStatusEnum.PARTIALLY_FILLED
-            ])
-        ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(5).all()
-        
-        # Calculate total portfolio value (simplified - assuming balances are in USD equivalent)
-        total_usd = sum(float(bal.total) for bal in balances if bal.asset == 'USDT')
-        
-        # Build message
-        if not balances:
-            message = """💰 *Exchange Portfolio*
+        if not portfolio_data:
+            message = """💼 <b>Portfolio</b>
 
-No balances found.
-Check if exchange sync is running and API credentials are configured."""
+No portfolio data available.
+Check if exchange sync is running."""
         else:
-            message = f"""💰 *Exchange Portfolio*
-
-💵 *Total USDT:* ${total_usd:,.2f}
-
-📊 *Balances:* ({len(balances)} assets)"""
-
-            for bal in balances[:10]:  # Show top 10
-                asset = bal.asset
-                free = float(bal.free)
-                locked = float(bal.locked)
-                total = float(bal.total)
-                
-                # Format based on asset type
-                if asset == 'USDT' or asset == 'USD':
-                    free_str = f"${free:,.2f}"
-                    locked_str = f"${locked:,.2f}"
-                    total_str = f"${total:,.2f}"
-                elif total >= 1:
-                    free_str = f"{free:,.4f}"
-                    locked_str = f"{locked:,.4f}"
-                    total_str = f"{total:,.4f}"
-                else:
-                    free_str = f"{free:.8f}"
-                    locked_str = f"{locked:.8f}"
-                    total_str = f"{total:.8f}"
-                
-                locked_indicator = "🔒" if locked > 0 else ""
-                
-                message += f"""
-
-🪙 *{asset}*
-• Free: {free_str}
-• Locked: {locked_str} {locked_indicator}
-• Total: {total_str}"""
+            # Portfolio Overview (Section 3.1)
+            total_value = portfolio_data.get("total_usd", 0.0)
             
-            if len(balances) > 10:
-                message += f"\n\n… and {len(balances) - 10} more assets"
+            # Calculate PnL breakdown (Section 3.1)
+            # Note: These calculations should match Dashboard exactly
+            # For now, using placeholder values - should be calculated from executed orders and open positions
+            realized_pnl = 0.0  # TODO: Calculate from executed orders
+            potential_pnl = 0.0  # TODO: Calculate from open positions (unrealized)
+            total_pnl = realized_pnl + potential_pnl
+            
+            message = f"""💼 <b>Portfolio Overview</b>
+
+💰 <b>Total Portfolio Value:</b> ${total_value:,.2f}
+
+📊 <b>Profit and Loss Breakdown:</b>
+  📈 Realized PnL: ${realized_pnl:+,.2f}
+  📊 Potential PnL: ${potential_pnl:+,.2f}
+  💵 Total PnL: ${total_pnl:+,.2f}
+
+📋 <b>Portfolio Positions</b>
+(Sorted by position value, descending)"""
+            
+            # Portfolio Positions List (Section 3.2)
+            assets = portfolio_data.get("balances", [])
+            if assets:
+                # Sort by USD value descending
+                sorted_assets = sorted(assets, key=lambda x: x.get("usd_value", 0), reverse=True)
+                
+                # Get open orders count per symbol
+                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                open_orders_by_symbol = {}
+                open_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status.in_([
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED
+                    ])
+                ).all()
+                for order in open_orders:
+                    symbol = order.symbol or "N/A"
+                    open_orders_by_symbol[symbol] = open_orders_by_symbol.get(symbol, 0) + 1
+                
+                # Get TP/SL values (simplified - would need to calculate from orders)
+                for asset in sorted_assets[:15]:  # Show top 15
+                    coin = asset.get("currency", "N/A")
+                    balance = asset.get("balance", 0.0)
+                    usd_value = asset.get("usd_value", 0.0)
+                    available = asset.get("available", 0.0)
+                    reserved = balance - available
+                    
+                    # Format balance
+                    if balance >= 1:
+                        balance_str = f"{balance:,.4f}"
+                    elif balance >= 0.000001:
+                        balance_str = f"{balance:,.6f}"
+                    else:
+                        balance_str = f"{balance:.8f}"
+                    
+                    # Get open orders count
+                    order_count = open_orders_by_symbol.get(coin, 0)
+                    
+                    # TP/SL values (placeholder - should calculate from orders)
+                    tp_value = 0.0  # TODO: Calculate from TP orders
+                    sl_value = 0.0  # TODO: Calculate from SL orders
+                    
+                    message += f"""
+
+🪙 <b>{coin}</b>
+  Position Value: ${usd_value:,.2f}
+  Units Held: {balance_str}
+  Available: {available:,.4f} | Reserved: {reserved:,.4f}
+  Open Orders: {order_count}
+  TP Value: ${tp_value:,.2f} | SL Value: ${sl_value:,.2f}"""
+                
+                if len(sorted_assets) > 15:
+                    message += f"\n\n... and {len(sorted_assets) - 15} more positions"
+            else:
+                message += "\n\nNo positions found."
         
-        # Add open orders section
-        if open_orders:
-            message += f"""
-
-📋 *Open Orders ({len(open_orders)})*"""
-
-            for order in open_orders:
-                symbol = order.symbol or "N/A"
-                side = order.side.value if order.side else "N/A"
-                status = order.status.value if order.status else "N/A"
-                quantity = float(order.quantity) if order.quantity else 0
-                price = float(order.price) if order.price else 0
-                
-                price_str = f"${price:,.4f}" if price > 0 else "Market"
-                quantity_str = f"{quantity:,.6f}" if quantity >= 0.000001 else f"{quantity:.8f}"
-                
-                message += f"""
-
-🔴 *{symbol}* {side}
-• Type: {order.order_type or 'LIMIT'}
-• Quantity: {quantity_str}
-• Price: {price_str}
-• Status: {status}"""
+        # Add back button
+        keyboard = _build_keyboard([
+            [{"text": "🔄 Refresh", "callback_data": "cmd:portfolio"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
         
         logger.info(f"[TG][CMD] /portfolio")
-        return send_command_response(chat_id, message)
+        return _send_menu_message(chat_id, message, keyboard)
     except Exception as e:
-        logger.error(f"[TG][ERROR] Failed to build portfolio: {e}")
+        logger.error(f"[TG][ERROR] Failed to build portfolio: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error building portfolio: {str(e)}")
 
 
@@ -1928,6 +1939,331 @@ No executed orders found in the last 24 hours."""
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build executed orders: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error building executed orders: {str(e)}")
+
+
+def send_expected_take_profit_message(chat_id: str, db: Session = None) -> bool:
+    """Send expected take profit summary for all open positions - Reference Specification Section 6"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Call API endpoint to get expected take profit summary
+        try:
+            response = requests.get(
+                f"{API_BASE_URL.rstrip('/')}/api/dashboard/expected-take-profit",
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as api_err:
+            logger.error(f"[TG][ERROR] Failed to fetch expected TP from API: {api_err}", exc_info=True)
+            return send_command_response(chat_id, f"❌ Error fetching expected take profit: {str(api_err)}")
+        
+        summary = data.get("summary", [])
+        total_symbols = data.get("total_symbols", 0)
+        last_updated = data.get("last_updated")
+        
+        if not summary:
+            message = """🎯 <b>Expected Take Profit</b>
+
+No open positions with take profit orders found."""
+        else:
+            message = f"""🎯 <b>Expected Take Profit</b>
+
+📊 <b>Total Symbols: {total_symbols}</b>"""
+            
+            # Format last updated time
+            if last_updated:
+                try:
+                    from datetime import datetime
+                    if isinstance(last_updated, str):
+                        ts = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                    else:
+                        ts = datetime.fromtimestamp(last_updated, tz=timezone.utc)
+                    tz = pytz.timezone("Asia/Makassar")
+                    ts_local = ts.astimezone(tz)
+                    time_str = ts_local.strftime("%Y-%m-%d %H:%M")
+                    message += f"\n🕐 Last update: {time_str}"
+                except:
+                    pass
+            
+            message += "\n\n"
+            
+            # Display each symbol's expected TP
+            for item in summary[:20]:  # Limit to 20 for readability
+                symbol = item.get("symbol", "N/A")
+                net_qty = item.get("net_qty", 0)
+                expected_tp = item.get("expected_tp", 0)
+                position_value = item.get("position_value", 0)
+                avg_entry = item.get("avg_entry_price", 0)
+                current_price = item.get("current_price", 0)
+                unrealized_pnl = item.get("unrealized_pnl", 0)
+                
+                # Format values
+                expected_tp_str = f"${expected_tp:,.2f}" if expected_tp else "N/A"
+                position_value_str = f"${position_value:,.2f}" if position_value else "N/A"
+                
+                # Format quantity
+                if abs(net_qty) >= 1:
+                    qty_str = f"{net_qty:,.4f}"
+                elif abs(net_qty) >= 0.000001:
+                    qty_str = f"{net_qty:,.6f}"
+                else:
+                    qty_str = f"{net_qty:.8f}"
+                
+                message += f"""📈 <b>{symbol}</b>
+  Net Qty: {qty_str}
+  Position Value: {position_value_str}
+  Expected TP: {expected_tp_str}"""
+                
+                if avg_entry and current_price:
+                    pnl_pct = ((current_price - avg_entry) / avg_entry * 100) if avg_entry > 0 else 0
+                    pnl_emoji = "📈" if pnl_pct >= 0 else "📉"
+                    message += f"\n  {pnl_emoji} Unrealized P&L: {pnl_pct:+.2f}%"
+                
+                # Add button to view details
+                message += "\n"
+            
+            if len(summary) > 20:
+                message += f"\n... and {len(summary) - 20} more positions"
+        
+        # Add back button
+        keyboard = _build_keyboard([
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}]
+        ])
+        
+        logger.info(f"[TG][CMD] /expected_take_profit")
+        return _send_menu_message(chat_id, message, keyboard)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to build expected take profit: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error building expected take profit: {str(e)}")
+
+
+def show_monitoring_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show monitoring sub-menu with sections - Reference Specification Section 8"""
+    try:
+        text = "🔍 <b>Monitoring</b>\n\nSelect a monitoring section:"
+        keyboard = _build_keyboard([
+            [{"text": "🖥️ System Monitoring", "callback_data": "monitoring:system"}],
+            [{"text": "⏱️ Throttle", "callback_data": "monitoring:throttle"}],
+            [{"text": "⚙️ Monitoring Workflows", "callback_data": "monitoring:workflows"}],
+            [{"text": "🚫 Blocked Telegram Messages", "callback_data": "monitoring:blocked"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing monitoring menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing monitoring menu: {str(e)}")
+
+
+def send_system_monitoring_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Send system monitoring information - Reference Specification Section 8.1"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get system health from API
+        try:
+            response = requests.get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health",
+                timeout=10
+            )
+            if response.status_code == 200:
+                health_data = response.json()
+            else:
+                health_data = {}
+        except:
+            health_data = {}
+        
+        # Build message from health data
+        message = "🖥️ <b>System Monitoring</b>\n\n"
+        
+        # Backend status
+        backend_status = health_data.get("backend", {}).get("status", "unknown")
+        backend_emoji = "✅" if backend_status == "healthy" else "⚠️" if backend_status == "unhealthy" else "❌"
+        message += f"{backend_emoji} <b>Backend:</b> {backend_status}\n"
+        
+        # Database status
+        db_status = health_data.get("database", {}).get("status", "unknown")
+        db_emoji = "✅" if db_status == "connected" else "❌"
+        message += f"{db_emoji} <b>Database:</b> {db_status}\n"
+        
+        # Exchange API status
+        exchange_status = health_data.get("exchange", {}).get("status", "unknown")
+        exchange_emoji = "✅" if exchange_status == "connected" else "❌"
+        message += f"{exchange_emoji} <b>Exchange API:</b> {exchange_status}\n"
+        
+        # Trading bot status
+        bot_status = health_data.get("bot", {}).get("status", "unknown")
+        bot_emoji = "🟢" if bot_status == "running" else "🔴"
+        message += f"{bot_emoji} <b>Trading Bot:</b> {bot_status}\n"
+        
+        # Live trading mode
+        live_trading = health_data.get("bot", {}).get("live_trading_enabled", False)
+        mode_emoji = "🟢" if live_trading else "🔴"
+        mode_text = "LIVE" if live_trading else "DRY RUN"
+        message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
+        
+        # Last sync times
+        if "last_sync" in health_data:
+            message += f"\n🕐 <b>Last Sync:</b> {health_data.get('last_sync', 'N/A')}\n"
+        
+        keyboard = _build_keyboard([
+            [{"text": "🔄 Refresh", "callback_data": "monitoring:system"}],
+            [{"text": "🔙 Back to Monitoring", "callback_data": "menu:monitoring"}],
+        ])
+        
+        return _send_or_edit_menu(chat_id, message, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to build system monitoring: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error building system monitoring: {str(e)}")
+
+
+def send_throttle_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Send throttle information (recent Telegram messages) - Reference Specification Section 8.2"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get recent Telegram messages from API
+        try:
+            response = requests.get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
+                params={"limit": 20},
+                timeout=10
+            )
+            if response.status_code == 200:
+                messages_data = response.json()
+                messages = messages_data.get("messages", [])
+            else:
+                messages = []
+        except:
+            messages = []
+        
+        message = "⏱️ <b>Throttle</b>\n\n"
+        message += f"📊 <b>Recent Messages ({len(messages)} shown)</b>\n\n"
+        
+        if not messages:
+            message += "No recent messages found."
+        else:
+            for msg in messages[:10]:  # Show last 10
+                timestamp = msg.get("timestamp", "N/A")
+                content = msg.get("content", "")[:50]  # Truncate long messages
+                msg_type = msg.get("type", "unknown")
+                status = msg.get("status", "sent")
+                
+                status_emoji = "✅" if status == "sent" else "⏸️" if status == "throttled" else "🚫"
+                message += f"{status_emoji} <b>{timestamp}</b> [{msg_type}]\n"
+                message += f"   {content}...\n\n"
+        
+        keyboard = _build_keyboard([
+            [{"text": "🔄 Refresh", "callback_data": "monitoring:throttle"}],
+            [{"text": "🔙 Back to Monitoring", "callback_data": "menu:monitoring"}],
+        ])
+        
+        return _send_or_edit_menu(chat_id, message, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to build throttle: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error building throttle: {str(e)}")
+
+
+def send_workflows_monitoring_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Send workflow monitoring information - Reference Specification Section 8.3"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get workflow status from API
+        try:
+            response = requests.get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/workflows",
+                timeout=10
+            )
+            if response.status_code == 200:
+                workflows_data = response.json()
+                workflows = workflows_data.get("workflows", [])
+            else:
+                workflows = []
+        except:
+            workflows = []
+        
+        message = "⚙️ <b>Monitoring Workflows</b>\n\n"
+        
+        if not workflows:
+            message += "No workflow information available."
+        else:
+            for workflow in workflows:
+                name = workflow.get("name", "Unknown")
+                last_execution = workflow.get("last_execution", "N/A")
+                status = workflow.get("status", "unknown")
+                count = workflow.get("execution_count", 0)
+                
+                status_emoji = "✅" if status == "success" else "❌" if status == "error" else "⏳"
+                message += f"{status_emoji} <b>{name}</b>\n"
+                message += f"   Last: {last_execution}\n"
+                message += f"   Count: {count}\n"
+                if status == "error":
+                    error = workflow.get("last_error", "")
+                    if error:
+                        message += f"   Error: {error[:50]}...\n"
+                message += "\n"
+        
+        keyboard = _build_keyboard([
+            [{"text": "🔄 Refresh", "callback_data": "monitoring:workflows"}],
+            [{"text": "🔙 Back to Monitoring", "callback_data": "menu:monitoring"}],
+        ])
+        
+        return _send_or_edit_menu(chat_id, message, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to build workflows monitoring: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error building workflows monitoring: {str(e)}")
+
+
+def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Send blocked Telegram messages - Reference Specification Section 8.4"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get blocked messages from API (filter for blocked=True)
+        try:
+            response = requests.get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
+                params={"blocked": True, "limit": 20},
+                timeout=10
+            )
+            if response.status_code == 200:
+                messages_data = response.json()
+                messages = messages_data.get("messages", [])
+            else:
+                messages = []
+        except:
+            messages = []
+        
+        message = "🚫 <b>Blocked Telegram Messages</b>\n\n"
+        message += f"📊 <b>Blocked Messages ({len(messages)} shown)</b>\n\n"
+        
+        if not messages:
+            message += "No blocked messages found."
+        else:
+            for msg in messages[:10]:  # Show last 10
+                timestamp = msg.get("timestamp", "N/A")
+                content = msg.get("content", "")[:50]  # Truncate long messages
+                reason = msg.get("block_reason", "Unknown")
+                
+                message += f"🚫 <b>{timestamp}</b>\n"
+                message += f"   Reason: {reason}\n"
+                message += f"   {content}...\n\n"
+        
+        keyboard = _build_keyboard([
+            [{"text": "🔄 Refresh", "callback_data": "monitoring:blocked"}],
+            [{"text": "🔙 Back to Monitoring", "callback_data": "menu:monitoring"}],
+        ])
+        
+        return _send_or_edit_menu(chat_id, message, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to build blocked messages: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error building blocked messages: {str(e)}")
 
 
 def send_version_message(chat_id: str) -> bool:
@@ -2818,6 +3154,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_watchlist_message(chat_id, db)
             elif cmd == "open_orders":
                 send_open_orders_message(chat_id, db)
+            elif cmd == "expected_tp":
+                send_expected_take_profit_message(chat_id, db)
             elif cmd == "executed_orders":
                 send_executed_orders_message(chat_id, db)
             elif cmd == "version":
@@ -2826,6 +3164,20 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_alerts_list_message(chat_id, db)
             elif cmd == "help":
                 send_help_message(chat_id)
+        elif callback_data == "menu:monitoring":
+            # Show monitoring sub-menu
+            show_monitoring_menu(chat_id, db, message_id)
+        elif callback_data.startswith("monitoring:"):
+            # Handle monitoring sub-sections
+            section = callback_data.replace("monitoring:", "")
+            if section == "system":
+                send_system_monitoring_message(chat_id, db, message_id)
+            elif section == "throttle":
+                send_throttle_message(chat_id, db, message_id)
+            elif section == "workflows":
+                send_workflows_monitoring_message(chat_id, db, message_id)
+            elif section == "blocked":
+                send_blocked_messages_message(chat_id, db, message_id)
         elif callback_data.startswith("setting:"):
             # Handle settings menu callbacks (e.g., setting:min_price_change_pct:select_strategy)
             _handle_setting_callback(chat_id, callback_data, callback_query.get("message", {}).get("message_id"), db)

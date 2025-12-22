@@ -115,7 +115,10 @@ class TelegramNotifier:
             return
 
         logger.info("Telegram Notifier initialized")
-        self.set_bot_commands()
+        # NOTE: Removed automatic set_bot_commands() call to prevent overriding
+        # the full command menu registered by setup_bot_commands() in telegram_commands.py
+        # The set_bot_commands() method is still available for manual use via API endpoint
+        # self.set_bot_commands()
     
     def _format_timestamp(self) -> str:
         """Format current timestamp using configured timezone (Bali time)"""
