@@ -3155,9 +3155,16 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         
         # Only authorized chat (group/channel) or user
         # For groups, check the chat ID; for private chats, check user ID
-        is_authorized = (chat_id == AUTH_CHAT_ID) or (user_id == AUTH_CHAT_ID)
+        # Ensure both are strings for proper comparison
+        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
+        is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
         if not is_authorized:
-            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}")
+            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID} (str: {auth_chat_id_str})")
+            # Send error message to user
+            try:
+                send_command_response(chat_id, "⛔ Not authorized")
+            except:
+                pass
             return
         
         # Mark this callback as processed BEFORE processing to prevent race conditions
