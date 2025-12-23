@@ -1108,31 +1108,98 @@ class SignalMonitorService:
                 except Exception as record_err:
                     logger.warning(f"Failed to record BUY signal event for {symbol} (non-blocking): {record_err}")
             if not buy_allowed:
-                blocked_msg = f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"
-                logger.info(blocked_msg)
-                self._log_signal_rejection(
-                    symbol,
-                    "BUY",
-                    self._classify_throttle_reason(buy_reason),
-                    {"throttle_reason": buy_reason},
+                # CRITICAL: Only block if there's a valid price reference
+                # If no price reference exists, the signal should be allowed (should_emit_signal already handles this,
+                # but we add an extra safety check here)
+                has_valid_reference = (
+                    last_buy_snapshot is not None 
+                    and last_buy_snapshot.price is not None 
+                    and last_buy_snapshot.price > 0
                 )
-                try:
-                    from app.api.routes_monitoring import add_telegram_message
-
-                    add_telegram_message(
-                        blocked_msg,
-                        symbol=symbol,
-                        blocked=True,
-                        throttle_status="BLOCKED",
-                        throttle_reason=buy_reason,
+                
+                # If no valid reference, allow the signal (should not be blocked)
+                if not has_valid_reference:
+                    logger.warning(
+                        f"⚠️ {symbol} BUY: Throttle check returned False but no valid price reference exists. "
+                        f"Allowing signal anyway. Reason: {buy_reason}"
                     )
-                except Exception:
-                    pass
-                # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
-                # This ensures price change threshold is calculated from the last sent alert price, not the blocked price
-                buy_signal = False
-                if current_state == "BUY":
-                    current_state = "WAIT"
+                    # Override the throttle decision - allow the signal
+                    buy_allowed = True
+                    throttle_buy_reason = "No previous same-side signal recorded - allowing first signal"
+                    # Record the signal event
+                    try:
+                        emit_reason = "First signal for this side/strategy (no previous reference)"
+                        record_signal_event(
+                            db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=current_price,
+                            source="signal_check",
+                            emit_reason=emit_reason,
+                        )
+                        logger.debug(f"📝 Recorded BUY signal event for {symbol} at {current_price} (strategy: {strategy_key}) - first signal")
+                    except Exception as record_err:
+                        logger.warning(f"Failed to record BUY signal event for {symbol} (non-blocking): {record_err}")
+                else:
+                    # Build blocked message with reference price and timestamp (only if we have a valid reference)
+                    blocked_msg_parts = [f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"]
+                    
+                    # Add reference price and timestamp (we know they exist from the check above)
+                    ref_price = last_buy_snapshot.price
+                    ref_timestamp = last_buy_snapshot.timestamp
+                    # Format timestamp in a readable format
+                    if ref_timestamp:
+                        if ref_timestamp.tzinfo is None:
+                            ref_timestamp = ref_timestamp.replace(tzinfo=timezone.utc)
+                        ref_time_str = ref_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+                        # Format price with appropriate decimals based on value
+                        if ref_price >= 1000:
+                            price_str = f"${ref_price:,.2f}"
+                        elif ref_price >= 1:
+                            price_str = f"${ref_price:.2f}"
+                        elif ref_price >= 0.01:
+                            price_str = f"${ref_price:.4f}"
+                        else:
+                            price_str = f"${ref_price:.8f}"
+                        blocked_msg_parts.append(f"Precio de referencia: {price_str} (último mensaje exitoso: {ref_time_str})")
+                    else:
+                        # Format price with appropriate decimals based on value
+                        if ref_price >= 1000:
+                            price_str = f"${ref_price:,.2f}"
+                        elif ref_price >= 1:
+                            price_str = f"${ref_price:.2f}"
+                        elif ref_price >= 0.01:
+                            price_str = f"${ref_price:.4f}"
+                        else:
+                            price_str = f"${ref_price:.8f}"
+                        blocked_msg_parts.append(f"Precio de referencia: {price_str}")
+                    
+                    blocked_msg = " | ".join(blocked_msg_parts)
+                    logger.info(blocked_msg)
+                    self._log_signal_rejection(
+                        symbol,
+                        "BUY",
+                        self._classify_throttle_reason(buy_reason),
+                        {"throttle_reason": buy_reason},
+                    )
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason=buy_reason,
+                        )
+                    except Exception:
+                        pass
+                    # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
+                    # This ensures price change threshold is calculated from the last sent alert price, not the blocked price
+                    buy_signal = False
+                    if current_state == "BUY":
+                        current_state = "WAIT"
         if sell_signal:
             self._log_signal_candidate(
                 symbol,
@@ -1200,26 +1267,93 @@ class SignalMonitorService:
             # CRITICAL: If throttle check blocks the signal, set sell_signal = False to prevent alert sending
             # This ensures SELL alerts respect the same throttling rules as BUY (cooldown and price change %)
             if not sell_allowed:
-                blocked_msg = f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"
-                logger.info(blocked_msg)
-                self._log_signal_rejection(
-                    symbol,
-                    "SELL",
-                    self._classify_throttle_reason(sell_reason),
-                    {"throttle_reason": sell_reason},
+                # CRITICAL: Only block if there's a valid price reference
+                # If no price reference exists, the signal should be allowed (should_emit_signal already handles this,
+                # but we add an extra safety check here)
+                has_valid_reference = (
+                    last_sell_snapshot is not None 
+                    and last_sell_snapshot.price is not None 
+                    and last_sell_snapshot.price > 0
                 )
-                try:
-                    from app.api.routes_monitoring import add_telegram_message
-
-                    add_telegram_message(
-                        blocked_msg,
-                        symbol=symbol,
-                        blocked=True,
-                        throttle_status="BLOCKED",
-                        throttle_reason=sell_reason,
+                
+                # If no valid reference, allow the signal (should not be blocked)
+                if not has_valid_reference:
+                    logger.warning(
+                        f"⚠️ {symbol} SELL: Throttle check returned False but no valid price reference exists. "
+                        f"Allowing signal anyway. Reason: {sell_reason}"
                     )
-                except Exception:
-                    pass
+                    # Override the throttle decision - allow the signal
+                    sell_allowed = True
+                    throttle_sell_reason = "No previous same-side signal recorded - allowing first signal"
+                    # Record the signal event
+                    try:
+                        emit_reason = "First signal for this side/strategy (no previous reference)"
+                        record_signal_event(
+                            db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="SELL",
+                            price=current_price,
+                            source="signal_check",
+                            emit_reason=emit_reason,
+                        )
+                        logger.debug(f"📝 Recorded SELL signal event for {symbol} at {current_price} (strategy: {strategy_key}) - first signal")
+                    except Exception as record_err:
+                        logger.warning(f"Failed to record SELL signal event for {symbol} (non-blocking): {record_err}")
+                else:
+                    # Build blocked message with reference price and timestamp (only if we have a valid reference)
+                    blocked_msg_parts = [f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"]
+                    
+                    # Add reference price and timestamp (we know they exist from the check above)
+                    ref_price = last_sell_snapshot.price
+                    ref_timestamp = last_sell_snapshot.timestamp
+                    # Format timestamp in a readable format
+                    if ref_timestamp:
+                        if ref_timestamp.tzinfo is None:
+                            ref_timestamp = ref_timestamp.replace(tzinfo=timezone.utc)
+                        ref_time_str = ref_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+                        # Format price with appropriate decimals based on value
+                        if ref_price >= 1000:
+                            price_str = f"${ref_price:,.2f}"
+                        elif ref_price >= 1:
+                            price_str = f"${ref_price:.2f}"
+                        elif ref_price >= 0.01:
+                            price_str = f"${ref_price:.4f}"
+                        else:
+                            price_str = f"${ref_price:.8f}"
+                        blocked_msg_parts.append(f"Precio de referencia: {price_str} (último mensaje exitoso: {ref_time_str})")
+                    else:
+                        # Format price with appropriate decimals based on value
+                        if ref_price >= 1000:
+                            price_str = f"${ref_price:,.2f}"
+                        elif ref_price >= 1:
+                            price_str = f"${ref_price:.2f}"
+                        elif ref_price >= 0.01:
+                            price_str = f"${ref_price:.4f}"
+                        else:
+                            price_str = f"${ref_price:.8f}"
+                        blocked_msg_parts.append(f"Precio de referencia: {price_str}")
+                    
+                    blocked_msg = " | ".join(blocked_msg_parts)
+                    logger.info(blocked_msg)
+                    self._log_signal_rejection(
+                        symbol,
+                        "SELL",
+                        self._classify_throttle_reason(sell_reason),
+                        {"throttle_reason": sell_reason},
+                    )
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason=sell_reason,
+                        )
+                    except Exception:
+                        pass
                 # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
                 # This ensures price change threshold is calculated from the last sent alert price, not the blocked price
                 # CRITICAL: Set sell_signal = False to prevent alert from being sent
