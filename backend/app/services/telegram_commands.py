@@ -3452,44 +3452,15 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     if text.startswith("/start"):
         logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
         try:
-            # Send welcome message with persistent keyboard buttons first
-            # This provides the user with quick access buttons at the bottom
-            logger.info(f"[TG][CMD][START] Sending welcome message with persistent keyboard to chat_id={chat_id}")
-            welcome_result = send_welcome_message(chat_id)
-            logger.info(f"[TG][CMD][START] Welcome message result: {welcome_result}")
-            
-            if not welcome_result:
-                logger.error(f"[TG][CMD][START] ❌ Failed to send welcome message to chat_id={chat_id}")
-            
-            # Small delay to ensure welcome message is sent before main menu
-            # This prevents Telegram from potentially merging the messages
-            time.sleep(1.0)
-            
-            # Also show the main menu with inline buttons (as per specification)
-            # This provides the full menu structure with all sections
+            # Show main menu with inline buttons (single message, no duplication)
             logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id}")
-            try:
-                menu_result = show_main_menu(chat_id, db)
-                logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
-                
-                if not menu_result:
-                    logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
-                    # Try sending a simple message to verify we can send messages
-                    logger.info(f"[TG][CMD][START] Attempting to send test message to verify connectivity...")
-                    test_result = send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
-                    logger.info(f"[TG][CMD][START] Test message result: {test_result}")
-            except Exception as menu_error:
-                logger.error(f"[TG][ERROR][START] ❌ Exception in show_main_menu: {menu_error}", exc_info=True)
-                menu_result = False
+            menu_result = show_main_menu(chat_id, db)
+            logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
             
-            if welcome_result and menu_result:
-                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id} (both messages sent)")
-            elif welcome_result:
-                logger.warning(f"[TG][CMD][START] ⚠️ Welcome sent but main menu failed for chat_id={chat_id}")
-            elif menu_result:
-                logger.warning(f"[TG][CMD][START] ⚠️ Main menu sent but welcome failed for chat_id={chat_id}")
+            if menu_result:
+                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
             else:
-                logger.error(f"[TG][CMD][START] ❌ Both welcome and main menu failed for chat_id={chat_id}")
+                logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
         except Exception as e:
             logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
     elif text.startswith("/menu"):
