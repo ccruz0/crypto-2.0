@@ -1,74 +1,83 @@
-# Quick Deployment Guide - Telegram Alerts Fix
+# 🚀 Deploy Telegram Fixes NOW
 
-## ⚠️ Important: Changes Must Be Committed First
+## ⚠️ IMPORTANT: Code is committed but NOT deployed yet!
 
-The deployment script uses `git pull`, so you need to commit and push the changes first.
+The server is still running the **OLD code**. You need to deploy the changes.
 
-## Quick Steps
+## Quick Deployment
 
-### 1. Commit and Push Changes (if not done)
+### Option 1: Use Deployment Script (Recommended)
+
 ```bash
-git add backend/app/services/signal_monitor.py backend/scripts/diagnose_telegram_alerts.py
-git commit -m "Fix: Add explicit origin parameter to Telegram alerts"
-git push origin main
+cd ~/automated-trading-platform
+./deploy_telegram_fixes.sh
 ```
 
-### 2. Deploy via SSM (Automated)
-```bash
-./deploy_telegram_fix_ssm.sh
-```
-
-### 3. OR Deploy Manually on AWS Server
-
-SSH into your AWS server and run:
+### Option 2: Manual Deployment via SSH
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+# 1. SSH to server
+ssh ubuntu@175.41.189.249
 
-# Fix git ownership issue
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform
+# 2. Navigate to project
+cd ~/automated-trading-platform
 
-# Pull latest code
+# 3. Pull latest code
 git pull origin main
 
-# Find container
-CONTAINER=$(docker ps --filter "name=market-updater-aws" --format "{{.Names}}" | head -1)
-echo "Container: $CONTAINER"
+# 4. Restart backend
+cd backend
 
-# Copy file into container
-docker cp backend/app/services/signal_monitor.py $CONTAINER:/app/app/services/signal_monitor.py
+# If using Docker:
+docker compose restart backend
 
-# Verify fix
-docker exec $CONTAINER grep "alert_origin = get_runtime_origin()" /app/app/services/signal_monitor.py && echo "✅ Fix verified"
-
-# Restart service
-docker compose --profile aws restart market-updater-aws
-
-# Check status
-sleep 5
-docker ps --filter "name=market-updater-aws" --format "table {{.Names}}\t{{.Status}}"
+# If using uvicorn directly:
+pkill -f "uvicorn app.main:app"
+source venv/bin/activate
+nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 > backend.log 2>&1 &
 ```
 
-## What the Fix Does
+### Option 3: If SSH is not working
 
-The fix adds explicit `origin="AWS"` parameter when sending alerts:
-- **Before**: `telegram_notifier.send_buy_signal(...)` (no origin)
-- **After**: `alert_origin = get_runtime_origin()` then `telegram_notifier.send_buy_signal(..., origin=alert_origin)`
+If you can't SSH directly, you may need to:
+1. Check if the server IP has changed
+2. Verify SSH key is correct
+3. Check firewall/security group settings
+4. Use AWS Console to access the instance
 
-This ensures the Telegram gatekeeper allows messages to be sent.
+## What Gets Fixed After Deployment
+
+✅ **Portfolio Message:**
+- Shows actual TP/SL values (not $0.00)
+- Shows open position indicators (🔒 Open Position / 💤 Available)
+- Menu buttons always appear
+
+✅ **/start Command:**
+- Shows main menu with inline buttons
+- No duplicate menus
+- No text command list
+
+✅ **Welcome Message:**
+- Shows main menu (same as /start)
+- No old text list
+- No persistent keyboard duplication
 
 ## Verify Deployment
 
-After deployment, monitor logs:
+After deploying, test:
+1. Send `/start` - should show main menu with inline buttons only
+2. Send `/portfolio` - should show TP/SL values and position status
+3. Check that no duplicate keyboards appear
+
+## Check Backend Status
+
 ```bash
-docker compose --profile aws logs -f market-updater-aws | grep TELEGRAM
+# Check if backend is running
+ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform/backend && pgrep -f "uvicorn app.main:app"'
+
+# Check backend logs
+ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform/backend && tail -f backend.log'
+
+# Or if using Docker:
+ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker compose logs -f backend'
 ```
-
-Look for:
-- `[TELEGRAM_INVOKE] origin_param=AWS` ✅
-- `[TELEGRAM_GATEKEEPER] ... RESULT=ALLOW` ✅
-- `[TELEGRAM_SUCCESS]` ✅
-
-
-
-
