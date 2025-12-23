@@ -547,11 +547,45 @@ def _handle_pending_value_message(chat_id: str, text: str, db: Session) -> bool:
         send_command_response(chat_id, f"❌ Error guardando valor: {e}")
     return True
 def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
-    """Send a message with inline keyboard."""
+    """Send a message with inline keyboard and remove persistent keyboard if present."""
     if not TELEGRAM_ENABLED:
         logger.debug("Telegram disabled: skipping menu message")
         return False
     try:
+        # Remove persistent keyboard first (if it exists) to avoid showing both keyboards
+        # This prevents the duplication issue where both inline buttons and persistent keyboard show
+        try:
+            remove_payload = {
+                "chat_id": chat_id,
+                "text": " ",  # Minimal text required by Telegram API
+                "reply_markup": {"remove_keyboard": True}
+            }
+            remove_response = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=remove_payload,
+                timeout=5
+            )
+            if remove_response.status_code == 200:
+                remove_result = remove_response.json()
+                if remove_result.get("ok"):
+                    # Delete the removal message immediately to keep chat clean
+                    delete_msg_id = remove_result.get('result', {}).get('message_id')
+                    try:
+                        requests.post(
+                            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
+                            json={"chat_id": chat_id, "message_id": delete_msg_id},
+                            timeout=5
+                        )
+                    except:
+                        pass  # Ignore delete errors
+        except Exception as e:
+            # Ignore errors - persistent keyboard might not exist, which is fine
+            logger.debug(f"[TG] Could not remove persistent keyboard (may not exist): {e}")
+        
+        # Small delay to ensure keyboard removal is processed
+        time.sleep(0.1)
+        
+        # Now send the message with inline keyboard
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": chat_id,
