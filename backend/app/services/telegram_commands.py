@@ -1365,7 +1365,12 @@ def send_portfolio_message(chat_id: str, db: Session = None) -> bool:
     """Send portfolio with PnL breakdown - Reference Specification Section 3"""
     try:
         if not db:
-            return send_command_response(chat_id, "❌ Database not available")
+            error_message = "❌ Database not available"
+            error_keyboard = _build_keyboard([
+                [{"text": "🔄 Retry", "callback_data": "cmd:portfolio"}],
+                [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+            ])
+            return _send_menu_message(chat_id, error_message, error_keyboard)
         
         # Get portfolio data from API endpoint (same as Dashboard)
         try:
@@ -1373,13 +1378,25 @@ def send_portfolio_message(chat_id: str, db: Session = None) -> bool:
             portfolio_data = get_portfolio_summary(db)
         except Exception as api_err:
             logger.error(f"[TG][ERROR] Failed to fetch portfolio from API: {api_err}", exc_info=True)
-            return send_command_response(chat_id, f"❌ Error fetching portfolio: {str(api_err)}")
+            error_message = f"❌ Error fetching portfolio: {str(api_err)}"
+            error_keyboard = _build_keyboard([
+                [{"text": "🔄 Retry", "callback_data": "cmd:portfolio"}],
+                [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+            ])
+            return _send_menu_message(chat_id, error_message, error_keyboard)
         
         if not portfolio_data:
             message = """💼 <b>Portfolio</b>
 
 No portfolio data available.
 Check if exchange sync is running."""
+            # Create keyboard even when no data
+            keyboard = _build_keyboard([
+                [{"text": "🔄 Refresh", "callback_data": "cmd:portfolio"}],
+                [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+            ])
+            logger.info(f"[TG][CMD] /portfolio (no data)")
+            return _send_menu_message(chat_id, message, keyboard)
         else:
             # Portfolio Overview (Section 3.1)
             total_value = portfolio_data.get("total_usd", 0.0)
@@ -1406,6 +1423,21 @@ Check if exchange sync is running."""
             # Portfolio Positions List (Section 3.2)
             assets = portfolio_data.get("balances", [])
             if assets:
+                # Get TP/SL values from API endpoint
+                tp_sl_values = {}
+                try:
+                    response = requests.get(
+                        f"{API_BASE_URL.rstrip('/')}/api/orders/tp-sl-values",
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        tp_sl_values = response.json()
+                        logger.info(f"[TG][PORTFOLIO] Fetched TP/SL values for {len(tp_sl_values)} currencies")
+                    else:
+                        logger.warning(f"[TG][PORTFOLIO] Failed to fetch TP/SL values: HTTP {response.status_code}")
+                except Exception as tp_sl_err:
+                    logger.warning(f"[TG][PORTFOLIO] Error fetching TP/SL values: {tp_sl_err}")
+                
                 # Sort by USD value descending
                 sorted_assets = sorted(assets, key=lambda x: x.get("usd_value", 0), reverse=True)
                 
@@ -1421,10 +1453,12 @@ Check if exchange sync is running."""
                 ).all()
                 for order in open_orders:
                     symbol = order.symbol or "N/A"
-                    open_orders_by_symbol[symbol] = open_orders_by_symbol.get(symbol, 0) + 1
+                    # Extract base currency from symbol (e.g., "BTC_USDT" -> "BTC")
+                    base_currency = symbol.split('_')[0].upper() if '_' in symbol else symbol.upper()
+                    open_orders_by_symbol[base_currency] = open_orders_by_symbol.get(base_currency, 0) + 1
                 
-                # Get TP/SL values (simplified - would need to calculate from orders)
-                for asset in sorted_assets:  # Show all positions
+                # Display all positions
+                for asset in sorted_assets:
                     coin = asset.get("currency", "N/A")
                     balance = asset.get("balance", 0.0)
                     usd_value = asset.get("usd_value", 0.0)
@@ -1442,14 +1476,18 @@ Check if exchange sync is running."""
                     # Get open orders count
                     order_count = open_orders_by_symbol.get(coin, 0)
                     
-                    # TP/SL values (placeholder - should calculate from orders)
-                    tp_value = 0.0  # TODO: Calculate from TP orders
-                    sl_value = 0.0  # TODO: Calculate from SL orders
+                    # Get TP/SL values from API response
+                    coin_tp_sl = tp_sl_values.get(coin, {})
+                    tp_value = coin_tp_sl.get("tp_value_usd", 0.0) or 0.0
+                    sl_value = coin_tp_sl.get("sl_value_usd", 0.0) or 0.0
+                    
+                    # Indicate if this is an open position (has reserved balance)
+                    position_status = "🔒 Open Position" if reserved > 0 else "💤 Available"
                     
                     # Add each position to the message
                     message += f"""
 
-🪙 <b>{coin}</b>
+🪙 <b>{coin}</b> {position_status}
   Position Value: ${usd_value:,.2f}
   Units Held: {balance_str}
   Available: {available:,.4f} | Reserved: {reserved:,.4f}
@@ -1465,10 +1503,28 @@ Check if exchange sync is running."""
         ])
         
         logger.info(f"[TG][CMD] /portfolio")
+        
+        # Check message length (Telegram limit is 4096 characters)
+        if len(message) > 4096:
+            logger.warning(f"[TG][PORTFOLIO] Message too long ({len(message)} chars), truncating...")
+            # Truncate message but keep the header and footer
+            header_end = message.find("📋 <b>Portfolio Positions</b>")
+            if header_end > 0:
+                header = message[:header_end + len("📋 <b>Portfolio Positions</b>\n(Sorted by position value, descending)")]
+                message = header + "\n\n⚠️ Message truncated due to length. Showing first positions only."
+            else:
+                message = message[:4000] + "\n\n⚠️ Message truncated..."
+        
         return _send_menu_message(chat_id, message, keyboard)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build portfolio: {e}", exc_info=True)
-        return send_command_response(chat_id, f"❌ Error building portfolio: {str(e)}")
+        # Send error with menu keyboard so user can navigate back
+        error_message = f"❌ Error building portfolio: {str(e)}"
+        error_keyboard = _build_keyboard([
+            [{"text": "🔄 Retry", "callback_data": "cmd:portfolio"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        return _send_menu_message(chat_id, error_message, error_keyboard)
 
 
 def send_signals_message(chat_id: str, db: Session = None) -> bool:
