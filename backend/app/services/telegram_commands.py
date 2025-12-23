@@ -888,6 +888,13 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
     7. Version History
     """
     try:
+        # Authorization check
+        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
+        if chat_id != auth_chat_id_str:
+            logger.warning(f"[TG][DENY] show_main_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
+            send_command_response(chat_id, "⛔ Not authorized")
+            return False
+        
         text = "📋 <b>Main Menu</b>\n\nSelect a section:"
         keyboard = _build_keyboard([
             [{"text": "💼 Portfolio", "callback_data": "menu:portfolio"}],
@@ -2178,6 +2185,12 @@ def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional
 def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
     """Show expected take profit sub-menu with options"""
     try:
+        # Authorization check
+        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
+        if chat_id != auth_chat_id_str:
+            logger.warning(f"[TG][DENY] show_expected_tp_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
+            return False
+        
         text = "🎯 <b>Expected Take Profit</b>\n\nSelect an option:"
         keyboard = _build_keyboard([
             [{"text": "📊 View Expected TP", "callback_data": "cmd:expected_tp"}],
