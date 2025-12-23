@@ -1076,6 +1076,11 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            # CRITICAL: Save previous price from snapshot BEFORE recording the signal event
+            # This ensures we use the same price that was used in the throttle check for consistency
+            last_buy_snapshot = signal_snapshots.get("BUY")
+            prev_buy_price_from_snapshot: Optional[float] = last_buy_snapshot.price if last_buy_snapshot and last_buy_snapshot.price else None
+            
             # Store throttle reason for use in alert message
             if buy_allowed:
                 throttle_buy_reason = buy_reason
@@ -1087,7 +1092,6 @@ class SignalMonitorService:
                     emit_reason_parts = []
                     if buy_reason:
                         emit_reason_parts.append(buy_reason)
-                    last_buy_snapshot = signal_snapshots.get("BUY")
                     if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
                         emit_reason_parts.append("First signal for this side/strategy")
                     elif signal_snapshots.get("SELL") and signal_snapshots.get("SELL").timestamp:
@@ -1227,6 +1231,11 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            # CRITICAL: Save previous price from snapshot BEFORE recording the signal event
+            # This ensures we use the same price that was used in the throttle check for consistency
+            last_sell_snapshot = signal_snapshots.get("SELL")
+            prev_sell_price_from_snapshot: Optional[float] = last_sell_snapshot.price if last_sell_snapshot and last_sell_snapshot.price else None
+            
             # Store throttle reason for use in alert message
             if sell_allowed:
                 throttle_sell_reason = sell_reason
@@ -1238,7 +1247,6 @@ class SignalMonitorService:
                     emit_reason_parts = []
                     if sell_reason:
                         emit_reason_parts.append(sell_reason)
-                    last_sell_snapshot = signal_snapshots.get("SELL")
                     if last_sell_snapshot is None or last_sell_snapshot.timestamp is None:
                         emit_reason_parts.append("First signal for this side/strategy")
                     elif signal_snapshots.get("BUY") and signal_snapshots.get("BUY").timestamp:
@@ -1429,7 +1437,10 @@ class SignalMonitorService:
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
                 
-                prev_buy_price: Optional[float] = self._get_last_alert_price(symbol, "BUY", db)
+                # Use the price from snapshot (saved before record_signal_event) for consistent price change calculation
+                # This ensures "Cambio desde última alerta" matches the price change shown in the trigger reason
+                # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
+                prev_buy_price: Optional[float] = prev_buy_price_from_snapshot if prev_buy_price_from_snapshot is not None else self._get_last_alert_price(symbol, "BUY", db)
                 
                 # ========================================================================
                 # VERIFICACIÓN FINAL: Re-verificar órdenes abiertas ANTES de enviar alerta
@@ -2241,7 +2252,10 @@ class SignalMonitorService:
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} SELL alert")
                 
-                prev_sell_price: Optional[float] = self._get_last_alert_price(symbol, "SELL", db)
+                # Use the price from snapshot (saved before record_signal_event) for consistent price change calculation
+                # This ensures "Cambio desde última alerta" matches the price change shown in the trigger reason
+                # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
+                prev_sell_price: Optional[float] = prev_sell_price_from_snapshot if prev_sell_price_from_snapshot is not None else self._get_last_alert_price(symbol, "SELL", db)
                 
                 # NOTE: Throttling already checked by should_emit_signal (passed if we reached here)
                 # Since sell_allowed was True, we proceed directly to send the alert
