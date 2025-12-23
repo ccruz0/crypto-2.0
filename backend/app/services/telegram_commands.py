@@ -805,22 +805,10 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
 
 
 def send_welcome_message(chat_id: str) -> bool:
-    """Send welcome message with custom keyboard (persistent buttons at bottom)"""
+    """Send welcome message with inline keyboard buttons"""
     if not TELEGRAM_ENABLED:
         return False
     try:
-        # Create custom keyboard (ReplyKeyboardMarkup - persistent buttons at bottom)
-        keyboard = {
-            "keyboard": [
-                [{"text": "🚀 Start"}],
-                [{"text": "📊 Status"}, {"text": "💰 Portfolio"}],
-                [{"text": "📈 Signals"}, {"text": "📋 Watchlist"}],
-                [{"text": "⚙️ Menu"}, {"text": "❓ Help"}]
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": False  # Keep keyboard persistent
-        }
-        
         message = """🎉 <b>Welcome to Trading Bot</b>
 
 Use the buttons below to interact with the bot.
@@ -837,17 +825,18 @@ Use the buttons below to interact with the bot.
 
 <b>Note:</b> Only authorized users can use these commands."""
         
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-            "reply_markup": keyboard
-        }
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        logger.info(f"[TG] Welcome message with custom keyboard sent to chat_id={chat_id}")
-        return True
+        # Create inline keyboard (buttons in the message)
+        keyboard = _build_keyboard([
+            [{"text": "📊 Status", "callback_data": "cmd:status"}],
+            [{"text": "💼 Portfolio", "callback_data": "cmd:portfolio"}],
+            [{"text": "📈 Signals", "callback_data": "cmd:signals"}],
+            [{"text": "📋 Watchlist", "callback_data": "cmd:watchlist"}],
+            [{"text": "⚙️ Main Menu", "callback_data": "menu:main"}],
+            [{"text": "❓ Help", "callback_data": "cmd:help"}],
+        ])
+        
+        logger.info(f"[TG] Sending welcome message with inline keyboard to chat_id={chat_id}")
+        return _send_menu_message(chat_id, message, keyboard)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to send welcome message: {e}", exc_info=True)
         return False
