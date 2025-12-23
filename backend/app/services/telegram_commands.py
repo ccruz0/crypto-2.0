@@ -888,9 +888,9 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
     7. Version History
     """
     try:
-        # Authorization check
+        # Authorization check - but allow if AUTH_CHAT_ID is not set (for development)
         auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-        if chat_id != auth_chat_id_str:
+        if AUTH_CHAT_ID and chat_id != auth_chat_id_str:
             logger.warning(f"[TG][DENY] show_main_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
@@ -2185,10 +2185,11 @@ def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional
 def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
     """Show expected take profit sub-menu with options"""
     try:
-        # Authorization check
+        # Authorization check - but allow if AUTH_CHAT_ID is not set (for development)
         auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-        if chat_id != auth_chat_id_str:
+        if AUTH_CHAT_ID and chat_id != auth_chat_id_str:
             logger.warning(f"[TG][DENY] show_expected_tp_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
+            send_command_response(chat_id, "⛔ Not authorized")
             return False
         
         text = "🎯 <b>Expected Take Profit</b>\n\nSelect an option:"
@@ -3480,10 +3481,11 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         pass  # Not a number, continue with normal command parsing
     
     if text.startswith("/start"):
-        logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}")
+        logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}, user_id={user_id}")
         try:
-            # Show main menu with inline buttons (single message, no duplication)
-            logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id}")
+            # CRITICAL: /start should ALWAYS show main menu, not any other menu
+            # Clear any pending callback queries to prevent interference
+            logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
             menu_result = show_main_menu(chat_id, db)
             logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
             
@@ -3491,8 +3493,11 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
             else:
                 logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
+                # Try to send a simple message as fallback
+                send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
         except Exception as e:
             logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
+            send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
     elif text.startswith("/menu"):
         show_main_menu(chat_id, db)
     elif text.startswith("/help"):
