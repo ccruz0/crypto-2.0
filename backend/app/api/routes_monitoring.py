@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 import logging
@@ -226,66 +226,81 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         # Clean old alerts
         clear_old_alerts()
         
-        # Also populate active alerts from recent Telegram messages (sent alerts only)
-        # This ensures alerts persist across backend restarts and are always up-to-date
+        # Populate active alerts from current signal states (SignalThrottleState)
+        # IMPORTANT: Show ALL currently active signals (BUY/SELL) that have green/red buttons
+        # This matches what's shown in the Throttle section - all symbols with active signals
         try:
-            from app.models.telegram_message import TelegramMessage
-            from datetime import timedelta
-            
-            # Get recent sent alerts from the last hour
-            one_hour_ago = datetime.now() - timedelta(hours=1)
-            from sqlalchemy import or_
-            recent_sent_alerts = (
-                db.query(TelegramMessage)
+            # Get ALL currently active signals (BUY or SELL, not WAIT) from signal_throttle_states
+            # This shows all symbols that currently have an active signal (green/red button)
+            active_signal_states = (
+                db.query(SignalThrottleState)
                 .filter(
-                    TelegramMessage.blocked == False,
-                    TelegramMessage.timestamp >= one_hour_ago,
                     or_(
-                        TelegramMessage.message.like('%BUY SIGNAL%'),
-                        TelegramMessage.message.like('%SELL SIGNAL%')
-                    )
+                        SignalThrottleState.side == 'BUY',
+                        SignalThrottleState.side == 'SELL'
+                    ),
+                    SignalThrottleState.last_price.isnot(None),
+                    SignalThrottleState.last_price > 0
                 )
-                .order_by(TelegramMessage.timestamp.desc())
-                .limit(50)
+                .order_by(SignalThrottleState.last_time.desc())
+                .limit(200)  # Show up to 200 active signals
                 .all()
             )
             
-            # Add recent alerts to _active_alerts if not already present
-            # Use a set to track existing alerts by (symbol, type, timestamp) to avoid duplicates
-            existing_alert_keys = {
-                (alert.get("symbol"), alert.get("type"), alert.get("timestamp"))
-                for alert in _active_alerts
-            }
+            # Clear existing alerts and rebuild from current signal states
+            # This ensures Active Alerts shows all currently active signals (matching Throttle section)
+            _active_alerts.clear()
             
-            for msg in recent_sent_alerts:
-                # Determine alert type from message
-                alert_type = "BUY_SIGNAL" if "BUY SIGNAL" in msg.message.upper() else "SELL_SIGNAL" if "SELL SIGNAL" in msg.message.upper() else "SIGNAL"
-                alert_key = (msg.symbol, alert_type, msg.timestamp.isoformat() if msg.timestamp else "")
+            # Add all active signals to _active_alerts
+            for state in active_signal_states:
+                # Determine alert type from side
+                alert_type = f"{state.side}_SIGNAL" if state.side in ['BUY', 'SELL'] else "SIGNAL"
                 
-                if alert_key not in existing_alert_keys:
-                    # Extract reason from message if available
-                    reason = msg.throttle_reason or "Signal detected"
-                    if len(reason) > 100:
-                        reason = reason[:100] + "..."
-                    
-                    _active_alerts.append({
-                        "type": alert_type,
-                        "symbol": msg.symbol or "UNKNOWN",
-                        "message": f"{alert_type.replace('_', ' ')}: {reason}",
-                        "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
-                        "severity": "INFO"
-                    })
-                    existing_alert_keys.add(alert_key)
+                # Extract reason from emit_reason if available
+                reason = state.emit_reason or "Signal detected"
+                if len(reason) > 100:
+                    reason = reason[:100] + "..."
+                
+                # Format message with price info
+                price_info = f"Price=${state.last_price:.4f}" if state.last_price else ""
+                message = f"{alert_type.replace('_', ' ')}: {reason}"
+                if price_info:
+                    message = f"{message} ({price_info})"
+                
+                _active_alerts.append({
+                    "type": alert_type,
+                    "symbol": state.symbol or "UNKNOWN",
+                    "message": message,
+                    "timestamp": state.last_time.isoformat() if state.last_time else datetime.now().isoformat(),
+                    "severity": "INFO"
+                })
             
-            # Keep only last 100 alerts
+            # Sort by timestamp descending (newest first)
+            _active_alerts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            
+            # Keep only last 100 alerts for display
             if len(_active_alerts) > 100:
-                _active_alerts = _active_alerts[-100:]
+                _active_alerts = _active_alerts[:100]
+            
+            # Get total count of active signals (not just displayed ones)
+            # Query again to get the actual count of all active signals
+            total_active_count = (
+                db.query(SignalThrottleState)
+                .filter(
+                    or_(
+                        SignalThrottleState.side == 'BUY',
+                        SignalThrottleState.side == 'SELL'
+                    ),
+                    SignalThrottleState.last_price.isnot(None),
+                    SignalThrottleState.last_price > 0
+                )
+                .count()
+            )
+            active_alerts_count = total_active_count
         except Exception as e:
             log.debug(f"Could not populate active alerts from database: {e}")
-            pass  # Non-critical, continue with in-memory alerts only
-        
-        # Get active alerts count
-        active_alerts_count = len(_active_alerts)
+            # Fallback to in-memory alerts count
+            active_alerts_count = len(_active_alerts)
         
         return JSONResponse(
             content={
