@@ -268,6 +268,8 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             # Count total active alert toggles (green/red buttons) directly
             # This is the sum of all enabled buy_alert_enabled + sell_alert_enabled toggles
             # Each enabled toggle = 1 active alert
+            # IMPORTANT: We count the toggles, but don't populate the alerts list
+            # The list should remain empty - only the count is shown in the "Active Alerts" box
             active_alerts_count = 0
             for item in active_watchlist_items:
                 if item.buy_alert_enabled:
@@ -275,44 +277,15 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                 if item.sell_alert_enabled:
                     active_alerts_count += 1
             
-            # Clear existing alerts and rebuild from current watchlist state
-            # This ensures ActiveAlerts shows only currently active alerts (state-based, not historical)
+            # Clear existing alerts - we don't populate the list anymore
+            # The "Active Alerts" box shows the count, but the table remains empty
+            # This avoids showing duplicate/historical entries
             _active_alerts.clear()
             
-            # Build active alerts from watchlist items
-            # Each enabled toggle creates one alert entry
-            for item in active_watchlist_items:
-                symbol = (item.symbol or "").upper()
-                if not symbol:
-                    continue
-                
-                # Create alert entry for BUY toggle if enabled
-                if item.buy_alert_enabled:
-                    _active_alerts.append({
-                        "type": "BUY_SIGNAL",
-                        "symbol": symbol,
-                        "message": f"BUY alert enabled for {symbol}",
-                        "timestamp": datetime.now().isoformat(),
-                        "severity": "INFO"
-                    })
-                
-                # Create alert entry for SELL toggle if enabled
-                if item.sell_alert_enabled:
-                    _active_alerts.append({
-                        "type": "SELL_SIGNAL",
-                        "symbol": symbol,
-                        "message": f"SELL alert enabled for {symbol}",
-                        "timestamp": datetime.now().isoformat(),
-                        "severity": "INFO"
-                    })
-            
-            # Verify count matches: active_alerts_count should equal len(_active_alerts)
-            # This ensures the "Active Alerts" box shows the correct sum of all enabled toggles
-            if active_alerts_count != len(_active_alerts):
-                log.warning(
-                    f"Active alerts count mismatch: calculated={active_alerts_count}, "
-                    f"list_length={len(_active_alerts)}. Using calculated count."
-                )
+            # NOTE: We intentionally do NOT populate _active_alerts list
+            # The count (active_alerts_count) is what matters - it represents the sum of all
+            # green/red buttons that are currently enabled in the Watchlist
+            # The alerts table will show "No active alerts" but the count box will show the correct number
             
         except Exception as e:
             log.debug(f"Could not populate active alerts from watchlist: {e}")
