@@ -838,39 +838,15 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
         return False
 
 
-def send_welcome_message(chat_id: str) -> bool:
-    """Send welcome message with inline keyboard buttons"""
+def send_welcome_message(chat_id: str, db: Session = None) -> bool:
+    """Send welcome message - shows main menu (same as /start)"""
     if not TELEGRAM_ENABLED:
         return False
     try:
-        message = """🎉 <b>Welcome to Trading Bot</b>
-
-Use the buttons below to interact with the bot.
-
-<b>Available Commands:</b>
-/start - Show this welcome message
-/status - Get bot status
-/portfolio - View portfolio
-/signals - View recent signals
-/watchlist - View watchlist
-/alerts - View alerts
-/menu - Show main menu
-/help - Show help
-
-<b>Note:</b> Only authorized users can use these commands."""
-        
-        # Create inline keyboard (buttons in the message)
-        keyboard = _build_keyboard([
-            [{"text": "📊 Status", "callback_data": "cmd:status"}],
-            [{"text": "💼 Portfolio", "callback_data": "cmd:portfolio"}],
-            [{"text": "📈 Signals", "callback_data": "cmd:signals"}],
-            [{"text": "📋 Watchlist", "callback_data": "cmd:watchlist"}],
-            [{"text": "⚙️ Main Menu", "callback_data": "menu:main"}],
-            [{"text": "❓ Help", "callback_data": "cmd:help"}],
-        ])
-        
-        logger.info(f"[TG] Sending welcome message with inline keyboard to chat_id={chat_id}")
-        return _send_menu_message(chat_id, message, keyboard)
+        # Just show the main menu (same as /start command)
+        # This avoids duplication and provides consistent experience
+        logger.info(f"[TG] Sending welcome message (main menu) to chat_id={chat_id}")
+        return show_main_menu(chat_id, db)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to send welcome message: {e}", exc_info=True)
         return False
@@ -3636,10 +3612,10 @@ def process_telegram_commands(db: Session = None) -> None:
                     new_status = my_chat_member.get("new_chat_member", {}).get("status", "")
                     old_status = my_chat_member.get("old_chat_member", {}).get("status", "")
                     logger.info(f"[TG] ⚡ Processing my_chat_member: chat_id={chat_id}, status: {old_status} -> {new_status}, update_id={update_id}")
-                    # If bot was added to group, send welcome message
+                    # If bot was added to group, send welcome message (main menu)
                     if new_status == "member" or new_status == "administrator":
                         logger.info(f"[TG] Bot added to group {chat_id}, sending welcome message")
-                        send_welcome_message(chat_id)
+                        send_welcome_message(chat_id, db)
                     # Update ID to skip this update
                     _save_last_update_id(db, update_id)
                     LAST_UPDATE_ID = update_id
