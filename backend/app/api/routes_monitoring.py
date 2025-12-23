@@ -131,20 +131,14 @@ _backend_restart_timestamp: Optional[float] = None
 _telegram_messages: List[Dict[str, Any]] = []
 
 def add_alert(alert_type: str, symbol: str, message: str, severity: str = "WARNING"):
-    """Add an alert to the active alerts list"""
-    global _active_alerts
-    alert = {
-        "type": alert_type,
-        "symbol": symbol,
-        "message": message,
-        "timestamp": datetime.now().isoformat(),
-        "severity": severity
-    }
-    _active_alerts.append(alert)
-    # Keep only last 100 alerts
-    if len(_active_alerts) > 100:
-        _active_alerts = _active_alerts[-100:]
-    log.info(f"Alert added: {alert_type} - {symbol} - {message}")
+    """DEPRECATED: ActiveAlerts is now state-based, not event-based.
+    
+    This function is kept for backward compatibility but does nothing.
+    Active alerts are now derived from Watchlist state (buy_alert_enabled/sell_alert_enabled)
+    in get_monitoring_summary(), not from historical messages.
+    """
+    # No-op: ActiveAlerts is computed from Watchlist state, not accumulated from events
+    log.debug(f"add_alert() called but ignored (state-based alerts): {alert_type} - {symbol}")
 
 def increment_scheduler_ticks():
     """Increment scheduler tick counter"""
@@ -157,13 +151,13 @@ def set_backend_restart_time():
     _last_backend_restart = time.time()
 
 def clear_old_alerts(max_age_seconds: int = 3600):
-    """Clear alerts older than max_age_seconds"""
-    global _active_alerts
-    now = time.time()
-    _active_alerts = [
-        alert for alert in _active_alerts
-        if (now - datetime.fromisoformat(alert["timestamp"]).timestamp()) < max_age_seconds
-    ]
+    """DEPRECATED: No longer needed since ActiveAlerts is state-based.
+    
+    Active alerts are now computed from Watchlist state on each request,
+    not stored historically. This function is kept for backward compatibility.
+    """
+    # No-op: ActiveAlerts are computed fresh from Watchlist state each time
+    pass
 
 @router.get("/monitoring/summary")
 async def get_monitoring_summary(db: Session = Depends(get_db)):
@@ -223,84 +217,108 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         if dashboard_state.get("errors"):
             backend_health = "unhealthy"
         
-        # Clean old alerts
-        clear_old_alerts()
-        
-        # Populate active alerts from current signal states (SignalThrottleState)
-        # IMPORTANT: Show ALL currently active signals (BUY/SELL) that have green/red buttons
-        # This matches what's shown in the Throttle section - all symbols with active signals
+        # ========================================================================
+        # REFACTORED: ActiveAlerts is now state-based, not event-based
+        # ========================================================================
+        # 
+        # Previous behavior (REMOVED):
+        # - Accumulated historical alert messages from SignalThrottleState
+        # - Showed throttled/blocked signals that were already handled
+        # - Duplicated information from throttle system
+        # - Did NOT reflect real "active alert" state from Watchlist
+        #
+        # New behavior (CURRENT):
+        # - Derives active alerts from Watchlist state (buy_alert_enabled/sell_alert_enabled)
+        # - Shows only currently active alerts based on toggle states
+        # - Real-time view: alert appears when toggle is ON, disappears when OFF
+        # - No historical accumulation: alerts are computed fresh on each request
+        #
+        # Rules:
+        # - An alert appears ONLY if:
+        #   1. Symbol is in Watchlist (is_deleted = False), AND
+        #   2. At least one alert toggle is active (buy_alert_enabled OR sell_alert_enabled)
+        # - An alert disappears immediately when:
+        #   - The corresponding toggle is turned off, OR
+        #   - The symbol is removed from the Watchlist
+        #
+        # This ensures consistency between:
+        # - Watchlist buttons (green/red toggles)
+        # - Monitoring tab (ActiveAlerts panel)
+        # - Backend alert state
+        # ========================================================================
         try:
-            # Get ALL currently active signals (BUY or SELL, not WAIT) from signal_throttle_states
-            # This shows all symbols that currently have an active signal (green/red button)
-            active_signal_states = (
-                db.query(SignalThrottleState)
+            from app.models.watchlist import WatchlistItem
+            
+            # Query watchlist items that have active alerts enabled
+            # Filter: symbol in watchlist AND at least one alert toggle enabled
+            active_watchlist_items = (
+                db.query(WatchlistItem)
                 .filter(
+                    # Symbol must be in watchlist (not deleted)
+                    WatchlistItem.is_deleted == False,
+                    # At least one alert toggle must be enabled
                     or_(
-                        SignalThrottleState.side == 'BUY',
-                        SignalThrottleState.side == 'SELL'
-                    ),
-                    SignalThrottleState.last_price.isnot(None),
-                    SignalThrottleState.last_price > 0
+                        WatchlistItem.buy_alert_enabled == True,
+                        WatchlistItem.sell_alert_enabled == True
+                    )
                 )
-                .order_by(SignalThrottleState.last_time.desc())
-                .limit(200)  # Show up to 200 active signals
                 .all()
             )
             
-            # Clear existing alerts and rebuild from current signal states
-            # This ensures Active Alerts shows all currently active signals (matching Throttle section)
+            # Count total active alert toggles (green/red buttons) directly
+            # This is the sum of all enabled buy_alert_enabled + sell_alert_enabled toggles
+            # Each enabled toggle = 1 active alert
+            active_alerts_count = 0
+            for item in active_watchlist_items:
+                if item.buy_alert_enabled:
+                    active_alerts_count += 1
+                if item.sell_alert_enabled:
+                    active_alerts_count += 1
+            
+            # Clear existing alerts and rebuild from current watchlist state
+            # This ensures ActiveAlerts shows only currently active alerts (state-based, not historical)
             _active_alerts.clear()
             
-            # Add all active signals to _active_alerts
-            for state in active_signal_states:
-                # Determine alert type from side
-                alert_type = f"{state.side}_SIGNAL" if state.side in ['BUY', 'SELL'] else "SIGNAL"
+            # Build active alerts from watchlist items
+            # Each enabled toggle creates one alert entry
+            for item in active_watchlist_items:
+                symbol = (item.symbol or "").upper()
+                if not symbol:
+                    continue
                 
-                # Extract reason from emit_reason if available
-                reason = state.emit_reason or "Signal detected"
-                if len(reason) > 100:
-                    reason = reason[:100] + "..."
+                # Create alert entry for BUY toggle if enabled
+                if item.buy_alert_enabled:
+                    _active_alerts.append({
+                        "type": "BUY_SIGNAL",
+                        "symbol": symbol,
+                        "message": f"BUY alert enabled for {symbol}",
+                        "timestamp": datetime.now().isoformat(),
+                        "severity": "INFO"
+                    })
                 
-                # Format message with price info
-                price_info = f"Price=${state.last_price:.4f}" if state.last_price else ""
-                message = f"{alert_type.replace('_', ' ')}: {reason}"
-                if price_info:
-                    message = f"{message} ({price_info})"
-                
-                _active_alerts.append({
-                    "type": alert_type,
-                    "symbol": state.symbol or "UNKNOWN",
-                    "message": message,
-                    "timestamp": state.last_time.isoformat() if state.last_time else datetime.now().isoformat(),
-                    "severity": "INFO"
-                })
+                # Create alert entry for SELL toggle if enabled
+                if item.sell_alert_enabled:
+                    _active_alerts.append({
+                        "type": "SELL_SIGNAL",
+                        "symbol": symbol,
+                        "message": f"SELL alert enabled for {symbol}",
+                        "timestamp": datetime.now().isoformat(),
+                        "severity": "INFO"
+                    })
             
-            # Sort by timestamp descending (newest first)
-            _active_alerts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-            
-            # Keep only last 100 alerts for display
-            if len(_active_alerts) > 100:
-                _active_alerts = _active_alerts[:100]
-            
-            # Get total count of active signals (not just displayed ones)
-            # Query again to get the actual count of all active signals
-            total_active_count = (
-                db.query(SignalThrottleState)
-                .filter(
-                    or_(
-                        SignalThrottleState.side == 'BUY',
-                        SignalThrottleState.side == 'SELL'
-                    ),
-                    SignalThrottleState.last_price.isnot(None),
-                    SignalThrottleState.last_price > 0
+            # Verify count matches: active_alerts_count should equal len(_active_alerts)
+            # This ensures the "Active Alerts" box shows the correct sum of all enabled toggles
+            if active_alerts_count != len(_active_alerts):
+                log.warning(
+                    f"Active alerts count mismatch: calculated={active_alerts_count}, "
+                    f"list_length={len(_active_alerts)}. Using calculated count."
                 )
-                .count()
-            )
-            active_alerts_count = total_active_count
+            
         except Exception as e:
-            log.debug(f"Could not populate active alerts from database: {e}")
-            # Fallback to in-memory alerts count
-            active_alerts_count = len(_active_alerts)
+            log.debug(f"Could not populate active alerts from watchlist: {e}")
+            # On error, clear alerts and return 0 (no active alerts)
+            _active_alerts.clear()
+            active_alerts_count = 0
         
         return JSONResponse(
             content={
