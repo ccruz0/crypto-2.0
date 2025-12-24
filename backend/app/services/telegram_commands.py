@@ -2396,7 +2396,7 @@ def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: 
         # Get blocked messages from API (filter for blocked=True)
         try:
             response = http_get(
-                f"{API_BASE_URL.rstrip('/', calling_module="telegram_commands")}/api/monitoring/telegram-messages",
+                f"{API_BASE_URL.rstrip('/', calling_module='telegram_commands')}/api/monitoring/telegram-messages",
                 params={"blocked": True, "limit": 20},
                 timeout=10
             )
@@ -4101,7 +4101,7 @@ def _get_signal_rules(cfg: Dict[str, Any], preset: str, risk_mode: str) -> Tuple
 
 def _save_signal_config(cfg: Dict[str, Any]) -> None:
     from app.services.config_loader import save_config
-from app.utils.http_client import http_get, http_post
+    from app.utils.http_client import http_get, http_post
 
     save_config(cfg)
 

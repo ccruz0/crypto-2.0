@@ -12,7 +12,7 @@ def crypto_auth_diagnostic():
     """Public diagnostic endpoint to test Crypto.com authentication"""
     import os
     from app.services.brokers.crypto_com_trade import CryptoComTradeClient
-from app.utils.http_client import http_get, http_post
+    from app.utils.http_client import http_get, http_post
     
     results = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),

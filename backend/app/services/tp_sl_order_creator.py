@@ -259,7 +259,7 @@ def create_stop_loss_order(
     # Note: The actual formatting with tick size will be done in place_stop_loss_order,
     # but we round here to avoid passing excessive precision
     import decimal
-from app.utils.http_client import http_get, http_post
+    from app.utils.http_client import http_get, http_post
     if entry_price >= 100:
         sl_price = round(sl_price, 2)
     elif entry_price >= 1:

@@ -288,6 +288,8 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             coins_with_signals = 0
             coins_without_signals = 0
             
+            log.info(f"📊 Dashboard state keys: {list(dashboard_state.keys())[:10] if dashboard_state else 'None'}")
+            
             if dashboard_state and "coins" in dashboard_state:
                 total_coins = len(dashboard_state.get("coins", []))
                 log.info(f"📊 Dashboard snapshot has {total_coins} coins")
@@ -330,23 +332,33 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             
             # If signals are missing from snapshot, calculate them directly for coins with toggles enabled
             # This ensures we can detect active signals even if snapshot doesn't include them
-            if coins_without_signals > 0 and len(active_watchlist_items) > 0:
+            # Also calculate if we have watchlist items but no signals in snapshot at all
+            should_calculate_signals = (
+                (coins_without_signals > 0 or len(signals_by_symbol) == 0) and 
+                len(active_watchlist_items) > 0
+            )
+            
+            log.info(f"🔧 Should calculate signals: {should_calculate_signals} (coins_without_signals={coins_without_signals}, signals_in_snapshot={len(signals_by_symbol)}, watchlist_items={len(active_watchlist_items)})")
+            
+            if should_calculate_signals:
                 try:
                     from app.services.trading_signals import calculate_trading_signals
                     from app.services.strategy_profiles import resolve_strategy_profile
-                    from app.models.market_data import MarketData
+                    from app.models.market_price import MarketData
                     
                     # Get market data for symbols that need signal calculation
                     symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
                                       if item.symbol and item.symbol.upper() not in signals_by_symbol]
                     
                     if symbols_to_check:
+                        log.info(f"🔧 Calculating signals for {len(symbols_to_check)} symbols: {symbols_to_check[:5]}")
                         # Query market data for these symbols
                         market_data_list = db.query(MarketData).filter(
                             func.upper(MarketData.symbol).in_(symbols_to_check)
                         ).all()
                         
                         market_data_by_symbol = {md.symbol.upper(): md for md in market_data_list}
+                        log.info(f"📊 Found market data for {len(market_data_by_symbol)} symbols: {list(market_data_by_symbol.keys())[:5]}")
                         
                         # Calculate signals for each coin
                         for item in active_watchlist_items:
@@ -379,7 +391,7 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                                     ma200=market_data.ma200,
                                     ema10=market_data.ema10,
                                     ma10w=market_data.ma10w,
-                                    volume=market_data.volume,
+                                    volume=market_data.current_volume,
                                     avg_volume=market_data.avg_volume,
                                     resistance_up=item.res_up,
                                     buy_target=item.res_down,  # Using res_down as buy target
@@ -394,11 +406,11 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                                 }
                                 
                             except Exception as sig_err:
-                                log.debug(f"Could not calculate signals for {item.symbol}: {sig_err}")
+                                log.error(f"❌ Could not calculate signals for {item.symbol}: {sig_err}", exc_info=True)
                                 continue
                                 
                 except Exception as calc_err:
-                    log.debug(f"Could not calculate signals directly: {calc_err}")
+                    log.error(f"❌ Could not calculate signals directly: {calc_err}", exc_info=True)
             
             # Count total active alerts (only those with both toggle enabled AND signal active)
             # This matches what the user sees in the watchlist (GRESS/RES buttons)
@@ -1980,5 +1992,5 @@ async def restart_backend():
         _backend_restart_status = "failed"
         log.error(f"Error initiating backend restart: {e}", exc_info=True)
         from fastapi import HTTPException
-from app.utils.http_client import http_get, http_post
+        from app.utils.http_client import http_get, http_post
         raise HTTPException(status_code=500, detail=f"Failed to initiate backend restart: {str(e)}")

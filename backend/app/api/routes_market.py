@@ -1264,7 +1264,7 @@ def update_watchlist_alert(
 ):
     """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
     import time
-from app.utils.http_client import http_get, http_post
+    from app.utils.http_client import http_get, http_post
     start_time = time.time()
     symbol_upper = symbol.upper()
     
