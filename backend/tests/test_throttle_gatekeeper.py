@@ -29,7 +29,7 @@ def test_enforce_throttle_blocks_when_throttle_failed():
         side="BUY",
         current_price=50000.0,
         throttle_allowed=False,
-        throttle_reason="THROTTLED_MIN_TIME (elapsed 2.00m < 5.00m)",
+        throttle_reason="THROTTLED_TIME_GATE (elapsed 30.0s < 60.0s)",
         throttle_metadata={
             "time_since_last": 2.0,
             "price_change_pct": 0.3,
@@ -48,7 +48,7 @@ def test_enforce_throttle_blocks_btc_with_zero_price_change():
         side="BUY",
         current_price=50000.0,
         throttle_allowed=False,
-        throttle_reason="THROTTLED_MIN_CHANGE (price change 0.00% < 1.00%)",
+        throttle_reason="THROTTLED_PRICE_GATE (price change 0.00% < 1.00%)",
         throttle_metadata={
             "time_since_last": 10.0,
             "price_change_pct": 0.0,
@@ -67,7 +67,7 @@ def test_enforce_throttle_blocks_btc_with_insufficient_time():
         side="BUY",
         current_price=50000.0,
         throttle_allowed=False,
-        throttle_reason="THROTTLED_MIN_TIME (elapsed 1.00m < 5.00m)",
+        throttle_reason="THROTTLED_TIME_GATE (elapsed 30.0s < 60.0s)",
         throttle_metadata={
             "time_since_last": 1.0,
             "price_change_pct": 2.0,
@@ -86,7 +86,7 @@ def test_enforce_throttle_blocks_btc_both_conditions_fail():
         side="BUY",
         current_price=50000.0,
         throttle_allowed=False,
-        throttle_reason="THROTTLED_MIN_TIME (elapsed 2.00m < 5.00m) AND price change 0.05% < 1.00%",
+        throttle_reason="THROTTLED_TIME_GATE (elapsed 30.0s < 60.0s)",
         throttle_metadata={
             "time_since_last": 2.0,
             "price_change_pct": 0.05,
@@ -179,7 +179,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=50000.0,
             throttle_allowed=False,
-            throttle_reason="THROTTLED_MIN_TIME (elapsed 0.17m < 5.00m) AND price change 0.00% < 1.00%",
+            throttle_reason="THROTTLED_TIME_GATE (elapsed 10.0s < 60.0s)",
             throttle_metadata={
                 "time_since_last": 0.17,  # 10 seconds = 0.17 minutes
                 "price_change_pct": 0.0,
@@ -245,7 +245,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=50000.0,
             throttle_allowed=False,
-            throttle_reason="THROTTLED_MIN_TIME (elapsed 0.17m < 5.00m)",
+            throttle_reason="THROTTLED_TIME_GATE (elapsed 10.0s < 60.0s)",
             throttle_metadata={
                 "time_since_last": 0.17,
                 "price_change_pct": 0.0,

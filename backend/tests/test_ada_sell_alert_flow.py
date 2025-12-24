@@ -23,10 +23,10 @@ class TestADASellAlertFlow:
     """Test SELL alert flow for ADA_USDT"""
     
     def test_first_sell_alert_always_allowed(self):
-        """First SELL alert should always be allowed (no previous state)"""
+        """CANONICAL: First SELL alert should always be allowed (no previous state)"""
         config = SignalThrottleConfig(
             min_price_change_pct=1.0,
-            min_interval_minutes=5.0,
+            min_interval_minutes=1.0,  # Fixed 60 seconds
         )
         
         allowed, reason = should_emit_signal(
@@ -42,15 +42,45 @@ class TestADASellAlertFlow:
         assert allowed is True
         assert "No previous" in reason or "first" in reason.lower()
     
-    def test_sell_alert_throttled_by_cooldown(self):
-        """SELL alert should be throttled if within cooldown period AND price change too small"""
+    def test_sell_alert_throttled_by_time_gate(self):
+        """CANONICAL: SELL alert should be throttled by time gate if < 60 seconds elapsed"""
         config = SignalThrottleConfig(
             min_price_change_pct=1.0,
-            min_interval_minutes=5.0,
+            min_interval_minutes=1.0,  # Fixed 60 seconds
         )
         
         now = datetime.now(timezone.utc)
-        two_minutes_ago = now - timedelta(minutes=2)  # 2 min < 5 min cooldown
+        thirty_seconds_ago = now - timedelta(seconds=30)  # 30s < 60s time gate
+        
+        last_sell = LastSignalSnapshot(
+            side="SELL",
+            price=0.50,
+            timestamp=thirty_seconds_ago,
+        )
+        
+        allowed, reason = should_emit_signal(
+            symbol="ADA_USDT",
+            side="SELL",
+            current_price=0.504,  # 0.8% price change (below 1% threshold) BUT time gate blocks first
+            current_time=now,
+            config=config,
+            last_same_side=last_sell,
+            last_opposite_side=None,
+        )
+        
+        # Should be blocked by time gate (30s < 60s) - checked first
+        assert allowed is False
+        assert "THROTTLED_TIME_GATE" in reason or "elapsed" in reason.lower()
+    
+    def test_sell_alert_throttled_by_price_gate(self):
+        """CANONICAL: SELL alert should be throttled by price gate if price change < threshold (after time gate passes)"""
+        config = SignalThrottleConfig(
+            min_price_change_pct=1.0,
+            min_interval_minutes=1.0,  # Fixed 60 seconds
+        )
+        
+        now = datetime.now(timezone.utc)
+        two_minutes_ago = now - timedelta(minutes=2)  # Time gate passes (2 min >= 1 min)
         
         last_sell = LastSignalSnapshot(
             side="SELL",
@@ -61,26 +91,26 @@ class TestADASellAlertFlow:
         allowed, reason = should_emit_signal(
             symbol="ADA_USDT",
             side="SELL",
-            current_price=0.504,  # 0.8% price change (below 1% threshold) AND cooldown not met
+            current_price=0.504,  # 0.8% price change (below 1% threshold) - price gate fails
             current_time=now,
             config=config,
             last_same_side=last_sell,
             last_opposite_side=None,
         )
         
-        # Should be blocked because BOTH cooldown AND price change fail
+        # Time gate passes, but price gate fails (0.8% < 1%)
         assert allowed is False
-        assert "THROTTLED" in reason or "elapsed" in reason.lower() or "cooldown" in reason.lower()
+        assert "THROTTLED_PRICE_GATE" in reason or "price change" in reason.lower()
     
-    def test_sell_alert_throttled_by_price_change(self):
-        """SELL alert should be throttled if price change < 1% AND cooldown not met"""
+    def test_sell_alert_allowed_after_time_and_price_gates_pass(self):
+        """CANONICAL: SELL alert should be allowed after time gate (60s) AND price gate pass"""
         config = SignalThrottleConfig(
             min_price_change_pct=1.0,
-            min_interval_minutes=5.0,
+            min_interval_minutes=1.0,  # Fixed 60 seconds
         )
         
         now = datetime.now(timezone.utc)
-        two_minutes_ago = now - timedelta(minutes=2)  # Cooldown NOT met (2 min < 5 min)
+        two_minutes_ago = now - timedelta(minutes=2)  # Time gate passes (2 min >= 1 min)
         
         last_sell = LastSignalSnapshot(
             side="SELL",
@@ -91,37 +121,7 @@ class TestADASellAlertFlow:
         allowed, reason = should_emit_signal(
             symbol="ADA_USDT",
             side="SELL",
-            current_price=0.504,  # 0.8% price change (below 1% threshold) AND cooldown not met
-            current_time=now,
-            config=config,
-            last_same_side=last_sell,
-            last_opposite_side=None,
-        )
-        
-        # Should be blocked because BOTH cooldown AND price change fail
-        assert allowed is False
-        assert "THROTTLED" in reason or "price change" in reason.lower() or "cooldown" in reason.lower()
-    
-    def test_sell_alert_allowed_after_cooldown_and_price_change(self):
-        """SELL alert should be allowed after cooldown AND sufficient price change"""
-        config = SignalThrottleConfig(
-            min_price_change_pct=1.0,
-            min_interval_minutes=5.0,
-        )
-        
-        now = datetime.now(timezone.utc)
-        ten_minutes_ago = now - timedelta(minutes=10)  # Cooldown met
-        
-        last_sell = LastSignalSnapshot(
-            side="SELL",
-            price=0.50,
-            timestamp=ten_minutes_ago,
-        )
-        
-        allowed, reason = should_emit_signal(
-            symbol="ADA_USDT",
-            side="SELL",
-            current_price=0.51,  # 2% price change (meets threshold)
+            current_price=0.51,  # 2% price change (meets threshold) - price gate passes
             current_time=now,
             config=config,
             last_same_side=last_sell,
@@ -129,45 +129,46 @@ class TestADASellAlertFlow:
         )
         
         assert allowed is True
-        assert "cooldown" in reason.lower() or "price change" in reason.lower() or "Δt=" in reason or "Δp=" in reason
+        assert "Δt=" in reason or "60" in reason or "price change" in reason.lower() or "Δp=" in reason
     
-    def test_sell_after_buy_resets_throttle(self):
-        """SELL alert after BUY should always be allowed (direction change)"""
+    def test_sell_and_buy_are_independent(self):
+        """CANONICAL: SELL and BUY are independent - no reset on side change"""
         config = SignalThrottleConfig(
             min_price_change_pct=1.0,
-            min_interval_minutes=5.0,
+            min_interval_minutes=1.0,  # Fixed 60 seconds
         )
         
         now = datetime.now(timezone.utc)
-        one_minute_ago = now - timedelta(minutes=1)
+        thirty_seconds_ago = now - timedelta(seconds=30)  # 30s < 60s
         two_minutes_ago = now - timedelta(minutes=2)
         
-        # Last SELL was 2 minutes ago
+        # Last SELL was 30 seconds ago (< 60 seconds) - should be blocked by time gate
         last_sell = LastSignalSnapshot(
             side="SELL",
             price=0.50,
-            timestamp=two_minutes_ago,
+            timestamp=thirty_seconds_ago,
         )
         
-        # But last BUY was 1 minute ago (more recent)
+        # Last BUY was 2 minutes ago (more recent than SELL, but doesn't matter - sides are independent)
         last_buy = LastSignalSnapshot(
             side="BUY",
             price=0.49,
-            timestamp=one_minute_ago,
+            timestamp=two_minutes_ago,
         )
         
         allowed, reason = should_emit_signal(
             symbol="ADA_USDT",
             side="SELL",
-            current_price=0.50,  # Same price as last SELL (would normally throttle)
+            current_price=0.50,  # Same price as last SELL, but time gate blocks first
             current_time=now,
             config=config,
             last_same_side=last_sell,
             last_opposite_side=last_buy,
         )
         
-        assert allowed is True
-        assert "direction change" in reason.lower() or "opposite-side" in reason.lower()
+        # Should be blocked by time gate (30s < 60s) - sides are independent
+        assert allowed is False
+        assert "THROTTLED_TIME_GATE" in reason or "elapsed" in reason.lower()
     
     def test_throttle_decision_logs_origin(self):
         """Throttle decisions should log runtime origin (AWS vs LOCAL)"""
