@@ -2,14 +2,16 @@
 """
 Watchlist Consistency Check Script
 
-Compares backend watchlist data with expected state, checking for inconsistencies
-in throttle flags, alert flags, and data integrity.
+Compares dashboard API data (/api/dashboard) with backend database (WatchlistItem),
+checking for inconsistencies between what the dashboard shows and what's in the database.
 """
 
 import sys
 import os
 from pathlib import Path
 from datetime import datetime
+import requests
+from typing import Dict, List, Optional, Any
 
 # Add parent directory to path to import app modules
 backend_dir = Path(__file__).parent.parent
@@ -33,8 +35,33 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.upper() if symbol else ""
 
 
+def get_api_watchlist_data(api_url: str = "http://localhost:8002/api/dashboard") -> Dict[str, Dict]:
+    """Get watchlist data from the dashboard API"""
+    try:
+        logger.info(f"Fetching watchlist data from API: {api_url}")
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        api_items = response.json()
+        
+        # Convert list to dict keyed by symbol for easy lookup
+        api_data = {}
+        for item in api_items:
+            symbol = normalize_symbol(item.get("symbol", ""))
+            if symbol:
+                api_data[symbol] = item
+        
+        logger.info(f"Retrieved {len(api_data)} items from API")
+        return api_data
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not fetch API data: {e}")
+        return {}
+    except Exception as e:
+        logger.warning(f"Error parsing API response: {e}")
+        return {}
+
+
 def get_watchlist_items(db: Session) -> list:
-    """Get all non-deleted watchlist items"""
+    """Get all non-deleted watchlist items from database"""
     return db.query(WatchlistItem).filter(
         WatchlistItem.is_deleted == False
     ).all()
@@ -60,20 +87,68 @@ def get_throttle_states(db: Session) -> dict:
     return throttle_states
 
 
-def check_consistency(db: Session) -> dict:
-    """Check watchlist consistency and return report data"""
+def compare_values(db_value: Any, api_value: Any, field_name: str) -> Optional[str]:
+    """Compare two values and return a description of the difference if they differ"""
+    # Handle None values
+    if db_value is None and api_value is None:
+        return None
+    if db_value is None:
+        return f"DB=None, API={api_value}"
+    if api_value is None:
+        return f"DB={db_value}, API=None"
+    
+    # Handle boolean values
+    if isinstance(db_value, bool) and isinstance(api_value, bool):
+        if db_value != api_value:
+            return f"DB={db_value}, API={api_value}"
+        return None
+    
+    # Handle numeric values (with small tolerance for floats)
+    if isinstance(db_value, (int, float)) and isinstance(api_value, (int, float)):
+        if isinstance(db_value, float) or isinstance(api_value, float):
+            # Use relative tolerance for floats
+            if abs(db_value - api_value) > max(1e-6, abs(db_value) * 0.001):
+                return f"DB={db_value}, API={api_value}"
+        else:
+            if db_value != api_value:
+                return f"DB={db_value}, API={api_value}"
+        return None
+    
+    # Handle string values
+    if str(db_value).strip() != str(api_value).strip():
+        return f"DB={db_value}, API={api_value}"
+    
+    return None
+
+
+def check_consistency(db: Session, api_url: str = "http://localhost:8002/api/dashboard") -> dict:
+    """Check watchlist consistency between API and database, return report data"""
+    # Get data from both sources
     watchlist_items = get_watchlist_items(db)
+    api_data = get_api_watchlist_data(api_url)
+    
     try:
         throttle_states = get_throttle_states(db)
     except Exception as e:
         logger.warning(f"Could not fetch throttle states, continuing without them: {e}")
         throttle_states = {}
     
+    # Fields to compare between API and DB
+    fields_to_compare = [
+        "trade_enabled",
+        "alert_enabled",
+        "buy_alert_enabled",
+        "sell_alert_enabled",
+        "trade_amount_usd",
+        "sl_tp_mode",
+    ]
+    
     report_data = {
         "timestamp": datetime.now().isoformat(),
         "total_items": len(watchlist_items),
         "items": [],
         "issues": [],
+        "api_available": len(api_data) > 0,
         "summary": {
             "total": len(watchlist_items),
             "trade_enabled": 0,
@@ -81,13 +156,19 @@ def check_consistency(db: Session) -> dict:
             "buy_alert_enabled": 0,
             "sell_alert_enabled": 0,
             "with_throttle_state": 0,
+            "api_mismatches": 0,
+            "only_in_db": 0,
+            "only_in_api": 0,
         }
     }
+    
+    # Track symbols we've seen
+    symbols_in_api = set()
     
     for item in watchlist_items:
         symbol = normalize_symbol(item.symbol)
         
-        # Count enabled flags
+        # Count enabled flags from DB
         if item.trade_enabled:
             report_data["summary"]["trade_enabled"] += 1
         if item.alert_enabled:
@@ -105,14 +186,33 @@ def check_consistency(db: Session) -> dict:
                 report_data["summary"]["with_throttle_state"] += 1
                 break
         
-        # Check for inconsistencies
+        # Check for inconsistencies between DB and API
         issues = []
+        api_item = api_data.get(symbol)
         
-        # Alert enabled should be consistent with buy/sell alerts
+        if api_item:
+            symbols_in_api.add(symbol)
+            # Compare fields
+            mismatches = []
+            for field in fields_to_compare:
+                db_value = getattr(item, field, None)
+                api_value = api_item.get(field)
+                diff = compare_values(db_value, api_value, field)
+                if diff:
+                    mismatches.append(f"{field}: {diff}")
+            
+            if mismatches:
+                issues.extend(mismatches)
+                report_data["summary"]["api_mismatches"] += 1
+        else:
+            # Symbol exists in DB but not in API
+            issues.append("Symbol exists in DB but not in API response")
+            report_data["summary"]["only_in_db"] += 1
+        
+        # Check for internal consistency (alert flags logic)
         if item.alert_enabled and not (item.buy_alert_enabled or item.sell_alert_enabled):
             issues.append("alert_enabled=True but both buy/sell alerts are False")
         
-        # If buy or sell alert is enabled, master alert should be enabled
         if (item.buy_alert_enabled or item.sell_alert_enabled) and not item.alert_enabled:
             issues.append("buy/sell alert enabled but master alert_enabled=False")
         
@@ -123,6 +223,7 @@ def check_consistency(db: Session) -> dict:
             "buy_alert_enabled": item.buy_alert_enabled,
             "sell_alert_enabled": item.sell_alert_enabled,
             "has_throttle_state": has_throttle,
+            "in_api": api_item is not None,
             "issues": issues
         }
         
@@ -132,6 +233,16 @@ def check_consistency(db: Session) -> dict:
             report_data["issues"].extend([
                 {"symbol": symbol, "issue": issue} for issue in issues
             ])
+    
+    # Check for symbols in API but not in DB
+    db_symbols = {normalize_symbol(item.symbol) for item in watchlist_items}
+    for api_symbol in api_data.keys():
+        if api_symbol not in db_symbols:
+            report_data["summary"]["only_in_api"] += 1
+            report_data["issues"].append({
+                "symbol": api_symbol,
+                "issue": "Symbol exists in API but not in DB"
+            })
     
     return report_data
 
@@ -143,17 +254,26 @@ def generate_markdown_report(report_data: dict) -> str:
     lines.append("")
     lines.append(f"**Generated:** {report_data['timestamp']}")
     lines.append("")
+    lines.append("**Purpose:** Compares dashboard API data (`/api/dashboard`) with backend database (`WatchlistItem`)")
+    lines.append("")
     
     # Summary
     summary = report_data["summary"]
     lines.append("## Summary")
     lines.append("")
-    lines.append(f"- **Total Items:** {summary['total']}")
-    lines.append(f"- **Trade Enabled:** {summary['trade_enabled']}")
-    lines.append(f"- **Alert Enabled (Master):** {summary['alert_enabled']}")
-    lines.append(f"- **Buy Alert Enabled:** {summary['buy_alert_enabled']}")
-    lines.append(f"- **Sell Alert Enabled:** {summary['sell_alert_enabled']}")
+    lines.append(f"- **Total Items (DB):** {summary['total']}")
+    lines.append(f"- **API Available:** {'✅ Yes' if report_data.get('api_available', False) else '❌ No'}")
+    lines.append(f"- **Trade Enabled (DB):** {summary['trade_enabled']}")
+    lines.append(f"- **Alert Enabled (Master, DB):** {summary['alert_enabled']}")
+    lines.append(f"- **Buy Alert Enabled (DB):** {summary['buy_alert_enabled']}")
+    lines.append(f"- **Sell Alert Enabled (DB):** {summary['sell_alert_enabled']}")
     lines.append(f"- **With Throttle State:** {summary['with_throttle_state']}")
+    lines.append("")
+    lines.append("### API vs Database Comparison")
+    lines.append("")
+    lines.append(f"- **API Mismatches:** {summary.get('api_mismatches', 0)}")
+    lines.append(f"- **Only in DB:** {summary.get('only_in_db', 0)}")
+    lines.append(f"- **Only in API:** {summary.get('only_in_api', 0)}")
     lines.append("")
     
     # Issues
@@ -166,14 +286,14 @@ def generate_markdown_report(report_data: dict) -> str:
     else:
         lines.append("## ✅ No Issues Found")
         lines.append("")
-        lines.append("All watchlist items are consistent.")
+        lines.append("All watchlist items are consistent between API and database.")
         lines.append("")
     
     # Detailed Items Table
     lines.append("## Watchlist Items")
     lines.append("")
-    lines.append("| Symbol | Trade | Alert | Buy Alert | Sell Alert | Throttle | Issues |")
-    lines.append("|--------|-------|-------|-----------|------------|----------|--------|")
+    lines.append("| Symbol | Trade | Alert | Buy Alert | Sell Alert | Throttle | In API | Issues |")
+    lines.append("|--------|-------|-------|-----------|------------|----------|--------|--------|")
     
     for item in report_data["items"]:
         trade = "✅" if item["trade_enabled"] else "❌"
@@ -181,9 +301,10 @@ def generate_markdown_report(report_data: dict) -> str:
         buy_alert = "✅" if item["buy_alert_enabled"] else "❌"
         sell_alert = "✅" if item["sell_alert_enabled"] else "❌"
         throttle = "✅" if item["has_throttle_state"] else "—"
+        in_api = "✅" if item.get("in_api", False) else "❌"
         issues_str = "; ".join(item["issues"]) if item["issues"] else "—"
         
-        lines.append(f"| {item['symbol']} | {trade} | {alert} | {buy_alert} | {sell_alert} | {throttle} | {issues_str} |")
+        lines.append(f"| {item['symbol']} | {trade} | {alert} | {buy_alert} | {sell_alert} | {throttle} | {in_api} | {issues_str} |")
     
     return "\n".join(lines)
 
@@ -195,8 +316,30 @@ def main():
         try:
             logger.info("Starting watchlist consistency check...")
             
+            # Try to determine API URL from environment or use default
+            # In Docker, try localhost:8002 first, then fallback to 8000
+            api_url = os.getenv("API_URL")
+            if not api_url:
+                # Try common ports when running inside Docker
+                for port in [8002, 8000]:
+                    test_url = f"http://localhost:{port}/api/dashboard"
+                    try:
+                        response = requests.get(test_url, timeout=2)
+                        if response.status_code == 200:
+                            api_url = test_url
+                            logger.info(f"Auto-detected API URL: {api_url}")
+                            break
+                    except:
+                        continue
+                
+                if not api_url:
+                    api_url = "http://localhost:8002/api/dashboard"
+                    logger.warning(f"Could not auto-detect API URL, using default: {api_url}")
+            
+            logger.info(f"Using API URL: {api_url}")
+            
             # Run consistency check
-            report_data = check_consistency(db)
+            report_data = check_consistency(db, api_url=api_url)
             
             # Generate markdown report
             markdown_content = generate_markdown_report(report_data)
@@ -253,9 +396,13 @@ def main():
                 print("\n✅ No issues found - watchlist is consistent")
             
             print(f"\n📊 Summary:")
-            print(f"  - Total items: {report_data['summary']['total']}")
+            print(f"  - Total items (DB): {report_data['summary']['total']}")
+            print(f"  - API available: {'Yes' if report_data.get('api_available', False) else 'No'}")
             print(f"  - Trade enabled: {report_data['summary']['trade_enabled']}")
             print(f"  - Alert enabled: {report_data['summary']['alert_enabled']}")
+            print(f"  - API mismatches: {report_data['summary'].get('api_mismatches', 0)}")
+            print(f"  - Only in DB: {report_data['summary'].get('only_in_db', 0)}")
+            print(f"  - Only in API: {report_data['summary'].get('only_in_api', 0)}")
             
             return 0 if issue_count == 0 else 1
             

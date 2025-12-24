@@ -1,6 +1,6 @@
 # Watchlist Consistency Workflow
 
-**Purpose:** Verify that Watchlist UI values (via `/api/watchlist`) match database records and strategy calculation for all coins.
+**Purpose:** Verify that Watchlist dashboard API values (via `/api/dashboard`) match database records (`WatchlistItem`) for all coins.
 
 **Status:** ✅ Ready for use
 
@@ -8,19 +8,16 @@
 
 ## Overview
 
-This workflow performs a daily consistency check that compares watchlist values across three layers:
+This workflow performs a daily consistency check that compares watchlist values between:
 
-1. **API/UI Layer**: JSON returned by `/api/watchlist` (what the frontend shows)
-2. **Database Layer**: `WatchlistItem` records in the database
-3. **Strategy/Calculation Layer**: Ground truth values computed using the same functions as the live monitor (`evaluate_signal_for_symbol`)
+1. **API/Dashboard Layer**: JSON returned by `/api/dashboard` (what the frontend shows)
+2. **Database Layer**: `WatchlistItem` records in the database (backend source of truth)
 
 The check validates:
-- **Prices**: Current market price
-- **Indicators**: RSI, MA50, MA200, EMA10, ATR
-- **Targets**: Buy target, take profit, stop loss
-- **Strategy**: Strategy profile, risk mode, SL/TP mode
 - **Flags**: `alert_enabled`, `buy_alert_enabled`, `sell_alert_enabled`, `trade_enabled`
-- **Other fields**: All fields used by the Watchlist UI
+- **Trading Settings**: `trade_amount_usd`, `sl_tp_mode`
+- **Consistency**: Ensures symbols exist in both API and database
+- **Internal Logic**: Validates that alert flags are logically consistent (e.g., if buy/sell alerts are enabled, master alert should be enabled)
 
 ---
 
@@ -68,37 +65,45 @@ Reports are generated daily at:
 ### Report Structure
 
 1. **Summary Section**:
-   - Total number of symbols checked
-   - How many are fully OK
-   - How many have minor drift
-   - How many have issues
+   - Total number of symbols in database
+   - API availability status
+   - Count of enabled flags (trade, alerts, etc.)
+   - API vs Database comparison statistics:
+     - Number of API mismatches
+     - Symbols only in database
+     - Symbols only in API
 
-2. **Symbols with Issues Table**:
-   - Quick overview of symbols that have mismatches
-   - Lists which fields are problematic
+2. **Issues Section**:
+   - List of all issues found, grouped by symbol
+   - Each issue describes the specific problem (e.g., "trade_enabled: DB=True, API=False")
 
-3. **Detailed Per-Symbol Section**:
-   - For each symbol, a table showing:
-     - Field name
-     - DB value
-     - API value
-     - Computed value (from strategy evaluation)
-     - Classification (EXACT_MATCH, NUMERIC_DRIFT, MISMATCH)
-   - Additional computed strategy info (preset, decision, index, signals)
+3. **Watchlist Items Table**:
+   - For each symbol, shows:
+     - Symbol name
+     - Trade, Alert, Buy Alert, Sell Alert status (✅/❌)
+     - Throttle state (✅/—)
+     - Whether symbol exists in API (✅/❌)
+     - List of issues found for that symbol
 
 ### Example Report Entry
 
 ```markdown
-### ETH_USDT
+## Summary
+- **Total Items (DB):** 33
+- **API Available:** ✅ Yes
+- **API Mismatches:** 2
+- **Only in DB:** 1
+- **Only in API:** 0
 
-**Status:** OK
+## ⚠️ Issues Found
+- **ETH_USDT**: trade_enabled: DB=True, API=False
+- **BTC_USDT**: Symbol exists in DB but not in API response
 
-| Field | DB | API | Computed | Classification |
-|-------|----|-----|----------|----------------|
-| price | 3079.1700 | 3079.1700 | 3079.1700 | EXACT_MATCH |
-| rsi | 75.50 | 75.50 | 75.50 | EXACT_MATCH |
-| alert_enabled | True | True | None | EXACT_MATCH |
-| buy_alert_enabled | True | False | None | MISMATCH |
+## Watchlist Items
+| Symbol | Trade | Alert | Buy Alert | Sell Alert | Throttle | In API | Issues |
+|--------|-------|-------|-----------|------------|----------|--------|--------|
+| ETH_USDT | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | trade_enabled: DB=True, API=False |
+| BTC_USDT | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | Symbol exists in DB but not in API response |
 ```
 
 ---
@@ -107,20 +112,31 @@ Reports are generated daily at:
 
 ### When a Symbol Has Issues
 
-1. **Check the field classification**:
-   - `MISMATCH` on boolean/string fields → Likely a data sync issue
-   - `NUMERIC_DRIFT` on prices/indicators → May be normal due to timing differences
-   - `MISMATCH` on computed vs DB/API → Strategy evaluation may be using different data source
+1. **API vs Database Mismatches**:
+   - **Field differences**: If a field like `trade_enabled`, `alert_enabled`, etc. differs between API and DB
+     - Check if the API endpoint is using cached data
+     - Verify that database updates are being properly reflected in the API response
+     - Check if there's a sync issue between `WatchlistItem` and `WatchlistMaster` tables
 
-2. **Common causes**:
-   - **API cache stale**: API may be returning cached values while DB has newer data
-   - **Computed values different**: Strategy evaluation may be using a different indicator window or data source
-   - **Flag mismatches**: `buy_alert_enabled` or `sell_alert_enabled` may have been updated in DB but not reflected in API
+2. **Symbol exists in DB but not in API**:
+   - The symbol may be filtered out by the API endpoint (e.g., `is_deleted=True`)
+   - Check if the API endpoint has different filtering logic
+   - Verify the symbol is not soft-deleted
 
-3. **Action items**:
-   - If API and DB match but computed differs: Check if strategy evaluation is using correct data source
-   - If API differs from DB: Check API caching logic
-   - If flags differ: Verify watchlist update logic
+3. **Symbol exists in API but not in DB**:
+   - The API may be returning data from a different source (e.g., `WatchlistMaster` table)
+   - Check if there's a sync issue between tables
+   - Verify database integrity
+
+4. **Internal Consistency Issues**:
+   - **alert_enabled=True but both buy/sell alerts are False**: Master alert is enabled but no specific alerts are enabled
+   - **buy/sell alert enabled but master alert_enabled=False**: Specific alerts are enabled but master switch is off
+   - These indicate logical inconsistencies that should be fixed
+
+5. **Action items**:
+   - If API differs from DB: Check API endpoint logic and caching
+   - If symbol missing in one source: Check filtering and sync logic
+   - If flags are inconsistent: Fix the logical inconsistency in the database
 
 ---
 
@@ -153,11 +169,12 @@ tail -f /home/ubuntu/watchlist_consistency_cron.log
 
 ## Telegram Notifications
 
-If there are symbols with issues (`MISMATCH` classifications), the script will automatically send a summary to Telegram (if the Telegram service is configured).
+If there are symbols with issues (API mismatches, missing symbols, or internal inconsistencies), the script will automatically send a summary to Telegram (if the Telegram service is configured).
 
 The message includes:
 - Total symbols checked
-- Number of symbols with issues
+- Number of API mismatches
+- Number of symbols only in DB or only in API
 - Link to the report
 
 ---
@@ -166,34 +183,35 @@ The message includes:
 
 ### Comparison Logic
 
-- **Numeric fields**: Uses relative tolerance (0.1%) and absolute tolerance (1e-6)
+- **Numeric fields**: Uses relative tolerance (0.1%) and absolute tolerance (1e-6) for float comparisons
 - **Boolean fields**: Exact match required
 - **String fields**: Case-insensitive comparison after normalization
+- **None values**: Treated as distinct from other values (DB=None vs API=value is a mismatch)
 
 ### Data Sources
 
-1. **Database**: Direct query of `WatchlistItem` table
-2. **API**: HTTP GET to `/api/watchlist` endpoint (from inside container)
-3. **Computed**: Uses `evaluate_signal_for_symbol()` which:
-   - Fetches market data using the same logic as `SignalMonitorService`
-   - Calculates trading signals using `calculate_trading_signals()`
-   - Returns ground truth values for price, RSI, MAs, etc.
+1. **Database**: Direct query of `WatchlistItem` table (filtered by `is_deleted=False`)
+2. **API**: HTTP GET to `/api/dashboard` endpoint (from inside container or via environment variable `API_URL`)
+
+The script automatically detects the API URL by trying common ports (8002, 8000) when running inside Docker, or uses the `API_URL` environment variable if set.
 
 ### Fields Compared
 
-**Numeric:**
-- `price`, `rsi`, `ma50`, `ma200`, `ema10`, `atr`
-- `buy_target`, `take_profit`, `stop_loss`
-- `sl_price`, `tp_price`, `sl_percentage`, `tp_percentage`
-- `min_price_change_pct`, `alert_cooldown_minutes`, `trade_amount_usd`
+**Boolean Flags:**
+- `trade_enabled`
+- `alert_enabled` (master alert switch)
+- `buy_alert_enabled`
+- `sell_alert_enabled`
 
-**Boolean:**
-- `alert_enabled`, `buy_alert_enabled`, `sell_alert_enabled`
-- `trade_enabled`, `trade_on_margin`, `sold`, `is_deleted`
-- `skip_sl_tp_reminder`
+**Trading Settings:**
+- `trade_amount_usd` (numeric)
+- `sl_tp_mode` (string: "conservative" or "aggressive")
 
-**String:**
-- `sl_tp_mode`, `order_status`, `exchange`
+### Internal Consistency Checks
+
+The script also validates logical consistency:
+- If `alert_enabled=True`, at least one of `buy_alert_enabled` or `sell_alert_enabled` should be `True`
+- If `buy_alert_enabled=True` or `sell_alert_enabled=True`, then `alert_enabled` should be `True`
 
 ---
 
