@@ -9,15 +9,45 @@ To prevent outbound "active scanning" patterns and ensure all external connectio
 1. **Egress Allowlist**: Only allowlisted domains can be accessed
 2. **Raw IP Blocking**: Direct IP address connections are blocked by default
 3. **Security Logging**: All outbound requests are logged with destination, resolved IP, and calling module
+4. **Single Entry Point**: All outbound HTTP requests MUST use `app.utils.http_client` - this is the ONLY allowed entry point
 
 ## Implementation
 
-The egress guardrails are implemented in `backend/app/utils/egress_guard.py` and enforced at multiple layers:
+The egress guardrails are implemented in `backend/app/utils/egress_guard.py` and enforced through the mandatory HTTP client wrapper `backend/app/utils/http_client.py`:
 
-- **VPN Gate** (`backend/app/utils/vpn_gate.py`): Health check URLs are validated
-- **Data Sources** (`backend/app/services/data_sources.py`): API data fetching is validated
-- **Crypto.com Trade Client** (`backend/app/services/brokers/crypto_com_trade.py`): Exchange API calls are validated
+- **http_client.py**: Single mandatory entry point for all outbound HTTP requests
+  - All URLs are validated BEFORE DNS resolution and connection
+  - Redirects are disabled by default to prevent redirect attacks
+  - If redirects are enabled, the final destination is validated against the allowlist
+- **VPN Gate** (`backend/app/utils/vpn_gate.py`): Uses http_client for health checks
+- **Data Sources** (`backend/app/services/data_sources.py`): Uses http_client for API data fetching
+- **Crypto.com Trade Client** (`backend/app/services/brokers/crypto_com_trade.py`): Uses http_client for exchange API calls
 - **Crypto.com Constants** (`backend/app/services/brokers/crypto_com_constants.py`): Raw IP usage is disabled
+
+## Redirect Handling
+
+HTTP redirects pose a security risk because they can be used to bypass the egress allowlist. For example, an allowlisted domain could redirect to a malicious non-allowlisted domain.
+
+**Protection Strategy:**
+
+1. **Redirects Disabled by Default**: All HTTP requests have `allow_redirects=False` by default
+2. **Explicit Enable Required**: Redirects must be explicitly enabled via `allow_redirects=True`
+3. **Final Destination Validation**: When redirects are enabled, the final destination URL (after all redirects) is validated against the egress allowlist
+4. **Request Blocked on Invalid Redirect**: If a redirect leads to a non-allowlisted domain, the request is immediately blocked and the connection is closed
+
+**Example:**
+```python
+# Redirects disabled by default (secure)
+response = http_get("https://api.crypto.com/exchange/v1", calling_module="my_module")
+
+# Redirects explicitly enabled - final destination will be validated
+response = http_get(
+    "https://api.crypto.com/exchange/v1",
+    allow_redirects=True,  # Must be explicit
+    calling_module="my_module"
+)
+# If redirect goes to evil.com, request is blocked with EgressGuardError
+```
 
 ## Allowlisted Domains
 
@@ -80,6 +110,23 @@ Outbound Rules:
 ```
 
 Note: The `/32` notation indicates a single IP address. In practice, you may need to resolve domains to their current IP addresses, or use AWS Security Group rules with domain names if your AWS setup supports it.
+
+## Single Entry Point: http_client.py
+
+**CRITICAL**: `backend/app/utils/http_client.py` is the ONLY allowed entry point for outbound HTTP requests in the backend.
+
+**DO NOT:**
+- Use `requests.get()` or `requests.post()` directly
+- Use `aiohttp.ClientSession` directly
+- Use `urllib.request` directly
+- Import `requests`, `aiohttp`, or `urllib.request` outside `http_client.py`
+
+**DO:**
+- Import: `from app.utils.http_client import http_get, http_post, async_http_get`
+- Use these functions for all outbound HTTP requests
+- All URLs are automatically validated against the egress allowlist
+
+The CI pipeline enforces this with static checks that fail if direct HTTP library imports or calls are detected outside `http_client.py`.
 
 ## Verification
 

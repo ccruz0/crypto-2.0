@@ -56,7 +56,7 @@ def http_get(
     timeout: float = 10.0,
     headers: Optional[Dict[str, str]] = None,
     calling_module: str = "unknown",
-    allow_redirects: bool = True,
+    allow_redirects: bool = False,  # SECURITY: Default to False to prevent redirect attacks
     **kwargs
 ) -> requests.Response:
     """
@@ -67,7 +67,8 @@ def http_get(
         timeout: Request timeout in seconds
         headers: Optional HTTP headers
         calling_module: Name of the calling module (for logging)
-        allow_redirects: Whether to follow redirects
+        allow_redirects: Whether to follow redirects (default: False for security).
+                        If True, final redirect destination is validated against allowlist.
         **kwargs: Additional arguments passed to requests.get()
     
     Returns:
@@ -80,7 +81,8 @@ def http_get(
     if not REQUESTS_AVAILABLE:
         raise ImportError("requests library is required for http_get()")
     
-    # Validate URL against egress allowlist
+    # SECURITY: Validate URL against egress allowlist BEFORE DNS resolution and connection
+    # This happens before any network activity
     validated_url, resolved_ip = validate_outbound_url(url, calling_module=calling_module)
     
     # Generate correlation ID for logging
@@ -90,6 +92,14 @@ def http_get(
     request_headers = headers or {}
     
     try:
+        # SECURITY: Disable redirects by default to prevent redirect attacks
+        # If redirects are needed, they must be explicitly enabled AND validated
+        # Default to False for security - redirects can bypass allowlist if not validated
+        if allow_redirects:
+            logger.warning(
+                f"[HTTP_CLIENT] Redirects enabled for {validated_url} - final destination will be validated"
+            )
+        
         # Make the request
         response = requests.get(
             validated_url,
@@ -99,9 +109,34 @@ def http_get(
             **kwargs
         )
         
-        # Log the request for security audit
+        # SECURITY: If redirects were followed, validate the final destination URL
+        # response.url contains the final URL after all redirects
+        if allow_redirects and response.url != validated_url:
+            try:
+                final_validated_url, _ = validate_outbound_url(
+                    response.url,
+                    calling_module=f"{calling_module}.redirect_final"
+                )
+                logger.info(
+                    f"[HTTP_CLIENT] Redirect followed: {validated_url} -> {final_validated_url} "
+                    f"(validated, called from {calling_module})"
+                )
+            except EgressGuardError as e:
+                # Redirect target is not allowlisted - block the response
+                logger.error(
+                    f"[HTTP_CLIENT] SECURITY: Redirect to non-allowlisted URL blocked: "
+                    f"{validated_url} -> {response.url} (called from {calling_module})"
+                )
+                response.close()
+                raise EgressGuardError(
+                    f"Redirect target not allowlisted: {response.url} "
+                    f"(redirected from {validated_url}, called from {calling_module})"
+                )
+        
+        # Log the request for security audit (use final URL if redirects were followed)
+        log_url = response.url if allow_redirects else validated_url
         log_outbound_request(
-            validated_url,
+            log_url,
             method="GET",
             status_code=response.status_code,
             calling_module=calling_module,
@@ -154,7 +189,8 @@ def http_post(
     if not REQUESTS_AVAILABLE:
         raise ImportError("requests library is required for http_post()")
     
-    # Validate URL against egress allowlist
+    # SECURITY: Validate URL against egress allowlist BEFORE DNS resolution and connection
+    # This happens before any network activity
     validated_url, resolved_ip = validate_outbound_url(url, calling_module=calling_module)
     
     # Generate correlation ID for logging
@@ -166,6 +202,14 @@ def http_post(
         request_headers["Content-Type"] = "application/json"
     
     try:
+        # SECURITY: POST requests typically should not follow redirects (RFC 7231)
+        # If redirects are explicitly enabled via kwargs, validate the final destination
+        allow_redirects_post = kwargs.pop('allow_redirects', False)
+        if allow_redirects_post:
+            logger.warning(
+                f"[HTTP_CLIENT] Redirects enabled for POST {validated_url} - final destination will be validated"
+            )
+        
         # Make the request
         if json:
             response = requests.post(
@@ -173,6 +217,7 @@ def http_post(
                 json=json,
                 timeout=timeout,
                 headers=request_headers,
+                allow_redirects=allow_redirects_post,
                 **kwargs
             )
         else:
@@ -181,12 +226,37 @@ def http_post(
                 data=data,
                 timeout=timeout,
                 headers=request_headers,
+                allow_redirects=allow_redirects_post,
                 **kwargs
             )
         
-        # Log the request for security audit
+        # SECURITY: If redirects were followed, validate the final destination URL
+        if allow_redirects_post and response.url != validated_url:
+            try:
+                final_validated_url, _ = validate_outbound_url(
+                    response.url,
+                    calling_module=f"{calling_module}.redirect_final"
+                )
+                logger.info(
+                    f"[HTTP_CLIENT] Redirect followed: {validated_url} -> {final_validated_url} "
+                    f"(validated, called from {calling_module})"
+                )
+            except EgressGuardError as e:
+                # Redirect target is not allowlisted - block the response
+                logger.error(
+                    f"[HTTP_CLIENT] SECURITY: Redirect to non-allowlisted URL blocked: "
+                    f"{validated_url} -> {response.url} (called from {calling_module})"
+                )
+                response.close()
+                raise EgressGuardError(
+                    f"Redirect target not allowlisted: {response.url} "
+                    f"(redirected from {validated_url}, called from {calling_module})"
+                )
+        
+        # Log the request for security audit (use final URL if redirects were followed)
+        log_url = response.url if allow_redirects_post else validated_url
         log_outbound_request(
-            validated_url,
+            log_url,
             method="POST",
             status_code=response.status_code,
             calling_module=calling_module,

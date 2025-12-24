@@ -144,16 +144,87 @@ class TestGuardrailBypass:
         except ImportError:
             pass  # requests not installed, which is fine
     
-    def test_egress_guard_called_before_request(self):
+    @patch('app.utils.http_client.validate_outbound_url')
+    def test_egress_guard_called_before_request(self, mock_validate):
         """Test that egress guard is called before making requests"""
-        with patch('app.utils.egress_guard.validate_outbound_url') as mock_validate:
-            mock_validate.side_effect = EgressGuardError("Blocked")
-            
-            with pytest.raises(EgressGuardError):
-                http_get("https://api.crypto.com/exchange/v1", calling_module="test")
-            
-            # validate_outbound_url should be called
-            mock_validate.assert_called_once()
+        # Make validate_outbound_url raise an exception
+        mock_validate.side_effect = EgressGuardError("Blocked")
+        
+        with pytest.raises(EgressGuardError):
+            http_get("https://api.crypto.com/exchange/v1", calling_module="test")
+        
+        # validate_outbound_url should be called before the request
+        mock_validate.assert_called_once()
+
+
+class TestRedirectProtection:
+    """Test redirect protection in HTTP client"""
+    
+    @patch('app.utils.http_client.requests.get')
+    @patch('app.utils.egress_guard.validate_outbound_url')
+    def test_redirect_to_non_allowlisted_blocked(self, mock_validate, mock_get):
+        """Test that redirects to non-allowlisted domains are blocked"""
+        # Create a mock response that simulates a redirect to non-allowlisted domain
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.url = "https://evil.com/api"  # Non-allowlisted domain (different from initial)
+        mock_get.return_value = mock_response
+        
+        # validate_outbound_url will be called twice:
+        # 1. Initial URL validation (should succeed)
+        # 2. Redirect target validation (should fail)
+        def validate_side_effect(url, calling_module=None):
+            if "evil.com" in url:
+                raise EgressGuardError(f"Domain not in allowlist: evil.com")
+            return (url, None)
+        
+        mock_validate.side_effect = validate_side_effect
+        
+        # This should fail because the redirect target is not allowlisted
+        with pytest.raises(EgressGuardError) as exc_info:
+            http_get(
+                "https://api.crypto.com/exchange/v1",
+                allow_redirects=True,
+                calling_module="test"
+            )
+        
+        assert "not allowlisted" in str(exc_info.value).lower() or "evil.com" in str(exc_info.value).lower()
+        # Response should be closed when redirect target is blocked
+        mock_response.close.assert_called_once()
+    
+    @patch('app.utils.http_client.requests.get')
+    def test_redirect_to_allowlisted_allowed(self, mock_get):
+        """Test that redirects to allowlisted domains are allowed"""
+        # Create a mock response that simulates a redirect to an allowlisted domain
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.url = "https://api.crypto.com/exchange/v1/public/get-tickers"  # Allowlisted
+        mock_get.return_value = mock_response
+        
+        # This should succeed because the redirect target is allowlisted
+        response = http_get(
+            "https://api.crypto.com/exchange/v1",
+            allow_redirects=True,
+            calling_module="test"
+        )
+        
+        assert response.status_code == 200
+    
+    @patch('app.utils.http_client.requests.get')
+    def test_redirects_disabled_by_default(self, mock_get):
+        """Test that redirects are disabled by default"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.url = "https://api.crypto.com/exchange/v1"  # Same as initial URL (no redirect)
+        mock_get.return_value = mock_response
+        
+        # Call without allow_redirects (should default to False)
+        http_get("https://api.crypto.com/exchange/v1", calling_module="test")
+        
+        # Verify allow_redirects=False was passed
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs.get('allow_redirects') is False
 
 
 if __name__ == "__main__":

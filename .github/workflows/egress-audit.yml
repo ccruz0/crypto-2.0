@@ -25,9 +25,17 @@ jobs:
         run: |
           pip install -q requests
       
+      - name: Install test dependencies
+        run: |
+          pip install -q pytest
+      
       - name: Run egress audit
         run: |
           python scripts/security/egress_audit.py
+      
+      - name: Run static HTTP import tests
+        run: |
+          cd backend && python -m pytest tests/test_static_http_imports.py -v
       
       - name: Check for direct HTTP imports
         run: |
