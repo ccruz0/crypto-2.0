@@ -8,7 +8,7 @@ import logging
 import time
 import asyncio
 from datetime import datetime, timezone
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from app.models.watchlist import WatchlistItem
 from app.services.watchlist_selector import (
     deduplicate_watchlist_items,
@@ -83,12 +83,13 @@ def _mark_item_deleted(item: WatchlistItem):
         item.skip_sl_tp_reminder = True
 
 
-def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = None) -> Dict[str, Any]:
+def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = None, db: Optional[Session] = None) -> Dict[str, Any]:
     """Convert WatchlistItem SQLAlchemy object into JSON-serializable dict.
     
     Args:
         item: WatchlistItem to serialize
         market_data: Optional MarketData object to enrich the item with computed values
+        db: Optional database session for calculating TP/SL from strategy
     """
     if not item:
         return {}
@@ -141,9 +142,13 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     # Enrich with MarketData if provided (ALWAYS prefer live computed values over DB values)
     # MarketData contains the live computed values (price, rsi, ma50, ma200, ema10, atr, volume fields)
     # while DB values may be stale, so we should always prefer market_data when available
+    current_price = serialized["price"]
+    current_atr = serialized["atr"]
+    
     if market_data:
         if market_data.price is not None:
             serialized["price"] = market_data.price
+            current_price = market_data.price
         if market_data.rsi is not None:
             serialized["rsi"] = market_data.rsi
         if market_data.ma50 is not None:
@@ -154,6 +159,7 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
             serialized["ema10"] = market_data.ema10
         if market_data.atr is not None:
             serialized["atr"] = market_data.atr
+            current_atr = market_data.atr
         if market_data.res_up is not None:
             serialized["res_up"] = market_data.res_up
         if market_data.res_down is not None:
@@ -167,6 +173,44 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
             serialized["avg_volume"] = market_data.avg_volume
         if market_data.volume_24h is not None:
             serialized["volume_24h"] = market_data.volume_24h
+    
+    # CRITICAL: Calculate TP/SL from strategy settings if they're blank
+    # This ensures all watchlist items have TP/SL values based on their strategy configuration
+    if (serialized["sl_price"] is None or serialized["tp_price"] is None) and current_price and current_price > 0:
+        calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+            symbol=item.symbol,
+            price=current_price,
+            atr=current_atr,
+            watchlist_item=item,
+            db=db
+        )
+        
+        # Only populate if calculated values are available and current values are None
+        needs_commit = False
+        if calculated_sl is not None and serialized["sl_price"] is None:
+            serialized["sl_price"] = calculated_sl
+            if db and item.sl_price is None:
+                item.sl_price = calculated_sl
+                needs_commit = True
+            log.debug(f"Populated sl_price for {item.symbol} from strategy: {calculated_sl}")
+        
+        if calculated_tp is not None and serialized["tp_price"] is None:
+            serialized["tp_price"] = calculated_tp
+            if db and item.tp_price is None:
+                item.tp_price = calculated_tp
+                needs_commit = True
+            log.debug(f"Populated tp_price for {item.symbol} from strategy: {calculated_tp}")
+        
+        # Save calculated values to database if they were missing
+        if needs_commit and db:
+            try:
+                db.add(item)
+                db.commit()
+                db.refresh(item)
+                log.info(f"✅ Populated missing SL/TP for {item.symbol} from strategy: SL={item.sl_price}, TP={item.tp_price}")
+            except Exception as e:
+                db.rollback()
+                log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
     
     return serialized
 
@@ -197,6 +241,111 @@ def _get_market_data_for_symbol(db: Session, symbol: str) -> Optional[Any]:
     except Exception as e:
         log.error(f"Unexpected error fetching MarketData for {symbol}: {e}", exc_info=True)
         return None
+
+
+def _calculate_tp_sl_from_strategy(
+    symbol: str,
+    price: Optional[float],
+    atr: Optional[float],
+    watchlist_item: Optional[WatchlistItem] = None,
+    db: Optional[Session] = None
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calculate TP/SL prices from strategy settings in trading_config.json.
+    
+    This function calculates sl_price and tp_price based on:
+    1. Strategy rules from trading_config.json (preset + risk mode)
+    2. Current price and ATR from MarketData
+    3. Strategy settings: sl.atrMult, sl.pct, tp.rr, tp.pct
+    
+    Args:
+        symbol: Symbol to calculate TP/SL for
+        price: Current price (from MarketData)
+        atr: ATR value (from MarketData)
+        watchlist_item: Optional WatchlistItem to get sl_tp_mode override
+        db: Optional database session for resolving strategy profile
+    
+    Returns:
+        Tuple of (sl_price, tp_price) or (None, None) if calculation not possible
+    """
+    if price is None or price <= 0:
+        return None, None
+    
+    try:
+        from app.services.strategy_profiles import resolve_strategy_profile
+        from app.services.config_loader import load_config
+        
+        # Resolve strategy profile (preset + risk mode)
+        strategy_type, risk_approach = resolve_strategy_profile(
+            symbol, db=db, watchlist_item=watchlist_item
+        )
+        
+        # Get strategy rules from config
+        cfg = load_config()
+        preset_key = strategy_type.value.lower()
+        risk_key = risk_approach.value.capitalize()
+        
+        # Get rules from presets (new format with rules structure)
+        presets = cfg.get("presets", {})
+        preset_data = presets.get(preset_key, {})
+        
+        if not preset_data or "rules" not in preset_data:
+            log.debug(f"No rules found for {symbol} preset={preset_key}, risk={risk_key}")
+            return None, None
+        
+        rules = preset_data.get("rules", {}).get(risk_key, {})
+        if not rules:
+            log.debug(f"No rules found for {symbol} preset={preset_key}, risk={risk_key}")
+            return None, None
+        
+        sl_config = rules.get("sl", {})
+        tp_config = rules.get("tp", {})
+        
+        # Calculate SL price
+        sl_price = None
+        if sl_config.get("atrMult") and atr is not None and atr > 0:
+            # Use ATR multiplier: SL = price - (atrMult * ATR)
+            atr_mult = sl_config.get("atrMult", 1.5)
+            sl_price = price - (atr_mult * atr)
+            log.debug(f"Calculated SL for {symbol}: {sl_price} = {price} - ({atr_mult} * {atr})")
+        elif sl_config.get("atrMult") and (atr is None or atr <= 0):
+            # ATR not available but strategy uses atrMult - use fallback percentage
+            # Estimate percentage based on typical ATR (usually 1-3% of price for most coins)
+            # Use a conservative estimate: atrMult * 2% of price
+            atr_mult = sl_config.get("atrMult", 1.5)
+            estimated_atr_pct = atr_mult * 2.0  # 2% per ATR multiplier unit
+            sl_price = price * (1 - estimated_atr_pct / 100)
+            log.debug(f"Calculated SL for {symbol} (ATR fallback): {sl_price} = {price} * (1 - {estimated_atr_pct}/100) [ATR unavailable, using fallback]")
+        elif sl_config.get("pct"):
+            # Use percentage: SL = price * (1 - pct/100)
+            sl_pct = sl_config.get("pct", 0.5)
+            sl_price = price * (1 - sl_pct / 100)
+            log.debug(f"Calculated SL for {symbol}: {sl_price} = {price} * (1 - {sl_pct}/100)")
+        
+        # Calculate TP price
+        tp_price = None
+        if tp_config.get("rr") and sl_price is not None:
+            # Use risk:reward ratio: TP = price + (rr * (price - sl_price))
+            rr = tp_config.get("rr", 1.5)
+            tp_price = price + (rr * (price - sl_price))
+            log.debug(f"Calculated TP for {symbol}: {tp_price} = {price} + ({rr} * ({price} - {sl_price}))")
+        elif tp_config.get("pct"):
+            # Use percentage: TP = price * (1 + pct/100)
+            tp_pct = tp_config.get("pct", 0.8)
+            tp_price = price * (1 + tp_pct / 100)
+            log.debug(f"Calculated TP for {symbol}: {tp_price} = {price} * (1 + {tp_pct}/100)")
+        
+        # Round to reasonable precision
+        if sl_price is not None:
+            sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
+        if tp_price is not None:
+            tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
+        
+        return sl_price, tp_price
+        
+    except Exception as e:
+        log.warning(f"Error calculating TP/SL from strategy for {symbol}: {e}", exc_info=True)
+        return None, None
 
 
 def _apply_watchlist_updates(item: WatchlistItem, data: Dict[str, Any]) -> None:
@@ -888,7 +1037,42 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         for item in canonical_items:
             # Enrich with MarketData if available
             md = market_data_map.get(item.symbol)
-            result.append(_serialize_watchlist_item(item, market_data=md))
+            
+            # Calculate and save TP/SL values if they're blank
+            if md and (item.sl_price is None or item.tp_price is None):
+                current_price = md.price if md.price is not None else item.price
+                current_atr = md.atr if md.atr is not None else item.atr
+                
+                if current_price and current_price > 0:
+                    calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+                        symbol=item.symbol,
+                        price=current_price,
+                        atr=current_atr,
+                        watchlist_item=item,
+                        db=db
+                    )
+                    
+                    # Save calculated values to database if they're None
+                    updated = False
+                    if calculated_sl is not None and item.sl_price is None:
+                        item.sl_price = calculated_sl
+                        updated = True
+                        log.debug(f"Saved calculated sl_price for {item.symbol}: {calculated_sl}")
+                    
+                    if calculated_tp is not None and item.tp_price is None:
+                        item.tp_price = calculated_tp
+                        updated = True
+                        log.debug(f"Saved calculated tp_price for {item.symbol}: {calculated_tp}")
+                    
+                    if updated:
+                        try:
+                            db.commit()
+                            db.refresh(item)
+                        except Exception as save_err:
+                            log.warning(f"Failed to save calculated TP/SL for {item.symbol}: {save_err}")
+                            db.rollback()
+            
+            result.append(_serialize_watchlist_item(item, market_data=md, db=db))
             if len(result) >= 100:
                 break
         log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)}")
@@ -989,6 +1173,26 @@ def create_watchlist_item(
                 old_value = getattr(existing_item, field)
                 new_value = payload[field]
                 
+                # CRITICAL: Protect user-set values from being overwritten with None
+                # Only allow None for fields that the user explicitly wants to clear
+                # For critical user-set fields, preserve existing values if new_value is None
+                user_set_fields = {"trade_amount_usd", "sl_percentage", "tp_percentage", "sl_price", "tp_price"}
+                if field in user_set_fields and new_value is None and old_value is not None:
+                    # User has a value set, and frontend is trying to clear it
+                    # Only clear if old_value is 0 or empty string (not a real user value)
+                    if field == "trade_amount_usd":
+                        if old_value != 0 and old_value != 0.0:
+                            log.info(f"[WATCHLIST_PROTECT] Preserving user-set {field}={old_value} for {symbol} (frontend tried to clear)")
+                            continue  # Skip this update, preserve existing value
+                    elif field in {"sl_percentage", "tp_percentage"}:
+                        if old_value != 0 and old_value != 0.0:
+                            log.info(f"[WATCHLIST_PROTECT] Preserving user-set {field}={old_value} for {symbol} (frontend tried to clear)")
+                            continue  # Skip this update, preserve existing value
+                    elif field in {"sl_price", "tp_price"}:
+                        if old_value != 0 and old_value != 0.0:
+                            log.info(f"[WATCHLIST_PROTECT] Preserving user-set {field}={old_value} for {symbol} (frontend tried to clear)")
+                            continue  # Skip this update, preserve existing value
+                
                 # Track changes to throttle-related parameters
                 if field == "alert_cooldown_minutes" and old_value != new_value:
                     old_val_str = f"{old_value}" if old_value is not None else "default"
@@ -1008,6 +1212,10 @@ def create_watchlist_item(
                     old_val_str = f"{old_value}%" if old_value is not None else "default"
                     new_val_str = f"{new_value}%" if new_value is not None else "default"
                     strategy_parameter_changes.append(f"tp_percentage ({old_val_str} → {new_val_str})")
+                
+                # Log value changes for debugging
+                if field in user_set_fields and old_value != new_value:
+                    log.info(f"[WATCHLIST_UPDATE] {symbol}.{field}: {old_value} → {new_value}")
                 
                 setattr(existing_item, field, payload[field])
 
@@ -1042,7 +1250,7 @@ def create_watchlist_item(
         
         # Enrich with MarketData before returning
         md = _get_market_data_for_symbol(db, existing_item.symbol)
-        return _serialize_watchlist_item(existing_item, market_data=md)
+        return _serialize_watchlist_item(existing_item, market_data=md, db=db)
 
     # No existing row: create a new item.
     item = WatchlistItem(
@@ -1091,9 +1299,43 @@ def create_watchlist_item(
     db.commit()
     db.refresh(item)
     
-    # Enrich with MarketData before returning
+    # Calculate and save TP/SL values if they're blank
     md = _get_market_data_for_symbol(db, item.symbol)
-    return _serialize_watchlist_item(item, market_data=md)
+    if md and (item.sl_price is None or item.tp_price is None):
+        current_price = md.price if md.price is not None else item.price
+        current_atr = md.atr if md.atr is not None else item.atr
+        
+        if current_price and current_price > 0:
+            calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+                symbol=item.symbol,
+                price=current_price,
+                atr=current_atr,
+                watchlist_item=item,
+                db=db
+            )
+            
+            # Save calculated values to database if they're None
+            updated = False
+            if calculated_sl is not None and item.sl_price is None:
+                item.sl_price = calculated_sl
+                updated = True
+                log.debug(f"Saved calculated sl_price for new item {item.symbol}: {calculated_sl}")
+            
+            if calculated_tp is not None and item.tp_price is None:
+                item.tp_price = calculated_tp
+                updated = True
+                log.debug(f"Saved calculated tp_price for new item {item.symbol}: {calculated_tp}")
+            
+            if updated:
+                try:
+                    db.commit()
+                    db.refresh(item)
+                except Exception as save_err:
+                    log.warning(f"Failed to save calculated TP/SL for new item {item.symbol}: {save_err}")
+                    db.rollback()
+    
+    # Enrich with MarketData before returning
+    return _serialize_watchlist_item(item, market_data=md, db=db)
 
 
 @router.put("/dashboard/{item_id}")
@@ -1252,9 +1494,17 @@ def update_watchlist_item(
             new_strategy_str = f"{new_preset or old_preset or 'default'}-{new_risk_mode or old_risk_mode or 'default'}"
             updates.append(f"STRATEGY: {old_strategy_str} → {new_strategy_str}")
     
+    # Log the update attempt for debugging
+    log.info(f"[WATCHLIST_UPDATE] PUT /dashboard/{item_id} for {item.symbol}: updating fields {list(payload.keys())}")
+    for key, value in payload.items():
+        if key in {"trade_amount_usd", "sl_percentage", "tp_percentage", "sl_price", "tp_price"}:
+            old_val = getattr(item, key, None)
+            log.info(f"[WATCHLIST_UPDATE] {item.symbol}.{key}: {old_val} → {value}")
+    
     _apply_watchlist_updates(item, payload)
     try:
         db.commit()
+        log.info(f"[WATCHLIST_UPDATE] Successfully committed update for {item.symbol}")
     except IntegrityError as ie:
         # Handle unique constraint when a deleted duplicate row is being restored implicitly.
         db.rollback()
@@ -1367,10 +1617,15 @@ def update_watchlist_item(
         except Exception as throttle_err:
             log.warning(f"⚠️ [TRADE] Failed to reset throttle state for {item.symbol}: {throttle_err}", exc_info=True)
         
-        # When trade_enabled is toggled to YES, also enable buy_alert_enabled and sell_alert_enabled
+        # When trade_enabled is toggled to YES, also enable alert_enabled, buy_alert_enabled and sell_alert_enabled
         # CRITICAL: Use new_value directly (from payload) instead of item.trade_enabled
         # This ensures we enable alerts even if item.trade_enabled hasn't been refreshed yet
         if new_value:
+            # CRITICAL: Enable alert_enabled (master switch) when trade is enabled
+            # This is required for alerts to be sent (both alert_enabled AND buy_alert_enabled must be True)
+            if not item.alert_enabled:
+                item.alert_enabled = True
+                log.info(f"⚡ [TRADE] Auto-enabled alert_enabled (master switch) for {item.symbol} (required for all alerts)")
             # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
             # This ensures alerts are sent when signals are detected
             if not item.buy_alert_enabled:
@@ -1503,7 +1758,7 @@ def update_watchlist_item(
     
     # Enrich with MarketData before returning
     md = _get_market_data_for_symbol(db, item.symbol)
-    result = _serialize_watchlist_item(item, market_data=md)
+    result = _serialize_watchlist_item(item, market_data=md, db=db)
     
     # Add success message if updates were made
     if updates:
@@ -1555,7 +1810,7 @@ def get_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db)):
     
     # Enrich with MarketData
     md = _get_market_data_for_symbol(db, symbol)
-    return _serialize_watchlist_item(item, market_data=md)
+    return _serialize_watchlist_item(item, market_data=md, db=db)
 
 
 @router.put("/dashboard/symbol/{symbol}/restore")
@@ -1577,12 +1832,12 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
     is_deleted = getattr(item, "is_deleted", False)
     if not is_deleted:
         # Enrich with MarketData before returning
-        md = _get_market_data_for_symbol(db, symbol)
-        return {
-            "ok": True,
-            "message": f"{symbol} is already active (not deleted)",
-            "item": _serialize_watchlist_item(item, market_data=md)
-        }
+            md = _get_market_data_for_symbol(db, symbol)
+            return {
+                "ok": True,
+                "message": f"{symbol} is already active (not deleted)",
+                "item": _serialize_watchlist_item(item, market_data=md, db=db)
+            }
     
     # Restore the item
     try:
@@ -1600,7 +1855,7 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
             return {
                 "ok": True,
                 "message": f"{symbol} has been restored",
-                "item": _serialize_watchlist_item(item, market_data=md)
+                "item": _serialize_watchlist_item(item, market_data=md, db=db)
             }
         else:
             raise HTTPException(status_code=400, detail="Soft delete not supported on this database")

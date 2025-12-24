@@ -587,37 +587,95 @@ class SignalMonitorService:
         
         # Get all watchlist items with alert_enabled = true (for alerts)
         # Note: This includes coins that may have trade_enabled = false
-        # IMPORTANT: Do NOT reference non-existent columns (e.g., is_deleted) for legacy DBs
+        # IMPORTANT: Use SQL directly to check which columns exist to avoid SQLAlchemy errors
         try:
-            # Try to filter by is_deleted if column exists
-            try:
-                watchlist_items = db.query(WatchlistItem).filter(
-                    WatchlistItem.alert_enabled == True,
-                    WatchlistItem.is_deleted == False
-                ).all()
-            except Exception:
-                # If is_deleted column doesn't exist, fall back to filtering only by alert_enabled
-                watchlist_items = db.query(WatchlistItem).filter(
-                    WatchlistItem.alert_enabled == True
-                ).all()
+            from sqlalchemy import text, inspect
             
-            if not watchlist_items:
-                logger.warning("⚠️ No watchlist items with alert_enabled = true found in database!")
+            # Check which columns exist by querying the database schema
+            inspector = inspect(db.bind) if hasattr(db, 'bind') and db.bind else None
+            available_columns = []
+            if inspector:
+                try:
+                    columns = inspector.get_columns('watchlist_items')
+                    available_columns = [col['name'] for col in columns]
+                    logger.debug(f"Available columns in watchlist_items: {available_columns}")
+                except Exception as e:
+                    logger.warning(f"Could not inspect table columns: {e}")
+            
+            has_alert_enabled = 'alert_enabled' in available_columns
+            has_trade_enabled = 'trade_enabled' in available_columns
+            has_is_deleted = 'is_deleted' in available_columns
+            
+            # Try querying with SQL directly to avoid SQLAlchemy column issues
+            # Build WHERE clause based on available columns
+            where_parts = []
+            if has_alert_enabled:
+                where_parts.append("alert_enabled = 1")
+            elif has_trade_enabled:
+                logger.warning("⚠️ alert_enabled column not found, using trade_enabled as fallback")
+                where_parts.append("trade_enabled = 1")
+            else:
+                logger.error("❌ Neither alert_enabled nor trade_enabled columns found!")
                 return []
             
-            logger.info(f"📊 Monitoring {len(watchlist_items)} coins with alert_enabled = true:")
+            if has_is_deleted:
+                where_parts.append("is_deleted = 0")
+            
+            where_clause = " AND ".join(where_parts)
+            sql = f"SELECT * FROM watchlist_items WHERE {where_clause}"
+            
+            # Execute raw SQL and map to WatchlistItem objects
+            result = db.execute(text(sql))
+            rows = result.fetchall()
+            
+            # Get column names from the result
+            if not rows:
+                logger.warning("⚠️ No watchlist items found matching criteria!")
+                return []
+            
+            # Get column names from first row  
+            column_names = list(rows[0]._mapping.keys()) if hasattr(rows[0], '_mapping') else list(rows[0].keys())
+            
+            watchlist_items = []
+            for row in rows:
+                # Create WatchlistItem and set attributes from row
+                item = WatchlistItem()
+                row_dict = dict(row._mapping) if hasattr(row, '_mapping') else dict(zip(column_names, row))
+                
+                for key, value in row_dict.items():
+                    if hasattr(WatchlistItem, key):
+                        try:
+                            setattr(item, key, value)
+                        except Exception as e:
+                            logger.debug(f"Could not set {key}={value} on WatchlistItem: {e}")
+                
+                # If alert_enabled column doesn't exist, infer it from trade_enabled (legacy databases)
+                # This allows the system to work with older database schemas
+                if not has_alert_enabled and has_trade_enabled:
+                    item.alert_enabled = bool(getattr(item, 'trade_enabled', False))
+                    logger.debug(f"Inferred alert_enabled={item.alert_enabled} from trade_enabled for {getattr(item, 'symbol', 'unknown')}")
+                # If alert_enabled column exists, ensure it's a boolean
+                elif has_alert_enabled:
+                    item.alert_enabled = bool(getattr(item, 'alert_enabled', False))
+                
+                watchlist_items.append(item)
+            
+            if not watchlist_items:
+                logger.warning("⚠️ No watchlist items with alert_enabled = true (or trade_enabled = true as fallback) found in database!")
+                return []
+            
+            logger.info(f"📊 Monitoring {len(watchlist_items)} coins with {'alert_enabled' if has_alert_enabled else 'trade_enabled'} = true:")
             for item in watchlist_items:
-                # Refresh the item from database to get latest values (important for trade_amount_usd and alert_enabled)
-                db.refresh(item)
-                # CRITICAL: Double-check alert_enabled after refresh - if it changed to False, log warning
-                if not item.alert_enabled:
-                    logger.error(
-                        f"⚠️ INCONSISTENCIA DETECTADA: {item.symbol} tiene alert_enabled=False después del refresh, "
-                        f"pero fue incluido en la consulta inicial. Esto no debería pasar."
-                    )
+                # Log item details
+                symbol = getattr(item, 'symbol', 'unknown')
+                alert_enabled = getattr(item, 'alert_enabled', False)
+                trade_enabled = getattr(item, 'trade_enabled', False)
+                trade_amount = getattr(item, 'trade_amount_usd', None) or 0
+                is_deleted = getattr(item, 'is_deleted', None)
+                
                 logger.info(
-                    f"   - {item.symbol}: alert_enabled={item.alert_enabled}, trade_enabled={item.trade_enabled}, "
-                    f"trade_amount=${item.trade_amount_usd or 0}, is_deleted={getattr(item, 'is_deleted', 'N/A')}"
+                    f"   - {symbol}: alert_enabled={alert_enabled}, trade_enabled={trade_enabled}, "
+                    f"trade_amount=${trade_amount}, is_deleted={is_deleted}"
                 )
             
             return watchlist_items
@@ -681,7 +739,13 @@ class SignalMonitorService:
                 old_alert = watchlist_item.alert_enabled
                 old_margin = watchlist_item.trade_on_margin if hasattr(watchlist_item, 'trade_on_margin') else None
                 # Update the watchlist_item object with fresh values
-                watchlist_item.trade_amount_usd = fresh_item.trade_amount_usd
+                # CRITICAL: Preserve user-set trade_amount_usd - only update if it was None/0 in DB
+                # This prevents overwriting user's manual settings during refresh
+                if fresh_item.trade_amount_usd is not None and fresh_item.trade_amount_usd != 0:
+                    # Only update if current value is None/0 (user hasn't set it yet)
+                    if watchlist_item.trade_amount_usd is None or watchlist_item.trade_amount_usd == 0:
+                        watchlist_item.trade_amount_usd = fresh_item.trade_amount_usd
+                    # Otherwise preserve user's value
                 watchlist_item.trade_enabled = fresh_item.trade_enabled
                 watchlist_item.alert_enabled = fresh_item.alert_enabled
                 # CRITICAL: Also refresh trade_on_margin from database
@@ -986,15 +1050,35 @@ class SignalMonitorService:
             # If manual signals exist, use them instead of calculated signals
             manual_signals = watchlist_item.signals if hasattr(watchlist_item, 'signals') and watchlist_item.signals else None
             
+            # CRITICAL FIX: Use strategy.decision as primary source (same as dashboard)
+            # This ensures signal_monitor matches what the dashboard displays
+            # strategy.decision is the canonical source of truth from calculate_trading_signals
+            strategy_decision = None
+            if signals and "strategy" in signals and isinstance(signals.get("strategy"), dict):
+                strategy_decision = signals["strategy"].get("decision")
+            
             if manual_signals and isinstance(manual_signals, dict):
                 # Use manual signals from dashboard if they exist
                 buy_signal = manual_signals.get("buy", False) if "buy" in manual_signals else signals.get("buy_signal", False)
                 sell_signal = manual_signals.get("sell", False) if "sell" in manual_signals else signals.get("sell_signal", False)
                 logger.info(f"🔧 {symbol} using MANUAL signals from dashboard: buy={buy_signal}, sell={sell_signal}")
+            elif strategy_decision:
+                # CRITICAL: Use strategy.decision as primary source (matches dashboard)
+                # This ensures alerts are sent when dashboard shows BUY
+                buy_signal = (strategy_decision == "BUY")
+                sell_signal = (strategy_decision == "SELL")
+                logger.info(
+                    f"✅ {symbol} using strategy.decision={strategy_decision} (matches dashboard): "
+                    f"buy_signal={buy_signal}, sell_signal={sell_signal}"
+                )
             else:
-                # Use calculated signals (normal behavior)
+                # Fallback to calculated signals (normal behavior)
                 buy_signal = signals.get("buy_signal", False)
                 sell_signal = signals.get("sell_signal", False)
+                logger.debug(
+                    f"⚠️ {symbol} strategy.decision not available, using buy_signal={buy_signal}, "
+                    f"sell_signal={sell_signal} from calculate_trading_signals"
+                )
             
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
@@ -2081,8 +2165,13 @@ class SignalMonitorService:
                             f"trade_enabled={trade_enabled}, trade_amount_usd={trade_amount_usd}"
                         )
                         # Update watchlist_item with fresh values
+                        # CRITICAL: Preserve user-set trade_amount_usd - only update if it was None/0 in DB
                         watchlist_item.trade_enabled = trade_enabled
-                        watchlist_item.trade_amount_usd = trade_amount_usd
+                        if trade_amount_usd is not None and trade_amount_usd != 0:
+                            # Only update if current value is None/0 (user hasn't set it yet)
+                            if watchlist_item.trade_amount_usd is None or watchlist_item.trade_amount_usd == 0:
+                                watchlist_item.trade_amount_usd = trade_amount_usd
+                            # Otherwise preserve user's value
                     else:
                         logger.warning(f"⚠️ [ORDER_CREATION_CHECK] {symbol} - No watchlist item found in database!")
                 except Exception as e:
