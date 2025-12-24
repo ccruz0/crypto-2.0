@@ -22,6 +22,7 @@ from sqlalchemy import text
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
