@@ -10,6 +10,7 @@ import time
 import tempfile
 import sys
 import json
+import requests
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
