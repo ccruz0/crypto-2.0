@@ -1,15 +1,16 @@
 import os
 import logging
-import requests
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 import pytz
 from sqlalchemy.orm import Session
 from app.services.telegram_notifier import telegram_notifier
 from app.services.brokers.crypto_com_trade import trade_client
+from app.core.runtime import get_runtime_origin
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.database import SessionLocal
 import json
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ class DailySummaryService:
                 message += "🤖 Trading Bot Automático"
                 
                 logger.warning("Daily summary: No portfolio data available, sending minimal summary")
-                success = self.telegram.send_message(message)
+                success = self.telegram.send_message(message, origin=get_runtime_origin())
                 if success:
                     logger.info("Daily summary (minimal) sent successfully")
                 else:
@@ -252,12 +253,25 @@ class DailySummaryService:
             if errors:
                 message += f"\n\n⚠️ Advertencias: {len(errors)} error(es) durante la obtención de datos"
                 for error in errors[:3]:  # Show first 3 errors
-                    # Truncate long errors and remove newlines
-                    error_clean = error[:100].replace('\n', ' ')
+                    # Truncate long errors but preserve error codes and important diagnostic info
+                    error_clean = error.replace('\n', ' ')
+                    
+                    # For authentication errors (40101, 40103), show more context
+                    if '40101' in error_clean or '40103' in error_clean or 'authentication' in error_clean.lower():
+                        # Show up to 250 chars for auth errors to include full diagnostic message
+                        if len(error_clean) > 250:
+                            error_clean = error_clean[:247] + "..."
+                    # If error contains a code, preserve at least 200 chars to show full code and context
+                    elif 'code:' in error_clean.lower() or 'code ' in error_clean.lower():
+                        if len(error_clean) > 200:
+                            error_clean = error_clean[:197] + "..."
+                    else:
+                        if len(error_clean) > 120:
+                            error_clean = error_clean[:117] + "..."
                     message += f"\n  • {error_clean}"
             
             # Send message
-            success = self.telegram.send_message(message)
+            success = self.telegram.send_message(message, origin=get_runtime_origin())
             
             if success:
                 logger.info("Daily summary sent successfully")
@@ -268,7 +282,13 @@ class DailySummaryService:
             error_msg = f"Error sending daily summary: {e}"
             logger.error(error_msg, exc_info=True)
             try:
-                self.telegram.send_message(f"❌ Error en resumen diario: {str(e)[:200]}")
+                # Preserve error codes in error messages
+                error_str = str(e)
+                if 'code:' in error_str.lower() or 'code ' in error_str.lower():
+                    error_display = error_str[:250]  # Show more for errors with codes
+                else:
+                    error_display = error_str[:200]
+                self.telegram.send_message(f"❌ Error en resumen diario: {error_display}", origin=get_runtime_origin())
             except Exception as e2:
                 logger.error(f"Failed to send error message: {e2}", exc_info=True)
 
@@ -305,7 +325,7 @@ class DailySummaryService:
                 if not sell_orders:
                     message = f"📊 **Reporte de Ventas - {now_bali.strftime('%d/%m/%Y %H:%M')} (Bali)**\n\n"
                     message += "ℹ️ No se ejecutaron órdenes de venta en las últimas 24 horas."
-                    self.telegram.send_message(message)
+                    self.telegram.send_message(message, origin=get_runtime_origin())
                     return
                 
                 # Build report message
@@ -403,26 +423,44 @@ class DailySummaryService:
                 #   → telegram_notifier.send_message() [telegram_notifier.py:151]
                 #   → Uses: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID env vars
                 #   → Origin: Defaults to get_runtime_origin() → "AWS" in AWS
-                #   → API Call: requests.post("https://api.telegram.org/bot{token}/sendMessage")
+                #   → API Call: http_post("https://api.telegram.org/bot{token}/sendMessage", calling_module="daily_summary")
                 #   → Result: Message sent to Telegram chat
                 # ============================================================
                 # ALL other alerts (signals, monitoring, watchlist, CPI) should
                 # use the SAME path: telegram_notifier.send_message()
                 # ============================================================
-                success = self.telegram.send_message(message)
+                success = self.telegram.send_message(message, origin=get_runtime_origin())
                 
                 if success:
                     logger.info(f"Sell orders report sent successfully: {len(sell_orders)} orders, P&L: ${total_profit_loss:,.2f}")
                 else:
                     logger.error("Failed to send sell orders report")
+                
+                # Commit changes if we created the session (though this is read-only, commit for consistency)
+                if should_close:
+                    try:
+                        db.commit()
+                        logger.debug("DailySummaryService: Committed database changes")
+                    except Exception as commit_err:
+                        logger.error(f"DailySummaryService: Error committing changes: {commit_err}", exc_info=True)
+                        db.rollback()
                     
+            except Exception as inner_e:
+                logger.error(f"Error in send_sell_orders_report inner block: {inner_e}", exc_info=True)
+                if should_close and db:
+                    try:
+                        db.rollback()
+                        logger.debug("DailySummaryService: Rolled back database changes due to inner error")
+                    except Exception as rollback_err:
+                        logger.error(f"DailySummaryService: Error rolling back: {rollback_err}", exc_info=True)
+                raise
             finally:
                 if should_close:
                     db.close()
                     
         except Exception as e:
             logger.error(f"Error sending sell orders report: {e}", exc_info=True)
-            self.telegram.send_message(f"❌ Error en reporte de ventas: {str(e)}")
+            self.telegram.send_message(f"❌ Error en reporte de ventas: {str(e)}", origin=get_runtime_origin())
 
 # Global instance
 daily_summary_service = DailySummaryService()

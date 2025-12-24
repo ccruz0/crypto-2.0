@@ -6,7 +6,6 @@ Handles incoming Telegram commands and responds with formatted messages
 import os
 import logging
 import math
-import requests
 import time
 import tempfile
 import sys
@@ -175,7 +174,7 @@ def _run_startup_diagnostics() -> None:
             logger.info(f"{log_prefix} Running startup diagnostics (TELEGRAM_DIAGNOSTICS=1)...")
         else:
             logger.info(f"{log_prefix} Running startup diagnostics...")
-        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5)
+        response = http_get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5, calling_module="telegram_commands")
         response.raise_for_status()
         bot_info = response.json()
         if bot_info.get("ok"):
@@ -187,7 +186,7 @@ def _run_startup_diagnostics() -> None:
             logger.error(f"{log_prefix} getMe failed: {bot_info}")
         
         # 2. Call getWebhookInfo
-        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo", timeout=5)
+        response = http_get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo", timeout=5, calling_module="telegram_commands")
         response.raise_for_status()
         webhook_info = response.json()
         if webhook_info.get("ok"):
@@ -201,11 +200,9 @@ def _run_startup_diagnostics() -> None:
             # 3. Delete webhook if present (always delete on startup to ensure polling works)
             if webhook_url:
                 logger.warning(f"{log_prefix} Webhook detected at {webhook_url}, deleting it...")
-                response = requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
-                    json={"drop_pending_updates": True},
-                    timeout=5
-                )
+                response = http_post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", json={"drop_pending_updates": True}, timeout=5
+                , calling_module="telegram_commands")
                 response.raise_for_status()
                 delete_result = response.json()
                 if delete_result.get("ok"):
@@ -223,7 +220,7 @@ def _run_startup_diagnostics() -> None:
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
                 params = {"limit": 10, "timeout": 0}
-                response = requests.get(url, params=params, timeout=5)
+                response = http_get(url, params=params, timeout=5, calling_module="telegram_commands")
                 response.raise_for_status()
                 data = response.json()
                 if data.get("ok"):
@@ -252,7 +249,7 @@ def _probe_updates_without_offset() -> List[Dict]:
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
         params = {"limit": 50}  # Get up to 50 updates
-        response = requests.get(url, params=params, timeout=5)
+        response = http_get(url, params=params, timeout=5, calling_module="telegram_commands")
         response.raise_for_status()
         data = response.json()
         if data.get("ok"):
@@ -560,22 +557,20 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
                 "text": " ",  # Minimal text required by Telegram API
                 "reply_markup": {"remove_keyboard": True}
             }
-            remove_response = requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json=remove_payload,
-                timeout=5
-            )
+            remove_response = http_post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=remove_payload, timeout=5
+            , calling_module="telegram_commands")
             if remove_response.status_code == 200:
                 remove_result = remove_response.json()
                 if remove_result.get("ok"):
                     # Delete the removal message immediately to keep chat clean
                     delete_msg_id = remove_result.get('result', {}).get('message_id')
                     try:
-                        requests.post(
+                        http_post(
                             f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
                             json={"chat_id": chat_id, "message_id": delete_msg_id},
                             timeout=5
-                        )
+                        , calling_module="services_telegram_commands")
                     except:
                         pass  # Ignore delete errors
         except Exception as e:
@@ -595,7 +590,7 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
         }
         logger.info(f"[TG] Sending menu message to chat_id={chat_id}, text_preview={text[:50]}..., keyboard_type={list(keyboard.keys())}")
         logger.debug(f"[TG] Full keyboard structure: {json.dumps(keyboard, indent=2)}")
-        response = requests.post(url, json=payload, timeout=10)
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         response.raise_for_status()
         result = response.json()
         if result.get("ok"):
@@ -628,7 +623,7 @@ def _edit_menu_message(chat_id: str, message_id: int, text: str, keyboard: Dict)
             "parse_mode": "HTML",
             "reply_markup": keyboard,
         }
-        response = requests.post(url, json=payload, timeout=10)
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         if response.status_code == 400:
             # Check if it's because message is unchanged (this is OK)
             error_data = response.json() if response.content else {}
@@ -682,7 +677,7 @@ def setup_bot_commands():
             "commands": commands
         }
         
-        response = requests.post(url, json=payload, timeout=10)
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         response.raise_for_status()
         
         result = response.json()
@@ -732,7 +727,7 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         
         # Increase timeout to account for network delay
         request_timeout = (timeout_override + 5) if timeout_override else 35
-        response = requests.get(url, params=params, timeout=request_timeout)
+        response = http_get(url, params=params, timeout=request_timeout, calling_module="telegram_commands")
         response.raise_for_status()
         
         data = response.json()
@@ -772,7 +767,7 @@ def send_command_response(chat_id: str, message: str) -> bool:
             "text": message,
             "parse_mode": "HTML"  # Use HTML instead of Markdown (more reliable)
         }
-        response = requests.post(url, json=payload, timeout=10)
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         
         if response.status_code != 200:
             error_data = response.json() if response.content else {}
@@ -783,7 +778,7 @@ def send_command_response(chat_id: str, message: str) -> bool:
                     "chat_id": chat_id,
                     "text": message
                 }
-                response2 = requests.post(url, json=payload_no_parse, timeout=10)
+                response2 = http_post(url, json=payload_no_parse, timeout=10, calling_module="telegram_commands")
                 response2.raise_for_status()
                 logger.info(f"[TG] Sent message without parse_mode")
                 return True
@@ -829,7 +824,7 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
             "parse_mode": "HTML",
             "reply_markup": keyboard
         }
-        response = requests.post(url, json=payload, timeout=10)
+        response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         response.raise_for_status()
         logger.info(f"[TG] Custom keyboard set up for chat_id={chat_id}")
         return True
@@ -1154,7 +1149,7 @@ def _trigger_watchlist_test(chat_id: str, symbol: str, db: Session) -> None:
         if isinstance(amount, (int, float)) and amount > 0:
             payload["trade_amount_usd"] = amount
         try:
-            response = requests.post(url, json=payload, timeout=30)
+            response = http_post(url, json=payload, timeout=30, calling_module="telegram_commands")
             if response.status_code != 200:
                 errors.append(f"{signal_type}: {response.text}")
                 continue
@@ -1432,10 +1427,9 @@ Check if exchange sync is running."""
                 # Get TP/SL values from API endpoint
                 tp_sl_values = {}
                 try:
-                    response = requests.get(
-                        f"{API_BASE_URL.rstrip('/')}/api/orders/tp-sl-values",
-                        timeout=10
-                    )
+                    response = http_get(
+                        f"{API_BASE_URL.rstrip('/')}/api/orders/tp-sl-values", timeout=10
+                    , calling_module="telegram_commands")
                     if response.status_code == 200:
                         tp_sl_values = response.json()
                         logger.info(f"[TG][PORTFOLIO] Fetched TP/SL values for {len(tp_sl_values)} currencies")
@@ -1599,10 +1593,9 @@ No signals generated yet."""
                 # 2. If not in watchlist or no price, try fetching from API
                 if current_price == 0:
                     try:
-                        import requests
                         # Try Crypto.com API (get-tickers returns all tickers)
                         ticker_url = "https://api.crypto.com/exchange/v1/public/get-tickers"
-                        ticker_response = requests.get(ticker_url, timeout=10)
+                        ticker_response = http_get(ticker_url, timeout=10, calling_module="telegram_commands")
                         if ticker_response.status_code == 200:
                             ticker_data = ticker_response.json()
                             if "result" in ticker_data and "data" in ticker_data["result"]:
@@ -2058,10 +2051,9 @@ def send_expected_take_profit_message(chat_id: str, db: Session = None) -> bool:
         
         # Call API endpoint to get expected take profit summary
         try:
-            response = requests.get(
-                f"{API_BASE_URL.rstrip('/')}/api/dashboard/expected-take-profit",
-                timeout=10
-            )
+            response = http_get(
+                f"{API_BASE_URL.rstrip('/')}/api/dashboard/expected-take-profit", timeout=10
+            , calling_module="telegram_commands")
             response.raise_for_status()
             data = response.json()
         except Exception as api_err:
@@ -2244,10 +2236,9 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
         
         # Get system health from API
         try:
-            response = requests.get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health",
-                timeout=10
-            )
+            response = http_get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health", timeout=10
+            , calling_module="telegram_commands")
             if response.status_code == 200:
                 health_data = response.json()
             else:
@@ -2307,11 +2298,9 @@ def send_throttle_message(chat_id: str, db: Session = None, message_id: Optional
         
         # Get recent Telegram messages from API
         try:
-            response = requests.get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
-                params={"limit": 20},
-                timeout=10
-            )
+            response = http_get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages", params={"limit": 20}, timeout=10
+            , calling_module="telegram_commands")
             if response.status_code == 200:
                 messages_data = response.json()
                 messages = messages_data.get("messages", [])
@@ -2355,10 +2344,9 @@ def send_workflows_monitoring_message(chat_id: str, db: Session = None, message_
         
         # Get workflow status from API
         try:
-            response = requests.get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/workflows",
-                timeout=10
-            )
+            response = http_get(
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/workflows", timeout=10
+            , calling_module="telegram_commands")
             if response.status_code == 200:
                 workflows_data = response.json()
                 workflows = workflows_data.get("workflows", [])
@@ -2407,8 +2395,8 @@ def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: 
         
         # Get blocked messages from API (filter for blocked=True)
         try:
-            response = requests.get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
+            response = http_get(
+                f"{API_BASE_URL.rstrip('/', calling_module="telegram_commands")}/api/monitoring/telegram-messages",
                 params={"blocked": True, "limit": 20},
                 timeout=10
             )
@@ -2599,7 +2587,6 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
             reply_markup = {"inline_keyboard": buttons}
             
             try:
-                import requests
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 payload = {
                     "chat_id": chat_id,
@@ -2607,7 +2594,7 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
                     "parse_mode": "Markdown",
                     "reply_markup": reply_markup
                 }
-                response = requests.post(url, json=payload, timeout=10)
+                response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
                 response.raise_for_status()
                 logger.info(f"[TG][CMD] /analyze (menu sent with {len(coins)} coins)")
                 return True
@@ -3129,7 +3116,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                     if callback_query_id:
                         try:
                             url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-                            requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
+                            http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
                         except:
                             pass
                     return
@@ -3180,7 +3167,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             # Answer callback query to remove loading state
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-                requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
+                http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
             except:
                 pass
         
@@ -4114,6 +4101,7 @@ def _get_signal_rules(cfg: Dict[str, Any], preset: str, risk_mode: str) -> Tuple
 
 def _save_signal_config(cfg: Dict[str, Any]) -> None:
     from app.services.config_loader import save_config
+from app.utils.http_client import http_get, http_post
 
     save_config(cfg)
 

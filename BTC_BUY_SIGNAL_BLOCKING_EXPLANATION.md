@@ -131,3 +131,4 @@ The minimum price change threshold can be configured per symbol in the watchlist
 - Toggle Trade or Alert status in the dashboard (easiest)
 - Or wait for price to move 1%+ from the stored reference price
 
+

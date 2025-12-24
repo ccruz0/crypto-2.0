@@ -1,85 +1,219 @@
-# Deployment Status - Telegram Menu Update
+# Watchlist Master Table - Deployment Status
 
-**Date:** 2025-01-27  
-**Commit:** `8e9342d` - "feat: Update Telegram menu to match Reference Specification v1.0"  
-**Workflow:** Deploy to AWS EC2 (Session Manager)  
-**Run ID:** 20421221066
+## ✅ Completed Steps
 
-## Deployment Summary
+### 1. Database Migration - ✅ COMPLETED
 
-✅ **Status:** Deployment Completed Successfully
+**Status:** Successfully completed
+- ✅ Created `watchlist_master` table
+- ✅ Migrated 23 rows from `watchlist_items` to `watchlist_master`
+- ✅ Enriched data with MarketData
+- ✅ Table verified with 23 rows
 
-### Workflow Steps Completed
+**Migration Script:** `backend/scripts/run_watchlist_master_migration.py`
 
-1. ✅ Set up job
-2. ✅ Checkout repository
-3. ✅ Fetch frontend source
-4. ✅ Show frontend version entry
-5. ✅ Configure AWS credentials
-6. ✅ Deploy to EC2 using Session Manager
-7. ✅ Post Configure AWS credentials
-8. ✅ Post Checkout repository
-9. ✅ Complete job
+**Output:**
+```
+✅ Migration completed successfully!
+✅ Verified: watchlist_master table exists with 23 rows
+```
 
-### Deployment Duration
+### 2. Code Implementation - ✅ COMPLETED
 
-- **Total Time:** ~6 minutes 13 seconds
-- **Started:** 2025-12-22T03:55:00Z
-- **Completed:** 2025-12-22T04:01:13Z
+All code changes have been implemented:
 
-### Changes Deployed
+**Backend:**
+- ✅ `watchlist_master` model with field timestamp tracking
+- ✅ Updated `GET /api/dashboard` to read from master table
+- ✅ New `PUT /api/dashboard/symbol/{symbol}` endpoint
+- ✅ Updated `POST /api/dashboard` to create master rows
+- ✅ Updated `PUT /api/dashboard/{item_id}` to sync to master
+- ✅ Seeding service to ensure table is never empty
+- ✅ `market_updater.py` writes to master table
 
-1. **Main Menu Restructure**
-   - Updated to 7 sections in exact order per specification
-   - Portfolio, Watchlist, Open Orders, Expected Take Profit, Executed Orders, Monitoring, Version History
+**Frontend:**
+- ✅ Updated `WatchlistItem` type with `field_updated_at`
+- ✅ New `updateWatchlistItem()` API function
+- ✅ `WatchlistCell` component for tooltips/highlighting
+- ✅ CSS styles for visual feedback
 
-2. **New Functions Added**
-   - `send_expected_take_profit_message()` - Expected TP section
-   - `show_monitoring_menu()` - Monitoring sub-menu
-   - `send_system_monitoring_message()` - System health
-   - `send_throttle_message()` - Recent messages
-   - `send_workflows_monitoring_message()` - Workflow status
-   - `send_blocked_messages_message()` - Blocked messages
+**Documentation:**
+- ✅ Architecture documentation
+- ✅ Implementation guide
+- ✅ Deployment steps
 
-3. **Portfolio Section Enhanced**
-   - Added PnL breakdown (Realized, Potential, Total)
-   - Updated to use Dashboard API endpoints
+## ⏳ Next Steps
 
-4. **Menu Override Fix**
-   - Fixed `TelegramNotifier` initialization to prevent menu override
+### Step 1: Test Endpoints Locally
 
-### Files Changed
+**Start Backend Server:**
+```bash
+cd backend
+# Activate virtual environment if needed
+source venv/bin/activate  # or your venv path
 
-- `backend/app/services/telegram_commands.py` - Main implementation
-- `backend/app/services/telegram_notifier.py` - Menu override fix
-- `TELEGRAM_MENU_REFERENCE_SPECIFICATION.md` - New specification document
-- `TELEGRAM_MENU_FIX_APPLIED.md` - Fix documentation
-- `TELEGRAM_MENU_ANALYSIS_REPORT.md` - Analysis report
+# Start server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-### Notes
+**Test Endpoints:**
+```bash
+# In another terminal
+cd backend
+python3 scripts/test_watchlist_master_endpoints.py
+```
 
-- ⚠️ Minor warning: Git process exit code 128 (non-critical, deployment still succeeded)
-- All code changes have been deployed to AWS EC2 instance
-- Backend service should be running with new menu structure
+**Or test manually:**
+```bash
+# Test GET endpoint
+curl http://localhost:8000/api/dashboard | jq '.[0] | {symbol, field_updated_at}'
 
-### Next Steps
+# Test PUT endpoint (update a field)
+curl -X PUT http://localhost:8000/api/dashboard/symbol/BTC_USDT \
+  -H "Content-Type: application/json" \
+  -d '{"buy_alert_enabled": true}' | jq
+```
 
-1. **Verify Deployment:**
-   - Test Telegram menu in production
-   - Verify all 7 sections are accessible
-   - Check that Expected Take Profit section works
-   - Test Monitoring sub-sections
+**Expected Results:**
+- GET should return items with `field_updated_at` field
+- PUT should update master table and return updated item with timestamps
 
-2. **Monitor Backend:**
-   - Check backend logs for any errors
-   - Verify Telegram bot is responding correctly
-   - Test menu navigation flow
+### Step 2: Deploy Backend
 
-3. **User Testing:**
-   - Send `/start` command in Telegram
-   - Navigate through all menu sections
-   - Verify data matches Dashboard
+**For Production/AWS:**
 
----
+1. **Copy files to server:**
+   ```bash
+   scp backend/app/models/watchlist_master.py user@server:/path/to/backend/app/models/
+   scp backend/app/services/watchlist_master_seed.py user@server:/path/to/backend/app/services/
+   scp backend/app/api/routes_dashboard.py user@server:/path/to/backend/app/api/
+   scp backend/market_updater.py user@server:/path/to/backend/
+   scp backend/scripts/run_watchlist_master_migration.py user@server:/path/to/backend/scripts/
+   ```
 
-**Deployment Status:** ✅ **COMPLETE**
+2. **Run migration on production:**
+   ```bash
+   ssh user@server "cd /path/to/backend && python3 scripts/run_watchlist_master_migration.py"
+   ```
+
+3. **Restart backend service:**
+   ```bash
+   ssh user@server "sudo systemctl restart your-backend-service"
+   # or
+   ssh user@server "docker restart your-backend-container"
+   ```
+
+4. **Verify:**
+   ```bash
+   curl https://your-api-domain.com/api/dashboard | jq '.[0] | {symbol, field_updated_at}'
+   ```
+
+### Step 3: Deploy Frontend
+
+1. **Build frontend:**
+   ```bash
+   cd frontend
+   npm install
+   npm run build
+   ```
+
+2. **Copy files to server:**
+   ```bash
+   scp frontend/src/components/WatchlistCell.tsx user@server:/path/to/frontend/src/components/
+   scp frontend/src/styles/watchlist.css user@server:/path/to/frontend/src/styles/
+   scp frontend/src/app/api.ts user@server:/path/to/frontend/src/app/
+   ```
+
+3. **Or push to git** (if using auto-deploy):
+   ```bash
+   git add .
+   git commit -m "Add watchlist master table support"
+   git push
+   ```
+
+4. **Restart frontend service** (if needed)
+
+### Step 4: Monitor
+
+**Check Logs:**
+```bash
+# Backend logs
+tail -f /var/log/your-backend/app.log | grep -i "watchlist_master"
+
+# Look for:
+# - "Updated watchlist_master for {symbol}"
+# - Any errors related to watchlist_master
+```
+
+**Verify Functionality:**
+1. Open watchlist page in browser
+2. Hover over cells - should show "Last updated" tooltip
+3. Make an edit - should show "✓ Saved" feedback
+4. Values updated in last 60 seconds should be highlighted (green background, bold)
+5. Refresh page - edits should persist
+
+## 📋 Testing Checklist
+
+- [ ] Backend server starts without errors
+- [ ] GET /api/dashboard returns data with `field_updated_at`
+- [ ] PUT /api/dashboard/symbol/{symbol} updates master table
+- [ ] Field timestamps are recorded correctly
+- [ ] Frontend tooltips show "Last updated"
+- [ ] Frontend shows "Saved" feedback after edits
+- [ ] Recent updates (last 60s) are highlighted
+- [ ] Data persists after page refresh
+- [ ] No discrepancies between UI and API
+
+## 🔍 Troubleshooting
+
+### Migration Issues
+- **Table already exists:** Migration is idempotent, safe to run multiple times
+- **Missing columns:** Migration handles missing columns gracefully
+- **No data migrated:** Check if `watchlist_items` table has data
+
+### API Issues
+- **Empty response:** Check seeding service, verify master table has data
+- **No field_updated_at:** Verify endpoint is using `_serialize_watchlist_master()`
+- **Updates not persisting:** Check backend logs for errors
+
+### Frontend Issues
+- **No tooltips:** Verify `WatchlistCell` component is being used
+- **No highlighting:** Check CSS file is loaded, verify `field_updated_at` in API response
+- **"Saved" not showing:** Check API response includes `updated_fields`
+
+## 📊 Current Status Summary
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Database Migration | ✅ Complete | 23 rows migrated |
+| Backend Code | ✅ Complete | All endpoints updated |
+| Frontend Code | ✅ Complete | Components and styles added |
+| Local Testing | ⏳ Pending | Server needs to be started |
+| Production Deployment | ⏳ Pending | Ready for deployment |
+| Monitoring | ⏳ Pending | Set up after deployment |
+
+## 🎯 Success Criteria
+
+✅ Migration completed successfully
+✅ Code changes implemented
+⏳ Endpoints tested locally
+⏳ Backend deployed to production
+⏳ Frontend deployed to production
+⏳ Monitoring set up
+⏳ All tests passing
+
+## 📝 Notes
+
+- The old `watchlist_items` table remains unchanged (safe rollback)
+- Master table can be re-seeded from old data anytime
+- Migration is idempotent (safe to run multiple times)
+- All existing endpoints continue to work during transition
+
+## 🚀 Ready for Next Steps
+
+The implementation is complete and ready for:
+1. Local testing (start server and test endpoints)
+2. Production deployment (copy files and run migration)
+3. Monitoring (check logs and verify functionality)
+
+See `DEPLOYMENT_STEPS.md` for detailed deployment instructions.

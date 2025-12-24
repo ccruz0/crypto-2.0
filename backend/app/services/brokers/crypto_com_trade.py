@@ -4,12 +4,14 @@ import hmac
 import hashlib
 import json
 import logging
-import requests
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 from contextvars import ContextVar
+
+# Use mandatory http_client wrapper for all outbound HTTP requests
+from app.utils.http_client import http_get, http_post
 
 from .crypto_com_constants import REST_BASE, CONTENT_TYPE_JSON
 from app.core.failover_config import (
@@ -146,11 +148,12 @@ class CryptoComTradeClient:
     def _call_proxy(self, method: str, params: dict) -> dict:
         """Call Crypto.com API through the proxy"""
         try:
-            response = requests.post(
+            response = http_post(
                 f"{self.proxy_url}/proxy/private",
                 json={"method": method, "params": params},
                 headers={"X-Proxy-Token": self.proxy_token},
-                timeout=15
+                timeout=15,
+                calling_module="crypto_com_trade._call_proxy"
             )
             response.raise_for_status()
             result = response.json()
@@ -190,32 +193,32 @@ class CryptoComTradeClient:
         """Fallback to TRADE_BOT for account balance"""
         url = f"{TRADEBOT_BASE}/api/account/balance?exchange=CRYPTO_COM"
         logger.info(f"Failover to TRADE_BOT: {url}")
-        return requests.get(url, timeout=CRYPTO_TIMEOUT)
+        return http_get(url, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_balance")
     
     def _fallback_open_orders(self):
         """Fallback to TRADE_BOT for open orders"""
         url = f"{TRADEBOT_BASE}/api/orders/open"
         logger.info(f"Failover to TRADE_BOT: {url}")
-        return requests.get(url, timeout=CRYPTO_TIMEOUT)
+        return http_get(url, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_open_orders")
     
     def _fallback_history(self):
         """Fallback to TRADE_BOT for order history"""
         url = f"{TRADEBOT_BASE}/api/orders/history"
         logger.info(f"Failover to TRADE_BOT: {url}")
-        return requests.get(url, timeout=CRYPTO_TIMEOUT)
+        return http_get(url, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_history")
     
     def _fallback_place_order(self, data):
         """Fallback to TRADE_BOT for placing orders"""
         url = f"{TRADEBOT_BASE}/api/orders/place"
         logger.info(f"Failover to TRADE_BOT: {url}")
-        return requests.post(url, json=data, timeout=CRYPTO_TIMEOUT)
+        return http_post(url, json=data, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_place_order")
     
     def _fallback_cancel_order(self, order_id):
         """Fallback to TRADE_BOT for canceling orders"""
         url = f"{TRADEBOT_BASE}/api/orders/cancel"
         logger.info(f"Failover to TRADE_BOT: {url}")
         params = {"order_id": order_id}
-        return requests.post(url, json=params, timeout=CRYPTO_TIMEOUT)
+        return http_post(url, json=params, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_cancel_order")
     # -----------------------------------------------------------------------
     
     def _params_to_str(self, obj, level: int = 0) -> str:
@@ -331,9 +334,8 @@ class CryptoComTradeClient:
         try:
             from app.utils.egress_guard import validate_outbound_url, log_outbound_request
             ipify_url = "https://api.ipify.org"
-            validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade.get_account_summary")
-            egress_ip = requests.get(validated_url, timeout=5).text.strip()
-            log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade.get_account_summary")
+            response = http_get(ipify_url, timeout=5, calling_module="crypto_com_trade.get_account_summary")
+            egress_ip = response.text.strip()
             logger.info(f"[CRYPTO_AUTH_DIAG] CRYPTO_COM_OUTBOUND_IP: {egress_ip}")
         except Exception as e:
             logger.warning(f"[CRYPTO_AUTH_DIAG] Could not determine outbound IP: {e}")
@@ -434,13 +436,13 @@ class CryptoComTradeClient:
             
             logger.debug(f"Request URL: {validated_url}")
             logger.debug(f"Payload keys: {list(payload.keys())}")
-            response = requests.post(validated_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            
-            # Log the outbound request for security auditing
-            try:
-                log_outbound_request(validated_url, method="POST", status_code=response.status_code, calling_module="crypto_com_trade.get_account_summary")
-            except Exception:
-                pass  # Don't fail if logging fails
+            response = http_post(
+                validated_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+                calling_module="crypto_com_trade.get_account_summary"
+            )
             
             # Check if authentication failed
             if response.status_code == 401:
@@ -454,11 +456,9 @@ class CryptoComTradeClient:
                 if error_code in [40101, 40103]:  # Authentication failure or IP illegal
                     # Get outbound IP for diagnostic purposes
                     try:
-                        from app.utils.egress_guard import validate_outbound_url, log_outbound_request
                         ipify_url = "https://api.ipify.org"
-                        validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade.get_account_summary")
-                        egress_ip = requests.get(validated_url, timeout=3).text.strip()
-                        log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade.get_account_summary")
+                        response = http_get(ipify_url, timeout=3, calling_module="crypto_com_trade.get_account_summary")
+                        egress_ip = response.text.strip()
                         logger.error(f"API authentication failed: {error_msg} (code: {error_code}). Outbound IP: {egress_ip}")
                     except Exception as ip_check_error:
                         logger.error(f"API authentication failed: {error_msg} (code: {error_code}). Could not check outbound IP: {ip_check_error}")
@@ -760,7 +760,7 @@ class CryptoComTradeClient:
         try:
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.get_open_orders")
             
             # Check if authentication failed
             if response.status_code == 401:
@@ -825,11 +825,12 @@ class CryptoComTradeClient:
         payload = self.sign_request(method, params)
         try:
             url = f"{self.base_url}/{method}"
-            response = requests.post(
+            response = http_post(
                 url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=10,
+                calling_module="crypto_com_trade.get_order_history"
             )
             if response.status_code == 401:
                 error_data = response.json()
@@ -1057,7 +1058,7 @@ class CryptoComTradeClient:
         try:
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.get_order_history")
             
             # Check if authentication failed
             if response.status_code == 401:
@@ -1477,7 +1478,7 @@ class CryptoComTradeClient:
                     f"  Payload JSON: {json.dumps(payload, ensure_ascii=False, indent=2)}"
                 )
                 
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_market_order")
                 
                 # Log HTTP response details
                 try:
@@ -1513,7 +1514,7 @@ class CryptoComTradeClient:
                         from app.utils.egress_guard import validate_outbound_url, log_outbound_request
                         ipify_url = "https://api.ipify.org"
                         validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade._call_api")
-                        egress_ip = requests.get(validated_url, timeout=5).text.strip()
+                        egress_ip = http_get(validated_url, timeout=5, calling_module="crypto_com_trade.place_market_order").text.strip()
                         log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade._call_api")
                         logger.error(f"   Outbound IP: {egress_ip} (must be whitelisted in Crypto.com Exchange)")
                     except Exception as e:
@@ -1650,7 +1651,7 @@ class CryptoComTradeClient:
                                 # Try this precision
                                 try:
                                     payload_retry = self.sign_request(method, params_retry)
-                                    response_retry = requests.post(url, json=payload_retry, headers={"Content-Type": "application/json"}, timeout=10)
+                                    response_retry = http_post(url, json=payload_retry, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade._call_api")
                                     
                                     if response_retry.status_code == 200:
                                         result_retry = response_retry.json()
@@ -1913,7 +1914,7 @@ class CryptoComTradeClient:
         try:
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_limit_order")
             
             # Check if authentication failed - same handling as get_account_summary
             if response.status_code == 401:
@@ -2085,7 +2086,7 @@ class CryptoComTradeClient:
         try:
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.cancel_order")
             
             if response.status_code == 401:
                 error_data = response.json()
@@ -2572,7 +2573,7 @@ class CryptoComTradeClient:
                 )
                 
                 logger.debug(f"Request URL: {url}")
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.create_params_dict")
                 
                 # Log HTTP response details
                 try:
@@ -2698,7 +2699,7 @@ class CryptoComTradeClient:
                                         f"  Payload JSON: {json_module.dumps(payload, ensure_ascii=False, indent=2)}"
                                     )
                                     
-                                    response_prec = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                                    response_prec = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.create_params_dict")
                                     
                                     # Log HTTP response for precision variation
                                     try:
@@ -2837,7 +2838,7 @@ class CryptoComTradeClient:
                                 try:
                                     payload = self.sign_request(method, params_updated)
                                     url = f"{self.base_url}/{method}"
-                                    response_prec = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                                    response_prec = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.create_params_dict")
                                     
                                     if response_prec.status_code == 200:
                                         result = response_prec.json()
@@ -3507,7 +3508,7 @@ class CryptoComTradeClient:
                     
                     try:
                         logger.debug(f"Request URL: {url}")
-                        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                        response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_take_profit_order")
                         
                         # Log HTTP response details
                         try:
@@ -3689,7 +3690,7 @@ class CryptoComTradeClient:
         public_url = f"{REST_BASE}/public/get-instruments"
         
         try:
-            response = requests.get(public_url, timeout=10)
+            response = http_get(public_url, timeout=10, calling_module="crypto_com_trade.get_instruments")
             response.raise_for_status()
             result = response.json()
             

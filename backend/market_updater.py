@@ -796,6 +796,54 @@ async def update_market_data():
                                 source=source
                             )
                             db.add(market_data)
+                        
+                        # CRITICAL: Also update watchlist_master table (source of truth for UI)
+                        try:
+                            from app.models.watchlist_master import WatchlistMaster
+                            from datetime import datetime, timezone
+                            
+                            master = db.query(WatchlistMaster).filter(
+                                WatchlistMaster.symbol == symbol.upper()
+                            ).first()
+                            
+                            if master:
+                                # Update market data fields in master table with timestamps
+                                now = datetime.now(timezone.utc)
+                                if price is not None:
+                                    master.update_field('price', price, now)
+                                if coin.get("rsi") is not None:
+                                    master.update_field('rsi', coin.get("rsi"), now)
+                                if coin.get("atr") is not None:
+                                    master.update_field('atr', coin.get("atr"), now)
+                                if coin.get("ma50") is not None:
+                                    master.update_field('ma50', coin.get("ma50"), now)
+                                if coin.get("ma200") is not None:
+                                    master.update_field('ma200', coin.get("ma200"), now)
+                                if coin.get("ema10") is not None:
+                                    master.update_field('ema10', coin.get("ema10"), now)
+                                if coin.get("volume_ratio") is not None:
+                                    master.update_field('volume_ratio', coin.get("volume_ratio"), now)
+                                if coin.get("current_volume") is not None:
+                                    master.update_field('current_volume', coin.get("current_volume"), now)
+                                if coin.get("avg_volume") is not None:
+                                    master.update_field('avg_volume', coin.get("avg_volume"), now)
+                                if coin.get("volume_24h") is not None:
+                                    master.update_field('volume_24h', coin.get("volume_24h"), now)
+                                
+                                res_up = price * 1.02 if price and price > 0 else None
+                                res_down = price * 0.98 if price and price > 0 else None
+                                if res_up is not None:
+                                    master.update_field('res_up', res_up, now)
+                                if res_down is not None:
+                                    master.update_field('res_down', res_down, now)
+                                
+                                master.updated_at = now
+                            else:
+                                # Master row doesn't exist - will be created by seeding on next API call
+                                logger.debug(f"watchlist_master row not found for {symbol}, will be seeded on next API call")
+                        except Exception as master_err:
+                            # Don't fail the entire update if master table update fails
+                            logger.warning(f"Error updating watchlist_master for {symbol}: {master_err}")
                     
                     db.commit()
                     logger.info(f"✅ Saved {len(enriched_coins)} market prices and data to database")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from typing import List, Dict, Any
-import requests
 import logging
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -12,7 +12,7 @@ def get_crypto_data():
     try:
         # Get real crypto prices from Crypto.com
         url = "https://api.crypto.com/exchange/v1/public/get-tickers"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_crypto")
         response.raise_for_status()
         result = response.json()
         

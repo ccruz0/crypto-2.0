@@ -26,7 +26,7 @@ def get_test_dashboard():
     try:
         # Get real crypto prices from Crypto.com
         url = "https://api.crypto.com/exchange/v1/public/get-tickers"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_test")
         response.raise_for_status()
         result = response.json()
         
@@ -1031,6 +1031,7 @@ def send_test_telegram_message(
             message = custom_message
         else:
             from datetime import datetime
+from app.utils.http_client import http_get, http_post
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             message = f"""🧪 <b>MENSAJE DE PRUEBA</b>
 

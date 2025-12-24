@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 import sys
 import os
-import requests
 
 # Add the backend directory to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

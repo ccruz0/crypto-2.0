@@ -34,21 +34,22 @@ setup_logging()
 
 logger = logging.getLogger(__name__)
 
-# DEBUG: Flag to disable heavy middlewares for performance testing
-DEBUG_DISABLE_HEAVY_MIDDLEWARES = True
+# DEBUG: Flags to disable services (read from environment variables)
+# These flags allow disabling services for debugging/performance testing
+# Set to "true" (case-insensitive) to disable, "false" to enable
+def _get_bool_env(env_var: str, default: bool = False) -> bool:
+    """Get boolean from environment variable"""
+    value = os.getenv(env_var, "").lower()
+    return value in ("true", "1", "yes", "on")
 
-# DEBUG: Flag to disable startup event for performance testing
-DEBUG_DISABLE_STARTUP_EVENT = False  # Re-enabled to test individual services
-
-# DEBUG: Flag to disable database import for performance testing
-DEBUG_DISABLE_DATABASE_IMPORT = False
-
-# DEBUG: Flags to disable individual background services
-DEBUG_DISABLE_EXCHANGE_SYNC = False  # Re-enabled - needed for portfolio data
-DEBUG_DISABLE_SIGNAL_MONITOR = False  # Re-enabled - needed for trading alerts
-DEBUG_DISABLE_TRADING_SCHEDULER = False  # Re-enabled - needed for automatic trading
-DEBUG_DISABLE_VPN_GATE = True  # Keep disabled
-DEBUG_DISABLE_TELEGRAM = False  # Enabled for Telegram commands
+DEBUG_DISABLE_HEAVY_MIDDLEWARES = _get_bool_env("DEBUG_DISABLE_HEAVY_MIDDLEWARES", True)
+DEBUG_DISABLE_STARTUP_EVENT = _get_bool_env("DEBUG_DISABLE_STARTUP_EVENT", False)
+DEBUG_DISABLE_DATABASE_IMPORT = _get_bool_env("DEBUG_DISABLE_DATABASE_IMPORT", False)
+DEBUG_DISABLE_EXCHANGE_SYNC = _get_bool_env("DEBUG_DISABLE_EXCHANGE_SYNC", False)
+DEBUG_DISABLE_SIGNAL_MONITOR = _get_bool_env("DEBUG_DISABLE_SIGNAL_MONITOR", False)
+DEBUG_DISABLE_TRADING_SCHEDULER = _get_bool_env("DEBUG_DISABLE_TRADING_SCHEDULER", False)
+DEBUG_DISABLE_VPN_GATE = _get_bool_env("DEBUG_DISABLE_VPN_GATE", True)
+DEBUG_DISABLE_TELEGRAM = _get_bool_env("DEBUG_DISABLE_TELEGRAM", False)
 
 # Performance timing middleware
 class TimingMiddleware(BaseHTTPMiddleware):
@@ -367,8 +368,12 @@ async def startup_event():
                         logger.debug(f"Watchlist already has {count} items and all portfolio coins are present - no sync needed")
             except Exception as inner_e:
                 logger.error(f"Error in watchlist sync inner block: {inner_e}", exc_info=True)
+                if db:
+                    db.rollback()
         except Exception as e:
             logger.error(f"Error ensuring watchlist is not empty: {e}", exc_info=True)
+            if db:
+                db.rollback()
         finally:
             # Bug 2 Fix: Ensure db session is always closed, even if exception occurs anywhere
             # This handles both inner try exceptions and outer try exceptions (imports, SessionLocal)

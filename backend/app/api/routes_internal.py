@@ -18,7 +18,7 @@ API_SECRET = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "").strip()
 def _egress_ip(timeout=5):
     """Get the public IP address used for outbound connections"""
     try:
-        ip = requests.get("https://api.ipify.org", timeout=timeout).text.strip()
+        ip = http_get("https://api.ipify.org", timeout=timeout, calling_module="routes_internal").text.strip()
         logger.info(f"[CRYPTO_AUTH_DIAG] CRYPTO_COM_OUTBOUND_IP: {ip}")
         return ip
     except Exception as e:
@@ -82,6 +82,7 @@ def websocket_status():
     try:
         from app.services.websocket_manager import is_websocket_connected
         from app.services.brokers.crypto_com_websocket import get_ws_client
+        from app.utils.http_client import http_get, http_post
         
         connected = is_websocket_connected()
         ws_client = get_ws_client()
@@ -128,7 +129,7 @@ def ping_private(db: Session = Depends(get_db), user=Depends(get_current_user)):
     logger.info(f"[CRYPTO_AUTH_DIAG] Payload (safe): {repr({k: v if k != 'sig' else v[:10] + '...' for k, v in payload.items()})}")
 
     try:
-        r = requests.post(url, json=payload, timeout=10)
+        r = http_post(url, json=payload, timeout=10, calling_module="routes_internal")
         code, msg = None, None
         try:
             j = r.json()

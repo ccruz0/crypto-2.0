@@ -6,22 +6,40 @@ import sys
 import os
 from pathlib import Path
 
-# Load credentials from .env.local BEFORE importing anything
+# Load credentials from .env.local if available, or use system environment variables
 script_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(script_dir)
 project_root = os.path.dirname(backend_dir)
-env_file = Path(project_root) / '.env.local'
 
-if env_file.exists():
+# Try multiple .env file locations (for AWS deployment)
+env_files = [
+    Path(project_root) / '.env.local',
+    Path(project_root) / '.env',
+    Path.home() / '.env.local',
+    Path('/opt/automated-trading-platform/.env.local'),
+    Path('/home/ubuntu/automated-trading-platform/.env.local'),
+]
+
+env_file = None
+for env_path in env_files:
+    if env_path.exists():
+        env_file = env_path
+        break
+
+if env_file:
     with open(env_file) as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
-                os.environ[key] = value
-    print("✅ Loaded credentials from .env.local")
+                # Don't override if already set in environment
+                if key not in os.environ:
+                    os.environ[key] = value
+    print(f"✅ Loaded credentials from {env_file}")
+elif os.getenv("EXCHANGE_CUSTOM_API_KEY") and os.getenv("EXCHANGE_CUSTOM_API_SECRET"):
+    print("✅ Using credentials from system environment variables")
 else:
-    print(f"⚠️  .env.local not found at {env_file}")
+    print(f"⚠️  No .env file found, checking system environment...")
 
 # Set LIVE_TRADING before importing
 os.environ['LIVE_TRADING'] = 'true'
@@ -68,6 +86,13 @@ print()
 # Test 2: Private endpoint (with auth)
 print('2. Testing private endpoint (get_account_summary)...')
 try:
+    # Get outbound IP for diagnostic purposes
+    try:
+        egress_ip = requests.get("https://api.ipify.org", timeout=3).text.strip()
+        print(f'   📍 Outbound IP: {egress_ip} (verify this is whitelisted)')
+    except:
+        print(f'   ⚠️  Could not determine outbound IP')
+    
     result = client.get_account_summary()
     if result and 'accounts' in result:
         accounts = result['accounts']
@@ -75,11 +100,30 @@ try:
         if accounts:
             print(f'   Sample account: {accounts[0].get("currency")} - Balance: {accounts[0].get("balance")}')
     elif 'error' in result:
-        print(f'   ❌ Private API error: {result.get("error")}')
+        error_msg = result.get("error", "Unknown error")
+        print(f'   ❌ Private API error: {error_msg}')
+        # Provide specific guidance based on error
+        if '40101' in str(error_msg) or 'code: 40101' in str(error_msg):
+            print(f'   💡 Error 40101: Check API key has "Read" permission and is enabled')
+        elif '40103' in str(error_msg) or 'code: 40103' in str(error_msg):
+            print(f'   💡 Error 40103: IP address not whitelisted. Add {egress_ip} to Crypto.com Exchange settings')
     else:
         print(f'   ⚠️  Private API responded but unexpected format: {list(result.keys())[:5] if result else "None"}')
+except RuntimeError as e:
+    error_str = str(e)
+    print(f'   ❌ Private API error: {error_str}')
+    # Extract error code if present
+    if 'code: 40101' in error_str or '40101' in error_str:
+        print(f'   💡 Error 40101: Authentication failure')
+        print(f'      - Verify API key has "Read" permission in Crypto.com Exchange settings')
+        print(f'      - Check API key is enabled (not disabled/suspended)')
+        print(f'      - Verify EXCHANGE_CUSTOM_API_KEY and EXCHANGE_CUSTOM_API_SECRET are correct')
+    elif 'code: 40103' in error_str or '40103' in error_str:
+        print(f'   💡 Error 40103: IP address not whitelisted')
+        print(f'      - Add your server IP to Crypto.com Exchange API Key whitelist')
 except Exception as e:
     print(f'   ❌ Private API error: {e}')
+    print(f'   💡 Check API credentials and IP whitelist configuration')
 
 print()
 

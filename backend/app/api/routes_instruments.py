@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
 import logging
-import requests
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ async def get_instruments():
     try:
         # Fetch instruments from Crypto.com Exchange public API
         url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_instruments")
         response.raise_for_status()
         result = response.json()
         
@@ -54,7 +54,7 @@ async def get_instrument(symbol: str):
     try:
         # Fetch all instruments and filter by symbol
         url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_instruments")
         response.raise_for_status()
         result = response.json()
         

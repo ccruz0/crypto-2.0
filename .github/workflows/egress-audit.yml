@@ -1,0 +1,51 @@
+name: Egress Security Audit
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  egress-audit:
+    runs-on: ubuntu-latest
+    name: Egress Security Audit
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install -q requests
+      
+      - name: Run egress audit
+        run: |
+          python scripts/security/egress_audit.py
+      
+      - name: Check for direct HTTP imports
+        run: |
+          echo "Checking for direct HTTP library imports outside http_client.py..."
+          if grep -r "^\s*import requests\|^\s*from requests import\|^\s*import aiohttp\|^\s*from aiohttp import\|^\s*import urllib.request\|^\s*from urllib import request" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/"; then
+            echo "❌ ERROR: Direct HTTP library imports found outside http_client.py"
+            echo "All outbound HTTP requests must use app.utils.http_client"
+            exit 1
+          fi
+          echo "✓ No direct HTTP imports found"
+      
+      - name: Check for direct HTTP calls
+        run: |
+          echo "Checking for direct HTTP calls (requests.get/post, aiohttp.ClientSession, urllib.request)..."
+          if grep -r "requests\.\(get\|post\)\|aiohttp\.ClientSession\|urllib\.request\.\(urlopen\|Request\)" backend/app --include="*.py" | grep -v "http_client.py" | grep -v "__pycache__" | grep -v "test_" | grep -v "tests/"; then
+            echo "❌ ERROR: Direct HTTP calls found outside http_client.py"
+            echo "All outbound HTTP requests must use app.utils.http_client"
+            exit 1
+          fi
+          echo "✓ No direct HTTP calls found"
+

@@ -967,11 +967,19 @@ class ExchangeSyncService:
         )
 
         # Persist the calculated values back to the watchlist for dashboard consistency
-        # IMPORTANT: Only persist sl_price and tp_price (calculated prices), NOT the percentages
-        # The percentages should only be persisted if the user explicitly set them
-        # If the user deleted them (None), we should NOT overwrite with calculated defaults
-        watchlist_item.sl_price = sl_price
-        watchlist_item.tp_price = tp_price
+        # CRITICAL: Only persist sl_price and tp_price if user hasn't manually set percentages
+        # If user has manually set sl_percentage or tp_percentage, preserve their values
+        # and don't overwrite with calculated prices (user's percentages take precedence)
+        user_has_manual_sl = watchlist_item.sl_percentage is not None and watchlist_item.sl_percentage != 0
+        user_has_manual_tp = watchlist_item.tp_percentage is not None and watchlist_item.tp_percentage != 0
+        
+        # Only update prices if user hasn't manually set percentages
+        # This preserves user's manual settings
+        if not user_has_manual_sl:
+            watchlist_item.sl_price = sl_price
+        if not user_has_manual_tp:
+            watchlist_item.tp_price = tp_price
+        
         # Only update percentages if they were explicitly set by the user (not None)
         # This prevents overwriting user-deleted values with calculated defaults
         if sl_percentage is not None:

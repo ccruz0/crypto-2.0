@@ -9,12 +9,15 @@ import time
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any, Tuple
+import json
 from app.models.watchlist import WatchlistItem
+from app.models.watchlist_master import WatchlistMaster
 from app.services.watchlist_selector import (
     deduplicate_watchlist_items,
     get_canonical_watchlist_item,
     select_preferred_watchlist_item,
 )
+from app.services.watchlist_master_seed import ensure_master_table_seeded
 from app.services.open_orders_cache import get_open_orders_cache
 from app.services.open_orders import (
     calculate_portfolio_order_metrics,
@@ -240,6 +243,115 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
                 db.commit()
                 db.refresh(item)
                 log.info(f"✅ Populated missing SL/TP for {item.symbol} from strategy: SL={item.sl_price}, TP={item.tp_price}")
+            except Exception as e:
+                db.rollback()
+                log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
+    
+    return serialized
+
+
+def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = None) -> Dict[str, Any]:
+    """Convert WatchlistMaster SQLAlchemy object into JSON-serializable dict.
+    
+    This is the new serialization function that reads from the master table (source of truth).
+    It includes per-field update timestamps for UI display.
+    
+    Args:
+        item: WatchlistMaster to serialize
+        db: Optional database session for calculating TP/SL from strategy
+    """
+    if not item:
+        return {}
+    
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+    
+    # Parse signals JSON if present
+    signals = None
+    if item.signals:
+        try:
+            import json
+            signals = json.loads(item.signals) if isinstance(item.signals, str) else item.signals
+        except (json.JSONDecodeError, TypeError):
+            signals = None
+    
+    # Get field update timestamps
+    field_updated_at = item.get_field_updated_at()
+    
+    serialized = {
+        "id": item.id,
+        "symbol": (item.symbol or "").upper(),
+        "exchange": item.exchange or "CRYPTO_COM",
+        "alert_enabled": item.alert_enabled if item.alert_enabled is not None else False,
+        "buy_alert_enabled": item.buy_alert_enabled if item.buy_alert_enabled is not None else False,
+        "sell_alert_enabled": item.sell_alert_enabled if item.sell_alert_enabled is not None else False,
+        "trade_enabled": item.trade_enabled if item.trade_enabled is not None else False,
+        "trade_amount_usd": item.trade_amount_usd,
+        "trade_on_margin": item.trade_on_margin if item.trade_on_margin is not None else False,
+        "sl_tp_mode": item.sl_tp_mode or "conservative",
+        "min_price_change_pct": item.min_price_change_pct,
+        "sl_percentage": item.sl_percentage,
+        "tp_percentage": item.tp_percentage,
+        "sl_price": item.sl_price,
+        "tp_price": item.tp_price,
+        "buy_target": item.buy_target,
+        "take_profit": item.take_profit,
+        "stop_loss": item.stop_loss,
+        "price": item.price,
+        "rsi": item.rsi,
+        "atr": item.atr,
+        "ma50": item.ma50,
+        "ma200": item.ma200,
+        "ema10": item.ema10,
+        "res_up": item.res_up,
+        "res_down": item.res_down,
+        "volume_ratio": item.volume_ratio,
+        "current_volume": item.current_volume,
+        "avg_volume": item.avg_volume,
+        "volume_24h": item.volume_24h,
+        "order_status": item.order_status or "PENDING",
+        "order_date": _iso(item.order_date),
+        "purchase_price": item.purchase_price,
+        "quantity": item.quantity,
+        "sold": item.sold if item.sold is not None else False,
+        "sell_price": item.sell_price,
+        "notes": item.notes,
+        "created_at": _iso(item.created_at),
+        "updated_at": _iso(item.updated_at),
+        "signals": signals,
+        "skip_sl_tp_reminder": item.skip_sl_tp_reminder if item.skip_sl_tp_reminder is not None else False,
+        "is_deleted": item.is_deleted if item.is_deleted is not None else False,
+        "deleted": bool(item.is_deleted if item.is_deleted is not None else False),
+        # Include per-field update timestamps for UI
+        "field_updated_at": field_updated_at,
+    }
+    
+    # Calculate TP/SL from strategy if needed (same logic as before)
+    if (serialized["sl_price"] is None or serialized["tp_price"] is None) and serialized["price"] and serialized["price"] > 0:
+        calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+            symbol=item.symbol,
+            price=serialized["price"],
+            atr=serialized["atr"],
+            watchlist_item=None,  # We don't have WatchlistItem here, but we can get sl_tp_mode from master
+            db=db
+        )
+        
+        if calculated_sl is not None and serialized["sl_price"] is None:
+            serialized["sl_price"] = calculated_sl
+            if db:
+                item.sl_price = calculated_sl
+                item.set_field_updated_at('sl_price')
+        
+        if calculated_tp is not None and serialized["tp_price"] is None:
+            serialized["tp_price"] = calculated_tp
+            if db:
+                item.tp_price = calculated_tp
+                item.set_field_updated_at('tp_price')
+        
+        if db and (calculated_sl is not None or calculated_tp is not None):
+            try:
+                db.commit()
+                db.refresh(item)
             except Exception as e:
                 db.rollback()
                 log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
@@ -1016,102 +1128,149 @@ def get_open_orders_summary():
 
 @router.get("/dashboard")
 def list_watchlist_items(db: Session = Depends(get_db)):
-    """Return watchlist items (limited to 100, deduplicated by symbol).
+    """Return watchlist items from master table (source of truth).
     
-    Enriches items with MarketData (price, rsi, ma50, ma200, ema10, atr) before returning.
-    This ensures the frontend receives computed values instead of NULL.
+    This endpoint reads ONLY from watchlist_master table, ensuring the UI
+    displays exactly what is stored in the master table with zero discrepancies.
+    Includes per-field update timestamps for UI display.
     """
-    log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received")
+    log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received (using master table)")
     try:
-        query = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc())
-        query = _filter_active_watchlist(query, db)
+        # Ensure master table is seeded (never empty)
         try:
-            items = query.limit(200).all()
+            ensure_master_table_seeded(db)
+        except Exception as seed_err:
+            log.warning(f"Error seeding master table: {seed_err}, continuing anyway")
+        
+        # Query master table directly (source of truth)
+        try:
+            items = db.query(WatchlistMaster).filter(
+                WatchlistMaster.is_deleted == False
+            ).order_by(WatchlistMaster.created_at.desc()).limit(200).all()
         except Exception as query_err:
-            # CRITICAL: Always rollback on database errors to prevent "transaction aborted" errors
-            log.warning(f"Watchlist query failed: {query_err}, rolling back transaction")
+            log.warning(f"Watchlist master query failed: {query_err}, rolling back transaction")
             db.rollback()
-            if "undefined column" in str(query_err).lower():
-                # Retry without filter if it's a column error
-                log.warning("Retrying watchlist query without filter due to missing column")
-                items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()
+            # Fallback: try without filter if column doesn't exist
+            if "undefined column" in str(query_err).lower() or "no such column" in str(query_err).lower():
+                log.warning("Retrying watchlist master query without is_deleted filter")
+                items = db.query(WatchlistMaster).order_by(WatchlistMaster.created_at.desc()).limit(200).all()
             else:
-                # For other errors, re-raise after rollback
                 raise
         
         result = []
-        canonical_items = deduplicate_watchlist_items(items)
-        if len(canonical_items) < len(items):
-            log.warning(
-                "[DASHBOARD_STATE_DEBUG] deduplicated watchlist rows %s -> %s",
-                len(items),
-                len(canonical_items),
-            )
-
-        # CRITICAL FIX: Enrich watchlist items with MarketData before serializing
-        # This ensures price, rsi, ma50, ma200, ema10, atr are populated from MarketData
-        # instead of returning NULL values from watchlist_items table
-        try:
-            from app.models.market_price import MarketData
-            all_symbols = [item.symbol for item in canonical_items]
-            if all_symbols:
-                # Batch query MarketData for all symbols at once (optimized)
-                market_data_list = db.query(MarketData).filter(MarketData.symbol.in_(all_symbols)).all()
-                market_data_map = {md.symbol: md for md in market_data_list}
-            else:
-                market_data_map = {}
-        except Exception as md_err:
-            # CRITICAL: Rollback on MarketData query errors to prevent transaction issues
-            log.warning(f"Failed to fetch MarketData for enrichment: {md_err}, rolling back")
-            db.rollback()
-            market_data_map = {}
-
-        for item in canonical_items:
-            # Enrich with MarketData if available
-            md = market_data_map.get(item.symbol)
-            
-            # Calculate and save TP/SL values if they're blank
-            if md and (item.sl_price is None or item.tp_price is None):
-                current_price = md.price if md.price is not None else item.price
-                current_atr = md.atr if md.atr is not None else item.atr
-                
-                if current_price and current_price > 0:
-                    calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
-                        symbol=item.symbol,
-                        price=current_price,
-                        atr=current_atr,
-                        watchlist_item=item,
-                        db=db
-                    )
-                    
-                    # Save calculated values to database if they're None
-                    updated = False
-                    if calculated_sl is not None and item.sl_price is None:
-                        item.sl_price = calculated_sl
-                        updated = True
-                        log.debug(f"Saved calculated sl_price for {item.symbol}: {calculated_sl}")
-                    
-                    if calculated_tp is not None and item.tp_price is None:
-                        item.tp_price = calculated_tp
-                        updated = True
-                        log.debug(f"Saved calculated tp_price for {item.symbol}: {calculated_tp}")
-                    
-                    if updated:
-                        try:
-                            db.commit()
-                            db.refresh(item)
-                        except Exception as save_err:
-                            log.warning(f"Failed to save calculated TP/SL for {item.symbol}: {save_err}")
-                            db.rollback()
-            
-            result.append(_serialize_watchlist_item(item, market_data=md, db=db))
+        for item in items:
+            result.append(_serialize_watchlist_master(item, db=db))
             if len(result) >= 100:
                 break
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)}")
+        
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from master table)")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
-        log.exception("Error fetching dashboard items")
+        log.exception("Error fetching dashboard items from master table")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/dashboard/symbol/{symbol}")
+def update_watchlist_item_by_symbol(
+    symbol: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Update a watchlist item in the master table.
+    
+    This endpoint writes directly to watchlist_master (source of truth).
+    Updates field timestamps automatically for each changed field.
+    Returns the updated item with field_updated_at metadata.
+    """
+    symbol = (symbol or "").upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    
+    try:
+        # Get or create master row
+        master = db.query(WatchlistMaster).filter(
+            WatchlistMaster.symbol == symbol
+        ).first()
+        
+        if not master:
+            # Create new master row if it doesn't exist
+            exchange = (payload.get("exchange") or "CRYPTO_COM").upper()
+            master = WatchlistMaster(
+                symbol=symbol,
+                exchange=exchange,
+                is_deleted=False
+            )
+            db.add(master)
+        
+        # Track which fields were updated for timestamp tracking
+        now = datetime.now(timezone.utc)
+        updated_fields = []
+        
+        # Update fields from payload
+        updatable_fields = {
+            "buy_target", "take_profit", "stop_loss",
+            "trade_enabled", "trade_amount_usd", "trade_on_margin",
+            "alert_enabled", "buy_alert_enabled", "sell_alert_enabled",
+            "sl_tp_mode", "min_price_change_pct", "alert_cooldown_minutes",
+            "sl_percentage", "tp_percentage", "sl_price", "tp_price",
+            "notes", "skip_sl_tp_reminder",
+            "order_status", "order_date", "purchase_price", "quantity",
+            "sold", "sell_price",
+            "price", "rsi", "atr", "ma50", "ma200", "ema10",
+            "res_up", "res_down",
+            "volume_ratio", "current_volume", "avg_volume", "volume_24h",
+        }
+        
+        for field in updatable_fields:
+            if field in payload:
+                old_value = getattr(master, field, None)
+                new_value = payload[field]
+                
+                # Handle boolean fields
+                if field in ["trade_enabled", "trade_on_margin", "alert_enabled", 
+                            "buy_alert_enabled", "sell_alert_enabled", "sold", 
+                            "skip_sl_tp_reminder", "is_deleted"]:
+                    new_value = bool(new_value) if new_value is not None else False
+                
+                # Only update if value changed
+                if old_value != new_value:
+                    setattr(master, field, new_value)
+                    master.set_field_updated_at(field, now)
+                    updated_fields.append(field)
+        
+        # Handle signals (JSON field)
+        if "signals" in payload:
+            signals_value = payload["signals"]
+            if signals_value is not None:
+                master.signals = json.dumps(signals_value) if not isinstance(signals_value, str) else signals_value
+            else:
+                master.signals = None
+            master.set_field_updated_at('signals', now)
+            updated_fields.append('signals')
+        
+        # Update exchange if provided
+        if "exchange" in payload:
+            master.exchange = (payload["exchange"] or "CRYPTO_COM").upper()
+        
+        if updated_fields:
+            master.updated_at = now
+            db.commit()
+            db.refresh(master)
+            log.info(f"✅ Updated watchlist_master for {symbol}: {', '.join(updated_fields)}")
+        else:
+            log.debug(f"No fields updated for {symbol}")
+        
+        return {
+            "ok": True,
+            "message": f"Updated {len(updated_fields)} field(s) for {symbol}",
+            "item": _serialize_watchlist_master(master, db=db),
+            "updated_fields": updated_fields
+        }
+        
+    except Exception as e:
+        db.rollback()
+        log.error(f"Error updating watchlist_master for {symbol}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1250,6 +1409,47 @@ def create_watchlist_item(
                     log.info(f"[WATCHLIST_UPDATE] {symbol}.{field}: {old_value} → {new_value}")
                 
                 setattr(existing_item, field, payload[field])
+        
+        # CRITICAL: Also update watchlist_master table (source of truth)
+        try:
+            master = db.query(WatchlistMaster).filter(
+                WatchlistMaster.symbol == symbol,
+                WatchlistMaster.exchange == exchange
+            ).first()
+            
+            if master:
+                # Update master table with same changes
+                now = datetime.now(timezone.utc)
+                for field in updatable_fields:
+                    if field in payload and hasattr(master, field):
+                        old_value = getattr(master, field, None)
+                        new_value = payload[field]
+                        if old_value != new_value:
+                            setattr(master, field, new_value)
+                            master.set_field_updated_at(field, now)
+                if "signals" in payload:
+                    import json
+                    signals_value = payload["signals"]
+                    master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    master.set_field_updated_at('signals', now)
+                master.updated_at = now
+            else:
+                # Create master row if it doesn't exist
+                master = WatchlistMaster(
+                    symbol=symbol,
+                    exchange=exchange,
+                    is_deleted=False
+                )
+                # Copy all fields from existing_item
+                for field in updatable_fields:
+                    if hasattr(existing_item, field) and hasattr(master, field):
+                        setattr(master, field, getattr(existing_item, field))
+                if hasattr(existing_item, 'signals'):
+                    import json
+                    master.signals = json.dumps(existing_item.signals) if existing_item.signals and not isinstance(existing_item.signals, str) else existing_item.signals
+                db.add(master)
+        except Exception as master_err:
+            log.warning(f"Error updating watchlist_master in POST /dashboard: {master_err}")
 
         db.commit()
         db.refresh(existing_item)
@@ -1330,6 +1530,55 @@ def create_watchlist_item(
     db.add(item)
     db.commit()
     db.refresh(item)
+    
+    # CRITICAL: Also create watchlist_master row (source of truth)
+    try:
+        master = WatchlistMaster(
+            symbol=symbol,
+            exchange=exchange,
+            is_deleted=False,
+            buy_target=item.buy_target,
+            take_profit=item.take_profit,
+            stop_loss=item.stop_loss,
+            trade_enabled=item.trade_enabled or False,
+            trade_amount_usd=item.trade_amount_usd,
+            trade_on_margin=item.trade_on_margin or False,
+            alert_enabled=item.alert_enabled or False,
+            buy_alert_enabled=getattr(item, 'buy_alert_enabled', False) or False,
+            sell_alert_enabled=getattr(item, 'sell_alert_enabled', False) or False,
+            sl_tp_mode=item.sl_tp_mode or "conservative",
+            min_price_change_pct=item.min_price_change_pct,
+            alert_cooldown_minutes=item.alert_cooldown_minutes,
+            sl_percentage=item.sl_percentage,
+            tp_percentage=item.tp_percentage,
+            sl_price=item.sl_price,
+            tp_price=item.tp_price,
+            notes=item.notes,
+            signals=json.dumps(item.signals) if item.signals and not isinstance(item.signals, str) else (item.signals if item.signals else None),
+            skip_sl_tp_reminder=item.skip_sl_tp_reminder or False,
+            order_status=item.order_status or "PENDING",
+            order_date=item.order_date,
+            purchase_price=item.purchase_price,
+            quantity=item.quantity,
+            sold=item.sold or False,
+            sell_price=item.sell_price,
+            price=item.price,
+            rsi=item.rsi,
+            atr=item.atr,
+            ma50=item.ma50,
+            ma200=item.ma200,
+            ema10=item.ema10,
+            res_up=item.res_up,
+            res_down=item.res_down,
+        )
+        db.add(master)
+        db.commit()
+        db.refresh(master)
+        log.info(f"✅ Created watchlist_master row for {symbol}")
+    except Exception as master_err:
+        log.warning(f"Error creating watchlist_master in POST /dashboard: {master_err}")
+        db.rollback()
+        # Continue anyway - master table will be seeded on next GET request
     
     # Calculate and save TP/SL values if they're blank
     md = _get_market_data_for_symbol(db, item.symbol)
@@ -1537,6 +1786,39 @@ def update_watchlist_item(
     try:
         db.commit()
         log.info(f"[WATCHLIST_UPDATE] Successfully committed update for {item.symbol}")
+        
+        # CRITICAL: Also update watchlist_master table (source of truth)
+        try:
+            symbol_upper = (item.symbol or "").upper()
+            exchange_upper = (item.exchange or "CRYPTO_COM").upper()
+            master = db.query(WatchlistMaster).filter(
+                WatchlistMaster.symbol == symbol_upper,
+                WatchlistMaster.exchange == exchange_upper
+            ).first()
+            
+            if master:
+                now = datetime.now(timezone.utc)
+                for field, value in payload.items():
+                    if field == "is_deleted":
+                        continue
+                    if hasattr(master, field):
+                        old_value = getattr(master, field, None)
+                        if old_value != value:
+                            setattr(master, field, value)
+                            master.set_field_updated_at(field, now)
+                if "signals" in payload:
+                    import json
+                    signals_value = payload["signals"]
+                    master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    master.set_field_updated_at('signals', now)
+                master.updated_at = now
+                db.commit()
+                log.debug(f"✅ Updated watchlist_master for {symbol_upper} via PUT /dashboard/{item_id}")
+            else:
+                # Master row doesn't exist - will be created by seeding on next GET request
+                log.debug(f"watchlist_master row not found for {symbol_upper}, will be seeded on next GET request")
+        except Exception as master_err:
+            log.warning(f"Error updating watchlist_master in PUT /dashboard/{item_id}: {master_err}")
     except IntegrityError as ie:
         # Handle unique constraint when a deleted duplicate row is being restored implicitly.
         db.rollback()
@@ -1562,6 +1844,36 @@ def update_watchlist_item(
                     )
                     _apply_watchlist_updates(canonical, payload)
                     db.commit()
+                    
+                    # CRITICAL: Also update watchlist_master table (source of truth)
+                    try:
+                        symbol_upper = (canonical.symbol or "").upper()
+                        exchange_upper = (canonical.exchange or "CRYPTO_COM").upper()
+                        master = db.query(WatchlistMaster).filter(
+                            WatchlistMaster.symbol == symbol_upper,
+                            WatchlistMaster.exchange == exchange_upper
+                        ).first()
+                        
+                        if master:
+                            now = datetime.now(timezone.utc)
+                            for field, value in payload.items():
+                                if field == "is_deleted":
+                                    continue
+                                if hasattr(master, field):
+                                    old_value = getattr(master, field, None)
+                                    if old_value != value:
+                                        setattr(master, field, value)
+                                        master.set_field_updated_at(field, now)
+                            if "signals" in payload:
+                                signals_value = payload["signals"]
+                                master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                                master.set_field_updated_at('signals', now)
+                            master.updated_at = now
+                            db.commit()
+                            log.debug(f"✅ Updated watchlist_master for {symbol_upper} via PUT /dashboard/{item_id} (canonical)")
+                    except Exception as master_err:
+                        log.warning(f"Error updating watchlist_master in PUT /dashboard/{item_id} (canonical): {master_err}")
+                    
                     item = canonical
                     item_id = canonical.id
                 else:

@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://trader:traderpass@db:5432/atp"
     
     # Security
-    SECRET_KEY: str = "your-secret-key-here"
+    # SECRET_KEY: Must be set via environment variable for security
+    # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    SECRET_KEY: Optional[str] = None
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
@@ -54,3 +56,16 @@ class Settings(BaseSettings):
         extra = "ignore"  # Ignore extra environment variables
 
 settings = Settings()
+
+# Validate SECRET_KEY is set (critical for security)
+if not settings.SECRET_KEY or settings.SECRET_KEY == "your-secret-key-here":
+    import warnings
+    import os
+    # Check if we're in a test environment
+    if os.getenv("ENVIRONMENT") != "test" and os.getenv("APP_ENV") != "test":
+        warnings.warn(
+            "SECRET_KEY is not set or using default value. "
+            "This is a security risk. Set SECRET_KEY in your environment variables. "
+            "Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'",
+            UserWarning
+        )

@@ -78,10 +78,9 @@ def create_take_profit_order(
     # Auto flows can adjust slightly to avoid creating an immediately-invalid TP (e.g. TP <= market for SELL TP).
     if (not dry_run) and str(source).lower() != "manual":
         try:
-            import requests
             ticker_url = "https://api.crypto.com/v2/public/get-ticker"
             ticker_params = {"instrument_name": symbol}
-            ticker_response = requests.get(ticker_url, params=ticker_params, timeout=5)
+            ticker_response = http_get(ticker_url, params=ticker_params, timeout=5, calling_module="tp_sl_order_creator")
             
             if ticker_response.status_code == 200:
                 ticker_data = ticker_response.json()
@@ -260,6 +259,7 @@ def create_stop_loss_order(
     # Note: The actual formatting with tick size will be done in place_stop_loss_order,
     # but we round here to avoid passing excessive precision
     import decimal
+from app.utils.http_client import http_get, http_post
     if entry_price >= 100:
         sl_price = round(sl_price, 2)
     elif entry_price >= 1:

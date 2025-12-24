@@ -533,6 +533,23 @@ def calculate_trading_signals(
     # Note: buy_ma_ok=None is excluded from this check (means MA not required)
     all_buy_flags_true = bool(buy_flags_boolean) and all(b is True for b in buy_flags_boolean.values())
     
+    # Enhanced logging for LDO to diagnose signal trigger issues
+    if "LDO" in symbol.upper():
+        logger.info(
+            "[LDO_DEBUG] symbol=%s | volume=%s | avg_volume=%s | volume_ratio=%s | min_volume_ratio=%s | "
+            "rsi=%s | price=%s | buy_target=%s | all_buy_flags_true=%s | buy_flags_boolean=%s",
+            symbol,
+            volume,
+            avg_volume,
+            volume_ratio_val,
+            min_volume_ratio,
+            rsi,
+            price,
+            buy_target,
+            all_buy_flags_true,
+            buy_flags_boolean,
+        )
+    
     # CANONICAL BUY RULE: If all boolean buy_* flags are True, set decision=BUY
     # This is the PRIMARY rule and must align with frontend tooltip logic
     
@@ -554,6 +571,19 @@ def calculate_trading_signals(
     if all_buy_flags_true:
         result["buy_signal"] = True
         strategy_state["decision"] = "BUY"
+        
+        # Enhanced logging for LDO when BUY signal is triggered
+        if "LDO" in symbol.upper():
+            logger.info(
+                "[LDO_BUY_TRIGGERED] symbol=%s | buy_signal=True | decision=BUY | index=%s | "
+                "volume_ratio=%.4f | min_volume_ratio=%.4f | rsi=%.2f | price=%.6f",
+                symbol,
+                strategy_index,
+                volume_ratio_val if volume_ratio_val is not None else -1.0,
+                min_volume_ratio,
+                rsi if rsi is not None else -1.0,
+                price,
+            )
         
         # Build rationale from individual flags
         rationale_parts = []
@@ -607,6 +637,20 @@ def calculate_trading_signals(
         if not no_buy_reasons:
             no_buy_reasons.append("Conditions not met")
         result["rationale"].append(f"⏸️ No buy signal ({profile_label}): {' | '.join(no_buy_reasons)}")
+        
+        # Enhanced logging for LDO when BUY signal is NOT triggered
+        if "LDO" in symbol.upper():
+            logger.warning(
+                "[LDO_BUY_NOT_TRIGGERED] symbol=%s | buy_signal=False | decision=%s | index=%s | "
+                "blocking_reasons=%s | buy_flags=%s | volume_ratio=%.4f | min_volume_ratio=%.4f",
+                symbol,
+                strategy_state.get("decision"),
+                strategy_index,
+                no_buy_reasons,
+                buy_flags,
+                volume_ratio_val if volume_ratio_val is not None else -1.0,
+                min_volume_ratio,
+            )
         
         # Not all buy flags are True - canonical rule did not trigger
         # Logging happens at end of function via DEBUG_STRATEGY_FINAL

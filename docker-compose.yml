@@ -1,39 +1,15 @@
 services:
   # ============================================
-  # GLUETUN (VPN Container) - AWS Profile Only
+  # GLUETUN (VPN Container) - REMOVED
   # ============================================
-  gluetun:
-    image: qmcgaw/gluetun:latest
-    container_name: gluetun
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - VPN_SERVICE_PROVIDER=nordvpn
-      - SERVER_COUNTRIES=Netherlands
-      - OPENVPN_USER=${OPENVPN_USER}
-      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
-      # NOTE: FIREWALL_VPN_INPUT_PORTS is for incoming connections through VPN
-      # Backend AWS exposes port 8002 directly, gluetun only handles outbound traffic
-      - FIREWALL_OUTBOUND_SUBNETS=172.0.0.0/8,104.19.0.0/16,149.154.0.0/16,91.108.0.0/16
-      - FIREWALL_VPN_OUTBOUND_SUBNETS=149.154.0.0/16,91.108.0.0/16
-      - UPDATER_PERIOD=24h
-      - HTTP_CONTROL_SERVER_LOG=false
-      - DNS_SERVER=enabled
-      - DNS_ADDRESS=127.0.0.1
-      - DNS_KEEP_NAMESERVER=on
-    # NOTE: Gluetun only handles outbound traffic, backend-aws exposes port 8002 directly
-    # No port mapping needed here to avoid conflicts
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/v1/openvpn/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    profiles:
-      - aws
+  # Gluetun has been removed as the system now uses direct AWS Elastic IP connection
+  # Backend connects directly to Crypto.com Exchange via AWS Elastic IP 47.130.143.159
+  # No VPN is needed. See MIGRATION_TO_DIRECT_AWS_IP_REPORT.md for details.
+  #
+  # gluetun:
+  #   image: qmcgaw/gluetun:latest
+  #   container_name: gluetun
+  #   ... (removed - not needed)
 
   # ============================================
   # DATABASE - Both Profiles
@@ -161,8 +137,9 @@ services:
       - API_BASE_URL=http://backend-aws:8002
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
-      # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
-      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
+      # Direct connection to Crypto.com Exchange via AWS Elastic IP (no proxy, no VPN)
+      # Backend connects directly from AWS Elastic IP 47.130.143.159 to api.crypto.com/exchange/v1
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
       - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - UVICORN_WORKERS=1
@@ -376,10 +353,11 @@ services:
           cpus: "1.0"
           memory: "512M"
     depends_on:
-      gluetun:
-        condition: service_healthy
       backend-aws:
         condition: service_healthy
+      # Gluetun dependency removed - frontend doesn't need VPN
+      # gluetun:
+      #   condition: service_healthy
     profiles:
       - aws
 

@@ -1,6 +1,5 @@
 import os
 import logging
-import requests
 import inspect
 from typing import Optional
 from datetime import datetime
@@ -10,6 +9,7 @@ from app.core.config import Settings
 from app.core.runtime import is_aws_runtime, get_runtime_origin
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ class TelegramNotifier:
                 "commands": commands
             }
             
-            response = requests.post(url, json=payload, timeout=10)
+            response = http_post(url, json=payload, timeout=10, calling_module="telegram_notifier._configure_bot_commands")
             response.raise_for_status()
             
             logger.info("Bot commands menu configured - only /menu command visible")
@@ -416,7 +416,7 @@ class TelegramNotifier:
             )
             
             try:
-                response = requests.post(url, json=payload, timeout=timeout_seconds)
+                response = http_post(url, json=payload, timeout=timeout_seconds, calling_module="telegram_notifier.send_telegram_message")
                 
                 # ============================================================
                 # [TELEGRAM_RESPONSE] - Response details

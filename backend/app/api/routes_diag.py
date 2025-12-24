@@ -1,7 +1,6 @@
 """Diagnostic endpoints for Crypto.com authentication troubleshooting"""
 from fastapi import APIRouter
 import logging
-import requests
 from datetime import datetime, timezone
 import time
 
@@ -13,6 +12,7 @@ def crypto_auth_diagnostic():
     """Public diagnostic endpoint to test Crypto.com authentication"""
     import os
     from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+from app.utils.http_client import http_get, http_post
     
     results = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -24,7 +24,7 @@ def crypto_auth_diagnostic():
     
     # Get outbound IP
     try:
-        results["outbound_ip"] = requests.get("https://api.ipify.org", timeout=5).text.strip()
+        results["outbound_ip"] = http_get("https://api.ipify.org", timeout=5, calling_module="routes_diag").text.strip()
         logger.info(f"[CRYPTO_AUTH_DIAG] CRYPTO_COM_OUTBOUND_IP: {results['outbound_ip']}")
     except Exception as e:
         logger.error(f"[CRYPTO_AUTH_DIAG] Failed to get outbound IP: {e}")

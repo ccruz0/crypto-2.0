@@ -4,11 +4,23 @@ A full-stack automated trading platform built with FastAPI (backend) and Next.js
 
 [![Dashboard Data Integrity](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml/badge.svg)](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml)
 
+## 🚨 Deployment Policy
+
+**⚠️ IMPORTANT: All production deployments MUST be done directly via SSH on AWS. Docker is CLOSED and will NOT be used.**
+
+For complete deployment guidelines, see: **[DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md)**
+
+**Key Points:**
+- ✅ All deployments via SSH directly on AWS EC2 instance
+- ❌ Docker is disabled and NOT to be used for deployments
+- ✅ Services run as direct processes on the host system
+- ❌ No Docker containers or Docker Compose for production
+
 ## Runtime Architecture
 
 **⚠️ IMPORTANT: AWS is the ONLY live production runtime (trading + alerts).**
 
-- **AWS Backend Container**: The only place where SignalMonitorService, scheduler, and Telegram bot run for production trading and alerts.
+- **AWS Backend** (Direct Process): The only place where SignalMonitorService, scheduler, and Telegram bot run for production trading and alerts. Services run directly on the EC2 host via SSH deployment (NOT in Docker containers).
 - **Local Mac**: Used ONLY for:
   - Development (edit code, run tests)
   - Git operations
@@ -20,6 +32,8 @@ A full-stack automated trading platform built with FastAPI (backend) and Next.js
 - Cause Telegram bot conflicts (409 errors)
 - Create duplicate orders
 - Cause data inconsistencies
+
+**Deployment**: All production deployments are done directly via SSH on AWS. Docker is disabled for production. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) for complete deployment guidelines.
 
 For production, use AWS only. Local docker-compose is for development/testing only.
 
@@ -45,9 +59,10 @@ automated-trading-platform/
 ## Services
 
 - **Database**: PostgreSQL
-- **Backend**: FastAPI with Uvicorn
-- **Frontend**: Next.js with TypeScript
-- **Containerization**: Docker & Docker Compose
+- **Backend**: FastAPI with Uvicorn (runs directly on host, not in Docker)
+- **Frontend**: Next.js with TypeScript (runs directly on host, not in Docker)
+
+**Note**: Docker is only used for local development. Production deployments use direct SSH execution on AWS EC2 instance. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) for details.
 
 ## Getting Started
 

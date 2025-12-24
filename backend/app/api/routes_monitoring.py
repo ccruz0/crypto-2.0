@@ -5,12 +5,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
+from app.utils.http_client import http_post
 import logging
 import time
 import asyncio
 import os
 import re
-import requests
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timezone, timedelta
@@ -229,34 +229,44 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
         #
         # New behavior (CURRENT):
         # - Derives active alerts from Watchlist state (buy_alert_enabled/sell_alert_enabled)
-        # - Shows only currently active alerts based on toggle states
-        # - Real-time view: alert appears when toggle is ON, disappears when OFF
+        # - Shows only currently active alerts based on toggle states AND active signals
+        # - Real-time view: alert appears when toggle is ON AND signal is active, disappears when either is OFF
         # - No historical accumulation: alerts are computed fresh on each request
         #
         # Rules:
         # - An alert appears ONLY if:
         #   1. Symbol is in Watchlist (is_deleted = False), AND
-        #   2. At least one alert toggle is active (buy_alert_enabled OR sell_alert_enabled)
+        #   2. Master alert switch is enabled (alert_enabled = True), AND
+        #   3. At least one alert toggle is active (buy_alert_enabled OR sell_alert_enabled), AND
+        #   4. The corresponding signal is ACTIVE (BUY signal active for buy_alert_enabled, SELL signal active for sell_alert_enabled)
         # - An alert disappears immediately when:
         #   - The corresponding toggle is turned off, OR
+        #   - The corresponding signal is no longer active, OR
         #   - The symbol is removed from the Watchlist
         #
         # This ensures consistency between:
         # - Watchlist buttons (green/red toggles)
         # - Monitoring tab (ActiveAlerts panel)
         # - Backend alert state
+        # - Actual signal conditions (GRESS/RES buttons)
         # ========================================================================
         try:
             from app.models.watchlist import WatchlistItem
             
+            log.info(f"🔔 Starting active alerts calculation. Dashboard state available: {dashboard_state is not None}")
+            
             # Query watchlist items that have active alerts enabled
             # Filter: symbol in watchlist AND at least one alert toggle enabled
+            # NOTE: We check both alert_enabled (master switch) and individual toggles
+            # If alert_enabled is False but buy_alert_enabled/sell_alert_enabled are True,
+            # we still include them (user may have enabled toggles but not the master switch)
             active_watchlist_items = (
                 db.query(WatchlistItem)
                 .filter(
                     # Symbol must be in watchlist (not deleted)
                     WatchlistItem.is_deleted == False,
                     # At least one alert toggle must be enabled
+                    # We check individual toggles first, then master switch as secondary
                     or_(
                         WatchlistItem.buy_alert_enabled == True,
                         WatchlistItem.sell_alert_enabled == True
@@ -265,30 +275,177 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                 .all()
             )
             
-            # Count total active alert toggles (green/red buttons) directly
-            # This is the sum of all enabled buy_alert_enabled + sell_alert_enabled toggles
-            # Each enabled toggle = 1 active alert
-            # IMPORTANT: We count the toggles, but don't populate the alerts list
-            # The list should remain empty - only the count is shown in the "Active Alerts" box
-            active_alerts_count = 0
-            for item in active_watchlist_items:
-                if item.buy_alert_enabled:
-                    active_alerts_count += 1
-                if item.sell_alert_enabled:
-                    active_alerts_count += 1
+            # Filter out items where master switch is explicitly disabled
+            # But include items where master switch is None (default) or True
+            active_watchlist_items = [
+                item for item in active_watchlist_items
+                if item.alert_enabled is not False  # Include if True or None
+            ]
             
-            # Clear existing alerts - we don't populate the list anymore
-            # The "Active Alerts" box shows the count, but the table remains empty
-            # This avoids showing duplicate/historical entries
+            # Build a map of symbols to their signal states from dashboard
+            # This allows us to check if signals are actually active (GRESS/RES buttons)
+            signals_by_symbol = {}
+            coins_with_signals = 0
+            coins_without_signals = 0
+            
+            if dashboard_state and "coins" in dashboard_state:
+                total_coins = len(dashboard_state.get("coins", []))
+                log.info(f"📊 Dashboard snapshot has {total_coins} coins")
+                for coin in dashboard_state.get("coins", []):
+                    symbol = coin.get("symbol") or coin.get("instrument_name")
+                    if symbol:
+                        symbol_upper = symbol.upper()
+                        signals = coin.get("signals")
+                        # Log first few coins to see structure
+                        if len(signals_by_symbol) < 3:
+                            log.info(f"📊 Coin {symbol_upper}: signals={signals}, type={type(signals)}")
+                        # Handle both dict format {"buy": true/false, "sell": true/false} and other formats
+                        if signals:
+                            coins_with_signals += 1
+                            if isinstance(signals, dict):
+                                signals_by_symbol[symbol_upper] = {
+                                    "buy": bool(signals.get("buy")),
+                                    "sell": bool(signals.get("sell"))
+                                }
+                            elif isinstance(signals, bool):
+                                # If signals is a boolean, treat it as a general signal state
+                                signals_by_symbol[symbol_upper] = {
+                                    "buy": signals,
+                                    "sell": False
+                                }
+                        else:
+                            coins_without_signals += 1
+            
+            # Log for debugging
+            if coins_without_signals > 0:
+                log.info(f"⚠️ {coins_without_signals} coins in dashboard snapshot don't have 'signals' field. "
+                         f"{coins_with_signals} coins have signals field.")
+            
+            # Log symbols that have signals in snapshot
+            if signals_by_symbol:
+                log.info(f"📊 Signals found in snapshot for {len(signals_by_symbol)} symbols: {list(signals_by_symbol.keys())[:5]}...")
+            
+            # Log active watchlist items
+            log.info(f"🔔 Found {len(active_watchlist_items)} watchlist items with toggles enabled")
+            
+            # If signals are missing from snapshot, calculate them directly for coins with toggles enabled
+            # This ensures we can detect active signals even if snapshot doesn't include them
+            if coins_without_signals > 0 and len(active_watchlist_items) > 0:
+                try:
+                    from app.services.trading_signals import calculate_trading_signals
+                    from app.services.strategy_profiles import resolve_strategy_profile
+                    from app.models.market_data import MarketData
+                    
+                    # Get market data for symbols that need signal calculation
+                    symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
+                                      if item.symbol and item.symbol.upper() not in signals_by_symbol]
+                    
+                    if symbols_to_check:
+                        # Query market data for these symbols
+                        market_data_list = db.query(MarketData).filter(
+                            func.upper(MarketData.symbol).in_(symbols_to_check)
+                        ).all()
+                        
+                        market_data_by_symbol = {md.symbol.upper(): md for md in market_data_list}
+                        
+                        # Calculate signals for each coin
+                        for item in active_watchlist_items:
+                            if not item.symbol:
+                                continue
+                            symbol_upper = item.symbol.upper()
+                            
+                            # Skip if we already have signals from snapshot
+                            if symbol_upper in signals_by_symbol:
+                                continue
+                            
+                            # Get market data for this symbol
+                            market_data = market_data_by_symbol.get(symbol_upper)
+                            if not market_data:
+                                continue
+                            
+                            # Resolve strategy profile
+                            try:
+                                strategy_type, risk_approach = resolve_strategy_profile(
+                                    item.symbol, db=db, watchlist_item=item
+                                )
+                                
+                                # Calculate trading signals
+                                signal_result = calculate_trading_signals(
+                                    symbol=item.symbol,
+                                    price=market_data.price or 0.0,
+                                    rsi=market_data.rsi,
+                                    atr14=market_data.atr,
+                                    ma50=market_data.ma50,
+                                    ma200=market_data.ma200,
+                                    ema10=market_data.ema10,
+                                    ma10w=market_data.ma10w,
+                                    volume=market_data.volume,
+                                    avg_volume=market_data.avg_volume,
+                                    resistance_up=item.res_up,
+                                    buy_target=item.res_down,  # Using res_down as buy target
+                                    strategy_type=strategy_type,
+                                    risk_approach=risk_approach
+                                )
+                                
+                                # Store signals in map
+                                signals_by_symbol[symbol_upper] = {
+                                    "buy": bool(signal_result.get("buy_signal", False)),
+                                    "sell": bool(signal_result.get("sell_signal", False))
+                                }
+                                
+                            except Exception as sig_err:
+                                log.debug(f"Could not calculate signals for {item.symbol}: {sig_err}")
+                                continue
+                                
+                except Exception as calc_err:
+                    log.debug(f"Could not calculate signals directly: {calc_err}")
+            
+            # Count total active alerts (only those with both toggle enabled AND signal active)
+            # This matches what the user sees in the watchlist (GRESS/RES buttons)
+            active_alerts_count = 0
             _active_alerts.clear()
             
-            # NOTE: We intentionally do NOT populate _active_alerts list
-            # The count (active_alerts_count) is what matters - it represents the sum of all
-            # green/red buttons that are currently enabled in the Watchlist
-            # The alerts table will show "No active alerts" but the count box will show the correct number
+            for item in active_watchlist_items:
+                symbol_upper = (item.symbol or "").upper()
+                coin_signals = signals_by_symbol.get(symbol_upper, {})
+                
+                # Log for debugging
+                if item.buy_alert_enabled or item.sell_alert_enabled:
+                    log.info(f"🔍 Checking {symbol_upper}: buy_toggle={item.buy_alert_enabled}, sell_toggle={item.sell_alert_enabled}, "
+                             f"signals={coin_signals}")
+                
+                # Create alert entry for BUY alerts ONLY if:
+                # 1. buy_alert_enabled is True (toggle is ON)
+                # 2. BUY signal is active (GRESS button is green)
+                if item.buy_alert_enabled:
+                    if coin_signals.get("buy") == True:
+                        active_alerts_count += 1
+                        _active_alerts.append({
+                            "type": "BUY",
+                            "symbol": item.symbol or "UNKNOWN",
+                            "message": f"Buy alert active for {item.symbol} (signal detected)",
+                            "severity": "INFO",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        log.info(f"✅ Added BUY alert for {symbol_upper}")
+                
+                # Create alert entry for SELL alerts ONLY if:
+                # 1. sell_alert_enabled is True (toggle is ON)
+                # 2. SELL signal is active (RES button is red)
+                if item.sell_alert_enabled:
+                    if coin_signals.get("sell") == True:
+                        active_alerts_count += 1
+                        _active_alerts.append({
+                            "type": "SELL",
+                            "symbol": item.symbol or "UNKNOWN",
+                            "message": f"Sell alert active for {item.symbol} (signal detected)",
+                            "severity": "INFO",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        log.info(f"✅ Added SELL alert for {symbol_upper}")
             
         except Exception as e:
-            log.debug(f"Could not populate active alerts from watchlist: {e}")
+            log.error(f"Could not populate active alerts from watchlist: {e}", exc_info=True)
             # On error, clear alerts and return 0 (no active alerts)
             _active_alerts.clear()
             active_alerts_count = 0
@@ -1117,6 +1274,149 @@ async def get_watchlist_consistency_report_latest():
         log.error(f"Error serving watchlist consistency report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error serving report: {str(e)}")
 
+
+@router.get("/monitoring/reports/watchlist-consistency/{date}")
+@router.head("/monitoring/reports/watchlist-consistency/{date}")
+async def get_watchlist_consistency_report_by_date(date: str):
+    """
+    Serve a dated watchlist consistency report as markdown.
+    
+    Date format: YYYYMMDD (e.g., 20251224)
+    This endpoint serves files like docs/monitoring/watchlist_consistency_report_YYYYMMDD.md
+    Supports both GET and HEAD methods.
+    """
+    try:
+        # Validate date format (YYYYMMDD)
+        if not date.isdigit() or len(date) != 8:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date format. Expected YYYYMMDD, got: {date}"
+            )
+        
+        # Resolve project root
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+        project_root = _resolve_project_root_from_backend_root(backend_root)
+        
+        # Build file path
+        report_path = Path(project_root) / "docs" / "monitoring" / f"watchlist_consistency_report_{date}.md"
+        
+        if not report_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Report not found for date {date}. The report may not have been generated for this date."
+            )
+        
+        # Read and return the file
+        content = report_path.read_text(encoding='utf-8')
+        
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'inline; filename="watchlist_consistency_report_{date}.md"',
+                **{k: v for k, v in _NO_CACHE_HEADERS.items()}
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error serving watchlist consistency report for date {date}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error serving report: {str(e)}")
+
+
+@router.get("/monitoring/reports/watchlist-dedup/latest")
+@router.head("/monitoring/reports/watchlist-dedup/latest")
+async def get_watchlist_dedup_report_latest():
+    """
+    Serve the latest watchlist dedup report as markdown.
+    
+    This endpoint serves the file at docs/monitoring/watchlist_dedup_report_latest.md
+    Supports both GET and HEAD methods.
+    """
+    try:
+        # Resolve project root
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+        project_root = _resolve_project_root_from_backend_root(backend_root)
+        
+        # Build file path
+        report_path = Path(project_root) / "docs" / "monitoring" / "watchlist_dedup_report_latest.md"
+        
+        if not report_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Report not found at {report_path}. Run the watchlist_dedup workflow first."
+            )
+        
+        # Read and return the file
+        content = report_path.read_text(encoding='utf-8')
+        
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'inline; filename="watchlist_dedup_report_latest.md"',
+                **{k: v for k, v in _NO_CACHE_HEADERS.items()}
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error serving watchlist dedup report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error serving report: {str(e)}")
+
+
+@router.get("/monitoring/reports/watchlist-dedup/{date}")
+@router.head("/monitoring/reports/watchlist-dedup/{date}")
+async def get_watchlist_dedup_report_by_date(date: str):
+    """
+    Serve a dated watchlist dedup report as markdown.
+    
+    Date format: YYYYMMDD (e.g., 20251224)
+    This endpoint serves files like docs/monitoring/watchlist_dedup_report_YYYYMMDD.md
+    Supports both GET and HEAD methods.
+    """
+    try:
+        # Validate date format (YYYYMMDD)
+        if not date.isdigit() or len(date) != 8:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date format. Expected YYYYMMDD, got: {date}"
+            )
+        
+        # Resolve project root
+        current_file = Path(__file__).resolve()
+        backend_root = str(current_file.parent.parent.parent)
+        project_root = _resolve_project_root_from_backend_root(backend_root)
+        
+        # Build file path
+        report_path = Path(project_root) / "docs" / "monitoring" / f"watchlist_dedup_report_{date}.md"
+        
+        if not report_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Report not found for date {date}. The report may not have been generated for this date."
+            )
+        
+        # Read and return the file
+        content = report_path.read_text(encoding='utf-8')
+        
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'inline; filename="watchlist_dedup_report_{date}.md"',
+                **{k: v for k, v in _NO_CACHE_HEADERS.items()}
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error serving watchlist dedup report for date {date}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error serving report: {str(e)}")
+
+
 @router.post("/monitoring/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
     """Run a workflow manually by its ID"""
@@ -1526,9 +1826,9 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
                     }
                     
                     # Run in thread to avoid blocking
-                    response = await asyncio.to_thread(
-                        requests.post, url, json=payload, headers=headers, timeout=10
-                    )
+                    def make_request():
+                        return http_post(url, json=payload, headers=headers, timeout=10, calling_module="routes_monitoring")
+                    response = await asyncio.to_thread(make_request)
                     
                     if response.status_code == 204:
                         record_workflow_execution(workflow_id, "success", None, error=None)
@@ -1680,4 +1980,5 @@ async def restart_backend():
         _backend_restart_status = "failed"
         log.error(f"Error initiating backend restart: {e}", exc_info=True)
         from fastapi import HTTPException
+from app.utils.http_client import http_get, http_post
         raise HTTPException(status_code=500, detail=f"Failed to initiate backend restart: {str(e)}")

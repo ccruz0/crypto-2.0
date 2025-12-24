@@ -1,131 +1,67 @@
-# ✅ Migración a Versión 0.45 - COMPLETADA
+# ✅ Migración de Columnas de Alertas - COMPLETADA
 
-## Estado Final
+## 📋 Resumen
 
-### ✅ Completado Exitosamente
+Se agregaron exitosamente las columnas faltantes `alert_enabled`, `buy_alert_enabled`, y `sell_alert_enabled` a la tabla `watchlist_items`.
 
-1. **Local Docker Runtime**
-   - ✅ Todos los contenedores detenidos
-   - ✅ Scripts de auto-start deshabilitados
-   - ✅ Uso local completamente bloqueado
+## ✅ Estado Actual
 
-2. **Versión 0.45 Implementada**
-   - ✅ Código actualizado localmente
-   - ✅ Versión agregada al historial
-   - ✅ Cambios commitados
+### Columnas Agregadas:
+- ✅ `alert_enabled` (BOOLEAN, default: FALSE)
+- ✅ `buy_alert_enabled` (BOOLEAN, default: FALSE)
+- ✅ `sell_alert_enabled` (BOOLEAN, default: FALSE)
 
-3. **Telegram Routing AWS-Only**
-   - ✅ Lógica implementada en `TelegramNotifier`
-   - ✅ Variables de configuración añadidas
-   - ✅ Local: Telegram deshabilitado (verificado)
-   - ✅ AWS: Variables configuradas correctamente
+### Estadísticas de la Migración:
+- **Total items**: 20
+- **Items con alert_enabled=True**: 1
+- **Items con buy_alert_enabled=True**: 1
+- **Items con sell_alert_enabled=True**: 1
+- **Items con trade_enabled=True**: 1
 
-4. **AWS Services**
-   - ✅ Servicios corriendo y saludables
-   - ✅ Variables de entorno configuradas:
-     - `ENVIRONMENT=aws` ✅
-     - `APP_ENV=aws` ✅
-     - `RUN_TELEGRAM=true` ✅
-   - ✅ Health checks pasando
-   - ✅ Backend respondiendo correctamente
+## 🔧 Script de Migración
 
-5. **Documentación**
-   - ✅ `docs/REMOTE_DEV.md` creado
-   - ✅ `MIGRATION_0.45_SUMMARY.md` creado
-   - ✅ `OPERATIONAL_SUMMARY_0.45.md` creado
+El script `backend/scripts/add_alert_columns.py` se ejecutó exitosamente y:
+1. ✅ Detectó las columnas faltantes
+2. ✅ Agregó las 3 columnas con valores por defecto
+3. ✅ Inicializó los valores basándose en `trade_enabled` (compatibilidad hacia atrás)
+4. ✅ Verificó que la migración fue exitosa
 
----
+## 🎯 Próximos Pasos
 
-## Servicios AWS Activos
+### Para activar UNI:
+1. **Abrir el dashboard**
+2. **Actualizar `trade_enabled = True` para UNI_USDT**
+   - Esto ahora también debería actualizar `alert_enabled`, `buy_alert_enabled`, y `sell_alert_enabled` automáticamente
+3. **Verificar en los logs** que el `signal_monitor` detecta UNI_USDT
+4. **Esperar hasta 30 segundos** para que el signal_monitor procese las señales
 
-- ✅ **backend-aws**: Running (healthy)
-- ✅ **frontend-aws**: Running (healthy)
-- ✅ **market-updater**: Running
-- ✅ **db**: Running (healthy)
-- ✅ **gluetun**: Running (healthy)
+### Verificación:
+- El `signal_monitor` ahora puede consultar correctamente por `alert_enabled`
+- Los endpoints `/watchlist/{symbol}/alert`, `/watchlist/{symbol}/buy-alert`, `/watchlist/{symbol}/sell-alert` ahora funcionan correctamente
+- El frontend puede actualizar estos valores sin errores
 
----
+## 🔍 Estado de UNI_USDT
 
-## Configuración AWS Verificada
-
-**Variables de Entorno:**
-```bash
-ENVIRONMENT=aws
-APP_ENV=aws
-RUN_TELEGRAM=true
+**Actual (después de migración)**:
+```
+symbol: UNI_USDT
+trade_enabled: 0 (False)
+alert_enabled: 0 (False)
+buy_alert_enabled: 0 (False)
+sell_alert_enabled: 0 (False)
 ```
 
-**Health Checks:**
-```bash
-✅ Backend: http://localhost:8002/api/health → {"status":"ok"}
-✅ Frontend: Running
-✅ Database: Healthy
-```
+**Acción requerida**: Actualizar `trade_enabled` a `True` desde el dashboard para activar las alertas y el trading automático.
 
----
+## 📝 Notas Técnicas
 
-## Próximos Pasos
+- Las columnas se agregaron con `NOT NULL DEFAULT FALSE` para mantener compatibilidad
+- Los valores existentes se inicializaron basándose en `trade_enabled`
+- El `signal_monitor` ahora usa `alert_enabled` como filtro principal (con fallback a `trade_enabled` para bases de datos legacy)
 
-### Para Sincronizar Cambios Futuros
+## ✨ Beneficios
 
-**Desde Local:**
-```bash
-# 1. Hacer cambios y commit
-cd /Users/carloscruz/automated-trading-platform
-git add .
-git commit -m "Descripción de cambios"
-
-# 2. Push (si git remote está configurado)
-git push origin main
-
-# 3. O usar SSH directo para copiar archivos
-```
-
-**En AWS:**
-```bash
-# Pull y rebuild
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git pull origin main && docker compose --profile aws up -d --build'"
-```
-
----
-
-## Comandos Útiles
-
-### Verificar Estado AWS
-```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws ps'"
-```
-
-### Ver Logs
-```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs -f backend-aws'"
-```
-
-### Health Check
-```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'curl -s http://localhost:8002/api/health'"
-```
-
-### Verificar Telegram Config
-```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec automated-trading-platform-backend-aws-1 env | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
-```
-
----
-
-## Verificación Final
-
-- [x] Local Docker deshabilitado
-- [x] Telegram local deshabilitado
-- [x] Versión 0.45 en código
-- [x] AWS servicios corriendo
-- [x] AWS variables configuradas
-- [x] Health checks pasando
-- [x] Documentación creada
-
----
-
-**Fecha de Migración:** 2025-11-23  
-**Versión:** 0.45  
-**Estado:** ✅ COMPLETADA
-
+1. **Separación de conceptos**: Ahora se pueden tener alertas sin trading automático
+2. **Endpoints funcionando**: Todos los endpoints de alertas funcionan correctamente
+3. **Frontend sincronizado**: El dashboard puede mostrar y actualizar todos los campos de alertas
+4. **Signal monitor mejorado**: El monitoreo de señales ahora funciona correctamente

@@ -6,13 +6,12 @@ The system connects directly to Crypto.com Exchange via AWS Elastic IP without V
 import os
 import time
 import json
-import urllib.request
-import urllib.error
 import asyncio
 import logging
 from typing import Optional
 
 from app.utils.egress_guard import validate_outbound_url, EgressGuardError
+from app.utils.http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -56,35 +55,27 @@ def _http_ok() -> bool:
     """Internal HTTP check function"""
     global _last_error
     try:
-        # Validate URL before making request (defense in depth)
-        try:
-            validated_url, _ = validate_outbound_url(URL, calling_module="vpn_gate._http_ok")
-        except EgressGuardError as e:
-            _last_error = f"Egress guard blocked: {str(e)}"
-            logger.error(f"[VPN_GATE] {_last_error}")
+        # Use http_client which validates URL via egress_guard
+        response = http_get(
+            URL,
+            timeout=TIMEOUT,
+            headers={"User-Agent": "gluetun-vpn-gate/1.0"},
+            calling_module="vpn_gate._http_ok"
+        )
+        
+        if response.status_code != 200:
+            _last_error = f"HTTP {response.status_code}"
             return False
         
-        req = urllib.request.Request(validated_url)
-        req.add_header("User-Agent", "gluetun-vpn-gate/1.0")
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            if r.status != 200:
-                _last_error = f"HTTP {r.status}"
+        if os.getenv("VPN_GATE_EXPECTS_JSON", "true").lower() == "true":
+            try:
+                response.json()
+            except Exception as e:
+                _last_error = f"Invalid JSON: {str(e)[:100]}"
                 return False
-            if os.getenv("VPN_GATE_EXPECTS_JSON", "true").lower() == "true":
-                try:
-                    data = r.read(2048).decode("utf-8", "ignore")
-                    json.loads(data)
-                except Exception as e:
-                    _last_error = f"Invalid JSON: {str(e)[:100]}"
-                    return False
+        
         _last_error = None
         return True
-    except urllib.error.HTTPError as e:
-        _last_error = f"HTTP {e.code}: {e.reason[:100]}"
-        return False
-    except urllib.error.URLError as e:
-        _last_error = f"URL Error: {str(e)[:200]}"
-        return False
     except Exception as e:
         _last_error = str(e)[:200]
         return False

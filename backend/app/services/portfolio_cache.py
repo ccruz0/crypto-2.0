@@ -63,9 +63,8 @@ def _table_exists(db: Session, table_name: str) -> bool:
 def get_crypto_prices() -> Dict[str, float]:
     """Get current prices for major cryptocurrencies"""
     try:
-        import requests
         url = "https://api.crypto.com/exchange/v1/public/get-tickers"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="portfolio_cache")
         response.raise_for_status()
         result = response.json()
         
@@ -119,15 +118,22 @@ def update_portfolio_cache(db: Session) -> Dict:
             balance_data = trade_client.get_account_summary()
         except Exception as auth_err:
             error_str = str(auth_err)
-            # Check for authentication errors (40101)
-            if "40101" in error_str or "Authentication failure" in error_str or "Authentication failed" in error_str:
-                error_msg = f"Crypto.com API authentication failed: {error_str}. Check API credentials and IP whitelist."
+            # Check for authentication errors (40101, 40103)
+            if "40101" in error_str or "40103" in error_str or "Authentication failure" in error_str or "Authentication failed" in error_str:
+                # Extract error code for more specific messaging
+                error_code = "40101" if "40101" in error_str else ("40103" if "40103" in error_str else "401")
+                error_msg = f"Crypto.com API authentication failed: {error_str}"
+                if error_code == "40101":
+                    error_msg += " Possible causes: Invalid API key/secret, missing Read permission, or API key disabled. Check: 1) API credentials match Crypto.com Exchange exactly, 2) API key has 'Read' permission enabled, 3) API key is Active (not Disabled/Suspended)."
+                elif error_code == "40103":
+                    error_msg += " IP address not whitelisted. Add your server's IP to the IP whitelist in Crypto.com Exchange API Key settings."
                 logger.error(error_msg)
                 result = {
                     "success": False,
                     "error": error_msg,
                     "last_updated": None,
-                    "auth_error": True  # Flag to indicate this is an auth error
+                    "auth_error": True,  # Flag to indicate this is an auth error
+                    "error_code": error_code  # Include error code for better handling
                 }
                 with _update_lock:
                     _last_update_result = result
@@ -143,7 +149,6 @@ def update_portfolio_cache(db: Session) -> Dict:
         prices = get_crypto_prices()
         
         # Also get prices from multiple sources for better coverage
-        import requests
         additional_prices = {}
         
         # Map common currency names to CoinGecko IDs (defined outside try block for later use)
@@ -185,7 +190,7 @@ def update_portfolio_cache(db: Session) -> Dict:
                     "ids": ",".join([id for id in gecko_id_list if id]),
                     "vs_currencies": "usd"
                 }
-                gecko_response = requests.get(gecko_url, params=gecko_params, timeout=10)
+                gecko_response = http_get(gecko_url, params=gecko_params, timeout=10, calling_module="portfolio_cache")
                 if gecko_response.status_code == 200:
                     gecko_data = gecko_response.json()
                     for gecko_id, gecko_info in gecko_data.items():
@@ -281,7 +286,7 @@ def update_portfolio_cache(db: Session) -> Dict:
                     # Try Crypto.com API directly for this specific currency (USDT pair)
                     try:
                         ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={currency}_USDT"
-                        ticker_response = requests.get(ticker_url, timeout=5)
+                        ticker_response = http_get(ticker_url, timeout=5, calling_module="portfolio_cache")
                         if ticker_response.status_code == 200:
                             ticker_data = ticker_response.json()
                             if "result" in ticker_data and "data" in ticker_data["result"]:
@@ -301,7 +306,7 @@ def update_portfolio_cache(db: Session) -> Dict:
                     if not price_found:
                         try:
                             ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={currency}_USD"
-                            ticker_response = requests.get(ticker_url, timeout=5)
+                            ticker_response = http_get(ticker_url, timeout=5, calling_module="portfolio_cache")
                             if ticker_response.status_code == 200:
                                 ticker_data = ticker_response.json()
                                 if "result" in ticker_data and "data" in ticker_data["result"]:
@@ -322,7 +327,7 @@ def update_portfolio_cache(db: Session) -> Dict:
                         try:
                             gecko_id = gecko_ids[currency]
                             gecko_url_single = f"https://api.coingecko.com/api/v3/simple/price?ids={gecko_id}&vs_currencies=usd"
-                            gecko_response = requests.get(gecko_url_single, timeout=5)
+                            gecko_response = http_get(gecko_url_single, timeout=5, calling_module="portfolio_cache")
                             if gecko_response.status_code == 200:
                                 gecko_data = gecko_response.json()
                                 if gecko_id in gecko_data and "usd" in gecko_data[gecko_id]:
@@ -340,8 +345,10 @@ def update_portfolio_cache(db: Session) -> Dict:
                     if not price_found:
                         logger.warning(f"⚠️ Could not find price for {currency} from any source")
             
-            if balance <= 0:
-                logger.debug(f"Skipping {currency}: balance is 0 or negative")
+            # Only skip negative balances (debts/loans), but save zero balances
+            # This ensures all assets are tracked even if balance is temporarily 0
+            if balance < 0:
+                logger.debug(f"Skipping {currency}: balance is negative (likely a loan/debt)")
                 continue
             
             # For stablecoins, use balance as USD value if not already calculated
@@ -489,11 +496,19 @@ def update_portfolio_cache(db: Session) -> Dict:
         logger.error(f"Error updating portfolio cache: {e}")
         db.rollback()
         
+        # Extract error code if it's an authentication error
+        error_code = None
+        if "40101" in error_str:
+            error_code = "40101"
+        elif "40103" in error_str:
+            error_code = "40103"
+        
         result = {
             "success": False,
             "error": error_str,
             "last_updated": None,
-            "auth_error": ("40101" in error_str or "Authentication" in error_str)
+            "auth_error": ("40101" in error_str or "40103" in error_str or "Authentication" in error_str),
+            "error_code": error_code if error_code else None
         }
         
         # Cache the error result (but with shorter TTL for errors)
@@ -564,6 +579,7 @@ def get_portfolio_summary(db: Session) -> Dict:
     try:
         from sqlalchemy import func, text
         from app.models.portfolio_loan import PortfolioLoan
+        from app.utils.http_client import http_get, http_post
         
         # OPTIMIZATION 1: Use SQL subquery to get latest balance per currency in one query
         # This is much faster than fetching all and deduplicating in Python
@@ -636,9 +652,11 @@ def get_portfolio_summary(db: Session) -> Dict:
         if query_elapsed > 0.1:
             logger.debug(f"Balance query took {query_elapsed:.3f}s")
         
-        # OPTIMIZATION 2: Get total_usd using SQL aggregation (single query)
-        total_usd_result = db.query(func.sum(PortfolioBalance.usd_value)).scalar()
-        total_assets_usd = float(total_usd_result) if total_usd_result else 0.0
+        # OPTIMIZATION 2: Calculate total_usd from deduplicated balances_data
+        # This ensures consistency with the balances list (same deduplication logic)
+        # Only sum positive USD values (negative values would indicate debts/loans which are handled separately)
+        total_assets_usd = sum(float(usd_value) for _, _, usd_value in balances_data 
+                              if usd_value is not None and float(usd_value) > 0)
         
         # OPTIMIZATION 3: Use cached table existence check
         total_borrowed_usd = 0.0

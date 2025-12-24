@@ -5,8 +5,8 @@ from app.services.portfolio_cache import get_portfolio_summary, update_portfolio
 from app.models.db import get_db
 from app.utils.redact import redact_secrets
 import logging
-import requests
 from typing import Dict, Optional
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -16,7 +16,7 @@ def get_crypto_prices() -> Dict[str, float]:
     try:
         # Get prices from Crypto.com Exchange public API
         url = "https://api.crypto.com/exchange/v1/public/get-tickers"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_account")
         response.raise_for_status()
         result = response.json()
         
@@ -113,11 +113,17 @@ def get_account_balance(
     except Exception as e:
         logger.error(f"Error getting account balance: {e}")
         error_msg = str(e)
-        if "401" in error_msg or "Unauthorized" in error_msg:
-            raise HTTPException(
-                status_code=401, 
-                detail="API authentication failed. Please check: 1) API key permissions include 'Read balance', 2) IP whitelist includes your server IP, 3) API credentials are correct. See: https://help.crypto.com/en/articles/3511424-api"
-            )
+        if "401" in error_msg or "Unauthorized" in error_msg or "40101" in error_msg or "40103" in error_msg:
+            # Extract error code if present
+            error_code = "40101" if "40101" in error_msg else ("40103" if "40103" in error_msg else "401")
+            detail_msg = f"API authentication failed (code: {error_code}). "
+            if "40101" in error_msg:
+                detail_msg += "Check: 1) API key has 'Read' permission enabled, 2) API key is not disabled/suspended, 3) API credentials are correct."
+            elif "40103" in error_msg:
+                detail_msg += "IP address not whitelisted. Add your server's outbound IP to Crypto.com Exchange API key whitelist."
+            else:
+                detail_msg += "Please check: 1) API key permissions include 'Read', 2) IP whitelist includes your server IP, 3) API credentials are correct."
+            raise HTTPException(status_code=401, detail=detail_msg)
         raise HTTPException(status_code=502, detail=str(e))
 
 @router.post("/account/balance/refresh")

@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.models.watchlist import WatchlistItem
 from app.schemas.watchlist import WatchlistItemUpdate
-import requests
 import logging
 import sqlite3
 import time
@@ -359,7 +358,7 @@ def get_ohlcv(
                 "count": limit
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = http_get(url, params=params, timeout=10, calling_module="routes_market")
             response.raise_for_status()
             result = response.json()
             
@@ -415,7 +414,7 @@ def get_ohlcv(
                 "limit": limit
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = http_get(url, params=params, timeout=10, calling_module="routes_market")
             response.raise_for_status()
             data = response.json()
             
@@ -457,7 +456,7 @@ def get_ticker(
             url = f"https://api.crypto.com/v2/public/get-ticker"
             params = {"instrument_name": symbol}
             
-            response = requests.get(url, params=params, timeout=10)
+            response = http_get(url, params=params, timeout=10, calling_module="routes_market")
             response.raise_for_status()
             result = response.json()
             
@@ -483,7 +482,7 @@ def get_ticker(
             url = f"https://api.binance.com/api/v3/ticker/24hr"
             params = {"symbol": binance_symbol}
             
-            response = requests.get(url, params=params, timeout=10)
+            response = http_get(url, params=params, timeout=10, calling_module="routes_market")
             response.raise_for_status()
             data = response.json()
             
@@ -509,7 +508,7 @@ def get_top_coins():
     try:
         # Fetch all instruments from Crypto.com
         url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-        response = requests.get(url, timeout=10)
+        response = http_get(url, timeout=10, calling_module="routes_market")
         response.raise_for_status()
         result = response.json()
         
@@ -525,7 +524,7 @@ def get_top_coins():
                 if quote_currency in ["USD", "USDT"]:
                     # Get ticker data for volume
                     ticker_url = f"https://api.crypto.com/exchange/v1/public/get-tickers"
-                    ticker_resp = requests.get(ticker_url, timeout=10)
+                    ticker_resp = http_get(ticker_url, timeout=10, calling_module="routes_market")
                     if ticker_resp.status_code == 200:
                         ticker_data = ticker_resp.json()
                         volume_24h = 0
@@ -1265,6 +1264,7 @@ def update_watchlist_alert(
 ):
     """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
     import time
+from app.utils.http_client import http_get, http_post
     start_time = time.time()
     symbol_upper = symbol.upper()
     

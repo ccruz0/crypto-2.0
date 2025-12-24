@@ -6,9 +6,9 @@ This prevents error 306 by ensuring we never request leverage higher than the ma
 """
 import logging
 import time
-import requests
 from typing import Optional, Dict
 from dataclasses import dataclass
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class MarginInfoService:
         
         try:
             logger.debug(f"Fetching instruments from {self._instruments_url}")
-            response = requests.get(self._instruments_url, timeout=10)
+            response = http_get(self._instruments_url, timeout=10, calling_module="margin_info_service")
             response.raise_for_status()
             data = response.json()
             
