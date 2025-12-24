@@ -10,7 +10,7 @@ def test_enforce_throttle_allows_when_throttle_passed():
         side="BUY",
         current_price=50000.0,
         throttle_allowed=True,
-        throttle_reason="cooldown OK (5.12m >= 5.00m)",
+        throttle_reason="Δt=307.2s>= 60.0s & |Δp|=↑ 1.50%>= 1.00%",
         throttle_metadata={
             "time_since_last": 5.12,
             "price_change_pct": 1.5,
@@ -105,7 +105,7 @@ def test_enforce_throttle_allows_when_both_conditions_met():
         side="BUY",
         current_price=51000.0,
         throttle_allowed=True,
-        throttle_reason="cooldown OK (6.00m >= 5.00m) AND price change 2.00% >= 1.00%",
+        throttle_reason="Δt=360.0s>= 60.0s & |Δp|=↑ 2.00%>= 1.00%",
         throttle_metadata={
             "time_since_last": 6.0,
             "price_change_pct": 2.0,
@@ -197,7 +197,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=50010.0,
             throttle_allowed=False,
-            throttle_reason="THROTTLED_MIN_CHANGE (price change 0.02% < 1.00%)",
+            throttle_reason="THROTTLED_PRICE_GATE (price change 0.02% < 1.00%)",
             throttle_metadata={
                 "time_since_last": 0.67,  # 40 seconds = 0.67 minutes
                 "price_change_pct": 0.02,
@@ -215,7 +215,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=51000.0,
             throttle_allowed=True,
-            throttle_reason="cooldown OK (6.00m >= 5.00m) AND price change 2.00% >= 1.00%",
+            throttle_reason="Δt=360.0s>= 60.0s & |Δp|=↑ 2.00%>= 1.00%",
             throttle_metadata={
                 "time_since_last": 6.0,
                 "price_change_pct": 2.0,
@@ -261,7 +261,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=50010.0,
             throttle_allowed=False,
-            throttle_reason="THROTTLED_MIN_CHANGE (price change 0.02% < 1.00%)",
+            throttle_reason="THROTTLED_PRICE_GATE (price change 0.02% < 1.00%)",
             throttle_metadata={
                 "time_since_last": 0.67,
                 "price_change_pct": 0.02,
@@ -277,7 +277,7 @@ class TestBTCThrottleStressScenario:
             side="BUY",
             current_price=51000.0,
             throttle_allowed=True,
-            throttle_reason="cooldown OK (6.00m >= 5.00m) AND price change 2.00% >= 1.00%",
+            throttle_reason="Δt=360.0s>= 60.0s & |Δp|=↑ 2.00%>= 1.00%",
             throttle_metadata={
                 "time_since_last": 6.0,
                 "price_change_pct": 2.0,
