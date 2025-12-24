@@ -97,17 +97,23 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     def _iso(dt):
         return dt.isoformat() if dt else None
     
+    # Ensure default values for fields that should always have values
+    # These fields should never be None in the API response
+    default_sl_tp_mode = item.sl_tp_mode if item.sl_tp_mode else "conservative"
+    default_order_status = item.order_status if item.order_status else "PENDING"
+    default_exchange = item.exchange if item.exchange else "CRYPTO_COM"
+    
     serialized = {
         "id": item.id,
         "symbol": (item.symbol or "").upper(),
-        "exchange": item.exchange,
+        "exchange": default_exchange,  # Always ensure exchange has a value
         "alert_enabled": item.alert_enabled if item.alert_enabled is not None else False,
         "buy_alert_enabled": getattr(item, "buy_alert_enabled", None) if getattr(item, "buy_alert_enabled", None) is not None else False,
         "sell_alert_enabled": getattr(item, "sell_alert_enabled", None) if getattr(item, "sell_alert_enabled", None) is not None else False,
         "trade_enabled": item.trade_enabled,
         "trade_amount_usd": item.trade_amount_usd,
         "trade_on_margin": item.trade_on_margin,
-        "sl_tp_mode": item.sl_tp_mode,
+        "sl_tp_mode": default_sl_tp_mode,  # Always ensure sl_tp_mode has a value
         "min_price_change_pct": item.min_price_change_pct,
         "sl_percentage": item.sl_percentage,
         "tp_percentage": item.tp_percentage,
@@ -124,7 +130,7 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         "ema10": item.ema10,
         "res_up": item.res_up,
         "res_down": item.res_down,
-        "order_status": item.order_status,
+        "order_status": default_order_status,  # Always ensure order_status has a value
         "order_date": _iso(item.order_date),
         "purchase_price": item.purchase_price,
         "quantity": item.quantity,
@@ -144,6 +150,9 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     # while DB values may be stale, so we should always prefer market_data when available
     current_price = serialized["price"]
     current_atr = serialized["atr"]
+    
+    # Track if MarketData was missing or incomplete for logging
+    market_data_missing_fields = []
     
     if market_data:
         if market_data.price is not None:
@@ -173,6 +182,29 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
             serialized["avg_volume"] = market_data.avg_volume
         if market_data.volume_24h is not None:
             serialized["volume_24h"] = market_data.volume_24h
+        
+        # Check which critical fields are still missing after enrichment
+        if serialized["price"] is None:
+            market_data_missing_fields.append("price")
+        if serialized["rsi"] is None:
+            market_data_missing_fields.append("rsi")
+        if serialized["ma50"] is None:
+            market_data_missing_fields.append("ma50")
+        if serialized["ma200"] is None:
+            market_data_missing_fields.append("ma200")
+        if serialized["ema10"] is None:
+            market_data_missing_fields.append("ema10")
+    else:
+        # MarketData not found - log warning for monitoring
+        market_data_missing_fields = ["price", "rsi", "ma50", "ma200", "ema10", "atr"]
+        log.debug(f"⚠️ MarketData not found for {item.symbol} - technical indicators will be None")
+    
+    # Log warning if critical fields are missing (helps identify MarketData update issues)
+    if market_data_missing_fields and log.isEnabledFor(logging.WARNING):
+        log.warning(
+            f"⚠️ {item.symbol}: MarketData missing fields: {', '.join(market_data_missing_fields)}. "
+            f"Ensure market_updater process is running to populate MarketData table."
+        )
     
     # CRITICAL: Calculate TP/SL from strategy settings if they're blank
     # This ensures all watchlist items have TP/SL values based on their strategy configuration
