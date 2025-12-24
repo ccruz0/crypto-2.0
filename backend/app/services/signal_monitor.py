@@ -197,13 +197,17 @@ class SignalMonitorService:
 
     @staticmethod
     def _classify_throttle_reason(reason: Optional[str]) -> str:
+        """Classify throttle reason to canonical codes (ALERTAS_Y_ORDENES_NORMAS.md)"""
         if not reason:
             return "THROTTLED"
         normalized = reason.lower()
-        if "cooldown" in normalized or "minutes" in normalized:
-            return "THROTTLED_MIN_TIME"
-        if "price change" in normalized or "%" in normalized:
-            return "THROTTLED_MIN_CHANGE"
+        # Canonical codes: THROTTLED_TIME_GATE, THROTTLED_PRICE_GATE
+        if "throttled_time_gate" in normalized or "cooldown" in normalized or "minutes" in normalized or "throttled_min_time" in normalized:
+            return "THROTTLED_TIME_GATE"
+        if "throttled_price_gate" in normalized or "price change" in normalized or "%" in normalized or "throttled_min_change" in normalized:
+            return "THROTTLED_PRICE_GATE"
+        if "immediate_alert_after_config_change" in normalized or "forced" in normalized:
+            return "IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE"
         return "THROTTLED"
     
     @staticmethod
