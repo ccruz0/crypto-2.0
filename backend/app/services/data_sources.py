@@ -43,26 +43,55 @@ async def _http_get_json(url: str, timeout: Optional[float] = None) -> Tuple[Opt
     if timeout is None:
         timeout = 5.0
 
+    # SECURITY: Validate outbound URL against allowlist
     try:
+        from app.utils.egress_guard import validate_outbound_url, log_outbound_request, EgressGuardError
+        validated_url, resolved_ip = validate_outbound_url(url, calling_module="data_sources._http_get_json")
+    except EgressGuardError as e:
+        logger.error(f"[DATA_SOURCES] Outbound request blocked: {e}")
+        return None, None
+
+    try:
+        status_code = None
         if _USE_AIOHTTP:
             # aiohttp expects aiohttp.ClientTimeout object
             from aiohttp import ClientTimeout  # type: ignore
             timeout_obj = ClientTimeout(total=timeout)
             async with aiohttp.ClientSession(timeout=timeout_obj) as session:  # type: ignore[attr-defined]
-                async with session.get(url) as response:
+                async with session.get(validated_url) as response:
+                    status_code = response.status
                     data = await response.json()
-                    return response.status, data
+                    # Log the outbound request for security auditing
+                    try:
+                        log_outbound_request(validated_url, method="GET", status_code=status_code, calling_module="data_sources._http_get_json")
+                    except Exception:
+                        pass  # Don't fail if logging fails
+                    return status_code, data
         elif httpx is not None:
             # httpx expects float timeout in seconds
             timeout_obj = httpx.Timeout(timeout)  # type: ignore
             async with httpx.AsyncClient(timeout=timeout_obj) as client:  # type: ignore[attr-defined]
-                response = await client.get(url)
-                return response.status_code, response.json()
+                response = await client.get(validated_url)
+                status_code = response.status_code
+                # Log the outbound request for security auditing
+                try:
+                    log_outbound_request(validated_url, method="GET", status_code=status_code, calling_module="data_sources._http_get_json")
+                except Exception:
+                    pass  # Don't fail if logging fails
+                return status_code, response.json()
     except asyncio.TimeoutError:
-        logger.error("HTTP request timeout for %s (timeout: %s)", url, timeout)
+        logger.error("HTTP request timeout for %s (timeout: %s)", validated_url, timeout)
+        try:
+            log_outbound_request(validated_url, method="GET", status_code=None, calling_module="data_sources._http_get_json")
+        except Exception:
+            pass
         return None, None
     except Exception as exc:  # pragma: no cover - runtime diagnostics
-        logger.error("HTTP request failed for %s: %s", url, exc)
+        logger.error("HTTP request failed for %s: %s", validated_url, exc)
+        try:
+            log_outbound_request(validated_url, method="GET", status_code=status_code, calling_module="data_sources._http_get_json")
+        except Exception:
+            pass
         return None, None
 
 class DataSource:

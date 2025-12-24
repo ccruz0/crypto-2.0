@@ -1,5 +1,7 @@
 """
-VPN Gate: Check external API reachability before startup
+API Reachability Gate: Check external API (Crypto.com) reachability before startup
+NOTE: This is NOT a VPN - it's just a health check to verify connectivity to Crypto.com API.
+The system connects directly to Crypto.com Exchange via AWS Elastic IP without VPN.
 """
 import os
 import time
@@ -7,7 +9,12 @@ import json
 import urllib.request
 import urllib.error
 import asyncio
+import logging
 from typing import Optional
+
+from app.utils.egress_guard import validate_outbound_url, EgressGuardError
+
+logger = logging.getLogger(__name__)
 
 ENABLED = os.getenv("VPN_GATE_ENABLED", "true").lower() == "true"
 URL = os.getenv("VPN_GATE_URL", "https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT")
@@ -17,6 +24,18 @@ MAXWAIT = int(os.getenv("VPN_GATE_MAX_WAIT_SECS", "120"))
 BG = os.getenv("VPN_GATE_BACKGROUND", "true").lower() == "true"
 ENV = os.getenv("ENVIRONMENT", "dev").lower()
 DEV_MAX = int(os.getenv("VPN_GATE_DEV_MAX_WAIT_SECS", "15"))
+
+# Validate URL at module load time
+try:
+    validated_url, _ = validate_outbound_url(URL, calling_module="vpn_gate.module_init")
+    if validated_url != URL:
+        logger.warning(f"[VPN_GATE] URL normalized: {URL} -> {validated_url}")
+    URL = validated_url
+except EgressGuardError as e:
+    logger.error(f"[VPN_GATE] SECURITY: Invalid VPN_GATE_URL configured: {e}")
+    # Disable VPN gate if URL is invalid
+    ENABLED = False
+    URL = ""  # Set to empty string to prevent use
 
 # Module-level status flag
 _vpn_ok: bool = False
@@ -37,7 +56,15 @@ def _http_ok() -> bool:
     """Internal HTTP check function"""
     global _last_error
     try:
-        req = urllib.request.Request(URL)
+        # Validate URL before making request (defense in depth)
+        try:
+            validated_url, _ = validate_outbound_url(URL, calling_module="vpn_gate._http_ok")
+        except EgressGuardError as e:
+            _last_error = f"Egress guard blocked: {str(e)}"
+            logger.error(f"[VPN_GATE] {_last_error}")
+            return False
+        
+        req = urllib.request.Request(validated_url)
         req.add_header("User-Agent", "gluetun-vpn-gate/1.0")
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             if r.status != 200:

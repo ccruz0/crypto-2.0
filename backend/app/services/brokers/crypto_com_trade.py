@@ -329,7 +329,11 @@ class CryptoComTradeClient:
         """Get account summary (balances)"""
         # [CRYPTO_AUTH_DIAG] Log outbound IP before request
         try:
-            egress_ip = requests.get("https://api.ipify.org", timeout=5).text.strip()
+            from app.utils.egress_guard import validate_outbound_url, log_outbound_request
+            ipify_url = "https://api.ipify.org"
+            validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade.get_account_summary")
+            egress_ip = requests.get(validated_url, timeout=5).text.strip()
+            log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade.get_account_summary")
             logger.info(f"[CRYPTO_AUTH_DIAG] CRYPTO_COM_OUTBOUND_IP: {egress_ip}")
         except Exception as e:
             logger.warning(f"[CRYPTO_AUTH_DIAG] Could not determine outbound IP: {e}")
@@ -419,9 +423,24 @@ class CryptoComTradeClient:
         try:
             # Use same pattern as get_open_orders which works
             url = f"{self.base_url}/{method}"
-            logger.debug(f"Request URL: {url}")
+            
+            # SECURITY: Validate outbound URL against allowlist
+            try:
+                from app.utils.egress_guard import validate_outbound_url, log_outbound_request, EgressGuardError
+                validated_url, resolved_ip = validate_outbound_url(url, calling_module="crypto_com_trade.get_account_summary")
+            except EgressGuardError as e:
+                logger.error(f"[CRYPTO_TRADE] Outbound request blocked: {e}")
+                raise RuntimeError(f"Security policy violation: {e}")
+            
+            logger.debug(f"Request URL: {validated_url}")
             logger.debug(f"Payload keys: {list(payload.keys())}")
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            response = requests.post(validated_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            
+            # Log the outbound request for security auditing
+            try:
+                log_outbound_request(validated_url, method="POST", status_code=response.status_code, calling_module="crypto_com_trade.get_account_summary")
+            except Exception:
+                pass  # Don't fail if logging fails
             
             # Check if authentication failed
             if response.status_code == 401:
@@ -433,7 +452,16 @@ class CryptoComTradeClient:
                 
                 # If IP not whitelisted or other auth issues, try failover before raising error
                 if error_code in [40101, 40103]:  # Authentication failure or IP illegal
-                    logger.error(f"API authentication failed: {error_msg} (code: {error_code})")
+                    # Get outbound IP for diagnostic purposes
+                    try:
+                        from app.utils.egress_guard import validate_outbound_url, log_outbound_request
+                        ipify_url = "https://api.ipify.org"
+                        validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade.get_account_summary")
+                        egress_ip = requests.get(validated_url, timeout=3).text.strip()
+                        log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade.get_account_summary")
+                        logger.error(f"API authentication failed: {error_msg} (code: {error_code}). Outbound IP: {egress_ip}")
+                    except Exception as ip_check_error:
+                        logger.error(f"API authentication failed: {error_msg} (code: {error_code}). Could not check outbound IP: {ip_check_error}")
                     
                     # Try failover to TRADE_BOT if enabled
                     if _should_failover(401):
@@ -447,8 +475,16 @@ class CryptoComTradeClient:
                         except Exception as failover_error:
                             logger.warning(f"Failover to TRADE_BOT failed: {failover_error}")
                     
-                    # If failover didn't work, raise error
-                    raise RuntimeError(f"Crypto.com API authentication failed: {error_msg} (code: {error_code}). Check API credentials and IP whitelist.")
+                    # Build detailed error message with actionable guidance
+                    error_details = f"Crypto.com API authentication failed: {error_msg} (code: {error_code})"
+                    if error_code == 40101:
+                        error_details += ". Possible causes: 1) Invalid API key/secret - verify EXCHANGE_CUSTOM_API_KEY and EXCHANGE_CUSTOM_API_SECRET match your Crypto.com Exchange API credentials exactly, 2) Missing Read permission - enable 'Read' permission in Crypto.com Exchange API Key settings, 3) API key disabled/suspended - check API key status in Crypto.com Exchange settings."
+                    elif error_code == 40103:
+                        error_details += ". IP address not whitelisted. Add your server's IP address to the IP whitelist in Crypto.com Exchange API Key settings. Current outbound IP may differ from expected."
+                    else:
+                        error_details += ". Check: 1) API credentials (EXCHANGE_CUSTOM_API_KEY/SECRET), 2) IP whitelist in Crypto.com Exchange settings, 3) API key permissions and status."
+                    
+                    raise RuntimeError(error_details)
             
             response.raise_for_status()
             result = response.json()
@@ -1312,9 +1348,13 @@ class CryptoComTradeClient:
             # Add exec_inst parameter for margin orders (based on successful manual order analysis)
             # Manual orders that work include exec_inst: ["MARGIN_ORDER"] in the response
             # This suggests the request payload should include exec_inst
-            params["exec_inst"] = ["MARGIN_ORDER"]
-            
-            logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value}, exec_inst=['MARGIN_ORDER']")
+            # NOTE: If authentication fails, try setting CRYPTO_SKIP_EXEC_INST=true
+            # The 'leverage' parameter alone may be sufficient to indicate margin order
+            if os.getenv("CRYPTO_SKIP_EXEC_INST", "false").lower() != "true":
+                params["exec_inst"] = ["MARGIN_ORDER"]
+                logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value}, exec_inst=['MARGIN_ORDER']")
+            else:
+                logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value} (exec_inst skipped per CRYPTO_SKIP_EXEC_INST=true)")
         else:
             logger.info(f"📊 SPOT ORDER (no leverage parameter)")
         
@@ -1455,7 +1495,49 @@ class CryptoComTradeClient:
                     error_data = response.json()
                     error_code = error_data.get("code", 0)
                     error_msg = error_data.get("message", "")
-                    logger.error(f"Authentication failed: {error_code} - {error_msg}")
+                    
+                    # Enhanced diagnostic logging for authentication failures
+                    logger.error(
+                        f"🔐 AUTHENTICATION FAILED for MARKET order ({symbol} {side_upper}):\n"
+                        f"   Error Code: {error_code}\n"
+                        f"   Error Message: {error_msg}\n"
+                        f"   API Key: {_preview_secret(self.api_key)}\n"
+                        f"   Base URL: {self.base_url}\n"
+                        f"   Method: {method}\n"
+                        f"   Using Proxy: {self.use_proxy}\n"
+                        f"   Live Trading: {self.live_trading}"
+                    )
+                    
+                    # Try to get outbound IP for diagnostic purposes
+                    try:
+                        from app.utils.egress_guard import validate_outbound_url, log_outbound_request
+                        ipify_url = "https://api.ipify.org"
+                        validated_url, _ = validate_outbound_url(ipify_url, calling_module="crypto_com_trade._call_api")
+                        egress_ip = requests.get(validated_url, timeout=5).text.strip()
+                        log_outbound_request(validated_url, method="GET", status_code=200, calling_module="crypto_com_trade._call_api")
+                        logger.error(f"   Outbound IP: {egress_ip} (must be whitelisted in Crypto.com Exchange)")
+                    except Exception as e:
+                        logger.debug(f"   Could not check outbound IP: {e}")
+                    
+                    # Provide specific guidance based on error code
+                    if error_code == 40101:
+                        logger.error(
+                            "   DIAGNOSIS: Authentication failure (40101)\n"
+                            "   Possible causes:\n"
+                            "   - API key or secret is incorrect\n"
+                            "   - API key is expired or revoked\n"
+                            "   - API key doesn't have 'Trade' permission\n"
+                            "   Run: python backend/scripts/diagnose_auth_issue.py for detailed diagnostics"
+                        )
+                    elif error_code == 40103:
+                        logger.error(
+                            "   DIAGNOSIS: IP address not whitelisted (40103)\n"
+                            "   Solution:\n"
+                            "   1. Go to https://exchange.crypto.com/ → Settings → API Keys\n"
+                            "   2. Edit your API key\n"
+                            "   3. Add your server's IP address to the whitelist\n"
+                            "   4. Wait a few minutes for changes to take effect"
+                        )
 
                     # If env default says "use proxy", but this call ended up direct (likely due to a
                     # per-request override), try proxy once before failing over to TRADE_BOT.
@@ -1746,9 +1828,13 @@ class CryptoComTradeClient:
             # Add exec_inst parameter for margin orders (based on successful manual order analysis)
             # Manual orders that work include exec_inst: ["MARGIN_ORDER"] in the response
             # This suggests the request payload should include exec_inst
-            params["exec_inst"] = ["MARGIN_ORDER"]
-            
-            logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value}, exec_inst=['MARGIN_ORDER']")
+            # NOTE: If authentication fails, try setting CRYPTO_SKIP_EXEC_INST=true
+            # The 'leverage' parameter alone may be sufficient to indicate margin order
+            if os.getenv("CRYPTO_SKIP_EXEC_INST", "false").lower() != "true":
+                params["exec_inst"] = ["MARGIN_ORDER"]
+                logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value}, exec_inst=['MARGIN_ORDER']")
+            else:
+                logger.info(f"📊 MARGIN ORDER CONFIGURED: leverage={leverage_value} (exec_inst skipped per CRYPTO_SKIP_EXEC_INST=true)")
         else:
             logger.info(f"📊 SPOT ORDER (no leverage parameter)")
         
