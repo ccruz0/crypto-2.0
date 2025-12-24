@@ -112,8 +112,8 @@ return True, "ALERT_ENABLED"
 **Canonical Rule:** Alerts throttled by time and price change
 
 **Implementation:**
-- ✅ `ALERT_COOLDOWN_MINUTES = 5` (from config)
-- ✅ `ALERT_MIN_PRICE_CHANGE_PCT = 1.0` (from config)
+- ⚠️ **DEPRECATED**: `ALERT_COOLDOWN_MINUTES = 5` - Ahora es fijo en 60 segundos (ver `ALERTAS_Y_ORDENES_NORMAS.md`)
+- ✅ `ALERT_MIN_PRICE_CHANGE_PCT = 1.0` (from config/strategy)
 - ✅ Uses `should_emit_signal()` from `signal_throttle.py`
 - ✅ Tracks last alert time and price per symbol/side
 

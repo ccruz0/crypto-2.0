@@ -1,5 +1,7 @@
 # Análisis de Logs - Signal Throttle
 
+**⚠️ NOTA**: Este documento contiene referencias a lógica antigua. Para la lógica canónica actual, ver `ALERTAS_Y_ORDENES_NORMAS.md`.
+
 **Fecha:** 2025-12-09  
 **Estado:** Signal Monitor está corriendo, pero las alertas pueden estar siendo bloqueadas
 
@@ -134,7 +136,7 @@ docker compose logs backend-aws | grep -i telegram | tail -50
 
 El throttle interno usa `last_alert_states` en memoria. Si el servicio se reinició, este estado se perdió, pero las señales pueden estar siendo bloqueadas por:
 
-- **Cooldown:** `ALERT_COOLDOWN_MINUTES` (default: 5 minutos)
+- **Cooldown:** **DEPRECATED** - Ahora es fijo en 60 segundos (ver `ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica)
 - **Cambio de precio mínimo:** `ALERT_MIN_PRICE_CHANGE_PCT` (default: 1.0%)
 
 ### 4. Agregar Logging Adicional

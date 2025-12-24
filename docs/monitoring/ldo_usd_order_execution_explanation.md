@@ -45,7 +45,7 @@ El sistema `SignalMonitorService` detectó una señal de compra cuando se cumpli
 Para evitar órdenes consecutivas, el sistema verifica:
 
 1. **Cooldown (Tiempo de espera)**
-   - ✅ Han pasado al menos 5 minutos desde la última orden BUY (o el tiempo configurado en `alert_cooldown_minutes`)
+   - ⚠️ **DEPRECATED**: Ahora es fijo en 60 segundos entre alertas (no configurable). Ver `ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica.
 
 2. **Cambio de Precio Mínimo**
    - ✅ El precio ha cambiado al menos 1% (o el porcentaje configurado en `min_price_change_pct`) desde la última orden

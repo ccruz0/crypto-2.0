@@ -25,10 +25,12 @@ cd backend && python scripts/diagnose_ldo_alerts.py
 
 ### 2. Throttle (Cooldown y Cambio de Precio) ⏱️
 
+**⚠️ DEPRECATED**: Ver `ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica actual.
+
 **Requerido:**
-- **Cooldown:** Debe haber pasado el tiempo configurado desde la última alerta BUY
-  - Default: 5 minutos (`alert_cooldown_minutes`)
-  - Configurable por símbolo en watchlist
+- **Cooldown:** ⚠️ **DEPRECATED** - Ahora es fijo en 60 segundos (no configurable)
+  - ~~Default: 5 minutos (`alert_cooldown_minutes`)~~ 
+  - ~~Configurable por símbolo en watchlist~~
 - **Cambio de Precio:** El precio debe haber cambiado al menos el porcentaje mínimo
   - Default: 1.0% (`min_price_change_pct`)
   - Configurable por símbolo en watchlist

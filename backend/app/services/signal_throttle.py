@@ -116,7 +116,7 @@ def should_emit_signal(
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Failed to clear force_next_signal for {symbol} {side}: {e}")
-        return True, "FORCED_AFTER_TOGGLE_RESET"
+        return True, "IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE"
 
     if last_same_side is None or last_same_side.timestamp is None or last_same_side.price is None:
         return True, "No previous same-side signal recorded"
@@ -125,19 +125,11 @@ def should_emit_signal(
     if last_same_time is None:
         return True, "Previous same-side signal missing timestamp"
 
-    # Direction change resets throttling (BUY after SELL or vice versa)
-    if last_opposite_side and last_opposite_side.timestamp:
-        opposite_time = _normalize_timestamp(last_opposite_side.timestamp)
-        if opposite_time and opposite_time > last_same_time:
-            return True, (
-                f"Opposite-side signal ({last_opposite_side.side}) "
-                f"at {opposite_time.isoformat()} resets cooldown"
-            )
-
-    elapsed_minutes = (now_ts - last_same_time).total_seconds() / 60.0
-    min_interval = max(config.min_interval_minutes or 0.0, 0.0)
-    cooldown_required = min_interval > 0
-    cooldown_met = not cooldown_required or elapsed_minutes >= min_interval
+    # CANONICAL: Fixed 60 seconds (1.0 minute) throttling per (symbol, side)
+    # BUY and SELL are independent - no reset on side change
+    elapsed_seconds = (now_ts - last_same_time).total_seconds()
+    FIXED_THROTTLE_SECONDS = 60.0  # Fixed by canonical logic (not configurable)
+    time_gate_passed = elapsed_seconds >= FIXED_THROTTLE_SECONDS
 
     last_price = last_same_side.price
     if last_price and last_price > 0:
@@ -150,21 +142,25 @@ def should_emit_signal(
         price_change_pct is not None and price_change_pct >= min_pct
     )
 
-    if not cooldown_met and cooldown_required:
+    # Time gate: Always check first (canonical: fixed 60 seconds)
+    if not time_gate_passed:
+        elapsed_minutes = elapsed_seconds / 60.0
         return (
             False,
-            f"THROTTLED_MIN_TIME (elapsed {elapsed_minutes:.2f}m < {min_interval:.2f}m)",
+            f"THROTTLED_TIME_GATE (elapsed {elapsed_seconds:.1f}s < {FIXED_THROTTLE_SECONDS:.0f}s)",
         )
+    
+    # Price gate: Only checked after time gate passes
     if not price_met and price_required:
         direction = "↑" if (last_price and current_price > last_price) else "↓" if last_price else ""
         return (
             False,
-            f"THROTTLED_MIN_CHANGE (absolute price change {direction} {(price_change_pct or 0.0):.2f}% < {min_pct:.2f}%)",
+            f"THROTTLED_PRICE_GATE (absolute price change {direction} {(price_change_pct or 0.0):.2f}% < {min_pct:.2f}%)",
         )
 
-    summary_parts = []
-    if cooldown_required:
-        summary_parts.append(f"Δt={elapsed_minutes:.2f}m>= {min_interval:.2f}m")
+    # Both gates passed
+    elapsed_minutes = elapsed_seconds / 60.0
+    summary_parts = [f"Δt={elapsed_seconds:.1f}s>= {FIXED_THROTTLE_SECONDS:.0f}s"]
     if price_required and price_change_pct is not None:
         direction = "↑" if (last_price and current_price > last_price) else "↓" if last_price else ""
         summary_parts.append(f"|Δp|={direction} {price_change_pct:.2f}%>= {min_pct:.2f}%")
@@ -178,11 +174,20 @@ def reset_throttle_state(
     symbol: str,
     strategy_key: str,
     side: Optional[str] = None,
+    current_price: Optional[float] = None,
+    parameter_change_reason: Optional[str] = None,
 ) -> None:
     """
-    Reset throttle state for a symbol+strategy combination.
+    Reset throttle state for a symbol+strategy combination (canonical: config change reset).
     If side is provided, only resets that side. Otherwise resets both BUY and SELL.
-    This clears last_price, last_time, and previous_price but preserves the record.
+    
+    CANONICAL BEHAVIOR (per ALERTAS_Y_ORDENES_NORMAS.md):
+    - baseline_price := current_price_now (if provided) or None
+    - last_sent_at := now
+    - force_next_signal := True (to allow immediate bypass)
+    
+    If current_price is provided, it sets baseline_price to current price.
+    Otherwise, it clears baseline_price (None) for a full reset.
     """
     symbol = symbol.upper()
     filters = [
@@ -193,14 +198,22 @@ def reset_throttle_state(
         filters.append(SignalThrottleState.side == side.upper())
     
     rows = db.query(SignalThrottleState).filter(*filters).all()
+    now_ts = datetime.now(timezone.utc)
     
     try:
         for row in rows:
-            row.last_price = None
+            # CANONICAL: On config change, set baseline_price to current_price (if provided)
+            if current_price is not None and current_price > 0:
+                row.last_price = current_price  # baseline_price = current_price_now
+            else:
+                row.last_price = None  # Full reset if no price provided
             row.previous_price = None
-            # Reset last_time to a far past date to effectively clear cooldown
-            row.last_time = datetime(1970, 1, 1, tzinfo=timezone.utc)
-            row.force_next_signal = False
+            # CANONICAL: last_sent_at := now (allows immediate alert if conditions met)
+            row.last_time = now_ts
+            # CANONICAL: Set force_next_signal = True to allow immediate bypass
+            row.force_next_signal = True
+            if parameter_change_reason:
+                row.emit_reason = f"CONFIG_CHANGE_RESET_BASELINE: {parameter_change_reason}"
         db.commit()
     except Exception:
         db.rollback()

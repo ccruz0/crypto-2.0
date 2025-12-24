@@ -1,5 +1,7 @@
 # SignalMonitorService Fix Summary
 
+**⚠️ HISTORICAL**: Este documento describe cambios históricos. Para la lógica canónica actual de throttling, ver `ALERTAS_Y_ORDENES_NORMAS.md`.
+
 **Date:** 2025-12-02  
 **Status:** ✅ Complete
 

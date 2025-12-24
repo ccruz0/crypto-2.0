@@ -1,5 +1,7 @@
 # ADA SELL Alert Flow Analysis
 
+**⚠️ DEPRECATED**: Este documento contiene lógica antigua. Ver `ALERTAS_Y_ORDENES_NORMAS.md` para la lógica canónica actual.
+
 **Date:** 2025-12-02  
 **Symbol:** ADA_USDT / ADA_USD  
 **Issue:** SELL signals appear in Watchlist UI but SELL alerts are not always sent from AWS
@@ -21,7 +23,7 @@
 3. Throttle Check (should_emit_signal):
    - Checks last SELL alert timestamp
    - Checks last SELL alert price
-   - Applies cooldown (5 minutes) OR price change (1%)
+   - **DEPRECATED**: Ahora aplica cooldown fijo de 60 segundos Y cambio de precio mínimo (ver `ALERTAS_Y_ORDENES_NORMAS.md`)
    ↓
 4. If throttled:
    - sell_signal = False (set to False)
@@ -59,8 +61,8 @@ From logs (2025-12-02 08:31:58):
 - `send_sell_signal` calls: **Not happening** (throttled before reaching send logic)
 
 **Root Cause:** The early throttle check (lines 1173-1211) is correctly blocking SELL alerts when:
-- Cooldown not expired (< 5 minutes since last SELL)
-- AND price change < 1% from last SELL
+- **DEPRECATED**: Cooldown not expired (< 60 seconds since last SELL) - tiempo ahora es fijo
+- AND price change < min_price_change_pct from baseline_price
 
 This is **correct behavior** according to business rules, but the user may be seeing SELL in the UI and expecting an alert immediately, not understanding that throttle rules apply.
 
@@ -70,9 +72,9 @@ This is **correct behavior** according to business rules, but the user may be se
 
 ### Business Rules (from business_rules_canonical.md)
 
-1. **Cooldown time:** ≥ 5 minutes between same-side alerts
-2. **Min price change:** ≥ 1% price change from last alert
-3. **Side change:** BUY → SELL or SELL → BUY always allowed (resets throttle)
+1. **Cooldown time:** **DEPRECATED** - Ahora es fijo: ≥ 60 segundos entre alertas del mismo lado (ver `ALERTAS_Y_ORDENES_NORMAS.md`)
+2. **Min price change:** ≥ min_price_change_pct (definido por estrategia) desde baseline_price
+3. **Side change:** **DEPRECATED** - Los lados son independientes, no hay reset por cambio de lado (ver `ALERTAS_Y_ORDENES_NORMAS.md`)
 
 ### Implementation (signal_throttle.py)
 
