@@ -1104,9 +1104,20 @@ class SignalMonitorService:
             logger.error(f"Error calculating trading signals for {symbol}: {e}", exc_info=True)
             return
 
+        # CRITICAL: Always enforce minimum 1 minute between messages
+        # Even if config specifies less, we require at least 1 minute to prevent spam
+        MIN_COOLDOWN_MINUTES = 1.0
+        cooldown_to_use = alert_cooldown_minutes or self.ALERT_COOLDOWN_MINUTES
+        if cooldown_to_use < MIN_COOLDOWN_MINUTES:
+            cooldown_to_use = MIN_COOLDOWN_MINUTES
+            logger.debug(
+                f"⚠️ Cooldown for {symbol} was {alert_cooldown_minutes or self.ALERT_COOLDOWN_MINUTES} minutes, "
+                f"enforcing minimum of {MIN_COOLDOWN_MINUTES} minute"
+            )
+        
         throttle_config = SignalThrottleConfig(
             min_price_change_pct=min_price_change_pct or self.ALERT_MIN_PRICE_CHANGE_PCT,
-            min_interval_minutes=alert_cooldown_minutes or self.ALERT_COOLDOWN_MINUTES,
+            min_interval_minutes=cooldown_to_use,
         )
         signal_snapshots: Dict[str, LastSignalSnapshot] = {}
         if buy_signal or sell_signal:
@@ -1283,8 +1294,8 @@ class SignalMonitorService:
                         )
                     except Exception:
                         pass
-                    # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
-                    # This ensures price change threshold is calculated from the last sent alert price, not the blocked price
+                    # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
+                    # The price reference should only be updated when a message is actually sent successfully
                     buy_signal = False
                     if current_state == "BUY":
                         current_state = "WAIT"
@@ -1446,8 +1457,9 @@ class SignalMonitorService:
                         )
                     except Exception:
                         pass
+                    # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
+                    # The price reference should only be updated when a message is actually sent successfully
                 # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
-                # This ensures price change threshold is calculated from the last sent alert price, not the blocked price
                 # CRITICAL: Set sell_signal = False to prevent alert from being sent
                 # This ensures throttling rules (cooldown and price change %) are respected
                 sell_signal = False
@@ -2392,19 +2404,8 @@ class SignalMonitorService:
                         add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
                     except Exception:
                         pass  # Non-critical, continue
-                    # Record blocked event in throttle state table so it appears in Throttle panel
-                    try:
-                        record_signal_event(
-                            db,
-                            symbol=symbol,
-                            strategy_key=strategy_key,
-                            side="SELL",
-                            price=current_price,
-                            source="blocked",
-                            emit_reason="Blocked: sell_alert_enabled=False",
-                        )
-                    except Exception as state_err:
-                        logger.warning(f"Failed to persist SELL throttle state (blocked) for {symbol}: {state_err}")
+                    # CRITICAL: Do NOT record signal event when blocked - price reference must remain the last successful (non-blocked) message price
+                    # The price reference should only be updated when a message is actually sent successfully
                     # Remove lock since we're not sending
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
