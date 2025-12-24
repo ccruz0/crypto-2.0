@@ -834,9 +834,18 @@ def get_signals(
                         risk_approach=risk_approach,
                     )
                     
-                    # Extract strategy_state from signals result
-                    if signals_result and "strategy" in signals_result:
-                        strategy_state = signals_result["strategy"]
+                    # Extract strategy_state and buy_signal from signals result
+                    if signals_result:
+                        if "strategy" in signals_result:
+                            strategy_state = signals_result["strategy"]
+                        # CRITICAL FIX: Use buy_signal from calculate_trading_signals (canonical source)
+                        # This ensures buy_signal matches strategy.decision
+                        if "buy_signal" in signals_result:
+                            buy_signal = signals_result["buy_signal"]
+                            logger.debug(f"✅ Using buy_signal from calculate_trading_signals for {symbol}: {buy_signal}")
+                        if "sell_signal" in signals_result:
+                            sell_signal = signals_result["sell_signal"]
+                            logger.debug(f"✅ Using sell_signal from calculate_trading_signals for {symbol}: {sell_signal}")
         except Exception as strategy_err:
             # Don't fail the entire request if strategy_state calculation fails
             logger.debug(f"Could not calculate strategy_state for {symbol}: {strategy_err}")
@@ -868,6 +877,9 @@ def get_signals(
                 "exhaustion": False,
                 "ma10w_break": False
             },
+            # CRITICAL FIX: Add buy_signal at top level for compatibility
+            "buy_signal": buy_signal,
+            "sell_signal": sell_signal,
             "stop_loss_take_profit": sl_tp_levels,
             "rationale": [
                 f"RSI: {rsi:.1f} ({'Oversold' if rsi < 30 else 'Overbought' if rsi > 70 else 'Neutral'})",
