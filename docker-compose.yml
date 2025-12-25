@@ -164,6 +164,7 @@ services:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Prod must not use --reload; it causes restarts and 502s
     # Use >1 worker so /ping_fast stays responsive even during slow endpoints.
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 1000 --max-requests-jitter 50"
     restart: always

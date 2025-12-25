@@ -8,25 +8,23 @@
 
 ## Core Principles
 
-### 1. Direct SSH Deployment Only
+### 1. SSH-Based Operations
 
-**All deployments MUST be performed directly via SSH on the AWS EC2 instance.**
+**All production operations MUST be performed directly via SSH on the AWS EC2 instance.**
 
 - ✅ **Allowed**: Direct SSH connections to AWS EC2 instance
 - ✅ **Allowed**: SSH-based deployment scripts that execute commands directly on the server
 - ✅ **Allowed**: Direct file synchronization via `rsync` or `scp` over SSH
-- ❌ **Prohibited**: Docker-based deployments
-- ❌ **Prohibited**: Docker Compose workflows
-- ❌ **Prohibited**: Container-based deployment methods
 
-### 2. Docker is Disabled
+### 2. Docker Compose for Production Services
 
-**Docker is CLOSED and will NOT be used for deployments.**
+**Production services run as Docker Compose containers using the AWS profile.**
 
-- ❌ Docker containers are NOT to be used for production deployments
-- ❌ `docker compose` commands are NOT to be used for deployment
-- ❌ Docker images are NOT to be built or transferred as part of deployment
-- ❌ Container-based service management is NOT permitted
+- ✅ Production services run using `docker compose --profile aws` commands
+- ✅ All Docker Compose operations are executed via SSH on the EC2 instance
+- ✅ Supported commands: `docker compose --profile aws ps`, `logs`, `restart`, `pull`, `up -d`
+- ❌ **Forbidden**: Uvicorn `--reload` flag in production (causes restarts and 502s)
+- ❌ **Forbidden**: Mixing systemd and Docker for the same service
 
 ---
 
@@ -42,7 +40,7 @@
 
 2. **Navigate to Project Directory**
    ```bash
-   cd ~/automated-trading-platform
+   cd /home/ubuntu/automated-trading-platform
    ```
 
 3. **Pull Latest Code** (if using Git)
@@ -50,84 +48,81 @@
    git pull origin main
    ```
 
-4. **Deploy Services Directly**
+4. **Deploy Services Using Docker Compose**
 
-   **Backend Deployment:**
+   **Pull Latest Images and Deploy:**
    ```bash
-   cd ~/automated-trading-platform/backend
+   cd /home/ubuntu/automated-trading-platform
    
-   # Set up virtual environment
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
+   # Pull latest images
+   docker compose --profile aws pull
    
-   # Stop existing service
-   pkill -f "uvicorn app.main:app" || true
-   
-   # Start service directly (no Docker)
-   nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+   # Deploy/update services
+   docker compose --profile aws up -d --remove-orphans
    ```
 
-   **Frontend Deployment:**
-   ```bash
-   cd ~/automated-trading-platform/frontend
-   
-   # Install dependencies
-   npm install
-   
-   # Build
-   npm run build
-   
-   # Start service directly (no Docker)
-   npm start
-   ```
+   **Note**: Services are defined in `docker-compose.yml` with the `aws` profile:
+   - `backend-aws`: FastAPI backend (uses Gunicorn, NOT uvicorn with --reload)
+   - `frontend-aws`: Next.js frontend
+   - `db`: PostgreSQL database
+   - `market-updater-aws`: Market data updater service
 
 5. **Verify Deployment**
    ```bash
-   # Check if services are running
-   ps aux | grep uvicorn
-   ps aux | grep node
+   # Check service status
+   docker compose --profile aws ps
+   
+   # View logs
+   docker compose --profile aws logs -n 200 backend-aws
+   docker compose --profile aws logs -n 200 frontend-aws
    
    # Check service health
-   curl http://localhost:8000/api/health
+   curl http://localhost:8002/api/health
    ```
+
+For detailed command reference, see [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md).
 
 ---
 
 ## Deployment Scripts
 
-### Available SSH-Based Deployment Scripts
+### Approved Deployment Methods
 
-The following scripts are approved for use as they deploy directly via SSH without Docker:
+The following are approved for production deployment:
 
-- `backend/deploy_backend_aws.sh` - Backend deployment via SSH
-- `deploy_backend_full.sh` - Full backend deployment via SSH
-- `deploy_frontend_update.sh` - Frontend deployment via SSH
-- Any script that uses `ssh`, `rsync`, or `scp` to deploy directly
+- Scripts that use `docker compose --profile aws` commands via SSH
+- SSH-based scripts that execute Docker Compose commands on the EC2 instance
+- Scripts that use `ssh`, `rsync`, or `scp` to sync files and execute Docker Compose commands
 
-### Prohibited Deployment Methods
+### Prohibited Practices
 
-The following are **NOT** to be used:
+The following are **NOT** permitted:
 
-- `sync_to_aws.sh` (uses Docker)
-- `.github/workflows/deploy.yml` (if it uses Docker)
-- Any script containing `docker compose` commands
-- Any script that builds or transfers Docker images
+- ❌ Using `uvicorn --reload` in production (causes restarts and 502 errors)
+- ❌ Mixing systemd services and Docker Compose for the same service
+- ❌ Running production services outside of Docker Compose with `--profile aws`
+- ❌ Using Docker Compose profiles other than `aws` for production
 
 ---
 
 ## Database Migrations
 
-Database migrations must also be performed directly via SSH:
+Database migrations can be run via Docker Compose:
 
 ```bash
 # Connect via SSH
 ssh ubuntu@<AWS_EC2_IP>
-cd ~/automated-trading-platform
+cd /home/ubuntu/automated-trading-platform
 
-# Run migrations directly (no Docker exec)
-cd backend
-source venv/bin/activate
+# Run migrations via Docker Compose
+docker compose --profile aws exec backend-aws python scripts/apply_migration_previous_price.py
+```
+
+Alternatively, if you need to run migrations outside of Docker:
+
+```bash
+cd /home/ubuntu/automated-trading-platform/backend
+source venv/bin/activate  # If virtualenv exists
 python scripts/apply_migration_previous_price.py
 ```
 
@@ -137,54 +132,62 @@ python scripts/apply_migration_previous_price.py
 
 ### Starting Services
 
-Services must be started directly on the host system:
+Services are managed via Docker Compose:
 
 ```bash
-# Backend
-cd ~/automated-trading-platform/backend
-source venv/bin/activate
-nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+cd /home/ubuntu/automated-trading-platform
 
-# Frontend
-cd ~/automated-trading-platform/frontend
-nohup npm start > frontend.log 2>&1 &
+# Start all services
+docker compose --profile aws up -d
+
+# Start specific service
+docker compose --profile aws up -d backend-aws
 ```
 
 ### Stopping Services
 
 ```bash
-# Backend
-pkill -f "uvicorn app.main:app"
+cd /home/ubuntu/automated-trading-platform
 
-# Frontend
-pkill -f "node.*frontend"
+# Stop specific service
+docker compose --profile aws stop backend-aws
+
+# Stop all services
+docker compose --profile aws down
 ```
 
 ### Checking Service Status
 
 ```bash
-# Check processes
-ps aux | grep uvicorn
-ps aux | grep node
+cd /home/ubuntu/automated-trading-platform
 
-# Check logs
-tail -f ~/automated-trading-platform/backend/backend.log
-tail -f ~/automated-trading-platform/frontend/frontend.log
+# Check service status
+docker compose --profile aws ps
+
+# View logs (last 200 lines)
+docker compose --profile aws logs -n 200 backend-aws
+docker compose --profile aws logs -n 200 frontend-aws
+
+# Follow logs in real-time
+docker compose --profile aws logs -f backend-aws
 ```
 
 ---
 
 ## Environment Configuration
 
-Environment variables must be configured directly on the server:
+Environment variables are configured via `.env.aws` file on the server:
 
 ```bash
-# Create/edit .env file directly on server
-cd ~/automated-trading-platform/backend
-nano .env
+# Edit environment file
+cd /home/ubuntu/automated-trading-platform
+nano .env.aws
 
-# Or use a deployment script that sets environment variables via SSH
+# After editing, restart services to apply changes
+docker compose --profile aws restart backend-aws
 ```
+
+Environment variables are loaded via the `env_file` directive in `docker-compose.yml` for the `aws` profile services.
 
 ---
 
@@ -192,36 +195,43 @@ nano .env
 
 Before considering a deployment complete:
 
-- [ ] Code deployed via SSH (not Docker)
-- [ ] Services started directly on host (no containers)
-- [ ] Environment variables configured on server
+- [ ] Code deployed via SSH
+- [ ] Latest images pulled: `docker compose --profile aws pull`
+- [ ] Services started/updated: `docker compose --profile aws up -d --remove-orphans`
+- [ ] Services verified running: `docker compose --profile aws ps`
+- [ ] Environment variables configured in `.env.aws`
 - [ ] Database migrations applied (if needed)
-- [ ] Services verified running (`ps aux | grep`)
-- [ ] Health checks passing (`curl http://localhost:8000/api/health`)
-- [ ] Logs checked for errors
+- [ ] Health checks passing: `curl http://localhost:8002/api/health`
+- [ ] Logs checked for errors: `docker compose --profile aws logs -n 200 backend-aws`
+- [ ] Verified no `--reload` flag in production (backend uses Gunicorn)
 
 ---
 
 ## Important Notes
 
-1. **No Docker Dependency**: All deployment processes must work without Docker being installed or running.
+1. **SSH-Based Operations**: All deployment operations are executed via SSH on the EC2 instance.
 
-2. **Direct Process Management**: Services run as direct processes on the EC2 instance, not in containers.
+2. **Docker Compose for Services**: Production services run as Docker Compose containers using the `--profile aws` profile.
 
-3. **SSH-Based Tools Only**: Only use SSH, rsync, scp, and direct command execution. No container orchestration tools.
+3. **No Reload in Production**: Backend service uses Gunicorn (NOT uvicorn with `--reload`). The `--reload` flag causes restarts and 502 errors in production and is forbidden.
 
-4. **Logs Location**: Service logs are written directly to files on the filesystem (e.g., `backend.log`, `frontend.log`), not to Docker logs.
+4. **Logs Access**: Service logs are accessed via `docker compose --profile aws logs` commands.
+
+5. **Single Source of Truth**: For exact command reference, see [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md).
 
 ---
 
-## Migration from Docker
+## Never Do
 
-If you have existing Docker-based deployments, they must be migrated to direct SSH deployments:
+**Hard rules for production:**
 
-1. Stop all Docker containers
-2. Deploy services directly on the host
-3. Update all deployment scripts to use SSH instead of Docker
-4. Remove Docker-based deployment workflows
+1. ❌ **Never use `uvicorn --reload`** in production. The backend-aws service uses Gunicorn which does not support reload. Using `--reload` causes service restarts and 502 errors.
+
+2. ❌ **Never mix systemd and Docker Compose** for the same service. Pick one management method and stick with it.
+
+3. ❌ **Never use profiles other than `aws`** for production deployments on AWS EC2.
+
+4. ❌ **Never run production services outside of Docker Compose** when using the AWS profile.
 
 ---
 
@@ -229,9 +239,9 @@ If you have existing Docker-based deployments, they must be migrated to direct S
 
 If you have questions about this policy or need clarification on deployment procedures, refer to:
 
+- [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) - Single source of truth for AWS deployment commands
 - SSH-based deployment scripts in the repository
 - AWS EC2 instance documentation
-- Direct service management guides
 
 ---
 

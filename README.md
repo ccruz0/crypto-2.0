@@ -6,21 +6,21 @@ A full-stack automated trading platform built with FastAPI (backend) and Next.js
 
 ## 🚨 Deployment Policy
 
-**⚠️ IMPORTANT: All production deployments MUST be done directly via SSH on AWS. Docker is CLOSED and will NOT be used.**
+**⚠️ IMPORTANT: All production operations are executed via SSH on the EC2 instance. Production services run as Docker Compose containers using the AWS profile.**
 
-For complete deployment guidelines, see: **[DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md)**
+For complete deployment guidelines, see: **[DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md)** and **[docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md)**
 
 **Key Points:**
-- ✅ All deployments via SSH directly on AWS EC2 instance
-- ❌ Docker is disabled and NOT to be used for deployments
-- ✅ Services run as direct processes on the host system
-- ❌ No Docker containers or Docker Compose for production
+- ✅ All production operations via SSH on AWS EC2 instance
+- ✅ Production services run as Docker Compose containers using `--profile aws`
+- ✅ The supported commands are `docker compose --profile aws ...`
+- ❌ Uvicorn `--reload` is forbidden in production (causes restarts and 502s)
 
 ## Runtime Architecture
 
 **⚠️ IMPORTANT: AWS is the ONLY live production runtime (trading + alerts).**
 
-- **AWS Backend** (Direct Process): The only place where SignalMonitorService, scheduler, and Telegram bot run for production trading and alerts. Services run directly on the EC2 host via SSH deployment (NOT in Docker containers).
+- **AWS Backend** (Docker Compose): The only place where SignalMonitorService, scheduler, and Telegram bot run for production trading and alerts. Services run in Docker Compose containers using the `--profile aws` profile. Operations are executed via SSH on the EC2 instance.
 - **Local Mac**: Used ONLY for:
   - Development (edit code, run tests)
   - Git operations
@@ -33,7 +33,7 @@ For complete deployment guidelines, see: **[DEPLOYMENT_POLICY.md](DEPLOYMENT_POL
 - Create duplicate orders
 - Cause data inconsistencies
 
-**Deployment**: All production deployments are done directly via SSH on AWS. Docker is disabled for production. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) for complete deployment guidelines.
+**Deployment**: All production operations are done via SSH on AWS EC2. Services run using Docker Compose with `--profile aws`. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) and [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) for complete deployment guidelines.
 
 For production, use AWS only. Local docker-compose is for development/testing only.
 
@@ -58,30 +58,47 @@ automated-trading-platform/
 
 ## Services
 
-- **Database**: PostgreSQL
-- **Backend**: FastAPI with Uvicorn (runs directly on host, not in Docker)
-- **Frontend**: Next.js with TypeScript (runs directly on host, not in Docker)
+- **Database**: PostgreSQL (Docker Compose)
+- **Backend**: FastAPI with Gunicorn/Uvicorn (Docker Compose with `--profile aws` in production)
+- **Frontend**: Next.js with TypeScript (Docker Compose with `--profile aws` in production)
 
-**Note**: Docker is only used for local development. Production deployments use direct SSH execution on AWS EC2 instance. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) for details.
+**Note**: Production services run in Docker Compose containers using `--profile aws`, managed via SSH on AWS EC2. Local development uses `--profile local`. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) and [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) for details.
 
 ## Getting Started
 
 ### Production (AWS Only)
 
-**The production runtime is on AWS. To check health:**
-```bash
-cd /Users/carloscruz/automated-trading-platform
-bash scripts/check_runtime_health_aws.sh
-```
+**The production runtime is on AWS. All operations are executed via SSH on the EC2 instance.**
 
-**To view logs:**
+**Basic Operations (execute via SSH on EC2):**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
-bash scripts/aws_backend_logs.sh --tail 200
+# Connect to AWS EC2
+ssh ubuntu@<AWS_EC2_IP>
+
+# Navigate to project directory
+cd /home/ubuntu/automated-trading-platform
+
+# Check service status
+docker compose --profile aws ps
+
+# View logs
+docker compose --profile aws logs -n 200 backend-aws
+docker compose --profile aws logs -n 200 frontend-aws
+
+# Restart services
+docker compose --profile aws restart backend-aws
+
+# Pull latest images and deploy
+docker compose --profile aws pull
+docker compose --profile aws up -d --remove-orphans
 ```
 
 **📌 AWS → Crypto.com Connection:**
 For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AWS_CRYPTO_COM_CONNECTION.md) for the standard connection configuration.
+
+**For detailed deployment procedures, see:**
+- [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) - Deployment policy and workflow
+- [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) - Single source of truth for AWS deployment commands
 
 ### Local Development (Dev Only - NOT Production)
 
