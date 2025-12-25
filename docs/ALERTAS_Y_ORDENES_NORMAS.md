@@ -56,7 +56,7 @@ Cuando **CUALQUIER parámetro** de una moneda cambia (flags, estrategia, umbrale
 
 1. **Resetea el baseline inmediatamente** para AMBOS lados (BUY y SELL) independientemente:
    - `baseline_price := precio_actual_ahora`
-   - `last_sent_at := ahora`
+   - `last_sent_at := NO se actualiza` (solo se actualiza cuando se envía una alerta exitosamente)
    - `config_hash := nuevo_hash` (si se usa)
    - `allow_immediate_after_config_change := True` (o `force_next_signal := True` en código)
 
@@ -270,10 +270,11 @@ Estos son los códigos de razón que el sistema registra:
 
 **Acción del sistema**:
 1. Detecta cambio de configuración
-2. Resetea para BUY: `baseline_price = $102` (precio actual), `last_sent_at = ahora`, `allow_immediate = True`
+2. Resetea para BUY: `baseline_price = $102` (precio actual), `last_sent_at = no se actualiza`, `allow_immediate = True`
 3. `buy_signal = True`, `alert_enabled = True`, `buy_alert_enabled = True` → **ALERTA BUY ENVIADA INMEDIATAMENTE**
-4. `trade_enabled = True` → **ORDEN BUY CREADA INMEDIATAMENTE**
-5. `allow_immediate = False` (desactivado después del uso)
+4. Al enviar la alerta exitosamente: `last_sent_at = ahora` (actualizado al enviar)
+5. `trade_enabled = True` → **ORDEN BUY CREADA INMEDIATAMENTE**
+6. `allow_immediate = False` (desactivado después del uso)
 
 **Resultado**: ✅ Alerta y orden creadas sin esperar 60s ni cambio de precio
 
@@ -287,10 +288,11 @@ Estos son los códigos de razón que el sistema registra:
 
 **Acción del sistema**:
 1. Detecta cambio de configuración
-2. Resetea para SELL: `baseline_price = $2480` (precio actual), `last_sent_at = ahora`, `allow_immediate = True`
+2. Resetea para SELL: `baseline_price = $2480` (precio actual), `last_sent_at = no se actualiza`, `allow_immediate = True`
 3. `sell_signal = True`, `alert_enabled = True`, `sell_alert_enabled = True` → **ALERTA SELL ENVIADA INMEDIATAMENTE**
-4. `trade_enabled = True` → **ORDEN SELL CREADA INMEDIATAMENTE**
-5. `allow_immediate = False`
+4. Al enviar la alerta exitosamente: `last_sent_at = ahora` (actualizado al enviar)
+5. `trade_enabled = True` → **ORDEN SELL CREADA INMEDIATAMENTE**
+6. `allow_immediate = False`
 
 **Resultado**: ✅ Alerta y orden creadas sin esperar 60s ni cambio de precio
 
