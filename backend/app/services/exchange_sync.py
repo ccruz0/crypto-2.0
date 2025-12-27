@@ -470,7 +470,7 @@ class ExchangeSyncService:
             sibling = db.query(ExchangeOrder).filter(
                 ExchangeOrder.oco_group_id == filled_order.oco_group_id,
                 ExchangeOrder.exchange_order_id != filled_order.exchange_order_id,
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
             ).first()
             
             if not sibling:
