@@ -474,7 +474,19 @@ class ExchangeSyncService:
             ).first()
             
             if not sibling:
-                logger.debug(f"OCO: No active sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
+                # Log detailed debug info to help diagnose why sibling wasn't found
+                all_siblings = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.oco_group_id == filled_order.oco_group_id,
+                    ExchangeOrder.exchange_order_id != filled_order.exchange_order_id
+                ).all()
+                if all_siblings:
+                    statuses = [f"{s.exchange_order_id}: {s.status}" for s in all_siblings]
+                    logger.warning(
+                        f"OCO: No active sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}. "
+                        f"Found {len(all_siblings)} sibling(s) but none are active: {', '.join(statuses)}"
+                    )
+                else:
+                    logger.debug(f"OCO: No sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
                 return
             
             logger.info(f"🔄 OCO: Cancelling sibling {sibling.order_role} order {sibling.exchange_order_id} (filled order: {filled_order.order_role})")
@@ -1387,7 +1399,32 @@ class ExchangeSyncService:
                     logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type (fallback)")
             
             if not target_orders:
-                logger.debug(f"No open {target_order_type} orders found to cancel for {symbol} (tried parent_order_id, order_role, time window, and symbol+type)")
+                # Log detailed debug info to help diagnose why target orders weren't found
+                executed_order_details = {
+                    'order_id': executed_order_id,
+                    'symbol': symbol,
+                    'parent_order_id': executed_order.parent_order_id if executed_order else None,
+                    'order_role': executed_order.order_role if executed_order else None,
+                    'order_type': executed_order.order_type if executed_order else None,
+                }
+                
+                # Check if any TP/SL orders exist at all for this symbol (regardless of status)
+                all_target_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.symbol == symbol,
+                    ExchangeOrder.order_type == target_order_type,
+                    ExchangeOrder.exchange_order_id != executed_order_id
+                ).all()
+                
+                if all_target_orders:
+                    statuses = [f"{o.exchange_order_id}: {o.status.value if hasattr(o.status, 'value') else o.status} (parent={o.parent_order_id}, role={o.order_role})" for o in all_target_orders]
+                    logger.warning(
+                        f"No active {target_order_type} orders found to cancel for {symbol} after SL order {executed_order_id} was executed. "
+                        f"Executed order details: {executed_order_details}. "
+                        f"Found {len(all_target_orders)} {target_order_type} order(s) but none are active: {', '.join(statuses)}. "
+                        f"(Tried strategies: parent_order_id, order_role, time window, symbol+type)"
+                    )
+                else:
+                    logger.debug(f"No {target_order_type} orders found at all for {symbol} (tried parent_order_id, order_role, time window, and symbol+type)")
                 return 0
             
             # Cancel each remaining order
@@ -1801,14 +1838,16 @@ class ExchangeSyncService:
                     # Check if status changed from non-FILLED to FILLED
                     # This happens when a LIMIT order we created gets executed, or when a CANCELLED order
                     # is actually found as FILLED in the history (correction)
+                    # CRITICAL: ALL order executions must trigger Telegram notifications
                     was_filled_before = existing.status == OrderStatusEnum.FILLED
                     needs_update = False
                     needs_telegram = False  # Only send Telegram if status actually changed
                     
                     # Update order status if it was not FILLED before but is FILLED in history
+                    # This covers: NEW->FILLED, ACTIVE->FILLED, PARTIALLY_FILLED->FILLED, CANCELLED->FILLED, etc.
                     if not was_filled_before and is_executed:
                         needs_update = True
-                        needs_telegram = True  # Status changed, send notification
+                        needs_telegram = True  # Status changed to FILLED - MUST send notification
                         logger.info(f"Order {order_id} ({existing.status.value if existing.status else 'UNKNOWN'}) found as FILLED in history - updating status and sending Telegram notification")
                     
                     # Also update if status is FILLED in history but different in DB (e.g., CANCELLED -> FILLED)
@@ -1825,16 +1864,24 @@ class ExchangeSyncService:
                     
                     # CRITICAL: Always update timestamps from Crypto.com if available, even if order already exists
                     # This ensures orders always reflect the actual dates from the exchange
+                    # IMPORTANT: Timestamp updates should NOT override needs_telegram if status just changed to FILLED
                     if status_str == 'FILLED' and (update_time or create_time):
                         needs_update = True
-                        if not was_filled_before:
-                            needs_telegram = False  # Don't send notification if we're just updating timestamps
+                        # Only suppress notification if order was already FILLED (just updating timestamps)
+                        # If status just changed to FILLED, preserve needs_telegram=True from earlier conditions
+                        if was_filled_before:
+                            needs_telegram = False  # Don't send notification if we're just updating timestamps for already-FILLED order
                     
                     # ALWAYS update timestamps from Crypto.com if available, regardless of other conditions
                     # This ensures the order reflects what's actually in Crypto.com
+                    # CRITICAL: Only suppress Telegram notification if order was already FILLED
+                    # If status just changed to FILLED, preserve needs_telegram=True from above
                     if (update_time or create_time) and existing:
                         needs_update = True
-                        needs_telegram = False  # Don't send notification when just updating timestamps
+                        # Only suppress notification if order was already FILLED (just updating timestamps)
+                        # If status just changed to FILLED, keep needs_telegram=True from earlier conditions
+                        if was_filled_before:
+                            needs_telegram = False  # Don't send notification when just updating timestamps
                         logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
                     
                     if needs_update:
