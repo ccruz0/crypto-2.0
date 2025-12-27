@@ -271,8 +271,38 @@ Emit Telegram/Crypto orders on signal eligibility transition; fix AWS channel ro
 - Logging added
 - AWS deployment verified
 - Telegram routing confirmed (ilovivoalerts channel)
+- Changes committed to git
+
+## Proof Logs
+
+### Telegram Configuration (AWS Startup)
+```
+[TELEGRAM_CONFIG] env=AWS resolved_channel=839853931 label=ilovivoalerts
+Telegram enabled: True
+Telegram chat_id: 839853931
+```
+
+### Signal Endpoint Test
+```bash
+curl 'https://dashboard.hilovivo.com/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT'
+```
+
+**Response:**
+```json
+{
+  "symbol": "ALGO_USDT",
+  "buy_signal": true,
+  "sell_signal": false,
+  ...
+}
+```
+
+**Expected Logs (when transition detected):**
+- `[SIGNAL_TRANSITION] {id} ALGO_USDT BUY from=NOT-ELIGIBLE to=ELIGIBLE`
+- `[TELEGRAM_SEND] ALGO_USDT BUY status=SUCCESS`
+- `[CRYPTO_ORDER_ATTEMPT] ALGO_USDT BUY` (if trade_enabled)
 
 **Next Steps:**
-- Monitor logs for real transition events
-- Verify alerts/orders are sent immediately in production
-- Collect proof logs from actual signal transitions
+- Monitor logs for real transition events in production
+- Verify alerts/orders are sent immediately when UI buttons turn RED/GREEN
+- Collect proof logs from actual signal transitions as they occur
