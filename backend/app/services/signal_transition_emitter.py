@@ -98,10 +98,14 @@ def check_and_emit_on_transition(
         # This is a heuristic - the real check is if throttle allows emission
         
         # Get throttle config
-        throttle_config = get_alert_thresholds(watchlist_item)
+        # get_alert_thresholds returns a tuple: (min_price_change_pct, cooldown_minutes)
+        min_price_change_pct, cooldown_minutes = get_alert_thresholds(
+            watchlist_item.symbol,
+            getattr(watchlist_item, "sl_tp_mode", None)
+        )
         throttle_config_obj = SignalThrottleConfig(
-            min_price_change_pct=throttle_config.get("min_price_change_pct", 0.0),
-            min_interval_minutes=throttle_config.get("min_interval_minutes", 1.0),
+            min_price_change_pct=min_price_change_pct or 0.0,
+            min_interval_minutes=cooldown_minutes or 1.0,
         )
         
         # Check BUY transition
