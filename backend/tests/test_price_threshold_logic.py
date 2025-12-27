@@ -27,11 +27,9 @@ def test_price_threshold_10_percent():
     current_price_10_5 = 110.5  # 10.5% increase
     
     last_snapshot = LastSignalSnapshot(
-        symbol="TEST",
         side="BUY",
         timestamp=last_time,
-        price=last_price,
-        strategy_key="swing-conservative"
+        price=last_price
     )
     
     # Test 1: 9.5% change should be BLOCKED by 10% threshold
@@ -77,11 +75,9 @@ def test_price_threshold_11_percent():
     current_price_11_2 = 111.2  # 11.2% increase (should pass)
     
     last_snapshot = LastSignalSnapshot(
-        symbol="TEST",
         side="BUY",
         timestamp=last_time,
-        price=last_price,
-        strategy_key="swing-conservative"
+        price=last_price
     )
     
     # Test 1: 10.5% change should be BLOCKED by 11% threshold
@@ -126,11 +122,9 @@ def test_price_threshold_3_percent():
     current_price_3_1 = 103.1  # 3.1% increase (should pass)
     
     last_snapshot = LastSignalSnapshot(
-        symbol="TEST",
         side="BUY",
         timestamp=last_time,
-        price=last_price,
-        strategy_key="swing-conservative"
+        price=last_price
     )
     
     # Test 1: 2.9% change should be BLOCKED by 3% threshold
@@ -174,11 +168,9 @@ def test_no_limit_threshold():
     current_price_minimal = 100.1  # 0.1% increase (should pass with no limit)
     
     last_snapshot = LastSignalSnapshot(
-        symbol="TEST",
         side="BUY",
         timestamp=last_time,
-        price=last_price,
-        strategy_key="swing-conservative"
+        price=last_price
     )
     
     # Test: 0.1% change should be ALLOWED with 0% threshold (no limit)
@@ -206,11 +198,9 @@ def test_time_gate_takes_precedence():
     current_price = 111.0  # 11% increase (sufficient, but time gate should block)
     
     last_snapshot = LastSignalSnapshot(
-        symbol="TEST",
         side="BUY",
         timestamp=last_time,
-        price=last_price,
-        strategy_key="swing-conservative"
+        price=last_price
     )
     
     allowed, reason = should_emit_signal(
