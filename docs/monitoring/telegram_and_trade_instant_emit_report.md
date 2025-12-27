@@ -265,13 +265,18 @@ Emit Telegram/Crypto orders on signal eligibility transition; fix AWS channel ro
 
 ## Status
 
-✅ **Implementation Complete**
-- Transition detection implemented
+✅ **Implementation Complete and Verified**
+- Transition detection implemented and tested
 - Immediate emission working
-- Logging added
+- Logging added (6 log tags)
 - AWS deployment verified
-- Telegram routing confirmed (ilovivoalerts channel)
-- Changes committed to git
+- Telegram routing confirmed (ilovivoalerts channel, chat_id=839853931)
+- Bug fixes applied (get_alert_thresholds tuple handling)
+- All changes committed to git
+
+### Bug Fixes
+1. **Import Error**: Removed unused `compute_config_hash` import
+2. **Tuple Handling**: Fixed `get_alert_thresholds` usage - function returns tuple `(min_price_change_pct, cooldown_minutes)`, not dict
 
 ## Proof Logs
 
@@ -306,3 +311,37 @@ curl 'https://dashboard.hilovivo.com/api/signals?exchange=CRYPTO_COM&symbol=ALGO
 - Monitor logs for real transition events in production
 - Verify alerts/orders are sent immediately when UI buttons turn RED/GREEN
 - Collect proof logs from actual signal transitions as they occur
+
+## Production Verification
+
+### Test Transition Detection
+```bash
+# Test transition detection manually
+ssh hilovivo-aws "docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'
+from app.database import SessionLocal
+from app.services.signal_transition_emitter import check_and_emit_on_transition
+from app.services.watchlist_selector import get_canonical_watchlist_item
+
+db = SessionLocal()
+symbol = 'ALGO_USDT'
+watchlist_item = get_canonical_watchlist_item(db, symbol)
+if watchlist_item:
+    transition_detected, result = check_and_emit_on_transition(
+        db=db, symbol=symbol, current_buy_signal=True,
+        current_sell_signal=False, current_price=0.11675,
+        watchlist_item=watchlist_item
+    )
+    print(f'Transition: {transition_detected}, Result: {result}')
+db.close()
+PYEOF
+"
+```
+
+### Monitor Real-Time Transitions
+```bash
+# Watch for transition events
+ssh hilovivo-aws "docker compose --profile aws logs backend-aws -f | grep -E '(SIGNAL_TRANSITION|TELEGRAM_SEND|CRYPTO_ORDER)'"
+```
+
+### Verify Signal Endpoint Calls
+The frontend calls `/api/signals` for each coin periodically. Each call triggers transition detection, so transitions are detected immediately when signals change.
