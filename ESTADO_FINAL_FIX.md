@@ -95,3 +95,9 @@ Deberías ver mensajes como:
 - Las alertas saltarán automáticamente si todos los flags están en YES
 - El ciclo de `signal_monitor` es cada 30 segundos
 
+
+
+
+
+
+

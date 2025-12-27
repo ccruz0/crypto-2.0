@@ -78,3 +78,9 @@ Después del despliegue:
 - Si el workflow de GitHub Actions no despliega automáticamente, se puede desplegar manualmente
 - Este fix resuelve el problema de sincronización entre `buy_signal` y `strategy.decision`
 
+
+
+
+
+
+

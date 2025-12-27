@@ -47,3 +47,9 @@ if [ $? -eq 0 ] && [ -n "$COMMAND_ID" ]; then
       --query "StandardOutputContent" --output text
 fi
 
+
+
+
+
+
+

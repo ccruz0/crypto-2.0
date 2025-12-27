@@ -111,3 +111,9 @@ Para cada símbolo con `trade_enabled=YES`:
 - ✅ Fix aplicado
 - ✅ Listo para usar
 
+
+
+
+
+
+

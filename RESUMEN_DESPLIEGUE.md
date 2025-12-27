@@ -72,3 +72,9 @@ Deberías ver mensajes como:
 - ⏳ Esperando que el backend termine de iniciar (1-2 minutos)
 - ✅ Listo para probar en el dashboard
 
+
+
+
+
+
+

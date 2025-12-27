@@ -108,3 +108,9 @@ if __name__ == "__main__":
         verificar_simbolo(symbol)
         print()
 
+
+
+
+
+
+

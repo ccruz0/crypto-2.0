@@ -132,3 +132,9 @@ The minimum price change threshold can be configured per symbol in the watchlist
 - Or wait for price to move 1%+ from the stored reference price
 
 
+
+
+
+
+
+

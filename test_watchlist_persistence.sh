@@ -152,3 +152,9 @@ echo "   3. Refresca la página (F5)"
 echo "   4. Verifica que los valores persisten"
 echo "   5. Reinicia el backend y verifica de nuevo"
 
+
+
+
+
+
+

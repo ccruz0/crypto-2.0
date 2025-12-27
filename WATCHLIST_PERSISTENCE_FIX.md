@@ -183,3 +183,9 @@ WHERE symbol = 'BTC_USDT';
 4. ✅ Monitorear logs para verificar que los valores se están guardando
 5. ⚠️ Si el problema persiste, verificar procesos de base de datos
 
+
+
+
+
+
+

@@ -245,7 +245,7 @@ logger.info(
 2. ✅ SELL alert throttled by cooldown
 3. ✅ SELL alert throttled by price change
 4. ✅ SELL alert allowed after cooldown and price change
-5. ✅ SELL after BUY resets throttle (direction change)
+5. ⚠️ **DEPRECATED**: SELL after BUY resets throttle (direction change) - Esta lógica fue reemplazada. BUY y SELL son ahora independientes y no se resetean mutuamente. Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica.
 6. ✅ Throttle decision logs origin
 
 **Run tests:**

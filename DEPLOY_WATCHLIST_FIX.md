@@ -135,3 +135,9 @@ docker compose --profile aws up -d backend-aws
 - El cambio es **backward compatible** - no rompe funcionalidad existente
 - Los valores por defecto solo se aplican cuando los campos son `None`
 
+
+
+
+
+
+

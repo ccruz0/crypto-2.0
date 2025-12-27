@@ -55,3 +55,9 @@
 3. ⚠️ Configurar `trade_amount_usd` para BTC_USD si se desea crear órdenes automáticamente
 4. 📝 Verificar que otros símbolos del dashboard (LDO_USD, ETC_USDT, TRX_USDT) existan en la base de datos
 
+
+
+
+
+
+

@@ -11,3 +11,9 @@ echo "docker-compose --profile aws logs -f backend-aws | grep -i 'TG.*START\|TG.
 echo ""
 
 
+
+
+
+
+
+

@@ -67,3 +67,9 @@ def add_market_data_columns():
 if __name__ == "__main__":
     add_market_data_columns()
 
+
+
+
+
+
+

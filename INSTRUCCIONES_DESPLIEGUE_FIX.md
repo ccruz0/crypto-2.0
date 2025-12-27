@@ -114,3 +114,9 @@ Deberías ver mensajes como:
 🟢 BUY signal detected for BTC_USDT
 ```
 
+
+
+
+
+
+

@@ -134,3 +134,9 @@ docker compose --profile aws exec backend grep -A 5 "strategy.decision" /app/app
 4. ⏳ Verificar en dashboard que funciona correctamente
 5. ⏳ Probar cambiando `trade_enabled` a YES y verificar que salta la alerta
 
+
+
+
+
+
+

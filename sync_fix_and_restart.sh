@@ -75,3 +75,9 @@ sleep 3
 # Verificar que el backend responde
 curl -s -f "https://dashboard.hilovivo.com/api/health" > /dev/null && echo "✅ Backend está respondiendo" || echo "⚠️  Backend no responde aún"
 
+
+
+
+
+
+

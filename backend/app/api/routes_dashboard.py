@@ -513,6 +513,10 @@ def _apply_watchlist_updates(item: WatchlistItem, data: Dict[str, Any]) -> None:
         # If frontend sends null/undefined, convert to False to maintain data integrity
         if field in boolean_fields and value is None:
             value = False
+        # Log updates for trade_amount_usd and trade_on_margin for debugging
+        if field in ("trade_amount_usd", "trade_on_margin"):
+            old_val = getattr(item, field, None)
+            log.info(f"[_apply_watchlist_updates] {getattr(item, 'symbol', 'UNKNOWN')}.{field}: {old_val} → {value}")
         setattr(item, field, value)
 
 @router.get("/dashboard/snapshot")
@@ -1724,8 +1728,8 @@ def update_watchlist_item(
     
     strategy_changed = False
     
-    # CRITICAL: Store old trade_enabled value BEFORE applying updates
-    # This is needed for the throttle reset logic later
+    # CRITICAL: Store old values BEFORE applying updates for config change detection
+    # These are needed for the throttling reset logic (per ALERTAS_Y_ORDENES_NORMAS.md)
     trade_enabled_old_value = None
     if "trade_enabled" in payload:
         trade_enabled_old_value = item.trade_enabled
@@ -1734,6 +1738,7 @@ def update_watchlist_item(
         if old_value != new_value:
             updates.append(f"TRADE: {'YES' if new_value else 'NO'}")
     
+    alert_enabled_old_value = None
     if "alert_enabled" in payload:
         alert_enabled_old_value = item.alert_enabled  # May be None if NULL in DB
         new_value = payload["alert_enabled"]
@@ -1745,14 +1750,20 @@ def update_watchlist_item(
             alert_enabled_was_updated = True
             # Log will be written after successful update verification (see below)
     
+    # Track old values for config change detection (needed for throttling reset)
+    buy_alert_enabled_old_value = getattr(item, "buy_alert_enabled", False) if "buy_alert_enabled" in payload else None
+    sell_alert_enabled_old_value = getattr(item, "sell_alert_enabled", False) if "sell_alert_enabled" in payload else None
+    min_price_change_pct_old_value = getattr(item, "min_price_change_pct", None) if "min_price_change_pct" in payload else None
+    trade_amount_usd_old_value = getattr(item, "trade_amount_usd", None) if "trade_amount_usd" in payload else None
+    
     if "buy_alert_enabled" in payload:
-        old_value = getattr(item, "buy_alert_enabled", False)
+        old_value = buy_alert_enabled_old_value
         new_value = payload["buy_alert_enabled"]
         if old_value != new_value:
             updates.append(f"BUY alert: {'YES' if new_value else 'NO'}")
     
     if "sell_alert_enabled" in payload:
-        old_value = getattr(item, "sell_alert_enabled", False)
+        old_value = sell_alert_enabled_old_value
         new_value = payload["sell_alert_enabled"]
         if old_value != new_value:
             updates.append(f"SELL alert: {'YES' if new_value else 'NO'}")
@@ -1803,7 +1814,24 @@ def update_watchlist_item(
                         continue
                     if hasattr(master, field):
                         old_value = getattr(master, field, None)
-                        if old_value != value:
+                        # CRITICAL: Handle numeric fields (trade_amount_usd) - compare properly including None vs 0
+                        if field == "trade_amount_usd":
+                            # Always update if value is provided (including 0 or None)
+                            old_float = float(old_value) if old_value is not None else None
+                            new_float = float(value) if value is not None else None
+                            if old_float != new_float:
+                                setattr(master, field, value)
+                                master.set_field_updated_at(field, now)
+                                log.info(f"[WATCHLIST_MASTER_UPDATE] {symbol_upper}.{field}: {old_value} → {value}")
+                        elif field == "trade_on_margin":
+                            # Handle boolean field - ensure proper comparison
+                            old_bool = bool(old_value) if old_value is not None else False
+                            new_bool = bool(value) if value is not None else False
+                            if old_bool != new_bool:
+                                setattr(master, field, value)
+                                master.set_field_updated_at(field, now)
+                                log.info(f"[WATCHLIST_MASTER_UPDATE] {symbol_upper}.{field}: {old_value} → {value}")
+                        elif old_value != value:
                             setattr(master, field, value)
                             master.set_field_updated_at(field, now)
                 if "signals" in payload:
@@ -1884,9 +1912,178 @@ def update_watchlist_item(
             else:
                 raise HTTPException(status_code=409, detail="Duplicate active watchlist row exists; update rejected.")
         else:
-            raise
+                raise
 
     db.refresh(item)
+    
+    # CANONICAL: Detect ANY configuration change that should trigger throttling reset
+    # Per ALERTAS_Y_ORDENES_NORMAS.md section 3.4, these fields count as "cambio de configuración":
+    # - alert_enabled, buy_alert_enabled, sell_alert_enabled
+    # - trade_enabled
+    # - strategy_id or strategy_name (strategy changes - handled separately below)
+    # - min_price_change_pct
+    # - trade_amount_usd
+    # - Any other configuration field
+    
+    config_changed = False
+    config_change_reasons = []
+    
+    # Check alert_enabled change (using old value captured BEFORE update)
+    if "alert_enabled" in payload and alert_enabled_old_value is not None:
+        new_value = payload.get("alert_enabled")
+        old_comparison = alert_enabled_old_value if alert_enabled_old_value is not None else False
+        new_comparison = new_value if new_value is not None else False
+        if old_comparison != new_comparison:
+            config_changed = True
+            config_change_reasons.append(f"alert_enabled ({'YES' if old_comparison else 'NO'} → {'YES' if new_comparison else 'NO'})")
+    
+    # Check buy_alert_enabled change
+    if "buy_alert_enabled" in payload and buy_alert_enabled_old_value is not None:
+        new_value = payload.get("buy_alert_enabled")
+        if buy_alert_enabled_old_value != new_value:
+            config_changed = True
+            config_change_reasons.append(f"buy_alert_enabled ({'YES' if buy_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+    
+    # Check sell_alert_enabled change
+    if "sell_alert_enabled" in payload and sell_alert_enabled_old_value is not None:
+        new_value = payload.get("sell_alert_enabled")
+        if sell_alert_enabled_old_value != new_value:
+            config_changed = True
+            config_change_reasons.append(f"sell_alert_enabled ({'YES' if sell_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+    
+    # Check trade_enabled change
+    if "trade_enabled" in payload and trade_enabled_old_value is not None:
+        new_value = payload.get("trade_enabled")
+        if trade_enabled_old_value != new_value:
+            config_changed = True
+            config_change_reasons.append(f"trade_enabled ({'YES' if trade_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+    
+    # Check min_price_change_pct change
+    if "min_price_change_pct" in payload and min_price_change_pct_old_value is not None:
+        new_value = payload.get("min_price_change_pct")
+        if min_price_change_pct_old_value != new_value:
+            config_changed = True
+            config_change_reasons.append(f"min_price_change_pct ({min_price_change_pct_old_value} → {new_value})")
+    
+    # Check trade_amount_usd change
+    if "trade_amount_usd" in payload and trade_amount_usd_old_value is not None:
+        new_value = payload.get("trade_amount_usd")
+        # Compare as floats to handle numeric comparison
+        old_float = float(trade_amount_usd_old_value) if trade_amount_usd_old_value is not None else None
+        new_float = float(new_value) if new_value is not None else None
+        if old_float != new_float:
+            config_changed = True
+            config_change_reasons.append(f"trade_amount_usd (${trade_amount_usd_old_value} → ${new_value})")
+    
+    # Reset throttle state for ANY configuration change (per documentation)
+    # NOTE: Strategy changes are handled separately below (they need special handling for old/new strategy keys)
+    # This handles non-strategy config changes: alert flags, trade_enabled, min_price_change_pct, trade_amount_usd
+    if config_changed and not strategy_changed:
+        try:
+            from app.services.strategy_profiles import resolve_strategy_profile
+            from app.services.signal_throttle import (
+                build_strategy_key,
+                reset_throttle_state,
+                set_force_next_signal,
+                compute_config_hash,
+            )
+            from app.models.signal_throttle import SignalThrottleState
+            
+            # Get current strategy (after update)
+            strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+            strategy_key = build_strategy_key(
+                strategy_profile[0],  # strategy_type
+                strategy_profile[1]   # risk_approach
+            )
+
+            # Compute hash from whitelisted config fields to avoid spurious resets
+            config_snapshot = {
+                "alert_enabled": getattr(item, "alert_enabled", False),
+                "buy_alert_enabled": getattr(item, "buy_alert_enabled", False),
+                "sell_alert_enabled": getattr(item, "sell_alert_enabled", False),
+                "trade_enabled": getattr(item, "trade_enabled", False),
+                "strategy_id": getattr(item, "strategy_id", None),
+                "strategy_name": getattr(item, "sl_tp_mode", None),
+                "min_price_change_pct": getattr(item, "min_price_change_pct", None),
+                "trade_amount_usd": getattr(item, "trade_amount_usd", None),
+            }
+            new_config_hash = compute_config_hash(config_snapshot)
+
+            existing_hash = None
+            try:
+                existing_state = (
+                    db.query(SignalThrottleState)
+                    .filter(
+                        SignalThrottleState.symbol == item.symbol,
+                        SignalThrottleState.strategy_key == strategy_key,
+                        SignalThrottleState.side == "BUY",
+                    )
+                    .first()
+                ) or (
+                    db.query(SignalThrottleState)
+                    .filter(
+                        SignalThrottleState.symbol == item.symbol,
+                        SignalThrottleState.strategy_key == strategy_key,
+                        SignalThrottleState.side == "SELL",
+                    )
+                    .first()
+                )
+                if existing_state:
+                    existing_hash = getattr(existing_state, "config_hash", None)
+            except Exception as hash_err:
+                log.debug(f"Could not read existing config_hash for {item.symbol}: {hash_err}")
+
+            if existing_hash and existing_hash == new_config_hash:
+                log.info(f"ℹ️ [CONFIG_CHANGE] No throttle reset: config hash unchanged for {item.symbol}")
+                config_changed = False
+                config_change_reasons = []
+                config_hash_to_store = existing_hash
+            else:
+                config_hash_to_store = new_config_hash
+            
+            if config_changed or config_hash_to_store != existing_hash:
+                # CANONICAL: Reset throttle state for configuration change
+                # baseline_price := current price, last_sent_at unchanged, force_next_signal=True
+                change_reason_str = ", ".join(config_change_reasons)
+                current_price = getattr(item, "price", None)
+                reset_throttle_state(
+                    db, 
+                    symbol=item.symbol, 
+                    strategy_key=strategy_key,
+                    current_price=current_price,
+                    parameter_change_reason=f"CONFIG_CHANGE: {change_reason_str}",
+                    config_hash=config_hash_to_store,
+                )
+                log.info(f"🔄 [CONFIG_CHANGE] Reset throttle state for {item.symbol} due to config changes: {change_reason_str}")
+                
+                # CANONICAL: Set force_next_signal for both BUY and SELL to allow immediate bypass
+                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
+                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="SELL", enabled=True)
+                log.info(f"⚡ [CONFIG_CHANGE] Set force_next_signal=True for {item.symbol} BUY/SELL - next signals will bypass throttle")
+                
+            # Also clear order creation limitations (allows immediate order creation)
+            try:
+                from app.services.signal_monitor import signal_monitor_service
+                signal_monitor_service.clear_order_creation_limitations(item.symbol)
+                log.info(f"🔄 [CONFIG_CHANGE] Cleared order creation limitations for {item.symbol}")
+            except Exception as clear_err:
+                log.warning(f"⚠️ [CONFIG_CHANGE] Failed to clear order creation limitations for {item.symbol}: {clear_err}")
+            
+            # CANONICAL: Evaluate signals immediately after config change and send alerts if criteria are met
+            # This ensures that if the new configuration allows an alert (signal active + flags enabled),
+            # the alert is sent immediately without waiting for the next monitor cycle
+            try:
+                from app.services.signal_monitor import signal_monitor_service
+                # Refresh item to get latest values
+                db.refresh(item)
+                # Evaluate signals and send alerts if criteria are met
+                signal_monitor_service._check_signal_for_coin_sync(db, item)
+                log.info(f"⚡ [CONFIG_CHANGE] Evaluated signals immediately for {item.symbol} after config change - alert sent if criteria met")
+            except Exception as eval_err:
+                log.warning(f"⚠️ [CONFIG_CHANGE] Failed to evaluate signals immediately for {item.symbol}: {eval_err}", exc_info=True)
+                
+        except Exception as throttle_err:
+            log.warning(f"⚠️ [CONFIG_CHANGE] Failed to reset throttle state for {item.symbol}: {throttle_err}", exc_info=True)
     
     # CRITICAL: Also check if strategy changed by comparing resolved strategy profiles
     # This catches changes in trading_config.json (preset) that aren't in the database payload
@@ -1925,41 +2122,9 @@ def update_watchlist_item(
     except Exception as new_strategy_err:
         log.debug(f"Could not resolve new strategy for {item.symbol}: {new_strategy_err}")
     
-    # When trade_enabled is toggled, reset throttle state and set force_next_signal
+    # When trade_enabled is toggled to YES, also enable alert flags (keep for backward compatibility)
     if "trade_enabled" in payload:
-        # CRITICAL: Use the old value we stored BEFORE applying updates
-        # Don't get it from item.trade_enabled after update - it's already changed!
-        old_value = trade_enabled_old_value if trade_enabled_old_value is not None else False
         new_value = payload.get("trade_enabled")
-        # Re-check after update to ensure we have the latest value
-        db.refresh(item)
-        
-        # CRITICAL: Reset throttle state whenever trade_enabled changes (ON or OFF)
-        # This clears the last_time and last_price so alerts can be sent immediately
-        try:
-            from app.services.strategy_profiles import resolve_strategy_profile
-            from app.services.signal_throttle import build_strategy_key, reset_throttle_state, set_force_next_signal
-            strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
-            strategy_key = build_strategy_key(
-                strategy_profile[0],  # strategy_type
-                strategy_profile[1]   # risk_approach
-            )
-            # Reset throttle state to clear last_time and last_price
-            trade_status = "enabled" if new_value else "disabled"
-            reset_throttle_state(
-                db, 
-                symbol=item.symbol, 
-                strategy_key=strategy_key,
-                parameter_change_reason=f"trade_enabled ({'NO' if not old_value else 'YES'} → {'YES' if new_value else 'NO'})"
-            )
-            log.info(f"🔄 [TRADE] Reset throttle state for {item.symbol} (trade_enabled={new_value}) - cleared cooldown timers")
-            
-            # Set force flag for both BUY and SELL to allow immediate signals
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="SELL", enabled=True)
-            log.info(f"⚡ [TRADE] Set force_next_signal for {item.symbol} BUY/SELL - next evaluation will bypass throttle")
-        except Exception as throttle_err:
-            log.warning(f"⚠️ [TRADE] Failed to reset throttle state for {item.symbol}: {throttle_err}", exc_info=True)
         
         # When trade_enabled is toggled to YES, also enable alert_enabled, buy_alert_enabled and sell_alert_enabled
         # CRITICAL: Use new_value directly (from payload) instead of item.trade_enabled
@@ -2056,6 +2221,19 @@ def update_watchlist_item(
                 log.info(f"🔄 [STRATEGY] Cleared order creation limitations for {item.symbol} - orders can be created immediately")
             except Exception as clear_err:
                 log.warning(f"⚠️ [STRATEGY] Failed to clear order creation limitations for {item.symbol}: {clear_err}", exc_info=True)
+            
+            # CANONICAL: Evaluate signals immediately after strategy change and send alerts if criteria are met
+            # This ensures that if the new strategy allows an alert (signal active + flags enabled),
+            # the alert is sent immediately without waiting for the next monitor cycle
+            try:
+                from app.services.signal_monitor import signal_monitor_service
+                # Refresh item to get latest values
+                db.refresh(item)
+                # Evaluate signals and send alerts if criteria are met
+                signal_monitor_service._check_signal_for_coin_sync(db, item)
+                log.info(f"⚡ [STRATEGY] Evaluated signals immediately for {item.symbol} after strategy change - alert sent if criteria met")
+            except Exception as eval_err:
+                log.warning(f"⚠️ [STRATEGY] Failed to evaluate signals immediately for {item.symbol}: {eval_err}", exc_info=True)
             
         except Exception as strategy_err:
             log.warning(f"⚠️ [STRATEGY] Failed to reset throttle state for {item.symbol}: {strategy_err}", exc_info=True)

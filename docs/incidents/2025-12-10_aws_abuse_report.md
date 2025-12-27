@@ -172,13 +172,32 @@ REST_BASE = "https://api.crypto.com/exchange/v1"
 - Validates `base_url` before making requests
 - Blocks requests if URL violates allowlist
 
+#### 6. Mandatory HTTP Client Wrapper
+
+**File**: `backend/app/utils/http_client.py` (NEW)
+
+- Single mandatory entry point for all outbound HTTP requests
+- All URLs validated BEFORE DNS resolution and connection
+- Redirects disabled by default to prevent redirect attacks
+- If redirects are enabled, final destination is validated against allowlist
+- All HTTP clients (requests, aiohttp, urllib) replaced with http_client wrapper
+
+**Key Security Features**:
+- Validation happens before any network activity
+- Redirect protection: redirects to non-allowlisted domains are blocked
+- Structured logging for all outbound requests
+- Centralized policy enforcement
+
 ### New Security Controls
 
 1. **Egress Allowlist**: Only allowlisted domains can be accessed
 2. **Raw IP Blocking**: Direct IP connections blocked by default
-3. **Security Logging**: All outbound requests logged with full context
-4. **Audit Script**: `scripts/security/egress_audit.py` validates configuration
-5. **Documentation**: `docs/security/EC2_EGRESS_GUARDRAILS.md` provides operational guidance
+3. **Single Entry Point**: All HTTP requests must use `http_client.py` wrapper
+4. **Redirect Protection**: Redirects disabled by default; final destinations validated if enabled
+5. **Security Logging**: All outbound requests logged with full context
+6. **Audit Script**: `scripts/security/egress_audit.py` validates configuration
+7. **CI Enforcement**: Static checks prevent direct HTTP library imports
+8. **Documentation**: `docs/security/EC2_EGRESS_GUARDRAILS.md` provides operational guidance
 
 ### Allowlisted Domains
 
@@ -196,10 +215,13 @@ The following domains are currently allowlisted:
 
 ### Hard Guardrails
 
-1. **Code-level Validation**: All outbound URLs validated before use
-2. **Module Initialization Checks**: Invalid URLs cause modules to disable
-3. **No Raw IPs**: Raw IP usage disabled in code, even if environment variables are set
-4. **Fail-Fast**: Requests blocked immediately if URL violates policy
+1. **Code-level Validation**: All outbound URLs validated before use (before DNS resolution)
+2. **Single Entry Point**: All HTTP requests must go through `http_client.py` wrapper
+3. **Module Initialization Checks**: Invalid URLs cause modules to disable
+4. **No Raw IPs**: Raw IP usage disabled in code, even if environment variables are set
+5. **Redirect Protection**: Redirects disabled by default; final destinations validated if enabled
+6. **Fail-Fast**: Requests blocked immediately if URL violates policy
+7. **CI Enforcement**: Static analysis prevents direct HTTP library usage outside http_client.py
 
 ### Operational Controls
 
@@ -271,19 +293,25 @@ We are committed to preventing any recurrence of this issue and maintaining the 
 ### New Files
 
 - `backend/app/utils/egress_guard.py` - Egress validation module
+- `backend/app/utils/http_client.py` - Mandatory HTTP client wrapper (single entry point)
 - `scripts/security/egress_audit.py` - Configuration audit script
+- `backend/tests/test_egress_guard.py` - Unit tests for egress guard
+- `backend/tests/test_static_http_imports.py` - Static analysis tests
+- `.github/workflows/egress-audit.yml` - CI enforcement workflow
 - `docs/security/EC2_EGRESS_GUARDRAILS.md` - Security documentation
 - `docs/incidents/2025-12-10_aws_abuse_report.md` - This incident report
 
 ### Modified Files
 
-- `backend/app/utils/vpn_gate.py` - Added egress guard validation
+- `backend/app/utils/vpn_gate.py` - Replaced urllib with http_client
 - `backend/app/services/brokers/crypto_com_constants.py` - Disabled raw IP usage
-- `backend/app/services/data_sources.py` - Added URL validation
-- `backend/app/services/brokers/crypto_com_trade.py` - Added URL validation to API calls
+- `backend/app/services/data_sources.py` - Replaced aiohttp/httpx with http_client
+- `backend/app/services/brokers/crypto_com_trade.py` - Replaced requests with http_client
+- All other backend services: Replaced direct HTTP calls with http_client wrapper
 
-## Commit
+## Commits
 
+### Initial Implementation
 ```
 security: prevent outbound scanning patterns and document AWS incident response
 
@@ -294,5 +322,19 @@ security: prevent outbound scanning patterns and document AWS incident response
 - Create security documentation and incident report
 
 Fixes AWS abuse report Case 11983634034-1
+```
+
+### Final Hardening
+```
+security: finalize outbound http guard with redirect protection
+
+- Implement mandatory http_client wrapper as single entry point
+- Add redirect protection: validate final destination URLs
+- Replace all direct HTTP library calls with http_client
+- Add CI enforcement for static analysis
+- Add comprehensive unit tests including redirect protection
+- Update documentation with redirect handling details
+
+Completes security hardening for AWS abuse report Case 11983634034-1
 ```
 

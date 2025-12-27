@@ -34,6 +34,7 @@ from app.services.signal_throttle import (
     fetch_signal_states,
     record_signal_event,
     should_emit_signal,
+    compute_config_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,21 @@ class SignalMonitorService:
             symbol,
             details or {},
         )
+
+    @staticmethod
+    def _compute_config_hash(watchlist_item: WatchlistItem) -> str:
+        """Build config hash from whitelisted fields for throttle resets."""
+        config_snapshot = {
+            "alert_enabled": getattr(watchlist_item, "alert_enabled", False),
+            "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False),
+            "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False),
+            "trade_enabled": getattr(watchlist_item, "trade_enabled", False),
+            "strategy_id": getattr(watchlist_item, "strategy_id", None),
+            "strategy_name": getattr(watchlist_item, "sl_tp_mode", None),
+            "min_price_change_pct": getattr(watchlist_item, "min_price_change_pct", None),
+            "trade_amount_usd": getattr(watchlist_item, "trade_amount_usd", None),
+        }
+        return compute_config_hash(config_snapshot)
 
     @staticmethod
     def _classify_throttle_reason(reason: Optional[str]) -> str:
@@ -805,6 +821,7 @@ class SignalMonitorService:
         strategy_key = build_strategy_key(strategy_type, risk_approach)
         strategy_display = strategy_type.value.title()
         risk_display = risk_approach.value.title()
+        config_hash_current = self._compute_config_hash(watchlist_item)
 
         self._log_symbol_context(symbol, "BUY", watchlist_item, strategy_display, risk_display)
         self._log_symbol_context(symbol, "SELL", watchlist_item, strategy_display, risk_display)
@@ -1179,35 +1196,6 @@ class SignalMonitorService:
             # Store throttle reason for use in alert message
             if buy_allowed:
                 throttle_buy_reason = buy_reason
-                # CRITICAL: Record signal event IMMEDIATELY after throttle check passes
-                # This prevents race conditions where multiple processes check should_emit_signal
-                # before any of them have recorded the signal, causing duplicate alerts
-                try:
-                    # Build emit reason (canonical codes from ALERTAS_Y_ORDENES_NORMAS.md)
-                    emit_reason_parts = []
-                    if buy_reason:
-                        # Map throttle reason to canonical code
-                        if "IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE" in buy_reason or "FORCED" in buy_reason:
-                            emit_reason_parts.append("IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE")
-                        else:
-                            emit_reason_parts.append(buy_reason)
-                    if last_buy_snapshot is None or last_buy_snapshot.timestamp is None:
-                        emit_reason_parts.append("First signal for this side/strategy")
-                    # CANONICAL: BUY and SELL are independent - no side change reset logic
-                    emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "ALERT_SENT"
-                    
-                    record_signal_event(
-                        db,
-                        symbol=symbol,
-                        strategy_key=strategy_key,
-                        side="BUY",
-                        price=current_price,
-                        source="signal_check",
-                        emit_reason=emit_reason,
-                    )
-                    logger.debug(f"📝 Recorded BUY signal event for {symbol} at {current_price} (strategy: {strategy_key}) - preventing duplicates")
-                except Exception as record_err:
-                    logger.warning(f"Failed to record BUY signal event for {symbol} (non-blocking): {record_err}")
             if not buy_allowed:
                 # CRITICAL: Only block if there's a valid price reference
                 # If no price reference exists, the signal should be allowed (should_emit_signal already handles this,
@@ -1336,35 +1324,6 @@ class SignalMonitorService:
             # Store throttle reason for use in alert message
             if sell_allowed:
                 throttle_sell_reason = sell_reason
-                # CRITICAL: Record signal event IMMEDIATELY after throttle check passes
-                # This prevents race conditions where multiple processes check should_emit_signal
-                # before any of them have recorded the signal, causing duplicate alerts
-                try:
-                    # Build emit reason (canonical codes from ALERTAS_Y_ORDENES_NORMAS.md)
-                    emit_reason_parts = []
-                    if sell_reason:
-                        # Map throttle reason to canonical code
-                        if "IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE" in sell_reason or "FORCED" in sell_reason:
-                            emit_reason_parts.append("IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE")
-                        else:
-                            emit_reason_parts.append(sell_reason)
-                    if last_sell_snapshot is None or last_sell_snapshot.timestamp is None:
-                        emit_reason_parts.append("First signal for this side/strategy")
-                    # CANONICAL: BUY and SELL are independent - no side change reset logic
-                    emit_reason = " | ".join(emit_reason_parts) if emit_reason_parts else "ALERT_SENT"
-                    
-                    record_signal_event(
-                        db,
-                        symbol=symbol,
-                        strategy_key=strategy_key,
-                        side="SELL",
-                        price=current_price,
-                        source="signal_check",
-                        emit_reason=emit_reason,
-                    )
-                    logger.debug(f"📝 Recorded SELL signal event for {symbol} at {current_price} (strategy: {strategy_key}) - preventing duplicates")
-                except Exception as record_err:
-                    logger.warning(f"Failed to record SELL signal event for {symbol} (non-blocking): {record_err}")
             # DEBUG: Log throttle check result for DOT_USD
             if symbol == "DOT_USD":
                 logger.info(
@@ -1756,6 +1715,7 @@ class SignalMonitorService:
                                     price=current_price,
                                     source="alert",
                                     emit_reason=emit_reason,
+                                    config_hash=config_hash_current,
                                 )
                                 logger.info(f"✅ Signal event recorded successfully for {symbol} BUY")
                                 buy_state_recorded = True
@@ -1952,6 +1912,7 @@ class SignalMonitorService:
             # 2. New BUY signal after WAIT/SELL (transition) AND no recent orders, OR
             # 3. Already in BUY but price has changed at least 3% from last order AND no recent orders
             should_create_order = False
+            blocked_by_limits = False
             
             # FIRST CHECK: Block if max open orders limit reached (most restrictive).
             # Use the UNIFIED count so that per-symbol logic matches global protection.
@@ -1960,9 +1921,8 @@ class SignalMonitorService:
                     f"🚫 BLOCKED: {symbol} has reached maximum open orders limit "
                     f"({unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}). Skipping new order."
                 )
-                should_create_order = False
+                blocked_by_limits = True
             # SECOND CHECK: Block if there are recent orders (within 5 minutes) - prevents consecutive orders
-            # IMPORTANT: Even if more than 5 minutes passed, we still need to check 3% price change
             elif recent_buy_orders:
                 # Get most recent time, handling timezone and None values
                 most_recent_order = recent_buy_orders[0]
@@ -1989,52 +1949,20 @@ class SignalMonitorService:
                         f"(order_id: {most_recent_order.exchange_order_id}, but timestamp is None). "
                         f"Cooldown period active - skipping new order to prevent consecutive orders."
                     )
+                blocked_by_limits = True
+
+            # ORDERS ONLY AFTER ALERT SENT and not blocked by limits/cooldown
+            if blocked_by_limits:
                 should_create_order = False
-            # THIRD CHECK: If alert was sent successfully, allow order creation (throttling already verified)
-            # CRITICAL: The alert throttling (should_emit_signal) already verified price change relative to last message
-            # If alert was sent, it means throttling passed, so we should create order if trade_enabled=True
-            # Only verify additional constraints (open orders limit, recent orders cooldown)
-            elif buy_alert_sent_successfully:
-                # Alert was sent successfully - throttling already verified price change relative to last message
-                # Allow order creation if trade_enabled=True (will be checked later)
+            elif not buy_alert_sent_successfully:
+                should_create_order = False
+                logger.info(f"ℹ️ {symbol}: BUY alert not sent -> skipping order creation")
+            else:
                 should_create_order = True
                 logger.info(
                     f"🟢 BUY alert was sent successfully for {symbol} (throttling passed). "
-                    f"Order creation allowed if trade_enabled=True (will be verified later)."
+                    f"Proceeding to order checks (trade_enabled, limits, cooldown)."
                 )
-            elif effective_last_price > 0:
-                # No alert was sent, but we have an open order - verify price change threshold
-                # This handles cases where alert was blocked but we still want to check for order creation
-                # Get min_price_change_pct from watchlist_item, fallback to default
-                # Check if attribute exists (for backward compatibility)
-                if hasattr(watchlist_item, 'min_price_change_pct') and watchlist_item.min_price_change_pct is not None:
-                    min_price_change_pct = watchlist_item.min_price_change_pct
-                else:
-                    min_price_change_pct = self.MIN_PRICE_CHANGE_PCT
-                
-                # Calculate price change from the open order price
-                price_change_pct = abs((current_price - effective_last_price) / effective_last_price * 100)
-                if price_change_pct >= min_price_change_pct:
-                    # Price change requirement met - allow order creation
-                    should_create_order = True
-                    logger.info(f"🟢 Price changed {price_change_pct:.2f}% for {symbol} (last open order: ${effective_last_price:.2f}, now: ${current_price:.2f}) - creating another order")
-                else:
-                    # Price change NOT met - block order creation
-                    logger.warning(
-                        f"🚫 BLOCKED: {symbol} price change {price_change_pct:.2f}% < {min_price_change_pct:.2f}% "
-                        f"(last open order: ${effective_last_price:.2f}, now: ${current_price:.2f}) - skipping to prevent consecutive orders."
-                    )
-                    should_create_order = False
-            else:
-                # No open orders and no alert sent - allow new order creation without price change check
-                # This handles: first_buy, new_transition, or continuing BUY state after all orders closed
-                should_create_order = True
-                if is_first_buy:
-                    logger.info(f"🟢 NEW BUY signal detected for {symbol} (first order, no open orders) - will create order")
-                elif is_new_buy_transition:
-                    logger.info(f"🟢 NEW BUY signal detected for {symbol} (transition from {prev_signal_state}, no open orders) - will create order")
-                else:
-                    logger.info(f"🟢 BUY signal for {symbol} (no open orders, allowing new order)")
             
             # ========================================================================
             # NOTA: El bloque de alertas ahora se ejecuta ANTES de la lógica de órdenes
@@ -2475,6 +2403,7 @@ class SignalMonitorService:
                                     price=current_price,
                                     source="alert",
                                     emit_reason=emit_reason,
+                                    config_hash=config_hash_current,
                                 )
                                 sell_state_recorded = True
                             except Exception as state_err:
@@ -3879,4 +3808,3 @@ class SignalMonitorService:
 
 # Global instance
 signal_monitor_service = SignalMonitorService()
-

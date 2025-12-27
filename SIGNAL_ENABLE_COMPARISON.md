@@ -134,3 +134,9 @@ ALTER TABLE watchlist_items ADD COLUMN sell_alert_enabled BOOLEAN NOT NULL DEFAU
 
 **Estado actual**: El sistema usa `trade_enabled` como workaround, pero esto mezcla dos conceptos diferentes y puede causar confusión.
 
+
+
+
+
+
+

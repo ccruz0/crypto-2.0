@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 from typing import Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.models.signal_throttle import SignalThrottleState
+
+# Whitelisted fields that define alert/trading configuration for throttling resets
+CONFIG_HASH_FIELDS = [
+    "alert_enabled",
+    "buy_alert_enabled",
+    "sell_alert_enabled",
+    "trade_enabled",
+    "strategy_id",
+    "strategy_name",
+    "min_price_change_pct",
+    "trade_amount_usd",
+]
 
 
 @dataclass
@@ -38,6 +51,15 @@ def build_strategy_key(strategy_type, risk_approach) -> str:
     strategy_value = getattr(strategy_type, "value", strategy_type)
     risk_value = getattr(risk_approach, "value", risk_approach)
     return _normalize_strategy_key(strategy_value, risk_value)
+
+
+def compute_config_hash(config: Dict[str, object]) -> str:
+    """Compute a stable hash from whitelisted config fields to avoid spurious resets."""
+    normalized = []
+    for field in CONFIG_HASH_FIELDS:
+        normalized.append(f"{field}={config.get(field)!r}")
+    payload = "|".join(normalized)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def fetch_signal_states(
@@ -176,6 +198,7 @@ def reset_throttle_state(
     side: Optional[str] = None,
     current_price: Optional[float] = None,
     parameter_change_reason: Optional[str] = None,
+    config_hash: Optional[str] = None,
 ) -> None:
     """
     Reset throttle state for a symbol+strategy combination (canonical: config change reset).
@@ -183,7 +206,7 @@ def reset_throttle_state(
     
     CANONICAL BEHAVIOR (per ALERTAS_Y_ORDENES_NORMAS.md):
     - baseline_price := current_price_now (if provided) or None
-    - last_sent_at := now
+    - last_sent_at is NOT updated on config change (only updated when an alert is SENT)
     - force_next_signal := True (to allow immediate bypass)
     
     If current_price is provided, it sets baseline_price to current price.
@@ -198,7 +221,6 @@ def reset_throttle_state(
         filters.append(SignalThrottleState.side == side.upper())
     
     rows = db.query(SignalThrottleState).filter(*filters).all()
-    now_ts = datetime.now(timezone.utc)
     
     try:
         for row in rows:
@@ -208,12 +230,12 @@ def reset_throttle_state(
             else:
                 row.last_price = None  # Full reset if no price provided
             row.previous_price = None
-            # CANONICAL: last_sent_at := now (allows immediate alert if conditions met)
-            row.last_time = now_ts
             # CANONICAL: Set force_next_signal = True to allow immediate bypass
             row.force_next_signal = True
             if parameter_change_reason:
                 row.emit_reason = f"CONFIG_CHANGE_RESET_BASELINE: {parameter_change_reason}"
+            if config_hash is not None:
+                row.config_hash = config_hash
         db.commit()
     except Exception:
         db.rollback()
@@ -307,6 +329,7 @@ def record_signal_event(
     price: Optional[float],
     source: str,
     emit_reason: Optional[str] = None,
+    config_hash: Optional[str] = None,
 ) -> None:
     """Persist the latest emitted signal."""
     side = side.upper()
@@ -331,6 +354,8 @@ def record_signal_event(
             existing.last_time = now_ts
             existing.last_source = source
             existing.emit_reason = emit_reason
+            if config_hash is not None:
+                existing.config_hash = config_hash
             # Clear force flag when recording a signal (it was used or we're recording new state)
             existing.force_next_signal = False
         else:
@@ -344,6 +369,7 @@ def record_signal_event(
                     last_source=source,
                     emit_reason=emit_reason,
                     force_next_signal=False,
+                    config_hash=config_hash,
                 )
             )
         db.commit()

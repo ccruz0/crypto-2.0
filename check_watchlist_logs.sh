@@ -29,3 +29,9 @@ tail -30 "$LOG_FILE"
 echo ""
 echo "✅ Revisión completada"
 
+
+
+
+
+
+

@@ -159,6 +159,7 @@ def ensure_optional_columns(db_engine=None):
     try:
         from app.models.watchlist import WatchlistItem
         from app.models.telegram_message import TelegramMessage
+        from app.models.signal_throttle import SignalThrottleState
     except Exception as import_err:
         logger.warning(f"Cannot load models to verify optional columns: {import_err}")
         return
@@ -179,6 +180,13 @@ def ensure_optional_columns(db_engine=None):
     table_configs[telegram_table] = [
         ("throttle_status", "VARCHAR(20)"),
         ("throttle_reason", "TEXT"),
+    ]
+
+    throttle_table = getattr(getattr(SignalThrottleState, "__table__", None), "name", None) or getattr(
+        SignalThrottleState, "__tablename__", "signal_throttle_states"
+    )
+    table_configs[throttle_table] = [
+        ("config_hash", "VARCHAR(128)")
     ]
     
     try:

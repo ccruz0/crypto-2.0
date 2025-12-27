@@ -112,10 +112,13 @@ return True, "ALERT_ENABLED"
 **Canonical Rule:** Alerts throttled by time and price change
 
 **Implementation:**
-- ⚠️ **DEPRECATED**: `ALERT_COOLDOWN_MINUTES = 5` - Ahora es fijo en 60 segundos (ver `ALERTAS_Y_ORDENES_NORMAS.md`)
-- ✅ `ALERT_MIN_PRICE_CHANGE_PCT = 1.0` (from config/strategy)
+- ✅ **Time Gate**: Fijo en 60 segundos (no configurable) - Verifica tiempo desde última alerta enviada
+- ✅ **Price Gate**: `min_price_change_pct` (from config/strategy, ej: 1.0%, 3.0%) - Compara con `baseline_price` del último mensaje
 - ✅ Uses `should_emit_signal()` from `signal_throttle.py`
-- ✅ Tracks last alert time and price per symbol/side
+- ✅ Tracks `baseline_price` and `last_sent_at` per (symbol, side) independently
+- ✅ Config change triggers immediate bypass (one-time per side)
+- ⚠️ **DEPRECATED**: `alert_cooldown_minutes` field exists in DB but is not used - throttling is fixed at 60 seconds
+- **Reference**: Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica completa
 
 ✅ **Matches canonical rule** - Prevents alert spam
 

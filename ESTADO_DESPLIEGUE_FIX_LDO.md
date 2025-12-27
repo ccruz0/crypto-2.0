@@ -77,3 +77,9 @@ Después del despliegue:
 - El despliegue puede tardar unos minutos si se hace automáticamente
 - Si necesitas desplegar manualmente, usa los comandos de arriba
 
+
+
+
+
+
+

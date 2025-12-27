@@ -210,3 +210,9 @@ docker compose logs -f market-updater-aws backend-aws | grep -E "MarketData|mark
 watch -n 60 'docker compose exec backend-aws python3 scripts/verify_market_data_status.py'
 ```
 
+
+
+
+
+
+

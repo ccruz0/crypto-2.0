@@ -1,207 +1,154 @@
-# Documentación Actualizada - Alertas y Órdenes
+# Documentation Update Summary
 
-**Fecha:** 2025-01-XX  
-**Propósito:** Actualización de documentación para reflejar la lógica canónica nueva de alertas y órdenes
+**Date:** 2025-12-24  
+**Task:** Update internal documentation to match NEW canonical logic for alerts and orders
 
----
+## Summary
 
-## 📋 Archivos Modificados
-
-### 1. Documento Principal (Fuente de Verdad)
-
-- **`docs/ALERTAS_Y_ORDENES_NORMAS.md`** - **COMPLETAMENTE REESCRITO**
-  - Actualizado con lógica canónica nueva
-  - Throttling fijo de 60 segundos (no configurable)
-  - Throttling independiente por (símbolo, lado)
-  - Sección de bypass inmediato post-configuración
-  - Tabla de verdad con 7 ejemplos concretos
-  - Nomenclatura estandarizada de campos
-
-### 2. Documentos con Notas de Deprecación
-
-- **`docs/SIGNAL_THROTTLE_LOG_ANALYSIS.md`**
-  - Agregada nota de deprecación al inicio
-  - Actualizada referencia a cooldown (ahora fijo 60s)
-
-- **`docs/monitoring/ADA_SELL_ALERT_FLOW_ANALYSIS.md`**
-  - Agregada nota de deprecación al inicio
-  - Actualizadas referencias a cooldown configurable
-  - Actualizada lógica de "cambio de lado resetea throttling" (removida)
-
-- **`docs/monitoring/business_rules_validation.md`**
-  - Marcada referencia a `ALERT_COOLDOWN_MINUTES = 5` como deprecada
-
-- **`docs/monitoring/ldo_usd_order_execution_explanation.md`**
-  - Actualizada referencia a cooldown de 5 minutos (ahora fijo 60s)
-
-- **`docs/monitoring/LDO_ALERTA_ORDEN_DIAGNOSTICO.md`**
-  - Agregada nota de deprecación
-  - Actualizada sección de throttle con referencia a lógica nueva
-
-- **`docs/SIGNAL_MONITOR_LOGGING_FIX.md`**
-  - Agregada nota histórica (documento de cambios pasados)
-
-- **`docs/SIGNAL_MONITOR_FIX_SUMMARY.md`**
-  - Agregada nota histórica (documento de cambios pasados)
+Updated all documentation to reflect the canonical logic where:
+- Alert throttling is fixed at 60 seconds (not configurable)
+- Throttling is per (symbol, side) - BUY and SELL are independent
+- Config changes trigger immediate bypass (one-time per side)
+- Orders are created only after successful alert (no re-checking price change)
+- Price gate uses `baseline_price` from last sent message (not last order)
 
 ---
 
-## 🔄 Resumen de Cambios
+## Modified Files
 
-### Cambios Principales en Lógica Documentada
+### 1. Primary Canonical Document
+- **`docs/ALERTAS_Y_ORDENES_NORMAS.md`** ✅
+  - Already correctly documents canonical logic
+  - Fixed 60 seconds throttling
+  - Per (symbol, side) granularity
+  - Config change immediate bypass
+  - Independent BUY/SELL sides
+  - Field naming consistency (baseline_price, last_sent_at, allow_immediate_after_config_change)
 
-1. **Throttling de Tiempo**:
-   - ❌ **ANTES**: Configurable (`alert_cooldown_minutes`, default 5 minutos)
-   - ✅ **AHORA**: Fijo en **60 segundos** (no configurable)
+### 2. Order Blocking Conditions
+- **`CONDICIONES_BLOQUEO_COMPRAS.md`** ✅
+  - Removed reference to "price change from last order" (deprecated)
+  - Updated checklist to reference alert throttling instead
+  - Updated summary table to mark deprecated conditions
+  - Added reference to canonical document
 
-2. **Granularidad de Throttling**:
-   - ✅ **CONFIRMADO**: Independiente por (símbolo, lado)
-   - ✅ BUY y SELL son completamente independientes
+### 3. Diagnostic Documentation
+- **`docs/monitoring/LDO_ALERTA_ORDEN_DIAGNOSTICO.md`** ✅
+  - Updated throttle section to reflect fixed 60 seconds
+  - Removed references to configurable `alert_cooldown_minutes`
+  - Updated to use `baseline_price` terminology
+  - Updated checklist items
 
-3. **Cambio de Lado**:
-   - ❌ **ANTES**: Cambio de lado (BUY ↔ SELL) resetea throttling
-   - ✅ **AHORA**: Los lados son independientes, no hay reset por cambio de lado
+### 4. Business Rules Validation
+- **`docs/monitoring/business_rules_validation.md`** ✅
+  - Updated throttling section to reflect canonical logic
+  - Added note about deprecated `alert_cooldown_minutes` field
+  - Added reference to canonical document
 
-4. **Cambio de Configuración**:
-   - ✅ **NUEVO**: Cuando cambia cualquier parámetro de configuración:
-     - Resetea baseline para ambos lados independientemente
-     - Permite bypass inmediato (una vez por lado)
-     - Después del bypass, vuelve a throttling normal
-
-5. **Puertas de Throttling**:
-   - ✅ **NUEVO**: Orden de verificación:
-     1. Primera alerta → Permitida inmediatamente
-     2. Puerta de tiempo (60s) → SIEMPRE se verifica primero
-     3. Puerta de precio → Solo después de pasar tiempo
-
-6. **Nomenclatura de Campos**:
-   - Documentación usa nombres canónicos:
-     - `baseline_price` (código: `last_price`)
-     - `last_sent_at` (código: `last_time`)
-     - `allow_immediate_after_config_change` (código: `force_next_signal`)
-
----
-
-## ✅ Checklist de Consistencia de Documentación
-
-### ✅ Throttling Fijo de 60s por (símbolo, lado)
-- [x] Documento principal actualizado con tiempo fijo
-- [x] Referencias a `alert_cooldown_minutes` marcadas como deprecadas
-- [x] Referencias a `minIntervalMinutes` marcadas como deprecadas
-- [x] Ejemplos actualizados con 60 segundos
-
-### ✅ Puerta de Precio Usa baseline_price
-- [x] Documentado uso de `baseline_price` (con nota de alias `last_price` en código)
-- [x] Fórmula documentada: `abs((precio_actual - baseline_price) / baseline_price) * 100 >= min_price_change_pct`
-- [x] Ejemplos numéricos incluidos (baseline $100, threshold 3%, etc.)
-
-### ✅ Bypass Inmediato Post-Config Documentado
-- [x] Sección completa sobre cambio de configuración
-- [x] Explicación de reset de baseline para ambos lados
-- [x] Explicación de flag `allow_immediate_after_config_change`
-- [x] Ejemplos de bypass inmediato incluidos
-
-### ✅ Órdenes Solo Después de Alerta Exitosa
-- [x] Documentado que orden requiere alerta enviada exitosamente
-- [x] Documentado que NO se re-verifica cambio de precio en creación de orden
-- [x] Mapeo BUY alert → BUY order, SELL alert → SELL order
-
-### ✅ Campos TP/SL Documentados
-- [x] `take_profit_pct` documentado como campo de estrategia
-- [x] `stop_loss_pct` documentado como campo de estrategia
-- [x] Ejemplo: TP 3%, SL 2%
-
-### ✅ Tabla de Verdad / Ejemplos
-- [x] 7 ejemplos concretos incluidos:
-  1. Cambio config → BUY inmediato
-  2. Cambio config → SELL inmediato
-  3. Bloqueado por tiempo
-  4. Bloqueado por precio
-  5. Permitido (tiempo + precio OK)
-  6. BUY permitido mientras SELL throttled (independencia)
-  7. Primera alerta
+### 5. Test Documentation
+- **`docs/monitoring/ADA_SELL_ALERT_FIX_SUMMARY.md`** ✅
+  - Marked "SELL after BUY resets throttle" test as deprecated
+  - Added note about independent sides
 
 ---
 
-## 🔍 Comandos de Verificación
+## Key Changes Made
 
-### Verificar Referencias a Cooldown Configurable (debería mostrar solo notas de deprecación)
+### 1. Alert Throttling Logic
+- **BEFORE**: Configurable cooldown (`alert_cooldown_minutes`, default 5 minutes)
+- **AFTER**: Fixed 60 seconds (not configurable)
+- **Documented in**: All affected docs updated
 
+### 2. Price Change Verification
+- **BEFORE**: Some docs referenced "price change from last order"
+- **AFTER**: Price change verified relative to `baseline_price` from last sent message
+- **Documented in**: CONDICIONES_BLOQUEO_COMPRAS.md, LDO_ALERTA_ORDEN_DIAGNOSTICO.md
+
+### 3. Side Independence
+- **BEFORE**: Some docs mentioned "change of side resets throttling"
+- **AFTER**: BUY and SELL are completely independent (per symbol, side)
+- **Documented in**: ADA_SELL_ALERT_FIX_SUMMARY.md (marked deprecated), main doc already correct
+
+### 4. Config Change Immediate Bypass
+- **BEFORE**: Not clearly documented
+- **AFTER**: Fully documented with examples in canonical doc
+- **Documented in**: ALERTAS_Y_ORDENES_NORMAS.md (already present)
+
+### 5. Field Naming Consistency
+- **BEFORE**: Mixed usage of `last_price`/`baseline_price`, `last_time`/`last_sent_at`
+- **AFTER**: Documentation uses canonical names with code alias notes
+- **Documented in**: ALERTAS_Y_ORDENES_NORMAS.md (mapping section)
+
+---
+
+## Documentation Consistency Checklist
+
+- [x] Alert throttling fixed to 60s per (symbol, side)
+- [x] Price gate uses `baseline_price` (not last order price)
+- [x] Config-change immediate bypass documented
+- [x] Orders only after successful alert (no re-checking price)
+- [x] TP/SL percent fields documented
+- [x] Independent BUY/SELL sides (no mutual reset)
+- [x] Field naming consistency (baseline_price, last_sent_at, allow_immediate_after_config_change)
+- [x] All deprecated terms marked or removed
+
+---
+
+## Verification Commands
+
+### Check for deprecated terms
 ```bash
-# Buscar referencias a alert_cooldown_minutes (debería mostrar solo en docs históricos con notas)
-grep -R "alert_cooldown_minutes" docs/ --include="*.md" | grep -v "DEPRECATED\|HISTORICAL" || echo "✅ Solo referencias deprecadas encontradas"
+# Should show only deprecated/historical references
+grep -R "alert_cooldown_minutes" docs/ --include="*.md" | grep -v "DEPRECATED\|HISTORICAL\|deprecated" || echo "✅ Only deprecated references found"
 
-# Buscar referencias a minIntervalMinutes
-grep -R "minIntervalMinutes" docs/ --include="*.md" | grep -v "DEPRECATED\|HISTORICAL" || echo "✅ Solo referencias deprecadas encontradas"
+# Should show only deprecated/historical references  
+grep -R "minIntervalMinutes" docs/ --include="*.md" | grep -v "DEPRECATED\|HISTORICAL\|deprecated" || echo "✅ Only deprecated references found"
 
-# Buscar referencias a cooldown de 5 minutos
-grep -R "5.*minut.*cooldown\|cooldown.*5.*minut" docs/ --include="*.md" -i | grep -v "DEPRECATED\|HISTORICAL" || echo "✅ Solo referencias deprecadas encontradas"
+# Should show only deprecated references
+grep -R "change of side resets\|side change resets\|direction change resets" docs/ --include="*.md" -i | grep -v "DEPRECATED\|deprecated\|NO resetea\|independiente" || echo "✅ Only deprecated/negative references found"
+
+# Should show only deprecated references
+grep -R "5 minutes cooldown\|5 minute cooldown" docs/ --include="*.md" -i | grep -v "DEPRECATED\|deprecated\|orden\|order" || echo "✅ Only deprecated/order-related references found"
+
+# Should show only deprecated references
+grep -R "price change from last order\|price change.*last order" docs/ --include="*.md" -i | grep -v "DEPRECATED\|deprecated\|NO\|not" || echo "✅ Only deprecated/negative references found"
 ```
 
-### Verificar Referencias a "Cambio de Lado Resetea"
-
+### Verify canonical document exists
 ```bash
-# Buscar referencias a cambio de lado reseteando throttling
-grep -R "change.*side.*reset\|side.*change.*reset\|cambio.*lado.*reset" docs/ --include="*.md" -i | grep -v "DEPRECATED\|NO resetea\|independientes" || echo "✅ Solo referencias corregidas encontradas"
+# Should show the canonical document
+ls -la docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ Canonical document exists"
 ```
 
-### Verificar Nomenclatura de Campos
-
+### Check field naming consistency
 ```bash
-# Verificar que baseline_price está documentado
-grep -R "baseline_price" docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ baseline_price documentado"
-
-# Verificar que last_sent_at está documentado
-grep -R "last_sent_at" docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ last_sent_at documentado"
-
-# Verificar que allow_immediate_after_config_change está documentado
-grep -R "allow_immediate_after_config_change" docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ allow_immediate_after_config_change documentado"
-```
-
-### Verificar Tabla de Verdad
-
-```bash
-# Verificar que hay ejemplos en el documento principal
-grep -R "Ejemplo [0-9]:" docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ Ejemplos encontrados"
-
-# Contar ejemplos
-grep -c "Ejemplo [0-9]:" docs/ALERTAS_Y_ORDENES_NORMAS.md
-```
-
-### Verificar Códigos de Razón
-
-```bash
-# Verificar códigos de razón documentados
-grep -E "THROTTLED_TIME_GATE|THROTTLED_PRICE_GATE|CONFIG_CHANGE|IMMEDIATE_ALERT|ALERT_SENT|ALERT_BLOCKED|ORDER_CREATED" docs/ALERTAS_Y_ORDENES_NORMAS.md && echo "✅ Códigos de razón documentados"
+# Should show canonical names in main doc
+grep -E "baseline_price|last_sent_at|allow_immediate_after_config_change" docs/ALERTAS_Y_ORDENES_NORMAS.md | head -5 && echo "✅ Canonical field names used"
 ```
 
 ---
 
-## 📝 Notas Adicionales
+## Remaining Deprecated Fields in Code
 
-1. **Documentos Históricos**: Algunos documentos en `docs/monitoring/` y `docs/` son reportes históricos o de diagnóstico. Se agregaron notas de deprecación pero se mantuvieron para referencia histórica.
+**Note**: The following fields exist in the database/code but are deprecated:
+- `alert_cooldown_minutes` (watchlist field) - Not used, throttling is fixed at 60s
+- `ALERT_COOLDOWN_MINUTES` (code constant) - May exist but not used for throttling decisions
 
-2. **Nomenclatura Código vs Documentación**: La documentación usa nombres canónicos (`baseline_price`, `last_sent_at`), pero el código puede usar alias (`last_price`, `last_time`). La documentación incluye notas de mapeo.
-
-3. **Fuente de Verdad**: `ALERTAS_Y_ORDENES_NORMAS.md` es ahora la **única fuente de verdad canónica** para las reglas de alertas y órdenes. Otros documentos deben referenciar este documento.
-
-4. **Verificación de Código**: Esta actualización es **solo de documentación**. No se modificó código. Si el código implementa lógica diferente, debe actualizarse para alinearse con esta documentación canónica.
+These are kept for backward compatibility but should not be referenced in new documentation.
 
 ---
 
-## 🎯 Próximos Pasos Recomendados
+## Next Steps
 
-1. **Auditar Código**: Verificar que el código implementa la lógica documentada:
-   - Throttling fijo de 60 segundos
-   - Independencia de lados
-   - Bypass inmediato post-config
-   - Nomenclatura de campos
-
-2. **Actualizar Tests**: Si hay tests que referencian lógica antigua, actualizarlos.
-
-3. **Comunicar Cambios**: Notificar al equipo sobre la nueva lógica canónica y la actualización de documentación.
+1. ✅ All documentation updated
+2. ⚠️ Code may still reference deprecated fields - this is OK for backward compatibility
+3. ✅ All docs now reference canonical document (`docs/ALERTAS_Y_ORDENES_NORMAS.md`)
+4. ✅ Inconsistencies marked as deprecated or removed
 
 ---
 
-**Documento generado automáticamente como parte de la actualización de documentación canónica.**
+## References
 
+- **Canonical Document**: `docs/ALERTAS_Y_ORDENES_NORMAS.md`
+- **Implementation**: `backend/app/services/signal_throttle.py`
+- **Model**: `backend/app/models/signal_throttle.py`

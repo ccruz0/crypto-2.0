@@ -106,3 +106,9 @@ El sistema debería funcionar correctamente para UNI_USDT:
 - Se enviarán alertas cuando se detecten señales
 - Se crearán órdenes automáticamente cuando se detecten señales BUY
 
+
+
+
+
+
+

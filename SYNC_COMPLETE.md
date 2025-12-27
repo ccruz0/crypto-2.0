@@ -54,3 +54,9 @@ Todos los símbolos ahora están completamente configurados y deberían:
 
 El sistema está completamente sincronizado y listo para funcionar con todos los símbolos configurados en el dashboard.
 
+
+
+
+
+
+

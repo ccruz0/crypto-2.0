@@ -25,26 +25,27 @@ cd backend && python scripts/diagnose_ldo_alerts.py
 
 ### 2. Throttle (Cooldown y Cambio de Precio) ⏱️
 
-**⚠️ DEPRECATED**: Ver `ALERTAS_Y_ORDENES_NORMAS.md` para lógica canónica actual.
+**Referencia canónica**: Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para la lógica completa.
 
 **Requerido:**
-- **Cooldown:** ⚠️ **DEPRECATED** - Ahora es fijo en 60 segundos (no configurable)
-  - ~~Default: 5 minutos (`alert_cooldown_minutes`)~~ 
-  - ~~Configurable por símbolo en watchlist~~
-- **Cambio de Precio:** El precio debe haber cambiado al menos el porcentaje mínimo
-  - Default: 1.0% (`min_price_change_pct`)
-  - Configurable por símbolo en watchlist
+- **Puerta de Tiempo (Time Gate)**: **FIJO** - 60 segundos desde la última alerta enviada para el mismo (símbolo, lado)
+  - ⚠️ **NO es configurable** - Siempre 60 segundos
+  - Se verifica primero, antes de la puerta de precio
+- **Puerta de Precio (Price Gate)**: El precio debe cambiar un porcentaje mínimo desde el `baseline_price` del último mensaje enviado
+  - Configurado por estrategia: `min_price_change_pct` (ej: 1.0%, 3.0%)
+  - Comparación: `abs((precio_actual - baseline_price) / baseline_price) * 100 >= min_price_change_pct`
+  - Solo se evalúa si la puerta de tiempo pasó
 
 **Verificación:**
 El script de diagnóstico muestra:
-- Tiempo transcurrido desde última alerta
-- Cambio de precio desde última alerta
+- Tiempo transcurrido desde última alerta (debe ser >= 60 segundos)
+- Cambio de precio desde `baseline_price` del último mensaje
 - Si ambos criterios se cumplen
 
 **Solución si está bloqueado:**
-- Esperar el tiempo de cooldown restante
-- O reducir `alert_cooldown_minutes` en el dashboard
-- O reducir `min_price_change_pct` en el dashboard
+- Esperar hasta que pasen 60 segundos desde la última alerta
+- Esperar a que el precio cambie el porcentaje mínimo requerido
+- **Nota**: No se puede configurar el tiempo de cooldown (es fijo en 60s)
 
 ### 3. Señal BUY Generada 🟢
 
@@ -184,8 +185,8 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "LDO.*(BLOQUEADO|BLOCKED)
 - [ ] `buy_alert_enabled = True` en dashboard
 - [ ] `trade_enabled = True` en dashboard (para órdenes)
 - [ ] `trade_amount_usd` configurado (para órdenes)
-- [ ] Cooldown cumplido (5 min default)
-- [ ] Cambio de precio cumplido (1% default)
+- [ ] Cooldown cumplido (60 segundos fijo, no configurable)
+- [ ] Cambio de precio cumplido (desde `baseline_price` del último mensaje, configurado por estrategia)
 - [ ] MAs disponibles: MA50 y EMA10 (para órdenes)
 - [ ] Órdenes abiertas < 3 (para órdenes)
 - [ ] Portfolio <= 3x trade_amount_usd (para órdenes)
@@ -198,7 +199,8 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "LDO.*(BLOQUEADO|BLOCKED)
 
 2. **Throttle es crítico:**
    - Incluso si todos los flags están activados, el throttle puede bloquear
-   - El throttle requiere AMBOS: cooldown Y cambio de precio
+   - El throttle requiere AMBOS: 60 segundos de cooldown (fijo) Y cambio de precio mínimo desde `baseline_price`
+   - Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para detalles completos
 
 3. **MAs son requeridos solo para órdenes:**
    - Las alertas se envían aunque falten MAs

@@ -30,11 +30,13 @@
 - **Ejemplo**: Si creaste una orden hace 3 minutos, NO se creará otra hasta que pasen 5 minutos
 - **Solución**: Espera 5 minutos desde la última orden
 
-### Bloqueo 3: Cambio de Precio Insuficiente (Línea 1979-2008)
-**Condición**: `price_change_pct < MIN_PRICE_CHANGE_PCT` (default: 1%)
-- **Límite**: Requiere mínimo 1% de cambio de precio desde la última orden
-- **Ejemplo**: Si la última orden fue a $100 y el precio actual es $100.50 (0.5%), NO se creará otra orden
-- **Solución**: Espera a que el precio cambie al menos 1%
+### Bloqueo 3: Cambio de Precio Insuficiente (DEPRECADO - Ya no aplica)
+**⚠️ NOTA**: Este bloqueo ya NO aplica. Las órdenes se crean después de alertas exitosas, y el cambio de precio se verifica durante el throttling de alertas (relativo al último mensaje enviado, no a la última orden).
+
+**Lógica Actual**:
+- El cambio de precio se verifica durante el throttling de alertas (relativo a `baseline_price` del último mensaje)
+- Si la alerta fue enviada exitosamente, la orden se crea sin re-verificar cambio de precio
+- Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para la lógica canónica actual
 
 ### Bloqueo 4: Portfolio Limit Excedido (Línea 2125-2143)
 **Condición**: `portfolio_value > 3 * trade_amount_usd`
@@ -82,9 +84,11 @@ GET /api/orders/open
 3. ✅ Hay señal BUY activa (`strategy.decision = "BUY"`)?
 4. ✅ Hay menos de 3 órdenes abiertas?
 5. ✅ Pasaron más de 5 minutos desde la última orden?
-6. ✅ El precio cambió al menos 1% desde la última orden?
+6. ✅ **La alerta fue enviada exitosamente** (el cambio de precio se verifica en el throttling de alertas, no en órdenes)
 7. ✅ El portfolio value < 3x trade_amount_usd?
 8. ✅ MA50 y EMA10 están disponibles?
+
+**Nota**: El cambio de precio se verifica durante el throttling de alertas (60 segundos + cambio mínimo desde `baseline_price` del último mensaje). Si la alerta fue enviada, la orden se crea sin re-verificar precio. Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para detalles.
 
 ### Si todo está OK pero no se crean órdenes:
 
@@ -104,13 +108,15 @@ GET /api/orders/open
 
 ## 📊 Resumen de Límites
 
-| Condición | Límite | Ubicación en Código |
-|-----------|--------|---------------------|
-| Máximo órdenes por símbolo | 3 | Línea 60, 1942 |
-| Cooldown entre órdenes | 5 minutos | Línea 1786, 1949 |
-| Cambio de precio mínimo | 1% | Línea 61, 1989 |
-| Portfolio limit | 3x trade_amount_usd | Línea 2122, 2125 |
-| Lock de creación | 10 segundos | Línea 62, 1921 |
+| Condición | Límite | Notas |
+|-----------|--------|-------|
+| Máximo órdenes por símbolo | 3 | Por base currency |
+| Cooldown entre órdenes | 5 minutos | Independiente del throttling de alertas |
+| ~~Cambio de precio mínimo~~ | ~~1%~~ | ⚠️ **DEPRECADO** - Ya no aplica. El cambio de precio se verifica en el throttling de alertas (60s + cambio desde `baseline_price` del último mensaje) |
+| Portfolio limit | 3x trade_amount_usd | Bloquea órdenes, no alertas |
+| Lock de creación | 10 segundos | Protección contra duplicados |
+
+**Referencia**: Ver `docs/ALERTAS_Y_ORDENES_NORMAS.md` para la lógica canónica actual de alertas y órdenes.
 
 ## ✅ Estado Actual del Fix
 
@@ -118,4 +124,5 @@ GET /api/orders/open
 - ✅ `alert_enabled` se habilita automáticamente
 - ✅ `signal_monitor` usa `strategy.decision`
 - ⚠️  Las órdenes tienen múltiples condiciones de bloqueo (por diseño)
+
 

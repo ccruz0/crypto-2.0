@@ -174,3 +174,9 @@ db.close()
 - [ ] Valores persisten después del reinicio
 - [ ] Valores verificados en la base de datos directamente
 
+
+
+
+
+
+

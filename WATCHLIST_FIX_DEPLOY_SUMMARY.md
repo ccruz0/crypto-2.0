@@ -142,3 +142,9 @@ Los campos técnicos (price, rsi, ma50, ma200, ema10) **aún pueden mostrar `-`*
 3. Monitorear logs para advertencias de MarketData
 4. Asegurar que `market_updater` esté corriendo para resolver campos técnicos restantes
 
+
+
+
+
+
+

@@ -68,3 +68,9 @@ echo "2. Verify MarketData status:"
 echo "   docker compose --profile aws exec backend-aws python3 scripts/verify_market_data_status.py"
 echo ""
 echo "3. Check watchlist API response to verify default values are present"
+
+
+
+
+
+

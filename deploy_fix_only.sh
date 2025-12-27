@@ -117,3 +117,9 @@ echo "   2. Busca BTC o DOT en la watchlist"
 echo "   3. Si muestra BUY con INDEX:100%, la alerta debería saltar automáticamente"
 echo "   4. Verifica los logs del backend para confirmar que detecta las señales"
 
+
+
+
+
+
+

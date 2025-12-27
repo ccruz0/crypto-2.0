@@ -276,3 +276,9 @@ grep -r "password\|secret\|token" backend/app --include="*.py" | grep -i "log\|p
 **Fin del Documento**
 
 
+
+
+
+
+
+

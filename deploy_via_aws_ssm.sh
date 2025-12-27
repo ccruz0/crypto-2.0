@@ -84,3 +84,9 @@ else
     echo "   3. La instancia EC2 tiene SSM Agent instalado"
 fi
 
+
+
+
+
+
+

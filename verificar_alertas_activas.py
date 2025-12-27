@@ -158,3 +158,9 @@ def verificar_alertas():
 if __name__ == "__main__":
     verificar_alertas()
 
+
+
+
+
+
+
