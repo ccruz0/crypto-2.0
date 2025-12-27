@@ -2445,11 +2445,11 @@ class SignalMonitorService:
                 
                 # CRITICAL: Final check - verify sell_alert_enabled before sending
                 # Refresh flag from database to ensure we have latest value
+                # Use get_canonical_watchlist_item to get the correct item (same logic as transition emitter)
                 db.expire_all()  # Force refresh from database
                 try:
-                    fresh_check = db.query(WatchlistItem).filter(
-                        WatchlistItem.symbol == symbol
-                    ).first()
+                    from app.services.watchlist_selector import get_canonical_watchlist_item
+                    fresh_check = get_canonical_watchlist_item(db, symbol)
                     if fresh_check:
                         sell_alert_enabled = getattr(fresh_check, 'sell_alert_enabled', False)
                         logger.debug(f"🔄 Última verificación de sell_alert_enabled para {symbol}: {sell_alert_enabled}")
