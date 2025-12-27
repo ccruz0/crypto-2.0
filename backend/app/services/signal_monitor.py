@@ -1362,6 +1362,32 @@ class SignalMonitorService:
             last_sell_snapshot = signal_snapshots.get("SELL")
             prev_sell_price_from_snapshot: Optional[float] = last_sell_snapshot.price if last_sell_snapshot and last_sell_snapshot.price else None
             
+            # PHASE 0: Structured logging for SELL signal evaluation decision
+            time_since_last_sell = None
+            if last_sell_snapshot and last_sell_snapshot.timestamp:
+                elapsed = (now_utc - last_sell_snapshot.timestamp).total_seconds()
+                time_since_last_sell = elapsed
+            price_change_usd_sell = None
+            price_change_pct_sell = None
+            if prev_sell_price_from_snapshot and prev_sell_price_from_snapshot > 0:
+                price_change_usd_sell = abs(current_price - prev_sell_price_from_snapshot)
+                price_change_pct_sell = abs((current_price - prev_sell_price_from_snapshot) / prev_sell_price_from_snapshot * 100)
+            
+            price_change_usd_str_sell = f"${price_change_usd_sell:.2f}" if price_change_usd_sell else "N/A"
+            price_change_pct_str_sell = f"{price_change_pct_sell:.2f}%" if price_change_pct_sell else "N/A"
+            time_since_last_str_sell = f"{time_since_last_sell:.1f}s" if time_since_last_sell else "N/A"
+            
+            logger.info(
+                f"[EVAL_{evaluation_id}] {symbol} SELL signal evaluation | "
+                f"decision={'ACCEPT' if sell_allowed else 'BLOCK'} | "
+                f"current_price=${current_price:.4f} | "
+                f"price_change_usd={price_change_usd_str_sell} | "
+                f"price_change_pct={price_change_pct_str_sell} | "
+                f"time_since_last={time_since_last_str_sell} | "
+                f"threshold={throttle_config.min_price_change_pct}% | "
+                f"reason={sell_reason}"
+            )
+            
             # Store throttle reason for use in alert message
             if sell_allowed:
                 throttle_sell_reason = sell_reason
@@ -2182,11 +2208,30 @@ class SignalMonitorService:
                     logger.info(f"✅ [ORDER_CREATION_CHECK] {symbol} - trade_enabled=True confirmed, proceeding with order creation")
                     if watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                         logger.info(f"✅ Trade enabled for {symbol} - creating BUY order automatically")
+                        # PHASE 0: Structured logging for order creation attempt
+                        logger.info(
+                            f"[EVAL_{evaluation_id}] {symbol} BUY order creation attempt | "
+                            f"trade_enabled=True | "
+                            f"trade_amount_usd=${watchlist_item.trade_amount_usd:.2f} | "
+                            f"price=${current_price:.4f}"
+                        )
                         try:
                             # Use asyncio.run() to execute async function from sync context
                             import asyncio
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
                             if order_result:
+                                # PHASE 0: Structured logging for order creation success
+                                order_id = order_result.get("order_id") or order_result.get("client_oid") or "N/A"
+                                exchange_order_id = order_result.get("exchange_order_id") or "N/A"
+                                filled_price = order_result.get("filled_price") or current_price
+                                quantity = order_result.get("quantity") or 0
+                                logger.info(
+                                    f"[EVAL_{evaluation_id}] {symbol} BUY order creation SUCCESS | "
+                                    f"order_id={order_id} | "
+                                    f"exchange_order_id={exchange_order_id} | "
+                                    f"price=${filled_price:.4f} | "
+                                    f"quantity={quantity:.4f}"
+                                )
                                 filled_price = order_result.get("filled_price")
                                 state_entry = self.last_signal_states.get(symbol, {})
                                 if filled_price:
@@ -2224,11 +2269,24 @@ class SignalMonitorService:
                                 # Order creation failed, remove lock immediately
                                 if symbol in self.order_creation_locks:
                                     del self.order_creation_locks[symbol]
-                                    logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
+                                # PHASE 0: Structured logging for order creation failure
+                                logger.error(
+                                    f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
+                                    f"order_result=None or empty | "
+                                    f"price=${current_price:.4f}"
+                                )
+                                logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
                         except Exception as order_err:
                             # Order creation failed, remove lock immediately
                             if symbol in self.order_creation_locks:
                                 del self.order_creation_locks[symbol]
+                            # PHASE 0: Structured logging for order creation exception
+                            error_str = str(order_err)[:200]  # Limit error message length
+                            logger.error(
+                                f"[EVAL_{evaluation_id}] {symbol} BUY order creation EXCEPTION | "
+                                f"error={error_str} | "
+                                f"price=${current_price:.4f}"
+                            )
                             logger.error(f"❌ Order creation failed for {symbol}: {order_err}", exc_info=True)
                             raise
                     else:
@@ -2427,14 +2485,32 @@ class SignalMonitorService:
                             throttle_reason=throttle_sell_reason or throttle_reason or sell_reason,
                             origin=alert_origin,
                         )
+                        # PHASE 0: Structured logging for SELL Telegram send attempt
+                        message_id_sell = None
+                        if isinstance(result, dict):
+                            message_id_sell = result.get("message_id")
+                        elif hasattr(result, 'message_id'):
+                            message_id_sell = result.message_id
+                        
                         # Alerts must never be blocked after conditions are met (guardrail compliance)
                         # If send_sell_signal returns False, log as error but do not treat as block
                         if result is False:
+                            logger.error(
+                                f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send FAILED | "
+                                f"result=False | "
+                                f"reason={reason_text}"
+                            )
                             logger.error(
                                 f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
                                 f"This should not happen when conditions are met. Check telegram_notifier."
                             )
                         else:
+                            logger.info(
+                                f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send SUCCESS | "
+                                f"message_id={message_id_sell or 'N/A'} | "
+                                f"price=${current_price:.4f} | "
+                                f"reason={reason_text}"
+                            )
                             logger.info(
                                 f"✅ SELL alert SENT for {symbol}: "
                                 f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
