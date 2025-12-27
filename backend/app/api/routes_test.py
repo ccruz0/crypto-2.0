@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 from app.database import get_db
 from app.models.watchlist import WatchlistItem
-from app.models.market_price import MarketPrice, MarketData
+from app.models.market_price import MarketPrice, MarketData as MarketDataModel
 from app.services.signal_monitor import signal_monitor_service
 from app.services.telegram_notifier import telegram_notifier
 from app.services.sl_tp_checker import sl_tp_checker_service
@@ -1138,8 +1138,8 @@ def inject_test_price(
         market_price.price = new_price
         market_price.updated_at = datetime.now(timezone.utc)
         
-        # Update MarketData if it exists
-        market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+        # Update MarketData if it exists (MarketDataModel is imported at top from market_price)
+        market_data = db.query(MarketDataModel).filter(MarketDataModel.symbol == symbol).first()
         if market_data:
             # Update price in MarketData to match MarketPrice
             market_data.price = new_price
@@ -1154,9 +1154,8 @@ def inject_test_price(
                 market_data.ma200 = float(payload.get("ma200"))
             market_data.updated_at = datetime.now(timezone.utc)
         else:
-            # Create MarketData entry if it doesn't exist
-            from app.models.market_data import MarketData
-            market_data = MarketData(
+            # Create MarketData entry if it doesn't exist (MarketDataModel is imported at top from market_price)
+            market_data = MarketDataModel(
                 symbol=symbol,
                 price=new_price,
                 rsi=payload.get("rsi"),

@@ -154,6 +154,7 @@ services:
       - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
       - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
+      - ENABLE_TEST_PRICE_INJECTION=${ENABLE_TEST_PRICE_INJECTION:-0}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
