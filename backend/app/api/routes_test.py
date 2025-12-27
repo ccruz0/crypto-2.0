@@ -1152,9 +1152,23 @@ def inject_test_price(
                 market_data.ema10 = float(payload.get("ema10"))
             if "ma200" in payload and payload.get("ma200") is not None:
                 market_data.ma200 = float(payload.get("ma200"))
+            if "current_volume" in payload and payload.get("current_volume") is not None:
+                market_data.current_volume = float(payload.get("current_volume"))
+            if "avg_volume" in payload and payload.get("avg_volume") is not None:
+                market_data.avg_volume = float(payload.get("avg_volume"))
+                # Calculate volume ratio
+                if market_data.current_volume and market_data.avg_volume and market_data.avg_volume > 0:
+                    market_data.volume_ratio = market_data.current_volume / market_data.avg_volume
             market_data.updated_at = datetime.now(timezone.utc)
         else:
             # Create MarketData entry if it doesn't exist (MarketDataModel is imported at top from market_price)
+            # Calculate volume ratio if volumes provided
+            volume_ratio = None
+            current_volume = payload.get("current_volume")
+            avg_volume = payload.get("avg_volume")
+            if current_volume and avg_volume and avg_volume > 0:
+                volume_ratio = float(current_volume) / float(avg_volume)
+            
             market_data = MarketDataModel(
                 symbol=symbol,
                 price=new_price,
@@ -1162,6 +1176,9 @@ def inject_test_price(
                 ma50=payload.get("ma50"),
                 ema10=payload.get("ema10"),
                 ma200=payload.get("ma200"),
+                current_volume=current_volume,
+                avg_volume=avg_volume,
+                volume_ratio=volume_ratio,
                 updated_at=datetime.now(timezone.utc)
             )
             db.add(market_data)
