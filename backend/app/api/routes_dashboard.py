@@ -1943,6 +1943,12 @@ def update_watchlist_item(
         if buy_alert_enabled_old_value != new_value:
             config_changed = True
             config_change_reasons.append(f"buy_alert_enabled ({'YES' if buy_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+            # PHASE 0: Structured logging for UI toggle
+            log.info(
+                f"[UI_TOGGLE] {symbol} BUY alert toggle | "
+                f"previous_state={'ENABLED' if buy_alert_enabled_old_value else 'DISABLED'} | "
+                f"new_state={'ENABLED' if new_value else 'DISABLED'}"
+            )
     
     # Check sell_alert_enabled change
     if "sell_alert_enabled" in payload and sell_alert_enabled_old_value is not None:
@@ -1950,6 +1956,12 @@ def update_watchlist_item(
         if sell_alert_enabled_old_value != new_value:
             config_changed = True
             config_change_reasons.append(f"sell_alert_enabled ({'YES' if sell_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+            # PHASE 0: Structured logging for UI toggle
+            log.info(
+                f"[UI_TOGGLE] {symbol} SELL alert toggle | "
+                f"previous_state={'ENABLED' if sell_alert_enabled_old_value else 'DISABLED'} | "
+                f"new_state={'ENABLED' if new_value else 'DISABLED'}"
+            )
     
     # Check trade_enabled change
     if "trade_enabled" in payload and trade_enabled_old_value is not None:

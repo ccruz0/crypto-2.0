@@ -738,8 +738,12 @@ class SignalMonitorService:
 
     def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):
         """Check signal for a specific coin and take action if needed"""
+        import uuid
         symbol = watchlist_item.symbol
         exchange = watchlist_item.exchange or "CRYPTO_COM"
+        
+        # Generate unique evaluation_id for this symbol evaluation run
+        evaluation_id = str(uuid.uuid4())[:8]
         
         try:
             # IMPORTANT: Query fresh from database to get latest trade_amount_usd
@@ -823,10 +827,21 @@ class SignalMonitorService:
         risk_display = risk_approach.value.title()
         config_hash_current = self._compute_config_hash(watchlist_item)
 
+        # PHASE 0: Structured logging with evaluation_id
+        min_price_change_pct, alert_cooldown_minutes = self._resolve_alert_thresholds(watchlist_item)
+        logger.info(
+            f"[EVAL_{evaluation_id}] {symbol} evaluation started | "
+            f"strategy={strategy_display}/{risk_display} | "
+            f"min_price_change_pct={min_price_change_pct}% | "
+            f"alert_cooldown_minutes={alert_cooldown_minutes} | "
+            f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)} | "
+            f"sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} | "
+            f"alert_enabled={watchlist_item.alert_enabled} | "
+            f"environment={get_runtime_origin()}"
+        )
+
         self._log_symbol_context(symbol, "BUY", watchlist_item, strategy_display, risk_display)
         self._log_symbol_context(symbol, "SELL", watchlist_item, strategy_display, risk_display)
-
-        min_price_change_pct, alert_cooldown_minutes = self._resolve_alert_thresholds(watchlist_item)
 
         # ========================================================================
         # CRITICAL: Verify alert_enabled is True after refresh - exit early if False
@@ -1192,6 +1207,32 @@ class SignalMonitorService:
             # This ensures we use the same price that was used in the throttle check for consistency
             last_buy_snapshot = signal_snapshots.get("BUY")
             prev_buy_price_from_snapshot: Optional[float] = last_buy_snapshot.price if last_buy_snapshot and last_buy_snapshot.price else None
+            
+            # PHASE 0: Structured logging for signal evaluation decision
+            time_since_last = None
+            if last_buy_snapshot and last_buy_snapshot.timestamp:
+                elapsed = (now_utc - last_buy_snapshot.timestamp).total_seconds()
+                time_since_last = elapsed
+            price_change_usd = None
+            price_change_pct = None
+            if prev_buy_price_from_snapshot and prev_buy_price_from_snapshot > 0:
+                price_change_usd = abs(current_price - prev_buy_price_from_snapshot)
+                price_change_pct = abs((current_price - prev_buy_price_from_snapshot) / prev_buy_price_from_snapshot * 100)
+            
+            price_change_usd_str = f"${price_change_usd:.2f}" if price_change_usd else "N/A"
+            price_change_pct_str = f"{price_change_pct:.2f}%" if price_change_pct else "N/A"
+            time_since_last_str = f"{time_since_last:.1f}s" if time_since_last else "N/A"
+            
+            logger.info(
+                f"[EVAL_{evaluation_id}] {symbol} BUY signal evaluation | "
+                f"decision={'ACCEPT' if buy_allowed else 'BLOCK'} | "
+                f"current_price=${current_price:.4f} | "
+                f"price_change_usd={price_change_usd_str} | "
+                f"price_change_pct={price_change_pct_str} | "
+                f"time_since_last={time_since_last_str} | "
+                f"threshold={throttle_config.min_price_change_pct}% | "
+                f"reason={buy_reason}"
+            )
             
             # Store throttle reason for use in alert message
             if buy_allowed:
@@ -1674,15 +1715,33 @@ class SignalMonitorService:
                             throttle_reason=throttle_buy_reason or buy_reason,
                             origin=alert_origin,
                         )
+                        # PHASE 0: Structured logging for Telegram send attempt
+                        message_id = None
+                        if isinstance(result, dict):
+                            message_id = result.get("message_id")
+                        elif hasattr(result, 'message_id'):
+                            message_id = result.message_id
+                        
                         # Alerts must never be blocked after conditions are met (guardrail compliance)
                         # If send_buy_signal returns False, log as error but do not treat as block
                         if result is False:
+                            logger.error(
+                                f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send FAILED | "
+                                f"result=False | "
+                                f"reason={reason_text}"
+                            )
                             logger.error(
                                 f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
                                 f"This should not happen when conditions are met. Check telegram_notifier."
                             )
                         else:
                             # Message already registered in send_buy_signal as sent
+                            logger.info(
+                                f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send SUCCESS | "
+                                f"message_id={message_id or 'N/A'} | "
+                                f"price=${current_price:.4f} | "
+                                f"reason={reason_text}"
+                            )
                             logger.info(
                                 f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
                                 f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 from app.database import get_db
 from app.models.watchlist import WatchlistItem
+from app.models.market_price import MarketPrice, MarketData
 from app.services.signal_monitor import signal_monitor_service
 from app.services.telegram_notifier import telegram_notifier
 from app.services.sl_tp_checker import sl_tp_checker_service
@@ -11,6 +12,7 @@ import requests
 import logging
 import asyncio
 import time
+import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1063,4 +1065,98 @@ def send_test_telegram_message(
     except Exception as e:
         logger.error(f"Error sending test Telegram message: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error sending test message: {str(e)}")
+
+
+@router.post("/test/inject-price")
+def inject_test_price(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Test-only endpoint to inject a mock price for a symbol to simulate threshold crossing.
+    
+    This endpoint is ONLY enabled when ENABLE_TEST_PRICE_INJECTION=1 (local dev only).
+    It updates MarketPrice and MarketData with a simulated price change to test throttle logic.
+    
+    Body: {
+        "symbol": "BTC_USDT",
+        "price_delta_usd": 10.5  # Price change in USD (absolute, not percentage)
+    }
+    """
+    # CRITICAL: Only enable in local dev with explicit flag
+    if os.getenv("ENABLE_TEST_PRICE_INJECTION") != "1":
+        raise HTTPException(
+            status_code=403,
+            detail="Test price injection is disabled. Set ENABLE_TEST_PRICE_INJECTION=1 to enable (local dev only)."
+        )
+    
+    try:
+        symbol = payload.get("symbol", "").upper()
+        price_delta_usd = float(payload.get("price_delta_usd", 0))
+        
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        
+        # Get current price from MarketPrice
+        market_price = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+        if not market_price or not market_price.price:
+            raise HTTPException(status_code=404, detail=f"No price data found for {symbol}")
+        
+        current_price = float(market_price.price)
+        new_price = current_price + price_delta_usd
+        
+        if new_price <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid price delta: would result in price <= 0")
+        
+        # Update MarketPrice
+        market_price.price = new_price
+        market_price.updated_at = datetime.now(timezone.utc)
+        
+        # Update MarketData if it exists
+        market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+        if market_data:
+            # Keep other indicators the same, just update price
+            # This simulates a price change without affecting RSI/MA calculations
+            pass
+        
+        db.commit()
+        
+        price_change_pct = (price_delta_usd / current_price) * 100
+        
+        logger.info(
+            f"[TEST_PRICE_INJECTION] {symbol} price injected: "
+            f"${current_price:.4f} -> ${new_price:.4f} "
+            f"(delta: ${price_delta_usd:.2f}, {price_change_pct:.2f}%)"
+        )
+        
+        # Trigger signal evaluation for this symbol
+        try:
+            watchlist_item = db.query(WatchlistItem).filter(
+                WatchlistItem.symbol == symbol,
+                WatchlistItem.is_deleted == False
+            ).first()
+            
+            if watchlist_item:
+                # Trigger evaluation
+                signal_monitor_service._check_signal_for_coin_sync(db, watchlist_item)
+                logger.info(f"[TEST_PRICE_INJECTION] Triggered signal evaluation for {symbol}")
+        except Exception as eval_err:
+            logger.warning(f"[TEST_PRICE_INJECTION] Failed to trigger evaluation: {eval_err}")
+        
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "previous_price": current_price,
+            "new_price": new_price,
+            "price_delta_usd": price_delta_usd,
+            "price_change_pct": round(price_change_pct, 2),
+            "message": f"Price injected: ${current_price:.4f} -> ${new_price:.4f}"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error injecting test price: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error injecting test price: {str(e)}")
 
