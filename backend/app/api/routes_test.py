@@ -1080,8 +1080,15 @@ def inject_test_price(
     
     Body: {
         "symbol": "BTC_USDT",
-        "price_delta_usd": 10.5  # Price change in USD (absolute, not percentage)
+        "price": 50000.0,  # Optional: Absolute price (takes precedence over price_delta_usd)
+        "price_delta_usd": 10.5,  # Optional: Price change in USD (absolute, not percentage)
+        "rsi": 30.0,  # Optional: Override RSI value
+        "ma50": 49000.0,  # Optional: Override MA50 value
+        "ema10": 49500.0,  # Optional: Override EMA10 value
+        "ma200": 48000.0,  # Optional: Override MA200 value
     }
+    
+    If both "price" and "price_delta_usd" are provided, "price" takes precedence.
     """
     # CRITICAL: Only enable in local dev with explicit flag
     if os.getenv("ENABLE_TEST_PRICE_INJECTION") != "1":
@@ -1092,10 +1099,21 @@ def inject_test_price(
     
     try:
         symbol = payload.get("symbol", "").upper()
-        price_delta_usd = float(payload.get("price_delta_usd", 0))
         
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol is required")
+        
+        # Support both absolute price and price delta
+        price_delta_usd = 0.0
+        if "price" in payload and payload.get("price") is not None:
+            # Use absolute price if provided
+            target_price = float(payload.get("price"))
+            price_delta_usd = None  # Will be calculated after getting current price
+        elif "price_delta_usd" in payload and payload.get("price_delta_usd") is not None:
+            # Use price delta if provided
+            price_delta_usd = float(payload.get("price_delta_usd"))
+        else:
+            raise HTTPException(status_code=400, detail="Either 'price' or 'price_delta_usd' is required")
         
         # Get current price from MarketPrice
         market_price = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
@@ -1103,7 +1121,15 @@ def inject_test_price(
             raise HTTPException(status_code=404, detail=f"No price data found for {symbol}")
         
         current_price = float(market_price.price)
-        new_price = current_price + price_delta_usd
+        
+        # Calculate new price based on provided input
+        if price_delta_usd is None:
+            # Absolute price was provided
+            new_price = target_price
+            price_delta_usd = new_price - current_price
+        else:
+            # Price delta was provided
+            new_price = current_price + price_delta_usd
         
         if new_price <= 0:
             raise HTTPException(status_code=400, detail=f"Invalid price delta: would result in price <= 0")
@@ -1115,9 +1141,31 @@ def inject_test_price(
         # Update MarketData if it exists
         market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
         if market_data:
-            # Keep other indicators the same, just update price
-            # This simulates a price change without affecting RSI/MA calculations
-            pass
+            # Update price in MarketData to match MarketPrice
+            market_data.price = new_price
+            # Optionally update indicators if provided
+            if "rsi" in payload and payload.get("rsi") is not None:
+                market_data.rsi = float(payload.get("rsi"))
+            if "ma50" in payload and payload.get("ma50") is not None:
+                market_data.ma50 = float(payload.get("ma50"))
+            if "ema10" in payload and payload.get("ema10") is not None:
+                market_data.ema10 = float(payload.get("ema10"))
+            if "ma200" in payload and payload.get("ma200") is not None:
+                market_data.ma200 = float(payload.get("ma200"))
+            market_data.updated_at = datetime.now(timezone.utc)
+        else:
+            # Create MarketData entry if it doesn't exist
+            from app.models.market_data import MarketData
+            market_data = MarketData(
+                symbol=symbol,
+                price=new_price,
+                rsi=payload.get("rsi"),
+                ma50=payload.get("ma50"),
+                ema10=payload.get("ema10"),
+                ma200=payload.get("ma200"),
+                updated_at=datetime.now(timezone.utc)
+            )
+            db.add(market_data)
         
         db.commit()
         
