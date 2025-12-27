@@ -24,7 +24,6 @@ from app.services.signal_throttle import (
     SignalThrottleConfig,
     build_strategy_key,
     record_signal_event,
-    compute_config_hash,
 )
 from app.services.config_loader import get_alert_thresholds
 
