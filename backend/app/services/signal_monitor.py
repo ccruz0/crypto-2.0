@@ -1167,6 +1167,41 @@ class SignalMonitorService:
                 signal_snapshots = {}
         last_buy_snapshot = signal_snapshots.get("BUY")
         last_sell_snapshot = signal_snapshots.get("SELL")
+        
+        # CRITICAL: Check for config changes and reset throttle immediately
+        # This ensures that changes to trade_amount_usd, alert_enabled, etc. reset the throttle immediately
+        from app.services.signal_throttle import reset_throttle_state
+        config_changed = False
+        for side, snapshot in signal_snapshots.items():
+            if snapshot and snapshot.config_hash and snapshot.config_hash != config_hash_current:
+                config_changed = True
+                logger.info(
+                    f"🔄 [CONFIG_CHANGE] {symbol} {side}: Config hash changed "
+                    f"(stored={snapshot.config_hash[:16]}... current={config_hash_current[:16]}...). "
+                    f"Resetting throttle immediately."
+                )
+                reset_throttle_state(
+                    db=db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side=side,
+                    current_price=current_price,
+                    parameter_change_reason=f"Config hash changed (trade_amount_usd, alert flags, etc.)",
+                    config_hash=config_hash_current,
+                )
+                # Refresh snapshots after reset
+                try:
+                    signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+                    last_buy_snapshot = signal_snapshots.get("BUY")
+                    last_sell_snapshot = signal_snapshots.get("SELL")
+                except Exception as refresh_err:
+                    logger.warning(f"Failed to refresh throttle state after reset for {symbol}: {refresh_err}")
+        
+        if config_changed:
+            logger.info(
+                f"✅ [CONFIG_CHANGE] {symbol}: Throttle reset complete. "
+                f"Next signal will bypass throttle (force_next_signal=True)."
+            )
 
         now_utc = datetime.now(timezone.utc)
         buy_state_recorded = False

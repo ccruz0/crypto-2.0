@@ -38,6 +38,7 @@ class LastSignalSnapshot:
     price: Optional[float]
     timestamp: Optional[datetime]
     force_next_signal: bool = False
+    config_hash: Optional[str] = None  # Hash of config when signal was last emitted
 
 
 def _normalize_strategy_key(strategy_type: Optional[str], risk_approach: Optional[str]) -> str:
@@ -81,6 +82,7 @@ def fetch_signal_states(
             price=row.last_price,
             timestamp=row.last_time,
             force_next_signal=getattr(row, 'force_next_signal', False),
+            config_hash=getattr(row, 'config_hash', None),
         )
     return snapshots
 
