@@ -403,7 +403,8 @@ def get_signals(
     ema10_period: int = Query(10, description="EMA10 period"),
     ma10w_period: int = Query(70, description="MA10w period"),
     atr_period: int = Query(14, description="ATR period"),
-    volume_period: int = Query(5, description="Volume period (reduced from 10 for faster reaction)")
+    volume_period: int = Query(5, description="Volume period (reduced from 10 for faster reaction)"),
+    db: Session = Depends(get_db) if DB_AVAILABLE else None
 ):
     """Calculate technical indicators and trading signals - SIMPLIFIED VERSION
     
@@ -427,8 +428,12 @@ def get_signals(
                 
                 logger.debug(f"🔍 [SIGNALS] {symbol}: Attempting database lookup")
                 # OPTIMIZED: Use limit(1) to avoid full table scan
-                db_gen = get_db()
-                db = next(db_gen)
+                # Use provided db session or create new one
+                should_close_db = False
+                if db is None:
+                    db_gen = get_db()
+                    db = next(db_gen)
+                    should_close_db = True
                 try:
                     # Fast query: filter by symbol and limit to 1 result
                     db_query_start = time_module.time()
@@ -529,7 +534,8 @@ def get_signals(
                         db_elapsed = time_module.time() - db_start
                         logger.info(f"✅ [SIGNALS] {symbol}: Got market data from database in {db_elapsed:.3f}s")
                 finally:
-                    db.close()
+                    if should_close_db:
+                        db.close()
         except Exception as db_err:
             db_elapsed = time_module.time() - db_start
             logger.warning(f"⚠️ [SIGNALS] {symbol}: Database read failed after {db_elapsed:.3f}s: {db_err}", exc_info=True)
@@ -780,9 +786,48 @@ def get_signals(
         buy_target = res_down  # Buy target is resistance down
         sell_target = res_up   # Sell target is resistance up
         
-        # NOTE: Telegram notifications are handled by signal_monitor_service
-        # Don't send notifications here to avoid blocking the endpoint
-        # The endpoint should only calculate and return signals quickly
+        # CRITICAL: Check for signal transition and emit immediately
+        # This ensures alerts/orders are sent the moment UI button turns RED/GREEN
+        # Only check if we have database access
+        if DB_AVAILABLE:
+            # Use the db session we already have, or create a new one if needed
+            transition_db = db
+            should_close_transition_db = False
+            if transition_db is None:
+                try:
+                    db_gen = get_db()
+                    transition_db = next(db_gen)
+                    should_close_transition_db = True
+                except Exception:
+                    transition_db = None
+            
+            if transition_db is not None:
+                try:
+                    from app.services.signal_transition_emitter import check_and_emit_on_transition
+                    from app.services.watchlist_selector import get_canonical_watchlist_item
+                    
+                    # Get watchlist item for transition check
+                    watchlist_item = get_canonical_watchlist_item(transition_db, symbol)
+                    if watchlist_item:
+                        transition_detected, transition_result = check_and_emit_on_transition(
+                            db=transition_db,
+                            symbol=symbol,
+                            current_buy_signal=buy_signal,
+                            current_sell_signal=sell_signal,
+                            current_price=current_price,
+                            watchlist_item=watchlist_item,
+                        )
+                        if transition_detected:
+                            logger.info(
+                                f"[SIGNALS] {symbol}: Signal transition detected and emitted "
+                                f"(BUY={transition_result.get('buy_transition')}, SELL={transition_result.get('sell_transition')})"
+                            )
+                except Exception as transition_err:
+                    # Don't fail the endpoint if transition check fails
+                    logger.warning(f"[SIGNALS] {symbol}: Transition check failed (non-blocking): {transition_err}")
+                finally:
+                    if should_close_transition_db and transition_db:
+                        transition_db.close()
         
         elapsed_time = time_module.time() - start_time
         logger.info(f"✅ [SIGNALS] {symbol}: Signals calculated in {elapsed_time:.3f}s (source: {source}, db_data_used: {db_data_used})")

@@ -3107,7 +3107,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         
         # DEDUPLICATION LEVEL 2: Check if this callback_data was recently processed
         # This prevents the same action from being processed multiple times across different chats
-        # (e.g., when both hilovivo-alerts and hilovivo-alerts-local receive the same callback)
+        # (e.g., when both Hilovivo-alerts and Hilovivo-alerts-local receive the same callback)
         if callback_data and callback_data != "noop":
             now = time.time()
             if callback_data in PROCESSED_CALLBACK_DATA:

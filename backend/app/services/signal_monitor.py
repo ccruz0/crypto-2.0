@@ -1768,6 +1768,11 @@ class SignalMonitorService:
                                 f"price=${current_price:.4f} | "
                                 f"reason={reason_text}"
                             )
+                            # E) Deep decision-grade logging
+                            logger.info(
+                                f"[TELEGRAM_SEND] {symbol} BUY status=SUCCESS message_id={message_id or 'N/A'} "
+                                f"channel={telegram_notifier.chat_id} origin={alert_origin}"
+                            )
                             logger.info(
                                 f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
                                 f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
@@ -2216,6 +2221,11 @@ class SignalMonitorService:
                             f"price=${current_price:.4f}"
                         )
                         try:
+                            # E) Deep decision-grade logging for order attempt
+                            logger.info(
+                                f"[CRYPTO_ORDER_ATTEMPT] {symbol} BUY price=${current_price:.4f} "
+                                f"qty_usd=${watchlist_item.trade_amount_usd:.2f} trade_enabled={watchlist_item.trade_enabled}"
+                            )
                             # Use asyncio.run() to execute async function from sync context
                             import asyncio
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
@@ -2231,6 +2241,11 @@ class SignalMonitorService:
                                     f"exchange_order_id={exchange_order_id} | "
                                     f"price=${filled_price:.4f} | "
                                     f"quantity={quantity:.4f}"
+                                )
+                                # E) Deep decision-grade logging for order result
+                                logger.info(
+                                    f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=True order_id={exchange_order_id} "
+                                    f"price=${filled_price:.4f} qty={quantity:.4f} error=None"
                                 )
                                 filled_price = order_result.get("filled_price")
                                 state_entry = self.last_signal_states.get(symbol, {})
@@ -2275,6 +2290,11 @@ class SignalMonitorService:
                                     f"order_result=None or empty | "
                                     f"price=${current_price:.4f}"
                                 )
+                                # E) Deep decision-grade logging for order result
+                                logger.error(
+                                    f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
+                                    f"price=${current_price:.4f} qty=0 error=order_result_empty"
+                                )
                                 logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
                         except Exception as order_err:
                             # Order creation failed, remove lock immediately
@@ -2286,6 +2306,11 @@ class SignalMonitorService:
                                 f"[EVAL_{evaluation_id}] {symbol} BUY order creation EXCEPTION | "
                                 f"error={error_str} | "
                                 f"price=${current_price:.4f}"
+                            )
+                            # E) Deep decision-grade logging for order result
+                            logger.error(
+                                f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
+                                f"price=${current_price:.4f} qty=0 error={error_str}"
                             )
                             logger.error(f"❌ Order creation failed for {symbol}: {order_err}", exc_info=True)
                             raise

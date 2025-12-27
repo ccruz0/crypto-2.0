@@ -29,8 +29,8 @@ def get_app_env() -> AppEnv:
         Defaults to LOCAL if APP_ENV is not set (with warning log)
     
     Configuration:
-        - Set APP_ENV=aws on AWS deployment (alerts go to hilovivo-alerts-aws)
-        - Set APP_ENV=local for local development (alerts go to hilovivo-alerts-local)
+        - Set APP_ENV=aws on AWS deployment (alerts go to channel configured in TELEGRAM_CHAT_ID)
+        - Set APP_ENV=local for local development (alerts go to channel configured in TELEGRAM_CHAT_ID)
     """
     settings = Settings()
     env_override = os.getenv("APP_ENV")
@@ -89,6 +89,28 @@ class TelegramNotifier:
         chat_id = (settings.TELEGRAM_CHAT_ID or "").strip()
         self.bot_token = bot_token or None
         self.chat_id = chat_id or None
+        
+        # CRITICAL: Log channel configuration for debugging
+        # On AWS, TELEGRAM_CHAT_ID must point to "Hilovivo-alerts" channel
+        # On local, TELEGRAM_CHAT_ID points to "Hilovivo-alerts-local" channel
+        if is_aws:
+            logger.info(
+                f"[TELEGRAM_CONFIG] env=AWS resolved_channel={self.chat_id} label=Hilovivo-alerts "
+                f"TELEGRAM_CHAT_ID={chat_id} "
+                f"ENVIRONMENT={environment} APP_ENV={app_env}"
+            )
+            # Verify that chat_id is set (required for AWS)
+            if not self.chat_id:
+                logger.error(
+                    "[TELEGRAM_CONFIG] CRITICAL: TELEGRAM_CHAT_ID not set on AWS! "
+                    "Alerts will not be sent. Set TELEGRAM_CHAT_ID to Hilovivo-alerts channel ID."
+                )
+        else:
+            logger.info(
+                f"[TELEGRAM_CONFIG] env=LOCAL resolved_channel={self.chat_id} label=Hilovivo-alerts-local "
+                f"TELEGRAM_CHAT_ID={chat_id} "
+                f"ENVIRONMENT={environment} APP_ENV={app_env}"
+            )
         
         # Only enable if toggle allows it and credentials are configured
         self.enabled = should_enable and bool(self.bot_token and self.chat_id)
@@ -161,7 +183,7 @@ class TelegramNotifier:
         - Blocks Telegram sends for non-AWS origins (logs instead)
         - Adds environment prefix [AWS] or [LOCAL] based on origin
         - Uses TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment
-        - Routes to the correct Telegram channel (hilovivo-alerts-aws or hilovivo-alerts-local)
+        - Routes to the Telegram channel configured via TELEGRAM_CHAT_ID environment variable
         
         Args:
             message: Message text (HTML format supported)
