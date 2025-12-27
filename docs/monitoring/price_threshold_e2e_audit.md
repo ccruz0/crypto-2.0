@@ -34,8 +34,28 @@ This document tracks the end-to-end verification of price change threshold behav
 
 ## Test Results
 
-### Local Testing
-**Status**: Ready for execution (code validated, syntax checks passed)
+### Unit Tests (No Docker Required) ✅
+**Status**: All tests passing
+
+**Command**:
+```bash
+python3 backend/tests/test_price_threshold_logic.py
+```
+
+**Results**:
+- ✅ Test 1: 9.5% change correctly blocked by 10% threshold
+- ✅ Test 2: 10.5% change correctly allowed by 10% threshold
+- ✅ Test 3: 10.5% change correctly blocked by 11% threshold
+- ✅ Test 4: 11.2% change correctly allowed by 11% threshold
+- ✅ Test 5: 2.9% change correctly blocked by 3% threshold
+- ✅ Test 6: 3.1% change correctly allowed by 3% threshold
+- ✅ Test 7: 0.1% change correctly allowed with 0% threshold (no limit)
+- ✅ Test 8: Time gate correctly takes precedence over price gate
+
+**Conclusion**: Throttle logic is working correctly for all threshold scenarios.
+
+### Local E2E Testing
+**Status**: Ready for execution (code validated, syntax checks passed, unit tests passing)
 
 **Prerequisites**:
 - Backend server running on port 8000
