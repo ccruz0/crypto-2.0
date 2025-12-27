@@ -1173,29 +1173,38 @@ class SignalMonitorService:
         from app.services.signal_throttle import reset_throttle_state
         config_changed = False
         for side, snapshot in signal_snapshots.items():
-            if snapshot and snapshot.config_hash and snapshot.config_hash != config_hash_current:
-                config_changed = True
-                logger.info(
-                    f"🔄 [CONFIG_CHANGE] {symbol} {side}: Config hash changed "
-                    f"(stored={snapshot.config_hash[:16]}... current={config_hash_current[:16]}...). "
-                    f"Resetting throttle immediately."
+            if snapshot:
+                # Detect change if: stored hash is None (first time) OR stored hash differs from current
+                stored_hash = snapshot.config_hash
+                hash_changed = (
+                    stored_hash is None or  # First time - no hash stored yet
+                    stored_hash != config_hash_current  # Hash changed
                 )
-                reset_throttle_state(
-                    db=db,
-                    symbol=symbol,
-                    strategy_key=strategy_key,
-                    side=side,
-                    current_price=current_price,
-                    parameter_change_reason=f"Config hash changed (trade_amount_usd, alert flags, etc.)",
-                    config_hash=config_hash_current,
-                )
-                # Refresh snapshots after reset
-                try:
-                    signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
-                    last_buy_snapshot = signal_snapshots.get("BUY")
-                    last_sell_snapshot = signal_snapshots.get("SELL")
-                except Exception as refresh_err:
-                    logger.warning(f"Failed to refresh throttle state after reset for {symbol}: {refresh_err}")
+                
+                if hash_changed and config_hash_current:
+                    config_changed = True
+                    stored_preview = stored_hash[:16] + "..." if stored_hash else "None"
+                    logger.info(
+                        f"🔄 [CONFIG_CHANGE] {symbol} {side}: Config hash changed "
+                        f"(stored={stored_preview} current={config_hash_current[:16]}...). "
+                        f"Resetting throttle immediately."
+                    )
+                    reset_throttle_state(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side=side,
+                        current_price=current_price,
+                        parameter_change_reason=f"Config hash changed (trade_amount_usd, alert flags, etc.)",
+                        config_hash=config_hash_current,
+                    )
+                    # Refresh snapshots after reset
+                    try:
+                        signal_snapshots = fetch_signal_states(db, symbol=symbol, strategy_key=strategy_key)
+                        last_buy_snapshot = signal_snapshots.get("BUY")
+                        last_sell_snapshot = signal_snapshots.get("SELL")
+                    except Exception as refresh_err:
+                        logger.warning(f"Failed to refresh throttle state after reset for {symbol}: {refresh_err}")
         
         if config_changed:
             logger.info(
