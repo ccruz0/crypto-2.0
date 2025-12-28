@@ -9,10 +9,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUTH_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+AUTH_USER_IDS_STR = os.getenv("TELEGRAM_AUTH_USER_ID", "")
 
-if not BOT_TOKEN or not AUTH_CHAT_ID:
-    print("❌ Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+if not BOT_TOKEN:
+    print("❌ Missing TELEGRAM_BOT_TOKEN")
     sys.exit(1)
+
+# Parse authorized user IDs
+AUTHORIZED_USER_IDS = set()
+if AUTH_USER_IDS_STR:
+    for user_id in AUTH_USER_IDS_STR.replace(",", " ").split():
+        user_id = user_id.strip()
+        if user_id:
+            AUTHORIZED_USER_IDS.add(user_id)
+elif AUTH_CHAT_ID:
+    # Fallback to TELEGRAM_CHAT_ID for backward compatibility
+    AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
+
+print(f"TELEGRAM_CHAT_ID (channel): {AUTH_CHAT_ID}")
+print(f"TELEGRAM_AUTH_USER_ID: {AUTH_USER_IDS_STR or '(not set)'}")
+print(f"Authorized user IDs: {AUTHORIZED_USER_IDS}")
 
 print("=== Simple Telegram Test ===\n")
 
@@ -44,8 +60,15 @@ if updates:
             user_id = msg.get("from", {}).get("id") if msg.get("from") else None
             print(f"   - {text[:50]}")
             print(f"     chat_id={chat_id}, user_id={user_id}")
-            print(f"     AUTH_CHAT_ID={AUTH_CHAT_ID}")
-            print(f"     authorized: {str(chat_id) == str(AUTH_CHAT_ID) or str(user_id) == str(AUTH_CHAT_ID)}")
+            print(f"     TELEGRAM_CHAT_ID={AUTH_CHAT_ID}")
+            print(f"     AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS}")
+            # Check authorization using new logic
+            is_authorized = (
+                (AUTH_CHAT_ID and str(chat_id) == str(AUTH_CHAT_ID)) or
+                (user_id and str(user_id) in AUTHORIZED_USER_IDS) or
+                (str(chat_id) in AUTHORIZED_USER_IDS)
+            )
+            print(f"     authorized: {is_authorized}")
 else:
     print("   ⚠️ NO UPDATES - Telegram is not delivering updates")
     print("   Possible causes:")
