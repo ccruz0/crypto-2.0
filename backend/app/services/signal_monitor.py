@@ -2308,7 +2308,44 @@ class SignalMonitorService:
                             # Use asyncio.run() to execute async function from sync context
                             import asyncio
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
-                            if order_result:
+                            # Check for errors first (error dicts are truthy but have "error" key)
+                            if order_result and isinstance(order_result, dict) and "error" in order_result:
+                                # Order creation failed, remove lock immediately
+                                if symbol in self.order_creation_locks:
+                                    del self.order_creation_locks[symbol]
+                                
+                                # Handle error cases
+                                error_type = order_result.get("error_type")
+                                error_msg = order_result.get("message")
+                                
+                                if error_type == "balance":
+                                    logger.warning(f"⚠️ BUY order creation blocked for {symbol}: Insufficient balance - {error_msg}")
+                                elif error_type == "trade_disabled":
+                                    logger.warning(f"🚫 BUY order creation blocked for {symbol}: Trade is disabled - {error_msg}")
+                                elif error_type == "authentication":
+                                    logger.error(f"❌ BUY order creation failed for {symbol}: Authentication error - {error_msg}")
+                                elif error_type == "order_placement":
+                                    logger.error(f"❌ BUY order creation failed for {symbol}: Order placement error - {error_msg}")
+                                elif error_type == "no_order_id":
+                                    logger.error(f"❌ BUY order creation failed for {symbol}: No order ID returned - {error_msg}")
+                                elif error_type == "exception":
+                                    logger.error(f"❌ BUY order creation failed for {symbol}: Exception - {error_msg}")
+                                else:
+                                    # PHASE 0: Structured logging for order creation failure
+                                    logger.error(
+                                        f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
+                                        f"error_type={error_type} | "
+                                        f"error_msg={error_msg} | "
+                                        f"price=${current_price:.4f}"
+                                    )
+                                    # E) Deep decision-grade logging for order result
+                                    logger.error(
+                                        f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
+                                        f"price=${current_price:.4f} qty=0 error={error_type or 'unknown'}"
+                                    )
+                                    logger.warning(f"⚠️ BUY order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
+                            elif order_result:
+                                # Success case - order was created
                                 # PHASE 0: Structured logging for order creation success
                                 order_id = order_result.get("order_id") or order_result.get("client_oid") or "N/A"
                                 exchange_order_id = order_result.get("exchange_order_id") or "N/A"
@@ -2360,33 +2397,23 @@ class SignalMonitorService:
                                     except Exception as state_err:
                                         logger.warning(f"Failed to persist BUY throttle state after order for {symbol}: {state_err}")
                             else:
+                                # order_result is None or falsy
                                 # Order creation failed, remove lock immediately
                                 if symbol in self.order_creation_locks:
                                     del self.order_creation_locks[symbol]
                                 
-                                # Check if it was a specific error type
-                                error_type = order_result.get("error_type") if isinstance(order_result, dict) else None
-                                error_msg = order_result.get("message") if isinstance(order_result, dict) else None
-                                
-                                if error_type == "balance":
-                                    logger.warning(f"⚠️ BUY order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                elif error_type == "trade_disabled":
-                                    logger.warning(f"🚫 BUY order creation blocked for {symbol}: Trade is disabled - {error_msg}")
-                                elif error_type == "authentication":
-                                    logger.error(f"❌ BUY order creation failed for {symbol}: Authentication error - {error_msg}")
-                                else:
-                                    # PHASE 0: Structured logging for order creation failure
-                                    logger.error(
-                                        f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
-                                        f"order_result=None or empty | "
-                                        f"price=${current_price:.4f}"
-                                    )
-                                    # E) Deep decision-grade logging for order result
-                                    logger.error(
-                                        f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
-                                        f"price=${current_price:.4f} qty=0 error=order_result_empty"
-                                    )
-                                    logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
+                                # PHASE 0: Structured logging for order creation failure
+                                logger.error(
+                                    f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
+                                    f"order_result=None or empty | "
+                                    f"price=${current_price:.4f}"
+                                )
+                                # E) Deep decision-grade logging for order result
+                                logger.error(
+                                    f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
+                                    f"price=${current_price:.4f} qty=0 error=order_result_empty"
+                                )
+                                logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
                         except Exception as order_err:
                             # Order creation failed, remove lock immediately
                             if symbol in self.order_creation_locks:
@@ -2750,7 +2777,27 @@ class SignalMonitorService:
                                     # Use asyncio.run() to execute async function from sync context
                                     import asyncio
                                     order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                    if order_result:
+                                    # Check for errors first (error dicts are truthy but have "error" key)
+                                    if order_result and isinstance(order_result, dict) and "error" in order_result:
+                                        # Handle error cases
+                                        error_type = order_result.get("error_type")
+                                        error_msg = order_result.get("message")
+                                        if error_type == "balance":
+                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
+                                        elif error_type == "trade_disabled":
+                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
+                                        elif error_type == "authentication":
+                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
+                                        elif error_type == "order_placement":
+                                            logger.error(f"❌ SELL order creation failed for {symbol}: Order placement error - {error_msg}")
+                                        elif error_type == "no_order_id":
+                                            logger.error(f"❌ SELL order creation failed for {symbol}: No order ID returned - {error_msg}")
+                                        elif error_type == "exception":
+                                            logger.error(f"❌ SELL order creation failed for {symbol}: Exception - {error_msg}")
+                                        else:
+                                            logger.warning(f"⚠️ SELL order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
+                                    elif order_result:
+                                        # Success case - order was created
                                         filled_price = order_result.get("filled_price")
                                         if filled_price:
                                             logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
@@ -2770,17 +2817,8 @@ class SignalMonitorService:
                                             except Exception as state_err:
                                                 logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
                                     else:
-                                        # Check if it was a balance issue, trade disabled, or other error
-                                        error_type = order_result.get("error_type") if isinstance(order_result, dict) else None
-                                        error_msg = order_result.get("message") if isinstance(order_result, dict) else None
-                                        if error_type == "balance":
-                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                        elif error_type == "trade_disabled":
-                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
-                                        elif error_type == "authentication":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
-                                        else:
-                                            logger.warning(f"⚠️ SELL order creation returned None for {symbol} (reason: {error_msg or 'unknown'})")
+                                        # order_result is None or falsy
+                                        logger.warning(f"⚠️ SELL order creation returned None for {symbol} (unknown reason)")
                                 except Exception as order_err:
                                     logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
                                     # Don't raise - alert was sent, order creation is secondary
