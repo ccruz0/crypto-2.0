@@ -2111,11 +2111,13 @@ class SignalMonitorService:
             # ========================================================================
             
             if should_create_order:
-                # CRITICAL: Double-check for recent orders just before creating (race condition protection)
+                # CRITICAL: Double-check for recent orders AND total open positions just before creating (race condition protection)
                 # Refresh the query to catch any orders that might have been created between checks
                 # FIX: Count by base currency to match the main check above
                 db.expire_all()  # Force refresh from database
                 symbol_base_final = symbol.split('_')[0] if '_' in symbol else symbol
+                
+                # Check 1: Recent orders (within 5 minutes) - prevents consecutive orders
                 final_recent_check = db.query(ExchangeOrder).filter(
                     ExchangeOrder.symbol.like(f"{symbol_base_final}_%"),
                     ExchangeOrder.side == OrderSideEnum.BUY,
@@ -2136,6 +2138,16 @@ class SignalMonitorService:
                     ).count()
                     final_recent_check = max(final_recent_check, exact_final_check)
                 
+                # Check 2: Total open positions count (unified) - prevents exceeding limit
+                # CRITICAL: This check is essential because the limit check at line 2058 might have passed
+                # but new orders could have been created between then and now, or the count might be stale
+                try:
+                    from app.services.order_position_service import count_open_positions_for_symbol
+                    final_unified_open_positions = count_open_positions_for_symbol(db, symbol_base_final)
+                except Exception as e:
+                    logger.warning(f"Could not compute unified open position count in final check for {symbol_base_final}: {e}")
+                    final_unified_open_positions = unified_open_positions  # Fallback to previous value
+                
                 if final_recent_check > 0:
                     logger.warning(
                         f"🚫 BLOCKED: {symbol} - Found {final_recent_check} recent order(s) in final check. "
@@ -2143,6 +2155,21 @@ class SignalMonitorService:
                     )
                     should_create_order = False
                     return  # Exit early
+                
+                # CRITICAL FIX: Also check total open positions in final check, not just recent orders
+                if final_unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL:
+                    logger.warning(
+                        f"🚫 BLOCKED: {symbol} (base: {symbol_base_final}) - Final check: exceeded max open orders limit "
+                        f"({final_unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}). "
+                        f"Order creation cancelled. This may indicate a race condition was detected."
+                    )
+                    should_create_order = False
+                    return  # Exit early
+                
+                logger.info(
+                    f"✅ Final check passed for {symbol}: recent={final_recent_check}, "
+                    f"unified_open={final_unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}"
+                )
                 
                 # Set lock BEFORE creating order to prevent concurrent creation
                 # Use time module (already imported at top of file)
