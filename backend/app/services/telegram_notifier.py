@@ -702,16 +702,39 @@ class TelegramNotifier:
                            sl_price: Optional[float] = None,
                            tp_price: Optional[float] = None,
                            open_orders_count: Optional[int] = None,
-                           order_role: Optional[str] = None):
+                           order_role: Optional[str] = None,
+                           trade_signal_id: Optional[int] = None,
+                           parent_order_id: Optional[str] = None):
         """Send an executed order notification with profit/loss calculations
         
         WORKING PATH (Order Executed Alerts):
         - Called from exchange_sync.py in backend-aws service
         - Uses get_runtime_origin() which returns "AWS" (backend-aws has RUNTIME_ORIGIN=AWS)
         - send_executed_order() → send_message() → origin="AWS" → passes gatekeeper → Telegram ✅
+        
+        Args:
+            trade_signal_id: ID of the trade signal that triggered this order (if created by alert)
+            parent_order_id: ID of the parent order (if this is a SL/TP order)
         """
         side_emoji = "🟢" if side == "BUY" else "🔴"
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
+        
+        # Determine order origin
+        origin_text = ""
+        if order_role:
+            # This is a SL/TP order
+            role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else ""
+            role_text = "Take Profit" if order_role == "TAKE_PROFIT" else "Stop Loss" if order_role == "STOP_LOSS" else order_role
+            origin_text = f"\n🎯 Origen: {role_emoji} {role_text}"
+        elif trade_signal_id:
+            # Order was created by an alert/signal
+            origin_text = f"\n🎯 Origen: 📢 Alerta (Signal ID: {trade_signal_id})"
+        elif parent_order_id:
+            # Order has a parent but no explicit role - likely SL/TP without role set
+            origin_text = f"\n🎯 Origen: 🔗 Orden relacionada (Parent: {parent_order_id[:8]}...)"
+        else:
+            # Manual order or unknown origin
+            origin_text = f"\n🎯 Origen: ✋ Manual"
         
         # Build order type text - include role (TP/SL) if available
         if order_role:
@@ -775,7 +798,7 @@ class TelegramNotifier:
 📈 Side: {side}
 💵 Price: ${price:,.4f}
 📦 Quantity: {quantity:,.6f}
-💸 Total: ${total_usd:,.2f}{profit_loss_text}{order_type_text}{order_id_text}{open_orders_text}
+💸 Total: ${total_usd:,.2f}{origin_text}{profit_loss_text}{order_type_text}{order_id_text}{open_orders_text}
 📅 Time: {timestamp}
 """
         # Executed order alert → send_message() → get_runtime_origin() → Telegram
