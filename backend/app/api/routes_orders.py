@@ -1094,6 +1094,182 @@ def verify_and_cleanup_stale_orders(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/orders/find-orphaned")
+def find_orphaned_orders(
+    execute: bool = False,
+    db: Session = Depends(get_db),
+    current_user = None if _should_disable_auth() else Depends(get_current_user)
+):
+    """
+    Find orphaned SL/TP orders that should have been cancelled.
+    
+    An orphaned order is:
+    1. An active SL/TP order whose sibling in the same OCO group is FILLED
+    2. An active SL/TP order whose parent order is FILLED and sibling is also FILLED
+    
+    Args:
+        execute: If True, actually cancel orphaned orders. Default is False (dry-run).
+    
+    Returns:
+        Dict with orphaned orders found and cancellation results
+    """
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
+        from app.services.brokers.crypto_com_trade import trade_client
+        from datetime import datetime, timezone
+        
+        # Find all active SL/TP orders
+        active_sl_tp = db.query(ExchangeOrder).filter(
+            ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
+            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+        ).all()
+        
+        logger.info(f"Checking {len(active_sl_tp)} active SL/TP orders for orphaned status")
+        
+        orphaned_orders = []
+        
+        for order in active_sl_tp:
+            is_orphaned = False
+            reason = ""
+            
+            # Check 1: If order has oco_group_id, check if sibling is FILLED
+            if order.oco_group_id:
+                siblings = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.oco_group_id == order.oco_group_id,
+                    ExchangeOrder.exchange_order_id != order.exchange_order_id
+                ).all()
+                
+                for sibling in siblings:
+                    if sibling.status == OrderStatusEnum.FILLED:
+                        is_orphaned = True
+                        reason = f"Sibling {sibling.order_role} order {sibling.exchange_order_id} is FILLED (OCO group: {order.oco_group_id})"
+                        break
+            
+            # Check 2: If order has parent_order_id, check if parent is FILLED
+            # AND check if there's a sibling SL/TP that's also FILLED
+            if not is_orphaned and order.parent_order_id:
+                parent = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.exchange_order_id == order.parent_order_id
+                ).first()
+                
+                if parent and parent.status == OrderStatusEnum.FILLED:
+                    # Check if there's a sibling SL/TP order that's FILLED
+                    # (meaning this order should have been cancelled)
+                    sibling_sl_tp = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.parent_order_id == order.parent_order_id,
+                        ExchangeOrder.exchange_order_id != order.exchange_order_id,
+                        ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT']),
+                        ExchangeOrder.status == OrderStatusEnum.FILLED
+                    ).first()
+                    
+                    if sibling_sl_tp:
+                        is_orphaned = True
+                        reason = f"Parent order {order.parent_order_id} is FILLED and sibling {sibling_sl_tp.order_role} order {sibling_sl_tp.exchange_order_id} is also FILLED"
+            
+            if is_orphaned:
+                orphaned_orders.append({
+                    "order_id": order.exchange_order_id,
+                    "symbol": order.symbol,
+                    "order_type": order.order_type,
+                    "order_role": order.order_role,
+                    "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                    "price": float(order.price) if order.price else None,
+                    "quantity": float(order.quantity) if order.quantity else None,
+                    "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                    "parent_order_id": order.parent_order_id,
+                    "oco_group_id": order.oco_group_id,
+                    "created_at": order.created_at.isoformat() if order.created_at else None,
+                    "reason": reason
+                })
+        
+        logger.info(f"Found {len(orphaned_orders)} orphaned orders")
+        
+        cancelled_count = 0
+        failed_count = 0
+        cancellation_details = []
+        
+        if orphaned_orders and execute:
+            logger.info("🔄 Cancelling orphaned orders...")
+            
+            for order_info in orphaned_orders:
+                order_id = order_info["order_id"]
+                try:
+                    # Try to cancel on exchange
+                    result = trade_client.cancel_order(order_id)
+                    
+                    if "error" not in result:
+                        # Update database
+                        order = db.query(ExchangeOrder).filter(
+                            ExchangeOrder.exchange_order_id == order_id
+                        ).first()
+                        if order:
+                            order.status = OrderStatusEnum.CANCELLED
+                            order.updated_at = datetime.now(timezone.utc)
+                            cancelled_count += 1
+                            cancellation_details.append({
+                                "order_id": order_id,
+                                "status": "cancelled",
+                                "message": f"Successfully cancelled {order_id}"
+                            })
+                            logger.info(f"✅ Cancelled orphaned order {order_id} ({order_info['symbol']})")
+                    else:
+                        error_msg = result.get('error', 'Unknown error')
+                        # Check if order might already be cancelled on exchange
+                        if 'not found' in error_msg.lower() or 'does not exist' in error_msg.lower():
+                            # Mark as cancelled in DB
+                            order = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.exchange_order_id == order_id
+                            ).first()
+                            if order:
+                                order.status = OrderStatusEnum.CANCELLED
+                                order.updated_at = datetime.now(timezone.utc)
+                                cancelled_count += 1
+                                cancellation_details.append({
+                                    "order_id": order_id,
+                                    "status": "marked_cancelled",
+                                    "message": f"Order not found on exchange, marked as CANCELLED"
+                                })
+                                logger.info(f"✅ Marked orphaned order {order_id} as CANCELLED (not found on exchange)")
+                        else:
+                            failed_count += 1
+                            cancellation_details.append({
+                                "order_id": order_id,
+                                "status": "failed",
+                                "message": f"Failed to cancel: {error_msg}"
+                            })
+                            logger.error(f"❌ Failed to cancel order {order_id}: {error_msg}")
+                except Exception as e:
+                    failed_count += 1
+                    cancellation_details.append({
+                        "order_id": order_id,
+                        "status": "error",
+                        "message": f"Error: {str(e)}"
+                    })
+                    logger.error(f"❌ Error cancelling order {order_id}: {e}")
+            
+            if cancelled_count > 0:
+                db.commit()
+                logger.info(f"Successfully cancelled/marked {cancelled_count} orphaned orders")
+        
+        return {
+            "ok": True,
+            "message": f"Found {len(orphaned_orders)} orphaned orders" + (f". Cancelled {cancelled_count}, failed {failed_count}" if execute else " (dry-run)"),
+            "orphaned_count": len(orphaned_orders),
+            "cancelled_count": cancelled_count if execute else 0,
+            "failed_count": failed_count if execute else 0,
+            "execute_mode": execute,
+            "orphaned_orders": orphaned_orders,
+            "cancellation_details": cancellation_details if execute else []
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error finding orphaned orders")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/orders/history")
 def get_order_history(
     limit: int = 100,  # Default to 100 orders per page
