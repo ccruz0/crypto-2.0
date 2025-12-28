@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, time as time_module, date
+from datetime import datetime, time as time_module, date, timezone
 import pytz
 from app.services.daily_summary import daily_summary_service
 from app.services.telegram_commands import process_telegram_commands
@@ -29,12 +29,14 @@ class TradingScheduler:
         self.last_sl_tp_check_date = None  # Track last SL/TP check date
         self.last_sell_orders_report_date = None  # Track last sell orders report date
         self.last_nightly_consistency_date = None  # Track last nightly consistency check date
+        self.last_hourly_sl_tp_check = None  # Track last hourly SL/TP check (datetime)
         self._scheduler_task = None  # Track the running task to prevent duplicates
         # Locks for atomic check-and-set operations on date tracking variables
         self._daily_summary_lock = asyncio.Lock()
         self._sl_tp_check_lock = asyncio.Lock()
         self._sell_orders_report_lock = asyncio.Lock()
         self._nightly_consistency_lock = asyncio.Lock()
+        self._hourly_sl_tp_check_lock = asyncio.Lock()
     
     def check_daily_summary_sync(self):
         """Check if it's time to send daily summary - synchronous worker
@@ -282,6 +284,185 @@ class TradingScheduler:
         # Run blocking DB/API calls in thread pool
         await asyncio.to_thread(self.check_telegram_commands_sync)
     
+    def check_hourly_sl_tp_missed_sync(self):
+        """Check for FILLED orders missing SL/TP - synchronous worker
+        Runs hourly to catch orders that were missed by the 1-hour automatic window
+        """
+        logger.info("Checking for FILLED orders missing SL/TP (hourly check)...")
+        
+        try:
+            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+            from app.services.exchange_sync import ExchangeSyncService
+            from app.services.telegram_notifier import telegram_notifier
+            from datetime import timedelta, timezone
+            
+            db = SessionLocal()
+            try:
+                exchange_sync = ExchangeSyncService()
+                now_utc = datetime.now(timezone.utc)
+                
+                # Check orders filled in last 3 hours
+                three_hours_ago = now_utc - timedelta(hours=3)
+                
+                # Find FILLED orders from last 3 hours that don't have SL/TP
+                filled_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                    ExchangeOrder.exchange_update_time >= three_hours_ago,
+                    # Exclude SL/TP orders themselves
+                    ~ExchangeOrder.order_type.in_(['STOP_LIMIT', 'STOP_LOSS_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT_LIMIT', 'TAKE_PROFIT'])
+                ).all()
+                
+                orders_missing_sl_tp = []
+                orders_too_old = []
+                orders_created = 0
+                
+                for order in filled_orders:
+                    # Check if SL/TP exist
+                    sl_count = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.parent_order_id == order.exchange_order_id,
+                        ExchangeOrder.order_role == 'STOP_LOSS'
+                    ).count()
+                    
+                    tp_count = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.parent_order_id == order.exchange_order_id,
+                        ExchangeOrder.order_role == 'TAKE_PROFIT'
+                    ).count()
+                    
+                    if sl_count == 0 or tp_count == 0:
+                        # Calculate time since filled
+                        filled_time = order.exchange_update_time or order.exchange_create_time
+                        if filled_time:
+                            if filled_time.tzinfo is None:
+                                filled_time = filled_time.replace(tzinfo=timezone.utc)
+                            time_since_filled = (now_utc - filled_time).total_seconds() / 3600  # hours
+                            
+                            order_info = {
+                                'order_id': order.exchange_order_id,
+                                'symbol': order.symbol,
+                                'side': order.side.value,
+                                'price': float(order.avg_price) if order.avg_price else (float(order.price) if order.price else 0),
+                                'quantity': float(order.quantity) if order.quantity else 0,
+                                'filled_time': filled_time,
+                                'time_since_filled': time_since_filled,
+                                'has_sl': sl_count > 0,
+                                'has_tp': tp_count > 0
+                            }
+                            
+                            # Try to create SL/TP if <3 hours old
+                            if time_since_filled < 3.0:
+                                try:
+                                    filled_price = float(order.avg_price) if order.avg_price else (float(order.price) if order.price else 0)
+                                    filled_qty = float(order.cumulative_quantity) if order.cumulative_quantity else (float(order.quantity) if order.quantity else 0)
+                                    
+                                    if filled_price > 0 and filled_qty > 0:
+                                        logger.info(f"🔄 Attempting to create SL/TP for missed order {order.exchange_order_id} ({order.symbol}) - filled {time_since_filled:.2f} hours ago")
+                                        exchange_sync._create_sl_tp_for_filled_order(
+                                            db=db,
+                                            symbol=order.symbol,
+                                            side=order.side.value,
+                                            filled_price=filled_price,
+                                            filled_qty=filled_qty,
+                                            order_id=order.exchange_order_id,
+                                            force=True,
+                                            source="hourly_check"
+                                        )
+                                        
+                                        # Verify creation
+                                        db.refresh(order)
+                                        sl_new = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.parent_order_id == order.exchange_order_id,
+                                            ExchangeOrder.order_role == 'STOP_LOSS'
+                                        ).count()
+                                        tp_new = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.parent_order_id == order.exchange_order_id,
+                                            ExchangeOrder.order_role == 'TAKE_PROFIT'
+                                        ).count()
+                                        
+                                        if sl_new > 0 and tp_new > 0:
+                                            orders_created += 1
+                                            logger.info(f"✅ Successfully created SL/TP for order {order.exchange_order_id}")
+                                        else:
+                                            orders_missing_sl_tp.append(order_info)
+                                    else:
+                                        orders_missing_sl_tp.append(order_info)
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to create SL/TP for order {order.exchange_order_id}: {e}", exc_info=True)
+                                    orders_missing_sl_tp.append(order_info)
+                            else:
+                                # Order is >3 hours old - too late to auto-create
+                                orders_too_old.append(order_info)
+                
+                # Send Telegram notification if there are issues
+                if orders_too_old or (orders_missing_sl_tp and orders_created == 0):
+                    try:
+                        message_parts = ["🔍 <b>HOURLY SL/TP CHECK</b>\n\n"]
+                        
+                        if orders_created > 0:
+                            message_parts.append(f"✅ Created SL/TP for {orders_created} missed order(s)\n\n")
+                        
+                        if orders_too_old:
+                            message_parts.append(f"⚠️ <b>{len(orders_too_old)} order(s) too old for auto-creation (>3 hours):</b>\n")
+                            for o in orders_too_old[:5]:  # Limit to 5 for brevity
+                                message_parts.append(
+                                    f"• {o['symbol']} {o['side']} - {o['order_id']}\n"
+                                    f"  Filled {o['time_since_filled']:.1f}h ago | Missing: {'SL' if not o['has_sl'] else ''} {'TP' if not o['has_tp'] else ''}\n"
+                                )
+                            if len(orders_too_old) > 5:
+                                message_parts.append(f"  ... and {len(orders_too_old) - 5} more\n")
+                            message_parts.append("\n💡 Manual intervention required\n")
+                        
+                        if orders_missing_sl_tp and orders_created == 0:
+                            message_parts.append(f"❌ <b>{len(orders_missing_sl_tp)} order(s) failed SL/TP creation:</b>\n")
+                            for o in orders_missing_sl_tp[:3]:
+                                message_parts.append(f"• {o['symbol']} {o['side']} - {o['order_id']}\n")
+                            if len(orders_missing_sl_tp) > 3:
+                                message_parts.append(f"  ... and {len(orders_missing_sl_tp) - 3} more\n")
+                        
+                        if len(message_parts) > 1:  # Only send if there's content beyond header
+                            telegram_notifier.send_message("".join(message_parts))
+                            logger.info(f"Sent hourly SL/TP check notification")
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send hourly SL/TP check notification: {notify_err}", exc_info=True)
+                
+                if orders_created == 0 and not orders_too_old and not orders_missing_sl_tp:
+                    logger.info("✅ All recent FILLED orders have SL/TP protection")
+                
+                # Record execution
+                from app.api.routes_monitoring import record_workflow_execution
+                record_workflow_execution("hourly_sl_tp_check", "success", None)
+                
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error in hourly SL/TP check: {e}", exc_info=True)
+            from app.api.routes_monitoring import record_workflow_execution
+            record_workflow_execution("hourly_sl_tp_check", "error", None, str(e))
+    
+    async def check_hourly_sl_tp_missed(self):
+        """Check for FILLED orders missing SL/TP - async wrapper
+        Runs every hour at :00 minutes
+        """
+        now = datetime.now(timezone.utc)
+        
+        # Check if it's a new hour (minute is 0-1, and we haven't checked this hour)
+        should_check = (
+            now.minute <= 1 and
+            (self.last_hourly_sl_tp_check is None or
+             self.last_hourly_sl_tp_check.hour != now.hour or
+             self.last_hourly_sl_tp_check.date() != now.date())
+        )
+        
+        async with self._hourly_sl_tp_check_lock:
+            if should_check:
+                # Set timestamp immediately to prevent concurrent execution
+                self.last_hourly_sl_tp_check = now
+                
+                # Run blocking DB/API calls in thread pool
+                await asyncio.to_thread(self.check_hourly_sl_tp_missed_sync)
+                
+                # Wait 2 minutes to avoid duplicate checks
+                await asyncio.sleep(120)
+    
     async def update_dashboard_snapshot(self):
         """Update dashboard snapshot cache periodically (every 60 seconds)"""
         try:
@@ -337,6 +518,7 @@ class TradingScheduler:
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
                 await self.check_nightly_consistency()
+                await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)
