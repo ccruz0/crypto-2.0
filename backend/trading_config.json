@@ -12,7 +12,7 @@
       "rules": {
         "Conservative": {
           "rsi": {
-            "buyBelow": 40,
+            "buyBelow": 30,
             "sellAbove": 70
           },
           "maChecks": {
@@ -21,17 +21,36 @@
             "ma200": true
           },
           "sl": {
-            "atrMult": 1.5
+            "atrMult": 1.5,
+            "fallbackPct": 3.0
           },
           "tp": {
             "rr": 1.5
           },
-          "volumeMinRatio": 0.5,
-          "minPriceChangePct": 1.0,
+          "volumeMinRatio": 1.0,
+          "minPriceChangePct": 3.0,
           "alertCooldownMinutes": 0.1667,
+          "trendFilters": {
+            "require_price_above_ma200": true,
+            "require_ema10_above_ma50": true
+          },
+          "rsiConfirmation": {
+            "require_rsi_cross_up": true,
+            "rsi_cross_level": 30
+          },
+          "candleConfirmation": {
+            "require_close_above_ema10": true,
+            "require_rsi_rising_n_candles": 2
+          },
+          "atr": {
+            "period": 14,
+            "multiplier_sl": 1.5,
+            "multiplier_tp": null
+          },
           "notes": [
             "Operaciones multi-d\u00eda",
-            "Confirmaci\u00f3n MA50/MA200"
+            "Confirmaci\u00f3n MA50/MA200",
+            "Filtros estrictos de reversi\u00f3n de tendencia"
           ]
         },
         "Aggressive": {

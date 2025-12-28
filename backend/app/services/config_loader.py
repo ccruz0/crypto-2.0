@@ -61,6 +61,104 @@ _DEFAULT_CONFIG = {
 
 NUM_FIELDS = {"RSI_PERIOD","RSI_BUY","RSI_SELL","MA50","EMA10","MA10W","ATR","VOL"}
 
+def _migrate_swing_conservative_defaults(rules: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Migrate Swing Conservative rules from old defaults to new stricter defaults.
+    Only updates if the config still matches old defaults (preserves user customizations).
+    
+    Old defaults:
+    - rsi.buyBelow: 40 -> 30
+    - volumeMinRatio: 0.5 -> 1.0
+    - minPriceChangePct: 1.0 -> 3.0
+    - sl.fallbackPct: missing -> 3.0 (if using percentage fallback)
+    
+    New gating parameters (added if missing):
+    - trendFilters, rsiConfirmation, candleConfirmation, atr
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if not isinstance(rules, dict):
+        return rules
+    
+    # Check if this looks like old defaults (exact match)
+    rsi = rules.get("rsi", {})
+    old_rsi_buy = rsi.get("buyBelow") if isinstance(rsi, dict) else None
+    old_volume = rules.get("volumeMinRatio")
+    old_min_change = rules.get("minPriceChangePct")
+    
+    # Check if it matches old defaults exactly
+    matches_old_defaults = (
+        old_rsi_buy == 40 and
+        old_volume == 0.5 and
+        old_min_change == 1.0
+    )
+    
+    updated = False
+    migrated_rules = dict(rules)
+    
+    if matches_old_defaults:
+        logger.info("Migrating Swing Conservative from old defaults to new stricter defaults")
+        
+        # Update RSI threshold
+        if isinstance(rsi, dict):
+            migrated_rsi = dict(rsi)
+            migrated_rsi["buyBelow"] = 30
+            migrated_rules["rsi"] = migrated_rsi
+            updated = True
+        
+        # Update volume requirement
+        migrated_rules["volumeMinRatio"] = 1.0
+        updated = True
+        
+        # Update min price change
+        migrated_rules["minPriceChangePct"] = 3.0
+        updated = True
+        
+        # Add SL fallback percentage if SL config exists
+        sl = migrated_rules.get("sl", {})
+        if isinstance(sl, dict) and "atrMult" in sl and "fallbackPct" not in sl:
+            migrated_sl = dict(sl)
+            migrated_sl["fallbackPct"] = 3.0
+            migrated_rules["sl"] = migrated_sl
+            updated = True
+    
+    # Add new gating parameters if missing (regardless of whether we migrated old defaults)
+    if "trendFilters" not in migrated_rules:
+        migrated_rules["trendFilters"] = {
+            "require_price_above_ma200": True,
+            "require_ema10_above_ma50": True
+        }
+        updated = True
+    
+    if "rsiConfirmation" not in migrated_rules:
+        migrated_rules["rsiConfirmation"] = {
+            "require_rsi_cross_up": True,
+            "rsi_cross_level": 30
+        }
+        updated = True
+    
+    if "candleConfirmation" not in migrated_rules:
+        migrated_rules["candleConfirmation"] = {
+            "require_close_above_ema10": True,
+            "require_rsi_rising_n_candles": 2
+        }
+        updated = True
+    
+    if "atr" not in migrated_rules:
+        migrated_rules["atr"] = {
+            "period": 14,
+            "multiplier_sl": 1.5,
+            "multiplier_tp": None
+        }
+        updated = True
+    
+    if updated:
+        logger.info("Swing Conservative migration completed (added new gating parameters)")
+    
+    return migrated_rules
+
+
 def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize config to ensure strategy_rules is the single source of truth.
@@ -68,6 +166,8 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     If strategy_rules exists, use it.
     If only legacy presets exists, migrate it to strategy_rules format.
     If neither exists, create default strategy_rules to ensure consistency.
+    
+    Also migrates Swing Conservative from old defaults to new stricter defaults.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -78,13 +178,30 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "notificationProfile": "swing",
             "rules": {
                 "Conservative": {
-                    "rsi": {"buyBelow": 40, "sellAbove": 70},
+                    "rsi": {"buyBelow": 30, "sellAbove": 70},
                     "maChecks": {"ema10": True, "ma50": True, "ma200": True},
-                    "sl": {"atrMult": 1.5},
+                    "sl": {"atrMult": 1.5, "fallbackPct": 3.0},
                     "tp": {"rr": 1.5},
-                    "volumeMinRatio": 0.5,
-                    "minPriceChangePct": 1.0,
+                    "volumeMinRatio": 1.0,
+                    "minPriceChangePct": 3.0,
                     "alertCooldownMinutes": 0.1667,
+                    "trendFilters": {
+                        "require_price_above_ma200": True,
+                        "require_ema10_above_ma50": True
+                    },
+                    "rsiConfirmation": {
+                        "require_rsi_cross_up": True,
+                        "rsi_cross_level": 30
+                    },
+                    "candleConfirmation": {
+                        "require_close_above_ema10": True,
+                        "require_rsi_rising_n_candles": 2
+                    },
+                    "atr": {
+                        "period": 14,
+                        "multiplier_sl": 1.5,
+                        "multiplier_tp": None
+                    },
                 },
                 "Aggressive": {
                     "rsi": {"buyBelow": 45, "sellAbove": 68},
@@ -145,8 +262,17 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
-    # If strategy_rules already exists and is not empty, return as-is
+    # If strategy_rules already exists and is not empty, migrate Swing Conservative defaults if needed
     if "strategy_rules" in cfg and cfg["strategy_rules"]:
+        # Migrate Swing Conservative defaults if needed
+        swing_preset = cfg["strategy_rules"].get("swing")
+        if isinstance(swing_preset, dict) and "rules" in swing_preset:
+            conservative_rules = swing_preset["rules"].get("Conservative")
+            if isinstance(conservative_rules, dict):
+                migrated = _migrate_swing_conservative_defaults(conservative_rules)
+                if migrated != conservative_rules:
+                    swing_preset["rules"]["Conservative"] = migrated
+                    cfg["strategy_rules"]["swing"] = swing_preset
         return cfg
     
     # If no strategy_rules but presets exists, migrate
@@ -483,8 +609,8 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
     if "rules" in preset_cfg:
         rules = preset_cfg.get("rules", {}).get(risk_key, {})
         if rules:
-            # Return rules in expected format
-            return {
+            # Return rules in expected format (including new gating parameters)
+            result = {
                 "rsi": {
                     "buyBelow": rules.get("rsi", {}).get("buyBelow") if isinstance(rules.get("rsi"), dict) else None,
                     "sellAbove": rules.get("rsi", {}).get("sellAbove") if isinstance(rules.get("rsi"), dict) else None,
@@ -493,7 +619,14 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
                 "volumeMinRatio": rules.get("volumeMinRatio"),
                 "minPriceChangePct": rules.get("minPriceChangePct"),
                 "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
+                "sl": rules.get("sl", {}),
+                "tp": rules.get("tp", {}),
+                "trendFilters": rules.get("trendFilters", {}),
+                "rsiConfirmation": rules.get("rsiConfirmation", {}),
+                "candleConfirmation": rules.get("candleConfirmation", {}),
+                "atr": rules.get("atr", {}),
             }
+            return result
     
     # Fallback to old format or defaults
     return {

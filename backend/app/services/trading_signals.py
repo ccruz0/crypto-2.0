@@ -81,13 +81,31 @@ def should_trigger_buy_signal(
     check_ema10 = ma_checks.get("ema10", False)
     check_ma50 = ma_checks.get("ma50", False)
     check_ma200 = ma_checks.get("ma200", False)
+    
+    # Extract trend-change gating parameters
+    trend_filters = rules.get("trendFilters", {})
+    require_price_above_ma200 = trend_filters.get("require_price_above_ma200", False)
+    require_ema10_above_ma50 = trend_filters.get("require_ema10_above_ma50", False)
+    
+    rsi_confirmation = rules.get("rsiConfirmation", {})
+    require_rsi_cross_up = rsi_confirmation.get("require_rsi_cross_up", False)
+    rsi_cross_level = rsi_confirmation.get("rsi_cross_level", rsi_buy_below or 30)
+    
+    candle_confirmation = rules.get("candleConfirmation", {})
+    require_close_above_ema10 = candle_confirmation.get("require_close_above_ema10", False)
+    require_rsi_rising_n_candles = candle_confirmation.get("require_rsi_rising_n_candles", 0)
+    
     profile_label = f"Strategy={strategy_type.value.title()} / Approach={risk_approach.value.title()} (Config-based)"
     reasons: List[str] = [profile_label]
     condition_flags: Dict[str, Optional[bool]] = {
         "rsi_ok": None,
         "ma_ok": None,
+        "trend_filters_ok": None,
+        "rsi_confirmation_ok": None,
+        "candle_confirmation_ok": None,
     }
     missing: List[str] = []
+    blocked_reasons: List[str] = []
 
     def conclude(success: bool, extra_reason: Optional[str] = None) -> BuyDecision:
         local_reasons = list(reasons)
@@ -244,6 +262,86 @@ def should_trigger_buy_signal(
         # This happens when all maChecks are False (strategy doesn't require MAs)
         condition_flags["ma_ok"] = True
         reasons.append("No MA checks required (maChecks all False)")
+
+    # Apply trend filters (additional gating beyond basic MA checks)
+    if require_price_above_ma200 and ma200 is not None:
+        if price <= ma200:
+            blocked_reasons.append(f"Price {price:.2f} ≤ MA200 {ma200:.2f} (trend filter requires price above MA200)")
+            condition_flags["trend_filters_ok"] = False
+            return conclude(False, blocked_reasons[-1])
+        condition_flags["trend_filters_ok"] = True
+        reasons.append(f"Price {price:.2f} > MA200 {ma200:.2f} (trend filter)")
+    elif require_price_above_ma200 and ma200 is None:
+        missing.append("MA200 (required by trend filter)")
+        condition_flags["trend_filters_ok"] = False
+        return conclude(False, "MA200 required by trend filter but unavailable")
+    else:
+        condition_flags["trend_filters_ok"] = True  # Not required
+    
+    if require_ema10_above_ma50 and ema10 is not None and ma50 is not None:
+        if ema10 <= ma50:
+            blocked_reasons.append(f"EMA10 {ema10:.2f} ≤ MA50 {ma50:.2f} (trend filter requires EMA10 above MA50)")
+            condition_flags["trend_filters_ok"] = False
+            return conclude(False, blocked_reasons[-1])
+        condition_flags["trend_filters_ok"] = True
+        reasons.append(f"EMA10 {ema10:.2f} > MA50 {ma50:.2f} (trend filter)")
+    elif require_ema10_above_ma50:
+        if ema10 is None:
+            missing.append("EMA10 (required by trend filter)")
+        if ma50 is None:
+            missing.append("MA50 (required by trend filter)")
+        if missing:
+            condition_flags["trend_filters_ok"] = False
+            return conclude(False, f"Trend filter requires EMA10/MA50 but unavailable: {', '.join(missing)}")
+    else:
+        if condition_flags.get("trend_filters_ok") is None:
+            condition_flags["trend_filters_ok"] = True  # Not required
+
+    # RSI confirmation: Check for RSI cross-up
+    # NOTE: For full RSI cross-up detection, we need previous RSI value.
+    # Current implementation checks if RSI is above cross level as a proxy.
+    # To properly detect cross-up, we'd need to pass previous_rsi parameter.
+    if require_rsi_cross_up and rsi is not None:
+        # Simplified check: RSI must be above cross level
+        # Full cross-up detection would require: previous_rsi < rsi_cross_level AND current_rsi >= rsi_cross_level
+        if rsi < rsi_cross_level:
+            blocked_reasons.append(f"RSI {rsi:.1f} < cross level {rsi_cross_level} (RSI cross-up required)")
+            condition_flags["rsi_confirmation_ok"] = False
+            return conclude(False, blocked_reasons[-1])
+        condition_flags["rsi_confirmation_ok"] = True
+        reasons.append(f"RSI {rsi:.1f} ≥ cross level {rsi_cross_level} (RSI confirmation)")
+    elif require_rsi_cross_up and rsi is None:
+        missing.append("RSI (required for RSI confirmation)")
+        condition_flags["rsi_confirmation_ok"] = False
+        return conclude(False, "RSI required for cross-up confirmation but unavailable")
+    else:
+        condition_flags["rsi_confirmation_ok"] = True  # Not required
+
+    # Candle confirmation: Check if close is above EMA10
+    if require_close_above_ema10 and ema10 is not None:
+        if price <= ema10:
+            blocked_reasons.append(f"Price {price:.2f} ≤ EMA10 {ema10:.2f} (candle confirmation requires close above EMA10)")
+            condition_flags["candle_confirmation_ok"] = False
+            return conclude(False, blocked_reasons[-1])
+        condition_flags["candle_confirmation_ok"] = True
+        reasons.append(f"Price {price:.2f} > EMA10 {ema10:.2f} (candle confirmation)")
+    elif require_close_above_ema10 and ema10 is None:
+        missing.append("EMA10 (required for candle confirmation)")
+        condition_flags["candle_confirmation_ok"] = False
+        return conclude(False, "EMA10 required for candle confirmation but unavailable")
+    else:
+        condition_flags["candle_confirmation_ok"] = True  # Not required
+    
+    # NOTE: require_rsi_rising_n_candles requires historical RSI values
+    # This would need to be implemented when historical data is available in the function signature
+    # For now, if this is required but not implemented, we log a warning but don't block
+    if require_rsi_rising_n_candles > 0:
+        logger.debug(
+            "⚠️ %s: RSI rising %d candles check requested but not yet implemented (requires historical RSI data)",
+            symbol, require_rsi_rising_n_candles
+        )
+        # Don't block for now - this is a future enhancement
+        condition_flags["candle_confirmation_ok"] = True
 
     # All configured checks passed
     return conclude(True)
@@ -605,16 +703,46 @@ def calculate_trading_signals(
         
         # Set initial TP/SL only if no position exists (position management is separate)
         if not last_buy_price:
-            # Set initial TP: +3% over entry price
-            result["tp"] = round(price * 1.03, 4)
+            # Get TP configuration from strategy rules
+            tp_config = strategy_rules.get("tp", {})
+            tp_rr = tp_config.get("rr")  # Risk:Reward ratio
+            
+            # TP will be set after SL calculation if using RR ratio
+            # Otherwise, use default +3% over entry price
+            result["tp"] = None  # Will be set below
 
-            # Set SL: entry - (1.5 × ATR)
-            if atr14 is not None and atr14 > 0:
-                result["sl"] = round(price - (1.5 * atr14), 4)
-                result["rationale"].append(f"Initial SL: {result['sl']:.2f} (entry - 1.5×ATR)")
+            # Get SL configuration from strategy rules
+            sl_config = strategy_rules.get("sl", {})
+            sl_atr_mult = sl_config.get("atrMult")  # ATR multiplier for SL
+            sl_fallback_pct = sl_config.get("fallbackPct", 3.0)  # Fallback percentage (default 3%)
+            
+            # Set SL based on strategy configuration
+            if sl_atr_mult is not None and atr14 is not None and atr14 > 0:
+                # Use ATR method: entry - (ATR_multiplier × ATR)
+                result["sl"] = round(price - (sl_atr_mult * atr14), 4)
+                result["rationale"].append(f"Initial SL: {result['sl']:.2f} (entry - {sl_atr_mult}×ATR)")
+                
+                # If TP uses RR ratio, calculate it based on SL
+                if tp_rr is not None and tp_rr > 0 and result["sl"] is not None:
+                    risk_amount = price - result["sl"]
+                    result["tp"] = round(price + (tp_rr * risk_amount), 4)
+                    result["rationale"].append(f"Initial TP: {result['tp']:.2f} (entry + {tp_rr}×risk)")
             else:
-                result["sl"] = round(price * 0.97, 4)  # Default 3% stop loss
-                result["rationale"].append("⚠️ ATR unavailable, using 3% default SL")
+                # Fallback: use percentage method
+                sl_pct = sl_fallback_pct / 100.0
+                result["sl"] = round(price * (1 - sl_pct), 4)
+                result["rationale"].append(f"⚠️ ATR unavailable, using {sl_fallback_pct}% fallback SL: {result['sl']:.2f}")
+                
+                # If TP uses RR ratio, calculate it based on SL
+                if tp_rr is not None and tp_rr > 0:
+                    risk_amount = price - result["sl"]
+                    result["tp"] = round(price + (tp_rr * risk_amount), 4)
+                    result["rationale"].append(f"Initial TP: {result['tp']:.2f} (entry + {tp_rr}×risk)")
+            
+            # Fallback: if TP is still None, use default +3% over entry price
+            if result["tp"] is None:
+                result["tp"] = round(price * 1.03, 4)
+                result["rationale"].append(f"Initial TP: {result['tp']:.2f} (default +3%)")
         
         # Canonical rule triggered - decision=BUY, buy_signal=True
         # Logging happens at end of function via DEBUG_STRATEGY_FINAL
