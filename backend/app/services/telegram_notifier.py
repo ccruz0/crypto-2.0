@@ -720,14 +720,20 @@ class TelegramNotifier:
         order_id_text = f"\n🆔 Order ID: {order_id}" if order_id else ""
         
         # Determine order origin
+        # Priority: order_role (SL/TP) > trade_signal_id (alert) > parent_order_id > manual
         origin_text = ""
         if order_role:
             # This is a SL/TP order
             role_emoji = "🚀" if order_role == "TAKE_PROFIT" else "🛑" if order_role == "STOP_LOSS" else ""
             role_text = "Take Profit" if order_role == "TAKE_PROFIT" else "Stop Loss" if order_role == "STOP_LOSS" else order_role
-            origin_text = f"\n🎯 Origen: {role_emoji} {role_text}"
+            if trade_signal_id:
+                # SL/TP order that was created by an alert
+                origin_text = f"\n🎯 Origen: {role_emoji} {role_text} (triggered by 📢 Alerta)"
+            else:
+                # SL/TP order (manual or auto-created)
+                origin_text = f"\n🎯 Origen: {role_emoji} {role_text}"
         elif trade_signal_id:
-            # Order was created by an alert/signal
+            # Order was created by an alert/signal (BUY/SELL from alert)
             origin_text = f"\n🎯 Origen: 📢 Alerta (Signal ID: {trade_signal_id})"
         elif parent_order_id:
             # Order has a parent but no explicit role - likely SL/TP without role set
