@@ -25,6 +25,13 @@
 - Ver `docs/monitoring/` para documentación de monitoreo
 - Ver `docs/debug/` para guías de debugging
 
+## 📋 Gestión de Órdenes y Notificaciones
+
+- **[Order Cancellation Notifications](ORDER_CANCELLATION_NOTIFICATIONS.md)**: Documentación completa sobre notificaciones de Telegram para órdenes canceladas
+  - 7 escenarios de cancelación cubiertos
+  - Guía de testing y troubleshooting
+  - Ejemplos de API y formato de notificaciones
+
 ---
 
 *Para más documentación, consulta los archivos `.md` en la raíz del proyecto.*

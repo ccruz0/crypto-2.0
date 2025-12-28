@@ -8,6 +8,22 @@ This document describes all order cancellation scenarios and their associated Te
 
 ---
 
+## Quick Reference
+
+| # | Scenario | Notification | Location | Trigger |
+|---|----------|--------------|----------|---------|
+| 1 | OCO Sibling Cancellation (Automatic) | ✅ **SENT** | `exchange_sync.py:_cancel_oco_sibling()` | When one SL/TP is filled, sibling auto-cancelled |
+| 2 | Orphaned Order Cancellation | ✅ **SENT** | `routes_orders.py:POST /orders/find-orphaned` | Manual cleanup of orphaned SL/TP orders |
+| 3 | Already-Cancelled OCO Sibling | ✅ **SENT** | `exchange_sync.py:_notify_already_cancelled_sl_tp()` | SL/TP executed, sibling already cancelled by exchange |
+| 4 | Manual Order Cancellation via API | ✅ **SENT** | `routes_orders.py:POST /orders/cancel` | Manual cancellation via REST API |
+| 5 | Cancel SL/TP Orders via API | ✅ **SENT** (Batched) | `routes_orders.py:POST /orders/cancel-sl-tp/{symbol}` | Bulk cancellation of SL/TP for symbol |
+| 6 | Orders Marked as CANCELLED During Sync | ✅ **SENT** (Batched) | `exchange_sync.py:sync_open_orders()` | Orders not found in exchange open orders |
+| 7 | REJECTED TP Orders Auto-Cancellation | ✅ **SENT** | `exchange_sync.py:sync_open_orders()` | REJECTED TP orders auto-cancelled by system |
+
+**Status:** ✅ **All 7 scenarios send Telegram notifications**
+
+---
+
 ## Cancellation Scenarios
 
 ### 1. OCO Sibling Cancellation (Automatic)
@@ -314,10 +330,129 @@ To verify notifications are working:
    - Execute an SL or TP order
    - Check Telegram channel for sibling cancellation notification
 
+### API Testing Examples
+
+#### Test Manual Order Cancellation
+
+```bash
+# Cancel a single order by order_id
+curl -X POST "http://your-api:8002/api/orders/cancel" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "exchange": "CRYPTO_COM",
+    "order_id": "1234567890"
+  }'
+
+# Expected response:
+# {
+#   "ok": true,
+#   "exchange": "CRYPTO_COM",
+#   "canceled_id": "1234567890",
+#   "result": {...}
+# }
+```
+
+#### Test SL/TP Order Cancellation
+
+```bash
+# Cancel all SL/TP orders for a symbol
+curl -X POST "http://your-api:8002/api/orders/cancel-sl-tp/BTC_USDT" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# Expected response:
+# {
+#   "ok": true,
+#   "symbol": "BTC_USDT",
+#   "canceled_orders": [...]
+# }
+```
+
+**Note:** After successful cancellation, check your Telegram channel for the notification message.
+
+---
+
+## Troubleshooting
+
+### Notification Not Received?
+
+If you cancelled an order but didn't receive a Telegram notification, follow these steps:
+
+1. **Verify Telegram Configuration:**
+   - Check that `TELEGRAM_BOT_TOKEN` is set correctly
+   - Check that `TELEGRAM_CHAT_ID` is set correctly (usually negative number for channels)
+   - Verify configuration: See [Telegram Setup Guide](../TELEGRAM_SETUP.md)
+   - Ensure you're running on AWS environment (notifications only sent from AWS)
+
+2. **Check Backend Logs:**
+   ```bash
+   # SSH into AWS instance
+   ssh hilovivo-aws
+   
+   # Check backend logs for notification errors
+   cd ~/automated-trading-platform
+   docker compose --profile aws logs backend-aws | grep -i "notification\|telegram" | tail -50
+   ```
+   
+   Look for:
+   - ✅ `"Sent Telegram notification for cancelled order"` - Success
+   - ⚠️ `"Failed to send Telegram notification"` - Check Telegram config
+   - ❌ `"TelegramNotifier"` errors - Configuration issue
+
+3. **Verify Order Was Actually Cancelled:**
+   - Check the API response - should return `"ok": true`
+   - Check exchange orders via API or exchange website
+   - Check database: order status should be `CANCELLED`
+
+4. **Check Telegram Bot Status:**
+   - Ensure bot is added to the Telegram channel/group
+   - Verify bot has permission to send messages
+   - Test with a simple message from the bot
+
+5. **Common Issues:**
+
+   **Issue:** "Failed to send Telegram notification" in logs
+   - **Solution:** Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are correct
+   - Check network connectivity from AWS to Telegram API
+
+   **Issue:** No notification for sync-based cancellations
+   - **Solution:** Wait for next sync cycle (runs every 5 seconds)
+   - Check if orders were actually cancelled (status = CANCELLED in DB)
+
+   **Issue:** Notification sent but not visible in Telegram
+   - **Solution:** Check if bot was removed from channel
+   - Verify `TELEGRAM_CHAT_ID` matches the channel ID
+   - Check if message was sent to wrong chat
+
+6. **Enable Debug Logging:**
+   ```bash
+   # Set log level to DEBUG in docker-compose.yml or .env
+   LOG_LEVEL=DEBUG
+   
+   # Restart backend
+   docker compose --profile aws restart backend-aws
+   
+   # Monitor logs
+   docker compose --profile aws logs -f backend-aws | grep -i telegram
+   ```
+
+### Verification Checklist
+
+- [ ] `TELEGRAM_BOT_TOKEN` is set and valid
+- [ ] `TELEGRAM_CHAT_ID` is set correctly (negative number for channels)
+- [ ] Bot is added to Telegram channel/group
+- [ ] Bot has permission to send messages
+- [ ] Running on AWS environment (not local)
+- [ ] Backend service is running and healthy
+- [ ] No errors in backend logs related to Telegram
+- [ ] Order cancellation API call returned success
+
 ---
 
 ## Related Documentation
 
+- **[Telegram Setup Guide](../TELEGRAM_SETUP.md)** - How to configure Telegram notifications
 - `OCO_IMPLEMENTATION_VS_DOCUMENTATION.md` - OCO system implementation details
 - `OCO_CANCELLATION_CODE_REVIEW.md` - Code review of OCO cancellation logic
 - `TP_CANCELLATION_FIX.md` - Fix for TP cancellation issues
