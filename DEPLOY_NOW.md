@@ -1,23 +1,23 @@
-# 🚀 Deploy Telegram Fixes NOW
+# Quick Deployment Guide - Order Cancellation Notifications
 
-## ⚠️ IMPORTANT: Code is committed but NOT deployed yet!
+## ✅ Code Status
+- ✅ Committed: commit `2c4bf6a`
+- ✅ Pushed to: `origin/main`
+- ✅ Ready to deploy
 
-The server is still running the **OLD code**. You need to deploy the changes.
+## 🚀 Deployment Commands
 
-## Quick Deployment
-
-### Option 1: Use Deployment Script (Recommended)
+### Option 1: One-line Command (Easiest)
 
 ```bash
-cd ~/automated-trading-platform
-./deploy_telegram_fixes.sh
+ssh ubuntu@<AWS_EC2_IP> 'cd ~/automated-trading-platform && git pull origin main && docker compose --profile aws restart backend-aws && sleep 5 && docker compose --profile aws ps backend-aws'
 ```
 
-### Option 2: Manual Deployment via SSH
+### Option 2: Step by Step
 
 ```bash
-# 1. SSH to server
-ssh ubuntu@175.41.189.249
+# 1. SSH to AWS EC2
+ssh ubuntu@<AWS_EC2_IP>
 
 # 2. Navigate to project
 cd ~/automated-trading-platform
@@ -25,59 +25,48 @@ cd ~/automated-trading-platform
 # 3. Pull latest code
 git pull origin main
 
-# 4. Restart backend
-cd backend
+# 4. Restart backend service
+docker compose --profile aws restart backend-aws
 
-# If using Docker:
-docker compose restart backend
+# 5. Check status
+docker compose --profile aws ps backend-aws
 
-# If using uvicorn directly:
-pkill -f "uvicorn app.main:app"
-source venv/bin/activate
-nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 > backend.log 2>&1 &
+# 6. Check logs
+docker compose --profile aws logs --tail=50 backend-aws | grep -i notification
 ```
 
-### Option 3: If SSH is not working
-
-If you can't SSH directly, you may need to:
-1. Check if the server IP has changed
-2. Verify SSH key is correct
-3. Check firewall/security group settings
-4. Use AWS Console to access the instance
-
-## What Gets Fixed After Deployment
-
-✅ **Portfolio Message:**
-- Shows actual TP/SL values (not $0.00)
-- Shows open position indicators (🔒 Open Position / 💤 Available)
-- Menu buttons always appear
-
-✅ **/start Command:**
-- Shows main menu with inline buttons
-- No duplicate menus
-- No text command list
-
-✅ **Welcome Message:**
-- Shows main menu (same as /start)
-- No old text list
-- No persistent keyboard duplication
-
-## Verify Deployment
-
-After deploying, test:
-1. Send `/start` - should show main menu with inline buttons only
-2. Send `/portfolio` - should show TP/SL values and position status
-3. Check that no duplicate keyboards appear
-
-## Check Backend Status
+### Option 3: Use Deployment Script
 
 ```bash
-# Check if backend is running
-ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform/backend && pgrep -f "uvicorn app.main:app"'
-
-# Check backend logs
-ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform/backend && tail -f backend.log'
-
-# Or if using Docker:
-ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker compose logs -f backend'
+# Make sure you have SSH access configured
+./deploy_manual_simple.sh ubuntu@<AWS_EC2_IP>
 ```
+
+## ✅ Verification
+
+After deployment, verify it worked:
+
+1. **Check service is running:**
+   ```bash
+   docker compose --profile aws ps backend-aws
+   ```
+   Should show "Up" status
+
+2. **Check logs for errors:**
+   ```bash
+   docker compose --profile aws logs --tail=100 backend-aws | grep -i error
+   ```
+
+3. **Test notifications:**
+   - Cancel a test order via API: `POST /api/orders/cancel`
+   - Check Telegram channel for notification
+
+## 📋 What Changed
+
+- `backend/app/services/exchange_sync.py` - Added notifications for sync-based cancellations
+- `backend/app/api/routes_orders.py` - Added notifications for cancel endpoints
+- All 7 cancellation scenarios now send Telegram notifications
+
+## ⚠️ Note
+
+GitHub Actions deployment is failing due to rsync/git conflicts. Manual deployment using `git pull` is the recommended approach since we only changed Python code (no Docker rebuild needed).

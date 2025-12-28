@@ -41,11 +41,11 @@ APP_ENV=local
 ```bash
 APP_ENV=aws
 TELEGRAM_BOT_TOKEN=<your_bot_token>
-TELEGRAM_CHAT_ID=<chat_id_for_hilovivo-alerts-aws>
+TELEGRAM_CHAT_ID=<chat_id_for_Hilovivo-alerts>
 ```
 
 **Result:**
-- All alerts are sent to the `hilovivo-alerts-aws` Telegram channel
+- All alerts are sent to the `Hilovivo-alerts` Telegram channel
 - All messages are prefixed with `[AWS]`
 - Example: `[AWS] 📊 BUY SIGNAL DETECTED...`
 
@@ -56,11 +56,11 @@ TELEGRAM_CHAT_ID=<chat_id_for_hilovivo-alerts-aws>
 ```bash
 APP_ENV=local
 TELEGRAM_BOT_TOKEN=<your_bot_token>
-TELEGRAM_CHAT_ID=<chat_id_for_hilovivo-alerts-local>
+TELEGRAM_CHAT_ID=<chat_id_for_Hilovivo-alerts-local>
 ```
 
 **Result:**
-- All alerts are sent to the `hilovivo-alerts-local` Telegram channel
+- All alerts are sent to the `Hilovivo-alerts-local` Telegram channel
 - All messages are prefixed with `[LOCAL]`
 - Example: `[LOCAL] 📊 BUY SIGNAL DETECTED...`
 
@@ -148,8 +148,8 @@ Send a test alert and verify:
 ### From Single Environment to Multi-Environment
 
 1. **Create separate Telegram channels:**
-   - `hilovivo-alerts-aws` (for production)
-   - `hilovivo-alerts-local` (for development)
+   - `Hilovivo-alerts` (for production/AWS)
+   - `Hilovivo-alerts-local` (for development/local)
 
 2. **Get chat IDs:**
    - Add bot to each channel

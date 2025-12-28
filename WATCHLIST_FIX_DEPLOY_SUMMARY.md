@@ -148,3 +148,6 @@ Los campos técnicos (price, rsi, ma50, ma200, ema10) **aún pueden mostrar `-`*
 
 
 
+
+
+

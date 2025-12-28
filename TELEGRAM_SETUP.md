@@ -23,12 +23,24 @@ This guide explains how to set up Telegram notifications for your automated trad
 
 ## Step 3: Configure Environment Variables
 
-Add these variables to your `.env` file on AWS:
+Add these variables to your `.env.aws` file on AWS:
 
 ```bash
+# Bot token from BotFather
 TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
+
+# Channel ID for sending alerts (get from channel, usually negative number)
+TELEGRAM_CHAT_ID=-1001234567890
+
+# Authorized user IDs for bot commands (comma or space-separated)
+# Get your user ID using @userinfobot or from bot logs
+TELEGRAM_AUTH_USER_ID=your_user_id_here
 ```
+
+**Important Notes:**
+- `TELEGRAM_CHAT_ID`: Used for sending alerts to channels/groups (usually a negative number)
+- `TELEGRAM_AUTH_USER_ID`: Used for authorizing users to use bot commands (your personal Telegram user ID)
+- You can specify multiple authorized users: `TELEGRAM_AUTH_USER_ID=123456789,987654321`
 
 ## Step 4: Deploy to AWS
 

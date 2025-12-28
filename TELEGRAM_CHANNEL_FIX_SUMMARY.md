@@ -100,6 +100,13 @@ After updating, you can verify the fix by:
 - The bot must be added to the channel and have permission to send messages
 - Changes to `.env.aws` require service restart to take effect
 
+## Related: Bot Command Authorization
+
+**Note:** If users are getting "Not authorized" when trying to use bot commands (like `/start`, `/menu`), you need to configure `TELEGRAM_AUTH_USER_ID` separately from `TELEGRAM_CHAT_ID`. See `TELEGRAM_AUTHORIZATION_FIX.md` for details.
+
+- `TELEGRAM_CHAT_ID`: For sending alerts to channels ✅
+- `TELEGRAM_AUTH_USER_ID`: For authorizing users to use bot commands ✅
+
 ## Troubleshooting
 
 If alerts still go to the wrong channel:
@@ -108,4 +115,6 @@ If alerts still go to the wrong channel:
 2. **Check bot permissions**: Ensure the bot is an admin in the Hilovivo-alerts channel
 3. **Check logs**: Look for `[TELEGRAM_CONFIG]` and `[TELEGRAM_SEND]` log entries
 4. **Verify environment**: Ensure `.env.aws` is being loaded (check `docker-compose.yml` env_file configuration)
+
+
 

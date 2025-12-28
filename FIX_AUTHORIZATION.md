@@ -2,40 +2,70 @@
 
 ## Problem
 Bot responds with "Not authorized" because:
-- Current `TELEGRAM_CHAT_ID=-5033055655` (group chat ID)
-- Your user_id: `839853931`
-- Authorization fails in private chats
+- `TELEGRAM_CHAT_ID` is set to channel ID (`839853931` for Hilovivo-alerts channel)
+- User IDs don't match channel ID, so authorization fails in private chats
+- Channel ID is needed for sending alerts, but user IDs are needed for bot commands
 
-## Solution
-Update `TELEGRAM_CHAT_ID` to your personal user_id: `839853931`
-
-## Steps
+## Solution (NEW - Recommended)
+Use the new `TELEGRAM_AUTH_USER_ID` environment variable to specify authorized user IDs separately from the channel ID.
 
 ### On AWS Server:
-1. Edit `.env.aws`:
+1. Get your Telegram user ID (see methods below)
+2. Edit `.env.aws`:
    ```bash
+   # Channel ID for sending alerts (keep existing)
    TELEGRAM_CHAT_ID=839853931
+   
+   # Authorized user IDs for bot commands (NEW)
+   TELEGRAM_AUTH_USER_ID=your_user_id_here
+   # Or multiple users: TELEGRAM_AUTH_USER_ID=123456789,987654321
    ```
 
-2. Restart backend:
+3. Restart backend:
    ```bash
    docker compose --profile aws restart backend-aws
    ```
 
-3. Test:
+4. Test:
    - Send `/start` in private chat → Should work ✅
    - Send `/start` in group chat → Should work ✅
 
-## Why This Works
-The authorization checks: `chat_id == AUTH_CHAT_ID OR user_id == AUTH_CHAT_ID`
+## Getting Your User ID
 
-- **Private chat**: `chat_id = 839853931` matches ✅
-- **Group chat**: `user_id = 839853931` matches ✅
+**Method 1: Using @userinfobot**
+1. Open Telegram and search for `@userinfobot`
+2. Start a conversation - it will show your user ID
+
+**Method 2: From Bot Logs**
+```bash
+docker compose --profile aws logs backend-aws | grep "user_id"
+```
+Look for your user_id when you send a command.
+
+**Method 3: Using Telegram API**
+```bash
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates"
+```
+Look for `"from":{"id":` in the response.
+
+## Why This Works
+The new authorization system:
+1. Uses `TELEGRAM_CHAT_ID` for sending alerts to channels ✅
+2. Uses `TELEGRAM_AUTH_USER_ID` for authorizing bot commands ✅
+3. Checks both `chat_id` and `user_id` against authorized list
 
 ## Verification
 After restart, check logs:
 ```bash
-docker compose --profile aws logs backend-aws | grep -i "AUTH.*Authorized"
+docker compose --profile aws logs backend-aws | grep -E "(AUTH.*Added|AUTH.*Authorized)"
 ```
 
-Should see: `[TG][AUTH] ✅ Authorized chat_id=839853931, user_id=839853931`
+Should see:
+- `[TG][AUTH] Added authorized user ID: your_user_id`
+- `[TG][AUTH] ✅ Authorized chat_id=..., user_id=...`
+
+## Legacy Solution (Not Recommended)
+If you don't want to use `TELEGRAM_AUTH_USER_ID`, you can set `TELEGRAM_CHAT_ID` to your user ID, but this will break channel alerts. The new approach is better because it separates concerns.
+
+## See Also
+- `TELEGRAM_AUTHORIZATION_FIX.md` - Complete documentation of the fix
