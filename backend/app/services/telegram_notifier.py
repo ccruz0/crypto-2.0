@@ -1138,6 +1138,7 @@ class TelegramNotifier:
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
         origin: Optional[str] = None,  # "AWS" or "LOCAL"
+        balance_warning: Optional[str] = None,  # Warning about insufficient balance for trade
     ):
         """Send a sell signal alert
         
@@ -1206,12 +1207,17 @@ class TelegramNotifier:
         if throttle_reason:
             trigger_reason_text = self._format_trigger_reason(throttle_reason)
 
+        # Add balance warning if provided
+        balance_warning_text = ""
+        if balance_warning:
+            balance_warning_text = f"\n\n{balance_warning}"
+        
         message = f"""
 🔴 <b>SELL SIGNAL DETECTED</b>{source_text}
 
 📈 Symbol: <b>{symbol}</b>
 {price_line}{price_change_text}
-✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}
+✅ Reason: {reason}{strategy_line}{approach_line}{trigger_reason_text}{balance_warning_text}
 📅 Time: {timestamp}
 """
         # Default to AWS if origin not provided (for backward compatibility)

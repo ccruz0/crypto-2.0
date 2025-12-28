@@ -1150,21 +1150,24 @@ class SignalMonitorService:
             min_price_change_pct=min_price_change_pct or self.ALERT_MIN_PRICE_CHANGE_PCT,
             min_interval_minutes=FIXED_THROTTLE_MINUTES,  # Fixed 60 seconds - not configurable
         )
+        
+        # CRITICAL: Always load snapshots to check for config changes, even if no signals are active
+        # This ensures that changes to trade_amount_usd, alert_enabled, etc. reset the throttle immediately
         signal_snapshots: Dict[str, LastSignalSnapshot] = {}
-        if buy_signal or sell_signal:
+        try:
+            signal_snapshots = fetch_signal_states(
+                db, symbol=symbol, strategy_key=strategy_key
+            )
+        except Exception as snapshot_err:
+            logger.warning(f"Failed to load throttle state for {symbol}: {snapshot_err}")
+            # CRITICAL: Rollback the transaction to allow subsequent operations to proceed
+            # This prevents "current transaction is aborted" errors
             try:
-                signal_snapshots = fetch_signal_states(
-                    db, symbol=symbol, strategy_key=strategy_key
-                )
-            except Exception as snapshot_err:
-                logger.warning(f"Failed to load throttle state for {symbol}: {snapshot_err}")
-                # CRITICAL: Rollback the transaction to allow subsequent operations to proceed
-                # This prevents "current transaction is aborted" errors
-                try:
-                    db.rollback()
-                except Exception as rollback_err:
-                    logger.warning(f"Failed to rollback transaction after throttle state error: {rollback_err}")
-                signal_snapshots = {}
+                db.rollback()
+            except Exception as rollback_err:
+                logger.warning(f"Failed to rollback transaction after throttle state error: {rollback_err}")
+            signal_snapshots = {}
+        
         last_buy_snapshot = signal_snapshots.get("BUY")
         last_sell_snapshot = signal_snapshots.get("SELL")
         
@@ -1172,7 +1175,9 @@ class SignalMonitorService:
         # This ensures that changes to trade_amount_usd, alert_enabled, etc. reset the throttle immediately
         from app.services.signal_throttle import reset_throttle_state
         config_changed = False
+        logger.info(f"[CONFIG_CHECK] {symbol}: Checking config_hash. Current={config_hash_current[:16] if config_hash_current else None}..., Snapshots={len(signal_snapshots)}")
         for side, snapshot in signal_snapshots.items():
+            logger.info(f"[CONFIG_CHECK] {symbol} {side}: snapshot={snapshot is not None}, stored_hash={snapshot.config_hash[:16] if snapshot and snapshot.config_hash else None}...")
             if snapshot:
                 # Detect change if: stored hash is None (first time) OR stored hash differs from current
                 stored_hash = snapshot.config_hash
@@ -2328,18 +2333,30 @@ class SignalMonitorService:
                                 # Order creation failed, remove lock immediately
                                 if symbol in self.order_creation_locks:
                                     del self.order_creation_locks[symbol]
-                                # PHASE 0: Structured logging for order creation failure
-                                logger.error(
-                                    f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
-                                    f"order_result=None or empty | "
-                                    f"price=${current_price:.4f}"
-                                )
-                                # E) Deep decision-grade logging for order result
-                                logger.error(
-                                    f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
-                                    f"price=${current_price:.4f} qty=0 error=order_result_empty"
-                                )
-                                logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
+                                
+                                # Check if it was a specific error type
+                                error_type = order_result.get("error_type") if isinstance(order_result, dict) else None
+                                error_msg = order_result.get("message") if isinstance(order_result, dict) else None
+                                
+                                if error_type == "balance":
+                                    logger.warning(f"⚠️ BUY order creation blocked for {symbol}: Insufficient balance - {error_msg}")
+                                elif error_type == "trade_disabled":
+                                    logger.warning(f"🚫 BUY order creation blocked for {symbol}: Trade is disabled - {error_msg}")
+                                elif error_type == "authentication":
+                                    logger.error(f"❌ BUY order creation failed for {symbol}: Authentication error - {error_msg}")
+                                else:
+                                    # PHASE 0: Structured logging for order creation failure
+                                    logger.error(
+                                        f"[EVAL_{evaluation_id}] {symbol} BUY order creation FAILED | "
+                                        f"order_result=None or empty | "
+                                        f"price=${current_price:.4f}"
+                                    )
+                                    # E) Deep decision-grade logging for order result
+                                    logger.error(
+                                        f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
+                                        f"price=${current_price:.4f} qty=0 error=order_result_empty"
+                                    )
+                                    logger.info(f"🔓 Lock removed for {symbol} (order creation returned None)")
                         except Exception as order_err:
                             # Order creation failed, remove lock immediately
                             if symbol in self.order_creation_locks:
@@ -2527,6 +2544,58 @@ class SignalMonitorService:
                 else:
                     # sell_alert_enabled is True - proceed to send alert (throttling already verified by should_emit_signal)
                     try:
+                        # ========================================================================
+                        # EARLY BALANCE CHECK: Check balance before sending alert if trade is enabled
+                        # This allows us to inform users in the alert if trade will fail
+                        # ========================================================================
+                        balance_check_warning = None
+                        trade_enabled_check = getattr(watchlist_item, 'trade_enabled', False)
+                        trade_amount_usd_check = getattr(watchlist_item, 'trade_amount_usd', None)
+                        
+                        # Only check balance if trade is enabled and amount is configured
+                        if trade_enabled_check and trade_amount_usd_check and trade_amount_usd_check > 0:
+                            # Read trade_on_margin from database
+                            user_wants_margin_check = getattr(watchlist_item, 'trade_on_margin', False)
+                            
+                            # For SELL orders, we need to check if we have enough balance of the base currency
+                            base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+                            
+                            if not user_wants_margin_check:
+                                try:
+                                    account_summary = trade_client.get_account_summary()
+                                    available_balance = 0
+                                    
+                                    if 'accounts' in account_summary or 'data' in account_summary:
+                                        accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
+                                        for acc in accounts:
+                                            currency = acc.get('currency', '').upper()
+                                            if currency == base_currency:
+                                                available = float(acc.get('available', '0') or '0')
+                                                available_balance = available
+                                                break
+                                    
+                                    # Calculate required quantity
+                                    required_qty = trade_amount_usd_check / current_price
+                                    
+                                    # If we don't have enough base currency, prepare warning
+                                    if available_balance < required_qty:
+                                        balance_check_warning = (
+                                            f"⚠️ <b>TRADE NO EJECUTADO</b> - Balance insuficiente: "
+                                            f"Disponible: {available_balance:.8f} {base_currency}, "
+                                            f"Requerido: {required_qty:.8f} {base_currency}"
+                                        )
+                                        logger.info(
+                                            f"💰 Early balance check for {symbol} SELL: Insufficient balance "
+                                            f"(available={available_balance:.8f} {base_currency} < "
+                                            f"required={required_qty:.8f} {base_currency}). "
+                                            f"Including warning in alert message."
+                                        )
+                                except Exception as balance_check_err:
+                                    logger.warning(
+                                        f"⚠️ Early balance check failed for {symbol} SELL: {balance_check_err}. "
+                                        f"Continuing with alert..."
+                                    )
+                        
                         price_variation = self._format_price_variation(prev_sell_price, current_price)
                         ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
                         ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
@@ -2553,6 +2622,7 @@ class SignalMonitorService:
                             throttle_status="SENT",
                             throttle_reason=throttle_sell_reason or throttle_reason or sell_reason,
                             origin=alert_origin,
+                            balance_warning=balance_check_warning,
                         )
                         # PHASE 0: Structured logging for SELL Telegram send attempt
                         message_id_sell = None
@@ -2637,43 +2707,53 @@ class SignalMonitorService:
                             trade_amount_usd = getattr(watchlist_item, 'trade_amount_usd', None)
                         
                         if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
-                            logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
-                            try:
-                                # Use asyncio.run() to execute async function from sync context
-                                import asyncio
-                                order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                if order_result:
-                                    filled_price = order_result.get("filled_price")
-                                    if filled_price:
-                                        logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
-                                    persist_price = filled_price or current_price
-                                    if not sell_state_recorded:
-                                        try:
-                                            record_signal_event(
-                                                db,
-                                                symbol=symbol,
-                                                strategy_key=strategy_key,
-                                                side="SELL",
-                                                price=persist_price,
-                                                source="order",
-                                                emit_reason="Order created",
-                                            )
-                                            sell_state_recorded = True
-                                        except Exception as state_err:
-                                            logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
-                                else:
-                                    # Check if it was a balance issue or other error
-                                    error_type = order_result.get("error_type") if isinstance(order_result, dict) else None
-                                    error_msg = order_result.get("message") if isinstance(order_result, dict) else None
-                                    if error_type == "balance":
-                                        logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                    elif error_type == "authentication":
-                                        logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
+                            # Skip order creation if early balance check already detected insufficient balance
+                            # We already warned in the alert, so don't try to create order and send duplicate message
+                            if balance_check_warning:
+                                logger.info(
+                                    f"🚫 Trade enabled for {symbol} but skipping SELL order creation - "
+                                    f"insufficient balance already detected and warned in alert"
+                                )
+                            else:
+                                logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
+                                try:
+                                    # Use asyncio.run() to execute async function from sync context
+                                    import asyncio
+                                    order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
+                                    if order_result:
+                                        filled_price = order_result.get("filled_price")
+                                        if filled_price:
+                                            logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
+                                        persist_price = filled_price or current_price
+                                        if not sell_state_recorded:
+                                            try:
+                                                record_signal_event(
+                                                    db,
+                                                    symbol=symbol,
+                                                    strategy_key=strategy_key,
+                                                    side="SELL",
+                                                    price=persist_price,
+                                                    source="order",
+                                                    emit_reason="Order created",
+                                                )
+                                                sell_state_recorded = True
+                                            except Exception as state_err:
+                                                logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
                                     else:
-                                        logger.warning(f"⚠️ SELL order creation returned None for {symbol} (reason: {error_msg or 'unknown'})")
-                            except Exception as order_err:
-                                logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
-                                # Don't raise - alert was sent, order creation is secondary
+                                        # Check if it was a balance issue, trade disabled, or other error
+                                        error_type = order_result.get("error_type") if isinstance(order_result, dict) else None
+                                        error_msg = order_result.get("message") if isinstance(order_result, dict) else None
+                                        if error_type == "balance":
+                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
+                                        elif error_type == "trade_disabled":
+                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
+                                        elif error_type == "authentication":
+                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
+                                        else:
+                                            logger.warning(f"⚠️ SELL order creation returned None for {symbol} (reason: {error_msg or 'unknown'})")
+                                except Exception as order_err:
+                                    logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
+                                    # Don't raise - alert was sent, order creation is secondary
                         else:
                             # Log specific reason why order wasn't created
                             reasons = []
@@ -2711,6 +2791,15 @@ class SignalMonitorService:
                             current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
         symbol = watchlist_item.symbol
+        
+        # CRITICAL: Double-check trade_enabled flag before proceeding
+        # This prevents order creation attempts when trade_enabled is False
+        if not getattr(watchlist_item, 'trade_enabled', False):
+            logger.warning(
+                f"🚫 Blocked BUY order creation for {symbol}: trade_enabled=False. "
+                f"This function should not be called when trade is disabled."
+            )
+            return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
         # Validate that trade_amount_usd is configured - REQUIRED, no default
         if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
@@ -3568,6 +3657,15 @@ class SignalMonitorService:
         """Create a SELL order automatically based on signal"""
         symbol = watchlist_item.symbol
         
+        # CRITICAL: Double-check trade_enabled flag before proceeding
+        # This prevents order creation attempts when trade_enabled is False
+        if not getattr(watchlist_item, 'trade_enabled', False):
+            logger.warning(
+                f"🚫 Blocked SELL order creation for {symbol}: trade_enabled=False. "
+                f"This function should not be called when trade is disabled."
+            )
+            return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
+        
         # Validate that trade_amount_usd is configured - REQUIRED, no default
         if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
@@ -3861,9 +3959,14 @@ class SignalMonitorService:
             
             logger.info(f"✅ Automatic SELL order created successfully: {symbol} - {order_id}")
             
-            # If order is filled, create TP/SL orders
-            if result_status in ["FILLED", "filled"] or result.get("avg_price"):
-                filled_qty = float(result.get("cumulative_quantity", qty))
+            # If order is filled, create TP/SL orders immediately
+            # For MARKET orders, they may not be immediately FILLED, so we check multiple conditions
+            is_filled = result_status in ["FILLED", "filled"]
+            has_avg_price = result.get("avg_price") is not None
+            
+            # Attempt SL/TP creation if order is filled or has avg_price (indicating it was filled)
+            if is_filled or has_avg_price:
+                filled_qty = float(result.get("cumulative_quantity", qty)) if result.get("cumulative_quantity") else qty
                 try:
                     from app.services.exchange_sync import ExchangeSyncService
                     exchange_sync = ExchangeSyncService()
@@ -3880,7 +3983,11 @@ class SignalMonitorService:
                     )
                     logger.info(f"✅ SL/TP orders created for SELL {symbol} order {order_id}")
                 except Exception as sl_tp_err:
-                    logger.warning(f"⚠️ Could not create SL/TP orders immediately for SELL {symbol}: {sl_tp_err}. Exchange sync will handle this.", exc_info=True)
+                    logger.warning(f"⚠️ Could not create SL/TP orders immediately for SELL {symbol}: {sl_tp_err}. Exchange sync will handle this when order becomes FILLED.", exc_info=True)
+            else:
+                # MARKET order not yet filled - exchange_sync will create SL/TP when it becomes FILLED
+                # Ensure the order is saved to database so exchange_sync can find it
+                logger.info(f"ℹ️ SELL MARKET order {order_id} for {symbol} not yet filled (status: {result_status}). Exchange sync will create SL/TP when order becomes FILLED.")
             
             filled_quantity = float(result.get("cumulative_quantity", qty)) if result.get("cumulative_quantity") else qty
             
