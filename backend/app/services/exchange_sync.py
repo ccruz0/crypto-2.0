@@ -1419,9 +1419,9 @@ class ExchangeSyncService:
                         ExchangeOrder.symbol == symbol,
                         ExchangeOrder.order_type == target_order_type,
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
-                    ExchangeOrder.exchange_order_id != executed_order_id
-                )
-            ).all()
+                        ExchangeOrder.exchange_order_id != executed_order_id
+                    )
+                ).all()
                 if target_orders:
                     logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type (fallback)")
             
@@ -2084,25 +2084,34 @@ class ExchangeSyncService:
                             )
                             
                             if is_sl_tp_executed:
-                                # First try to cancel using OCO group ID (more reliable)
+                                # CRITICAL: Always attempt to cancel the sibling order
+                                # Try OCO group ID method first (most reliable if OCO group ID exists)
+                                oco_cancelled = False
                                 if existing.oco_group_id:
                                     try:
                                         logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
                                         self._cancel_oco_sibling(db, existing)
+                                        oco_cancelled = True
+                                        logger.info(f"✅ OCO cancellation attempted for order {order_id}")
                                     except Exception as oco_err:
                                         logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
                                 
-                                # Also try the fallback method (for orders without OCO group ID)
+                                # ALWAYS try the fallback method (works even without OCO group ID)
                                 # This will search by parent_order_id, order_role, time window, or symbol+type
-                                try:
-                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                    if cancelled_count == 0:
-                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
-                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
-                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
-                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                except Exception as cancel_err:
-                                    logger.warning(f"Error canceling remaining SL/TP for {order_id}: {cancel_err}")
+                                # This ensures cancellation works for both BUY and SELL orders
+                                if not oco_cancelled:
+                                    try:
+                                        logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
+                                        cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                        if cancelled_count > 0:
+                                            logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
+                                        elif cancelled_count == 0:
+                                            # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                            # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                            logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                            self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    except Exception as cancel_err:
+                                        logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
                             
                             # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
                             elif is_sell_limit_that_closes_position:
@@ -2251,19 +2260,32 @@ class ExchangeSyncService:
                 is_sl_tp_executed = order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
                 
                 if is_sl_tp_executed:
-                    # First try to cancel using OCO group ID (more reliable)
+                    # CRITICAL: Always attempt to cancel the sibling order
+                    # Try OCO group ID method first (most reliable if OCO group ID exists)
+                    oco_cancelled = False
                     if new_order.oco_group_id:
                         try:
                             logger.info(f"Attempting to cancel OCO sibling for new order {order_id} (group: {new_order.oco_group_id})")
                             self._cancel_oco_sibling(db, new_order)
+                            oco_cancelled = True
+                            logger.info(f"✅ OCO cancellation attempted for new order {order_id}")
                         except Exception as oco_err:
                             logger.warning(f"Error canceling OCO sibling for new order {order_id}: {oco_err}")
                     
-                    # Also try the fallback method (for orders without OCO group ID or if OCO cancel failed)
-                    try:
-                        self._cancel_remaining_sl_tp(db, symbol, order_type_upper, order_id)
-                    except Exception as cancel_err:
-                        logger.warning(f"Error canceling remaining SL/TP for new order {order_id}: {cancel_err}")
+                    # ALWAYS try the fallback method (works even without OCO group ID)
+                    # This ensures cancellation works for both BUY and SELL orders
+                    if not oco_cancelled:
+                        try:
+                            logger.info(f"Attempting fallback cancellation for sibling of new order {order_id} (symbol: {symbol}, type: {order_type_upper})")
+                            cancelled_count = self._cancel_remaining_sl_tp(db, symbol, order_type_upper, order_id)
+                            if cancelled_count > 0:
+                                logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method for new order")
+                            elif cancelled_count == 0:
+                                # Check if sibling was already cancelled
+                                logger.debug(f"No active {order_type_upper} orders found to cancel for new order - checking for already CANCELLED orders")
+                                self._notify_already_cancelled_sl_tp(db, symbol, order_type_upper, order_id)
+                        except Exception as cancel_err:
+                            logger.error(f"❌ Error canceling remaining SL/TP for new order {order_id}: {cancel_err}", exc_info=True)
                 
                 # Track for marking as processed AFTER successful commit
                 orders_processed_this_cycle.append(order_id)
