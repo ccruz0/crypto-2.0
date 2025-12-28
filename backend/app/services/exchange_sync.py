@@ -459,35 +459,141 @@ class ExchangeSyncService:
             logger.error(f"Error syncing open orders: {e}", exc_info=True)
             db.rollback()
     
+    def _send_oco_cancellation_notification(self, db: Session, filled_order: 'ExchangeOrder', cancelled_sibling: 'ExchangeOrder', was_already_cancelled: bool = False):
+        """Send Telegram notification for OCO sibling cancellation"""
+        try:
+            from datetime import timezone
+            from app.services.telegram_notifier import telegram_notifier
+            from app.models.exchange_order import ExchangeOrder
+            
+            # Get filled order details
+            filled_order_type = filled_order.order_type or "UNKNOWN"
+            filled_order_price = filled_order.avg_price or filled_order.price or 0
+            filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
+            filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
+            
+            # Get cancelled order details
+            cancelled_order_type = cancelled_sibling.order_type or "UNKNOWN"
+            cancelled_order_price = cancelled_sibling.price or 0
+            cancelled_order_qty = cancelled_sibling.quantity or 0
+            cancelled_order_time = cancelled_sibling.exchange_update_time or cancelled_sibling.updated_at or datetime.now(timezone.utc)
+            
+            # Format times
+            filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
+            cancelled_time_str = cancelled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if cancelled_order_time else "N/A"
+            
+            # Calculate profit/loss if possible
+            pnl_info = ""
+            if filled_order.parent_order_id:
+                parent_order = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.exchange_order_id == filled_order.parent_order_id
+                ).first()
+                if parent_order:
+                    entry_price = parent_order.avg_price or parent_order.price or 0
+                    parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
+                    
+                    if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
+                        if parent_side == "BUY":
+                            pnl_usd = (filled_order_price - entry_price) * filled_order_qty
+                            pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
+                        else:  # SELL (short position)
+                            pnl_usd = (entry_price - filled_order_price) * filled_order_qty
+                            pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
+                        
+                        pnl_emoji = "💰" if pnl_usd >= 0 else "💸"
+                        pnl_label = "Profit" if pnl_usd >= 0 else "Loss"
+                        pnl_info = (
+                            f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
+                            f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
+                        )
+            
+            # Build message
+            cancellation_note = " (already cancelled by Crypto.com OCO)" if was_already_cancelled else ""
+            message = (
+                f"🔄 <b>OCO: Order Cancelled{cancellation_note}</b>\n\n"
+                f"📊 Symbol: <b>{cancelled_sibling.symbol}</b>\n"
+                f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
+                f"✅ <b>Filled Order:</b>\n"
+                f"   🎯 Type: {filled_order_type}\n"
+                f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
+                f"   💵 Price: ${filled_order_price:.4f}\n"
+                f"   📦 Quantity: {filled_order_qty:.8f}\n"
+                f"   ⏰ Time: {filled_time_str}\n"
+                f"{pnl_info}\n"
+                f"❌ <b>Cancelled Order:</b>\n"
+                f"   🎯 Type: {cancelled_order_type}\n"
+                f"   📋 Role: {cancelled_sibling.order_role or 'N/A'}\n"
+                f"   💵 Price: ${cancelled_order_price:.4f}\n"
+                f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
+                f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
+                f"📋 Order IDs:\n"
+                f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
+                f"   ❌ Cancelled: <code>{cancelled_sibling.exchange_order_id}</code>\n\n"
+                f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
+            )
+            
+            telegram_notifier.send_message(message)
+            logger.info(f"Sent detailed OCO cancellation notification for {cancelled_sibling.symbol}")
+        except Exception as e:
+            logger.warning(f"Failed to send OCO cancellation notification: {e}", exc_info=True)
+            raise
+    
     def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder'):
-        """Cancel the sibling order in an OCO group when one is FILLED"""
+        """Cancel the sibling order in an OCO group when one is FILLED
+        
+        This method handles two scenarios:
+        1. Sibling is still active -> Cancel it via API and update DB
+        2. Sibling is already CANCELLED (by Crypto.com OCO) -> Update DB and notify
+        """
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from app.services.brokers.crypto_com_trade import trade_client
             from app.services.telegram_notifier import telegram_notifier
             
-            # Find the sibling order in the same OCO group
-            sibling = db.query(ExchangeOrder).filter(
+            # First, find ALL siblings regardless of status (to catch already-cancelled ones)
+            all_siblings = db.query(ExchangeOrder).filter(
                 ExchangeOrder.oco_group_id == filled_order.oco_group_id,
-                ExchangeOrder.exchange_order_id != filled_order.exchange_order_id,
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-            ).first()
+                ExchangeOrder.exchange_order_id != filled_order.exchange_order_id
+            ).all()
             
-            if not sibling:
-                # Log detailed debug info to help diagnose why sibling wasn't found
-                all_siblings = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.oco_group_id == filled_order.oco_group_id,
-                    ExchangeOrder.exchange_order_id != filled_order.exchange_order_id
-                ).all()
-                if all_siblings:
+            if not all_siblings:
+                logger.debug(f"OCO: No sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
+                return
+            
+            # Find active sibling first (to cancel if still active)
+            active_sibling = None
+            for sib in all_siblings:
+                if sib.status in [OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]:
+                    active_sibling = sib
+                    break
+            
+            # If no active sibling, check if any sibling is already CANCELLED (Crypto.com auto-cancelled it)
+            if not active_sibling:
+                cancelled_sibling = None
+                for sib in all_siblings:
+                    if sib.status == OrderStatusEnum.CANCELLED:
+                        cancelled_sibling = sib
+                        break
+                
+                if cancelled_sibling:
+                    # Sibling was already cancelled by Crypto.com OCO - just notify
+                    logger.info(f"✅ OCO: Sibling {cancelled_sibling.order_role} order {cancelled_sibling.exchange_order_id} was already CANCELLED by Crypto.com OCO")
+                    # Still send notification to inform user
+                    try:
+                        self._send_oco_cancellation_notification(db, filled_order, cancelled_sibling, was_already_cancelled=True)
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send OCO notification for already-cancelled sibling: {notify_err}")
+                    return
+                else:
+                    # Sibling exists but in unexpected status - log warning
                     statuses = [f"{s.exchange_order_id}: {s.status}" for s in all_siblings]
                     logger.warning(
                         f"OCO: No active sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}. "
                         f"Found {len(all_siblings)} sibling(s) but none are active: {', '.join(statuses)}"
                     )
-                else:
-                    logger.debug(f"OCO: No sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
-                return
+                    return
+            
+            sibling = active_sibling
             
             logger.info(f"🔄 OCO: Cancelling sibling {sibling.order_role} order {sibling.exchange_order_id} (filled order: {filled_order.order_role})")
             
@@ -504,86 +610,7 @@ class ExchangeSyncService:
                 
                 # Send detailed Telegram notification
                 try:
-                    from datetime import timezone
-                    from app.services.telegram_notifier import telegram_notifier
-                    
-                    # Get filled order details
-                    filled_order_type = filled_order.order_type or "UNKNOWN"
-                    # For FILLED orders, prioritize avg_price (actual execution price) over price (limit/trigger price)
-                    filled_order_price = filled_order.avg_price or filled_order.price or 0
-                    filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
-                    filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
-                    
-                    # Get cancelled order details
-                    cancelled_order_type = sibling.order_type or "UNKNOWN"
-                    cancelled_order_price = sibling.price or 0
-                    cancelled_order_qty = sibling.quantity or 0
-                    cancelled_order_time = datetime.now(timezone.utc)
-                    
-                    # Format times
-                    filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
-                    cancelled_time_str = cancelled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC")
-                    
-                    # Calculate profit/loss if possible (for both TP and SL orders)
-                    pnl_info = ""
-                    if filled_order.parent_order_id:
-                        # Try to find parent order for P/L calculation
-                        parent_order = db.query(ExchangeOrder).filter(
-                            ExchangeOrder.exchange_order_id == filled_order.parent_order_id
-                        ).first()
-                        if parent_order:
-                            entry_price = parent_order.avg_price or parent_order.price or 0
-                            parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
-                            
-                            if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
-                                # Calculate profit/loss based on parent order side
-                                if parent_side == "BUY":
-                                    # For BUY orders: profit if exit > entry, loss if exit < entry
-                                    pnl_usd = (filled_order_price - entry_price) * filled_order_qty
-                                    pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
-                                else:  # SELL (short position)
-                                    # For SELL orders: profit if exit < entry, loss if exit > entry
-                                    pnl_usd = (entry_price - filled_order_price) * filled_order_qty
-                                    pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
-                                
-                                # Format profit/loss with emoji and sign
-                                if pnl_usd >= 0:
-                                    pnl_emoji = "💰"
-                                    pnl_label = "Profit"
-                                else:
-                                    pnl_emoji = "💸"
-                                    pnl_label = "Loss"
-                                
-                                pnl_info = (
-                                    f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
-                                    f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
-                                )
-                    
-                    message = (
-                        f"🔄 <b>OCO: Order Cancelled</b>\n\n"
-                        f"📊 Symbol: <b>{sibling.symbol}</b>\n"
-                        f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
-                        f"✅ <b>Filled Order:</b>\n"
-                        f"   🎯 Type: {filled_order_type}\n"
-                        f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
-                        f"   💵 Price: ${filled_order_price:.4f}\n"
-                        f"   📦 Quantity: {filled_order_qty:.8f}\n"
-                        f"   ⏰ Time: {filled_time_str}\n"
-                        f"{pnl_info}\n"
-                        f"❌ <b>Cancelled Order:</b>\n"
-                        f"   🎯 Type: {cancelled_order_type}\n"
-                        f"   📋 Role: {sibling.order_role or 'N/A'}\n"
-                        f"   💵 Price: ${cancelled_order_price:.4f}\n"
-                        f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
-                        f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
-                        f"📋 Order IDs:\n"
-                        f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
-                        f"   ❌ Cancelled: <code>{sibling.exchange_order_id}</code>\n\n"
-                        f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
-                    )
-                    
-                    telegram_notifier.send_message(message)
-                    logger.info(f"Sent detailed OCO cancellation notification for {sibling.symbol}")
+                    self._send_oco_cancellation_notification(db, filled_order, sibling, was_already_cancelled=False)
                 except Exception as tg_err:
                     logger.warning(f"Failed to send OCO notification: {tg_err}", exc_info=True)
             else:
