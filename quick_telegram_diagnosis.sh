@@ -22,8 +22,14 @@ aws ssm send-command \
     \"docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'\",
     \"import os, requests\",
     \"token = os.getenv('TELEGRAM_BOT_TOKEN')\",
-    \"auth_id = os.getenv('TELEGRAM_CHAT_ID')\",
-    \"print(f'AUTH_CHAT_ID: {auth_id}')\",
+    \"auth_chat_id = os.getenv('TELEGRAM_CHAT_ID')\",
+    \"auth_user_ids = os.getenv('TELEGRAM_AUTH_USER_ID', '')\",
+    \"print(f'TELEGRAM_CHAT_ID (channel): {auth_chat_id}')\",
+    \"print(f'TELEGRAM_AUTH_USER_ID: {auth_user_ids or \"(not set)\"}')\",
+    \"authorized_set = set(auth_user_ids.replace(',', ' ').split()) if auth_user_ids else set()\",
+    \"if auth_chat_id and auth_chat_id not in authorized_set:\",
+    \"    authorized_set.add(auth_chat_id)\",
+    \"print(f'Authorized IDs: {authorized_set}')\",
     \"r = requests.get(f'https://api.telegram.org/bot{token}/getUpdates?timeout=1&offset=-1', timeout=3)\",
     \"updates = r.json().get('result', [])\",
     \"print(f'Recent updates: {len(updates)}')\",
@@ -36,8 +42,8 @@ aws ssm send-command \
     \"        text = msg.get('text', '')\",
     \"        print(f'  Last: {text[:40]}')\",
     \"        print(f'  chat_id={chat_id}, user_id={user_id}')\",
-    \"        print(f'  auth_id={auth_id}')\",
-    \"        print(f'  Would authorize: {chat_id == str(auth_id) or user_id == str(auth_id)}')\",
+    \"        is_auth = (chat_id == str(auth_chat_id)) or (user_id in authorized_set) or (chat_id in authorized_set)\",
+    \"        print(f'  Would authorize: {is_auth}')\",
     \"PYEOF\"
   ]" \
   --region "$REGION" \

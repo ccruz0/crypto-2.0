@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Script para obtener el chat_id del canal de Telegram "ilovivoalerts"
+
+echo "🔍 Obteniendo chat_id del canal Hilovivo-alerts..."
+echo ""
+echo "Para obtener el chat_id del canal:"
+echo ""
+echo "1. Abre Telegram y ve al canal 'Hilovivo-alerts'"
+echo "2. Asegúrate de que el bot esté agregado al canal como administrador"
+echo "3. Envía un mensaje en el canal (o reenvía un mensaje existente)"
+echo "4. Ejecuta este comando para obtener el chat_id:"
+echo ""
+echo "   curl \"https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/getUpdates\" | python3 -m json.tool | grep -A 5 \"Hilovivo-alerts\""
+echo ""
+echo "O usa @userinfobot:"
+echo "   - Reenvía un mensaje del canal a @userinfobot"
+echo "   - Te mostrará el chat_id (será un número negativo)"
+echo ""
+echo "Una vez que tengas el chat_id (ejemplo: -1001234567890), actualiza .env.aws:"
+echo ""
+echo "   ssh hilovivo-aws"
+echo "   cd /home/ubuntu/automated-trading-platform"
+echo "   nano .env.aws"
+echo "   # Cambia TELEGRAM_CHAT_ID=839853931 a TELEGRAM_CHAT_ID=-1001234567890"
+echo "   docker compose --profile aws restart backend-aws"
+echo ""
+
