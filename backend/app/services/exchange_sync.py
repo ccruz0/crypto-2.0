@@ -425,9 +425,16 @@ class ExchangeSyncService:
                                 try:
                                     # Try to cancel the order on the exchange (in case it's still there)
                                     cancel_result = trade_client.cancel_order(order_id)
-                                    logger.info(f"✅ Cancelled REJECTED TP order {order_id} ({symbol}) on exchange")
+                                    
+                                    # Check if cancellation was successful
+                                    if "error" in cancel_result:
+                                        error_msg = cancel_result.get("error", "Unknown error")
+                                        logger.warning(f"⚠️ Could not cancel REJECTED TP order {order_id} on exchange: {error_msg}")
+                                    else:
+                                        logger.info(f"✅ Cancelled REJECTED TP order {order_id} ({symbol}) on exchange")
                                     
                                     # Send Telegram notification for REJECTED TP auto-cancellation
+                                    # (Note: We notify regardless of cancellation success since the order is REJECTED)
                                     try:
                                         from app.services.telegram_notifier import telegram_notifier
                                         
