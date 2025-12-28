@@ -82,16 +82,40 @@ def ensure_master_table_seeded(db: Session) -> int:
                 created_count += 1
             else:
                 # Update existing master row with latest from watchlist_items
+                # BUT: Don't overwrite master if it was updated more recently than items
+                # This prevents overwriting user changes made directly to master table
                 updated = False
-                if master.buy_target != item.buy_target:
-                    master.buy_target = item.buy_target
-                    updated = True
-                if master.trade_enabled != (item.trade_enabled or False):
-                    master.trade_enabled = item.trade_enabled or False
-                    updated = True
-                if master.alert_enabled != (item.alert_enabled or False):
-                    master.alert_enabled = item.alert_enabled or False
-                    updated = True
+                
+                # Check if master was updated more recently than items
+                master_updated = master.updated_at if hasattr(master, 'updated_at') and master.updated_at else None
+                item_updated = item.updated_at if hasattr(item, 'updated_at') and item.updated_at else None
+                
+                # Only sync from items to master if items is newer, or if master has no update timestamp
+                should_sync_from_items = (
+                    master_updated is None or 
+                    item_updated is None or 
+                    (item_updated and item_updated > master_updated)
+                )
+                
+                if should_sync_from_items:
+                    if master.buy_target != item.buy_target:
+                        master.buy_target = item.buy_target
+                        updated = True
+                    # CRITICAL: Only sync trade_enabled from items if items is newer
+                    # This prevents overwriting user changes made directly to master
+                    if master.trade_enabled != (item.trade_enabled or False):
+                        master.trade_enabled = item.trade_enabled or False
+                        updated = True
+                    if master.alert_enabled != (item.alert_enabled or False):
+                        master.alert_enabled = item.alert_enabled or False
+                        updated = True
+                else:
+                    # Master is newer, so sync FROM master TO items instead
+                    if item.trade_enabled != (master.trade_enabled or False):
+                        item.trade_enabled = master.trade_enabled or False
+                        updated = True
+                        log.debug(f"[SYNC_MASTER_TO_ITEMS] Synced trade_enabled for {item.symbol} from master to items")
+                
                 if updated:
                     updated_count += 1
             

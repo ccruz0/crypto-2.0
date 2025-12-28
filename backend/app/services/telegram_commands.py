@@ -38,9 +38,28 @@ except ImportError:
 # Use environment variables only (no repo defaults)
 _env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 _env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+# TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs
+# If not set, falls back to TELEGRAM_CHAT_ID (for backward compatibility)
+_env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
 AUTH_CHAT_ID = _env_chat_id or None
 BOT_TOKEN = _env_bot_token or None
-TELEGRAM_ENABLED = bool(BOT_TOKEN and AUTH_CHAT_ID)
+
+# Parse authorized user IDs (support comma or space separated)
+AUTHORIZED_USER_IDS = set()
+if _env_auth_user_ids:
+    # Split by comma or space, strip whitespace
+    for user_id in _env_auth_user_ids.replace(",", " ").split():
+        user_id = user_id.strip()
+        if user_id:
+            AUTHORIZED_USER_IDS.add(user_id)
+            logger.info(f"[TG][AUTH] Added authorized user ID: {user_id}")
+elif AUTH_CHAT_ID:
+    # Fallback: if no TELEGRAM_AUTH_USER_ID is set, use TELEGRAM_CHAT_ID as authorized user ID
+    # This allows backward compatibility but note: TELEGRAM_CHAT_ID is typically a channel ID
+    AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
+    logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized user ID (backward compatibility): {AUTH_CHAT_ID}")
+
+TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
 if not TELEGRAM_ENABLED:
     logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
 
@@ -68,6 +87,45 @@ PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
 
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
+
+
+def _is_authorized(chat_id: str, user_id: str) -> bool:
+    """
+    Check if a user/chat is authorized to use bot commands.
+    
+    Authorization rules:
+    1. If chat_id matches AUTH_CHAT_ID (channel/group ID), allow
+    2. If user_id is in AUTHORIZED_USER_IDS, allow
+    3. If chat_id is in AUTHORIZED_USER_IDS (for private chats), allow
+    
+    Args:
+        chat_id: Telegram chat ID (can be user ID for private chats, or channel/group ID)
+        user_id: Telegram user ID (from message.from.id)
+    
+    Returns:
+        True if authorized, False otherwise
+    """
+    if not AUTH_CHAT_ID and not AUTHORIZED_USER_IDS:
+        # No authorization configured - allow all (for development)
+        return True
+    
+    chat_id_str = str(chat_id) if chat_id else ""
+    user_id_str = str(user_id) if user_id else ""
+    auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
+    
+    # Check if chat_id matches channel/group ID
+    if auth_chat_id_str and chat_id_str == auth_chat_id_str:
+        return True
+    
+    # Check if user_id is in authorized user IDs
+    if user_id_str and user_id_str in AUTHORIZED_USER_IDS:
+        return True
+    
+    # Check if chat_id is in authorized user IDs (for private chats)
+    if chat_id_str and chat_id_str in AUTHORIZED_USER_IDS:
+        return True
+    
+    return False
 
 
 def _acquire_poller_lock(db: Session) -> bool:
@@ -885,10 +943,11 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
     7. Version History
     """
     try:
-        # Authorization check - but allow if AUTH_CHAT_ID is not set (for development)
-        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-        if AUTH_CHAT_ID and chat_id != auth_chat_id_str:
-            logger.warning(f"[TG][DENY] show_main_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
+        # Authorization check - use helper function
+        # Note: For menu display, we need user_id but it's not available here
+        # So we check chat_id only (works for private chats where chat_id == user_id)
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] show_main_menu: chat_id={chat_id} not authorized")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
         
@@ -2179,10 +2238,9 @@ def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional
 def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
     """Show expected take profit sub-menu with options"""
     try:
-        # Authorization check - but allow if AUTH_CHAT_ID is not set (for development)
-        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-        if AUTH_CHAT_ID and chat_id != auth_chat_id_str:
-            logger.warning(f"[TG][DENY] show_expected_tp_menu: chat_id={chat_id} != AUTH_CHAT_ID={AUTH_CHAT_ID}")
+        # Authorization check - use helper function
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] show_expected_tp_menu: chat_id={chat_id} not authorized")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
         
@@ -3143,13 +3201,9 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         # callback_data was already extracted above for deduplication
         message_id = message.get("message_id")
         
-        # Only authorized chat (group/channel) or user
-        # For groups, check the chat ID; for private chats, check user ID
-        # Ensure both are strings for proper comparison
-        auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-        is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
-        if not is_authorized:
-            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID} (str: {auth_chat_id_str})")
+        # Only authorized chat (group/channel) or user - use helper function
+        if not _is_authorized(chat_id, user_id):
+            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS}")
             # Send error message to user
             try:
                 send_command_response(chat_id, "⛔ Not authorized")
@@ -3185,9 +3239,17 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         elif callback_data.startswith("watchlist:page:"):
             try:
                 page = int(callback_data.split(":")[-1])
-            except ValueError:
+                logger.info(f"[TG][WATCHLIST] Navigating to page {page} for chat_id={chat_id}")
+            except ValueError as e:
+                logger.warning(f"[TG][WATCHLIST] Invalid page number in callback_data={callback_data}: {e}")
                 page = 1
-            show_watchlist_menu(chat_id, db, page=page, message_id=message_id)
+            try:
+                result = show_watchlist_menu(chat_id, db, page=page, message_id=message_id)
+                if not result:
+                    logger.error(f"[TG][WATCHLIST] Failed to show watchlist menu page {page} for chat_id={chat_id}")
+            except Exception as e:
+                logger.error(f"[TG][WATCHLIST] Error showing watchlist menu page {page}: {e}", exc_info=True)
+                send_command_response(chat_id, f"❌ Error navegando a página {page}: {str(e)}")
         elif callback_data == "watchlist:add":
             _prompt_value_input(
                 chat_id,
@@ -3395,17 +3457,13 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     from_user = message.get("from", {})
     user_id = str(from_user.get("id", "")) if from_user else ""
     
-    # Only authorized user - check both chat_id (for private chats) and user_id (for groups)
-    # In groups, chat_id is the group ID, so we need to check user_id
-    # Ensure AUTH_CHAT_ID is also a string for comparison
-    auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
-    is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
-    if not is_authorized:
-        logger.warning(f"[TG][DENY] chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID} (str: {auth_chat_id_str}), command={text[:50]}")
+    # Only authorized user - use helper function
+    if not _is_authorized(chat_id, user_id):
+        logger.warning(f"[TG][DENY] chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS}, command={text[:50]}")
         send_command_response(chat_id, "⛔ Not authorized")
         return
     else:
-        logger.info(f"[TG][AUTH] ✅ Authorized chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID} for command={text[:50]}")
+        logger.info(f"[TG][AUTH] ✅ Authorized chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS} for command={text[:50]}")
     
     # Parse command
     text = text.strip()

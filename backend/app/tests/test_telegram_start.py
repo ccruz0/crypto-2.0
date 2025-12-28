@@ -44,40 +44,61 @@ def test_start_command_parsing_in_groups():
 # Test authorization in groups
 def test_authorization_in_group():
     """Test that authorization works in groups using user_id"""
+    from app.services.telegram_commands import _is_authorized, AUTH_CHAT_ID, AUTHORIZED_USER_IDS
+    
     # Simulate group message
     chat_id = "-1001234567890"  # Group chat ID (negative)
     user_id = "123456789"  # User ID (positive)
-    auth_chat_id = "123456789"  # Authorized user ID
     
-    # Authorization logic: check both chat_id and user_id
-    auth_chat_id_str = str(auth_chat_id) if auth_chat_id else ""
-    is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
-    
-    # In groups, user_id should match
-    assert is_authorized == True
+    # Mock the authorization setup
+    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
+         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
+        # In groups, user_id should match AUTHORIZED_USER_IDS
+        is_authorized = _is_authorized(chat_id, user_id)
+        assert is_authorized == True
 
 def test_authorization_in_private_chat():
     """Test that authorization works in private chats using chat_id"""
+    from app.services.telegram_commands import _is_authorized
+    
     # Simulate private chat
     chat_id = "123456789"  # Private chat ID (same as user_id)
     user_id = "123456789"
-    auth_chat_id = "123456789"
     
-    auth_chat_id_str = str(auth_chat_id) if auth_chat_id else ""
-    is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
-    
-    assert is_authorized == True
+    # Mock the authorization setup
+    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
+         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
+        # In private chats, chat_id should match AUTHORIZED_USER_IDS
+        is_authorized = _is_authorized(chat_id, user_id)
+        assert is_authorized == True
 
 def test_authorization_denied():
     """Test that unauthorized users are denied"""
+    from app.services.telegram_commands import _is_authorized
+    
     chat_id = "999999999"
     user_id = "999999999"
-    auth_chat_id = "123456789"
     
-    auth_chat_id_str = str(auth_chat_id) if auth_chat_id else ""
-    is_authorized = (chat_id == auth_chat_id_str) or (user_id == auth_chat_id_str)
+    # Mock the authorization setup
+    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
+         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
+        # Unauthorized user should be denied
+        is_authorized = _is_authorized(chat_id, user_id)
+        assert is_authorized == False
+
+def test_authorization_with_channel_id():
+    """Test that channel ID authorization works"""
+    from app.services.telegram_commands import _is_authorized
     
-    assert is_authorized == False
+    # Simulate channel interaction
+    chat_id = "-1001234567890"  # Channel ID
+    user_id = "123456789"
+    
+    # Mock: channel ID matches AUTH_CHAT_ID
+    with patch('app.services.telegram_commands.AUTH_CHAT_ID', '-1001234567890'), \
+         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', set()):
+        is_authorized = _is_authorized(chat_id, user_id)
+        assert is_authorized == True
 
 # Test webhook deletion
 def test_webhook_deletion_on_startup():

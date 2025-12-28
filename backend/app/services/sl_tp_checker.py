@@ -780,18 +780,30 @@ class SLTPCheckerService:
                 # Get strategy mode and percentages
                 strategy_mode = watchlist_item.sl_tp_mode or "conservative"
                 
+                # Log what we're reading from watchlist
+                logger.info(
+                    f"Reading SL/TP settings for {symbol}: "
+                    f"watchlist_sl_pct={watchlist_item.sl_percentage}, watchlist_tp_pct={watchlist_item.tp_percentage}, "
+                    f"mode={strategy_mode}"
+                )
+                
                 # Use configured percentages or defaults based on strategy
-                if watchlist_item.sl_percentage is not None:
-                    sl_percentage = watchlist_item.sl_percentage
+                # CRITICAL: Check for None and > 0 (0% would be invalid anyway)
+                if watchlist_item.sl_percentage is not None and watchlist_item.sl_percentage > 0:
+                    sl_percentage = abs(watchlist_item.sl_percentage)
+                    logger.info(f"Using watchlist SL percentage: {sl_percentage}% (from watchlist: {watchlist_item.sl_percentage}%)")
                 else:
                     # Default percentages based on strategy
                     sl_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+                    logger.info(f"Using default SL percentage: {sl_percentage}% (watchlist had: {watchlist_item.sl_percentage})")
                 
-                if watchlist_item.tp_percentage is not None:
-                    tp_percentage = watchlist_item.tp_percentage
+                if watchlist_item.tp_percentage is not None and watchlist_item.tp_percentage > 0:
+                    tp_percentage = abs(watchlist_item.tp_percentage)
+                    logger.info(f"Using watchlist TP percentage: {tp_percentage}% (from watchlist: {watchlist_item.tp_percentage}%)")
                 else:
                     # Default percentages based on strategy
                     tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+                    logger.info(f"Using default TP percentage: {tp_percentage}% (watchlist had: {watchlist_item.tp_percentage})")
                 
                 logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
                 
@@ -1730,18 +1742,30 @@ class SLTPCheckerService:
                 # Get strategy mode and percentages
                 strategy_mode = watchlist_item.sl_tp_mode or "conservative"
                 
+                # Log what we're reading from watchlist
+                logger.info(
+                    f"Reading SL/TP settings for {symbol}: "
+                    f"watchlist_sl_pct={watchlist_item.sl_percentage}, watchlist_tp_pct={watchlist_item.tp_percentage}, "
+                    f"mode={strategy_mode}"
+                )
+                
                 # Use configured percentages or defaults based on strategy
-                if watchlist_item.sl_percentage is not None:
-                    sl_percentage = watchlist_item.sl_percentage
+                # CRITICAL: Check for None and > 0 (0% would be invalid anyway)
+                if watchlist_item.sl_percentage is not None and watchlist_item.sl_percentage > 0:
+                    sl_percentage = abs(watchlist_item.sl_percentage)
+                    logger.info(f"Using watchlist SL percentage: {sl_percentage}% (from watchlist: {watchlist_item.sl_percentage}%)")
                 else:
                     # Default percentages based on strategy
                     sl_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+                    logger.info(f"Using default SL percentage: {sl_percentage}% (watchlist had: {watchlist_item.sl_percentage})")
                 
-                if watchlist_item.tp_percentage is not None:
-                    tp_percentage = watchlist_item.tp_percentage
+                if watchlist_item.tp_percentage is not None and watchlist_item.tp_percentage > 0:
+                    tp_percentage = abs(watchlist_item.tp_percentage)
+                    logger.info(f"Using watchlist TP percentage: {tp_percentage}% (from watchlist: {watchlist_item.tp_percentage}%)")
                 else:
                     # Default percentages based on strategy
                     tp_percentage = 3.0 if strategy_mode == "conservative" else 2.0
+                    logger.info(f"Using default TP percentage: {tp_percentage}% (watchlist had: {watchlist_item.tp_percentage})")
                 
                 logger.info(f"Calculating SL/TP for {symbol}: entry_price={entry_price}, strategy={strategy_mode}, sl_percentage={sl_percentage}%, tp_percentage={tp_percentage}%")
                 

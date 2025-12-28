@@ -286,7 +286,7 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     
     # FIX: Accept hyphenated preset strings like "swing-aggressive" from frontend
     # The frontend sends preset values in format "preset-risk" (e.g., "swing-aggressive")
-    # but the backend's presets dict uses keys like "Swing", "Scalp" (capitalized, no hyphen)
+    # but the backend's presets dict uses keys like "swing", "scalp", "intraday" (lowercase, no hyphen)
     # Parse the preset string to extract the base preset name for validation
     if preset:
         preset_enum, _ = _parse_preset_strings(preset)
@@ -297,9 +297,17 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             if base_preset_name not in cfg.get("presets", {}):
                 raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (parsed as '{base_preset_name}')")
         else:
-            # If parsing fails, fall back to direct lookup (for legacy format)
-            if preset not in cfg.get("presets", {}):
-                raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}'")
+            # If enum parsing fails, extract base preset name from the string (e.g., "scalp-aggressive" -> "scalp")
+            # This handles cases where the preset string format is valid but enum conversion fails
+            normalized = preset.lower()
+            if "-" in normalized:
+                base_preset_name = normalized.split("-", 1)[0]
+            else:
+                base_preset_name = normalized
+            
+            # Check if the base preset name exists in config
+            if base_preset_name not in cfg.get("presets", {}):
+                raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (extracted base: '{base_preset_name}')")
     
     cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
     save_config(cfg)  # Return value not needed here

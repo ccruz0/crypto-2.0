@@ -809,6 +809,7 @@ def get_signals(
                     # Get watchlist item for transition check
                     watchlist_item = get_canonical_watchlist_item(transition_db, symbol)
                     if watchlist_item:
+                        logger.debug(f"[SIGNALS] {symbol}: Checking signal transition (BUY={buy_signal}, SELL={sell_signal})")
                         transition_detected, transition_result = check_and_emit_on_transition(
                             db=transition_db,
                             symbol=symbol,
@@ -822,12 +823,18 @@ def get_signals(
                                 f"[SIGNALS] {symbol}: Signal transition detected and emitted "
                                 f"(BUY={transition_result.get('buy_transition')}, SELL={transition_result.get('sell_transition')})"
                             )
+                        else:
+                            logger.debug(f"[SIGNALS] {symbol}: No transition detected (throttle may be blocking)")
+                    else:
+                        logger.debug(f"[SIGNALS] {symbol}: No watchlist item found, skipping transition check")
                 except Exception as transition_err:
                     # Don't fail the endpoint if transition check fails
-                    logger.warning(f"[SIGNALS] {symbol}: Transition check failed (non-blocking): {transition_err}")
+                    logger.warning(f"[SIGNALS] {symbol}: Transition check failed (non-blocking): {transition_err}", exc_info=True)
                 finally:
                     if should_close_transition_db and transition_db:
                         transition_db.close()
+            else:
+                logger.debug(f"[SIGNALS] {symbol}: No database session available, skipping transition check")
         
         elapsed_time = time_module.time() - start_time
         logger.info(f"✅ [SIGNALS] {symbol}: Signals calculated in {elapsed_time:.3f}s (source: {source}, db_data_used: {db_data_used})")

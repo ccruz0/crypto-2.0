@@ -960,6 +960,13 @@ class ExchangeSyncService:
             db.commit()
             db.refresh(watchlist_item)
             logger.info(f"✅ Created temporary watchlist_item for {symbol} with conservative SL/TP settings")
+        else:
+            logger.info(
+                f"Found watchlist item for {symbol}: "
+                f"sl_percentage={watchlist_item.sl_percentage}, "
+                f"tp_percentage={watchlist_item.tp_percentage}, "
+                f"sl_tp_mode={watchlist_item.sl_tp_mode}"
+            )
         
         # NOTE: We allow SL/TP creation even if trade_enabled=False
         # This is because SL/TP orders are protection orders for existing positions,
@@ -1044,8 +1051,29 @@ class ExchangeSyncService:
             return 3.0, 3.0  # conservative baseline
 
         default_sl_pct, default_tp_pct = _default_percentages(sl_tp_mode)
-        effective_sl_pct = abs(sl_percentage) if sl_percentage and sl_percentage > 0 else default_sl_pct
-        effective_tp_pct = abs(tp_percentage) if tp_percentage and tp_percentage > 0 else default_tp_pct
+        
+        # Log what we're reading from watchlist
+        logger.info(
+            f"Reading SL/TP settings for {symbol} order {order_id}: "
+            f"watchlist_sl_pct={sl_percentage}, watchlist_tp_pct={tp_percentage}, "
+            f"mode={sl_tp_mode}, defaults=(sl={default_sl_pct}%, tp={default_tp_pct}%)"
+        )
+        
+        # Use watchlist percentages if set and > 0, otherwise use defaults
+        # CRITICAL: Check for None explicitly, and allow 0 to fall back to defaults (0% would be invalid anyway)
+        effective_sl_pct = abs(sl_percentage) if (sl_percentage is not None and sl_percentage > 0) else default_sl_pct
+        effective_tp_pct = abs(tp_percentage) if (tp_percentage is not None and tp_percentage > 0) else default_tp_pct
+        
+        # Log which values we're actually using
+        if sl_percentage is not None and sl_percentage > 0:
+            logger.info(f"Using watchlist SL percentage: {effective_sl_pct}% (from watchlist: {sl_percentage}%)")
+        else:
+            logger.info(f"Using default SL percentage: {effective_sl_pct}% (watchlist had: {sl_percentage})")
+        
+        if tp_percentage is not None and tp_percentage > 0:
+            logger.info(f"Using watchlist TP percentage: {effective_tp_pct}% (from watchlist: {tp_percentage}%)")
+        else:
+            logger.info(f"Using default TP percentage: {effective_tp_pct}% (watchlist had: {tp_percentage})")
 
         if side == "BUY":
             sl_price = filled_price * (1 - effective_sl_pct / 100)
@@ -1106,12 +1134,26 @@ class ExchangeSyncService:
         if not user_has_manual_tp:
             watchlist_item.tp_price = tp_price
         
-        # Only update percentages if they were explicitly set by the user (not None)
-        # This prevents overwriting user-deleted values with calculated defaults
-        if sl_percentage is not None:
+        # CRITICAL FIX: Only update percentages if they were NOT set by the user
+        # If user has manually set percentages, preserve them (don't overwrite with defaults)
+        # Only write back defaults if the user hasn't set custom values
+        # This prevents overwriting user's custom settings with default values
+        if sl_percentage is None or sl_percentage == 0:
+            # User hasn't set a custom SL percentage, safe to persist the effective one (which will be the default)
+            # This allows the dashboard to show what percentage was actually used
             watchlist_item.sl_percentage = effective_sl_pct
-        if tp_percentage is not None:
+            logger.info(f"Persisting SL percentage {effective_sl_pct}% to watchlist (was not set by user)")
+        else:
+            # User has set a custom SL percentage, preserve it
+            logger.info(f"Preserving user's custom SL percentage {sl_percentage}% in watchlist (not overwriting)")
+        
+        if tp_percentage is None or tp_percentage == 0:
+            # User hasn't set a custom TP percentage, safe to persist the effective one (which will be the default)
             watchlist_item.tp_percentage = effective_tp_pct
+            logger.info(f"Persisting TP percentage {effective_tp_pct}% to watchlist (was not set by user)")
+        else:
+            # User has set a custom TP percentage, preserve it
+            logger.info(f"Preserving user's custom TP percentage {tp_percentage}% in watchlist (not overwriting)")
         try:
             db.commit()
         except Exception as persist_err:

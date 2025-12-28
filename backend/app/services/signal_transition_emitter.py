@@ -136,11 +136,24 @@ def check_and_emit_on_transition(
                     (datetime.now(timezone.utc) - last_buy_snapshot.timestamp).total_seconds() > 3600
                 )
                 
+                # Emit if it's a transition OR if throttle allows (meaning signal is eligible now)
+                # This ensures signals are sent when they become eligible, even if recently active
                 if is_transition:
                     buy_transition = True
+                    transition_type = "NEW_TRANSITION"
                     logger.info(
                         f"[SIGNAL_TRANSITION] {transition_id} {symbol} BUY from=NOT-ELIGIBLE to=ELIGIBLE "
-                        f"alert_enabled={buy_alert_enabled} trade_enabled={trade_enabled} "
+                        f"type={transition_type} alert_enabled={buy_alert_enabled} trade_enabled={trade_enabled} "
+                        f"price=${current_price:.4f} reason={buy_reason}"
+                    )
+                else:
+                    # Throttle allows emission - signal is eligible now, emit it
+                    # This handles cases where signal was recently active but throttle now allows (e.g., price change, config reset)
+                    buy_transition = True
+                    transition_type = "THROTTLE_ALLOWED"
+                    logger.info(
+                        f"[SIGNAL_TRANSITION] {transition_id} {symbol} BUY signal eligible (throttle allows) "
+                        f"type={transition_type} alert_enabled={buy_alert_enabled} trade_enabled={trade_enabled} "
                         f"price=${current_price:.4f} reason={buy_reason}"
                     )
         
@@ -160,17 +173,33 @@ def check_and_emit_on_transition(
             )
             
             if sell_allowed:
+                # Detect transition if:
+                # 1. No previous state (first time)
+                # 2. Previous state is old (>1 hour) - clear transition
                 is_transition = (
                     last_sell_snapshot is None or
                     last_sell_snapshot.timestamp is None or
                     (datetime.now(timezone.utc) - last_sell_snapshot.timestamp).total_seconds() > 3600
                 )
                 
+                # Emit if it's a transition OR if throttle allows (meaning signal is eligible now)
+                # This ensures signals are sent when they become eligible, even if recently active
                 if is_transition:
                     sell_transition = True
+                    transition_type = "NEW_TRANSITION"
                     logger.info(
                         f"[SIGNAL_TRANSITION] {transition_id} {symbol} SELL from=NOT-ELIGIBLE to=ELIGIBLE "
-                        f"alert_enabled={sell_alert_enabled} trade_enabled={trade_enabled} "
+                        f"type={transition_type} alert_enabled={sell_alert_enabled} trade_enabled={trade_enabled} "
+                        f"price=${current_price:.4f} reason={sell_reason}"
+                    )
+                else:
+                    # Throttle allows emission - signal is eligible now, emit it
+                    # This handles cases where signal was recently active but throttle now allows (e.g., price change, config reset)
+                    sell_transition = True
+                    transition_type = "THROTTLE_ALLOWED"
+                    logger.info(
+                        f"[SIGNAL_TRANSITION] {transition_id} {symbol} SELL signal eligible (throttle allows) "
+                        f"type={transition_type} alert_enabled={sell_alert_enabled} trade_enabled={trade_enabled} "
                         f"price=${current_price:.4f} reason={sell_reason}"
                     )
         
