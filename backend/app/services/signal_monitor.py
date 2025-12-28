@@ -2145,8 +2145,11 @@ class SignalMonitorService:
                     from app.services.order_position_service import count_open_positions_for_symbol
                     final_unified_open_positions = count_open_positions_for_symbol(db, symbol_base_final)
                 except Exception as e:
-                    logger.warning(f"Could not compute unified open position count in final check for {symbol_base_final}: {e}")
-                    final_unified_open_positions = unified_open_positions  # Fallback to previous value
+                    logger.error(f"Could not compute unified open position count in final check for {symbol_base_final}: {e}")
+                    # Conservative fallback: if we can't count, assume we're at limit to prevent over-ordering
+                    logger.warning(f"🚫 BLOCKED: {symbol} - Cannot verify open positions count, blocking order for safety")
+                    should_create_order = False
+                    return  # Exit early - be conservative when count fails
                 
                 if final_recent_check > 0:
                     logger.warning(

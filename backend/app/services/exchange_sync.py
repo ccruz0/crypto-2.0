@@ -270,6 +270,9 @@ class ExchangeSyncService:
                     )
                 ).all()
                 
+                # Track cancelled orders for notification
+                cancelled_orders = []
+                
                 for order in existing_orders:
                     # Check if order is filled in history (might have been filled between syncs)
                     # For MARKET orders, they may execute immediately and not appear in open orders
@@ -293,8 +296,56 @@ class ExchangeSyncService:
                         order.status = OrderStatusEnum.CANCELLED
                         order.exchange_update_time = datetime.now(timezone.utc)
                         logger.info(f"Order {order.exchange_order_id} ({order.symbol}) marked as CANCELLED - not found in open orders")
+                        cancelled_orders.append(order)
                     else:
                         logger.debug(f"Order {order.exchange_order_id} is FILLED, skipping cancellation")
+                
+                # Send Telegram notification for cancelled orders (batched)
+                if cancelled_orders:
+                    try:
+                        from app.services.telegram_notifier import telegram_notifier
+                        
+                        if len(cancelled_orders) == 1:
+                            order = cancelled_orders[0]
+                            order_type = order.order_type or "UNKNOWN"
+                            order_role = f" ({order.order_role})" if order.order_role else ""
+                            side = order.side.value if hasattr(order.side, 'value') else str(order.side)
+                            price_text = f"\n💵 Price: ${order.price:.4f}" if order.price else ""
+                            qty_text = f"\n📦 Quantity: {order.quantity:.8f}" if order.quantity else ""
+                            
+                            message = (
+                                f"❌ <b>ORDER CANCELLED (Sync)</b>\n\n"
+                                f"📊 Symbol: <b>{order.symbol}</b>\n"
+                                f"🔄 Side: {side}\n"
+                                f"🎯 Type: {order_type}{order_role}\n"
+                                f"📋 Order ID: <code>{order.exchange_order_id}</code>{price_text}{qty_text}\n\n"
+                                f"💡 <b>Reason:</b> Order not found in exchange open orders during sync"
+                            )
+                        else:
+                            message = (
+                                f"❌ <b>ORDERS CANCELLED (Sync)</b>\n\n"
+                                f"📋 <b>{len(cancelled_orders)} orders</b> have been cancelled (not found in exchange open orders):\n\n"
+                            )
+                            
+                            for idx, order in enumerate(cancelled_orders[:10], 1):  # Limit to 10 for readability
+                                order_type = order.order_type or "UNKNOWN"
+                                order_role = f" ({order.order_role})" if order.order_role else ""
+                                side = order.side.value if hasattr(order.side, 'value') else str(order.side)
+                                message += (
+                                    f"{idx}. <b>{order.symbol}</b> - {order_type}{order_role} ({side})\n"
+                                    f"   ID: <code>{order.exchange_order_id}</code>\n\n"
+                                )
+                            
+                            if len(cancelled_orders) > 10:
+                                message += f"... and {len(cancelled_orders) - 10} more orders\n\n"
+                            
+                            message += "💡 <b>Reason:</b> Orders not found in exchange open orders during sync"
+                        
+                        telegram_notifier.send_message(message.strip(), origin="AWS")
+                        logger.info(f"✅ Sent Telegram notification for {len(cancelled_orders)} cancelled order(s) from sync")
+                    except Exception as notify_err:
+                        logger.warning(f"⚠️ Failed to send Telegram notification for cancelled orders from sync: {notify_err}", exc_info=True)
+                        # Don't fail sync if notification fails
             
             # Upsert orders from response
             for order_data in orders:
@@ -375,6 +426,27 @@ class ExchangeSyncService:
                                     # Try to cancel the order on the exchange (in case it's still there)
                                     cancel_result = trade_client.cancel_order(order_id)
                                     logger.info(f"✅ Cancelled REJECTED TP order {order_id} ({symbol}) on exchange")
+                                    
+                                    # Send Telegram notification for REJECTED TP auto-cancellation
+                                    try:
+                                        from app.services.telegram_notifier import telegram_notifier
+                                        
+                                        price_text = f"\n💵 Price: ${existing.price:.4f}" if existing.price else ""
+                                        qty_text = f"\n📦 Quantity: {existing.quantity:.8f}" if existing.quantity else ""
+                                        
+                                        message = (
+                                            f"🗑️ <b>REJECTED TP ORDER AUTO-CANCELLED</b>\n\n"
+                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                            f"📋 Order ID: <code>{order_id}</code>\n"
+                                            f"🎯 Type: {order_type_upper}{price_text}{qty_text}\n\n"
+                                            f"💡 <b>Reason:</b> TP order was REJECTED by exchange and automatically cancelled to prevent issues"
+                                        )
+                                        
+                                        telegram_notifier.send_message(message.strip(), origin="AWS")
+                                        logger.info(f"✅ Sent Telegram notification for REJECTED TP auto-cancellation: {order_id}")
+                                    except Exception as notify_err:
+                                        logger.warning(f"⚠️ Failed to send Telegram notification for REJECTED TP auto-cancellation: {notify_err}", exc_info=True)
+                                        # Don't fail cancellation if notification fails
                                 except Exception as cancel_err:
                                     logger.warning(f"⚠️ Could not cancel REJECTED TP order {order_id} on exchange (may already be cancelled): {cancel_err}")
                             
@@ -461,78 +533,78 @@ class ExchangeSyncService:
     
     def _send_oco_cancellation_notification(self, db: Session, filled_order: 'ExchangeOrder', cancelled_sibling: 'ExchangeOrder', was_already_cancelled: bool = False):
         """Send Telegram notification for OCO sibling cancellation"""
-                try:
-                    from datetime import timezone
-                    from app.services.telegram_notifier import telegram_notifier
+        try:
+            from datetime import timezone
+            from app.services.telegram_notifier import telegram_notifier
             from app.models.exchange_order import ExchangeOrder
-                    
-                    # Get filled order details
-                    filled_order_type = filled_order.order_type or "UNKNOWN"
-                    filled_order_price = filled_order.avg_price or filled_order.price or 0
-                    filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
-                    filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
-                    
-                    # Get cancelled order details
+            
+            # Get filled order details
+            filled_order_type = filled_order.order_type or "UNKNOWN"
+            filled_order_price = filled_order.avg_price or filled_order.price or 0
+            filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
+            filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
+            
+            # Get cancelled order details
             cancelled_order_type = cancelled_sibling.order_type or "UNKNOWN"
             cancelled_order_price = cancelled_sibling.price or 0
             cancelled_order_qty = cancelled_sibling.quantity or 0
             cancelled_order_time = cancelled_sibling.exchange_update_time or cancelled_sibling.updated_at or datetime.now(timezone.utc)
-                    
-                    # Format times
-                    filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
+            
+            # Format times
+            filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
             cancelled_time_str = cancelled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if cancelled_order_time else "N/A"
-                    
+            
             # Calculate profit/loss if possible
-                    pnl_info = ""
-                    if filled_order.parent_order_id:
-                        parent_order = db.query(ExchangeOrder).filter(
-                            ExchangeOrder.exchange_order_id == filled_order.parent_order_id
-                        ).first()
-                        if parent_order:
-                            entry_price = parent_order.avg_price or parent_order.price or 0
-                            parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
-                            
-                            if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
-                                if parent_side == "BUY":
-                                    pnl_usd = (filled_order_price - entry_price) * filled_order_qty
-                                    pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
-                                else:  # SELL (short position)
-                                    pnl_usd = (entry_price - filled_order_price) * filled_order_qty
-                                    pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
-                                
+            pnl_info = ""
+            if filled_order.parent_order_id:
+                parent_order = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.exchange_order_id == filled_order.parent_order_id
+                ).first()
+                if parent_order:
+                    entry_price = parent_order.avg_price or parent_order.price or 0
+                    parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
+                    
+                    if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
+                        if parent_side == "BUY":
+                            pnl_usd = (filled_order_price - entry_price) * filled_order_qty
+                            pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
+                        else:  # SELL (short position)
+                            pnl_usd = (entry_price - filled_order_price) * filled_order_qty
+                            pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
+                        
                         pnl_emoji = "💰" if pnl_usd >= 0 else "💸"
                         pnl_label = "Profit" if pnl_usd >= 0 else "Loss"
-                                pnl_info = (
-                                    f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
-                                    f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
-                                )
-                    
+                        pnl_info = (
+                            f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
+                            f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
+                        )
+            
             # Build message
             cancellation_note = " (already cancelled by Crypto.com OCO)" if was_already_cancelled else ""
-                    message = (
+            message = (
                 f"🔄 <b>OCO: Order Cancelled{cancellation_note}</b>\n\n"
                 f"📊 Symbol: <b>{cancelled_sibling.symbol}</b>\n"
-                        f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
-                        f"✅ <b>Filled Order:</b>\n"
-                        f"   🎯 Type: {filled_order_type}\n"
-                        f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
-                        f"   💵 Price: ${filled_order_price:.4f}\n"
-                        f"   📦 Quantity: {filled_order_qty:.8f}\n"
-                        f"   ⏰ Time: {filled_time_str}\n"
-                        f"{pnl_info}\n"
-                        f"❌ <b>Cancelled Order:</b>\n"
-                        f"   🎯 Type: {cancelled_order_type}\n"
+                f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
+                f"✅ <b>Filled Order:</b>\n"
+                f"   🎯 Type: {filled_order_type}\n"
+                f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
+                f"   💵 Price: ${filled_order_price:.4f}\n"
+                f"   📦 Quantity: {filled_order_qty:.8f}\n"
+                f"   ⏰ Time: {filled_time_str}\n"
+                f"{pnl_info}\n"
+                f"❌ <b>Cancelled Order:</b>\n"
+                f"   🎯 Type: {cancelled_order_type}\n"
                 f"   📋 Role: {cancelled_sibling.order_role or 'N/A'}\n"
-                        f"   💵 Price: ${cancelled_order_price:.4f}\n"
-                        f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
-                        f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
-                        f"📋 Order IDs:\n"
-                        f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
+                f"   💵 Price: ${cancelled_order_price:.4f}\n"
+                f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
+                f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
+                f"📋 Order IDs:\n"
+                f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
                 f"   ❌ Cancelled: <code>{cancelled_sibling.exchange_order_id}</code>\n\n"
-                        f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
-                    )
-                    
-                    telegram_notifier.send_message(message)
+                f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
+            )
+            
+            telegram_notifier.send_message(message)
             logger.info(f"Sent detailed OCO cancellation notification for {cancelled_sibling.symbol}")
         except Exception as e:
             logger.warning(f"Failed to send OCO cancellation notification: {e}", exc_info=True)
@@ -1926,7 +1998,7 @@ class ExchangeSyncService:
                         # Only suppress notification if order was already FILLED (just updating timestamps)
                         # If status just changed to FILLED, keep needs_telegram=True from earlier conditions
                         if was_filled_before:
-                        needs_telegram = False  # Don't send notification when just updating timestamps
+                            needs_telegram = False  # Don't send notification when just updating timestamps
                         logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
                     
                     if needs_update:
@@ -2121,17 +2193,17 @@ class ExchangeSyncService:
                                 # This will search by parent_order_id, order_role, time window, or symbol+type
                                 # This ensures cancellation works for both BUY and SELL orders
                                 if not oco_success:
-                                try:
+                                    try:
                                         logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
-                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                        cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
                                         if cancelled_count > 0:
                                             logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
                                         elif cancelled_count == 0:
-                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
-                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
-                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
-                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                except Exception as cancel_err:
+                                            # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                            # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                            logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                            self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    except Exception as cancel_err:
                                         logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
                             
                             # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
@@ -2308,7 +2380,7 @@ class ExchangeSyncService:
                                 # Check if sibling was already cancelled
                                 logger.debug(f"No active {order_type_upper} orders found to cancel for new order - checking for already CANCELLED orders")
                                 self._notify_already_cancelled_sl_tp(db, symbol, order_type_upper, order_id)
-                    except Exception as cancel_err:
+                        except Exception as cancel_err:
                             logger.error(f"❌ Error canceling remaining SL/TP for new order {order_id}: {cancel_err}", exc_info=True)
                 
                 # Track for marking as processed AFTER successful commit

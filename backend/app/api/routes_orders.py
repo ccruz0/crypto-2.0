@@ -159,6 +159,7 @@ def place_order(
 @router.post("/orders/cancel")
 def cancel_order(
     request: CancelOrderRequest,
+    db: Session = Depends(get_db),
     current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
     """Cancel order on specified exchange"""
@@ -171,8 +172,65 @@ def cancel_order(
         order_id = request.order_id or request.client_oid
         result = trade_client.cancel_order(order_id)
         
-        logger.info(f"Order cancelled: {order_id}")
         logger.debug(f"Response: {redact_secrets(result)}")
+        
+        # Check if cancellation was successful
+        if "error" in result:
+            error_msg = result.get("error", "Unknown error")
+            logger.error(f"Failed to cancel order {order_id}: {error_msg}")
+            raise HTTPException(status_code=400, detail=f"Failed to cancel order: {error_msg}")
+        
+        logger.info(f"Order cancelled: {order_id}")
+        
+        # Send Telegram notification for cancelled order (only if successful)
+        try:
+            from app.services.telegram_notifier import telegram_notifier
+            from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+            from datetime import datetime, timezone
+            
+            # Try to get order details from database
+            db_order = db.query(ExchangeOrder).filter(
+                ExchangeOrder.exchange_order_id == order_id
+            ).first()
+            
+            if db_order:
+                # Update status to CANCELLED if found in DB
+                db_order.status = OrderStatusEnum.CANCELLED
+                db.commit()
+                
+                # Build notification with order details
+                symbol = db_order.symbol or "UNKNOWN"
+                order_type = db_order.order_type or "UNKNOWN"
+                order_role = db_order.order_role or ""
+                side = db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side)
+                price = db_order.price or 0
+                qty = db_order.quantity or 0
+                
+                role_text = f" ({order_role})" if order_role else ""
+                price_text = f"\n💵 Price: ${price:.4f}" if price > 0 else ""
+                qty_text = f"\n📦 Quantity: {qty:.8f}" if qty > 0 else ""
+                
+                message = (
+                    f"❌ <b>ORDER CANCELLED</b>\n\n"
+                    f"📊 Symbol: <b>{symbol}</b>\n"
+                    f"🔄 Side: {side}\n"
+                    f"🎯 Type: {order_type}{role_text}\n"
+                    f"📋 Order ID: <code>{order_id}</code>{price_text}{qty_text}\n\n"
+                    f"💡 <b>Reason:</b> Manual cancellation via API"
+                )
+            else:
+                # Order not in DB, send basic notification
+                message = (
+                    f"❌ <b>ORDER CANCELLED</b>\n\n"
+                    f"📋 Order ID: <code>{order_id}</code>\n\n"
+                    f"💡 <b>Reason:</b> Manual cancellation via API"
+                )
+            
+            telegram_notifier.send_message(message, origin="AWS")
+            logger.info(f"✅ Sent Telegram notification for cancelled order {order_id}")
+        except Exception as notify_err:
+            logger.warning(f"⚠️ Failed to send Telegram notification for cancelled order: {notify_err}", exc_info=True)
+            # Don't fail the cancellation if notification fails
         
         return {
             "ok": True,
@@ -330,6 +388,50 @@ def cancel_sl_tp_orders(
         
         # Commit database changes
         db.commit()
+        
+        # Send Telegram notification for cancelled SL/TP orders
+        if canceled_orders:
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                
+                if len(canceled_orders) == 1:
+                    order_info = canceled_orders[0]
+                    role_emoji = "🛑" if order_info.get('order_role') == 'STOP_LOSS' else "🚀" if order_info.get('order_role') == 'TAKE_PROFIT' else "📋"
+                    role_text = order_info.get('order_role', 'SL/TP') or order_info.get('order_type', 'SL/TP')
+                    
+                    message = (
+                        f"❌ <b>SL/TP ORDER CANCELLED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol_upper}</b>\n"
+                        f"{role_emoji} Type: {role_text}\n"
+                        f"📋 Order ID: <code>{order_info['order_id']}</code>\n"
+                        f"🔄 Side: {order_info.get('side', 'N/A')}\n\n"
+                        f"💡 <b>Reason:</b> Manual cancellation via API"
+                    )
+                else:
+                    message = (
+                        f"❌ <b>SL/TP ORDERS CANCELLED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol_upper}</b>\n"
+                        f"📋 <b>{len(canceled_orders)} orders</b> have been cancelled:\n\n"
+                    )
+                    
+                    for idx, order_info in enumerate(canceled_orders[:10], 1):  # Limit to 10 for readability
+                        role_emoji = "🛑" if order_info.get('order_role') == 'STOP_LOSS' else "🚀" if order_info.get('order_role') == 'TAKE_PROFIT' else "📋"
+                        role_text = order_info.get('order_role', 'SL/TP') or order_info.get('order_type', 'SL/TP')
+                        message += (
+                            f"{idx}. {role_emoji} {role_text} - {order_info.get('side', 'N/A')}\n"
+                            f"   ID: <code>{order_info['order_id']}</code>\n\n"
+                        )
+                    
+                    if len(canceled_orders) > 10:
+                        message += f"... and {len(canceled_orders) - 10} more orders\n\n"
+                    
+                    message += "💡 <b>Reason:</b> Manual cancellation via API"
+                
+                telegram_notifier.send_message(message.strip(), origin="AWS")
+                logger.info(f"✅ Sent Telegram notification for {len(canceled_orders)} cancelled SL/TP order(s)")
+            except Exception as notify_err:
+                logger.warning(f"⚠️ Failed to send Telegram notification for cancelled SL/TP orders: {notify_err}", exc_info=True)
+                # Don't fail the operation if notification fails
         
         return {
             "ok": True,
@@ -1187,6 +1289,7 @@ def find_orphaned_orders(
         cancelled_count = 0
         failed_count = 0
         cancellation_details = []
+        cancelled_orders_for_notification = []
         
         if orphaned_orders and execute:
             logger.info("🔄 Cancelling orphaned orders...")
@@ -1211,6 +1314,7 @@ def find_orphaned_orders(
                                 "status": "cancelled",
                                 "message": f"Successfully cancelled {order_id}"
                             })
+                            cancelled_orders_for_notification.append(order_info)
                             logger.info(f"✅ Cancelled orphaned order {order_id} ({order_info['symbol']})")
                     else:
                         error_msg = result.get('error', 'Unknown error')
@@ -1229,6 +1333,7 @@ def find_orphaned_orders(
                                     "status": "marked_cancelled",
                                     "message": f"Order not found on exchange, marked as CANCELLED"
                                 })
+                                cancelled_orders_for_notification.append(order_info)
                                 logger.info(f"✅ Marked orphaned order {order_id} as CANCELLED (not found on exchange)")
                         else:
                             failed_count += 1
@@ -1250,6 +1355,56 @@ def find_orphaned_orders(
             if cancelled_count > 0:
                 db.commit()
                 logger.info(f"Successfully cancelled/marked {cancelled_count} orphaned orders")
+                
+                # Send Telegram notification for cancelled orphaned orders
+                try:
+                    from app.services.telegram_notifier import telegram_notifier
+                    
+                    if cancelled_orders_for_notification:
+                        # Build notification message
+                        if len(cancelled_orders_for_notification) == 1:
+                            order_info = cancelled_orders_for_notification[0]
+                            role_emoji = "🛑" if order_info.get('order_role') == 'STOP_LOSS' else "🚀" if order_info.get('order_role') == 'TAKE_PROFIT' else "📋"
+                            role_text = order_info.get('order_role', 'SL/TP') or 'SL/TP'
+                            
+                            price_text = f"💵 Price: ${order_info['price']:.4f}\n" if order_info.get('price') else ""
+                            qty_text = f"📦 Quantity: {order_info['quantity']:.8f}\n" if order_info.get('quantity') else ""
+                            
+                            message = (
+                                f"🗑️ <b>ORPHANED ORDER DELETED</b>\n\n"
+                                f"📊 Symbol: <b>{order_info['symbol']}</b>\n"
+                                f"{role_emoji} Type: {role_text}\n"
+                                f"📋 Order ID: <code>{order_info['order_id']}</code>\n"
+                                f"{price_text}"
+                                f"{qty_text}"
+                                f"\n💡 <b>Reason:</b> {order_info.get('reason', 'Orphaned order detected')}\n"
+                                f"✅ Order has been cancelled and removed."
+                            )
+                        else:
+                            message = (
+                                f"🗑️ <b>ORPHANED ORDERS DELETED</b>\n\n"
+                                f"📊 <b>{len(cancelled_orders_for_notification)} orphaned orders</b> have been cancelled:\n\n"
+                            )
+                            
+                            for idx, order_info in enumerate(cancelled_orders_for_notification[:10], 1):  # Limit to 10 for readability
+                                role_emoji = "🛑" if order_info.get('order_role') == 'STOP_LOSS' else "🚀" if order_info.get('order_role') == 'TAKE_PROFIT' else "📋"
+                                role_text = order_info.get('order_role', 'SL/TP') or 'SL/TP'
+                                message += (
+                                    f"{idx}. {role_emoji} <b>{order_info['symbol']}</b> - {role_text}\n"
+                                    f"   ID: <code>{order_info['order_id']}</code>\n"
+                                    f"   Reason: {order_info.get('reason', 'Orphaned')}\n\n"
+                                )
+                            
+                            if len(cancelled_orders_for_notification) > 10:
+                                message += f"... and {len(cancelled_orders_for_notification) - 10} more orders\n\n"
+                            
+                            message += "✅ All orphaned orders have been cancelled and removed."
+                        
+                        telegram_notifier.send_message(message.strip())
+                        logger.info(f"✅ Sent Telegram notification for {len(cancelled_orders_for_notification)} deleted orphaned orders")
+                except Exception as notify_err:
+                    logger.warning(f"⚠️ Failed to send Telegram notification for orphaned order deletion: {notify_err}", exc_info=True)
+                    # Don't fail the whole operation if notification fails
         
         return {
             "ok": True,
