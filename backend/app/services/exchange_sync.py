@@ -461,89 +461,92 @@ class ExchangeSyncService:
     
     def _send_oco_cancellation_notification(self, db: Session, filled_order: 'ExchangeOrder', cancelled_sibling: 'ExchangeOrder', was_already_cancelled: bool = False):
         """Send Telegram notification for OCO sibling cancellation"""
-        try:
-            from datetime import timezone
-            from app.services.telegram_notifier import telegram_notifier
+                try:
+                    from datetime import timezone
+                    from app.services.telegram_notifier import telegram_notifier
             from app.models.exchange_order import ExchangeOrder
-            
-            # Get filled order details
-            filled_order_type = filled_order.order_type or "UNKNOWN"
-            filled_order_price = filled_order.avg_price or filled_order.price or 0
-            filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
-            filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
-            
-            # Get cancelled order details
+                    
+                    # Get filled order details
+                    filled_order_type = filled_order.order_type or "UNKNOWN"
+                    filled_order_price = filled_order.avg_price or filled_order.price or 0
+                    filled_order_qty = filled_order.quantity or filled_order.cumulative_quantity or 0
+                    filled_order_time = filled_order.exchange_update_time or filled_order.updated_at
+                    
+                    # Get cancelled order details
             cancelled_order_type = cancelled_sibling.order_type or "UNKNOWN"
             cancelled_order_price = cancelled_sibling.price or 0
             cancelled_order_qty = cancelled_sibling.quantity or 0
             cancelled_order_time = cancelled_sibling.exchange_update_time or cancelled_sibling.updated_at or datetime.now(timezone.utc)
-            
-            # Format times
-            filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
-            cancelled_time_str = cancelled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if cancelled_order_time else "N/A"
-            
-            # Calculate profit/loss if possible
-            pnl_info = ""
-            if filled_order.parent_order_id:
-                parent_order = db.query(ExchangeOrder).filter(
-                    ExchangeOrder.exchange_order_id == filled_order.parent_order_id
-                ).first()
-                if parent_order:
-                    entry_price = parent_order.avg_price or parent_order.price or 0
-                    parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
                     
-                    if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
-                        if parent_side == "BUY":
-                            pnl_usd = (filled_order_price - entry_price) * filled_order_qty
-                            pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
-                        else:  # SELL (short position)
-                            pnl_usd = (entry_price - filled_order_price) * filled_order_qty
-                            pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
-                        
+                    # Format times
+                    filled_time_str = filled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if filled_order_time else "N/A"
+            cancelled_time_str = cancelled_order_time.strftime("%Y-%m-%d %H:%M:%S UTC") if cancelled_order_time else "N/A"
+                    
+            # Calculate profit/loss if possible
+                    pnl_info = ""
+                    if filled_order.parent_order_id:
+                        parent_order = db.query(ExchangeOrder).filter(
+                            ExchangeOrder.exchange_order_id == filled_order.parent_order_id
+                        ).first()
+                        if parent_order:
+                            entry_price = parent_order.avg_price or parent_order.price or 0
+                            parent_side = parent_order.side.value if hasattr(parent_order.side, 'value') else str(parent_order.side)
+                            
+                            if entry_price > 0 and filled_order_price > 0 and filled_order_qty > 0:
+                                if parent_side == "BUY":
+                                    pnl_usd = (filled_order_price - entry_price) * filled_order_qty
+                                    pnl_pct = ((filled_order_price - entry_price) / entry_price) * 100
+                                else:  # SELL (short position)
+                                    pnl_usd = (entry_price - filled_order_price) * filled_order_qty
+                                    pnl_pct = ((entry_price - filled_order_price) / entry_price) * 100
+                                
                         pnl_emoji = "💰" if pnl_usd >= 0 else "💸"
                         pnl_label = "Profit" if pnl_usd >= 0 else "Loss"
-                        pnl_info = (
-                            f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
-                            f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
-                        )
-            
+                                pnl_info = (
+                                    f"\n{pnl_emoji} <b>{pnl_label}:</b> ${abs(pnl_usd):,.2f} ({pnl_pct:+.2f}%)\n"
+                                    f"   💵 Entry: ${entry_price:,.4f} → Exit: ${filled_order_price:,.4f}"
+                                )
+                    
             # Build message
             cancellation_note = " (already cancelled by Crypto.com OCO)" if was_already_cancelled else ""
-            message = (
+                    message = (
                 f"🔄 <b>OCO: Order Cancelled{cancellation_note}</b>\n\n"
                 f"📊 Symbol: <b>{cancelled_sibling.symbol}</b>\n"
-                f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
-                f"✅ <b>Filled Order:</b>\n"
-                f"   🎯 Type: {filled_order_type}\n"
-                f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
-                f"   💵 Price: ${filled_order_price:.4f}\n"
-                f"   📦 Quantity: {filled_order_qty:.8f}\n"
-                f"   ⏰ Time: {filled_time_str}\n"
-                f"{pnl_info}\n"
-                f"❌ <b>Cancelled Order:</b>\n"
-                f"   🎯 Type: {cancelled_order_type}\n"
+                        f"🔗 OCO Group ID: <code>{filled_order.oco_group_id}</code>\n\n"
+                        f"✅ <b>Filled Order:</b>\n"
+                        f"   🎯 Type: {filled_order_type}\n"
+                        f"   📋 Role: {filled_order.order_role or 'N/A'}\n"
+                        f"   💵 Price: ${filled_order_price:.4f}\n"
+                        f"   📦 Quantity: {filled_order_qty:.8f}\n"
+                        f"   ⏰ Time: {filled_time_str}\n"
+                        f"{pnl_info}\n"
+                        f"❌ <b>Cancelled Order:</b>\n"
+                        f"   🎯 Type: {cancelled_order_type}\n"
                 f"   📋 Role: {cancelled_sibling.order_role or 'N/A'}\n"
-                f"   💵 Price: ${cancelled_order_price:.4f}\n"
-                f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
-                f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
-                f"📋 Order IDs:\n"
-                f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
+                        f"   💵 Price: ${cancelled_order_price:.4f}\n"
+                        f"   📦 Quantity: {cancelled_order_qty:.8f}\n"
+                        f"   ⏰ Cancelled: {cancelled_time_str}\n\n"
+                        f"📋 Order IDs:\n"
+                        f"   ✅ Filled: <code>{filled_order.exchange_order_id}</code>\n"
                 f"   ❌ Cancelled: <code>{cancelled_sibling.exchange_order_id}</code>\n\n"
-                f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
-            )
-            
-            telegram_notifier.send_message(message)
+                        f"💡 <b>Reason:</b> One-Cancels-Other (OCO) - When one protection order is filled, the other is automatically cancelled to prevent double execution."
+                    )
+                    
+                    telegram_notifier.send_message(message)
             logger.info(f"Sent detailed OCO cancellation notification for {cancelled_sibling.symbol}")
         except Exception as e:
             logger.warning(f"Failed to send OCO cancellation notification: {e}", exc_info=True)
             raise
     
-    def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder'):
+    def _cancel_oco_sibling(self, db: Session, filled_order: 'ExchangeOrder') -> bool:
         """Cancel the sibling order in an OCO group when one is FILLED
         
         This method handles two scenarios:
         1. Sibling is still active -> Cancel it via API and update DB
         2. Sibling is already CANCELLED (by Crypto.com OCO) -> Update DB and notify
+        
+        Returns:
+            bool: True if sibling was successfully cancelled or already cancelled, False if cancellation failed
         """
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
@@ -558,7 +561,7 @@ class ExchangeSyncService:
             
             if not all_siblings:
                 logger.debug(f"OCO: No sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}")
-                return
+                return False  # No sibling found, fallback should be tried
             
             # Find active sibling first (to cancel if still active)
             active_sibling = None
@@ -583,7 +586,7 @@ class ExchangeSyncService:
                         self._send_oco_cancellation_notification(db, filled_order, cancelled_sibling, was_already_cancelled=True)
                     except Exception as notify_err:
                         logger.warning(f"Failed to send OCO notification for already-cancelled sibling: {notify_err}")
-                    return
+                    return True  # Sibling already cancelled, success
                 else:
                     # Sibling exists but in unexpected status - log warning
                     statuses = [f"{s.exchange_order_id}: {s.status}" for s in all_siblings]
@@ -591,7 +594,7 @@ class ExchangeSyncService:
                         f"OCO: No active sibling found for {filled_order.exchange_order_id} in group {filled_order.oco_group_id}. "
                         f"Found {len(all_siblings)} sibling(s) but none are active: {', '.join(statuses)}"
                     )
-                    return
+                    return False  # No active sibling found, fallback should be tried
             
             sibling = active_sibling
             
@@ -613,6 +616,8 @@ class ExchangeSyncService:
                     self._send_oco_cancellation_notification(db, filled_order, sibling, was_already_cancelled=False)
                 except Exception as tg_err:
                     logger.warning(f"Failed to send OCO notification: {tg_err}", exc_info=True)
+                
+                return True  # Successfully cancelled
             else:
                 error_msg = result.get('error', 'Unknown error')
                 logger.error(f"❌ OCO: Failed to cancel sibling order {sibling.exchange_order_id}: {error_msg}")
@@ -627,13 +632,16 @@ class ExchangeSyncService:
                         f"❌ Failed to Cancel: {sibling.order_role} ({sibling.exchange_order_id})\n"
                         f"🔗 OCO Group: <code>{filled_order.oco_group_id}</code>\n\n"
                         f"❌ Error: {error_msg}\n\n"
-                        f"⚠️ Please cancel the remaining {sibling.order_role} order manually."
+                        f"⚠️ Will try fallback method to cancel the order."
                     )
                 except Exception as tg_err:
                     logger.warning(f"Failed to send OCO error notification: {tg_err}")
+                
+                return False  # Cancellation failed, fallback should be tried
         
         except Exception as e:
             logger.error(f"❌ OCO: Error cancelling sibling order: {e}", exc_info=True)
+            return False  # Exception occurred, fallback should be tried
     
     def _create_sl_tp_for_filled_order(
         self,
@@ -1344,6 +1352,7 @@ class ExchangeSyncService:
                     logger.info(f"Found {len(target_orders)} {target_order_type} orders by parent_order_id {executed_order.parent_order_id}")
             
             # Strategy 2: Find by order_role if Strategy 1 didn't find anything
+            # Also filter by side to ensure we get the correct sibling (for both BUY and SELL positions)
             if not target_orders and executed_order:
                 # Determine target order_role based on executed order's order_role or order_type
                 if executed_order.order_role:
@@ -1361,19 +1370,24 @@ class ExchangeSyncService:
                         target_role = "STOP_LOSS"
                 
                 if target_role:
+                    # Filter by same side to ensure we get the correct sibling
+                    # For BUY positions: SL/TP are both SELL orders
+                    # For SELL positions (shorts): SL/TP are both BUY orders
                     target_orders = db.query(ExchangeOrder).filter(
                         and_(
                             ExchangeOrder.symbol == symbol,
                             ExchangeOrder.order_role == target_role,
                             ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
                             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id
                         )
                     ).all()
                     if target_orders:
-                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by order_role {target_role}")
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by order_role {target_role} and side {executed_order.side}")
             
             # Strategy 3: Find by symbol + order_type + similar creation time (fallback)
+            # Filter by same side to ensure we get the correct sibling for both BUY and SELL positions
             if not target_orders and executed_order:
                 # Look for orders created around the same time (within 5 minutes of the executed order)
                 if executed_order.exchange_create_time:
@@ -1385,6 +1399,7 @@ class ExchangeSyncService:
                         and_(
                             ExchangeOrder.symbol == symbol,
                             ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
                             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id,
                             ExchangeOrder.exchange_create_time >= time_window_start,
@@ -1392,7 +1407,7 @@ class ExchangeSyncService:
                         )
                     ).all()
                     if target_orders:
-                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window")
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window + side {executed_order.side}")
                 elif executed_order.created_at:
                     # Fallback to created_at if exchange_create_time is not available
                     from datetime import timedelta
@@ -1403,6 +1418,7 @@ class ExchangeSyncService:
                         and_(
                             ExchangeOrder.symbol == symbol,
                             ExchangeOrder.order_type == target_order_type,
+                            ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
                             ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id,
                             ExchangeOrder.created_at >= time_window_start,
@@ -1410,20 +1426,22 @@ class ExchangeSyncService:
                         )
                     ).all()
                     if target_orders:
-                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window (using created_at)")
+                        logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + time window + side {executed_order.side} (using created_at)")
             
             # Strategy 4: Final fallback - just find any open order of the target type for this symbol
-            if not target_orders:
+            # Filter by same side to ensure we get the correct sibling for both BUY and SELL positions
+            if not target_orders and executed_order:
                 target_orders = db.query(ExchangeOrder).filter(
                     and_(
                         ExchangeOrder.symbol == symbol,
                         ExchangeOrder.order_type == target_order_type,
+                        ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
-                        ExchangeOrder.exchange_order_id != executed_order_id
-                    )
-                ).all()
+                    ExchangeOrder.exchange_order_id != executed_order_id
+                )
+            ).all()
                 if target_orders:
-                    logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type (fallback)")
+                    logger.info(f"Found {len(target_orders)} {target_order_type} orders by symbol + order_type + side {executed_order.side} (fallback)")
             
             if not target_orders:
                 # Log detailed debug info to help diagnose why target orders weren't found
@@ -1908,7 +1926,7 @@ class ExchangeSyncService:
                         # Only suppress notification if order was already FILLED (just updating timestamps)
                         # If status just changed to FILLED, keep needs_telegram=True from earlier conditions
                         if was_filled_before:
-                            needs_telegram = False  # Don't send notification when just updating timestamps
+                        needs_telegram = False  # Don't send notification when just updating timestamps
                         logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
                     
                     if needs_update:
@@ -2086,31 +2104,34 @@ class ExchangeSyncService:
                             if is_sl_tp_executed:
                                 # CRITICAL: Always attempt to cancel the sibling order
                                 # Try OCO group ID method first (most reliable if OCO group ID exists)
-                                oco_cancelled = False
+                                oco_success = False
                                 if existing.oco_group_id:
                                     try:
                                         logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
-                                        self._cancel_oco_sibling(db, existing)
-                                        oco_cancelled = True
-                                        logger.info(f"✅ OCO cancellation attempted for order {order_id}")
+                                        oco_success = self._cancel_oco_sibling(db, existing)
+                                        if oco_success:
+                                            logger.info(f"✅ OCO cancellation succeeded for order {order_id}")
+                                        else:
+                                            logger.warning(f"⚠️ OCO cancellation returned False for order {order_id}, will try fallback")
                                     except Exception as oco_err:
                                         logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
+                                        oco_success = False
                                 
-                                # ALWAYS try the fallback method (works even without OCO group ID)
+                                # ALWAYS try the fallback method if OCO method didn't succeed
                                 # This will search by parent_order_id, order_role, time window, or symbol+type
                                 # This ensures cancellation works for both BUY and SELL orders
-                                if not oco_cancelled:
-                                    try:
+                                if not oco_success:
+                                try:
                                         logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
-                                        cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
                                         if cancelled_count > 0:
                                             logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
                                         elif cancelled_count == 0:
-                                            # If no active SL/TP found to cancel, check if there's already a CANCELLED one
-                                            # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
-                                            logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
-                                            self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                    except Exception as cancel_err:
+                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                except Exception as cancel_err:
                                         logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
                             
                             # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
@@ -2262,19 +2283,22 @@ class ExchangeSyncService:
                 if is_sl_tp_executed:
                     # CRITICAL: Always attempt to cancel the sibling order
                     # Try OCO group ID method first (most reliable if OCO group ID exists)
-                    oco_cancelled = False
+                    oco_success = False
                     if new_order.oco_group_id:
                         try:
                             logger.info(f"Attempting to cancel OCO sibling for new order {order_id} (group: {new_order.oco_group_id})")
-                            self._cancel_oco_sibling(db, new_order)
-                            oco_cancelled = True
-                            logger.info(f"✅ OCO cancellation attempted for new order {order_id}")
+                            oco_success = self._cancel_oco_sibling(db, new_order)
+                            if oco_success:
+                                logger.info(f"✅ OCO cancellation succeeded for new order {order_id}")
+                            else:
+                                logger.warning(f"⚠️ OCO cancellation returned False for new order {order_id}, will try fallback")
                         except Exception as oco_err:
                             logger.warning(f"Error canceling OCO sibling for new order {order_id}: {oco_err}")
+                            oco_success = False
                     
-                    # ALWAYS try the fallback method (works even without OCO group ID)
+                    # ALWAYS try the fallback method if OCO method didn't succeed
                     # This ensures cancellation works for both BUY and SELL orders
-                    if not oco_cancelled:
+                    if not oco_success:
                         try:
                             logger.info(f"Attempting fallback cancellation for sibling of new order {order_id} (symbol: {symbol}, type: {order_type_upper})")
                             cancelled_count = self._cancel_remaining_sl_tp(db, symbol, order_type_upper, order_id)
@@ -2284,7 +2308,7 @@ class ExchangeSyncService:
                                 # Check if sibling was already cancelled
                                 logger.debug(f"No active {order_type_upper} orders found to cancel for new order - checking for already CANCELLED orders")
                                 self._notify_already_cancelled_sl_tp(db, symbol, order_type_upper, order_id)
-                        except Exception as cancel_err:
+                    except Exception as cancel_err:
                             logger.error(f"❌ Error canceling remaining SL/TP for new order {order_id}: {cancel_err}", exc_info=True)
                 
                 # Track for marking as processed AFTER successful commit
