@@ -2200,7 +2200,9 @@ class ExchangeSyncService:
                                     order_type=order_type,
                                     entry_price=entry_price,  # Add entry_price for profit/loss calculation
                                     open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                                    order_role=inferred_order_role  # Use inferred role if order_role is not set
+                                    order_role=inferred_order_role,  # Use inferred role if order_role is not set
+                                    trade_signal_id=existing.trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
+                                    parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                                 )
                                 logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
                             except Exception as telegram_err:
@@ -2546,14 +2548,18 @@ class ExchangeSyncService:
                         ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
                     ).count()
                     
-                    # Get order_role from the order if it exists in database
+                    # Get order_role, trade_signal_id, and parent_order_id from the order if it exists in database
                     order_role = None
+                    trade_signal_id = None
+                    parent_order_id = None
                     if order_id:
                         existing_order = db.query(ExchangeOrder).filter(
                             ExchangeOrder.exchange_order_id == order_id
                         ).first()
                         if existing_order:
                             order_role = existing_order.order_role
+                            trade_signal_id = existing_order.trade_signal_id
+                            parent_order_id = existing_order.parent_order_id
                     
                     # Infer order_role from order_type if order_role is not set
                     # This helps identify manually created SL/TP orders
@@ -2574,7 +2580,9 @@ class ExchangeSyncService:
                         order_type=order_type,
                         entry_price=entry_price,  # Add entry_price for profit/loss calculation
                         open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                        order_role=order_role  # Use inferred role if order_role is not set
+                        order_role=order_role,  # Use inferred role if order_role is not set
+                        trade_signal_id=trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
+                        parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                     )
                     logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id}")
                 except Exception as telegram_err:
