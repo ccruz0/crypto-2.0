@@ -78,3 +78,6 @@ The next SELL signal for TON_USDT should:
 
 
 
+
+
+
