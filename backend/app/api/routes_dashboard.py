@@ -1239,6 +1239,32 @@ def update_watchlist_item_by_symbol(
                 
                 # Only update if value changed
                 if old_value != new_value:
+                    # Log trade_enabled changes with count information
+                    if field == "trade_enabled":
+                        if new_value is False and old_value is True:
+                            # Count how many coins currently have trade_enabled=True
+                            current_trade_enabled_count = db.query(WatchlistItem).filter(
+                                WatchlistItem.trade_enabled == True,
+                                WatchlistItem.is_deleted == False
+                            ).count()
+                            log.warning(
+                                f"[TRADE_ENABLED_DISABLE] PUT /dashboard/symbol/{symbol}: "
+                                f"Disabling trade_enabled for {symbol}. "
+                                f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
+                                f"This should only happen if user explicitly disables it."
+                            )
+                        elif new_value is True and old_value is False:
+                            # Count how many coins will have trade_enabled=True after this change
+                            current_trade_enabled_count = db.query(WatchlistItem).filter(
+                                WatchlistItem.trade_enabled == True,
+                                WatchlistItem.is_deleted == False
+                            ).count()
+                            log.info(
+                                f"[TRADE_ENABLED_ENABLE] PUT /dashboard/symbol/{symbol}: "
+                                f"Enabling trade_enabled for {symbol}. "
+                                f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
+                                f"After this change: {current_trade_enabled_count + 1}"
+                            )
                     setattr(master, field, new_value)
                     master.set_field_updated_at(field, now)
                     updated_fields.append(field)
@@ -1258,12 +1284,65 @@ def update_watchlist_item_by_symbol(
             master.exchange = (payload["exchange"] or "CRYPTO_COM").upper()
         
         if updated_fields:
+            # If trade_enabled was changed, check count before and after commit
+            trade_enabled_changed = "trade_enabled" in updated_fields
+            count_before = None
+            if trade_enabled_changed:
+                count_before = db.query(WatchlistItem).filter(
+                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.is_deleted == False
+                ).count()
+            
             master.updated_at = now
             db.commit()
             db.refresh(master)
             log.info(f"✅ Updated watchlist_master for {symbol}: {', '.join(updated_fields)}")
+            
+            # After commit, verify count didn't change unexpectedly
+            if trade_enabled_changed:
+                count_after = db.query(WatchlistItem).filter(
+                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.is_deleted == False
+                ).count()
+                expected_change = 1 if master.trade_enabled else -1
+                expected_count = (count_before or 0) + expected_change
+                if count_after != expected_count:
+                    log.error(
+                        f"[TRADE_ENABLED_COUNT_MISMATCH] PUT /dashboard/symbol/{symbol}: "
+                        f"Unexpected count change! Before: {count_before}, After: {count_after}, "
+                        f"Expected: {expected_count}. This suggests another coin was automatically disabled!"
+                    )
+                else:
+                    log.info(
+                        f"[TRADE_ENABLED_COUNT_VERIFIED] PUT /dashboard/symbol/{symbol}: "
+                        f"Count verified. Before: {count_before}, After: {count_after}, Expected: {expected_count}"
+                    )
         else:
             log.debug(f"No fields updated for {symbol}")
+        
+        # CRITICAL: Also sync to watchlist_items table to keep them in sync
+        # This ensures both tables have the same trade_enabled value
+        if updated_fields and "trade_enabled" in updated_fields:
+            try:
+                # Find the corresponding watchlist_items row
+                item = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol == symbol,
+                    WatchlistItem.exchange == (master.exchange or "CRYPTO_COM").upper(),
+                    WatchlistItem.is_deleted == False
+                ).first()
+                
+                if item:
+                    # Sync trade_enabled from master to items
+                    if item.trade_enabled != master.trade_enabled:
+                        log.info(f"[SYNC_MASTER_TO_ITEMS] Syncing trade_enabled for {symbol}: {item.trade_enabled} -> {master.trade_enabled}")
+                        item.trade_enabled = master.trade_enabled
+                        db.commit()
+                        log.info(f"[SYNC_MASTER_TO_ITEMS] Successfully synced trade_enabled for {symbol}")
+                else:
+                    log.debug(f"[SYNC_MASTER_TO_ITEMS] No watchlist_items row found for {symbol}, skipping sync")
+            except Exception as sync_err:
+                log.warning(f"[SYNC_MASTER_TO_ITEMS] Error syncing to watchlist_items for {symbol}: {sync_err}")
+                # Don't fail the request if sync fails
         
         return {
             "ok": True,
@@ -1737,6 +1816,29 @@ def update_watchlist_item(
         new_value = payload["trade_enabled"]
         if old_value != new_value:
             updates.append(f"TRADE: {'YES' if new_value else 'NO'}")
+            # Log when trade_enabled is being changed, especially when disabling
+            if new_value is False and old_value is True:
+                # Count how many coins currently have trade_enabled=True
+                current_trade_enabled_count = db.query(WatchlistItem).filter(
+                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.is_deleted == False
+                ).count()
+                log.warning(
+                    f"[TRADE_ENABLED_DISABLE] Disabling trade_enabled for {item.symbol}. "
+                    f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
+                    f"This should only happen if user explicitly disables it."
+                )
+            elif new_value is True and old_value is False:
+                # Count how many coins will have trade_enabled=True after this change
+                current_trade_enabled_count = db.query(WatchlistItem).filter(
+                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.is_deleted == False
+                ).count()
+                log.info(
+                    f"[TRADE_ENABLED_ENABLE] Enabling trade_enabled for {item.symbol}. "
+                    f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
+                    f"After this change: {current_trade_enabled_count + 1}"
+                )
     
     alert_enabled_old_value = None
     if "alert_enabled" in payload:
@@ -1794,9 +1896,40 @@ def update_watchlist_item(
             log.info(f"[WATCHLIST_UPDATE] {item.symbol}.{key}: {old_val} → {value}")
     
     _apply_watchlist_updates(item, payload)
+    
+    # If trade_enabled was changed, check count before and after commit
+    trade_enabled_changed = "trade_enabled" in payload and trade_enabled_old_value != payload.get("trade_enabled")
+    count_before = None
+    if trade_enabled_changed:
+        count_before = db.query(WatchlistItem).filter(
+            WatchlistItem.trade_enabled == True,
+            WatchlistItem.is_deleted == False
+        ).count()
+    
     try:
         db.commit()
         log.info(f"[WATCHLIST_UPDATE] Successfully committed update for {item.symbol}")
+        
+        # After commit, verify count didn't change unexpectedly
+        if trade_enabled_changed:
+            count_after = db.query(WatchlistItem).filter(
+                WatchlistItem.trade_enabled == True,
+                WatchlistItem.is_deleted == False
+            ).count()
+            new_trade_enabled_value = payload.get("trade_enabled")
+            expected_change = 1 if new_trade_enabled_value else -1
+            expected_count = (count_before or 0) + expected_change
+            if count_after != expected_count:
+                log.error(
+                    f"[TRADE_ENABLED_COUNT_MISMATCH] PUT /dashboard/{item_id} for {item.symbol}: "
+                    f"Unexpected count change! Before: {count_before}, After: {count_after}, "
+                    f"Expected: {expected_count}. This suggests another coin was automatically disabled!"
+                )
+            else:
+                log.info(
+                    f"[TRADE_ENABLED_COUNT_VERIFIED] PUT /dashboard/{item_id} for {item.symbol}: "
+                    f"Count verified. Before: {count_before}, After: {count_after}, Expected: {expected_count}"
+                )
         
         # CRITICAL: Also update watchlist_master table (source of truth)
         try:
