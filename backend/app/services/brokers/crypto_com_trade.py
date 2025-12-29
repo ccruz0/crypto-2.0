@@ -1247,7 +1247,8 @@ class CryptoComTradeClient:
             try:
                 import requests as req
                 inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-                inst_response = req.get(inst_url, timeout=3)
+                # Increased timeout to 10 seconds to avoid timeout issues
+                inst_response = req.get(inst_url, timeout=10)
                 if inst_response.status_code == 200:
                     inst_data = inst_response.json()
                     if "result" in inst_data and "instruments" in inst_data["result"]:
@@ -1270,53 +1271,36 @@ class CryptoComTradeClient:
             if got_instrument_info and qty_tick_size:
                 # Round to nearest tick size (round DOWN to avoid exceeding balance)
                 tick_decimal = decimal.Decimal(str(qty_tick_size))
-                qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
-                # Format with exact precision required
-                # CRITICAL: Don't strip trailing zeros - exchange may require exact decimal places
-                # Format with the exact number of decimals required by the exchange
-                qty_str = f"{qty_decimal:.{quantity_decimals}f}"
-                # Only strip trailing zeros if quantity_decimals allows it (but keep at least 1 decimal if needed)
-                # For very small quantities, the exchange might require all decimal places
-                if quantity_decimals > 0:
-                    # Try stripping zeros, but ensure we don't lose precision
-                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
-                    # If stripped version has fewer decimals than required, keep original
-                    if '.' in qty_str_stripped:
-                        stripped_decimals = len(qty_str_stripped.split('.')[1])
-                        if stripped_decimals >= min(2, quantity_decimals):  # Keep at least 2 decimals or required decimals
-                            qty_str = qty_str_stripped
-                    elif quantity_decimals > 0:
-                        # If no decimal point after stripping, add it back with required decimals
-                        qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+                # CRITICAL FIX: Use the original qty_decimal, not divide by itself
+                qty_decimal_rounded = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
+                # Format with exact precision required - DO NOT strip trailing zeros
+                # The exchange requires exactly quantity_decimals decimal places
+                qty_str = f"{qty_decimal_rounded:.{quantity_decimals}f}"
                 logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
             else:
                 # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
-                # FIX: Based on successful test, BTC_USD requires max 5 decimals for small quantities
+                # FIX: Based on ETH_USDT error, use max 4 decimals for quantities between 0.001 and 1
                 # Most exchanges require 2 decimals for quantities >= 1
+
+                # DEBUG: Log the exact qty value and type for troubleshooting
+                logger.info(f"🔍 [QUANTITY_DEBUG] Fallback formatting for {symbol}: qty={qty} (type: {type(qty).__name__}), qty >= 1: {qty >= 1}, qty >= 0.001: {qty >= 0.001}")
+
                 if qty >= 1:
                     # For quantities >= 1, use 2 decimals (most common requirement)
-                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal:.2f}"
+                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
+                    qty_str = f"{qty_decimal_rounded:.2f}"
                 elif qty >= 0.001:
-                    # For quantities between 0.001 and 1, use 5 decimals (works for BTC_USD)
-                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00001'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal:.5f}"
-                    # Strip trailing zeros but keep at least 2 decimals
-                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
-                    if '.' in qty_str_stripped:
-                        stripped_decimals = len(qty_str_stripped.split('.')[1])
-                        if stripped_decimals >= 2:
-                            qty_str = qty_str_stripped
+                    # For quantities between 0.001 and 1, use 4 decimals max (works for ETH_USDT and BTC_USDT)
+                    # CRITICAL FIX: Round DOWN to avoid "Invalid quantity format" error for ETH_USDT
+                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.0001'), rounding=decimal.ROUND_DOWN)
+                    qty_str = f"{qty_decimal_rounded:.4f}"
+                    logger.info(f"🔧 [QUANTITY_FIX] ETH_USDT style formatting: {qty} -> {qty_str} (4 decimals, rounded down)")
                 else:
                     # For quantities < 0.001, use 8 decimals but round down
                     # CRITICAL: Don't strip trailing zeros - exchange may require exact format
-                    qty_decimal = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
+                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
                     # Format with 8 decimals and keep trailing zeros (exchange may require them)
-                    qty_str = f"{qty_decimal:.8f}"
-                    # Only strip if it results in a valid format (keep at least 2 decimals for small quantities)
-                    qty_str_stripped = qty_str.rstrip('0').rstrip('.')
-                    if '.' in qty_str_stripped and len(qty_str_stripped.split('.')[1]) >= 2:
-                        qty_str = qty_str_stripped
+                    qty_str = f"{qty_decimal_rounded:.8f}"
                 logger.warning(f"⚠️ Using fallback precision for MARKET SELL {symbol}: {qty} -> {qty_str} (instrument info not available)")
             
             # CRITICAL: Store as string to prevent any float conversion
@@ -1421,7 +1405,8 @@ class CryptoComTradeClient:
                         if side_upper == "BUY":
                             order_data["notional"] = notional
                         else:
-                            order_data["qty"] = qty
+                            # Use formatted quantity from params (already properly formatted)
+                            order_data["qty"] = params.get("quantity", str(qty))
                         # Include margin parameters in fallback
                         if is_margin:
                             order_data["is_margin"] = True
@@ -1449,7 +1434,8 @@ class CryptoComTradeClient:
                     if side_upper == "BUY":
                         order_data["notional"] = notional
                     else:
-                        order_data["qty"] = qty
+                        # Use formatted quantity from params (already properly formatted)
+                        order_data["qty"] = params.get("quantity", str(qty))
                     # Include margin parameters in fallback
                     if is_margin:
                         order_data["is_margin"] = True
@@ -1568,7 +1554,8 @@ class CryptoComTradeClient:
                                 if side_upper == "BUY":
                                     order_data["notional"] = notional
                                 else:
-                                    order_data["qty"] = qty
+                                    # Use formatted quantity from params (already properly formatted)
+                                    order_data["qty"] = params.get("quantity", str(qty))
                                 if is_margin:
                                     order_data["is_margin"] = True
                                     order_data["leverage"] = int(leverage) if leverage else 10
@@ -2155,7 +2142,7 @@ class CryptoComTradeClient:
             import requests as req
             import decimal as dec
             inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-            inst_response = req.get(inst_url, timeout=3)
+            inst_response = req.get(inst_url, timeout=10)
             if inst_response.status_code == 200:
                 inst_data = inst_response.json()
                 if "result" in inst_data and "instruments" in inst_data["result"]:
@@ -2755,7 +2742,7 @@ class CryptoComTradeClient:
                                 try:
                                     import requests as req
                                     inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-                                    inst_response = req.get(inst_url, timeout=3)
+                                    inst_response = req.get(inst_url, timeout=10)
                                     if inst_response.status_code == 200:
                                         inst_data = inst_response.json()
                                         if "result" in inst_data and "instruments" in inst_data["result"]:
@@ -2979,7 +2966,7 @@ class CryptoComTradeClient:
         try:
             import requests as req
             inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-            inst_response = req.get(inst_url, timeout=3)
+            inst_response = req.get(inst_url, timeout=10)
             if inst_response.status_code == 200:
                 inst_data = inst_response.json()
                 # API returns instruments in result.data, not result.instruments
@@ -3036,11 +3023,9 @@ class CryptoComTradeClient:
             tick_decimal = decimal.Decimal(str(qty_tick_size))
             # Round DOWN (ROUND_FLOOR) to ensure we don't exceed available balance
             qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR) * tick_decimal
-            # Format with exact decimals, then remove trailing zeros if needed
-            qty_str = f"{qty_decimal:.{quantity_decimals}f}".rstrip('0').rstrip('.')
-            # Ensure at least one decimal if quantity_decimals > 0
-            if quantity_decimals > 0 and '.' not in qty_str:
-                qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+            # Format with exact decimals - DO NOT strip trailing zeros
+            # The exchange requires exactly quantity_decimals decimal places
+            qty_str = f"{qty_decimal:.{quantity_decimals}f}"
         else:
             # Preserve original precision with at least 4 decimals
             qty_str_original = f"{qty:.10f}".rstrip('0').rstrip('.')
