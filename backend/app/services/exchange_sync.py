@@ -273,10 +273,29 @@ class ExchangeSyncService:
                 # Track cancelled orders for notification
                 cancelled_orders = []
                 
+                # CRITICAL FIX: Refresh database session to ensure we have the latest order statuses
+                # from the order history sync that runs before this function
+                db.expire_all()
+                
                 for order in existing_orders:
+                    # Refresh this specific order to get latest status from database
+                    # This ensures we see if it was just marked as FILLED by order history sync
+                    try:
+                        db.refresh(order)
+                    except Exception as refresh_err:
+                        # If refresh fails (e.g., order was deleted), log and continue with fresh query below
+                        logger.debug(f"Could not refresh order {order.exchange_order_id}: {refresh_err}")
+                    
                     # Check if order is filled in history (might have been filled between syncs)
                     # For MARKET orders, they may execute immediately and not appear in open orders
                     # Check order history first before marking as cancelled
+                    # NOTE: Since sync_order_history now runs BEFORE sync_open_orders, executed orders
+                    # should already be marked as FILLED in the database
+                    if order.status == OrderStatusEnum.FILLED:
+                        logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) is FILLED, skipping cancellation")
+                        continue
+                    
+                    # Double-check with a fresh query to be absolutely sure (handles cases where refresh failed)
                     filled_order = db.query(ExchangeOrder).filter(
                         and_(
                             ExchangeOrder.exchange_order_id == order.exchange_order_id,
@@ -293,12 +312,11 @@ class ExchangeSyncService:
                             continue
                         
                         # For LIMIT orders, mark as CANCELLED if not found in open orders or history
+                        # At this point, we've verified the order is not FILLED (checked above)
                         order.status = OrderStatusEnum.CANCELLED
                         order.exchange_update_time = datetime.now(timezone.utc)
-                        logger.info(f"Order {order.exchange_order_id} ({order.symbol}) marked as CANCELLED - not found in open orders")
+                        logger.info(f"Order {order.exchange_order_id} ({order.symbol}) marked as CANCELLED - not found in open orders and not FILLED")
                         cancelled_orders.append(order)
-                    else:
-                        logger.debug(f"Order {order.exchange_order_id} is FILLED, skipping cancellation")
                 
                 # Send Telegram notification for cancelled orders (batched)
                 if cancelled_orders:
@@ -2623,11 +2641,15 @@ class ExchangeSyncService:
     def _run_sync_sync(self, db: Session):
         """Run one sync cycle - synchronous worker that runs in thread pool"""
         self.sync_balances(db)
-        self.sync_open_orders(db)
+        # CRITICAL FIX: Sync order history BEFORE open orders to prevent race condition
+        # This ensures that executed orders are marked as FILLED before we check for missing orders
+        # Otherwise, orders that were just executed might be incorrectly marked as CANCELLED
         # Sync order history every cycle (every 5 seconds) to catch all new orders
         # Increased page_size to 200 and max_pages to 10 to get more recent orders
         # This ensures we catch orders from the last ~2000 orders (10 pages * 200 orders)
         self.sync_order_history(db, page_size=200, max_pages=10)
+        # Now sync open orders - executed orders will already be FILLED from history sync above
+        self.sync_open_orders(db)
     
     async def run_sync(self):
         """Run one sync cycle - async wrapper that delegates to thread pool"""
