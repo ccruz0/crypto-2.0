@@ -29,6 +29,7 @@ class ExchangeSyncService:
         self.last_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
         self.latest_unified_open_orders: List[UnifiedOpenOrder] = []
+        self._executed_order_notification_sent: Dict[str, float] = {}  # Track executed order notifications {order_id: timestamp}
     
     def _purge_stale_processed_orders(self):
         """Remove processed order IDs older than 10 minutes"""
@@ -49,6 +50,61 @@ class ExchangeSyncService:
     def _mark_order_processed(self, order_id: str):
         """Mark an order as processed with current timestamp"""
         self.processed_order_ids[order_id] = time.time()
+    
+    def _has_notification_been_sent(self, order_id: str) -> bool:
+        """Check if a notification has been sent for an executed order
+        
+        Args:
+            order_id: The exchange order ID
+            
+        Returns:
+            True if notification was sent within the last 10 minutes, False otherwise
+        """
+        if not hasattr(self, '_executed_order_notification_sent'):
+            self._executed_order_notification_sent = {}
+        
+        if order_id not in self._executed_order_notification_sent:
+            return False
+        
+        # Check if notification is still valid (within last 10 minutes)
+        notification_timestamp = self._executed_order_notification_sent[order_id]
+        time_since_notification = time.time() - notification_timestamp
+        if time_since_notification > 600:  # 10 minutes
+            # Notification is stale, remove it
+            del self._executed_order_notification_sent[order_id]
+            return False
+        
+        return True
+    
+    def _mark_notification_sent(self, order_id: str):
+        """Mark that a notification has been sent for an executed order
+        
+        Args:
+            order_id: The exchange order ID
+        """
+        if not hasattr(self, '_executed_order_notification_sent'):
+            self._executed_order_notification_sent = {}
+        
+        self._executed_order_notification_sent[order_id] = time.time()
+    
+    def _purge_stale_notification_tracking(self):
+        """Remove notification tracking entries older than 10 minutes"""
+        if not hasattr(self, '_executed_order_notification_sent'):
+            return
+        
+        current_time = time.time()
+        stale_threshold = 600  # 10 minutes in seconds
+        
+        stale_ids = [
+            order_id for order_id, timestamp in self._executed_order_notification_sent.items()
+            if (current_time - timestamp) > stale_threshold
+        ]
+        
+        for order_id in stale_ids:
+            del self._executed_order_notification_sent[order_id]
+        
+        if stale_ids:
+            logger.debug(f"Purged {len(stale_ids)} stale notification tracking entries")
     
     def sync_balances(self, db: Session):
         """Sync account balances from Crypto.com"""
@@ -1883,6 +1939,7 @@ class ExchangeSyncService:
             
             # Purge stale processed order IDs before processing
             self._purge_stale_processed_orders()
+            self._purge_stale_notification_tracking()
             
             # Track orders processed in this cycle - mark as processed only AFTER successful commit
             orders_processed_this_cycle = []
@@ -2216,7 +2273,7 @@ class ExchangeSyncService:
                                     elif order_type_upper == 'TAKE_PROFIT_LIMIT':
                                         inferred_order_role = 'TAKE_PROFIT'
                                 
-                                telegram_notifier.send_executed_order(
+                                result = telegram_notifier.send_executed_order(
                                     symbol=order_symbol,
                                     side=side or (existing.side.value if existing.side else 'BUY'),
                                     price=order_price_float or (existing.price or 0),
@@ -2230,7 +2287,12 @@ class ExchangeSyncService:
                                     trade_signal_id=existing.trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
                                     parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                                 )
-                                logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
+                                if result:
+                                    # Mark notification as sent to prevent duplicate notifications
+                                    self._mark_notification_sent(order_id)
+                                    logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
+                                else:
+                                    logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
                             except Exception as telegram_err:
                                 logger.warning(f"Failed to send Telegram notification: {telegram_err}")
                             
@@ -2596,7 +2658,7 @@ class ExchangeSyncService:
                         elif order_type_upper == 'TAKE_PROFIT_LIMIT':
                             order_role = 'TAKE_PROFIT'
                     
-                    telegram_notifier.send_executed_order(
+                    result = telegram_notifier.send_executed_order(
                         symbol=symbol,
                         side=side,
                         price=order_price_float or 0,
@@ -2610,7 +2672,12 @@ class ExchangeSyncService:
                         trade_signal_id=trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
                         parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                     )
-                    logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id}")
+                    if result:
+                        # Mark notification as sent to prevent duplicate notifications
+                        self._mark_notification_sent(order_id)
+                        logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id}")
+                    else:
+                        logger.warning(f"Failed to send Telegram notification for executed order: {symbol} {side} - {order_id}")
                 except Exception as telegram_err:
                     logger.warning(f"Failed to send Telegram notification: {telegram_err}")
             
