@@ -3649,7 +3649,7 @@ class SignalMonitorService:
                     existing_order = db.query(ExchangeOrder).filter(
                         ExchangeOrder.exchange_order_id == str(order_id)
                     ).first()
-                    
+
                     if not existing_order:
                         # Convert all numpy types to Python native types
                         safe_price = to_python_float(result.get("avg_price")) if result.get("avg_price") else None
@@ -3657,7 +3657,43 @@ class SignalMonitorService:
                         safe_cumulative_qty = to_python_float(result.get("cumulative_quantity")) if result.get("cumulative_quantity") else safe_qty
                         safe_cumulative_val = to_python_float(result.get("cumulative_value")) if result.get("cumulative_value") else None
                         safe_avg_price = to_python_float(result.get("avg_price")) if result.get("avg_price") else None
-                        
+
+                        # CRITICAL FIX: Create TradeSignal record and assign trade_signal_id to link automatic order
+                        # This prevents automatic orders from being marked as "Manual" in Telegram notifications
+                        trade_signal_id = None
+                        try:
+                            from app.services.signal_writer import upsert_trade_signal
+                            from app.models.trade_signal import PresetEnum, RiskProfileEnum, SignalStatusEnum
+
+                            # Create TradeSignal record for automatic order
+                            trade_signal = upsert_trade_signal(
+                                db=db,
+                                symbol=symbol,
+                                preset_enum=PresetEnum.SWING,  # Default preset for automatic orders
+                                risk_profile_enum=RiskProfileEnum.CONSERVATIVE,  # Default risk profile
+                                rsi=None,  # Technical indicators not available at order creation time
+                                ma50=None,
+                                ma200=None,
+                                ema10=None,
+                                ma10w=None,
+                                atr=None,
+                                resistance_up=None,
+                                resistance_down=None,
+                                entry_price=filled_price or current_price,  # Price when order was placed
+                                current_price=filled_price or current_price,
+                                volume_24h=None,  # Volume data not available
+                                volume_ratio=None,
+                                should_trade=True,  # Automatic order was created, so should_trade=True
+                                status_enum=SignalStatusEnum.ORDER_PLACED,  # Status: order has been placed
+                                exchange_order_id=str(order_id),  # Link to the exchange order
+                                notes=f"Automatic BUY order created by signal monitor at ${filled_price or current_price:.4f}"
+                            )
+                            trade_signal_id = trade_signal.id
+                            logger.info(f"✅ Created TradeSignal record (ID: {trade_signal_id}) for automatic BUY order: {symbol}")
+                        except Exception as signal_err:
+                            logger.warning(f"⚠️ Failed to create TradeSignal record for automatic order {symbol}: {signal_err}")
+                            # Continue with order creation even if signal creation fails
+
                         new_exchange_order = ExchangeOrder(
                             exchange_order_id=str(order_id),
                             client_oid=str(result.get("client_order_id", order_id)),
@@ -3673,7 +3709,8 @@ class SignalMonitorService:
                             exchange_create_time=now_utc,  # CRITICAL: Set timestamp for cooldown checks
                             exchange_update_time=now_utc,
                             created_at=now_utc,
-                            updated_at=now_utc
+                            updated_at=now_utc,
+                            trade_signal_id=trade_signal_id  # CRITICAL: Link to TradeSignal to mark as automatic
                         )
                         db.add(new_exchange_order)
                         db.commit()
@@ -3995,6 +4032,42 @@ class SignalMonitorService:
                     ).first()
                     
                     if not existing_order:
+                        # CRITICAL FIX: Create TradeSignal record and assign trade_signal_id to link automatic order
+                        # This prevents automatic orders from being marked as "Manual" in Telegram notifications
+                        trade_signal_id = None
+                        try:
+                            from app.services.signal_writer import upsert_trade_signal
+                            from app.models.trade_signal import PresetEnum, RiskProfileEnum, SignalStatusEnum
+
+                            # Create TradeSignal record for automatic order
+                            trade_signal = upsert_trade_signal(
+                                db=db,
+                                symbol=symbol,
+                                preset_enum=PresetEnum.SWING,  # Default preset for automatic orders
+                                risk_profile_enum=RiskProfileEnum.CONSERVATIVE,  # Default risk profile
+                                rsi=None,  # Technical indicators not available at order creation time
+                                ma50=None,
+                                ma200=None,
+                                ema10=None,
+                                ma10w=None,
+                                atr=None,
+                                resistance_up=None,
+                                resistance_down=None,
+                                entry_price=filled_price or current_price,  # Price when order was placed
+                                current_price=filled_price or current_price,
+                                volume_24h=None,  # Volume data not available
+                                volume_ratio=None,
+                                should_trade=True,  # Automatic order was created, so should_trade=True
+                                status_enum=SignalStatusEnum.ORDER_PLACED,  # Status: order has been placed
+                                exchange_order_id=str(order_id),  # Link to the exchange order
+                                notes=f"Automatic SELL order created by signal monitor at ${filled_price or current_price:.4f}"
+                            )
+                            trade_signal_id = trade_signal.id
+                            logger.info(f"✅ Created TradeSignal record (ID: {trade_signal_id}) for automatic SELL order: {symbol}")
+                        except Exception as signal_err:
+                            logger.warning(f"⚠️ Failed to create TradeSignal record for automatic order {symbol}: {signal_err}")
+                            # Continue with order creation even if signal creation fails
+
                         new_exchange_order = ExchangeOrder(
                             exchange_order_id=str(order_id),
                             client_oid=str(result.get("client_order_id", order_id)),
@@ -4010,7 +4083,8 @@ class SignalMonitorService:
                             exchange_create_time=now_utc,
                             exchange_update_time=now_utc,
                             created_at=now_utc,
-                            updated_at=now_utc
+                            updated_at=now_utc,
+                            trade_signal_id=trade_signal_id  # CRITICAL: Link to TradeSignal to mark as automatic
                         )
                         db.add(new_exchange_order)
                         db.commit()
