@@ -2043,29 +2043,37 @@ class ExchangeSyncService:
                     # Update data even if already FILLED (to sync latest values from API)
                     elif was_filled_before and status_str == 'FILLED':
                         needs_update = True
-                        needs_telegram = False  # Already FILLED, don't send notification again
-                        logger.debug(f"Order {order_id} already FILLED - updating data from API (no notification)")
+                        # CRITICAL FIX: Check if notification was actually sent before suppressing it
+                        # This ensures orders that were created as FILLED (e.g., MARKET orders) still get notifications
+                        if self._has_notification_been_sent(order_id):
+                            needs_telegram = False  # Notification already sent, don't send again
+                            logger.debug(f"Order {order_id} already FILLED and notification already sent - updating data from API (no notification)")
+                        else:
+                            needs_telegram = True  # Order is FILLED but notification not sent yet - send it now
+                            logger.info(f"Order {order_id} already FILLED but notification not sent - sending notification now")
                     
                     # CRITICAL: Always update timestamps from Crypto.com if available, even if order already exists
                     # This ensures orders always reflect the actual dates from the exchange
                     # IMPORTANT: Timestamp updates should NOT override needs_telegram if status just changed to FILLED
                     if status_str == 'FILLED' and (update_time or create_time):
                         needs_update = True
-                        # Only suppress notification if order was already FILLED (just updating timestamps)
+                        # Only suppress notification if order was already FILLED AND notification was already sent
                         # If status just changed to FILLED, preserve needs_telegram=True from earlier conditions
-                        if was_filled_before:
-                            needs_telegram = False  # Don't send notification if we're just updating timestamps for already-FILLED order
+                        if was_filled_before and self._has_notification_been_sent(order_id):
+                            needs_telegram = False  # Don't send notification if we're just updating timestamps for already-FILLED order with notification sent
+                        # If notification wasn't sent yet, keep needs_telegram=True (set above)
                     
                     # ALWAYS update timestamps from Crypto.com if available, regardless of other conditions
                     # This ensures the order reflects what's actually in Crypto.com
-                    # CRITICAL: Only suppress Telegram notification if order was already FILLED
+                    # CRITICAL: Only suppress Telegram notification if order was already FILLED AND notification was sent
                     # If status just changed to FILLED, preserve needs_telegram=True from above
                     if (update_time or create_time) and existing:
                         needs_update = True
-                        # Only suppress notification if order was already FILLED (just updating timestamps)
+                        # Only suppress notification if order was already FILLED AND notification was already sent
                         # If status just changed to FILLED, keep needs_telegram=True from earlier conditions
-                        if was_filled_before:
-                            needs_telegram = False  # Don't send notification when just updating timestamps
+                        if was_filled_before and self._has_notification_been_sent(order_id):
+                            needs_telegram = False  # Don't send notification when just updating timestamps for already-FILLED order with notification sent
+                        # If notification wasn't sent yet, keep needs_telegram=True (set above)
                         logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
                     
                     if needs_update:
