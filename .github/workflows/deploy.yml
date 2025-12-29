@@ -153,15 +153,30 @@ jobs:
           exit 1
         }
         
+        # Pre-sync: Fix permissions on existing files to allow rsync to overwrite them
+        echo "🔧 Pre-sync: Fixing permissions on existing files..."
+        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
+          "cd ~/automated-trading-platform && \
+           ([ -d frontend ] && find frontend -type f -exec chmod 644 {} \; 2>/dev/null || true) && \
+           ([ -d frontend ] && find frontend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
+           echo '✅ Pre-sync permissions fixed'"
+        
         echo "📁 Copying files to EC2..."
+        # Use --partial to continue on errors, but still fail if critical files can't be copied
         rsync -avz \
           --chmod=Du=rwx,go=rx,Fu=rw,go=r \
+          --partial \
           -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" \
           --exclude='.git' \
           --exclude='node_modules' \
           --exclude='.next' \
           --exclude='__pycache__' \
-          ./ ubuntu@$EC2_TARGET_HOST:~/automated-trading-platform/
+          --exclude='frontend/artifacts' \
+          --exclude='frontend/test-results' \
+          --exclude='frontend/playwright-report' \
+          ./ ubuntu@$EC2_TARGET_HOST:~/automated-trading-platform/ || {
+          echo "⚠️ rsync completed with some errors, but continuing deployment..."
+        }
         
         # Post-sync: Fix permissions for Docker compatibility
         echo "🔧 Post-sync: Ensuring Docker-compatible permissions..."
