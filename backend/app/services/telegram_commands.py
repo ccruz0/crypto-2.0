@@ -352,6 +352,158 @@ def _format_coin_status_icons(item: WatchlistItem) -> str:
     return f"{alert_icon}{trade_icon}{margin_icon}"
 
 
+def _calculate_portfolio_pnl(db: Session) -> Tuple[float, float]:
+    """
+    Calculate realized and unrealized PnL from executed orders and open positions.
+    
+    Returns:
+        Tuple[realized_pnl, unrealized_pnl]
+    """
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+        from app.models.market_price import MarketPrice
+        
+        # Calculate realized PnL from executed orders (FILLED BUY/SELL pairs)
+        # Track positions per symbol for accurate matching
+        realized_pnl = 0.0
+        
+        # Get all FILLED orders ordered by execution time, grouped by symbol
+        filled_orders = db.query(ExchangeOrder).filter(
+            ExchangeOrder.status == OrderStatusEnum.FILLED
+        ).order_by(
+            ExchangeOrder.symbol.asc(),
+            ExchangeOrder.exchange_update_time.asc(),
+            ExchangeOrder.created_at.asc()
+        ).all()
+        
+        # Group orders by symbol for per-symbol FIFO matching
+        orders_by_symbol: Dict[str, List[ExchangeOrder]] = {}
+        for order in filled_orders:
+            symbol = (order.symbol or "").upper()
+            if symbol:
+                orders_by_symbol.setdefault(symbol, []).append(order)
+        
+        # Process each symbol separately
+        for symbol, symbol_orders in orders_by_symbol.items():
+            # FIFO matching: Match BUY orders with SELL orders per symbol
+            buy_queue: List[Tuple[float, float]] = []  # List of (quantity, avg_price) tuples
+            
+            for order in symbol_orders:
+                # Skip SL/TP orders for realized PnL calculation
+                # (they're part of position management, not separate trades)
+                if order.order_role in ["STOP_LOSS", "TAKE_PROFIT"]:
+                    continue
+                
+                qty = float(order.cumulative_quantity or order.quantity or 0)
+                price = float(order.avg_price or order.price or 0)
+                
+                if qty <= 0 or price <= 0:
+                    continue
+                
+                if order.side == OrderSideEnum.BUY:
+                    # Add to buy queue
+                    buy_queue.append((qty, price))
+                elif order.side == OrderSideEnum.SELL:
+                    # Match with earliest BUY orders (FIFO)
+                    remaining_sell_qty = qty
+                    while remaining_sell_qty > 0 and buy_queue:
+                        buy_qty, buy_price = buy_queue[0]
+                        
+                        if buy_qty <= remaining_sell_qty:
+                            # This BUY is fully matched
+                            pnl = (price - buy_price) * buy_qty
+                            realized_pnl += pnl
+                            remaining_sell_qty -= buy_qty
+                            buy_queue.pop(0)
+                        else:
+                            # Partial match
+                            pnl = (price - buy_price) * remaining_sell_qty
+                            realized_pnl += pnl
+                            buy_queue[0] = (buy_qty - remaining_sell_qty, buy_price)
+                            remaining_sell_qty = 0
+        
+        # Calculate unrealized PnL from open positions (remaining buy_queue per symbol)
+        unrealized_pnl = 0.0
+        
+        # Get current prices for all symbols
+        market_prices = db.query(MarketPrice).all()
+        price_map = {mp.symbol.upper(): mp.price for mp in market_prices}
+        
+        # Calculate unrealized PnL for remaining positions (grouped by symbol)
+        open_positions_by_symbol: Dict[str, List[Tuple[float, float]]] = {}
+        
+        # Re-process to build open positions per symbol
+        for symbol, symbol_orders in orders_by_symbol.items():
+            buy_queue: List[Tuple[float, float]] = []
+            
+            for order in symbol_orders:
+                if order.order_role in ["STOP_LOSS", "TAKE_PROFIT"]:
+                    continue
+                
+                qty = float(order.cumulative_quantity or order.quantity or 0)
+                price = float(order.avg_price or order.price or 0)
+                
+                if qty <= 0 or price <= 0:
+                    continue
+                
+                if order.side == OrderSideEnum.BUY:
+                    buy_queue.append((qty, price))
+                elif order.side == OrderSideEnum.SELL:
+                    # Match with BUY orders (FIFO)
+                    remaining_sell_qty = qty
+                    while remaining_sell_qty > 0 and buy_queue:
+                        buy_qty, _ = buy_queue[0]
+                        if buy_qty <= remaining_sell_qty:
+                            remaining_sell_qty -= buy_qty
+                            buy_queue.pop(0)
+                        else:
+                            buy_queue[0] = (buy_qty - remaining_sell_qty, buy_queue[0][1])
+                            remaining_sell_qty = 0
+            
+            # Store remaining open positions for this symbol
+            if buy_queue:
+                open_positions_by_symbol[symbol] = buy_queue
+        
+        # Calculate unrealized PnL for each symbol's open positions
+        for symbol, positions in open_positions_by_symbol.items():
+            # Try to find current price for this symbol
+            current_price = None
+            
+            # Check symbol directly
+            if symbol in price_map:
+                current_price = price_map[symbol]
+            else:
+                # Try variants (e.g., BTC_USDT, BTC_USD, BTC)
+                symbol_variants = [
+                    symbol,
+                    symbol.replace("_USDT", ""),
+                    symbol.replace("_USD", ""),
+                ]
+                for variant in symbol_variants:
+                    if variant in price_map:
+                        current_price = price_map[variant]
+                        break
+            
+            if current_price and current_price > 0:
+                # Calculate average entry price and total quantity for this symbol
+                total_qty = sum(qty for qty, _ in positions)
+                if total_qty > 0:
+                    # Weighted average entry price
+                    total_cost = sum(qty * price for qty, price in positions)
+                    avg_entry_price = total_cost / total_qty
+                    
+                    # Calculate unrealized PnL
+                    position_pnl = (current_price - avg_entry_price) * total_qty
+                    unrealized_pnl += position_pnl
+        
+        logger.debug(f"[PNL] Calculated: realized=${realized_pnl:.2f}, unrealized=${unrealized_pnl:.2f}")
+        return realized_pnl, unrealized_pnl
+        
+    except Exception as e:
+        logger.warning(f"[PNL] Error calculating PnL: {e}", exc_info=True)
+        return 0.0, 0.0
+
+
 def _format_coin_summary(item: WatchlistItem) -> str:
     """Detailed summary block for a single coin."""
     amount = getattr(item, "trade_amount_usd", None)
@@ -907,6 +1059,121 @@ def send_welcome_message(chat_id: str, db: Session = None) -> bool:
         return False
 
 
+def send_audit_snapshot(chat_id: str, db: Session) -> bool:
+    """Send audit snapshot with system health and status"""
+    try:
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from app.models.watchlist import WatchlistItem
+        from app.services.watchlist_selector import deduplicate_watchlist_items
+        import time
+        
+        lines = ["🔍 <b>Audit Snapshot</b>\n"]
+        
+        # Service health
+        backend_ok = False
+        try:
+            response = http_get(f"{API_BASE_URL.rstrip('/')}/api/ping_fast", timeout=5, calling_module="telegram_commands")
+            backend_ok = response.status_code == 200
+        except:
+            pass
+        
+        lines.append(f"📊 <b>Service Health:</b>")
+        lines.append(f"  Backend: {'✅ OK' if backend_ok else '❌ FAILED'}")
+        lines.append("")
+        
+        # Watchlist deduplication status
+        if db:
+            try:
+                all_items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
+                canonical_items = deduplicate_watchlist_items(all_items)
+                duplicates = len(all_items) - len(canonical_items)
+                unique_symbols = len(set(item.symbol.upper() for item in canonical_items))
+                
+                lines.append(f"📋 <b>Watchlist:</b>")
+                lines.append(f"  Symbols: {unique_symbols}")
+                lines.append(f"  Duplicates: {'⚠️ ' + str(duplicates) if duplicates > 0 else '✅ 0'}")
+                lines.append("")
+            except Exception as wl_err:
+                logger.warning(f"[AUDIT] Error checking watchlist: {wl_err}")
+                lines.append("📋 <b>Watchlist:</b> ⚠️ Error checking")
+                lines.append("")
+        
+        # Active alerts count
+        if db:
+            try:
+                buy_alerts = db.query(WatchlistItem).filter(
+                    WatchlistItem.is_deleted == False,
+                    WatchlistItem.buy_alert_enabled == True
+                ).count()
+                sell_alerts = db.query(WatchlistItem).filter(
+                    WatchlistItem.is_deleted == False,
+                    WatchlistItem.sell_alert_enabled == True
+                ).count()
+                
+                lines.append(f"🔔 <b>Active Alerts:</b>")
+                lines.append(f"  BUY: {buy_alerts}")
+                lines.append(f"  SELL: {sell_alerts}")
+                lines.append("")
+            except Exception as alert_err:
+                logger.warning(f"[AUDIT] Error counting alerts: {alert_err}")
+        
+        # Open orders count
+        if db:
+            try:
+                open_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status.in_([
+                        OrderStatusEnum.NEW,
+                        OrderStatusEnum.ACTIVE,
+                        OrderStatusEnum.PARTIALLY_FILLED
+                    ])
+                ).count()
+                
+                lines.append(f"📦 <b>Open Orders:</b> {open_orders}")
+                if open_orders > 3:
+                    lines.append("  ⚠️ Warning: More than 3 open orders")
+                lines.append("")
+            except Exception as order_err:
+                logger.warning(f"[AUDIT] Error counting orders: {order_err}")
+        
+        # Watchlist load time
+        if backend_ok:
+            try:
+                start_time = time.time()
+                response = http_get(f"{API_BASE_URL.rstrip('/')}/api/dashboard/state", timeout=10, calling_module="telegram_commands")
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                
+                lines.append(f"⏱️  <b>Watchlist Load:</b> {elapsed_ms}ms")
+                if elapsed_ms > 2000:
+                    lines.append("  ⚠️ Warning: Load time exceeds 2 seconds")
+                lines.append("")
+            except Exception as load_err:
+                logger.warning(f"[AUDIT] Error measuring load time: {load_err}")
+        
+        # Reports status
+        if backend_ok:
+            try:
+                response = http_get(f"{API_BASE_URL.rstrip('/')}/api/reports/dashboard-data-integrity/latest", timeout=5, calling_module="telegram_commands")
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict) and data.get("status") == "success":
+                        report_data = data.get("report", {})
+                        inconsistencies = report_data.get("inconsistencies", [])
+                        lines.append(f"📊 <b>Reports:</b> ✅ OK ({len(inconsistencies)} inconsistencies)")
+                    else:
+                        lines.append("📊 <b>Reports:</b> ⚠️ No report available")
+                else:
+                    lines.append("📊 <b>Reports:</b> ⚠️ Endpoint not available")
+            except Exception as report_err:
+                logger.debug(f"[AUDIT] Reports check failed (non-critical): {report_err}")
+                lines.append("📊 <b>Reports:</b> ⚠️ Could not check")
+        
+        message = "\n".join(lines)
+        return send_command_response(chat_id, message)
+    except Exception as e:
+        logger.error(f"[AUDIT] Error generating snapshot: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error generating audit snapshot: {str(e)}")
+
+
 def send_help_message(chat_id: str) -> bool:
     """Send help message with command descriptions"""
     message = """📚 <b>Command Help</b>
@@ -921,6 +1188,7 @@ def send_help_message(chat_id: str) -> bool:
 /alerts - Show all coins with Alert=YES (automatic alerts enabled)
 /analyze &lt;symbol&gt; - Get detailed analysis for a coin (e.g., /analyze BTC_USDT) or show menu if no symbol
 /add &lt;symbol&gt; - Add a coin to the watchlist (e.g., /add BTC_USDT)
+/audit or /snapshot - Show system audit snapshot (health, watchlist, alerts, orders)
 /create_sl_tp [symbol] - Create SL/TP orders for positions missing protection
 /create_sl [symbol] - Create only SL order for a position
 /create_tp [symbol] - Create only TP order for a position
@@ -1465,9 +1733,7 @@ Check if exchange sync is running."""
             
             # Calculate PnL breakdown (Section 3.1)
             # Note: These calculations should match Dashboard exactly
-            # For now, using placeholder values - should be calculated from executed orders and open positions
-            realized_pnl = 0.0  # TODO: Calculate from executed orders
-            potential_pnl = 0.0  # TODO: Calculate from open positions (unrealized)
+            realized_pnl, potential_pnl = _calculate_portfolio_pnl(db)
             total_pnl = realized_pnl + potential_pnl
             
             message = f"""💼 <b>Portfolio Overview</b>
@@ -3563,6 +3829,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         send_alerts_list_message(chat_id, db)
     elif text.startswith("/analyze"):
         send_analyze_message(chat_id, text, db)
+    elif text.startswith("/audit") or text.startswith("/snapshot"):
+        send_audit_snapshot(chat_id, db)
     elif text.startswith("/add"):
         handle_add_coin_command(chat_id, text, db)
     elif text.startswith("/create_sl_tp"):
