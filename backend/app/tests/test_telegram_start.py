@@ -187,7 +187,7 @@ def test_welcome_message_has_keyboard():
         mock_post.return_value = mock_response
         
         from app.services.telegram_commands import send_welcome_message
-from app.utils.http_client import http_get, http_post
+        from app.utils.http_client import http_get, http_post
         
         with patch.dict(os.environ, {
             'TELEGRAM_BOT_TOKEN': 'test_token',
