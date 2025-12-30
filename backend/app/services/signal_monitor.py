@@ -39,6 +39,19 @@ from app.services.signal_throttle import (
 
 logger = logging.getLogger(__name__)
 
+# Force diagnostic flags (env-gated, default OFF)
+FORCE_SELL_DIAGNOSTIC = os.getenv("FORCE_SELL_DIAGNOSTIC", "0").lower() in ("1", "true", "yes")
+FORCE_SELL_DIAGNOSTIC_SYMBOL = os.getenv("FORCE_SELL_DIAGNOSTIC_SYMBOL", "").upper()
+
+if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
+    target_symbol = FORCE_SELL_DIAGNOSTIC_SYMBOL or "TRX_USDT"
+    logger.info(
+        f"🔧 [DIAGNOSTIC] Force sell diagnostics enabled for SYMBOL={target_symbol} | "
+        f"FORCE_SELL_DIAGNOSTIC={FORCE_SELL_DIAGNOSTIC} | "
+        f"FORCE_SELL_DIAGNOSTIC_SYMBOL={FORCE_SELL_DIAGNOSTIC_SYMBOL or 'TRX_USDT'} | "
+        f"DRY_RUN=True (no orders will be placed)"
+    )
+
 
 class SignalMonitorService:
     """Service to monitor trading signals and create orders automatically
@@ -2922,9 +2935,279 @@ class SignalMonitorService:
                     # Always remove lock when done (if not already removed)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+        
+        # ========================================================================
+        # FORCE DIAGNOSTIC PATH: Run SELL order creation checks even when signal is WAIT
+        # This allows testing diagnostics without waiting for a real SELL signal
+        # ========================================================================
+        should_force_diagnostic = (
+            (FORCE_SELL_DIAGNOSTIC and symbol == "TRX_USDT") or
+            (FORCE_SELL_DIAGNOSTIC_SYMBOL and symbol.upper() == FORCE_SELL_DIAGNOSTIC_SYMBOL.upper())
+        )
+        
+        if should_force_diagnostic and not sell_signal:
+            logger.info(
+                f"🔧 [FORCE_DIAGNOSTIC] Running SELL order creation diagnostics for {symbol} "
+                f"(signal=WAIT, but diagnostics forced via env flag) | DRY_RUN=True (no order will be placed)"
+            )
             
-            # Handle SELL signal state update (for internal tracking) - same level as BUY block (line 1554)
-            if current_state == "SELL":
+            try:
+                # ========================================================================
+                # PREFLIGHT CHECK 1: Refresh trade flags from database
+                # ========================================================================
+                db.expire_all()
+                fresh_trade_check = db.query(WatchlistItem).filter(
+                    WatchlistItem.symbol == symbol
+                ).first()
+                if fresh_trade_check:
+                    trade_enabled = getattr(fresh_trade_check, 'trade_enabled', False)
+                    trade_amount_usd = getattr(fresh_trade_check, 'trade_amount_usd', None)
+                    watchlist_item.trade_enabled = trade_enabled
+                    watchlist_item.trade_amount_usd = trade_amount_usd
+                
+                logger.info(
+                    f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 1 - Trade flags: "
+                    f"trade_enabled={watchlist_item.trade_enabled}, "
+                    f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
+                    f"trade_on_margin={getattr(watchlist_item, 'trade_on_margin', False)}"
+                )
+                
+                # ========================================================================
+                # PREFLIGHT CHECK 2: Validate trade_enabled and trade_amount_usd
+                # ========================================================================
+                if not watchlist_item.trade_enabled:
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 2 - BLOCKED: trade_enabled=False"
+                    )
+                elif not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 2 - BLOCKED: trade_amount_usd={watchlist_item.trade_amount_usd} (invalid or not set)"
+                    )
+                else:
+                    logger.info(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 2 - PASSED: trade_enabled=True, trade_amount_usd=${watchlist_item.trade_amount_usd:,.2f}"
+                    )
+                
+                # ========================================================================
+                # PREFLIGHT CHECK 3: Balance check (base currency for SELL orders)
+                # ========================================================================
+                balance_check_passed = False
+                balance_check_warning = None
+                available_balance = 0
+                required_qty = 0
+                base_currency = symbol.split('_')[0] if '_' in symbol else symbol
+                
+                if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
+                    user_wants_margin_check = getattr(watchlist_item, 'trade_on_margin', False)
+                    
+                    if user_wants_margin_check:
+                        logger.info(
+                            f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 3 - SKIPPED: Margin trading enabled "
+                            f"(balance check not performed for margin orders)"
+                        )
+                        balance_check_passed = True  # Margin orders skip balance check
+                    else:
+                        try:
+                            account_summary = trade_client.get_account_summary()
+                            
+                            if 'accounts' in account_summary or 'data' in account_summary:
+                                accounts = account_summary.get('accounts') or account_summary.get('data', {}).get('accounts', [])
+                                for acc in accounts:
+                                    currency = acc.get('currency', '').upper()
+                                    if currency == base_currency:
+                                        available = float(acc.get('available', '0') or '0')
+                                        available_balance = available
+                                        break
+                            
+                            required_qty = watchlist_item.trade_amount_usd / current_price
+                            
+                            logger.info(
+                                f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 3 - Balance check: "
+                                f"base_currency={base_currency}, "
+                                f"available={available_balance:.8f} {base_currency}, "
+                                f"required={required_qty:.8f} {base_currency} "
+                                f"(from trade_amount_usd=${watchlist_item.trade_amount_usd:,.2f} / current_price=${current_price:.8f})"
+                            )
+                            
+                            if available_balance < required_qty:
+                                balance_check_warning = (
+                                    f"Insufficient balance: Available={available_balance:.8f} {base_currency} < "
+                                    f"Required={required_qty:.8f} {base_currency}"
+                                )
+                                logger.warning(
+                                    f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 3 - BLOCKED: {balance_check_warning}"
+                                )
+                                balance_check_passed = False
+                            else:
+                                logger.info(
+                                    f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 3 - PASSED: "
+                                    f"Sufficient balance ({available_balance:.8f} >= {required_qty:.8f} {base_currency})"
+                                )
+                                balance_check_passed = True
+                        except Exception as balance_check_err:
+                            logger.warning(
+                                f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 3 - ERROR: Balance check failed: {balance_check_err}"
+                            )
+                            balance_check_passed = False
+                
+                # ========================================================================
+                # PREFLIGHT CHECK 4: Live trading status
+                # ========================================================================
+                try:
+                    from app.utils.live_trading import get_live_trading_status
+                    live_trading = get_live_trading_status(db)
+                    dry_run_mode = not live_trading
+                    logger.info(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 4 - Live trading: "
+                        f"live_trading={live_trading}, dry_run_mode={dry_run_mode}"
+                    )
+                except Exception as live_check_err:
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 4 - ERROR: Could not check live trading status: {live_check_err}"
+                    )
+                    dry_run_mode = True  # Default to dry run on error
+                
+                # ========================================================================
+                # PREFLIGHT CHECK 5: Open orders constraints
+                # ========================================================================
+                open_orders_status = "unknown"
+                base_symbol = symbol.split('_')[0] if '_' in symbol else symbol
+                try:
+                    from app.services.order_position_service import count_open_positions_for_symbol
+                    base_open = count_open_positions_for_symbol(db, base_symbol)
+                    MAX_OPEN_ORDERS_PER_SYMBOL = self.MAX_OPEN_ORDERS_PER_SYMBOL
+                    
+                    if base_open >= MAX_OPEN_ORDERS_PER_SYMBOL:
+                        open_orders_status = f"BLOCKED ({base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} limit reached)"
+                        logger.warning(
+                            f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 5 - BLOCKED: "
+                            f"Open orders limit reached: {base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} for {base_symbol}"
+                        )
+                    else:
+                        open_orders_status = f"OK ({base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL})"
+                        logger.info(
+                            f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 5 - PASSED: "
+                            f"Open orders: {base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} for {base_symbol}"
+                        )
+                except Exception as open_orders_err:
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 5 - ERROR: Could not check open orders: {open_orders_err}"
+                    )
+                    open_orders_status = "check_failed"
+                
+                # ========================================================================
+                # PREFLIGHT CHECK 6: Margin settings (if margin trading)
+                # ========================================================================
+                margin_settings = "N/A"
+                if getattr(watchlist_item, 'trade_on_margin', False):
+                    try:
+                        from app.services.margin_decision_helper import decide_trading_mode, log_margin_decision, DEFAULT_CONFIGURED_LEVERAGE
+                        trading_decision = decide_trading_mode(
+                            symbol=symbol,
+                            configured_leverage=DEFAULT_CONFIGURED_LEVERAGE,
+                            user_wants_margin=getattr(watchlist_item, 'trade_on_margin', False)
+                        )
+                        margin_settings = f"margin={trading_decision.use_margin}, leverage={trading_decision.leverage}"
+                        logger.info(
+                            f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 6 - Margin settings: "
+                            f"use_margin={trading_decision.use_margin}, "
+                            f"leverage={trading_decision.leverage}"
+                        )
+                    except Exception as margin_check_err:
+                        logger.warning(
+                            f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 6 - ERROR: Margin check failed: {margin_check_err}"
+                        )
+                        margin_settings = "check_failed"
+                else:
+                    margin_settings = "spot_trading"
+                    logger.info(
+                        f"🔍 [DIAGNOSTIC] {symbol} PREFLIGHT CHECK 6 - Margin settings: spot_trading (margin disabled)"
+                    )
+                
+                # ========================================================================
+                # FINAL DECISION: Would order be created?
+                # ========================================================================
+                # CRITICAL: In forced diagnostic mode, NEVER create real orders
+                # This guard ensures even if code path changes, no order is placed
+                FORCE_DIAGNOSTIC_DRY_RUN = True  # Explicit guard - cannot be overridden
+                
+                would_create_order = (
+                    watchlist_item.trade_enabled and
+                    watchlist_item.trade_amount_usd and
+                    watchlist_item.trade_amount_usd > 0 and
+                    balance_check_passed
+                )
+                
+                # Build blocking reasons list
+                blocking_reasons = []
+                if not watchlist_item.trade_enabled:
+                    blocking_reasons.append("trade_enabled=False")
+                if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+                    blocking_reasons.append(f"trade_amount_usd invalid ({watchlist_item.trade_amount_usd})")
+                if not balance_check_passed:
+                    if balance_check_warning:
+                        blocking_reasons.append(balance_check_warning)
+                    else:
+                        blocking_reasons.append("balance check failed")
+                
+                # Get live trading status for summary
+                live_trading_status = False
+                try:
+                    from app.utils.live_trading import get_live_trading_status
+                    live_trading_status = get_live_trading_status(db)
+                except Exception:
+                    pass
+                
+                # Check if open orders would block (add to blocking reasons if applicable)
+                if open_orders_status.startswith("BLOCKED"):
+                    blocking_reasons.append(f"open_orders_limit ({open_orders_status})")
+                    would_create_order = False  # Override decision if open orders limit reached
+                
+                # Structured summary log (single line with all key info)
+                final_decision = "WOULD_CREATE" if would_create_order else "BLOCKED"
+                blocking_reasons_str = ", ".join(blocking_reasons) if blocking_reasons else "none"
+                
+                logger.info(
+                    f"🔍 [DIAGNOSTIC] FINAL symbol={symbol} "
+                    f"decision={final_decision} "
+                    f"reasons=[{blocking_reasons_str}] "
+                    f"required_qty={required_qty:.8f} "
+                    f"avail_base={available_balance:.8f} "
+                    f"open_orders={open_orders_status} "
+                    f"live_trading={live_trading_status} "
+                    f"trade_enabled={watchlist_item.trade_enabled} "
+                    f"DRY_RUN=True"
+                )
+                
+                if would_create_order:
+                    calculated_qty = watchlist_item.trade_amount_usd / current_price
+                    logger.info(
+                        f"🔍 [DIAGNOSTIC] {symbol} Order details (DRY_RUN): "
+                        f"symbol={symbol}, "
+                        f"side=SELL, "
+                        f"amount_usd=${watchlist_item.trade_amount_usd:,.2f}, "
+                        f"current_price=${current_price:.8f}, "
+                        f"calculated_qty={calculated_qty:.8f} {base_currency}, "
+                        f"margin={getattr(watchlist_item, 'trade_on_margin', False)}"
+                    )
+                    # CRITICAL: Explicit guard - log that order is suppressed
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} DRY_RUN – order suppressed | "
+                        f"Would call _create_sell_order but FORCE_DIAGNOSTIC_DRY_RUN=True prevents execution"
+                    )
+                else:
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} Order would NOT be created (DRY_RUN): "
+                        f"blocking_reasons=[{blocking_reasons_str}]"
+                    )
+            except Exception as diag_err:
+                logger.error(
+                    f"🔍 [DIAGNOSTIC] {symbol} Force diagnostic failed: {diag_err}",
+                    exc_info=True
+                )
+        
+        # Handle SELL signal state update (for internal tracking) - same level as BUY block (line 1554)
+        if current_state == "SELL":
                 state_entry = self.last_signal_states.get(symbol, {})
                 state_entry.update({
                     "state": "SELL",
@@ -3839,6 +4122,25 @@ class SignalMonitorService:
                                  current_price: float, res_up: float, res_down: float):
         """Create a SELL order automatically based on signal"""
         symbol = watchlist_item.symbol
+        
+        # CRITICAL SAFETY GUARD: Block execution if forced diagnostics are enabled for this symbol
+        # This prevents any accidental order placement during diagnostic mode
+        should_force_diagnostic = (
+            (FORCE_SELL_DIAGNOSTIC and symbol == "TRX_USDT") or
+            (FORCE_SELL_DIAGNOSTIC_SYMBOL and symbol.upper() == FORCE_SELL_DIAGNOSTIC_SYMBOL.upper())
+        )
+        if should_force_diagnostic:
+            logger.error(
+                f"🚫 [DIAGNOSTIC] DRY_RUN – order suppressed | "
+                f"_create_sell_order called for {symbol} but FORCE_SELL_DIAGNOSTIC is enabled. "
+                f"This should never happen - forced diagnostic mode should not call real order functions. "
+                f"Returning error to prevent order placement."
+            )
+            return {
+                "error": "diagnostic_mode",
+                "error_type": "diagnostic_mode",
+                "message": f"Order creation blocked: FORCE_SELL_DIAGNOSTIC is enabled for {symbol}"
+            }
         
         # CRITICAL: Double-check trade_enabled flag before proceeding
         # This prevents order creation attempts when trade_enabled is False
