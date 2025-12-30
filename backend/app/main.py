@@ -167,6 +167,17 @@ async def startup_event():
                 await loop.run_in_executor(None, init_db)
                 logger.info("Database initialization completed")
             
+            # Eagerly initialize TelegramNotifier to ensure TELEGRAM_STARTUP log appears
+            # This triggers __init__ which logs [TELEGRAM_STARTUP] exactly once
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                # Access the instance to ensure initialization (already instantiated at module level)
+                # This is a no-op but ensures the module is imported and __init__ has run
+                _ = telegram_notifier.enabled  # Access attribute to ensure initialization
+                logger.debug("TelegramNotifier initialized (TELEGRAM_STARTUP log should appear above)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize TelegramNotifier: {e}")
+            
             # Telegram startup diagnostics (run once on startup)
             try:
                 from app.services.telegram_commands import _run_startup_diagnostics

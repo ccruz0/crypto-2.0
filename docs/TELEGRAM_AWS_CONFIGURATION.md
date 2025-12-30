@@ -65,15 +65,17 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 ### 3. Verify Telegram Startup Log
 
-**Check startup configuration:**
+**Check startup configuration (appears once per container start):**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_STARTUP\]" | head -1'
+ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP'
 ```
 
 **Expected format:**
 ```
 [TELEGRAM_STARTUP] ENVIRONMENT=aws APP_ENV=aws hostname=<hostname> pid=<pid> telegram_enabled=True bot_token_present=True chat_id_present=True chat_id_last4=****<last4>
 ```
+
+**Note:** This log is emitted exactly once during application startup when TelegramNotifier is initialized. It appears in the startup logs, typically within the first 200 lines after container start.
 
 ### 4. Verify Active Sending
 
