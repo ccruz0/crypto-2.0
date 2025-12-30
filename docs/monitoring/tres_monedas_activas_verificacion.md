@@ -67,3 +67,4 @@ Los logs del backend deberían mostrar:
 4. Si no hay logs de transición, verificar si las señales ya estaban activas antes de la implementación
 
 
+

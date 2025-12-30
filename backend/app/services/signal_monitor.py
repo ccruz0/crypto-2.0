@@ -1458,6 +1458,18 @@ class SignalMonitorService:
                     and last_sell_snapshot.price > 0
                 )
                 
+                # DIAGNOSTIC: Log why SELL signal is being blocked for TRX_USDT
+                if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                    logger.warning(
+                        f"🔍 [DIAGNOSTIC] {symbol} SELL signal BLOCKED by throttling: "
+                        f"sell_allowed={sell_allowed}, sell_reason={sell_reason}, "
+                        f"has_valid_reference={has_valid_reference}, "
+                        f"last_sell_snapshot={last_sell_snapshot}, "
+                        f"current_price={current_price}, "
+                        f"sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)}, "
+                        f"alert_enabled={watchlist_item.alert_enabled}"
+                    )
+                
                 # If no valid reference, allow the signal (should not be blocked)
                 if not has_valid_reference:
                     logger.warning(
@@ -2514,6 +2526,15 @@ class SignalMonitorService:
                 f"sell_signal={sell_signal}, sell_alert_enabled={sell_alert_enabled}"
             )
         # CRITICAL: Verify BOTH alert_enabled (master switch) AND sell_alert_enabled (SELL-specific) before processing
+        # DIAGNOSTIC: Log why SELL alert might not be sent for TRX_USDT
+        if symbol == "TRX_USDT" or symbol == "TRX_USD":
+            logger.info(
+                f"🔍 [DIAGNOSTIC] {symbol} SELL alert check: "
+                f"sell_signal={sell_signal}, alert_enabled={watchlist_item.alert_enabled}, "
+                f"sell_alert_enabled={sell_alert_enabled}, "
+                f"will_send={'YES' if (sell_signal and watchlist_item.alert_enabled and sell_alert_enabled) else 'NO'}"
+            )
+        
         if sell_signal and watchlist_item.alert_enabled and sell_alert_enabled:
             logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert (alert_enabled=True, sell_alert_enabled=True)")
             
@@ -2647,6 +2668,24 @@ class SignalMonitorService:
                                             f"required={required_qty:.8f} {base_currency}). "
                                             f"Including warning in alert message."
                                         )
+                                        
+                                        # DIAGNOSTIC: Log balance issue for TRX_USDT
+                                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                            logger.warning(
+                                                f"🔍 [DIAGNOSTIC] {symbol} SELL order will be SKIPPED due to insufficient balance: "
+                                                f"available={available_balance:.8f} {base_currency}, "
+                                                f"required={required_qty:.8f} {base_currency}, "
+                                                f"trade_amount_usd={trade_amount_usd_check}, "
+                                                f"current_price={current_price}"
+                                            )
+                                    else:
+                                        # DIAGNOSTIC: Log successful balance check for TRX_USDT
+                                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                            logger.info(
+                                                f"🔍 [DIAGNOSTIC] {symbol} SELL balance check PASSED: "
+                                                f"available={available_balance:.8f} {base_currency}, "
+                                                f"required={required_qty:.8f} {base_currency}"
+                                            )
                                 except Exception as balance_check_err:
                                     logger.warning(
                                         f"⚠️ Early balance check failed for {symbol} SELL: {balance_check_err}. "
@@ -2763,6 +2802,16 @@ class SignalMonitorService:
                             trade_enabled = getattr(watchlist_item, 'trade_enabled', False)
                             trade_amount_usd = getattr(watchlist_item, 'trade_amount_usd', None)
                         
+                        # DIAGNOSTIC: Log order creation check for TRX_USDT
+                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                            logger.info(
+                                f"🔍 [DIAGNOSTIC] {symbol} SELL order creation check: "
+                                f"trade_enabled={watchlist_item.trade_enabled}, "
+                                f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
+                                f"balance_check_warning={balance_check_warning is not None}, "
+                                f"will_create_order={'YES' if (watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0 and not balance_check_warning) else 'NO'}"
+                            )
+                        
                         if watchlist_item.trade_enabled and watchlist_item.trade_amount_usd and watchlist_item.trade_amount_usd > 0:
                             # Skip order creation if early balance check already detected insufficient balance
                             # We already warned in the alert, so don't try to create order and send duplicate message
@@ -2773,10 +2822,29 @@ class SignalMonitorService:
                                 )
                             else:
                                 logger.info(f"🔴 Trade enabled for {symbol} - creating SELL order automatically after alert")
+                                
+                                # DIAGNOSTIC: Log before calling _create_sell_order for TRX_USDT
+                                if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                    logger.info(
+                                        f"🔍 [DIAGNOSTIC] {symbol} Calling _create_sell_order: "
+                                        f"current_price={current_price}, "
+                                        f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
+                                        f"trade_on_margin={getattr(watchlist_item, 'trade_on_margin', False)}"
+                                    )
+                                
                                 try:
                                     # Use asyncio.run() to execute async function from sync context
                                     import asyncio
                                     order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
+                                    
+                                    # DIAGNOSTIC: Log result for TRX_USDT
+                                    if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                        logger.info(
+                                            f"🔍 [DIAGNOSTIC] {symbol} _create_sell_order result: "
+                                            f"result_type={type(order_result).__name__}, "
+                                            f"has_error={'error' in order_result if isinstance(order_result, dict) else 'N/A'}, "
+                                            f"result={order_result}"
+                                        )
                                     # Check for errors first (error dicts are truthy but have "error" key)
                                     if order_result and isinstance(order_result, dict) and "error" in order_result:
                                         # Handle error cases
@@ -2829,6 +2897,16 @@ class SignalMonitorService:
                                 reasons.append("trade_enabled=False")
                             if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
                                 reasons.append(f"trade_amount_usd={'not configured' if not watchlist_item.trade_amount_usd else f'{watchlist_item.trade_amount_usd} (invalid)'}")
+                            
+                            # DIAGNOSTIC: Enhanced logging for TRX_USDT
+                            if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                logger.warning(
+                                    f"🔍 [DIAGNOSTIC] {symbol} SELL order NOT created - "
+                                    f"trade_enabled={watchlist_item.trade_enabled}, "
+                                    f"trade_amount_usd={watchlist_item.trade_amount_usd}, "
+                                    f"reasons: {', '.join(reasons)}"
+                                )
+                            
                             logger.warning(
                                 f"🚫 SELL alert sent for {symbol} but order NOT created - "
                                 f"Reasons: {', '.join(reasons)}. "

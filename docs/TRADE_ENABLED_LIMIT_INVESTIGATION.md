@@ -146,3 +146,4 @@ Since no explicit limit was found in the code, possible causes:
 - `backend/app/api/routes_dashboard.py` - Added logging for trade_enabled changes
 - `backend/scripts/monitor_trade_enabled_limit.py` - Created monitoring script
 
+

@@ -80,3 +80,4 @@ Cuando DOT_USDT (o cualquier moneda) tenga una señal activa y el throttle permi
 - ✅ Se registrará en los logs como `[SIGNAL_TRANSITION]` con tipo `THROTTLE_ALLOWED` o `NEW_TRANSITION`
 
 
+

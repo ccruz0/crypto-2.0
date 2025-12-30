@@ -196,3 +196,4 @@ docker compose --profile aws up -d --build --force-recreate backend-aws
 - Preserves user settings in database
 - Comprehensive logging shows what's being used
 
+

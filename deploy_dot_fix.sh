@@ -110,3 +110,4 @@ echo "   1. Monitor logs: docker logs -f automated-trading-platform-backend-aws-
 echo "   2. Check for BLOCKED messages when DOT limit is reached"
 echo "   3. Verify DOT stops creating orders when count >= 3"
 
+

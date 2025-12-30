@@ -53,3 +53,4 @@ Type: channel            ← Tipo: canal
 - Si NO → Usa Opción B (envía un mensaje primero)
 
 
+

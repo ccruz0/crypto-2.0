@@ -71,3 +71,4 @@ echo "   3. Check recent Telegram sends:"
 echo "      docker compose --profile aws logs backend-aws | grep TELEGRAM_SEND"
 
 
+

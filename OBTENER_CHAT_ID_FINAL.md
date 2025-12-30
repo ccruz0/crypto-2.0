@@ -119,3 +119,4 @@ Esto te dará el chat_id del canal.
 - R: Sí, el bot debe ser administrador del canal para poder enviar mensajes
 
 
+

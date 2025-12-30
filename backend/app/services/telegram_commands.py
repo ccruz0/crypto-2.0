@@ -882,7 +882,8 @@ def setup_bot_commands():
             {"command": "create_sl_tp", "description": "Crear SL/TP para posiciones sin protección"},
             {"command": "create_sl", "description": "Crear solo SL para una posición"},
             {"command": "create_tp", "description": "Crear solo TP para una posición"},
-            {"command": "skip_sl_tp_reminder", "description": "No preguntar más sobre SL/TP"}
+            {"command": "skip_sl_tp_reminder", "description": "No preguntar más sobre SL/TP"},
+            {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"}
         ]
         
         payload = {
@@ -3325,6 +3326,50 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
         return send_command_response(chat_id, f"❌ Error skipping reminder: {str(e)}")
 
 
+def handle_panic_command(chat_id: str, text: str, db: Session = None) -> bool:
+    """Handle /panic command - Stop all trading by setting all trade_enabled to False"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get all watchlist items with trade_enabled=True
+        active_items = db.query(WatchlistItem).filter(
+            WatchlistItem.trade_enabled == True,
+            WatchlistItem.is_deleted == False
+        ).all()
+        
+        if not active_items:
+            message = "🟢 <b>PANIC BUTTON</b>\n\n"
+            message += "✅ All trading is already disabled.\n"
+            message += "💡 No coins have Trade=YES."
+        else:
+            # Update all items to set trade_enabled=False
+            updated_count = 0
+            for item in active_items:
+                item.trade_enabled = False
+                updated_count += 1
+            
+            db.commit()
+            
+            message = "🔴 <b>PANIC BUTTON ACTIVATED</b>\n\n"
+            message += f"⛔ <b>ALL TRADING STOPPED</b>\n\n"
+            message += f"📊 Updated: <b>{updated_count}</b> coins\n"
+            message += f"💡 All Trade flags set to <b>NO</b>\n\n"
+            message += "⚠️ No new orders will be created.\n"
+            message += "💡 Use /watchlist to verify changes."
+            
+            logger.warning(f"[TG][PANIC] Panic button activated by chat_id={chat_id}, disabled trading for {updated_count} coins")
+        
+        logger.info(f"[TG][CMD] /panic executed by chat_id={chat_id}")
+        return send_command_response(chat_id, message)
+        
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to execute panic command: {e}", exc_info=True)
+        if db:
+            db.rollback()
+        return send_command_response(chat_id, f"❌ Error executing panic command: {str(e)}")
+
+
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
@@ -3843,6 +3888,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         handle_create_tp_command(chat_id, text, db)
     elif text.startswith("/skip_sl_tp_reminder"):
         handle_skip_sl_tp_reminder_command(chat_id, text, db)
+    elif text.startswith("/panic"):
+        handle_panic_command(chat_id, text, db)
     elif text.startswith("/"):
         send_command_response(chat_id, "❓ Unknown command. Use /help")
 

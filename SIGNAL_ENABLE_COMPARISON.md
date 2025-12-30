@@ -142,3 +142,4 @@ ALTER TABLE watchlist_items ADD COLUMN sell_alert_enabled BOOLEAN NOT NULL DEFAU
 
 
 
+

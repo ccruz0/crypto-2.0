@@ -63,3 +63,4 @@ fresh_check = get_canonical_watchlist_item(db, symbol)
 Hay 11 watchlist items para LDO_USD. El sistema ahora usa correctamente el item canónico, pero sería recomendable limpiar los duplicados usando `cleanup_watchlist_duplicates` en el futuro.
 
 
+

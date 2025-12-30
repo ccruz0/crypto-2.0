@@ -146,7 +146,7 @@ class TelegramNotifier:
                 "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID_AWS must be set."
             )
             return
-        
+
         logger.info(f"[TELEGRAM_ENABLED] Telegram notifications are ENABLED (ENVIRONMENT={environment}, chat_id={chat_id_masked})")
         # NOTE: Removed automatic set_bot_commands() call to prevent overriding
         # the full command menu registered by setup_bot_commands() in telegram_commands.py
@@ -205,31 +205,7 @@ class TelegramNotifier:
         Returns:
             True if message sent successfully, False otherwise
         """
-        # ============================================================
-        # [TELEGRAM_INVOKE] - Diagnostic logging at entry point
-        # ============================================================
-        timestamp = datetime.now().isoformat()
-        
-        # Get caller information
-        # Check if currentframe() returns None before accessing .f_back
-        current_frame = inspect.currentframe()
-        caller_frame = current_frame.f_back if current_frame is not None else None
-        caller_path = "unknown"
-        caller_function = "unknown"
-        if caller_frame:
-            try:
-                caller_file = caller_frame.f_code.co_filename
-                caller_function = caller_frame.f_code.co_name
-                # Extract relative path from caller_file
-                if "backend" in caller_file:
-                    caller_path = caller_file.split("backend")[-1]
-                else:
-                    caller_path = os.path.basename(caller_file)
-                caller_path = f"{caller_path}:{caller_frame.f_lineno} in {caller_function}"
-            except Exception:
-                pass
-        
-        # Extract symbol for logging
+        # Extract symbol for logging (used later in TELEGRAM_SEND)
         symbol = None
         try:
             import re
@@ -240,29 +216,6 @@ class TelegramNotifier:
                     symbol = potential_symbol
         except Exception:
             pass
-        
-        # Get environment variables for diagnostics
-        env_runtime_origin = os.getenv("RUNTIME_ORIGIN", "NOT_SET")
-        env_aws_execution = os.getenv("AWS_EXECUTION_ENV", os.getenv("AWS_EXECUTION", "NOT_SET"))
-        env_run_telegram = os.getenv("RUN_TELEGRAM", "NOT_SET")
-        env_bot_token_present = "YES" if os.getenv("TELEGRAM_BOT_TOKEN") else "NO"
-        env_chat_id_present = "YES" if os.getenv("TELEGRAM_CHAT_ID") else "NO"
-        
-        logger.info(
-            "[TELEGRAM_INVOKE] timestamp=%s origin_param=%s message_len=%d symbol=%s "
-            "caller=%s RUNTIME_ORIGIN=%s AWS_EXECUTION=%s RUN_TELEGRAM=%s "
-            "TELEGRAM_BOT_TOKEN=%s TELEGRAM_CHAT_ID=%s",
-            timestamp,
-            origin if origin else "None",
-            len(message),
-            symbol or "N/A",
-            caller_path,
-            env_runtime_origin,
-            env_aws_execution,
-            env_run_telegram,
-            env_bot_token_present,
-            env_chat_id_present,
-        )
         
         # CENTRAL GATEKEEPER: Telegram is ONLY enabled when ENV=aws
         # This check happens before any other logic
@@ -297,11 +250,6 @@ class TelegramNotifier:
                 full_message = f"[AWS] {message}"
             else:
                 full_message = message
-            env_label = "[AWS]"
-            
-            # E2E TEST LOGGING: Log before sending to Telegram API
-            prefix = "[TEST]" if origin_upper == "TEST" else "[AWS]" if origin_upper == "AWS" else "[UNKNOWN]"
-            logger.info(f"[E2E_TEST_SENDING_TELEGRAM] origin_upper={origin_upper}, prefix={prefix}, message_preview={message[:80]}")
             
             # Extract symbol and side for logging
             log_symbol = symbol or "UNKNOWN"
@@ -333,19 +281,6 @@ class TelegramNotifier:
             
             if reply_markup:
                 payload["reply_markup"] = reply_markup
-            
-            # ============================================================
-            # [TELEGRAM_REQUEST] - Request details before sending
-            # ============================================================
-            payload_keys = list(payload.keys())
-            timeout_seconds = 10
-            logger.info(
-                "[TELEGRAM_REQUEST] url=%s payload_keys=%s timeout=%d message_len=%d",
-                url_safe,
-                payload_keys,
-                timeout_seconds,
-                len(full_message),
-            )
             
             try:
                 response = http_post(url, json=payload, timeout=timeout_seconds, calling_module="telegram_notifier.send_telegram_message")
@@ -422,7 +357,7 @@ class TelegramNotifier:
             except Exception:
                 message_id = "unknown"
             
-            # Enhanced success logging with diagnostics
+            # Success logging
             logger.info(
                 "[TELEGRAM_SUCCESS] type=ALERT symbol=%s side=%s origin=%s message_id=%s chat_id=%s",
                 log_symbol,
@@ -432,30 +367,10 @@ class TelegramNotifier:
                 self.chat_id,
             )
             
-            # E2E TEST LOGGING: Log success
-            logger.info(f"[E2E_TEST_TELEGRAM_OK] origin_upper={origin_upper}, message_id={message_id}")
-            
-            # Log TEST alert Telegram success
-            if origin_upper == "TEST":
-                logger.info(
-                    f"[TEST_ALERT_TELEGRAM_OK] origin={origin_upper}, chat_id={self.chat_id}, "
-                    f"message_id={message_id}, symbol={symbol or 'UNKNOWN'}"
-                )
-            
-            # Register sent message in dashboard (both AWS and TEST messages)
+            # Register sent message in dashboard
             try:
                 from app.api.routes_monitoring import add_telegram_message
-                # Store the message with its prefix for clarity in monitoring
-                # TEST messages should show [TEST] prefix, AWS messages show [AWS]
-                display_message = full_message  # Keep prefix for monitoring clarity
-                add_telegram_message(display_message, symbol=symbol, blocked=False)
-                # Additional logging for TEST alerts
-                if origin_upper == "TEST":
-                    logger.info(
-                        f"[TEST_ALERT_MONITORING] Registered in Monitoring: symbol={symbol or 'UNKNOWN'}, "
-                        f"blocked=False, prefix=[TEST], message_preview={display_message[:100]}"
-                    )
-                    # Also log after saving to DB (will be logged in add_telegram_message if we add it there)
+                add_telegram_message(full_message, symbol=symbol, blocked=False)
             except Exception as e:
                 logger.debug(f"Could not register Telegram message in dashboard: {e}")
                 # Non-critical, continue
@@ -463,17 +378,7 @@ class TelegramNotifier:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            # E2E TEST LOGGING: Log error with full traceback
-            logger.error(f"[E2E_TEST_TELEGRAM_ERROR] origin_upper={origin_upper}, error={e}", exc_info=True)
-            # Log TEST alert Telegram error
-            if origin_upper == "TEST":
-                error_status = getattr(e, "status_code", None) or getattr(e, "response", {}).get("status_code", "unknown") if hasattr(e, "response") else "unknown"
-                error_body = str(e)[:200]
-                logger.error(
-                    f"[TEST_ALERT_TELEGRAM_ERROR] origin={origin_upper}, status={error_status}, "
-                    f"error={error_body}, symbol={symbol or 'UNKNOWN'}"
-                )
+            logger.error(f"[TELEGRAM_ERROR] Failed to send message: {e}", exc_info=True)
             return False
     
     def send_message_with_buttons(self, message: str, buttons: list) -> bool:

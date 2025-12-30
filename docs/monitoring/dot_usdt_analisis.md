@@ -84,3 +84,4 @@ sell_rsi_ok=False  ← RSI no alcanza 70 para SELL
 ```
 
 
+

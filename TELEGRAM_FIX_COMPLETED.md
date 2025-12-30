@@ -95,3 +95,4 @@ Después de actualizar, verifica que:
 - Los cambios en `.env.aws` requieren reinicio de servicios para tomar efecto
 
 
+

@@ -47,3 +47,4 @@ Si el canal está vacío o no puedes reenviar mensajes:
 Actualiza `.env.aws` con ese número negativo y reinicia el backend.
 
 
+

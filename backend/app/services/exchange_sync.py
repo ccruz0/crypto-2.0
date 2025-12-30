@@ -2,6 +2,7 @@
 Synchronizes data from Crypto.com Exchange API to the database every 5 seconds
 """
 import asyncio
+import json
 import logging
 import os
 import time
@@ -16,6 +17,7 @@ from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
+from app.services.fill_tracker import get_fill_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,6 @@ class ExchangeSyncService:
         self.last_sync: Optional[datetime] = None
         self.processed_order_ids: Dict[str, float] = {}  # Track already processed executed orders {order_id: timestamp}
         self.latest_unified_open_orders: List[UnifiedOpenOrder] = []
-        self._executed_order_notification_sent: Dict[str, float] = {}  # Track executed order notifications {order_id: timestamp}
     
     def _purge_stale_processed_orders(self):
         """Remove processed order IDs older than 10 minutes"""
@@ -50,61 +51,6 @@ class ExchangeSyncService:
     def _mark_order_processed(self, order_id: str):
         """Mark an order as processed with current timestamp"""
         self.processed_order_ids[order_id] = time.time()
-    
-    def _has_notification_been_sent(self, order_id: str) -> bool:
-        """Check if a notification has been sent for an executed order
-        
-        Args:
-            order_id: The exchange order ID
-            
-        Returns:
-            True if notification was sent within the last 10 minutes, False otherwise
-        """
-        if not hasattr(self, '_executed_order_notification_sent'):
-            self._executed_order_notification_sent = {}
-        
-        if order_id not in self._executed_order_notification_sent:
-            return False
-        
-        # Check if notification is still valid (within last 10 minutes)
-        notification_timestamp = self._executed_order_notification_sent[order_id]
-        time_since_notification = time.time() - notification_timestamp
-        if time_since_notification > 600:  # 10 minutes
-            # Notification is stale, remove it
-            del self._executed_order_notification_sent[order_id]
-            return False
-        
-        return True
-    
-    def _mark_notification_sent(self, order_id: str):
-        """Mark that a notification has been sent for an executed order
-        
-        Args:
-            order_id: The exchange order ID
-        """
-        if not hasattr(self, '_executed_order_notification_sent'):
-            self._executed_order_notification_sent = {}
-        
-        self._executed_order_notification_sent[order_id] = time.time()
-    
-    def _purge_stale_notification_tracking(self):
-        """Remove notification tracking entries older than 10 minutes"""
-        if not hasattr(self, '_executed_order_notification_sent'):
-            return
-        
-        current_time = time.time()
-        stale_threshold = 600  # 10 minutes in seconds
-        
-        stale_ids = [
-            order_id for order_id, timestamp in self._executed_order_notification_sent.items()
-            if (current_time - timestamp) > stale_threshold
-        ]
-        
-        for order_id in stale_ids:
-            del self._executed_order_notification_sent[order_id]
-        
-        if stale_ids:
-            logger.debug(f"Purged {len(stale_ids)} stale notification tracking entries")
     
     def sync_balances(self, db: Session):
         """Sync account balances from Crypto.com"""
@@ -1939,7 +1885,6 @@ class ExchangeSyncService:
             
             # Purge stale processed order IDs before processing
             self._purge_stale_processed_orders()
-            self._purge_stale_notification_tracking()
             
             # Track orders processed in this cycle - mark as processed only AFTER successful commit
             orders_processed_this_cycle = []
@@ -2076,74 +2021,42 @@ class ExchangeSyncService:
                 ).first()
                 
                 if existing:
-                    # Check if status changed from non-FILLED to FILLED
-                    # This happens when a LIMIT order we created gets executed, or when a CANCELLED order
-                    # is actually found as FILLED in the history (correction)
-                    # CRITICAL: ALL order executions must trigger Telegram notifications
-                    was_filled_before = existing.status == OrderStatusEnum.FILLED
+                    # Update order data from API
+                    # STRICT FILL-ONLY: Notifications are handled separately using fill tracker
                     needs_update = False
-                    needs_telegram = False  # Only send Telegram if status actually changed
                     
-                    # Update order status if it was not FILLED before but is FILLED in history
-                    # This covers: NEW->FILLED, ACTIVE->FILLED, PARTIALLY_FILLED->FILLED, CANCELLED->FILLED, etc.
-                    if not was_filled_before and is_executed:
-                        needs_update = True
-                        needs_telegram = True  # Status changed to FILLED - MUST send notification
-                        logger.info(f"Order {order_id} ({existing.status.value if existing.status else 'UNKNOWN'}) found as FILLED in history - updating status and sending Telegram notification")
+                    # Update status if changed
+                    if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
+                        if existing.status != OrderStatusEnum(status_str):
+                            needs_update = True
+                            logger.debug(f"Order {order_id} status changed: {existing.status.value if existing.status else 'UNKNOWN'} -> {status_str}")
                     
-                    # Also update if status is FILLED in history but different in DB (e.g., CANCELLED -> FILLED)
-                    elif existing.status != OrderStatusEnum.FILLED and status_str == 'FILLED':
-                        needs_update = True
-                        needs_telegram = True  # Status changed, send notification
-                        logger.info(f"Order {order_id} status correction: {existing.status.value if existing.status else 'UNKNOWN'} -> FILLED (found in Crypto.com history)")
-                    
-                    # Update data even if already FILLED (to sync latest values from API)
-                    elif was_filled_before and status_str == 'FILLED':
-                        needs_update = True
-                        # CRITICAL FIX: Check if notification was actually sent before suppressing it
-                        # This ensures orders that were created as FILLED (e.g., MARKET orders) still get notifications
-                        if self._has_notification_been_sent(order_id):
-                            needs_telegram = False  # Notification already sent, don't send again
-                            logger.debug(f"Order {order_id} already FILLED and notification already sent - updating data from API (no notification)")
-                        else:
-                            needs_telegram = True  # Order is FILLED but notification not sent yet - send it now
-                            logger.info(f"Order {order_id} already FILLED but notification not sent - sending notification now")
-                    
-                    # CRITICAL: Always update timestamps from Crypto.com if available, even if order already exists
-                    # This ensures orders always reflect the actual dates from the exchange
-                    # IMPORTANT: Timestamp updates should NOT override needs_telegram if status just changed to FILLED
-                    if status_str == 'FILLED' and (update_time or create_time):
-                        needs_update = True
-                        # Only suppress notification if order was already FILLED AND notification was already sent
-                        # If status just changed to FILLED, preserve needs_telegram=True from earlier conditions
-                        if was_filled_before and self._has_notification_been_sent(order_id):
-                            needs_telegram = False  # Don't send notification if we're just updating timestamps for already-FILLED order with notification sent
-                        # If notification wasn't sent yet, keep needs_telegram=True (set above)
-                    
-                    # ALWAYS update timestamps from Crypto.com if available, regardless of other conditions
-                    # This ensures the order reflects what's actually in Crypto.com
-                    # CRITICAL: Only suppress Telegram notification if order was already FILLED AND notification was sent
-                    # If status just changed to FILLED, preserve needs_telegram=True from above
+                    # Always update timestamps from Crypto.com if available
                     if (update_time or create_time) and existing:
                         needs_update = True
-                        # Only suppress notification if order was already FILLED AND notification was already sent
-                        # If status just changed to FILLED, keep needs_telegram=True from earlier conditions
-                        if was_filled_before and self._has_notification_been_sent(order_id):
-                            needs_telegram = False  # Don't send notification when just updating timestamps for already-FILLED order with notification sent
-                        # If notification wasn't sent yet, keep needs_telegram=True (set above)
-                        logger.info(f"Updating timestamps for order {order_id} from Crypto.com (update_time={update_time}, create_time={create_time})")
+                    
+                    # Always update cumulative_quantity from API (needed for fill tracking)
+                    # Parse cumulative_quantity as string if needed
+                    cumulative_qty_from_api = order_data.get('cumulative_quantity', '0') or '0'
+                    new_cumulative_qty = float(cumulative_qty_from_api) if cumulative_qty_from_api else 0
+                    last_seen_qty = existing.cumulative_quantity
+                    delta_qty = new_cumulative_qty - last_seen_qty
+                    
+                    # Always update cumulative_quantity (even if nothing else changed) for fill tracking
+                    if new_cumulative_qty != existing.cumulative_quantity:
+                        needs_update = True
+                        existing.cumulative_quantity = new_cumulative_qty
                     
                     if needs_update:
                         # Update existing order with new status and execution data from Crypto.com history
-                        logger.info(f"Updating order {order_id} from {existing.status.value if existing.status else 'UNKNOWN'} to FILLED with data from Crypto.com")
+                        logger.debug(f"Updating order {order_id} data from Crypto.com (status={status_str})")
                         
-                        existing.status = OrderStatusEnum.FILLED
+                        # Update status if provided and valid
+                        if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
+                            existing.status = OrderStatusEnum(status_str)
                         # Always use data from Crypto.com history (more accurate)
                         existing.price = order_price_float if order_price_float else existing.price
                         existing.quantity = executed_qty if executed_qty > 0 else (quantity_float if quantity_float > 0 else existing.quantity)
-                        # Parse cumulative_quantity as string if needed
-                        cumulative_qty_from_api = order_data.get('cumulative_quantity', '0') or '0'
-                        existing.cumulative_quantity = float(cumulative_qty_from_api) if cumulative_qty_from_api else 0
                         cumulative_val_from_api = order_data.get('cumulative_value', '0') or '0'
                         existing.cumulative_value = float(cumulative_val_from_api) if cumulative_val_from_api else 0
                         avg_price_from_api = order_data.get('avg_price', '0') or '0'
@@ -2182,181 +2095,245 @@ class ExchangeSyncService:
                         # This prevents orders from being skipped in future syncs if commit fails
                         # Track for marking as processed after commit succeeds
                         orders_processed_this_cycle.append(order_id)
-                        
-                        if needs_telegram:
-                            try:
-                                from app.services.telegram_notifier import telegram_notifier
+                    
+                    # STRICT FILL-ONLY NOTIFICATION LOGIC (check even if needs_update was False)
+                    # Only notify for real fills: status must be FILLED or PARTIALLY_FILLED with increased filled_qty
+                    # Check fills for any order with fill status, regardless of whether other fields changed
+                    fill_tracker = get_fill_tracker()
+                    # Use updated cumulative_quantity (already set above if it changed)
+                    current_filled_qty = existing.cumulative_quantity if existing.cumulative_quantity > 0 else executed_qty
+                    # Determine current status - prefer status_str from API, fallback to existing status
+                    if status_str in ('FILLED', 'PARTIALLY_FILLED'):
+                        current_status_str = status_str
+                    elif existing.status in (OrderStatusEnum.FILLED, OrderStatusEnum.PARTIALLY_FILLED):
+                        current_status_str = existing.status.value
+                    else:
+                        current_status_str = None
+                    
+                    should_notify, notify_reason = fill_tracker.should_notify_fill(
+                        order_id=order_id,
+                        current_filled_qty=current_filled_qty,
+                        status=current_status_str or 'UNKNOWN'
+                    ) if current_status_str else (False, f"Status {status_str} is not a fill status")
+                    
+                    if should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
+                        try:
+                            from app.services.telegram_notifier import telegram_notifier
+                            
+                            total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                            order_type = order_data.get('order_type', existing.order_type or 'LIMIT')
+                            order_type_upper = order_type.upper()
+                            
+                            # If this is a SL or TP order, find the original entry order to calculate profit/loss
+                            entry_price = None
+                            if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
+                                current_side = side or (existing.side.value if existing.side else 'BUY')
                                 
-                                total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
-                                order_type = order_data.get('order_type', existing.order_type or 'LIMIT')
-                                order_type_upper = order_type.upper()
+                                # First try to find by parent_order_id (most reliable)
+                                if existing.parent_order_id:
+                                    parent_order = db.query(ExchangeOrder).filter(
+                                        ExchangeOrder.exchange_order_id == existing.parent_order_id
+                                    ).first()
+                                    if parent_order:
+                                        entry_price = parent_order.avg_price if parent_order.avg_price else parent_order.price
+                                        logger.info(f"Found entry price via parent_order_id for SL/TP order {order_id}: {entry_price} from parent {existing.parent_order_id}")
                                 
-                                # If this is a SL or TP order, find the original entry order to calculate profit/loss
-                                entry_price = None
-                                if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                                    current_side = side or (existing.side.value if existing.side else 'BUY')
+                                # If parent_order_id not found, search for most recent BUY order
+                                if not entry_price and current_side == "SELL":
+                                    # This is selling (TP/SL after BUY), so find the original BUY order
+                                    # Look for BUY orders created before this TP/SL order
+                                    if existing.exchange_create_time:
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "BUY",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                            ExchangeOrder.exchange_order_id != order_id,  # Not the current order
+                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                    else:
+                                        # Fallback without time constraint
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "BUY",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                            ExchangeOrder.exchange_order_id != order_id
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
                                     
-                                    # First try to find by parent_order_id (most reliable)
-                                    if existing.parent_order_id:
-                                        parent_order = db.query(ExchangeOrder).filter(
-                                            ExchangeOrder.exchange_order_id == existing.parent_order_id
-                                        ).first()
-                                        if parent_order:
-                                            entry_price = parent_order.avg_price if parent_order.avg_price else parent_order.price
-                                            logger.info(f"Found entry price via parent_order_id for SL/TP order {order_id}: {entry_price} from parent {existing.parent_order_id}")
+                                    if original_order:
+                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
+                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from BUY order {original_order.exchange_order_id}")
+                                elif not entry_price and current_side == "BUY":
+                                    # This is buying (SL/TP after SELL for short positions), find original SELL order
+                                    if existing.exchange_create_time:
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "SELL",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                            ExchangeOrder.exchange_order_id != order_id,
+                                            ExchangeOrder.exchange_create_time <= existing.exchange_create_time
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                                    else:
+                                        original_order = db.query(ExchangeOrder).filter(
+                                            ExchangeOrder.symbol == (symbol or existing.symbol),
+                                            ExchangeOrder.side == "SELL",
+                                            ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                            ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                            ExchangeOrder.exchange_order_id != order_id
+                                        ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
                                     
-                                    # If parent_order_id not found, search for most recent BUY order
-                                    if not entry_price and current_side == "SELL":
-                                        # This is selling (TP/SL after BUY), so find the original BUY order
-                                        # Look for BUY orders created before this TP/SL order
-                                        if existing.exchange_create_time:
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "BUY",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                                ExchangeOrder.exchange_order_id != order_id,  # Not the current order
-                                                ExchangeOrder.exchange_create_time <= existing.exchange_create_time  # Created before TP/SL
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                        else:
-                                            # Fallback without time constraint
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "BUY",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                                ExchangeOrder.exchange_order_id != order_id
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                        
-                                        if original_order:
-                                            entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                            logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from BUY order {original_order.exchange_order_id}")
-                                    elif not entry_price and current_side == "BUY":
-                                        # This is buying (SL/TP after SELL for short positions), find original SELL order
-                                        if existing.exchange_create_time:
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "SELL",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                                ExchangeOrder.exchange_order_id != order_id,
-                                                ExchangeOrder.exchange_create_time <= existing.exchange_create_time
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                        else:
-                                            original_order = db.query(ExchangeOrder).filter(
-                                                ExchangeOrder.symbol == (symbol or existing.symbol),
-                                                ExchangeOrder.side == "SELL",
-                                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                                ExchangeOrder.exchange_order_id != order_id
-                                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                                        
-                                        if original_order:
-                                            entry_price = original_order.avg_price if original_order.avg_price else original_order.price
-                                            logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
-                                
-                                # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
-                                # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
-                                order_symbol = symbol or existing.symbol
-                                open_orders_count = db.query(ExchangeOrder).filter(
-                                    ExchangeOrder.symbol == order_symbol,
-                                    ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
-                                    ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-                                ).count()
-                                
-                                # Infer order_role from order_type if order_role is not set
-                                # This helps identify manually created SL/TP orders
-                                inferred_order_role = existing.order_role
-                                if not inferred_order_role and order_type_upper:
-                                    if order_type_upper == 'STOP_LIMIT':
-                                        inferred_order_role = 'STOP_LOSS'
-                                    elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                                        inferred_order_role = 'TAKE_PROFIT'
-                                
-                                result = telegram_notifier.send_executed_order(
-                                    symbol=order_symbol,
-                                    side=side or (existing.side.value if existing.side else 'BUY'),
-                                    price=order_price_float or (existing.price or 0),
-                                    quantity=executed_qty or (existing.quantity or 0),
-                                    total_usd=total_usd,
+                                    if original_order:
+                                        entry_price = original_order.avg_price if original_order.avg_price else original_order.price
+                                        logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from SELL order {original_order.exchange_order_id}")
+                            
+                            # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
+                            # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
+                            order_symbol = symbol or existing.symbol
+                            open_orders_count = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.symbol == order_symbol,
+                                ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
+                                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                            ).count()
+                            
+                            # Infer order_role from order_type if order_role is not set
+                            # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
+                            # Do NOT mislabel BUY orders as Stop Loss
+                            inferred_order_role = existing.order_role
+                            if not inferred_order_role and order_type_upper:
+                                if order_type_upper == 'STOP_LIMIT':
+                                    inferred_order_role = 'STOP_LOSS'
+                                elif order_type_upper == 'TAKE_PROFIT_LIMIT':
+                                    inferred_order_role = 'TAKE_PROFIT'
+                                # For other order types, leave as None (don't mislabel)
+                            
+                            # Audit log: log notification attempt as JSON
+                            audit_log = {
+                                "event": "ORDER_EXECUTED_NOTIFICATION",
+                                "symbol": order_symbol,
+                                "side": side or (existing.side.value if existing.side else 'BUY'),
+                                "order_id": order_id,
+                                "status": current_status_str,
+                                "cumulative_quantity": current_filled_qty,
+                                "delta_quantity": delta_qty,
+                                "price": order_price_float or (existing.price or 0),
+                                "avg_price": existing.avg_price,
+                                "order_type": order_type,
+                                "order_role": inferred_order_role,
+                                "client_oid": existing.client_oid,
+                                "trade_signal_id": existing.trade_signal_id,
+                                "parent_order_id": existing.parent_order_id,
+                                "notify_reason": notify_reason,
+                                "handler": "exchange_sync.update_existing_order"
+                            }
+                            logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
+                            
+                            result = telegram_notifier.send_executed_order(
+                                symbol=order_symbol,
+                                side=side or (existing.side.value if existing.side else 'BUY'),
+                                price=order_price_float or (existing.price or 0),
+                                quantity=current_filled_qty,
+                                total_usd=total_usd,
+                                order_id=order_id,
+                                order_type=order_type,
+                                entry_price=entry_price,  # Add entry_price for profit/loss calculation
+                                open_orders_count=open_orders_count,  # Add open orders count for monitoring
+                                order_role=inferred_order_role,  # Use inferred role if order_role is not set
+                                trade_signal_id=existing.trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
+                                parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
+                            )
+                            if result:
+                                # Record fill in persistent tracker
+                                fill_tracker.record_fill(
                                     order_id=order_id,
-                                    order_type=order_type,
-                                    entry_price=entry_price,  # Add entry_price for profit/loss calculation
-                                    open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                                    order_role=inferred_order_role,  # Use inferred role if order_role is not set
-                                    trade_signal_id=existing.trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
-                                    parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
+                                    filled_qty=current_filled_qty,
+                                    status=current_status_str,
+                                    notification_sent=True
                                 )
-                                if result:
-                                    # Mark notification as sent to prevent duplicate notifications
-                                    self._mark_notification_sent(order_id)
-                                    logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
-                                else:
-                                    logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
-                            except Exception as telegram_err:
-                                logger.warning(f"Failed to send Telegram notification: {telegram_err}")
-                            
-                            # Check if this is a SL or TP order that was executed - cancel the other one
-                            # Also check if this is a SELL LIMIT order that closes a position - cancel SL
-                            order_type_from_history = order_data.get('order_type', '').upper()
-                            order_type_from_db = existing.order_type or ''
-                            is_sl_tp_executed = (
-                                order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'] or 
-                                order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                                logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id} (reason: {notify_reason})")
+                            else:
+                                logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
+                        except Exception as telegram_err:
+                            logger.warning(f"Failed to send Telegram notification: {telegram_err}")
+                    else:
+                        # Record fill even if we don't notify (for tracking)
+                        if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
+                            fill_tracker.record_fill(
+                                order_id=order_id,
+                                filled_qty=current_filled_qty,
+                                status=current_status_str,
+                                notification_sent=False
                             )
-                            
-                            # If this is a SELL LIMIT order (not TP/SL) that closes a position, cancel remaining SL
-                            is_sell_limit_that_closes_position = (
-                                order_type_from_history == 'LIMIT' and 
-                                side == 'SELL' and 
-                                not is_sl_tp_executed
-                            )
-                            
-                            if is_sl_tp_executed:
-                                # CRITICAL: Always attempt to cancel the sibling order
-                                # Try OCO group ID method first (most reliable if OCO group ID exists)
-                                oco_success = False
-                                if existing.oco_group_id:
-                                    try:
-                                        logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
-                                        oco_success = self._cancel_oco_sibling(db, existing)
-                                        if oco_success:
-                                            logger.info(f"✅ OCO cancellation succeeded for order {order_id}")
-                                        else:
-                                            logger.warning(f"⚠️ OCO cancellation returned False for order {order_id}, will try fallback")
-                                    except Exception as oco_err:
-                                        logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
-                                        oco_success = False
-                                
-                                # ALWAYS try the fallback method if OCO method didn't succeed
-                                # This will search by parent_order_id, order_role, time window, or symbol+type
-                                # This ensures cancellation works for both BUY and SELL orders
-                                if not oco_success:
-                                    try:
-                                        logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
-                                        cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                        if cancelled_count > 0:
-                                            logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
-                                        elif cancelled_count == 0:
-                                            # If no active SL/TP found to cancel, check if there's already a CANCELLED one
-                                            # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
-                                            logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
-                                            self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
-                                    except Exception as cancel_err:
-                                        logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
-                            
-                            # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
-                            elif is_sell_limit_that_closes_position:
-                                try:
-                                    logger.info(f"SELL LIMIT order {order_id} executed - cancelling remaining SL orders for {symbol or existing.symbol}")
-                                    self._cancel_remaining_sl_tp(db, symbol or existing.symbol, 'LIMIT', order_id)
-                                except Exception as cancel_err:
-                                    logger.warning(f"Error canceling remaining SL orders after SELL LIMIT execution for {order_id}: {cancel_err}")
+                        if current_status_str not in ('FILLED', 'PARTIALLY_FILLED'):
+                            logger.debug(f"Skipping notification for order {order_id}: status={status_str} is not a fill status")
+                        else:
+                            logger.debug(f"Skipping notification for order {order_id}: {notify_reason}")
+                    
+                    # Check if this is a SL or TP order that was executed - cancel the other one
+                    # Also check if this is a SELL LIMIT order that closes a position - cancel SL
+                    # This logic runs regardless of whether notification was sent
+                    if is_executed:
+                        order_type_from_history = order_data.get('order_type', '').upper()
+                        order_type_from_db = existing.order_type or ''
+                        is_sl_tp_executed = (
+                            order_type_from_history in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'] or 
+                            order_type_from_db.upper() in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
+                        )
                         
-                        # Create SL/TP for LIMIT orders that were filled (only if status just changed to FILLED)
-                        # Do this AFTER we've marked the order for update, but handle errors gracefully
-                        # Create SL/TP for both LIMIT and MARKET orders when they are filled
-                        # IMPORTANT: NEVER create SL/TP for STOP_LIMIT or TAKE_PROFIT_LIMIT orders
+                        # If this is a SELL LIMIT order (not TP/SL) that closes a position, cancel remaining SL
+                        is_sell_limit_that_closes_position = (
+                            order_type_from_history == 'LIMIT' and 
+                            side == 'SELL' and 
+                            not is_sl_tp_executed
+                        )
+                        
+                        if is_sl_tp_executed:
+                            # CRITICAL: Always attempt to cancel the sibling order
+                            # Try OCO group ID method first (most reliable if OCO group ID exists)
+                            oco_success = False
+                            if existing.oco_group_id:
+                                try:
+                                    logger.info(f"Attempting to cancel OCO sibling for order {order_id} (group: {existing.oco_group_id})")
+                                    oco_success = self._cancel_oco_sibling(db, existing)
+                                    if oco_success:
+                                        logger.info(f"✅ OCO cancellation succeeded for order {order_id}")
+                                    else:
+                                        logger.warning(f"⚠️ OCO cancellation returned False for order {order_id}, will try fallback")
+                                except Exception as oco_err:
+                                    logger.warning(f"Error canceling OCO sibling for {order_id}: {oco_err}")
+                                    oco_success = False
+                            
+                            # ALWAYS try the fallback method if OCO method didn't succeed
+                            # This will search by parent_order_id, order_role, time window, or symbol+type
+                            # This ensures cancellation works for both BUY and SELL orders
+                            if not oco_success:
+                                try:
+                                    logger.info(f"Attempting fallback cancellation for sibling of {order_id} (symbol: {symbol or existing.symbol}, type: {order_type_from_history or order_type_from_db.upper()})")
+                                    cancelled_count = self._cancel_remaining_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                    if cancelled_count > 0:
+                                        logger.info(f"✅ Successfully cancelled {cancelled_count} sibling order(s) via fallback method")
+                                    elif cancelled_count == 0:
+                                        # If no active SL/TP found to cancel, check if there's already a CANCELLED one
+                                        # This means it was cancelled by Crypto.com OCO automatically, but we should still notify
+                                        logger.debug(f"No active {order_type_from_db.upper()} orders found to cancel - checking for already CANCELLED orders")
+                                        self._notify_already_cancelled_sl_tp(db, symbol or existing.symbol, order_type_from_history or order_type_from_db.upper(), order_id)
+                                except Exception as cancel_err:
+                                    logger.error(f"❌ Error canceling remaining SL/TP for {order_id}: {cancel_err}", exc_info=True)
+                        
+                        # If this is a SELL LIMIT order that closes a position, cancel remaining SL orders
+                        elif is_sell_limit_that_closes_position:
+                            try:
+                                logger.info(f"SELL LIMIT order {order_id} executed - cancelling remaining SL orders for {symbol or existing.symbol}")
+                                self._cancel_remaining_sl_tp(db, symbol or existing.symbol, 'LIMIT', order_id)
+                            except Exception as cancel_err:
+                                logger.warning(f"Error canceling remaining SL orders after SELL LIMIT execution for {order_id}: {cancel_err}")
+                    
+                    # Create SL/TP for LIMIT orders that were filled (only if status just changed to FILLED)
+                    # Do this AFTER we've marked the order for update, but handle errors gracefully
+                    # Create SL/TP for both LIMIT and MARKET orders when they are filled
+                    # IMPORTANT: NEVER create SL/TP for STOP_LIMIT or TAKE_PROFIT_LIMIT orders
+                    if needs_update and is_executed:
                         order_type_from_history = order_data.get('order_type', '').upper()
                         order_type_from_db = existing.order_type or ''
                         
@@ -2376,7 +2353,7 @@ class ExchangeSyncService:
                         # CRITICAL FIX: Always check and create SL/TP for FILLED orders, not just when needs_telegram=True
                         # This ensures SL/TP are created even if the order was already FILLED in the database
                         # The _create_sl_tp_for_filled_order function already checks for duplicates, so it's safe to call multiple times
-                        if is_main_order and is_executed:
+                        if is_main_order:
                             # Check if order was created by this system (has trade_signal_id or was created recently by this system)
                             # Only create SL/TP for orders that:
                             # 1. Were created by this system (have trade_signal_id), OR
@@ -2454,9 +2431,6 @@ class ExchangeSyncService:
                                         # Continue - order status update should still be committed even if SL/TP fails
                         elif is_sl_tp_order:
                             logger.debug(f"Skipping SL/TP creation for {order_type_from_history or order_type_from_db} order {order_id} - SL/TP orders should not create new SL/TP")
-                    else:
-                        # No update needed - order is already in correct state
-                        logger.debug(f"Order {order_id} already in correct state, skipping update")
                     
                     # Already marked as processed before sending Telegram (see above)
                     continue  # Already synced to database
@@ -2587,99 +2561,153 @@ class ExchangeSyncService:
                 elif order_type in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
                     logger.debug(f"Skipping SL/TP creation for {order_type} order {order_id} - SL/TP orders should not create new SL/TP")
                 
+                # STRICT FILL-ONLY NOTIFICATION LOGIC for new orders
+                # Only notify for real fills: status must be FILLED or PARTIALLY_FILLED with increased filled_qty
+                fill_tracker = get_fill_tracker()
+                current_filled_qty = executed_qty
+                current_status_str = status_str if status_str in ('FILLED', 'PARTIALLY_FILLED') else None
+                
+                should_notify, notify_reason = fill_tracker.should_notify_fill(
+                    order_id=order_id,
+                    current_filled_qty=current_filled_qty,
+                    status=current_status_str or 'UNKNOWN'
+                ) if current_status_str else (False, f"Status {status_str} is not a fill status")
+                
                 # Send Telegram notification for new executed order with execution time
-                try:
-                    from app.services.telegram_notifier import telegram_notifier
-                    
-                    # Use the proper method for executed orders
-                    total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
-                    order_type = order_data.get('order_type', 'LIMIT')
-                    order_type_upper = order_type.upper()
-                    
-                    # If this is a SL or TP order, find the original entry order to calculate profit/loss
-                    entry_price = None
-                    if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
-                        # Find the most recent BUY or SELL order (depending on side) for this symbol
-                        # For SL/TP after BUY: find last BUY order
-                        # For SL/TP after SELL: find last SELL order
-                        # SL/TP after BUY means we're selling (SELL), so find last BUY
-                        # SL/TP after SELL means we're buying (BUY), so find last SELL
-                        if side == "SELL":
-                            # This is selling, so find the original BUY order
-                            original_order = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.symbol == symbol,
-                                ExchangeOrder.side == "BUY",
-                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
-                        else:  # side == "BUY"
-                            # This is buying, so find the original SELL order (for short positions)
-                            original_order = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.symbol == symbol,
-                                ExchangeOrder.side == "SELL",
-                                ExchangeOrder.status == OrderStatusEnum.FILLED,
-                                ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
-                                ExchangeOrder.exchange_order_id != order_id  # Not the current order
-                            ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                if should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
+                    try:
+                        from app.services.telegram_notifier import telegram_notifier
                         
-                        if original_order:
-                            # Use avg_price if available (more accurate for MARKET orders), otherwise price
-                            entry_price = float(original_order.avg_price) if original_order.avg_price else float(original_order.price) if original_order.price else None
-                            logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
-                    
-                    # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
-                    # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
-                    open_orders_count = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.symbol == symbol,
-                        ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
-                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-                    ).count()
-                    
-                    # Get order_role, trade_signal_id, and parent_order_id from the order if it exists in database
-                    order_role = None
-                    trade_signal_id = None
-                    parent_order_id = None
-                    if order_id:
-                        existing_order = db.query(ExchangeOrder).filter(
-                            ExchangeOrder.exchange_order_id == order_id
-                        ).first()
-                        if existing_order:
-                            order_role = existing_order.order_role
-                            trade_signal_id = existing_order.trade_signal_id
-                            parent_order_id = existing_order.parent_order_id
-                    
-                    # Infer order_role from order_type if order_role is not set
-                    # This helps identify manually created SL/TP orders
-                    if not order_role and order_type:
+                        # Use the proper method for executed orders
+                        total_usd = order_price_float * executed_qty if order_price_float and executed_qty else 0
+                        order_type = order_data.get('order_type', 'LIMIT')
                         order_type_upper = order_type.upper()
-                        if order_type_upper == 'STOP_LIMIT':
-                            order_role = 'STOP_LOSS'
-                        elif order_type_upper == 'TAKE_PROFIT_LIMIT':
-                            order_role = 'TAKE_PROFIT'
-                    
-                    result = telegram_notifier.send_executed_order(
-                        symbol=symbol,
-                        side=side,
-                        price=order_price_float or 0,
-                        quantity=executed_qty,
-                        total_usd=total_usd,
-                        order_id=order_id,
-                        order_type=order_type,
-                        entry_price=entry_price,  # Add entry_price for profit/loss calculation
-                        open_orders_count=open_orders_count,  # Add open orders count for monitoring
-                        order_role=order_role,  # Use inferred role if order_role is not set
-                        trade_signal_id=trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
-                        parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
-                    )
-                    if result:
-                        # Mark notification as sent to prevent duplicate notifications
-                        self._mark_notification_sent(order_id)
-                        logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id}")
+                        
+                        # If this is a SL or TP order, find the original entry order to calculate profit/loss
+                        entry_price = None
+                        if order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
+                            # Find the most recent BUY or SELL order (depending on side) for this symbol
+                            # For SL/TP after BUY: find last BUY order
+                            # For SL/TP after SELL: find last SELL order
+                            # SL/TP after BUY means we're selling (SELL), so find last BUY
+                            # SL/TP after SELL means we're buying (BUY), so find last SELL
+                            if side == "SELL":
+                                # This is selling, so find the original BUY order
+                                original_order = db.query(ExchangeOrder).filter(
+                                    ExchangeOrder.symbol == symbol,
+                                    ExchangeOrder.side == "BUY",
+                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
+                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                            else:  # side == "BUY"
+                                # This is buying, so find the original SELL order (for short positions)
+                                original_order = db.query(ExchangeOrder).filter(
+                                    ExchangeOrder.symbol == symbol,
+                                    ExchangeOrder.side == "SELL",
+                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                    ExchangeOrder.order_type.in_(["MARKET", "LIMIT"]),
+                                    ExchangeOrder.exchange_order_id != order_id  # Not the current order
+                                ).order_by(ExchangeOrder.exchange_update_time.desc()).first()
+                            
+                            if original_order:
+                                # Use avg_price if available (more accurate for MARKET orders), otherwise price
+                                entry_price = float(original_order.avg_price) if original_order.avg_price else float(original_order.price) if original_order.price else None
+                                logger.info(f"Found entry price for SL/TP order {order_id}: {entry_price} from order {original_order.exchange_order_id}")
+                        
+                        # Count open BUY orders for this symbol (NEW, ACTIVE, PARTIALLY_FILLED)
+                        # CRITICAL: Only count BUY orders, not SELL (SL/TP), because limit is per BUY orders
+                        open_orders_count = db.query(ExchangeOrder).filter(
+                            ExchangeOrder.symbol == symbol,
+                            ExchangeOrder.side == OrderSideEnum.BUY,  # Only count BUY orders
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                        ).count()
+                        
+                        # Get order_role, trade_signal_id, and parent_order_id from the order if it exists in database
+                        order_role = None
+                        trade_signal_id = None
+                        parent_order_id = None
+                        if order_id:
+                            existing_order = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.exchange_order_id == order_id
+                            ).first()
+                            if existing_order:
+                                order_role = existing_order.order_role
+                                trade_signal_id = existing_order.trade_signal_id
+                                parent_order_id = existing_order.parent_order_id
+                        
+                        # Infer order_role from order_type if order_role is not set
+                        # CRITICAL: Only set role if order_type clearly indicates it (STOP_LIMIT, TAKE_PROFIT_LIMIT)
+                        # Do NOT mislabel BUY orders as Stop Loss
+                        if not order_role and order_type:
+                            order_type_upper = order_type.upper()
+                            if order_type_upper == 'STOP_LIMIT':
+                                order_role = 'STOP_LOSS'
+                            elif order_type_upper == 'TAKE_PROFIT_LIMIT':
+                                order_role = 'TAKE_PROFIT'
+                            # For other order types, leave as None (don't mislabel)
+                        
+                        # Audit log: log notification attempt as JSON
+                        audit_log = {
+                            "event": "ORDER_EXECUTED_NOTIFICATION",
+                            "symbol": symbol,
+                            "side": side,
+                            "order_id": order_id,
+                            "status": current_status_str,
+                            "cumulative_quantity": current_filled_qty,
+                            "delta_quantity": delta_qty,
+                            "price": order_price_float or 0,
+                            "avg_price": order_data.get('avg_price'),
+                            "order_type": order_type,
+                            "order_role": order_role,
+                            "client_oid": order_data.get('client_oid'),
+                            "trade_signal_id": trade_signal_id,
+                            "parent_order_id": parent_order_id,
+                            "notify_reason": notify_reason,
+                            "handler": "exchange_sync.new_order"
+                        }
+                        logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
+                        
+                        result = telegram_notifier.send_executed_order(
+                            symbol=symbol,
+                            side=side,
+                            price=order_price_float or 0,
+                            quantity=current_filled_qty,
+                            total_usd=total_usd,
+                            order_id=order_id,
+                            order_type=order_type,
+                            entry_price=entry_price,  # Add entry_price for profit/loss calculation
+                            open_orders_count=open_orders_count,  # Add open orders count for monitoring
+                            order_role=order_role,  # Use inferred role if order_role is not set
+                            trade_signal_id=trade_signal_id,  # Pass trade_signal_id to determine if order was created by alert
+                            parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
+                        )
+                        if result:
+                            # Record fill in persistent tracker
+                            fill_tracker.record_fill(
+                                order_id=order_id,
+                                filled_qty=current_filled_qty,
+                                status=current_status_str,
+                                notification_sent=True
+                            )
+                            logger.info(f"Sent Telegram notification for executed order: {symbol} {side} - {order_id} (reason: {notify_reason})")
+                        else:
+                            logger.warning(f"Failed to send Telegram notification for executed order: {symbol} {side} - {order_id}")
+                    except Exception as telegram_err:
+                        logger.warning(f"Failed to send Telegram notification: {telegram_err}")
+                else:
+                    # Record fill even if we don't notify (for tracking)
+                    if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
+                        fill_tracker.record_fill(
+                            order_id=order_id,
+                            filled_qty=current_filled_qty,
+                            status=current_status_str,
+                            notification_sent=False
+                        )
+                    if current_status_str not in ('FILLED', 'PARTIALLY_FILLED'):
+                        logger.debug(f"Skipping notification for new order {order_id}: status={status_str} is not a fill status")
                     else:
-                        logger.warning(f"Failed to send Telegram notification for executed order: {symbol} {side} - {order_id}")
-                except Exception as telegram_err:
-                    logger.warning(f"Failed to send Telegram notification: {telegram_err}")
+                        logger.debug(f"Skipping notification for new order {order_id}: {notify_reason}")
             
             # Always commit to ensure status updates are saved
             # Even if SL/TP creation fails, we want to save the order status update

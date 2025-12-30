@@ -125,3 +125,4 @@ echo "   4. Verifica los logs del backend para confirmar que detecta las señale
 
 
 
+

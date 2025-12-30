@@ -72,3 +72,4 @@ Si las señales ya estaban activas **antes** de la implementación:
 **Nota**: Las señales actuales pueden haber estado activas antes de la implementación, por lo que no se detectó transición. El sistema funcionará cuando una señal cambie de estado en el futuro.
 
 
+

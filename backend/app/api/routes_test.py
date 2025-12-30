@@ -1067,6 +1067,78 @@ def send_test_telegram_message(
         raise HTTPException(status_code=500, detail=f"Error sending test message: {str(e)}")
 
 
+@router.post("/test/send-executed-order")
+def test_send_executed_order(
+    symbol: str = Body(..., embed=True, description="Symbol (e.g., ETH_USDT)"),
+    side: str = Body("BUY", embed=True, description="Order side: BUY or SELL"),
+    price: float = Body(..., embed=True, description="Execution price"),
+    quantity: float = Body(..., embed=True, description="Quantity executed"),
+    order_id: Optional[str] = Body(None, embed=True, description="Order ID"),
+    order_type: Optional[str] = Body("LIMIT", embed=True, description="Order type"),
+    order_role: Optional[str] = Body(None, embed=True, description="Order role: STOP_LOSS, TAKE_PROFIT, or None"),
+    trade_signal_id: Optional[int] = Body(None, embed=True, description="Trade signal ID if created by alert"),
+    parent_order_id: Optional[str] = Body(None, embed=True, description="Parent order ID if SL/TP"),
+    entry_price: Optional[float] = Body(None, embed=True, description="Entry price for profit/loss calculation")
+):
+    """
+    Test endpoint to send an executed order notification with the new format showing order origin.
+    
+    Examples:
+    - SL/TP order: {"symbol": "ETH_USDT", "side": "SELL", "price": 2500.0, "quantity": 0.1, "order_role": "STOP_LOSS", "entry_price": 2600.0}
+    - Alert order: {"symbol": "BTC_USDT", "side": "BUY", "price": 45000.0, "quantity": 0.01, "trade_signal_id": 123}
+    - Manual order: {"symbol": "DOGE_USDT", "side": "BUY", "price": 0.08, "quantity": 1000}
+    """
+    try:
+        total_usd = price * quantity
+        
+        result = telegram_notifier.send_executed_order(
+            symbol=symbol,
+            side=side,
+            price=price,
+            quantity=quantity,
+            total_usd=total_usd,
+            order_id=order_id or f"TEST_{int(time.time())}",
+            order_type=order_type,
+            entry_price=entry_price,
+            open_orders_count=None,
+            order_role=order_role,
+            trade_signal_id=trade_signal_id,
+            parent_order_id=parent_order_id
+        )
+        
+        if result:
+            return {
+                "ok": True,
+                "message": "Executed order notification sent successfully",
+                "symbol": symbol,
+                "side": side,
+                "order_origin": _determine_order_origin(order_role, trade_signal_id, parent_order_id)
+            }
+        else:
+            return {
+                "ok": False,
+                "message": "Failed to send executed order notification",
+                "symbol": symbol
+            }
+    except Exception as e:
+        logger.error(f"Error sending test executed order notification: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+def _determine_order_origin(order_role: Optional[str], trade_signal_id: Optional[int], parent_order_id: Optional[str]) -> str:
+    """Helper to determine order origin for response"""
+    if order_role:
+        if trade_signal_id:
+            return f"{order_role} (triggered by alert)"
+        return order_role
+    elif trade_signal_id:
+        return "Alert"
+    elif parent_order_id:
+        return "Related order"
+    else:
+        return "Manual"
+
+
 @router.post("/test/inject-price")
 def inject_test_price(
     payload: Dict[str, Any] = Body(...),

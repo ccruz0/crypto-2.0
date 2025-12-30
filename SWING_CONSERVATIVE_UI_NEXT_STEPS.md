@@ -99,3 +99,4 @@ grep -n "Modal\|Dialog\|modal\|dialog" frontend/src/app/page.tsx
 grep -n "Strategy\|Config\|Setup" frontend/src/app/page.tsx -i
 ```
 
+

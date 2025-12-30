@@ -60,3 +60,4 @@ Para asegurar que el cambio se detecte:
 - **`trade_amount_usd`** (debería, pero necesita verificación)
 
 
+

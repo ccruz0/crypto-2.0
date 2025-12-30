@@ -219,3 +219,4 @@ watch -n 60 'docker compose exec backend-aws python3 scripts/verify_market_data_
 
 
 
+

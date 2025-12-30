@@ -103,3 +103,4 @@ Add a button somewhere in the UI (e.g., in a header, toolbar, or settings area):
 - Backend saving can be implemented in the `handleSaveStrategyConfig` function by calling `saveTradingConfig` with the appropriate format
 - The component handles form validation and error states internally
 
+

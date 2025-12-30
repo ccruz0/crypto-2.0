@@ -199,3 +199,4 @@ docker compose --profile aws exec backend-aws python -c "from app.database impor
 - Service restart is required for changes to take effect
 - Consider deploying during low-traffic period
 
+

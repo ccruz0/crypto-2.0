@@ -22,6 +22,7 @@ cd /home/ubuntu/automated-trading-platform
 CONTAINER_NAME=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)
 if [ -n "$CONTAINER_NAME" ]; then
   docker cp frontend/src/app/page.tsx $CONTAINER_NAME:/app/src/app/page.tsx
+  docker cp frontend/src/app/api.ts $CONTAINER_NAME:/app/src/app/api.ts
   docker cp frontend/src/app/components/tabs/WatchlistTab.tsx $CONTAINER_NAME:/app/src/app/components/tabs/WatchlistTab.tsx
   docker cp frontend/src/lib/api.ts $CONTAINER_NAME:/app/src/lib/api.ts
   docker cp frontend/src/hooks/useOrders.ts $CONTAINER_NAME:/app/src/hooks/useOrders.ts

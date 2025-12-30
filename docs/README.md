@@ -32,6 +32,14 @@
   - Guía de testing y troubleshooting
   - Ejemplos de API y formato de notificaciones
 
+## 🤖 Desarrollo y Uso de Agentes AI
+
+- **[AI Agent Usage Guidelines](ai-agent-usage.md)**: Reglas y mejores prácticas para el uso de agentes AI
+  - Reglas obligatorias para limitar consumo de créditos
+  - Cuándo usar Auto mode
+  - Configuración requerida antes de ejecutar agentes
+  - Mejores prácticas y justificación
+
 ---
 
 *Para más documentación, consulta los archivos `.md` en la raíz del proyecto.*

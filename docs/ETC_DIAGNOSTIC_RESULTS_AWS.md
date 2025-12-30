@@ -98,3 +98,4 @@ docker compose logs backend-aws | grep -i "signal.*monitor\|ETC_USDT"
 
 
 
+
