@@ -54,89 +54,98 @@ def get_app_env() -> AppEnv:
 class TelegramNotifier:
     """Telegram notification service for trading alerts
     
-    IMPORTANT: Telegram messages are ONLY sent from AWS environment.
-    Local development must NEVER send Telegram messages.
-    This is enforced via RUN_TELEGRAM environment variable.
+    IMPORTANT: Telegram messages are ONLY sent when ENV=aws.
+    Local and test environments NEVER send Telegram messages.
+    This is enforced via ENVIRONMENT or APP_ENV environment variable.
     """
     
     def __init__(self):
-        # Check if Telegram should be enabled based on environment flag
+        # CRITICAL: Environment-level kill switch - Telegram ONLY enabled when ENVIRONMENT=aws
         settings = Settings()
-        environment = (settings.ENVIRONMENT or "").strip().lower()
+        # Use ENVIRONMENT (same as docker-compose.yml) - this is the authoritative source
+        environment = (os.getenv("ENVIRONMENT") or settings.ENVIRONMENT or "local").strip().lower()
         app_env = (os.getenv("APP_ENV") or settings.APP_ENV or "").strip().lower()
         
-        # Determine if we're on AWS
-        is_aws = (
-            app_env == "aws" or 
-            environment == "aws" or 
-            os.getenv("ENVIRONMENT", "").lower() == "aws" or
-            os.getenv("APP_ENV", "").lower() == "aws"
-        )
+        # Telegram is ONLY enabled when ENVIRONMENT=aws (not APP_ENV)
+        telegram_enabled = (environment == "aws")
         
-        run_telegram = (
-            settings.RUN_TELEGRAM
-            or os.getenv("RUN_TELEGRAM")
-            or "true"
-        )
-        run_telegram = run_telegram.strip().lower()
-        
-        # Telegram is enabled whenever RUN_TELEGRAM=true (default), regardless of environment.
-        # Set RUN_TELEGRAM=false to disable alerts entirely (used in certain tests/local runs).
-        should_enable = run_telegram == "true"
-        
-        # Environment-only configuration
+        # Get bot token
         bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
-        chat_id = (settings.TELEGRAM_CHAT_ID or "").strip()
         self.bot_token = bot_token or None
+        
+        # Get chat_id based on environment
+        # AWS: MUST use TELEGRAM_CHAT_ID_AWS (no fallback - hard requirement)
+        # Local: TELEGRAM_CHAT_ID_LOCAL (for reference only, won't be used)
+        if environment == "aws":
+            chat_id = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
+            if not chat_id:
+                # HARD REQUIREMENT: TELEGRAM_CHAT_ID_AWS must be set for AWS
+                logger.error(
+                    "[TELEGRAM_SECURITY] CRITICAL: TELEGRAM_CHAT_ID_AWS not set! "
+                    "ENVIRONMENT=aws requires TELEGRAM_CHAT_ID_AWS to be explicitly set. "
+                    "Legacy TELEGRAM_CHAT_ID fallback is disabled for security. "
+                    "Telegram sending DISABLED."
+                )
+                telegram_enabled = False
+        else:
+            # Local environment - get LOCAL chat_id (for reference, won't be used for sending)
+            chat_id = (os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip()
+            if not chat_id:
+                # Fallback to legacy TELEGRAM_CHAT_ID for local (not used for sending anyway)
+                chat_id = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+        
         self.chat_id = chat_id or None
         
-        # CRITICAL: Log channel configuration for debugging
-        # On AWS, TELEGRAM_CHAT_ID must point to "Hilovivo-alerts" channel
-        # On local, TELEGRAM_CHAT_ID points to "Hilovivo-alerts-local" channel
-        if is_aws:
-            logger.info(
-                f"[TELEGRAM_CONFIG] env=AWS resolved_channel={self.chat_id} label=Hilovivo-alerts "
-                f"TELEGRAM_CHAT_ID={chat_id} "
-                f"ENVIRONMENT={environment} APP_ENV={app_env}"
-            )
-            # Verify that chat_id is set (required for AWS)
-            if not self.chat_id:
+        # CRITICAL: When ENVIRONMENT=aws, chat_id MUST match TELEGRAM_CHAT_ID_AWS
+        # This prevents AWS from accidentally sending to local channel
+        if environment == "aws" and self.chat_id:
+            expected_chat_id_aws = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
+            if expected_chat_id_aws and self.chat_id != expected_chat_id_aws:
                 logger.error(
-                    "[TELEGRAM_CONFIG] CRITICAL: TELEGRAM_CHAT_ID not set on AWS! "
-                    "Alerts will not be sent. Set TELEGRAM_CHAT_ID to Hilovivo-alerts channel ID."
+                    f"[TELEGRAM_SECURITY] CRITICAL: chat_id mismatch! "
+                    f"ENVIRONMENT=aws but chat_id does not match TELEGRAM_CHAT_ID_AWS. "
+                    f"Expected: {expected_chat_id_aws[-4:] if len(expected_chat_id_aws) >= 4 else '****'}, "
+                    f"Got: {self.chat_id[-4:] if len(self.chat_id) >= 4 else '****'}. "
+                    f"Telegram sending DISABLED to prevent sending to wrong channel."
                 )
-        else:
-            logger.info(
-                f"[TELEGRAM_CONFIG] env=LOCAL resolved_channel={self.chat_id} label=Hilovivo-alerts-local "
-                f"TELEGRAM_CHAT_ID={chat_id} "
-                f"ENVIRONMENT={environment} APP_ENV={app_env}"
-            )
+                telegram_enabled = False
         
-        # Only enable if toggle allows it and credentials are configured
-        self.enabled = should_enable and bool(self.bot_token and self.chat_id)
+        # Store enabled state (must be aws AND credentials present AND chat_id matches)
+        self.enabled = telegram_enabled and bool(self.bot_token and self.chat_id)
         
-        if not should_enable:
-            logger.info(
-                f"Telegram disabled via RUN_TELEGRAM flag. Environment: {environment}, "
-                f"APP_ENV: {app_env}, RUN_TELEGRAM: {run_telegram}, is_aws: {is_aws}"
-            )
-            return
+        # Startup logging: ENVIRONMENT, APP_ENV, hostname, pid, telegram_enabled, masked chat_id
+        hostname = socket.gethostname()
+        pid = getpid()
+        chat_id_masked = f"****{self.chat_id[-4:]}" if self.chat_id and len(self.chat_id) >= 4 else "****"
+        logger.info(
+            f"[TELEGRAM_STARTUP] ENVIRONMENT={environment} APP_ENV={app_env} hostname={hostname} pid={pid} "
+            f"telegram_enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
+            f"chat_id_present={bool(self.chat_id)} chat_id_last4={chat_id_masked}"
+        )
         
-        # Timezone configuration - defaults to Asia/Makassar (Bali time UTC+8), can be overridden with TELEGRAM_TIMEZONE env var
-        # Examples: "Asia/Makassar" (Bali), "Europe/Madrid" (Spain), "Europe/Paris" (France), etc.
+        # Set timezone (used for formatting even if disabled)
         timezone_name = os.getenv("TELEGRAM_TIMEZONE", "Asia/Makassar")
         try:
             self.timezone = pytz.timezone(timezone_name)
-            logger.info(f"Telegram Notifier timezone set to: {timezone_name}")
         except pytz.exceptions.UnknownTimeZoneError:
             logger.warning(f"Unknown timezone '{timezone_name}', falling back to Asia/Makassar")
             self.timezone = pytz.timezone("Asia/Makassar")
         
-        if not self.enabled:
-            logger.warning("Telegram disabled: missing env vars")
+        if not telegram_enabled:
+            logger.info(
+                f"[TELEGRAM_DISABLED] ENVIRONMENT is '{environment}' (not 'aws'). "
+                f"Telegram notifications will NOT be sent. Set ENVIRONMENT=aws to enable."
+            )
             return
-
-        logger.info("Telegram Notifier initialized")
+        
+        if not self.enabled:
+            logger.warning(
+                "[TELEGRAM_DISABLED] ENVIRONMENT is 'aws' but missing credentials or chat_id mismatch. "
+                "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID_AWS must be set."
+            )
+            return
+        
+        logger.info(f"[TELEGRAM_ENABLED] Telegram notifications are ENABLED (ENVIRONMENT={environment}, chat_id={chat_id_masked})")
         # NOTE: Removed automatic set_bot_commands() call to prevent overriding
         # the full command menu registered by setup_bot_commands() in telegram_commands.py
         # The set_bot_commands() method is still available for manual use via API endpoint
@@ -253,141 +262,40 @@ class TelegramNotifier:
             env_chat_id_present,
         )
         
-        # CENTRAL GATEKEEPER: Only AWS and TEST origins can send Telegram alerts
-        # If origin is not provided, use runtime origin as fallback
-        if origin is None:
-            origin = get_runtime_origin()
-        
-        origin_upper = origin.upper() if origin else "LOCAL"
-        
-        # E2E TEST LOGGING: Log normalized origin
-        logger.info(f"[E2E_TEST_GATEKEEPER_ORIGIN] origin_upper={origin_upper}")
-        
-        # ============================================================
-        # [TELEGRAM_GATEKEEPER] - All conditions that decide send/skip
-        # ============================================================
-        # ALERT PATH COMPARISON:
-        # - Executed orders: Called from backend-aws (RUNTIME_ORIGIN=AWS) → origin="AWS" → ALLOW ✅
-        # - BUY/SELL signals: Called from market-updater (needs RUNTIME_ORIGIN=AWS) → origin="AWS" → ALLOW ✅
-        # - Monitoring alerts: Same as signals, must have RUNTIME_ORIGIN=AWS
-        # - If origin="LOCAL" or not in whitelist → BLOCK ❌
-        gatekeeper_checks = {
-            "origin_upper": origin_upper,
-            "origin_in_whitelist": origin_upper in ("AWS", "TEST"),
-            "self.enabled": self.enabled,
-            "bot_token_present": bool(self.bot_token),
-            "chat_id_present": bool(self.chat_id),
-        }
-        gatekeeper_result = "ALLOW" if (
-            gatekeeper_checks["origin_in_whitelist"] and 
-            gatekeeper_checks["self.enabled"] and
-            gatekeeper_checks["bot_token_present"] and
-            gatekeeper_checks["chat_id_present"]
-        ) else "BLOCK"
-        
-        logger.info(
-            "[TELEGRAM_GATEKEEPER] origin_upper=%s origin_in_whitelist=%s enabled=%s "
-            "bot_token_present=%s chat_id_present=%s RESULT=%s",
-            gatekeeper_checks["origin_upper"],
-            gatekeeper_checks["origin_in_whitelist"],
-            gatekeeper_checks["self.enabled"],
-            gatekeeper_checks["bot_token_present"],
-            gatekeeper_checks["chat_id_present"],
-            gatekeeper_result,
-        )
-        
-        # LIVE ALERT LOGGING: Log gatekeeper check for live alerts
-        if "LIVE ALERT" in message or "BUY SIGNAL" in message or "SELL SIGNAL" in message:
-            allowed = origin_upper in ("AWS", "TEST") and self.enabled
-            side = "BUY" if "BUY SIGNAL" in message else ("SELL" if "SELL SIGNAL" in message else "UNKNOWN")
-            # Use symbol if available, otherwise extract it safely
-            log_symbol = symbol if 'symbol' in locals() else (None)
-            if log_symbol is None:
-                try:
-                    import re
-                    symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', message)
-                    if symbol_match:
-                        potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
-                        if '_' in potential_symbol or len(potential_symbol) >= 2:
-                            log_symbol = potential_symbol
-                except Exception:
-                    pass
-            logger.info(
-                f"[LIVE_ALERT_GATEKEEPER] symbol={log_symbol or 'UNKNOWN'} side={side} origin={origin_upper} "
-                f"enabled={self.enabled} bot_token_present={bool(self.bot_token)} "
-                f"chat_id_present={bool(self.chat_id)} allowed={allowed}"
-            )
-        
-        # 1) Block truly LOCAL / non-AWS, non-TEST origins
-        if origin_upper not in ("AWS", "TEST"):
-            # Log what would have been sent
+        # CENTRAL GATEKEEPER: Telegram is ONLY enabled when ENV=aws
+        # This check happens before any other logic
+        if not self.enabled:
             preview = message[:200] + "..." if len(message) > 200 else message
-            logger.warning(
-                f"[TELEGRAM_BLOCKED] Skipping Telegram send for non-AWS/non-TEST origin '{origin_upper}'. "
-                f"Message would have been: {preview}. "
-                f"ROOT CAUSE: Service must have RUNTIME_ORIGIN=AWS env var set. "
-                f"Check docker-compose.yml for the service calling this alert."
+            env_value = os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or "local"
+            logger.debug(
+                f"[TELEGRAM_BLOCKED] Skipping Telegram send (ENV={env_value}, not 'aws'). "
+                f"Message would have been: {preview}"
             )
-            # E2E TEST LOGGING: Log block
-            logger.info(f"[E2E_TEST_GATEKEEPER_BLOCK] origin_upper={origin_upper}, message_preview={message[:80]}")
-            # Note: This block only executes when origin_upper is NOT "AWS" or "TEST",
-            # so checking for "TEST" here would be unreachable. Removed unreachable code.
-            
-            # Still register in dashboard for debugging, but mark as blocked
+            # Register in dashboard for debugging, but mark as blocked
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 add_telegram_message(
-                    f"[LOCAL DEBUG] {message}", 
+                    f"[BLOCKED] {message}", 
                     symbol=symbol, 
                     blocked=True
                 )
             except Exception as e:
-                logger.debug(f"Could not register LOCAL debug message in dashboard: {e}")
+                logger.debug(f"Could not register blocked message in dashboard: {e}")
             return False
         
-        if not self.enabled:
-            logger.debug("Telegram disabled: skipping send_message call")
-            # E2E TEST LOGGING: Log disabled state
-            logger.warning("[E2E_TEST_CONFIG] Telegram sending disabled by configuration (RUN_TELEGRAM or similar)")
-            return False
+        # If we reach here, ENV=aws and credentials are present, so send the message
+        # Get origin for message prefix (AWS/LOCAL/TEST) but don't block based on it
+        if origin is None:
+            origin = get_runtime_origin()
+        origin_upper = origin.upper() if origin else "AWS"
         
         try:
-            # 2) For TEST origin: allow sending, but prefix with [TEST]
-            if origin_upper == "TEST":
-                # Add [TEST] prefix if not already present
-                if not message.startswith("[TEST]"):
-                    full_message = f"[TEST] {message}"
-                else:
-                    full_message = message
-                env_label = "[TEST]"
-                # Extract symbol and side for logging
-                test_symbol = symbol or "UNKNOWN"
-                test_side = "UNKNOWN"
-                if "BUY SIGNAL" in message or "🟢" in message:
-                    test_side = "BUY"
-                elif "SELL SIGNAL" in message or "🟥" in message:
-                    test_side = "SELL"
-                logger.info(
-                    f"[TEST_ALERT_LOG] symbol={test_symbol}, side={test_side}, origin=TEST, "
-                    f"prefix=[TEST], message_length={len(full_message)}, sending_to_telegram=True"
-                )
-                logger.info(
-                    f"[TEST_ALERT_SENDING] origin=TEST, prefix=[TEST], symbol={test_symbol}, "
-                    f"side={test_side}, chat_id={self.chat_id}, url=api.telegram.org/bot.../sendMessage"
-                )
-            
-            # 3) For AWS origin: production alerts with [AWS] prefix
-            elif origin_upper == "AWS":
-                # Add [AWS] prefix if not already present
-                if not message.startswith("[AWS]"):
-                    full_message = f"[AWS] {message}"
-                else:
-                    full_message = message
-                env_label = "[AWS]"
+            # Add [AWS] prefix for all messages (since we only send when ENV=aws)
+            if not message.startswith("[AWS]"):
+                full_message = f"[AWS] {message}"
             else:
-                # Should not reach here due to gatekeeper above, but fallback
                 full_message = message
-                env_label = "[UNKNOWN]"
+            env_label = "[AWS]"
             
             # E2E TEST LOGGING: Log before sending to Telegram API
             prefix = "[TEST]" if origin_upper == "TEST" else "[AWS]" if origin_upper == "AWS" else "[UNKNOWN]"
@@ -400,6 +308,37 @@ class TelegramNotifier:
                 log_side = "BUY"
             elif "SELL SIGNAL" in message or "🔴" in message:
                 log_side = "SELL"
+            
+            # RUNTIME PROOF: Log immediately before sending Telegram API call
+            # This proves all alerts originate from same pid+hostname with correct ENVIRONMENT
+            hostname = socket.gethostname()
+            pid = getpid()
+            env_runtime = os.getenv("ENVIRONMENT", "NOT_SET")
+            chat_id_masked = f"****{self.chat_id[-4:]}" if self.chat_id and len(self.chat_id) >= 4 else "****"
+            
+            # Extract handler name from caller
+            handler_name = "unknown"
+            try:
+                import traceback
+                stack = traceback.extract_stack()
+                if len(stack) >= 2:
+                    caller_frame = stack[-2]
+                    handler_name = f"{os.path.basename(caller_frame.filename)}:{caller_frame.name}"
+            except Exception:
+                pass
+            
+            logger.info(
+                "[TELEGRAM_SEND_PROOF] handler=%s order_id=%s symbol=%s pid=%d hostname=%s "
+                "ENVIRONMENT=%s chat_id_last4=%s message_len=%d",
+                handler_name,
+                "N/A",  # order_id will be extracted from message if available
+                log_symbol,
+                pid,
+                hostname,
+                env_runtime,
+                chat_id_masked,
+                len(full_message)
+            )
             
             # Log Telegram send attempt with full context
             logger.info(
