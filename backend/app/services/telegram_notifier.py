@@ -309,37 +309,6 @@ class TelegramNotifier:
             elif "SELL SIGNAL" in message or "🔴" in message:
                 log_side = "SELL"
             
-            # RUNTIME PROOF: Log immediately before sending Telegram API call
-            # This proves all alerts originate from same pid+hostname with correct ENVIRONMENT
-            hostname = socket.gethostname()
-            pid = getpid()
-            env_runtime = os.getenv("ENVIRONMENT", "NOT_SET")
-            chat_id_masked = f"****{self.chat_id[-4:]}" if self.chat_id and len(self.chat_id) >= 4 else "****"
-            
-            # Extract handler name from caller
-            handler_name = "unknown"
-            try:
-                import traceback
-                stack = traceback.extract_stack()
-                if len(stack) >= 2:
-                    caller_frame = stack[-2]
-                    handler_name = f"{os.path.basename(caller_frame.filename)}:{caller_frame.name}"
-            except Exception:
-                pass
-            
-            logger.info(
-                "[TELEGRAM_SEND_PROOF] handler=%s order_id=%s symbol=%s pid=%d hostname=%s "
-                "ENVIRONMENT=%s chat_id_last4=%s message_len=%d",
-                handler_name,
-                "N/A",  # order_id will be extracted from message if available
-                log_symbol,
-                pid,
-                hostname,
-                env_runtime,
-                chat_id_masked,
-                len(full_message)
-            )
-            
             # Log Telegram send attempt with full context
             logger.info(
                 "[TELEGRAM_SEND] type=ALERT symbol=%s side=%s chat_id=%s origin=%s message_len=%d message_preview=%s",
