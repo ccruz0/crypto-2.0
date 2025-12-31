@@ -1,6 +1,6 @@
 """Dashboard state endpoint - returns portfolio, balances, and dashboard data"""
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db, table_has_column, engine as db_engine
@@ -114,6 +114,11 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         "buy_alert_enabled": getattr(item, "buy_alert_enabled", None) if getattr(item, "buy_alert_enabled", None) is not None else False,
         "sell_alert_enabled": getattr(item, "sell_alert_enabled", None) if getattr(item, "sell_alert_enabled", None) is not None else False,
         "trade_enabled": item.trade_enabled,
+        # REGRESSION GUARD: trade_amount_usd must be returned exactly as stored in DB
+        # - If DB is NULL, API must return null (NOT 10, NOT 0, NOT any default)
+        # - If DB is 10.0, API must return 10.0 (NOT 11, NOT mutated)
+        # - This field is the single source of truth - no defaults/mutations allowed
+        # - Any change that adds defaults here will break the consistency guarantee
         "trade_amount_usd": item.trade_amount_usd,
         "trade_on_margin": item.trade_on_margin,
         "sl_tp_mode": default_sl_tp_mode,  # Always ensure sl_tp_mode has a value
@@ -246,6 +251,29 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
             except Exception as e:
                 db.rollback()
                 log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
+    
+    # CRITICAL: Add resolved strategy information to API response
+    # This ensures frontend can display the correct strategy and tooltip matches dropdown
+    try:
+        from app.services.strategy_profiles import resolve_strategy_profile
+        strategy_type, risk_approach = resolve_strategy_profile(
+            symbol=item.symbol,
+            db=db,
+            watchlist_item=item
+        )
+        # Add strategy fields to response
+        serialized["strategy_preset"] = strategy_type.value if strategy_type else None
+        serialized["strategy_risk"] = risk_approach.value if risk_approach else None
+        # Create canonical strategy key for comparison (e.g., "swing-conservative")
+        if strategy_type and risk_approach:
+            serialized["strategy_key"] = f"{strategy_type.value}-{risk_approach.value}"
+        else:
+            serialized["strategy_key"] = None
+    except Exception as e:
+        log.debug(f"Could not resolve strategy for {item.symbol}: {e}")
+        serialized["strategy_preset"] = None
+        serialized["strategy_risk"] = None
+        serialized["strategy_key"] = None
     
     return serialized
 
@@ -627,24 +655,36 @@ async def _compute_dashboard_state(db: Session) -> dict:
         
         # Extract balances from portfolio summary
         balances_list = portfolio_summary.get("balances", [])
-        # Use total_usd from portfolio_summary (correctly calculated as assets - borrowed)
-        # Bug 3 Fix: portfolio_cache correctly calculates total_usd = total_assets_usd - total_borrowed_usd
-        # We should use that value instead of incorrectly recalculating it
-        total_usd_value = portfolio_summary.get("total_usd", 0.0)
-        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
-        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
+        # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
+        # Backend returns values explicitly:
+        # - total_usd: NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
+        # - total_assets_usd: GROSS raw assets (before haircut and borrowed) - informational only
+        # - total_collateral_usd: Collateral value after haircuts - informational only
+        # - total_borrowed_usd: Total borrowed amounts (shown separately, NOT added to totals)
+        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)  # GROSS raw assets
+        total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
+        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)  # Borrowed (separate)
+        total_usd_value = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
         last_updated = portfolio_summary.get("last_updated")
         
         # Log raw data for debugging
         log.debug(f"Raw portfolio_summary: balances={len(balances_list)}, total_usd={total_usd_value}, last_updated={last_updated}")
         
-        # Get unified open orders from cache and merge with database orders
+        # Get unified open orders from cache - Crypto.com API is the source of truth
         unified_orders_start = time.time()
         cached_open_orders = get_open_orders_cache()
         unified_open_orders = cached_open_orders.get("orders", []) or []
         
-        # Also fetch orders from database (like /api/orders/open does)
-        # This ensures all orders (including database-only orders) are shown
+        # Log Crypto.com API response for debugging
+        cached_order_ids = {order.order_id for order in unified_open_orders}
+        cached_symbols = {order.symbol for order in unified_open_orders}
+        log.info(f"[OPEN_ORDERS] Crypto.com API returned {len(unified_open_orders)} open orders. Order IDs: {sorted(cached_order_ids)[:10]}... Symbols: {sorted(cached_symbols)}")
+        
+        # CRITICAL FIX: Only show orders that exist in Crypto.com API response
+        # Do NOT merge database orders that don't exist in Crypto.com - they are stale/ghost orders
+        # The cache is populated by exchange_sync.py from Crypto.com API, so it's the source of truth
+        
+        # Verify database orders against Crypto.com cache and log any ghost orders
         try:
             from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
             from sqlalchemy import func
@@ -652,8 +692,7 @@ async def _compute_dashboard_state(db: Session) -> dict:
             
             open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
             
-            # Include all open orders AND all SL/TP orders (regardless of status)
-            # to show all potential orders that might be active on exchange
+            # Check database for orders that claim to be open but aren't in Crypto.com response
             from sqlalchemy import or_
             
             db_orders = db.query(ExchangeOrder).filter(
@@ -669,93 +708,32 @@ async def _compute_dashboard_state(db: Session) -> dict:
                 func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
             ).limit(500).all()
             
-            # Convert database orders to UnifiedOpenOrder format and merge with cached orders
-            # Use order_id to deduplicate (cached orders take priority)
-            cached_order_ids = {order.order_id for order in unified_open_orders}
+            # Log database orders for debugging
+            db_order_ids = {str(order.exchange_order_id) for order in db_orders}
+            db_symbols = {order.symbol for order in db_orders if order.symbol}
+            log.info(f"[OPEN_ORDERS] Database has {len(db_orders)} orders with open status. Order IDs: {sorted(db_order_ids)[:10]}... Symbols: {sorted(db_symbols)}")
             
+            # Detect and log ghost orders (in database but not in Crypto.com)
+            ghost_orders = []
             for db_order in db_orders:
-                if db_order.exchange_order_id not in cached_order_ids:
-                    # Convert ExchangeOrder to UnifiedOpenOrder
-                    from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
-                    from decimal import Decimal
-                    
-                    create_time = db_order.exchange_create_time or db_order.created_at
-                    update_time = db_order.exchange_update_time or db_order.updated_at
-                    
-                    # ExchangeOrder doesn't have trigger_price field, only price and trigger_condition
-                    # Determine if this is a trigger order based on order_type or order_role
-                    is_trigger_order = (
-                        db_order.order_type and any(
-                            trigger_type in db_order.order_type.upper()
-                            for trigger_type in ['TRIGGER', 'STOP', 'TAKE_PROFIT', 'STOP_LIMIT', 'TAKE_PROFIT_LIMIT']
-                        )
-                    ) or db_order.order_role in ['STOP_LOSS', 'TAKE_PROFIT']
-                    
-                    db_unified = UnifiedOpenOrder(
-                        order_id=str(db_order.exchange_order_id),
-                        symbol=db_order.symbol or "",
-                        side=db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
-                        order_type=db_order.order_type or "LIMIT",
-                        status=db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
-                        price=Decimal(str(db_order.price)) if db_order.price else None,
-                        trigger_price=Decimal(str(db_order.trigger_condition)) if db_order.trigger_condition else None,  # Use trigger_condition as trigger_price
-                        quantity=Decimal(str(db_order.quantity)) if db_order.quantity else Decimal("0"),
-                        is_trigger=is_trigger_order,
-                        trigger_type=db_order.order_role if db_order.order_role else None,
-                        client_oid=db_order.client_oid,
-                        created_at=_format_timestamp(create_time),
-                        updated_at=_format_timestamp(update_time),
-                        source="database",
-                        metadata={"order_role": db_order.order_role} if db_order.order_role else {},
-                    )
-                    unified_open_orders.append(db_unified)
-                    cached_order_ids.add(db_unified.order_id)
-                    
-                    log.debug(f"Added database order {db_order.exchange_order_id} to dashboard state")
+                order_id_str = str(db_order.exchange_order_id)
+                if order_id_str not in cached_order_ids:
+                    ghost_orders.append({
+                        "order_id": order_id_str,
+                        "symbol": db_order.symbol,
+                        "status": db_order.status.value if hasattr(db_order.status, 'value') else str(db_order.status),
+                        "side": db_order.side.value if hasattr(db_order.side, 'value') else str(db_order.side),
+                    })
             
-            # Also check SQLite order_history_db for compatibility (like /api/orders/open does)
-            try:
-                from app.services.order_history_db import order_history_db
-                sqlite_orders = order_history_db.get_orders_by_status(['ACTIVE', 'NEW', 'PARTIALLY_FILLED'], limit=100)
-                
-                for sqlite_order in sqlite_orders:
-                    order_id = sqlite_order.get('order_id')
-                    if order_id and order_id not in cached_order_ids:
-                        # Convert SQLite order dict to UnifiedOpenOrder format
-                        from app.services.open_orders import UnifiedOpenOrder, _normalize_symbol, _safe_decimal, _format_timestamp
-                        from decimal import Decimal
-                        
-                        order_id_str = str(order_id)
-                        symbol = _normalize_symbol(sqlite_order.get('instrument_name') or sqlite_order.get('symbol'))
-                        side = (sqlite_order.get('side') or 'BUY').upper()
-                        order_type = (sqlite_order.get('order_type') or sqlite_order.get('type') or 'LIMIT').upper()
-                        status = (sqlite_order.get('status') or 'NEW').upper()
-                        
-                        sqlite_unified = UnifiedOpenOrder(
-                            order_id=order_id_str,
-                            symbol=symbol,
-                            side=side,
-                            order_type=order_type,
-                            status=status,
-                            price=_safe_decimal(sqlite_order.get('price')),
-                            trigger_price=_safe_decimal(sqlite_order.get('trigger_price') or sqlite_order.get('stop_price')),
-                            quantity=_safe_decimal(sqlite_order.get('quantity')) or Decimal("0"),
-                            is_trigger=False,
-                            client_oid=sqlite_order.get('client_oid'),
-                            created_at=_format_timestamp(sqlite_order.get('create_time') or sqlite_order.get('created_at')),
-                            updated_at=_format_timestamp(sqlite_order.get('update_time') or sqlite_order.get('updated_at')),
-                            source="sqlite",
-                            metadata=sqlite_order,
-                        )
-                        unified_open_orders.append(sqlite_unified)
-                        cached_order_ids.add(sqlite_unified.order_id)
-                        log.debug(f"Added SQLite order {order_id_str} to dashboard state")
-            except Exception as sqlite_err:
-                log.debug(f"Error getting orders from SQLite: {sqlite_err}")
+            if ghost_orders:
+                log.warning(f"[GHOST_ORDERS] Detected {len(ghost_orders)} ghost orders in database that don't exist in Crypto.com: {ghost_orders[:5]}")
+                # Log each ghost order once per dashboard load
+                for ghost in ghost_orders[:10]:  # Limit to first 10 to avoid log spam
+                    log.warning(f"[GHOST_ORDER] Dropping ghost order: {ghost['order_id']} ({ghost['symbol']}) - status={ghost['status']}, side={ghost['side']} - NOT in Crypto.com API response")
                 
         except Exception as db_err:
-            log.warning(f"Error merging database orders: {db_err}")
-            # Continue with cached orders only if database merge fails
+            log.warning(f"Error checking database for ghost orders: {db_err}")
+            # Continue with cached orders only if database check fails
         
         open_orders_list = [serialize_unified_order(order) for order in unified_open_orders]
         unified_orders_elapsed = time.time() - unified_orders_start
@@ -1027,9 +1005,15 @@ async def _compute_dashboard_state(db: Session) -> dict:
             "portfolio_last_updated": last_updated,
             "portfolio": {
                 "assets": portfolio_assets,  # Main portfolio data (v4.0 format)
-                "total_value_usd": total_usd_value,
+                "total_value_usd": total_usd_value,  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
+                "total_assets_usd": total_assets_usd,  # GROSS raw assets (before haircut and borrowed)
+                "total_collateral_usd": total_collateral_usd,  # Collateral after haircuts (informational)
+                "total_borrowed_usd": total_borrowed_usd,  # Borrowed amounts (shown separately)
                 "exchange": "Crypto.com Exchange"
             },
+            # Invariant: Total Value shown to users must equal Crypto.com Margin "Wallet Balance" (NET).
+            # This is enforced by using total_usd from portfolio_summary, which is calculated as:
+            # total_usd = total_assets_usd - total_borrowed_usd (NET equity)
             "bot_status": {
                 "is_running": True,
                 "status": "running",
@@ -1132,46 +1116,42 @@ def get_open_orders_summary():
 
 @router.get("/dashboard")
 def list_watchlist_items(db: Session = Depends(get_db)):
-    """Return watchlist items from master table (source of truth).
+    """Return watchlist items from WatchlistItem table (single source of truth).
     
-    This endpoint reads ONLY from watchlist_master table, ensuring the UI
-    displays exactly what is stored in the master table with zero discrepancies.
-    Includes per-field update timestamps for UI display.
+    This endpoint reads ONLY from watchlist_items table, ensuring the UI
+    displays exactly what is stored in the database with zero discrepancies.
+    No defaults or mutations are applied - returns exact DB values.
     """
-    log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received (using master table)")
+    log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received (using watchlist_items table)")
     try:
-        # Ensure master table is seeded (never empty)
+        # Query watchlist_items table directly (single source of truth)
         try:
-            ensure_master_table_seeded(db)
-        except Exception as seed_err:
-            log.warning(f"Error seeding master table: {seed_err}, continuing anyway")
-        
-        # Query master table directly (source of truth)
-        try:
-            items = db.query(WatchlistMaster).filter(
-                WatchlistMaster.is_deleted == False
-            ).order_by(WatchlistMaster.created_at.desc()).limit(200).all()
+            items = db.query(WatchlistItem).filter(
+                WatchlistItem.is_deleted == False
+            ).order_by(WatchlistItem.created_at.desc()).limit(200).all()
         except Exception as query_err:
-            log.warning(f"Watchlist master query failed: {query_err}, rolling back transaction")
+            log.warning(f"Watchlist items query failed: {query_err}, rolling back transaction")
             db.rollback()
             # Fallback: try without filter if column doesn't exist
             if "undefined column" in str(query_err).lower() or "no such column" in str(query_err).lower():
-                log.warning("Retrying watchlist master query without is_deleted filter")
-                items = db.query(WatchlistMaster).order_by(WatchlistMaster.created_at.desc()).limit(200).all()
+                log.warning("Retrying watchlist items query without is_deleted filter")
+                items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()
             else:
                 raise
         
         result = []
         for item in items:
-            result.append(_serialize_watchlist_master(item, db=db))
+            # Get market data for enrichment (price, rsi, etc.) but don't mutate trade_amount_usd
+            market_data = _get_market_data_for_symbol(db, item.symbol)
+            result.append(_serialize_watchlist_item(item, market_data=market_data, db=db))
             if len(result) >= 100:
                 break
         
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from master table)")
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from watchlist_items table)")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
-        log.exception("Error fetching dashboard items from master table")
+        log.exception("Error fetching dashboard items from watchlist_items table")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1181,37 +1161,41 @@ def update_watchlist_item_by_symbol(
     payload: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db)
 ):
-    """Update a watchlist item in the master table.
+    """Update a watchlist item in WatchlistItem table (single source of truth).
     
-    This endpoint writes directly to watchlist_master (source of truth).
-    Updates field timestamps automatically for each changed field.
-    Returns the updated item with field_updated_at metadata.
+    This endpoint writes directly to watchlist_items table.
+    Returns the updated item from a fresh DB read (no mutations).
+    
+    REGRESSION GUARD: This function MUST update WatchlistItem, NOT WatchlistMaster.
+    Changing this to update WatchlistMaster will break the "DB is truth" guarantee.
+    See tests/test_watchlist_regression_guard.py for regression tests.
     """
     symbol = (symbol or "").upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="symbol is required")
     
     try:
-        # Get or create master row
-        master = db.query(WatchlistMaster).filter(
-            WatchlistMaster.symbol == symbol
+        # Get or create WatchlistItem row (single source of truth)
+        exchange = (payload.get("exchange") or "CRYPTO_COM").upper()
+        item = db.query(WatchlistItem).filter(
+            WatchlistItem.symbol == symbol,
+            WatchlistItem.exchange == exchange,
+            WatchlistItem.is_deleted == False
         ).first()
         
-        if not master:
-            # Create new master row if it doesn't exist
-            exchange = (payload.get("exchange") or "CRYPTO_COM").upper()
-            master = WatchlistMaster(
+        if not item:
+            # Create new WatchlistItem if it doesn't exist
+            item = WatchlistItem(
                 symbol=symbol,
                 exchange=exchange,
                 is_deleted=False
             )
-            db.add(master)
+            db.add(item)
         
-        # Track which fields were updated for timestamp tracking
-        now = datetime.now(timezone.utc)
+        # Track which fields were updated
         updated_fields = []
         
-        # Update fields from payload
+        # Update fields from payload - CRITICAL: No defaults, exact values only
         updatable_fields = {
             "buy_target", "take_profit", "stop_loss",
             "trade_enabled", "trade_amount_usd", "trade_on_margin",
@@ -1223,137 +1207,137 @@ def update_watchlist_item_by_symbol(
             "sold", "sell_price",
             "price", "rsi", "atr", "ma50", "ma200", "ema10",
             "res_up", "res_down",
-            "volume_ratio", "current_volume", "avg_volume", "volume_24h",
         }
         
         for field in updatable_fields:
             if field in payload:
-                old_value = getattr(master, field, None)
+                old_value = getattr(item, field, None)
                 new_value = payload[field]
                 
-                # Handle boolean fields
+                # Handle boolean fields - convert None to False for booleans only
                 if field in ["trade_enabled", "trade_on_margin", "alert_enabled", 
                             "buy_alert_enabled", "sell_alert_enabled", "sold", 
-                            "skip_sl_tp_reminder", "is_deleted"]:
+                            "skip_sl_tp_reminder"]:
                     new_value = bool(new_value) if new_value is not None else False
                 
-                # Only update if value changed
+                # CRITICAL: For trade_amount_usd, allow None/null explicitly (no default)
+                # Only update if value actually changed
+                if field == "trade_amount_usd":
+                    # Allow None/null values - compare properly
+                    pass
                 if old_value != new_value:
-                    # Log trade_enabled changes with count information
-                    if field == "trade_enabled":
-                        if new_value is False and old_value is True:
-                            # Count how many coins currently have trade_enabled=True
-                            current_trade_enabled_count = db.query(WatchlistItem).filter(
-                                WatchlistItem.trade_enabled == True,
-                                WatchlistItem.is_deleted == False
-                            ).count()
-                            log.warning(
-                                f"[TRADE_ENABLED_DISABLE] PUT /dashboard/symbol/{symbol}: "
-                                f"Disabling trade_enabled for {symbol}. "
-                                f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
-                                f"This should only happen if user explicitly disables it."
-                            )
-                        elif new_value is True and old_value is False:
-                            # Count how many coins will have trade_enabled=True after this change
-                            current_trade_enabled_count = db.query(WatchlistItem).filter(
-                                WatchlistItem.trade_enabled == True,
-                                WatchlistItem.is_deleted == False
-                            ).count()
-                            log.info(
-                                f"[TRADE_ENABLED_ENABLE] PUT /dashboard/symbol/{symbol}: "
-                                f"Enabling trade_enabled for {symbol}. "
-                                f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
-                                f"After this change: {current_trade_enabled_count + 1}"
-                            )
-                    setattr(master, field, new_value)
-                    master.set_field_updated_at(field, now)
+                    setattr(item, field, new_value)
+                    updated_fields.append(field)
+                        log.debug(f"Updated {symbol}.{field}: {old_value} -> {new_value}")
+                elif old_value != new_value:
+                    setattr(item, field, new_value)
                     updated_fields.append(field)
         
         # Handle signals (JSON field)
         if "signals" in payload:
             signals_value = payload["signals"]
             if signals_value is not None:
-                master.signals = json.dumps(signals_value) if not isinstance(signals_value, str) else signals_value
+                item.signals = json.dumps(signals_value) if not isinstance(signals_value, str) else signals_value
             else:
-                master.signals = None
-            master.set_field_updated_at('signals', now)
+                item.signals = None
             updated_fields.append('signals')
         
         # Update exchange if provided
         if "exchange" in payload:
-            master.exchange = (payload["exchange"] or "CRYPTO_COM").upper()
+            item.exchange = (payload["exchange"] or "CRYPTO_COM").upper()
         
         if updated_fields:
-            # If trade_enabled was changed, check count before and after commit
-            trade_enabled_changed = "trade_enabled" in updated_fields
-            count_before = None
-            if trade_enabled_changed:
-                count_before = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True,
-                    WatchlistItem.is_deleted == False
-                ).count()
-            
-            master.updated_at = now
             db.commit()
-            db.refresh(master)
-            log.info(f"✅ Updated watchlist_master for {symbol}: {', '.join(updated_fields)}")
-            
-            # After commit, verify count didn't change unexpectedly
-            if trade_enabled_changed:
-                count_after = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True,
-                    WatchlistItem.is_deleted == False
-                ).count()
-                expected_change = 1 if master.trade_enabled else -1
-                expected_count = (count_before or 0) + expected_change
-                if count_after != expected_count:
-                    log.error(
-                        f"[TRADE_ENABLED_COUNT_MISMATCH] PUT /dashboard/symbol/{symbol}: "
-                        f"Unexpected count change! Before: {count_before}, After: {count_after}, "
-                        f"Expected: {expected_count}. This suggests another coin was automatically disabled!"
-                    )
-                else:
-                    log.info(
-                        f"[TRADE_ENABLED_COUNT_VERIFIED] PUT /dashboard/symbol/{symbol}: "
-                        f"Count verified. Before: {count_before}, After: {count_after}, Expected: {expected_count}"
-                    )
+            # CRITICAL: Refresh from DB to get exact stored values (no mutations)
+            db.refresh(item)
+            log.info(f"✅ Updated watchlist_items for {symbol}: {', '.join(updated_fields)}")
         else:
             log.debug(f"No fields updated for {symbol}")
+            # Still refresh to return current DB state
+            db.refresh(item)
         
-        # CRITICAL: Also sync to watchlist_items table to keep them in sync
-        # This ensures both tables have the same trade_enabled value
-        if updated_fields and "trade_enabled" in updated_fields:
+        # Reset throttle state if alert/trade/config fields changed
+        throttle_reset_fields = {
+            "alert_enabled", "buy_alert_enabled", "sell_alert_enabled",
+            "trade_enabled", "min_price_change_pct", "trade_amount_usd", "sl_tp_mode"
+        }
+        if any(field in updated_fields for field in throttle_reset_fields):
             try:
-                # Find the corresponding watchlist_items row
-                item = db.query(WatchlistItem).filter(
-                    WatchlistItem.symbol == symbol,
-                    WatchlistItem.exchange == (master.exchange or "CRYPTO_COM").upper(),
-                    WatchlistItem.is_deleted == False
-                ).first()
+                from app.services.strategy_profiles import resolve_strategy_profile
+                from app.services.signal_throttle import (
+                    build_strategy_key,
+                    reset_throttle_state,
+                    set_force_next_signal,
+                    compute_config_hash,
+                )
                 
-                if item:
-                    # Sync trade_enabled from master to items
-                    if item.trade_enabled != master.trade_enabled:
-                        log.info(f"[SYNC_MASTER_TO_ITEMS] Syncing trade_enabled for {symbol}: {item.trade_enabled} -> {master.trade_enabled}")
-                        item.trade_enabled = master.trade_enabled
-                        db.commit()
-                        log.info(f"[SYNC_MASTER_TO_ITEMS] Successfully synced trade_enabled for {symbol}")
-                else:
-                    log.debug(f"[SYNC_MASTER_TO_ITEMS] No watchlist_items row found for {symbol}, skipping sync")
-            except Exception as sync_err:
-                log.warning(f"[SYNC_MASTER_TO_ITEMS] Error syncing to watchlist_items for {symbol}: {sync_err}")
-                # Don't fail the request if sync fails
+                # Resolve strategy
+                strategy_type, risk_approach = resolve_strategy_profile(symbol, db, item)
+                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                
+                # Get current price
+                current_price = getattr(item, "price", None)
+                if not current_price or current_price <= 0:
+                    market_data = _get_market_data_for_symbol(db, symbol)
+                    if market_data:
+                        current_price = getattr(market_data, "price", None)
+                
+                # Compute config hash
+                config_hash = compute_config_hash({
+                    "alert_enabled": item.alert_enabled,
+                    "buy_alert_enabled": getattr(item, "buy_alert_enabled", False),
+                    "sell_alert_enabled": getattr(item, "sell_alert_enabled", False),
+                    "trade_enabled": item.trade_enabled,
+                    "strategy_id": None,
+                    "strategy_name": item.sl_tp_mode,
+                    "min_price_change_pct": item.min_price_change_pct,
+                    "trade_amount_usd": item.trade_amount_usd,
+                })
+                
+                # Build change reason
+                changed_fields_list = [f for f in updated_fields if f in throttle_reset_fields]
+                change_reason = f"Dashboard update: {', '.join(changed_fields_list)}"
+                
+                # Reset throttle state
+                reset_throttle_state(
+                    db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side=None,  # Reset both BUY and SELL
+                    current_price=current_price,
+                    parameter_change_reason=change_reason,
+                    config_hash=config_hash,
+                )
+                log.info(f"🔄 [DASHBOARD_UPDATE] Reset throttle state for {symbol} (strategy: {strategy_key}, price: {current_price})")
+                
+                # Set force_next_signal for both sides if any alert/trade field was enabled
+                alert_or_trade_enabled = (
+                    item.alert_enabled or
+                    getattr(item, "buy_alert_enabled", False) or
+                    getattr(item, "sell_alert_enabled", False) or
+                    item.trade_enabled
+                )
+                if alert_or_trade_enabled:
+                    set_force_next_signal(db, symbol=symbol, strategy_key=strategy_key, side="BUY", enabled=True)
+                    set_force_next_signal(db, symbol=symbol, strategy_key=strategy_key, side="SELL", enabled=True)
+                    log.info(f"⚡ [DASHBOARD_UPDATE] Set force_next_signal for {symbol} BUY/SELL - next evaluation will bypass throttle")
+            except Exception as throttle_err:
+                log.warning(f"⚠️ [DASHBOARD_UPDATE] Failed to reset throttle state for {symbol}: {throttle_err}", exc_info=True)
+        
+        # Return serialized item from fresh DB read
+        market_data = _get_market_data_for_symbol(db, item.symbol)
+        serialized_item = _serialize_watchlist_item(item, market_data=market_data, db=db)
         
         return {
             "ok": True,
             "message": f"Updated {len(updated_fields)} field(s) for {symbol}",
-            "item": _serialize_watchlist_master(master, db=db),
+            "item": serialized_item,
             "updated_fields": updated_fields
         }
         
     except Exception as e:
         db.rollback()
-        log.error(f"Error updating watchlist_master for {symbol}: {e}", exc_info=True)
+        log.error(f"Error updating watchlist_items for {symbol}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2006,34 +1990,8 @@ def update_watchlist_item(
                     _apply_watchlist_updates(canonical, payload)
                     db.commit()
                     
-                    # CRITICAL: Also update watchlist_master table (source of truth)
-                    try:
-                        symbol_upper = (canonical.symbol or "").upper()
-                        exchange_upper = (canonical.exchange or "CRYPTO_COM").upper()
-                        master = db.query(WatchlistMaster).filter(
-                            WatchlistMaster.symbol == symbol_upper,
-                            WatchlistMaster.exchange == exchange_upper
-                        ).first()
-                        
-                        if master:
-                            now = datetime.now(timezone.utc)
-                            for field, value in payload.items():
-                                if field == "is_deleted":
-                                    continue
-                                if hasattr(master, field):
-                                    old_value = getattr(master, field, None)
-                                    if old_value != value:
-                                        setattr(master, field, value)
-                                        master.set_field_updated_at(field, now)
-                            if "signals" in payload:
-                                signals_value = payload["signals"]
-                                master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
-                                master.set_field_updated_at('signals', now)
-                            master.updated_at = now
-                            db.commit()
-                            log.debug(f"✅ Updated watchlist_master for {symbol_upper} via PUT /dashboard/{item_id} (canonical)")
-                    except Exception as master_err:
-                        log.warning(f"Error updating watchlist_master in PUT /dashboard/{item_id} (canonical): {master_err}")
+                    # Note: watchlist_master sync removed - WatchlistItem is now single source of truth
+                    # Master table updates are no longer needed
                     
                     item = canonical
                     item_id = canonical.id
@@ -2078,7 +2036,7 @@ def update_watchlist_item(
             config_change_reasons.append(f"buy_alert_enabled ({'YES' if buy_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
             # PHASE 0: Structured logging for UI toggle
             log.info(
-                f"[UI_TOGGLE] {symbol} BUY alert toggle | "
+                f"[UI_TOGGLE] {item.symbol} BUY alert toggle | "
                 f"previous_state={'ENABLED' if buy_alert_enabled_old_value else 'DISABLED'} | "
                 f"new_state={'ENABLED' if new_value else 'DISABLED'}"
             )
@@ -2091,7 +2049,7 @@ def update_watchlist_item(
             config_change_reasons.append(f"sell_alert_enabled ({'YES' if sell_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
             # PHASE 0: Structured logging for UI toggle
             log.info(
-                f"[UI_TOGGLE] {symbol} SELL alert toggle | "
+                f"[UI_TOGGLE] {item.symbol} SELL alert toggle | "
                 f"previous_state={'ENABLED' if sell_alert_enabled_old_value else 'DISABLED'} | "
                 f"new_state={'ENABLED' if new_value else 'DISABLED'}"
             )
@@ -2863,3 +2821,501 @@ def get_expected_take_profit_details_endpoint(symbol: str, db: Session = Depends
 def diagnostics_portfolio_reconciliation(db: Session = Depends(get_db)):
     """Compare live Crypto.com balances vs cached PortfolioBalance rows."""
     return reconcile_portfolio_balances(db)
+
+
+def _verify_diagnostics_auth(request: Request) -> None:
+    """
+    Internal auth guard for diagnostics endpoints.
+    Requires ENABLE_DIAGNOSTICS_ENDPOINTS=1 and X-Diagnostics-Key header.
+    Returns 404 (not 401) to reduce endpoint discoverability.
+    Do not log the key.
+    """
+    import os
+    
+    # Check if diagnostics endpoints are enabled
+    if os.getenv("ENABLE_DIAGNOSTICS_ENDPOINTS", "0") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    # Check for diagnostics API key
+    expected_key = os.getenv("DIAGNOSTICS_API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    # Verify header (case-insensitive)
+    provided_key = request.headers.get("X-Diagnostics-Key") or request.headers.get("x-diagnostics-key")
+    if not provided_key or provided_key != expected_key:
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    # Auth passed - continue
+
+
+@router.get("/diagnostics/portfolio-verify", tags=["diagnostics"])
+def diagnostics_portfolio_verify(
+    request: Request,
+    db: Session = Depends(get_db),
+    include_breakdown: bool = False
+):
+    """
+    Verify that dashboard "Total Value" (NET Wallet Balance) matches Crypto.com "Wallet Balance".
+    
+    This endpoint:
+    1. Gets dashboard NET from cached portfolio summary (same value shown in UI)
+    2. Fetches fresh from Crypto.com API and calculates NET the same way
+    3. Compares them and returns pass/fail
+    
+    Query params:
+    - include_breakdown: If 1 and PORTFOLIO_DEBUG=1, includes asset-by-asset breakdown
+    
+    Protected by:
+    - ENABLE_DIAGNOSTICS_ENDPOINTS=1 environment variable
+    - X-Diagnostics-Key header (DIAGNOSTICS_API_KEY env var)
+    """
+    import os
+    from app.services.brokers.crypto_com_trade import trade_client
+    from app.services.portfolio_cache import _normalize_currency_name, get_crypto_prices
+    from datetime import datetime, timezone
+    from fastapi import Query
+    
+    # Security: Verify diagnostics auth
+    _verify_diagnostics_auth(request)
+    
+    VERIFICATION_DEBUG = os.getenv("VERIFICATION_DEBUG", "0") == "1"
+    PORTFOLIO_DEBUG = os.getenv("PORTFOLIO_DEBUG", "0") == "1"
+    
+    try:
+        # Step 1: Get dashboard NET value (same as shown in UI "Total Value")
+        portfolio_summary = get_portfolio_summary(db)
+        dashboard_net_usd = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance
+        dashboard_gross_usd = portfolio_summary.get("total_assets_usd", 0.0)  # Raw gross assets
+        dashboard_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
+        dashboard_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
+        
+        # Step 2: Fetch fresh from Crypto.com API and calculate NET the same way
+        # This replicates the calculation in update_portfolio_cache() without updating cache
+        try:
+            balance_data = trade_client.get_account_summary()
+        except Exception as api_err:
+            return {
+                "error": f"Crypto.com API call failed: {str(api_err)}",
+                "dashboard_net_usd": dashboard_net_usd,
+                "crypto_com_net_usd": None,
+                "diff_usd": None,
+                "diff_pct": None,
+                "pass": False,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        if not balance_data or "accounts" not in balance_data:
+            return {
+                "error": "No balance data received from Crypto.com",
+                "dashboard_net_usd": dashboard_net_usd,
+                "crypto_com_net_usd": None,
+                "diff_usd": None,
+                "diff_pct": None,
+                "pass": False,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Calculate NET Wallet Balance from Crypto.com API response (same logic as portfolio_cache)
+        # Must use collateral (after haircuts) to match Crypto.com Margin "Wallet Balance"
+        crypto_com_total_assets = 0.0
+        crypto_com_total_collateral = 0.0
+        crypto_com_total_borrowed = 0.0
+        
+        # Get prices for calculating USD values if market_value not available
+        prices = get_crypto_prices()
+        
+        for account in balance_data.get("accounts", []):
+            currency = _normalize_currency_name(
+                account.get("currency") or account.get("instrument_name") or account.get("symbol")
+            )
+            if not currency:
+                continue
+            
+            balance = float(account.get("balance", 0))
+            
+            # Skip negative balances (they're loans, handled separately)
+            if balance < 0:
+                # Check for explicit loan fields
+                borrowed_balance = abs(float(account.get("borrowed_balance", 0)))
+                borrowed_value = abs(float(account.get("borrowed_value", 0)))
+                loan_amount = abs(float(account.get("loan_amount", 0)))
+                loan_value = abs(float(account.get("loan_value", 0)))
+                
+                total_borrowed = borrowed_balance or loan_amount or abs(balance)
+                total_borrowed_usd = borrowed_value or loan_value
+                
+                # Calculate borrowed USD value if not provided
+                if total_borrowed_usd == 0 and total_borrowed > 0:
+                    if currency in ["USD", "USDT", "USDC"]:
+                        total_borrowed_usd = total_borrowed
+                    elif currency in prices:
+                        total_borrowed_usd = total_borrowed * prices[currency]
+                
+                if total_borrowed_usd > 0:
+                    crypto_com_total_borrowed += total_borrowed_usd
+                continue
+            
+            # Use market_value from Crypto.com if available (most accurate)
+            market_value_from_api = account.get("market_value")
+            usd_value = 0.0
+            
+            if market_value_from_api:
+                try:
+                    if isinstance(market_value_from_api, str):
+                        market_value_str = market_value_from_api.strip().replace(",", "").replace(" ", "")
+                        if market_value_str and market_value_str.lower() not in ["0", "0.0", "0.00"]:
+                            usd_value = float(market_value_str)
+                    else:
+                        usd_value = float(market_value_from_api)
+                except (ValueError, TypeError):
+                    usd_value = 0.0
+            
+            # If no market_value, calculate from prices (same as portfolio_cache)
+            if usd_value == 0:
+                if currency in ["USDT", "USD", "USDC"]:
+                    usd_value = balance
+                elif currency in prices:
+                    usd_value = balance * prices[currency]
+                else:
+                    # Try Crypto.com API directly for this currency (same as portfolio_cache)
+                    from app.utils.http_client import http_get
+                    price_found = False
+                    
+                    # Try USDT pair first
+                    try:
+                        ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={currency}_USDT"
+                        ticker_response = http_get(ticker_url, timeout=5, calling_module="portfolio_verify")
+                        if ticker_response.status_code == 200:
+                            ticker_data = ticker_response.json()
+                            if "result" in ticker_data and "data" in ticker_data["result"]:
+                                ticker = ticker_data["result"]["data"]
+                                price = float(ticker.get("a", 0))
+                                if price > 0:
+                                    prices[currency] = price
+                                    usd_value = balance * price
+                                    price_found = True
+                    except Exception:
+                        pass
+                    
+                    # If USDT pair failed, try USD pair
+                    if not price_found:
+                        try:
+                            ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={currency}_USD"
+                            ticker_response = http_get(ticker_url, timeout=5, calling_module="portfolio_verify")
+                            if ticker_response.status_code == 200:
+                                ticker_data = ticker_response.json()
+                                if "result" in ticker_data and "data" in ticker_data["result"]:
+                                    ticker = ticker_data["result"]["data"]
+                                    price = float(ticker.get("a", 0))
+                                    if price > 0:
+                                        prices[currency] = price
+                                        usd_value = balance * price
+                        except Exception:
+                            pass
+            
+            if usd_value > 0:
+                crypto_com_total_assets += usd_value
+                
+                # Extract haircut and calculate collateral (same as portfolio_cache)
+                haircut = 0.0
+                haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+                if haircut_raw is not None:
+                    try:
+                        if isinstance(haircut_raw, str):
+                            haircut_str = haircut_raw.strip().replace("--", "").strip()
+                            if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                                haircut = float(haircut_str)
+                        else:
+                            haircut = float(haircut_raw)
+                    except (ValueError, TypeError):
+                        haircut = 0.0
+                
+                # Stablecoins have 0 haircut
+                if currency in ["USD", "USDT", "USDC"]:
+                    haircut = 0.0
+                
+                # Calculate collateral value (after haircut)
+                collateral_value = usd_value * (1 - haircut)
+                crypto_com_total_collateral += collateral_value
+        
+        # Calculate NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
+        crypto_com_net_usd = crypto_com_total_collateral - crypto_com_total_borrowed
+        
+        # Step 3: Compare
+        diff_usd = dashboard_net_usd - crypto_com_net_usd
+        diff_pct = (diff_usd / crypto_com_net_usd * 100) if crypto_com_net_usd != 0 else 0.0
+        pass_check = abs(diff_usd) <= 5.0  # Tolerance: $5
+        
+        result = {
+            "dashboard_net_usd": round(dashboard_net_usd, 2),
+            "dashboard_gross_usd": round(dashboard_gross_usd, 2),
+            "dashboard_collateral_usd": round(dashboard_collateral_usd, 2),
+            "dashboard_borrowed_usd": round(dashboard_borrowed_usd, 2),
+            "crypto_com_net_usd": round(crypto_com_net_usd, 2),
+            "crypto_com_gross_usd": round(crypto_com_total_assets, 2),
+            "crypto_com_collateral_usd": round(crypto_com_total_collateral, 2),
+            "crypto_com_borrowed_usd": round(crypto_com_total_borrowed, 2),
+            "diff_usd": round(diff_usd, 2),
+            "diff_pct": round(diff_pct, 4),
+            "pass": pass_check,
+            "tolerance_usd": 5.0,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Add breakdown if requested and PORTFOLIO_DEBUG is enabled
+        if include_breakdown and PORTFOLIO_DEBUG:
+            breakdown = []
+            # Re-process accounts to build breakdown (we already have the data, but need to format it)
+            for account in balance_data.get("accounts", []):
+                currency = _normalize_currency_name(
+                    account.get("currency") or account.get("instrument_name") or account.get("symbol")
+                )
+                if not currency:
+                    continue
+                
+                balance = float(account.get("balance", 0))
+                if balance <= 0:
+                    continue
+                
+                # Calculate raw value (same logic as above)
+                market_value_from_api = account.get("market_value")
+                usd_value = 0.0
+                
+                if market_value_from_api:
+                    try:
+                        if isinstance(market_value_from_api, str):
+                            market_value_str = market_value_from_api.strip().replace(",", "").replace(" ", "")
+                            if market_value_str and market_value_str.lower() not in ["0", "0.0", "0.00"]:
+                                usd_value = float(market_value_str)
+                        else:
+                            usd_value = float(market_value_from_api)
+                    except (ValueError, TypeError):
+                        usd_value = 0.0
+                
+                if usd_value == 0:
+                    if currency in ["USDT", "USD", "USDC"]:
+                        usd_value = balance
+                    elif currency in prices:
+                        usd_value = balance * prices[currency]
+                
+                if usd_value > 0:
+                    # Extract haircut (same logic as above)
+                    haircut = 0.0
+                    haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+                    if haircut_raw is not None:
+                        try:
+                            if isinstance(haircut_raw, str):
+                                haircut_str = haircut_raw.strip().replace("--", "").strip()
+                                if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                                    haircut = float(haircut_str)
+                            else:
+                                haircut = float(haircut_raw)
+                        except (ValueError, TypeError):
+                            haircut = 0.0
+                    
+                    if currency in ["USD", "USDT", "USDC"]:
+                        haircut = 0.0
+                    
+                    collateral_value = usd_value * (1 - haircut)
+                    breakdown.append({
+                        "symbol": currency,
+                        "quantity": round(balance, 8),
+                        "raw_value_usd": round(usd_value, 2),
+                        "haircut": round(haircut, 4),
+                        "collateral_value_usd": round(collateral_value, 2)
+                    })
+            
+            # Sort by raw_value_usd descending
+            breakdown.sort(key=lambda x: x["raw_value_usd"], reverse=True)
+            result["breakdown"] = breakdown
+        
+        # Structured logging when VERIFICATION_DEBUG=1
+        if VERIFICATION_DEBUG:
+            log.info(f"[VERIFICATION_DEBUG] Portfolio verify: dashboard_net=${dashboard_net_usd:,.2f}, crypto_com_net=${crypto_com_net_usd:,.2f}, diff=${diff_usd:,.2f}, pass={pass_check}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error in portfolio verification: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
+@router.get("/diagnostics/portfolio-verify-lite", tags=["diagnostics"])
+def diagnostics_portfolio_verify_lite(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Lightweight portfolio verification endpoint.
+    
+    Returns only essential fields: pass, dashboard_net_usd, crypto_com_net_usd, diff_usd, timestamp.
+    No per-asset breakdown even if PORTFOLIO_DEBUG=1.
+    
+    Protected by:
+    - ENABLE_DIAGNOSTICS_ENDPOINTS=1 environment variable
+    - X-Diagnostics-Key header (DIAGNOSTICS_API_KEY env var)
+    """
+    import os
+    from app.services.brokers.crypto_com_trade import trade_client
+    from app.services.portfolio_cache import _normalize_currency_name, get_crypto_prices
+    from datetime import datetime, timezone
+    
+    # Security: Verify diagnostics auth
+    _verify_diagnostics_auth(request)
+    
+    VERIFICATION_DEBUG = os.getenv("VERIFICATION_DEBUG", "0") == "1"
+    
+    try:
+        # Step 1: Get dashboard NET value (same as shown in UI "Total Value")
+        portfolio_summary = get_portfolio_summary(db)
+        dashboard_net_usd = portfolio_summary.get("total_usd", 0.0)  # NET equity
+        
+        # Step 2: Fetch fresh from Crypto.com API and calculate NET the same way
+        try:
+            balance_data = trade_client.get_account_summary()
+        except Exception as api_err:
+            return {
+                "error": f"Crypto.com API call failed: {str(api_err)}",
+                "dashboard_net_usd": round(dashboard_net_usd, 2),
+                "crypto_com_net_usd": None,
+                "diff_usd": None,
+                "pass": False,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        if not balance_data or "accounts" not in balance_data:
+            return {
+                "error": "No balance data received from Crypto.com",
+                "dashboard_net_usd": round(dashboard_net_usd, 2),
+                "crypto_com_net_usd": None,
+                "diff_usd": None,
+                "pass": False,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Calculate NET Wallet Balance from Crypto.com API response (same logic as portfolio_cache)
+        # Must use collateral (after haircuts) to match Crypto.com Margin "Wallet Balance"
+        crypto_com_total_assets = 0.0
+        crypto_com_total_collateral = 0.0
+        crypto_com_total_borrowed = 0.0
+        prices = get_crypto_prices()
+        
+        for account in balance_data.get("accounts", []):
+            currency = _normalize_currency_name(
+                account.get("currency") or account.get("instrument_name") or account.get("symbol")
+            )
+            if not currency:
+                continue
+            
+            balance = float(account.get("balance", 0))
+            
+            # Handle loans (negative balances)
+            if balance < 0:
+                borrowed_balance = abs(float(account.get("borrowed_balance", 0)))
+                borrowed_value = abs(float(account.get("borrowed_value", 0)))
+                loan_amount = abs(float(account.get("loan_amount", 0)))
+                loan_value = abs(float(account.get("loan_value", 0)))
+                
+                total_borrowed = borrowed_balance or loan_amount or abs(balance)
+                total_borrowed_usd = borrowed_value or loan_value
+                
+                if total_borrowed_usd == 0 and total_borrowed > 0:
+                    if currency in ["USD", "USDT", "USDC"]:
+                        total_borrowed_usd = total_borrowed
+                    elif currency in prices:
+                        total_borrowed_usd = total_borrowed * prices[currency]
+                
+                if total_borrowed_usd > 0:
+                    crypto_com_total_borrowed += total_borrowed_usd
+                continue
+            
+            # Calculate asset USD value (raw)
+            market_value_from_api = account.get("market_value")
+            usd_value = 0.0
+            
+            if market_value_from_api:
+                try:
+                    if isinstance(market_value_from_api, str):
+                        market_value_str = market_value_from_api.strip().replace(",", "").replace(" ", "")
+                        if market_value_str and market_value_str.lower() not in ["0", "0.0", "0.00"]:
+                            usd_value = float(market_value_str)
+                    else:
+                        usd_value = float(market_value_from_api)
+                except (ValueError, TypeError):
+                    usd_value = 0.0
+            
+            if usd_value == 0:
+                if currency in ["USDT", "USD", "USDC"]:
+                    usd_value = balance
+                elif currency in prices:
+                    usd_value = balance * prices[currency]
+                else:
+                    # Try Crypto.com API directly (minimal - only if needed)
+                    from app.utils.http_client import http_get
+                    try:
+                        ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={currency}_USDT"
+                        ticker_response = http_get(ticker_url, timeout=5, calling_module="portfolio_verify_lite")
+                        if ticker_response.status_code == 200:
+                            ticker_data = ticker_response.json()
+                            if "result" in ticker_data and "data" in ticker_data["result"]:
+                                ticker = ticker_data["result"]["data"]
+                                price = float(ticker.get("a", 0))
+                                if price > 0:
+                                    usd_value = balance * price
+                    except Exception:
+                        pass
+            
+            if usd_value > 0:
+                crypto_com_total_assets += usd_value
+                
+                # Extract haircut and calculate collateral (same as portfolio_cache)
+                haircut = 0.0
+                haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+                if haircut_raw is not None:
+                    try:
+                        if isinstance(haircut_raw, str):
+                            haircut_str = haircut_raw.strip().replace("--", "").strip()
+                            if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                                haircut = float(haircut_str)
+                        else:
+                            haircut = float(haircut_raw)
+                    except (ValueError, TypeError):
+                        haircut = 0.0
+                
+                # Stablecoins have 0 haircut
+                if currency in ["USD", "USDT", "USDC"]:
+                    haircut = 0.0
+                
+                # Calculate collateral value (after haircut)
+                collateral_value = usd_value * (1 - haircut)
+                crypto_com_total_collateral += collateral_value
+        
+        # Calculate NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
+        crypto_com_net_usd = crypto_com_total_collateral - crypto_com_total_borrowed
+        
+        # Compare
+        diff_usd = dashboard_net_usd - crypto_com_net_usd
+        pass_check = abs(diff_usd) <= 5.0
+        
+        result = {
+            "pass": pass_check,
+            "dashboard_net_usd": round(dashboard_net_usd, 2),
+            "crypto_com_net_usd": round(crypto_com_net_usd, 2),
+            "diff_usd": round(diff_usd, 2),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Structured logging when VERIFICATION_DEBUG=1
+        if VERIFICATION_DEBUG:
+            log.info(f"[VERIFICATION_DEBUG] Portfolio verify-lite: dashboard_net=${dashboard_net_usd:,.2f}, crypto_com_net=${crypto_com_net_usd:,.2f}, diff=${diff_usd:,.2f}, pass={pass_check}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error in portfolio verification (lite): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")

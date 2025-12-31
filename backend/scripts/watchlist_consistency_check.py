@@ -121,6 +121,26 @@ def compare_values(db_value: Any, api_value: Any, field_name: str) -> Optional[s
     return None
 
 
+def get_resolved_strategy_key(db: Session, item: WatchlistItem) -> Optional[str]:
+    """Resolve the full strategy key (preset-risk) for a watchlist item.
+    
+    Returns canonical strategy key like "swing-conservative" or None if unresolved.
+    """
+    try:
+        from app.services.strategy_profiles import resolve_strategy_profile
+        strategy_type, risk_approach = resolve_strategy_profile(
+            symbol=item.symbol,
+            db=db,
+            watchlist_item=item
+        )
+        if strategy_type and risk_approach:
+            return f"{strategy_type.value}-{risk_approach.value}"
+        return None
+    except Exception as e:
+        logger.debug(f"Could not resolve strategy for {item.symbol}: {e}")
+        return None
+
+
 def check_consistency(db: Session, api_url: str = "http://localhost:8002/api/dashboard") -> dict:
     """Check watchlist consistency between API and database, return report data"""
     # Get data from both sources
@@ -201,6 +221,20 @@ def check_consistency(db: Session, api_url: str = "http://localhost:8002/api/das
                 if diff:
                     mismatches.append(f"{field}: {diff}")
             
+            # CRITICAL: Compare resolved strategy (preset-risk) between DB and API
+            # This ensures dropdown and tooltip match
+            db_strategy_key = get_resolved_strategy_key(db, item)
+            api_strategy_key = api_item.get("strategy_key")
+            
+            # Normalize "no strategy" representations
+            db_strategy_normalized = db_strategy_key if db_strategy_key else None
+            api_strategy_normalized = api_strategy_key if api_strategy_key and api_strategy_key.lower() not in ["none", "no strategy", ""] else None
+            
+            if db_strategy_normalized != api_strategy_normalized:
+                db_display = db_strategy_key if db_strategy_key else "None"
+                api_display = api_strategy_key if api_strategy_key else "None"
+                mismatches.append(f"strategy: DB={db_display}, API={api_display}")
+            
             if mismatches:
                 issues.extend(mismatches)
                 report_data["summary"]["api_mismatches"] += 1
@@ -216,6 +250,10 @@ def check_consistency(db: Session, api_url: str = "http://localhost:8002/api/das
         if (item.buy_alert_enabled or item.sell_alert_enabled) and not item.alert_enabled:
             issues.append("buy/sell alert enabled but master alert_enabled=False")
         
+        # Get resolved strategy for display
+        db_strategy_key = get_resolved_strategy_key(db, item)
+        api_strategy_key = api_item.get("strategy_key") if api_item else None
+        
         item_data = {
             "symbol": symbol,
             "trade_enabled": item.trade_enabled,
@@ -224,6 +262,8 @@ def check_consistency(db: Session, api_url: str = "http://localhost:8002/api/das
             "sell_alert_enabled": item.sell_alert_enabled,
             "has_throttle_state": has_throttle,
             "in_api": api_item is not None,
+            "strategy_db": db_strategy_key or "None",
+            "strategy_api": api_strategy_key or "None",
             "issues": issues
         }
         
@@ -292,8 +332,8 @@ def generate_markdown_report(report_data: dict) -> str:
     # Detailed Items Table
     lines.append("## Watchlist Items")
     lines.append("")
-    lines.append("| Symbol | Trade | Alert | Buy Alert | Sell Alert | Throttle | In API | Issues |")
-    lines.append("|--------|-------|-------|-----------|------------|----------|--------|--------|")
+    lines.append("| Symbol | Trade | Alert | Buy Alert | Sell Alert | Strategy (DB) | Strategy (API) | Throttle | In API | Issues |")
+    lines.append("|--------|-------|-------|-----------|------------|---------------|---------------|----------|--------|--------|")
     
     for item in report_data["items"]:
         trade = "✅" if item["trade_enabled"] else "❌"
@@ -302,9 +342,15 @@ def generate_markdown_report(report_data: dict) -> str:
         sell_alert = "✅" if item["sell_alert_enabled"] else "❌"
         throttle = "✅" if item["has_throttle_state"] else "—"
         in_api = "✅" if item.get("in_api", False) else "❌"
+        strategy_db = item.get("strategy_db", "—")
+        strategy_api = item.get("strategy_api", "—")
+        # Highlight strategy mismatches
+        if strategy_db != strategy_api and strategy_db != "—" and strategy_api != "—":
+            strategy_db = f"⚠️ {strategy_db}"
+            strategy_api = f"⚠️ {strategy_api}"
         issues_str = "; ".join(item["issues"]) if item["issues"] else "—"
         
-        lines.append(f"| {item['symbol']} | {trade} | {alert} | {buy_alert} | {sell_alert} | {throttle} | {in_api} | {issues_str} |")
+        lines.append(f"| {item['symbol']} | {trade} | {alert} | {buy_alert} | {sell_alert} | {strategy_db} | {strategy_api} | {throttle} | {in_api} | {issues_str} |")
     
     return "\n".join(lines)
 
