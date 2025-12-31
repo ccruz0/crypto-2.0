@@ -307,10 +307,11 @@ def verify_strategy_write_through(db: Session, api_url: str, symbol: str):
 def verify_specific_symbols(db: Session, api_url: str):
     """Verify the specific symbols mentioned in the issue"""
     logger.info("=" * 60)
-    logger.info("Verifying specific symbols: TRX_USDT, ALGO_USDT, ADA_USD")
+    logger.info("Verifying specific symbols: TRX_USDT, ALGO_USDT, ADA_USDT")
     logger.info("=" * 60)
     
-    symbols = ["TRX_USDT", "ALGO_USDT", "ADA_USD"]
+    # Use symbols that exist in DB (ADA_USDT not ADA_USD based on AWS DB check)
+    symbols = ["TRX_USDT", "ALGO_USDT", "ADA_USDT"]
     all_ok = True
     all_issues = []
     

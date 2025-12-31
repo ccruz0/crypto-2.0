@@ -110,9 +110,11 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         "id": item.id,
         "symbol": (item.symbol or "").upper(),
         "exchange": default_exchange,  # Always ensure exchange has a value
-        "alert_enabled": item.alert_enabled if item.alert_enabled is not None else False,
-        "buy_alert_enabled": getattr(item, "buy_alert_enabled", None) if getattr(item, "buy_alert_enabled", None) is not None else False,
-        "sell_alert_enabled": getattr(item, "sell_alert_enabled", None) if getattr(item, "sell_alert_enabled", None) is not None else False,
+        # CRITICAL: Return exact DB values for boolean fields (no defaults)
+        # If DB is False, return False. If DB is None, return None (not False).
+        "alert_enabled": item.alert_enabled,
+        "buy_alert_enabled": getattr(item, "buy_alert_enabled", None),
+        "sell_alert_enabled": getattr(item, "sell_alert_enabled", None),
         "trade_enabled": item.trade_enabled,
         # REGRESSION GUARD: trade_amount_usd must be returned exactly as stored in DB
         # - If DB is NULL, API must return null (NOT 10, NOT 0, NOT any default)
@@ -254,6 +256,9 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     
     # CRITICAL: Add resolved strategy information to API response
     # This ensures frontend can display the correct strategy and tooltip matches dropdown
+    # Must always resolve strategy - if resolver fails, log error but still attempt resolution
+    strategy_type = None
+    risk_approach = None
     try:
         from app.services.strategy_profiles import resolve_strategy_profile
         strategy_type, risk_approach = resolve_strategy_profile(
@@ -261,19 +266,24 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
             db=db,
             watchlist_item=item
         )
-        # Add strategy fields to response
-        serialized["strategy_preset"] = strategy_type.value if strategy_type else None
-        serialized["strategy_risk"] = risk_approach.value if risk_approach else None
-        # Create canonical strategy key for comparison (e.g., "swing-conservative")
-        if strategy_type and risk_approach:
-            serialized["strategy_key"] = f"{strategy_type.value}-{risk_approach.value}"
-        else:
-            serialized["strategy_key"] = None
     except Exception as e:
-        log.debug(f"Could not resolve strategy for {item.symbol}: {e}")
-        serialized["strategy_preset"] = None
-        serialized["strategy_risk"] = None
+        log.error(f"Failed to resolve strategy for {item.symbol}: {e}", exc_info=True)
+        # Try to get at least risk from DB directly
+        if item.sl_tp_mode:
+            from app.services.strategy_profiles import _normalize_approach, RiskApproach
+            risk_approach = _normalize_approach(item.sl_tp_mode)
+    
+    # Add strategy fields to response
+    serialized["strategy_preset"] = strategy_type.value if strategy_type else None
+    serialized["strategy_risk"] = risk_approach.value if risk_approach else None
+    # Create canonical strategy key for comparison (e.g., "swing-conservative")
+    if strategy_type and risk_approach:
+        serialized["strategy_key"] = f"{strategy_type.value}-{risk_approach.value}"
+    else:
         serialized["strategy_key"] = None
+        # Log warning if strategy should be resolvable but isn't
+        if item.sl_tp_mode:
+            log.warning(f"Strategy resolution incomplete for {item.symbol}: preset={strategy_type}, risk={risk_approach}, sl_tp_mode={item.sl_tp_mode}")
     
     return serialized
 
@@ -1222,16 +1232,10 @@ def update_watchlist_item_by_symbol(
                 
                 # CRITICAL: For trade_amount_usd, allow None/null explicitly (no default)
                 # Only update if value actually changed
-                if field == "trade_amount_usd":
-                    # Allow None/null values - compare properly
-                    pass
                 if old_value != new_value:
                     setattr(item, field, new_value)
                     updated_fields.append(field)
-                        log.debug(f"Updated {symbol}.{field}: {old_value} -> {new_value}")
-                elif old_value != new_value:
-                    setattr(item, field, new_value)
-                    updated_fields.append(field)
+                    log.debug(f"Updated {symbol}.{field}: {old_value} -> {new_value}")
         
         # Handle signals (JSON field)
         if "signals" in payload:
