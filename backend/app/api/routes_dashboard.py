@@ -1125,7 +1125,6 @@ def get_open_orders_summary():
 
 
 @router.get("/dashboard")
-@router.head("/dashboard")
 def list_watchlist_items(db: Session = Depends(get_db)):
     """Return watchlist items from WatchlistItem table (single source of truth).
     
@@ -1226,6 +1225,16 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
         log.exception("Error fetching dashboard items from watchlist_items table")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.head("/dashboard")
+def list_watchlist_items_head(db: Session = Depends(get_db)):
+    """HEAD handler for /api/dashboard - returns same headers as GET but no body"""
+    # HEAD requests should return same headers as GET but no body
+    # FastAPI middleware will add fingerprint headers automatically
+    # We just need to return empty response with 200 status
+    from fastapi import Response
+    return Response(status_code=200, content="", media_type="application/json")
 
 
 @router.put("/dashboard/symbol/{symbol}")
