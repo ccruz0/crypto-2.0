@@ -104,3 +104,15 @@ These help verify which code version is running.
 - `3`: Database fingerprint mismatch (use container wrapper)
 - Other: Script-specific errors
 
+## Deployment Verification
+
+After rebuilding the backend image, verify scripts are included:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+docker compose --profile aws build --no-cache backend-aws
+docker compose --profile aws up -d backend-aws
+docker exec $(docker compose --profile aws ps -q backend-aws) sh -lc "ls -la /app/scripts | head -30"
+docker exec $(docker compose --profile aws ps -q backend-aws) sh -lc "test -f /app/scripts/print_api_fingerprints.py && echo OK || echo MISSING"
+```
+

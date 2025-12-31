@@ -270,12 +270,17 @@ class SignalMonitorService:
         
         # In diagnostic mode, print to stdout for snippet extraction
         # Format as single-line summary for easy parsing
-        trade_amount_str = f"${trade_amount_usd:.2f}" if trade_amount_usd else "None"
-        blocked_by_str = f" blocked_by={guard_reason}" if guard_reason else ""
-        print(f"TRADE decision={decision} reason={reason_code} symbol={symbol} side={side} "
-              f"current_price=${current_price:.4f} signal_exists={signal_exists} "
-              f"trade_enabled={trade_enabled} trade_amount_usd={trade_amount_str} "
-              f"should_create_order={should_create_order}{blocked_by_str} eval_id={evaluation_id}")
+        # blocked_by should match reason when decision is SKIP
+        blocked_by_value = guard_reason if guard_reason else (reason_code if decision == "SKIP" else "none")
+        
+        print(f"TRADE decision={decision} reason={reason_code} blocked_by={blocked_by_value} "
+              f"trade_enabled={trade_enabled} signal_exists={signal_exists} "
+              f"should_create_order={should_create_order} symbol={symbol} side={side} "
+              f"current_price=${current_price:.4f} trade_amount_usd=${trade_amount_usd:.2f}" if trade_amount_usd else 
+              f"TRADE decision={decision} reason={reason_code} blocked_by={blocked_by_value} "
+              f"trade_enabled={trade_enabled} signal_exists={signal_exists} "
+              f"should_create_order={should_create_order} symbol={symbol} side={side} "
+              f"current_price=${current_price:.4f} trade_amount_usd=None")
         
         # Also log normally for production logs
         logger.info(f"🔍 [TRADE_DECISION_TRACE] {symbol} {side} (eval_id={evaluation_id})")

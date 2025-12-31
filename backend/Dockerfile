@@ -55,6 +55,10 @@ ARG BUILD_TIME=unknown
 # Copiar código de la app (needed before we can check .git)
 COPY . .
 
+# Explicitly copy scripts directory to ensure it's included in the image
+# This prevents regression if .dockerignore or COPY . . behavior changes
+COPY scripts/ /app/scripts/
+
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time
 # Use shell to compute final values and write to files for later use

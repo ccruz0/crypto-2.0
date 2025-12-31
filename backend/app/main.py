@@ -169,6 +169,15 @@ async def startup_event():
     except Exception:
         pass  # Ignore if monitoring module not available
     
+    # Verify critical scripts exist (if PRINT_FINGERPRINTS_ON_START is set)
+    if os.getenv("PRINT_FINGERPRINTS_ON_START") == "1":
+        import pathlib
+        scripts_path = pathlib.Path("/app/scripts/print_api_fingerprints.py")
+        if scripts_path.exists():
+            logger.info(f"✅ Verified: {scripts_path} exists")
+        else:
+            logger.warning(f"⚠️  Warning: {scripts_path} not found in container")
+    
     if DEBUG_DISABLE_STARTUP_EVENT:
         logger.warning("PERF: Startup event DISABLED for performance testing")
         return
