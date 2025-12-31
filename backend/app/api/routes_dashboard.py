@@ -1139,6 +1139,10 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             items = db.query(WatchlistItem).filter(
                 WatchlistItem.is_deleted == False
             ).order_by(WatchlistItem.created_at.desc()).limit(200).all()
+            # DEBUG: Log what we got for problematic symbols
+            for item in items:
+                if item.symbol in ["ALGO_USDT", "ADA_USDT", "TRX_USDT"]:
+                    log.info(f"[DEBUG] Query returned {item.symbol}: ID={item.id} trade_amount_usd={item.trade_amount_usd} trade_enabled={item.trade_enabled} alert_enabled={item.alert_enabled} is_deleted={getattr(item, 'is_deleted', None)}")
         except Exception as query_err:
             log.warning(f"Watchlist items query failed: {query_err}, rolling back transaction")
             db.rollback()
