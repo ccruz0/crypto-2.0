@@ -15,6 +15,8 @@ from pathlib import Path
 import requests
 import time
 from typing import Dict, Any, Optional
+import hashlib
+from urllib.parse import urlparse, urlunparse
 
 # Add parent directory to path to import app modules
 backend_dir = Path(__file__).parent.parent
@@ -30,6 +32,69 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def is_running_in_docker() -> bool:
+    """Check if script is running inside Docker container"""
+    return os.path.exists("/.dockerenv") or os.getenv("RUNNING_IN_DOCKER") == "1"
+
+
+def compute_db_fingerprint(database_url: str) -> tuple[str, str, str]:
+    """Compute DB fingerprint (host, name, hash) from DATABASE_URL"""
+    try:
+        parsed = urlparse(database_url)
+        db_host = parsed.hostname or "unknown"
+        db_name = parsed.path.lstrip("/") if parsed.path else "unknown"
+        # Hash with password stripped (never include password)
+        safe_url = urlunparse(parsed._replace(netloc=f"{parsed.username or ''}@{parsed.hostname or ''}:{parsed.port or ''}"))
+        db_hash = hashlib.sha256(safe_url.encode()).hexdigest()[:10]
+        return db_host, db_name, db_hash
+    except Exception:
+        return "unknown", "unknown", "unknown"
+
+
+def verify_db_match(api_url: str, local_database_url: str) -> bool:
+    """Verify local DB matches API DB by comparing fingerprints"""
+    try:
+        response = requests.get(api_url, timeout=5)
+        api_db_host = response.headers.get("X-ATP-DB-Host", "unknown")
+        api_db_name = response.headers.get("X-ATP-DB-Name", "unknown")
+        api_db_hash = response.headers.get("X-ATP-DB-Hash", "unknown")
+        
+        local_host, local_name, local_hash = compute_db_fingerprint(local_database_url)
+        
+        if api_db_hash != "unknown" and local_hash != "unknown" and api_db_hash != local_hash:
+            logger.error("=" * 70)
+            logger.error("❌ DATABASE MISMATCH DETECTED")
+            logger.error("=" * 70)
+            logger.error(f"API DB:  host={api_db_host}, name={api_db_name}, hash={api_db_hash}")
+            logger.error(f"Local DB: host={local_host}, name={local_name}, hash={local_hash}")
+            logger.error("")
+            logger.error("Script is using a different database than the API!")
+            logger.error("Run via: backend/scripts/run_in_backend_container.sh python3 scripts/verify_watchlist_e2e.py")
+            logger.error("=" * 70)
+            return False
+        return True
+    except requests.exceptions.RequestException:
+        # API not reachable - skip verification but still honor host check
+        return True
+
+
+# GUARD: Prevent host execution unless explicitly allowed
+if not is_running_in_docker() and os.getenv("ALLOW_HOST_RUN") != "1":
+    script_name = Path(__file__).name
+    print("=" * 70, file=sys.stderr)
+    print("❌ REFUSING TO RUN ON HOST", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print("", file=sys.stderr)
+    print("This script must run inside the backend container to use the same", file=sys.stderr)
+    print("database as the API. Running on host may show mismatches.", file=sys.stderr)
+    print("", file=sys.stderr)
+    print(f"Run via: backend/scripts/run_in_backend_container.sh python3 scripts/{script_name}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Override: ALLOW_HOST_RUN=1 (advanced, may show mismatches)", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    sys.exit(2)
 
 
 def get_api_url() -> str:
@@ -338,6 +403,12 @@ def main():
     try:
         api_url = get_api_url()
         logger.info(f"Using API URL: {api_url}")
+        
+        # Verify DB fingerprint matches API (if API is reachable)
+        from app.database import database_url
+        if not verify_db_match(api_url, database_url):
+            return 3
+        
         logger.info(f"Write tests enabled: {write_test_enabled} (set E2E_WRITE_TEST=1 to enable)")
         
         db: Session = SessionLocal()

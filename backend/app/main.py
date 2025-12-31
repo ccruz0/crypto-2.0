@@ -115,17 +115,43 @@ app.add_middleware(
     max_age=3600,  # Cache preflight requests for 1 hour
     )
 
-# Build fingerprint middleware - adds commit/build time to dashboard responses
+# Build fingerprint middleware - adds commit/build time and DB fingerprint to all responses
 class BuildFingerprintMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         
-        # Add fingerprint headers for /api/dashboard endpoint
-        if request.url.path == "/api/dashboard":
-            git_sha = os.getenv("ATP_GIT_SHA", "unknown")
-            build_time = os.getenv("ATP_BUILD_TIME", "unknown")
-            response.headers["X-ATP-Backend-Commit"] = git_sha
-            response.headers["X-ATP-Backend-BuildTime"] = build_time
+        # Add build fingerprint headers
+        git_sha = os.getenv("ATP_GIT_SHA", "unknown")
+        build_time = os.getenv("ATP_BUILD_TIME", "unknown")
+        response.headers["X-ATP-Backend-Commit"] = git_sha
+        response.headers["X-ATP-Backend-BuildTime"] = build_time
+        
+        # Add DB fingerprint headers (for verification scripts to match DB)
+        import hashlib
+        from urllib.parse import urlparse, urlunparse
+        database_url = os.getenv("DATABASE_URL", "")
+        if database_url:
+            try:
+                parsed = urlparse(database_url)
+                # Extract host and database name
+                db_host = parsed.hostname or "unknown"
+                db_name = parsed.path.lstrip("/") if parsed.path else "unknown"
+                
+                # Create hash of DATABASE_URL with password stripped (never include password)
+                safe_url = urlunparse(parsed._replace(netloc=f"{parsed.username or ''}@{parsed.hostname or ''}:{parsed.port or ''}"))
+                db_hash = hashlib.sha256(safe_url.encode()).hexdigest()[:10]
+                
+                response.headers["X-ATP-DB-Host"] = db_host
+                response.headers["X-ATP-DB-Name"] = db_name
+                response.headers["X-ATP-DB-Hash"] = db_hash
+            except Exception:
+                response.headers["X-ATP-DB-Host"] = "unknown"
+                response.headers["X-ATP-DB-Name"] = "unknown"
+                response.headers["X-ATP-DB-Hash"] = "unknown"
+        else:
+            response.headers["X-ATP-DB-Host"] = "unknown"
+            response.headers["X-ATP-DB-Name"] = "unknown"
+            response.headers["X-ATP-DB-Hash"] = "unknown"
         
         return response
 
