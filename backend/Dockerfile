@@ -59,6 +59,10 @@ COPY . .
 # This prevents regression if .dockerignore or COPY . . behavior changes
 COPY scripts/ /app/scripts/
 
+# Build-time assertion: fail loudly if critical scripts are missing
+# This ensures the build fails immediately rather than silently missing files at runtime
+RUN test -f /app/scripts/print_api_fingerprints.py || (echo "ERROR: /app/scripts/print_api_fingerprints.py is missing in image" >&2 && exit 1)
+
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time
 # Use shell to compute final values and write to files for later use

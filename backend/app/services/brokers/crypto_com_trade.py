@@ -511,8 +511,30 @@ class CryptoComTradeClient:
                             if market_value:
                                 account_entry["market_value"] = str(market_value)
                             accounts.append(account_entry)
-                    logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
-                    return {"accounts": accounts}
+                logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
+                
+                # Extract top-level equity/wallet balance fields if present
+                # Crypto.com margin wallet may provide pre-computed NET balance
+                response_data = {"accounts": accounts}
+                result_data = result.get("result", {})
+                
+                # Check for equity/wallet balance fields (various possible names)
+                equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
+                                "available_equity", "account_equity", "balance_equity"]
+                for field in equity_fields:
+                    if field in result_data:
+                        value = result_data[field]
+                        if value is not None:
+                            try:
+                                # Convert to float if it's a string
+                                equity_value = float(value) if isinstance(value, str) else float(value)
+                                response_data["margin_equity"] = equity_value
+                                logger.info(f"Found margin equity field '{field}': {equity_value}")
+                                break  # Use first found field
+                            except (ValueError, TypeError):
+                                logger.debug(f"Could not parse equity field '{field}': {value}")
+                
+                return response_data
                 
                 # Try user-balance format (data array with position_balances)
                 if "data" in result["result"]:
