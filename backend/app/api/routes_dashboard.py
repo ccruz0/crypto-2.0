@@ -1149,15 +1149,33 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             else:
                 raise
         
-        result = []
+        # CRITICAL: Deduplicate by symbol to ensure one row per symbol (same logic as verification scripts)
+        # Use select_preferred_watchlist_item to pick canonical row when duplicates exist
+        items_by_symbol: Dict[str, List[WatchlistItem]] = {}
         for item in items:
+            symbol_key = (item.symbol or "").upper()
+            if symbol_key not in items_by_symbol:
+                items_by_symbol[symbol_key] = []
+            items_by_symbol[symbol_key].append(item)
+        
+        # Select canonical item for each symbol (ensures API and verification scripts use same row)
+        canonical_items = []
+        for symbol_key, symbol_items in items_by_symbol.items():
+            if len(symbol_items) > 1:
+                log.debug(f"Found {len(symbol_items)} rows for {symbol_key}, selecting canonical row")
+            canonical_item = select_preferred_watchlist_item(symbol_items, symbol_key)
+            if canonical_item:
+                canonical_items.append(canonical_item)
+        
+        result = []
+        for item in canonical_items:
             # Get market data for enrichment (price, rsi, etc.) but don't mutate trade_amount_usd
             market_data = _get_market_data_for_symbol(db, item.symbol)
             result.append(_serialize_watchlist_item(item, market_data=market_data, db=db))
             if len(result) >= 100:
                 break
         
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from watchlist_items table)")
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from watchlist_items table, deduplicated)")
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)

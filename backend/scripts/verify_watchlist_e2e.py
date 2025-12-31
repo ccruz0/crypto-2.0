@@ -41,11 +41,14 @@ def get_api_url() -> str:
 
 
 def get_db_item(db: Session, symbol: str) -> Optional[WatchlistItem]:
-    """Get WatchlistItem from database"""
-    return db.query(WatchlistItem).filter(
+    """Get WatchlistItem from database using same selection logic as API"""
+    from app.services.watchlist_selector import select_preferred_watchlist_item
+    items = db.query(WatchlistItem).filter(
         WatchlistItem.symbol == symbol.upper(),
         WatchlistItem.is_deleted == False
-    ).first()
+    ).all()
+    # Use same selection logic as API to ensure we compare the same row
+    return select_preferred_watchlist_item(items, symbol.upper()) if items else None
 
 
 def get_api_item(api_url: str, symbol: str) -> Optional[Dict]:
