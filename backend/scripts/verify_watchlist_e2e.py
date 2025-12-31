@@ -75,8 +75,19 @@ def verify_db_match(api_url: str, local_database_url: str) -> bool:
             logger.error("=" * 70)
             return False
         return True
-    except requests.exceptions.RequestException:
-        # API not reachable - skip verification but still honor host check
+    except requests.exceptions.RequestException as e:
+        # API not reachable - print exact URL and guidance
+        logger.error("=" * 70)
+        logger.error("❌ API NOT REACHABLE")
+        logger.error("=" * 70)
+        logger.error(f"Attempted URL: {api_url}")
+        logger.error(f"Error: {e}")
+        logger.error("")
+        logger.error("If running on Mac, you may need to:")
+        logger.error("  - SSH to AWS: ssh hilovivo-aws 'curl -sI http://localhost:8002/api/dashboard'")
+        logger.error("  - Or use wrapper: backend/scripts/run_in_backend_container.sh python3 scripts/verify_watchlist_e2e.py")
+        logger.error("=" * 70)
+        # Still honor host check - if not in Docker, this should have been caught earlier
         return True
 
 

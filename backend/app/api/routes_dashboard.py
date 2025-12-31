@@ -1125,6 +1125,7 @@ def get_open_orders_summary():
 
 
 @router.get("/dashboard")
+@router.head("/dashboard")
 def list_watchlist_items(db: Session = Depends(get_db)):
     """Return watchlist items from WatchlistItem table (single source of truth).
     

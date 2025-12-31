@@ -14,6 +14,36 @@ backend/scripts/run_in_backend_container.sh python3 scripts/watchlist_consistenc
 
 # End-to-end verification
 backend/scripts/run_in_backend_container.sh python3 scripts/verify_watchlist_e2e.py
+
+# Check API fingerprint headers
+backend/scripts/run_in_backend_container.sh python3 scripts/print_api_fingerprints.py
+```
+
+## Checking API Headers
+
+**If `curl -sI http://localhost:8002/api/dashboard` returns empty on your Mac:**
+- You're likely running it locally, not on AWS
+- The backend is not running on your Mac, or it's on a different port
+
+**To check headers correctly:**
+
+**On AWS host:**
+```bash
+ssh hilovivo-aws 'curl -sI http://localhost:8002/api/dashboard | head -20'
+```
+
+**From your laptop to AWS:**
+```bash
+curl -sI http://<aws-host>:8002/api/dashboard | head -20
+```
+
+**Or use the fingerprint script (works from anywhere):**
+```bash
+# On AWS host
+python3 backend/scripts/print_api_fingerprints.py
+
+# From Mac via wrapper
+backend/scripts/run_in_backend_container.sh python3 scripts/print_api_fingerprints.py
 ```
 
 The wrapper script:
