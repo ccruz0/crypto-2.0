@@ -116,3 +116,171 @@ docker exec $(docker compose --profile aws ps -q backend-aws) sh -lc "ls -la /ap
 docker exec $(docker compose --profile aws ps -q backend-aws) sh -lc "test -f /app/scripts/print_api_fingerprints.py && echo OK || echo MISSING"
 ```
 
+### Complete Verification Script (All Steps)
+
+Run this complete script to verify the fix end-to-end:
+
+```bash
+ssh hilovivo-aws '
+set -euo pipefail
+
+REPO="/home/ubuntu/automated-trading-platform"
+cd "$REPO"
+
+echo "=============================="
+echo "Complete Verification Process"
+echo "=============================="
+
+# Step 1: Verify Dockerfile has the fix
+echo ""
+echo "1) Checking Dockerfile..."
+if grep -q "COPY scripts/ /app/scripts/" backend/Dockerfile && grep -q "RUN test -f /app/scripts/print_api_fingerprints.py" backend/Dockerfile; then
+    echo "✅ Dockerfile contains both COPY and RUN test"
+else
+    echo "❌ Dockerfile missing required lines"
+    exit 1
+fi
+
+# Step 2: Rebuild
+echo ""
+echo "2) Rebuilding backend-aws image..."
+docker compose --profile aws build --no-cache backend-aws
+echo "✅ Build completed"
+
+# Step 3: Restart container
+echo ""
+echo "3) Restarting backend-aws container..."
+docker compose --profile aws up -d --force-recreate backend-aws
+sleep 5
+
+# Step 4: Verify in container
+echo ""
+echo "4) Verifying in running container..."
+CID=$(docker compose --profile aws ps -q backend-aws)
+if docker exec "$CID" sh -lc "test -f /app/scripts/print_api_fingerprints.py" 2>/dev/null; then
+    echo "✅ Container verification: File exists"
+    docker exec "$CID" sh -lc "ls -lh /app/scripts/print_api_fingerprints.py"
+else
+    echo "❌ Container verification: File MISSING"
+    exit 1
+fi
+
+# Step 5: Verify in image (robust method)
+echo ""
+echo "5) Verifying in image..."
+CID=$(docker compose --profile aws ps -q backend-aws)
+
+# Try to get image reference from docker compose config first
+IMAGE_REF=$(docker compose --profile aws config 2>/dev/null | awk '\''/backend-aws:/{f=1} f && /image:/{print $2; exit}'\'' | head -1)
+
+# If compose config doesn't have explicit image, get it from container
+if [ -z "$IMAGE_REF" ] || [ "$IMAGE_REF" = "null" ]; then
+    RAW=$(docker inspect "$CID" --format '\''{{.Image}}'\'' 2>/dev/null || echo "")
+    if [ -n "$RAW" ]; then
+        # Ensure sha256: prefix is present
+        if [[ "$RAW" == sha256:* ]]; then
+            IMAGE_REF="$RAW"
+        else
+            IMAGE_REF="sha256:$RAW"
+        fi
+    fi
+fi
+
+if [ -z "$IMAGE_REF" ]; then
+    echo "❌ Could not determine image reference"
+    exit 1
+fi
+
+echo "Testing image: $IMAGE_REF"
+if docker run --rm "$IMAGE_REF" sh -lc "test -f /app/scripts/print_api_fingerprints.py" 2>/dev/null; then
+    echo "✅ Image verification: File exists"
+else
+    echo "❌ Image verification: File MISSING"
+    exit 1
+fi
+
+echo ""
+echo "=============================="
+echo "✅ ALL VERIFICATIONS PASSED"
+echo "=============================="
+'
+```
+
+### Step 4: Verify in Container (Standalone)
+
+```bash
+ssh hilovivo-aws '
+set -euo pipefail
+
+REPO="/home/ubuntu/automated-trading-platform"
+cd "$REPO"
+
+echo "=============================="
+echo "Step 4: Verifying in running container"
+echo "=============================="
+
+# Get container ID
+CID=$(docker compose --profile aws ps -q backend-aws)
+if [ -z "$CID" ]; then
+    echo "Starting backend-aws container..."
+    docker compose --profile aws up -d backend-aws
+    sleep 5
+    CID=$(docker compose --profile aws ps -q backend-aws)
+fi
+
+echo "Container ID: $CID"
+echo ""
+
+# Verify script exists
+docker exec "$CID" sh -lc "ls -la /app/scripts | head -10"
+echo ""
+docker exec "$CID" sh -lc "test -f /app/scripts/print_api_fingerprints.py && echo '\''✅ OK: File exists in container'\'' || echo '\''❌ MISSING: File not found in container'\''"
+'
+```
+
+### Step 5: Verify in Image (Standalone - Robust Method)
+
+```bash
+ssh hilovivo-aws '
+set -euo pipefail
+
+REPO="/home/ubuntu/automated-trading-platform"
+cd "$REPO"
+
+echo "=============================="
+echo "Step 5: Verifying in image (not container)"
+echo "=============================="
+
+# Get container ID to find its image
+CID=$(docker compose --profile aws ps -q backend-aws)
+if [ -z "$CID" ]; then
+    echo "❌ Backend container not running"
+    exit 1
+fi
+
+# Try to get image reference from docker compose config first
+IMAGE_REF=$(docker compose --profile aws config 2>/dev/null | awk '\''/backend-aws:/{f=1} f && /image:/{print $2; exit}'\'' | head -1)
+
+# If compose config doesn'\''t have explicit image, get it from container
+if [ -z "$IMAGE_REF" ] || [ "$IMAGE_REF" = "null" ]; then
+    RAW=$(docker inspect "$CID" --format '\''{{.Image}}'\'' 2>/dev/null || echo "")
+    if [ -n "$RAW" ]; then
+        # Ensure sha256: prefix is present
+        if [[ "$RAW" == sha256:* ]]; then
+            IMAGE_REF="$RAW"
+        else
+            IMAGE_REF="sha256:$RAW"
+        fi
+    fi
+fi
+
+if [ -z "$IMAGE_REF" ]; then
+    echo "❌ Could not determine image reference"
+    exit 1
+fi
+
+echo "Testing image: $IMAGE_REF"
+docker run --rm "$IMAGE_REF" sh -lc "test -f /app/scripts/print_api_fingerprints.py && echo '\''✅ OK: File exists in image'\'' || echo '\''❌ MISSING: File not found in image'\''"
+'
+```
+
