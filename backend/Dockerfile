@@ -51,11 +51,33 @@ RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.t
 # Build fingerprint: capture git commit and build time
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
+
+# Copiar código de la app (needed before we can check .git)
+COPY . .
+
+# Auto-detect build fingerprint if not provided via build args
+# After COPY . ., we can check .git directory and get current time
+# Use shell to compute final values and write to files for later use
+RUN FINAL_GIT_SHA="$GIT_SHA" && \
+    if [ "$FINAL_GIT_SHA" = "unknown" ] && [ -d .git ] && command -v git >/dev/null 2>&1; then \
+        FINAL_GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown"); \
+    fi && \
+    FINAL_BUILD_TIME="$BUILD_TIME" && \
+    if [ "$FINAL_BUILD_TIME" = "unknown" ]; then \
+        FINAL_BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ"); \
+    fi && \
+    echo "$FINAL_GIT_SHA" > /app/.git_sha && \
+    echo "$FINAL_BUILD_TIME" > /app/.build_time
+
+# Set environment variables - use ARG values as defaults
+# If ARG was "unknown", the RUN command above wrote detected values to /app/.git_sha and /app/.build_time
+# An entrypoint script will read those files and override env vars at runtime if needed
 ENV ATP_GIT_SHA=${GIT_SHA} \
     ATP_BUILD_TIME=${BUILD_TIME}
 
-# Copiar código de la app
-COPY . .
+# Copy entrypoint script and make it executable
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # FIX: Change ownership of /app to appuser so it can write trading_config.json
 # This must be done as root before switching to appuser
@@ -69,4 +91,5 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import socket
 
 USER appuser
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

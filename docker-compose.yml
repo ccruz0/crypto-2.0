@@ -140,6 +140,10 @@ services:
       - API_BASE_URL=http://backend-aws:8002
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - LIVE_TRADING=${LIVE_TRADING:-true}
+      # Build fingerprint env vars (middleware reads ATP_GIT_SHA and ATP_BUILD_TIME)
+      # These are set from build args during image build, but also set here as runtime override
+      - ATP_GIT_SHA=${ATP_GIT_SHA:-${GIT_SHA:-unknown}}
+      - ATP_BUILD_TIME=${ATP_BUILD_TIME:-${BUILD_TIME:-unknown}}
       # Direct connection to Crypto.com Exchange via AWS Elastic IP (no proxy, no VPN)
       # Backend connects directly from AWS Elastic IP 47.130.143.159 to api.crypto.com/exchange/v1
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}

@@ -1636,9 +1636,51 @@ class SignalMonitorService:
                 evaluation_id=evaluation_id
             )
         
-        # DIAG_MODE: Print signal detection summary at end of trace
+        # DIAG_MODE: Print signal detection summary and TRADE decision trace at end of trace
         if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+            # Print signal_detected to stdout
+            print(f"signal_detected: buy={buy_signal}, sell={sell_signal}")
             logger.info(f"  signal_detected: buy={buy_signal}, sell={sell_signal}")
+            
+            # Always print TRADE decision trace in DIAG mode, even if no signal
+            # This ensures the snippet always includes TRADE decision information
+            trade_guard_reason = None
+            trade_should_create = False
+            
+            if not watchlist_item.trade_enabled:
+                trade_guard_reason = "TRADE_DISABLED"
+            elif not buy_signal:
+                trade_guard_reason = "NO_SIGNAL"
+            else:
+                # If there's a signal, use the actual guard_reason from order creation logic
+                # But we may not have reached that code path, so check common guards
+                if not buy_alert_sent_successfully:
+                    trade_guard_reason = "ALERT_NOT_SENT"
+                elif not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+                    trade_guard_reason = "INVALID_TRADE_AMOUNT"
+                else:
+                    # Signal exists, alert sent, trade enabled, amount valid
+                    # Check if we would create order (this is evaluated in the order creation path)
+                    # For now, assume it would be allowed if all conditions are met
+                    trade_should_create = True
+            
+            # Print TRADE decision trace
+            self._print_trade_decision_trace(
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",  # Focus on BUY for now
+                current_price=current_price,
+                signal_exists=buy_signal,
+                trade_enabled=watchlist_item.trade_enabled,
+                trade_amount_usd=watchlist_item.trade_amount_usd,
+                should_create_order=trade_should_create,
+                guard_reason=trade_guard_reason,
+                evaluation_id=evaluation_id
+            )
+            
+            # Print TRACE END markers
+            print(f"===== TRACE END {symbol} =====")
+            print("=" * 80)
             logger.info(f"===== TRACE END {symbol} =====")
             logger.info("=" * 80)
         
