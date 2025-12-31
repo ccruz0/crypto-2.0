@@ -96,3 +96,4 @@ Si el backend no inicia después del deploy:
 4. Si hay errores de sintaxis, verificar: `python3 -m py_compile backend/app/services/exchange_sync.py`
 
 
+

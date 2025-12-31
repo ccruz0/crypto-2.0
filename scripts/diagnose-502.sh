@@ -84,3 +84,4 @@ echo "     * Service binding (should be 0.0.0.0, not 127.0.0.1)"
 echo "   - Check nginx error logs for detailed error messages"
 
 
+

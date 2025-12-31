@@ -17,3 +17,4 @@ cd ~/automated-trading-platform/backend 2>/dev/null || cd /home/ubuntu/automated
 python3 check_specific_order.py "$ORDER_ID"
 
 
+

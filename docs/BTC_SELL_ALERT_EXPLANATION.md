@@ -113,3 +113,4 @@ El precio en watchlist es solo metadata/notas. Para que se envíe una alerta SEL
 
 
 
+

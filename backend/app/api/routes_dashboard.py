@@ -1,6 +1,6 @@
 """Dashboard state endpoint - returns portfolio, balances, and dashboard data"""
 
-from fastapi import APIRouter, Depends, HTTPException, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Body, Request, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db, table_has_column, engine as db_engine
@@ -1132,6 +1132,8 @@ def list_watchlist_items(db: Session = Depends(get_db)):
     displays exactly what is stored in the database with zero discrepancies.
     No defaults or mutations are applied - returns exact DB values.
     """
+    import os
+    
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard received (using watchlist_items table)")
     try:
         # Query watchlist_items table directly (single source of truth)
@@ -1139,10 +1141,21 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             items = db.query(WatchlistItem).filter(
                 WatchlistItem.is_deleted == False
             ).order_by(WatchlistItem.created_at.desc()).limit(200).all()
-            # DEBUG: Log what we got for problematic symbols
+            
+            # QUERY_RESULT: Log all fetched rows for ALGO_USDT specifically
+            algo_db_rows = [item for item in items if item.symbol == "ALGO_USDT"]
+            log.info(f"[QUERY_RESULT] Total rows fetched: {len(items)}, ALGO_USDT rows: {len(algo_db_rows)}")
+            for item in algo_db_rows:
+                log.info(f"[QUERY_RESULT] ALGO_USDT: id={item.id} trade_amount_usd={item.trade_amount_usd} trade_enabled={item.trade_enabled} alert_enabled={item.alert_enabled} is_deleted={getattr(item, 'is_deleted', None)}")
+            
+            # Track all DB IDs for guard check
+            db_ids_by_symbol: Dict[str, set] = {}
             for item in items:
-                if item.symbol in ["ALGO_USDT", "ADA_USDT", "TRX_USDT"]:
-                    log.info(f"[DEBUG] Query returned {item.symbol}: ID={item.id} trade_amount_usd={item.trade_amount_usd} trade_enabled={item.trade_enabled} alert_enabled={item.alert_enabled} is_deleted={getattr(item, 'is_deleted', None)}")
+                symbol_key = (item.symbol or "").upper()
+                if symbol_key not in db_ids_by_symbol:
+                    db_ids_by_symbol[symbol_key] = set()
+                db_ids_by_symbol[symbol_key].add(item.id)
+                
         except Exception as query_err:
             log.warning(f"Watchlist items query failed: {query_err}, rolling back transaction")
             db.rollback()
@@ -1150,6 +1163,12 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             if "undefined column" in str(query_err).lower() or "no such column" in str(query_err).lower():
                 log.warning("Retrying watchlist items query without is_deleted filter")
                 items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()
+                db_ids_by_symbol = {}
+                for item in items:
+                    symbol_key = (item.symbol or "").upper()
+                    if symbol_key not in db_ids_by_symbol:
+                        db_ids_by_symbol[symbol_key] = set()
+                    db_ids_by_symbol[symbol_key].add(item.id)
             else:
                 raise
         
@@ -1175,11 +1194,32 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         for item in canonical_items:
             # Get market data for enrichment (price, rsi, etc.) but don't mutate trade_amount_usd
             market_data = _get_market_data_for_symbol(db, item.symbol)
-            result.append(_serialize_watchlist_item(item, market_data=market_data, db=db))
+            serialized = _serialize_watchlist_item(item, market_data=market_data, db=db)
+            
+            # GUARD: Detect phantom IDs - if serialized id not in DB query results, log error and drop item
+            symbol_key = (item.symbol or "").upper()
+            if symbol_key in db_ids_by_symbol and serialized.get("id") not in db_ids_by_symbol[symbol_key]:
+                log.error(f"[PHANTOM_ID_DETECTED] Symbol {symbol_key}: serialized id={serialized.get('id')} not in DB query results {db_ids_by_symbol[symbol_key]}. Dropping inconsistent item.")
+                continue
+            
+            result.append(serialized)
+            
+            # SERIALIZED_RESULT: Log final serialized data for ALGO_USDT
+            if item.symbol == "ALGO_USDT":
+                log.info(f"[SERIALIZED_RESULT] ALGO_USDT: id={serialized.get('id')} trade_amount_usd={serialized.get('trade_amount_usd')} strategy_key={serialized.get('strategy_key')}")
+            
             if len(result) >= 100:
                 break
         
-        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from watchlist_items table, deduplicated)")
+        # Add build fingerprint to response
+        git_sha = os.getenv("ATP_GIT_SHA", "unknown")
+        build_time = os.getenv("ATP_BUILD_TIME", "unknown")
+        
+        log.info(f"[DASHBOARD_STATE_DEBUG] response_status=200 items_count={len(result)} (from watchlist_items table, deduplicated) [commit={git_sha[:8]}]")
+        
+        # Return list directly (frontend expects array)
+        # Note: FastAPI will serialize the list to JSON automatically
+        # Build fingerprint is added via middleware or response model (see main.py)
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)

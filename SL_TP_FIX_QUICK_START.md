@@ -197,3 +197,4 @@ docker compose --profile aws up -d --build --force-recreate backend-aws
 - Comprehensive logging shows what's being used
 
 
+

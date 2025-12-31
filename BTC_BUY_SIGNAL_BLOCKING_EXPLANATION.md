@@ -141,3 +141,4 @@ The minimum price change threshold can be configured per symbol in the watchlist
 
 
 
+

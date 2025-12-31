@@ -100,3 +100,4 @@ aws ssm send-command \
 - [ ] Fix works for other symbols too (not just DOT)
 
 
+

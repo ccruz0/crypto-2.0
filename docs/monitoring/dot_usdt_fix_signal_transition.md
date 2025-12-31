@@ -81,3 +81,4 @@ Cuando DOT_USDT (o cualquier moneda) tenga una señal activa y el throttle permi
 
 
 
+

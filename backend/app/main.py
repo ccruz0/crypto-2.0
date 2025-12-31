@@ -27,6 +27,8 @@ import logging
 import time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
+import os
 
 # Setup logging configuration early
 from app.core.logging_config import setup_logging
@@ -112,6 +114,22 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,  # Cache preflight requests for 1 hour
     )
+
+# Build fingerprint middleware - adds commit/build time to dashboard responses
+class BuildFingerprintMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        
+        # Add fingerprint headers for /api/dashboard endpoint
+        if request.url.path == "/api/dashboard":
+            git_sha = os.getenv("ATP_GIT_SHA", "unknown")
+            build_time = os.getenv("ATP_BUILD_TIME", "unknown")
+            response.headers["X-ATP-Backend-Commit"] = git_sha
+            response.headers["X-ATP-Backend-BuildTime"] = build_time
+        
+        return response
+
+app.add_middleware(BuildFingerprintMiddleware)
 logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 
 # Startup validation and database initialization

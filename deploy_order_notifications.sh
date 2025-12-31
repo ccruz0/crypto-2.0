@@ -77,3 +77,4 @@ echo "💡 To monitor logs in real-time:"
 echo "   ssh $EC2_USER@$EC2_HOST 'cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws'"
 
 
+

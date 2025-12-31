@@ -104,3 +104,4 @@ ssh hilovivo-aws "docker compose --profile aws logs backend-aws -f | grep -E '(S
 
 
 
+

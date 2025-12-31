@@ -120,3 +120,4 @@ Para cada símbolo con `trade_enabled=YES`:
 
 
 
+

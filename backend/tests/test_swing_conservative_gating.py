@@ -233,3 +233,4 @@ def test_missing_ema10_ma50_blocks(swing_conservative_rules):
     assert "EMA10" in " ".join(decision.missing_indicators), "Should list EMA10 as missing"
 
 
+

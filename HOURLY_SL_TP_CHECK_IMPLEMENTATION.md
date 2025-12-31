@@ -78,3 +78,4 @@ ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aw
 No configuration needed - runs automatically!
 
 
+

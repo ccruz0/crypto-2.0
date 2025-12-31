@@ -58,3 +58,4 @@ ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker-compose --p
 
 
 
+

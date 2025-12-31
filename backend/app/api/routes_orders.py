@@ -968,92 +968,112 @@ def get_open_orders(
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
 ):
-    """Get all open/pending orders, sorted by creation time (newest first)"""
+    """Get all open/pending orders from Crypto.com API (source of truth)"""
     import time as time_module
     from datetime import datetime, timezone, timedelta
     from sqlalchemy import func, or_
     start_time = time_module.time()
     try:
-        logger.info("get_open_orders called - fetching all open orders from database")
+        logger.info("get_open_orders called - fetching open orders from Crypto.com cache")
         
-        if db is None:
-            logger.warning("Database not available, returning empty orders")
-            return {
-                "ok": True,
-                "exchange": "CRYPTO_COM",
-                "orders": [],
-                "count": 0,
-                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            }
+        # CRITICAL FIX: Use Crypto.com API cache as source of truth
+        # Only return orders that actually exist in Crypto.com Exchange
+        from app.services.open_orders_cache import get_open_orders_cache
+        from app.services.open_orders import serialize_unified_order
         
-        # Get open/pending orders from ExchangeOrder table using correct enum values
-        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        cached_open_orders = get_open_orders_cache()
+        unified_open_orders = cached_open_orders.get("orders", []) or []
         
-        # Open orders are: NEW, ACTIVE, PARTIALLY_FILLED
-        # IMPORTANT: Show ALL open orders regardless of creation date
-        # Open orders can be created days/weeks ago and still be active
-        open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+        # Log Crypto.com API response for debugging
+        cached_order_ids = {order.order_id for order in unified_open_orders}
+        cached_symbols = {order.symbol for order in unified_open_orders}
+        logger.info(f"[OPEN_ORDERS] Crypto.com API returned {len(unified_open_orders)} open orders. Order IDs: {sorted(cached_order_ids)[:10]}... Symbols: {sorted(cached_symbols)}")
         
-        # RESTORED v4.0: Query ALL open orders (no date filter), sorted by creation time (newest first)
-        # Use COALESCE to handle NULL exchange_create_time (fallback to created_at)
-        # This ensures ALL open orders are returned, even if exchange_create_time is NULL
-        orders_query = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status.in_(open_statuses)
-        )
-        
-        # Sort by creation time (newest first) - use COALESCE to handle None values (v4.0 behavior)
-        orders = orders_query.order_by(
-            func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
-        ).limit(500).all()
-        
-        # Convert to dict format expected by frontend
+        # Convert UnifiedOpenOrder to frontend format
         orders_list = []
-        for order in orders:
-            # Get creation time (prefer exchange_create_time, fallback to created_at)
-            create_time = order.exchange_create_time or order.created_at
-            create_timestamp_ms = int(create_time.timestamp() * 1000) if create_time else None
+        for unified_order in unified_open_orders:
+            # Only include orders with valid order_id (must exist in Crypto.com)
+            if not unified_order.order_id:
+                logger.warning(f"[GHOST_ORDER] Dropping order without order_id: {unified_order.symbol}")
+                continue
             
-            # Format creation datetime for display - use ISO format so frontend can parse as UTC correctly
-            if create_time:
-                # Ensure datetime is timezone-aware (UTC)
-                if create_time.tzinfo is None:
-                    create_time = create_time.replace(tzinfo=timezone.utc)
-                create_datetime_str = create_time.isoformat()
-            else:
-                create_datetime_str = "N/A"
+            # Get creation time from unified order
+            create_time = None
+            create_timestamp_ms = None
+            create_datetime_str = "N/A"
+            
+            if unified_order.created_at:
+                try:
+                    # Parse ISO format datetime string
+                    if isinstance(unified_order.created_at, str):
+                        create_time = datetime.fromisoformat(unified_order.created_at.replace('Z', '+00:00'))
+                    else:
+                        create_time = unified_order.created_at
+                    
+                    if create_time.tzinfo is None:
+                        create_time = create_time.replace(tzinfo=timezone.utc)
+                    
+                    create_timestamp_ms = int(create_time.timestamp() * 1000)
+                    create_datetime_str = create_time.isoformat()
+                except Exception as e:
+                    logger.debug(f"Error parsing created_at for order {unified_order.order_id}: {e}")
+            
+            # Get update time
+            update_timestamp_ms = None
+            if unified_order.updated_at:
+                try:
+                    if isinstance(unified_order.updated_at, str):
+                        update_time = datetime.fromisoformat(unified_order.updated_at.replace('Z', '+00:00'))
+                    else:
+                        update_time = unified_order.updated_at
+                    
+                    if update_time.tzinfo is None:
+                        update_time = update_time.replace(tzinfo=timezone.utc)
+                    
+                    update_timestamp_ms = int(update_time.timestamp() * 1000)
+                except Exception:
+                    update_timestamp_ms = create_timestamp_ms
             
             orders_list.append({
-                "order_id": order.exchange_order_id,
-                "client_oid": order.client_oid,
-                "instrument_name": order.symbol,
-                "order_type": order.order_type or "LIMIT",
-                "order_role": order.order_role,  # CRITICAL: Include order_role for TP/SL identification
-                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
-                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                "quantity": float(order.quantity) if order.quantity else 0.0,
-                "price": float(order.price) if order.price else None,
-                "avg_price": float(order.avg_price) if order.avg_price else None,
-                "cumulative_quantity": float(order.cumulative_quantity) if order.cumulative_quantity else 0.0,
-                "cumulative_value": float(order.cumulative_value) if order.cumulative_value else 0.0,
+                "order_id": unified_order.order_id,
+                "client_oid": unified_order.client_oid,
+                "instrument_name": unified_order.symbol,
+                "order_type": unified_order.order_type or "LIMIT",
+                "order_role": unified_order.metadata.get("order_role") if unified_order.metadata else None,
+                "side": unified_order.side,
+                "status": unified_order.status,
+                "quantity": float(unified_order.quantity) if unified_order.quantity else 0.0,
+                "price": float(unified_order.price) if unified_order.price else None,
+                "avg_price": None,  # Not available in unified order
+                "cumulative_quantity": 0.0,  # Not available in unified order
+                "cumulative_value": 0.0,  # Not available in unified order
                 "create_time": create_timestamp_ms,
-                "create_datetime": create_datetime_str,  # Human-readable datetime
-                "update_time": int(order.exchange_update_time.timestamp() * 1000) if order.exchange_update_time else int(order.updated_at.timestamp() * 1000),
-                # Ensure orders are sorted by creation time (newest first) - already sorted in query
+                "create_datetime": create_datetime_str,
+                "update_time": update_timestamp_ms or create_timestamp_ms,
             })
         
-        # Also check SQLite order_history_db for compatibility
-        try:
-            sqlite_orders = order_history_db.get_orders_by_status(['ACTIVE', 'NEW', 'PARTIALLY_FILLED'], limit=100)
-            # Merge SQLite orders (avoid duplicates by order_id)
-            existing_ids = {o.get('order_id') for o in orders_list}
-            for sqlite_order in sqlite_orders:
-                if sqlite_order.get('order_id') not in existing_ids:
-                    orders_list.append(sqlite_order)
-        except Exception as e:
-            logger.debug(f"Error getting orders from SQLite: {e}")
+        # Sort by creation time (newest first)
+        orders_list.sort(key=lambda x: x.get("create_time") or 0, reverse=True)
+        
+        # Check database for ghost orders (for logging only)
+        if db:
+            try:
+                from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+                db_orders = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.status.in_(open_statuses)
+                ).limit(100).all()
+                
+                db_order_ids = {str(order.exchange_order_id) for order in db_orders}
+                ghost_orders = [oid for oid in db_order_ids if oid not in cached_order_ids]
+                
+                if ghost_orders:
+                    logger.warning(f"[GHOST_ORDERS] Database has {len(ghost_orders)} orders marked as open that don't exist in Crypto.com: {ghost_orders[:5]}")
+            except Exception as db_err:
+                logger.debug(f"Error checking database for ghost orders: {db_err}")
         
         elapsed_time = time_module.time() - start_time
-        logger.info(f"Retrieved {len(orders_list)} open orders (all time) in {elapsed_time:.3f}s")
+        logger.info(f"Retrieved {len(orders_list)} open orders from Crypto.com API in {elapsed_time:.3f}s")
         
         if elapsed_time > 0.3:
             logger.warning(f"⚠️ Open orders fetch took {elapsed_time:.3f}s - this is slow! Should be < 0.2 seconds.")
@@ -1064,7 +1084,8 @@ def get_open_orders(
             "orders": orders_list,
             "count": len(orders_list),
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "sorted_by": "creation_time_desc"
+            "sorted_by": "creation_time_desc",
+            "source": "crypto_com_api"  # Indicate orders come from Crypto.com API
         }
     except Exception as e:
         logger.exception("Error getting open orders")

@@ -33,6 +33,7 @@ from app.services.signal_throttle import (
     reset_throttle_state,
     set_force_next_signal,
     build_strategy_key,
+    compute_config_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -1335,6 +1336,62 @@ def update_watchlist_alert(
         except Exception as refresh_err:
             logger.warning("Failed to refresh watchlist item %s after alert update: %s", symbol_upper, refresh_err)
         
+        # Reset throttle state when toggling alert status (legacy endpoint)
+        try:
+            # Resolve strategy_key for this symbol
+            strategy_type, risk_approach = resolve_strategy_profile(symbol_upper, db, watchlist_item)
+            strategy_key = build_strategy_key(strategy_type, risk_approach)
+            
+            # Get current price from watchlist item or market data
+            current_price = getattr(watchlist_item, "price", None)
+            if not current_price or current_price <= 0:
+                # Try to get from market data
+                try:
+                    from app.api.routes_dashboard import _get_market_data_for_symbol
+                    market_data = _get_market_data_for_symbol(db, symbol_upper)
+                    if market_data:
+                        current_price = getattr(market_data, "price", None)
+                except Exception:
+                    pass
+            
+            # Compute config hash for consistency with signal_monitor
+            config_hash = compute_config_hash({
+                "alert_enabled": watchlist_item.alert_enabled,
+                "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False),
+                "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False),
+                "trade_enabled": watchlist_item.trade_enabled,
+                "strategy_id": None,
+                "strategy_name": watchlist_item.sl_tp_mode,
+                "min_price_change_pct": watchlist_item.min_price_change_pct,
+                "trade_amount_usd": watchlist_item.trade_amount_usd,
+            })
+            
+            # Reset throttle state for both BUY and SELL (legacy endpoint sets both)
+            reset_throttle_state(
+                db,
+                symbol=symbol_upper,
+                strategy_key=strategy_key,
+                side=None,  # Reset both sides
+                current_price=current_price,
+                parameter_change_reason=f"Legacy alert toggle: alert_enabled={alert_enabled}",
+                config_hash=config_hash,
+            )
+            logger.info(f"🔄 [LEGACY ALERT] Reset throttle state for {symbol_upper} (strategy: {strategy_key}, price: {current_price})")
+            
+            if alert_enabled:
+                # Enabling: set force flag to allow immediate signal on next evaluation
+                set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY", enabled=True)
+                set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL", enabled=True)
+                logger.info(f"⚡ [LEGACY ALERT] Set force_next_signal for {symbol_upper} BUY/SELL - next evaluation will bypass throttle")
+            else:
+                # Disabling: ensure force flag is cleared
+                set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY", enabled=False)
+                set_force_next_signal(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL", enabled=False)
+                logger.info(f"🔄 [LEGACY ALERT] Cleared force_next_signal for {symbol_upper} BUY/SELL")
+        except Exception as throttle_err:
+            # Log but don't fail the toggle operation
+            logger.warning(f"⚠️ [LEGACY ALERT] Failed to reset throttle state for {symbol_upper}: {throttle_err}", exc_info=True)
+        
         total_elapsed = time.time() - start_time
         logger.info(f"✅ [ALERT UPDATE] Updated alert_enabled for {symbol_upper}: {alert_enabled} (took {total_elapsed:.3f}s)")
         _log_alert_state("LEGACY ALERT UPDATE", watchlist_item)
@@ -1453,9 +1510,41 @@ def update_buy_alert(
                 strategy_type, risk_approach = resolve_strategy_profile(symbol_upper, db, watchlist_item)
                 strategy_key = build_strategy_key(strategy_type, risk_approach)
                 
+                # Get current price from watchlist item or market data
+                current_price = getattr(watchlist_item, "price", None)
+                if not current_price or current_price <= 0:
+                    # Try to get from market data
+                    try:
+                        from app.api.routes_dashboard import _get_market_data_for_symbol
+                        market_data = _get_market_data_for_symbol(db, symbol_upper)
+                        if market_data:
+                            current_price = getattr(market_data, "price", None)
+                    except Exception:
+                        pass
+                
+                # Compute config hash for consistency with signal_monitor
+                config_hash = compute_config_hash({
+                    "alert_enabled": watchlist_item.alert_enabled,
+                    "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False),
+                    "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False),
+                    "trade_enabled": watchlist_item.trade_enabled,
+                    "strategy_id": None,
+                    "strategy_name": watchlist_item.sl_tp_mode,
+                    "min_price_change_pct": watchlist_item.min_price_change_pct,
+                    "trade_amount_usd": watchlist_item.trade_amount_usd,
+                })
+                
                 # Reset throttle state for BUY side (always reset on any toggle)
-                reset_throttle_state(db, symbol=symbol_upper, strategy_key=strategy_key, side="BUY")
-                logger.info(f"🔄 [BUY ALERT] Reset throttle state for {symbol_upper} BUY (strategy: {strategy_key})")
+                reset_throttle_state(
+                    db,
+                    symbol=symbol_upper,
+                    strategy_key=strategy_key,
+                    side="BUY",
+                    current_price=current_price,
+                    parameter_change_reason=f"BUY alert toggle: {old_buy_alert_enabled} -> {buy_alert_enabled}",
+                    config_hash=config_hash,
+                )
+                logger.info(f"🔄 [BUY ALERT] Reset throttle state for {symbol_upper} BUY (strategy: {strategy_key}, price: {current_price})")
                 
                 if buy_alert_enabled:
                     # Enabling: set force flag to allow immediate signal on next evaluation
@@ -1580,9 +1669,41 @@ def update_sell_alert(
                 strategy_type, risk_approach = resolve_strategy_profile(symbol_upper, db, watchlist_item)
                 strategy_key = build_strategy_key(strategy_type, risk_approach)
                 
+                # Get current price from watchlist item or market data
+                current_price = getattr(watchlist_item, "price", None)
+                if not current_price or current_price <= 0:
+                    # Try to get from market data
+                    try:
+                        from app.api.routes_dashboard import _get_market_data_for_symbol
+                        market_data = _get_market_data_for_symbol(db, symbol_upper)
+                        if market_data:
+                            current_price = getattr(market_data, "price", None)
+                    except Exception:
+                        pass
+                
+                # Compute config hash for consistency with signal_monitor
+                config_hash = compute_config_hash({
+                    "alert_enabled": watchlist_item.alert_enabled,
+                    "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False),
+                    "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False),
+                    "trade_enabled": watchlist_item.trade_enabled,
+                    "strategy_id": None,
+                    "strategy_name": watchlist_item.sl_tp_mode,
+                    "min_price_change_pct": watchlist_item.min_price_change_pct,
+                    "trade_amount_usd": watchlist_item.trade_amount_usd,
+                })
+                
                 # Reset throttle state for SELL side (always reset on any toggle)
-                reset_throttle_state(db, symbol=symbol_upper, strategy_key=strategy_key, side="SELL")
-                logger.info(f"🔄 [SELL ALERT] Reset throttle state for {symbol_upper} SELL (strategy: {strategy_key})")
+                reset_throttle_state(
+                    db,
+                    symbol=symbol_upper,
+                    strategy_key=strategy_key,
+                    side="SELL",
+                    current_price=current_price,
+                    parameter_change_reason=f"SELL alert toggle: {old_sell_alert_enabled} -> {sell_alert_enabled}",
+                    config_hash=config_hash,
+                )
+                logger.info(f"🔄 [SELL ALERT] Reset throttle state for {symbol_upper} SELL (strategy: {strategy_key}, price: {current_price})")
                 
                 if sell_alert_enabled:
                     # Enabling: set force flag to allow immediate signal on next evaluation

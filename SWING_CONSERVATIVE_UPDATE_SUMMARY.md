@@ -236,3 +236,4 @@ docker-compose exec backend python -c "from app.services.config_loader import lo
 5. **Frontend UI Location**: The Strategy Setup panel UI is located somewhere in `frontend/src/app/page.tsx` (a very large file). The form controls need to be added to display and edit the new gating parameters.
 
 
+

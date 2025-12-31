@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 FORCE_SELL_DIAGNOSTIC = os.getenv("FORCE_SELL_DIAGNOSTIC", "0").lower() in ("1", "true", "yes")
 FORCE_SELL_DIAGNOSTIC_SYMBOL = os.getenv("FORCE_SELL_DIAGNOSTIC_SYMBOL", "").upper()
 
+# Single symbol diagnostic mode (for throttle reset investigation)
+DIAG_SYMBOL = os.getenv("DIAG_SYMBOL", "").upper()
+
 if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
     target_symbol = FORCE_SELL_DIAGNOSTIC_SYMBOL or "TRX_USDT"
     logger.info(
@@ -51,6 +54,24 @@ if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
         f"FORCE_SELL_DIAGNOSTIC_SYMBOL={FORCE_SELL_DIAGNOSTIC_SYMBOL or 'TRX_USDT'} | "
         f"DRY_RUN=True (no orders will be placed)"
     )
+
+if DIAG_SYMBOL:
+    logger.info(
+        f"🔧 [DIAG_MODE] Single symbol diagnostic mode enabled for SYMBOL={DIAG_SYMBOL} | "
+        f"Only this symbol will be evaluated with detailed decision trace"
+    )
+
+# Decision reason codes (canonical constants)
+SKIP_DISABLED_ALERT = "SKIP_DISABLED_ALERT"
+SKIP_DISABLED_TRADE = "SKIP_DISABLED_TRADE"
+SKIP_COOLDOWN_ACTIVE = "SKIP_COOLDOWN_ACTIVE"
+SKIP_NO_SIGNAL = "SKIP_NO_SIGNAL"
+SKIP_NO_PRICE = "SKIP_NO_PRICE"
+SKIP_NO_STRATEGY = "SKIP_NO_STRATEGY"
+SKIP_DB_MISMATCH = "SKIP_DB_MISMATCH"
+EXEC_ALERT_SENT = "EXEC_ALERT_SENT"
+EXEC_ORDER_PLACED = "EXEC_ORDER_PLACED"
+EXEC_ORDER_BLOCKED_BY_THROTTLE = "EXEC_ORDER_BLOCKED_BY_THROTTLE"
 
 
 class SignalMonitorService:
@@ -208,6 +229,181 @@ class SignalMonitorService:
             symbol,
             details or {},
         )
+
+    def _print_trade_decision_trace(
+        self,
+        symbol: str,
+        strategy_key: str,
+        side: str,
+        current_price: float,
+        signal_exists: bool,
+        trade_enabled: bool,
+        trade_amount_usd: Optional[float],
+        should_create_order: bool,
+        guard_reason: Optional[str],
+        evaluation_id: str
+    ) -> None:
+        """Print TRADE decision trace for diagnostic mode"""
+        if not DIAG_SYMBOL or symbol.upper() != DIAG_SYMBOL:
+            return
+        
+        # Determine decision and reason code
+        decision = "SKIP"
+        reason_code = SKIP_NO_SIGNAL
+        
+        if not signal_exists:
+            reason_code = SKIP_NO_SIGNAL
+        elif not trade_enabled:
+            reason_code = SKIP_DISABLED_TRADE
+        elif not trade_amount_usd or trade_amount_usd <= 0:
+            reason_code = SKIP_DISABLED_TRADE  # Invalid trade amount
+        elif guard_reason:
+            # Guard blocked execution
+            decision = "SKIP"
+            reason_code = EXEC_ORDER_BLOCKED_BY_THROTTLE
+        elif should_create_order:
+            decision = "EXEC"
+            reason_code = EXEC_ORDER_PLACED
+        else:
+            decision = "SKIP"
+            reason_code = EXEC_ORDER_BLOCKED_BY_THROTTLE
+        
+        # In diagnostic mode, print to stdout for snippet extraction
+        # Format as single-line summary for easy parsing
+        trade_amount_str = f"${trade_amount_usd:.2f}" if trade_amount_usd else "None"
+        blocked_by_str = f" blocked_by={guard_reason}" if guard_reason else ""
+        print(f"TRADE decision={decision} reason={reason_code} symbol={symbol} side={side} "
+              f"current_price=${current_price:.4f} signal_exists={signal_exists} "
+              f"trade_enabled={trade_enabled} trade_amount_usd={trade_amount_str} "
+              f"should_create_order={should_create_order}{blocked_by_str} eval_id={evaluation_id}")
+        
+        # Also log normally for production logs
+        logger.info(f"🔍 [TRADE_DECISION_TRACE] {symbol} {side} (eval_id={evaluation_id})")
+        logger.info(f"  symbol: {symbol}")
+        logger.info(f"  strategy: {strategy_key}")
+        logger.info(f"  side: {side}")
+        logger.info(f"  current_price: ${current_price:.4f}")
+        logger.info(f"  signal_exists: {signal_exists}")
+        logger.info(f"  trade_enabled: {trade_enabled}")
+        logger.info(f"  trade_amount_usd: ${trade_amount_usd:.2f}" if trade_amount_usd else "  trade_amount_usd: None")
+        logger.info(f"  should_create_order: {should_create_order}")
+        logger.info(f"  guard_reason: {guard_reason or 'none'}")
+        logger.info(f"  final_decision: {decision}")
+        logger.info(f"  reason_code: {reason_code}")
+        if guard_reason:
+            logger.info(f"  blocked_by: {guard_reason}")
+
+    def _print_decision_trace(
+        self,
+        symbol: str,
+        strategy_key: str,
+        side: str,
+        current_price: float,
+        signal_exists: bool,
+        alert_enabled: bool,
+        trade_enabled: bool,
+        snapshot: Optional[LastSignalSnapshot],
+        throttle_config: SignalThrottleConfig,
+        now_utc: datetime,
+        evaluation_id: str
+    ) -> None:
+        """Print detailed decision trace for diagnostic mode"""
+        if not DIAG_SYMBOL or symbol.upper() != DIAG_SYMBOL:
+            return
+        
+        # Build throttle key
+        throttle_key = f"{symbol}:{strategy_key}:{side}"
+        
+        # Get reference price and timestamp
+        reference_price = snapshot.price if snapshot and snapshot.price else None
+        last_sent = snapshot.timestamp if snapshot and snapshot.timestamp else None
+        
+        # Calculate price change
+        price_change_pct = None
+        if reference_price and reference_price > 0:
+            price_change_pct = abs((current_price - reference_price) / reference_price * 100)
+        
+        # Calculate time diff
+        elapsed_seconds = None
+        if last_sent:
+            if last_sent.tzinfo is None:
+                last_sent = last_sent.replace(tzinfo=timezone.utc)
+            elapsed_seconds = (now_utc - last_sent).total_seconds()
+        
+        # Determine decision and reason code
+        decision = "SKIP"
+        reason_code = SKIP_NO_SIGNAL
+        
+        if not signal_exists:
+            reason_code = SKIP_NO_SIGNAL
+        elif not alert_enabled:
+            reason_code = SKIP_DISABLED_ALERT
+        elif not trade_enabled and side == "BUY":
+            # For BUY, if trade is disabled, we still send alert if alert_enabled
+            # So this is not a skip reason for alerts
+            pass
+        elif snapshot and snapshot.force_next_signal:
+            decision = "EXEC"
+            reason_code = EXEC_ALERT_SENT  # Will be sent
+        elif snapshot and snapshot.timestamp:
+            # Check throttle
+            if elapsed_seconds and elapsed_seconds < 60.0:
+                reason_code = SKIP_COOLDOWN_ACTIVE
+            elif price_change_pct and price_change_pct < throttle_config.min_price_change_pct:
+                reason_code = SKIP_COOLDOWN_ACTIVE  # Price gate not met
+            else:
+                decision = "EXEC"
+                reason_code = EXEC_ALERT_SENT
+        else:
+            # No previous signal - should allow
+            decision = "EXEC"
+            reason_code = EXEC_ALERT_SENT
+        
+        # Format timestamps
+        last_sent_str = last_sent.isoformat() if last_sent else "None"
+        now_str = now_utc.isoformat()
+        diff_str = f"{elapsed_seconds:.1f}s" if elapsed_seconds is not None else "N/A"
+        cooldown_threshold = "60.0s"
+        
+        # In diagnostic mode, print to stdout for snippet extraction
+        # Format as single-line summary for easy parsing
+        if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+            reference_price_str = f"${reference_price:.4f}" if reference_price else "None"
+            price_change_str = f"{price_change_pct:.2f}%" if price_change_pct else "N/A"
+            force_next_str = str(snapshot.force_next_signal) if snapshot else "False"
+            print(f"ALERT decision={decision} reason={reason_code} symbol={symbol} side={side} "
+                  f"current_price=${current_price:.4f} reference_price={reference_price_str} "
+                  f"price_change_pct={price_change_str} alert_enabled={alert_enabled} "
+                  f"trade_enabled={trade_enabled} throttle_key={throttle_key} "
+                  f"last_sent={last_sent_str} now={now_str} elapsed={diff_str} "
+                  f"cooldown_threshold={cooldown_threshold} price_threshold={throttle_config.min_price_change_pct}% "
+                  f"force_next_signal={force_next_str} eval_id={evaluation_id}")
+        
+        # Also log normally for production logs
+        logger.info("=" * 80)
+        logger.info(f"🔍 [DECISION_TRACE] {symbol} {side} (eval_id={evaluation_id})")
+        logger.info(f"  symbol: {symbol}")
+        logger.info(f"  strategy: {strategy_key}")
+        logger.info(f"  side: {side}")
+        logger.info(f"  current_price: ${current_price:.4f}")
+        logger.info(f"  reference_price: ${reference_price:.4f}" if reference_price else "  reference_price: None")
+        logger.info(f"  price_change%: {price_change_pct:.2f}%" if price_change_pct else "  price_change%: N/A")
+        logger.info(f"  alert_enabled: {alert_enabled}")
+        logger.info(f"  trade_enabled: {trade_enabled}")
+        logger.info(f"  throttle_key: {throttle_key}")
+        logger.info(f"  throttle_key_alert: {throttle_key} (shared with trade)")
+        logger.info(f"  throttle_key_trade: {throttle_key} (shared with alert)")
+        logger.info(f"  cooldown_checked_for_alert: True (shared throttle)")
+        logger.info(f"  cooldown_checked_for_trade: True (shared throttle)")
+        logger.info(f"  last_sent: {last_sent_str}")
+        logger.info(f"  now: {now_str}")
+        logger.info(f"  elapsed: {diff_str}")
+        logger.info(f"  cooldown_threshold: {cooldown_threshold}")
+        logger.info(f"  price_threshold: {throttle_config.min_price_change_pct}%")
+        logger.info(f"  force_next_signal: {snapshot.force_next_signal if snapshot else False}")
+        logger.info(f"  final_decision: {decision}")
+        logger.info(f"  reason_code: {reason_code}")
+        logger.info("=" * 80)
 
     @staticmethod
     def _compute_config_hash(watchlist_item: WatchlistItem) -> str:
@@ -736,6 +932,14 @@ class SignalMonitorService:
             if not watchlist_items:
                 return
             
+            # DIAG_MODE: Filter to only diagnostic symbol if set
+            if DIAG_SYMBOL:
+                watchlist_items = [item for item in watchlist_items if getattr(item, 'symbol', '').upper() == DIAG_SYMBOL]
+                if not watchlist_items:
+                    logger.info(f"🔧 [DIAG_MODE] No watchlist items found for {DIAG_SYMBOL}")
+                    return
+                logger.info(f"🔧 [DIAG_MODE] Filtered to {len(watchlist_items)} item(s) for {DIAG_SYMBOL}")
+            
             for item in watchlist_items:
                 try:
                     await self._check_signal_for_coin(db, item)
@@ -1238,6 +1442,29 @@ class SignalMonitorService:
         throttle_buy_reason: Optional[str] = None
         throttle_sell_reason: Optional[str] = None
 
+        # DIAG_MODE: Print decision trace for diagnostic symbol
+        if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+            # Print markers to stdout for snippet extraction
+            print("=" * 80)
+            print(f"===== TRACE START {symbol} =====")
+            # Also log normally
+            logger.info("=" * 80)
+            logger.info(f"===== TRACE START {symbol} =====")
+            
+            self._print_decision_trace(
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                current_price=current_price,
+                signal_exists=buy_signal,
+                alert_enabled=getattr(watchlist_item, 'buy_alert_enabled', False) or watchlist_item.alert_enabled,
+                trade_enabled=watchlist_item.trade_enabled,
+                snapshot=signal_snapshots.get("BUY"),
+                throttle_config=throttle_config,
+                now_utc=now_utc,
+                evaluation_id=evaluation_id
+            )
+
         if buy_signal:
             self._log_signal_candidate(
                 symbol,
@@ -1392,6 +1619,29 @@ class SignalMonitorService:
                     buy_signal = False
                     if current_state == "BUY":
                         current_state = "WAIT"
+        
+        # DIAG_MODE: Print decision trace for diagnostic symbol (SELL)
+        if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+            self._print_decision_trace(
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                current_price=current_price,
+                signal_exists=sell_signal,
+                alert_enabled=getattr(watchlist_item, 'sell_alert_enabled', False) or watchlist_item.alert_enabled,
+                trade_enabled=watchlist_item.trade_enabled,
+                snapshot=signal_snapshots.get("SELL"),
+                throttle_config=throttle_config,
+                now_utc=now_utc,
+                evaluation_id=evaluation_id
+            )
+        
+        # DIAG_MODE: Print signal detection summary at end of trace
+        if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+            logger.info(f"  signal_detected: buy={buy_signal}, sell={sell_signal}")
+            logger.info(f"===== TRACE END {symbol} =====")
+            logger.info("=" * 80)
+        
         if sell_signal:
             self._log_signal_candidate(
                 symbol,
@@ -2116,16 +2366,34 @@ class SignalMonitorService:
                 blocked_by_limits = True
 
             # ORDERS ONLY AFTER ALERT SENT and not blocked by limits/cooldown
+            guard_reason = None
             if blocked_by_limits:
                 should_create_order = False
+                guard_reason = "MAX_OPEN_ORDERS" if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL else "RECENT_ORDERS_COOLDOWN"
             elif not buy_alert_sent_successfully:
                 should_create_order = False
+                guard_reason = "ALERT_NOT_SENT"
                 logger.info(f"ℹ️ {symbol}: BUY alert not sent -> skipping order creation")
             else:
                 should_create_order = True
                 logger.info(
                     f"🟢 BUY alert was sent successfully for {symbol} (throttling passed). "
                     f"Proceeding to order checks (trade_enabled, limits, cooldown)."
+                )
+            
+            # DIAG_MODE: Print TRADE decision trace for diagnostic symbol (BUY)
+            if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+                self._print_trade_decision_trace(
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side="BUY",
+                    current_price=current_price,
+                    signal_exists=buy_signal,
+                    trade_enabled=watchlist_item.trade_enabled,
+                    trade_amount_usd=watchlist_item.trade_amount_usd,
+                    should_create_order=should_create_order,
+                    guard_reason=guard_reason,
+                    evaluation_id=evaluation_id
                 )
             
             # ========================================================================
@@ -2383,6 +2651,21 @@ class SignalMonitorService:
                                     f"price=${filled_price:.4f} | "
                                     f"quantity={quantity:.4f}"
                                 )
+                                
+                                # DIAG_MODE: Update TRADE decision trace to show EXEC_ORDER_PLACED
+                                if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+                                    self._print_trade_decision_trace(
+                                        symbol=symbol,
+                                        strategy_key=strategy_key,
+                                        side="BUY",
+                                        current_price=current_price,
+                                        signal_exists=buy_signal,
+                                        trade_enabled=watchlist_item.trade_enabled,
+                                        trade_amount_usd=watchlist_item.trade_amount_usd,
+                                        should_create_order=True,
+                                        guard_reason=None,  # No guard - order was placed
+                                        evaluation_id=evaluation_id
+                                    )
                                 # E) Deep decision-grade logging for order result
                                 logger.info(
                                     f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=True order_id={exchange_order_id} "

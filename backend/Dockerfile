@@ -48,6 +48,12 @@ COPY requirements.txt ./requirements.txt
 # (dev deps como pytest, black, isort, flake8 están comentadas en requirements.txt)
 RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt
 
+# Build fingerprint: capture git commit and build time
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV ATP_GIT_SHA=${GIT_SHA} \
+    ATP_BUILD_TIME=${BUILD_TIME}
+
 # Copiar código de la app
 COPY . .
 

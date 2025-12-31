@@ -108,3 +108,4 @@ El fix está **completado y commiteado**. El código está disponible en el repo
 **Prioridad:** Alta (afectaba confiabilidad de las notificaciones)
 
 
+

@@ -1,14 +1,19 @@
 """Service for caching portfolio data in the database"""
 import logging
+import os
 from sqlalchemy.orm import Session
 from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.services.brokers.crypto_com_trade import trade_client
+from app.utils.http_client import http_get
 import time
 from typing import List, Dict, Optional
 import threading
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
+
+# Diagnostic logging flag (set PORTFOLIO_DEBUG=1 to enable)
+PORTFOLIO_DEBUG = os.getenv("PORTFOLIO_DEBUG", "0") == "1"
 
 # Cache for table existence checks (avoid repeated inspector calls)
 _table_cache = {}
@@ -145,73 +150,31 @@ def update_portfolio_cache(db: Session) -> Dict:
             logger.error("No balance data received from Crypto.com")
             return {"success": False, "last_updated": None, "error": "No balance data received"}
         
-        # Get current prices for ALL coins (not just USDT pairs)
-        prices = get_crypto_prices()
+        # CRITICAL FIX: Use ONLY Crypto.com prices (no CoinGecko fallback)
+        # Crypto.com Exchange UI uses market_value from API or Crypto.com ticker prices
+        # Using external price sources (CoinGecko) causes mismatches with Crypto.com UI
+        prices = get_crypto_prices()  # Gets prices from Crypto.com tickers API
+        all_prices = prices  # Only use Crypto.com prices
         
-        # Also get prices from multiple sources for better coverage
-        additional_prices = {}
+        if PORTFOLIO_DEBUG:
+            logger.info(f"[PORTFOLIO_DEBUG] Crypto.com ticker prices loaded: {len(prices)} symbols")
+            for symbol, price in sorted(prices.items(), key=lambda x: x[1], reverse=True)[:10]:
+                logger.info(f"[PORTFOLIO_DEBUG]   {symbol}: ${price:.8f}")
         
-        # Map common currency names to CoinGecko IDs (defined outside try block for later use)
-        gecko_ids = {
-                "BTC": "bitcoin",
-                "ETH": "ethereum",
-                "BNB": "binancecoin",
-                "SOL": "solana",
-                "XRP": "ripple",
-                "ADA": "cardano",
-                "DOT": "polkadot",
-                "MATIC": "matic-network",
-                "LINK": "chainlink",
-                "UNI": "uniswap",
-                "AVAX": "avalanche-2",
-                "ATOM": "cosmos",
-                "ALGO": "algorand",
-                "NEAR": "near",
-                "AAVE": "aave",
-                "CRO": "crypto-com-chain",
-                "USDT": "tether",
-                "USDC": "usd-coin",
-                "BONK": "bonk",
-                "AKT": "akash-network",
-                "TON": "the-open-network",
-        }
-        
-        # Try CoinGecko API for coins not found in Crypto.com
-        try:
-            gecko_url = "https://api.coingecko.com/api/v3/simple/price"
-            # Get list of currencies we have balances for
-            currencies = [acc.get("currency", "").upper() for acc in balance_data.get("accounts", [])]
-            
-            # Build list of CoinGecko IDs for currencies we need
-            gecko_id_list = [gecko_ids.get(c) for c in currencies if c in gecko_ids and c not in prices]
-            
-            if gecko_id_list:
-                gecko_params = {
-                    "ids": ",".join([id for id in gecko_id_list if id]),
-                    "vs_currencies": "usd"
-                }
-                gecko_response = http_get(gecko_url, params=gecko_params, timeout=10, calling_module="portfolio_cache")
-                if gecko_response.status_code == 200:
-                    gecko_data = gecko_response.json()
-                    for gecko_id, gecko_info in gecko_data.items():
-                        if "usd" in gecko_info:
-                            # Find currency name for this gecko_id
-                            for currency, cid in gecko_ids.items():
-                                if cid == gecko_id:
-                                    additional_prices[currency] = float(gecko_info["usd"])
-                                    break
-        except Exception as e:
-            logger.debug(f"Could not fetch additional prices from CoinGecko: {e}")
-        
-        # Merge prices
-        all_prices = {**prices, **additional_prices}
+        # Diagnostic data structure for detailed logging
+        diagnostic_data = [] if PORTFOLIO_DEBUG else None
         
         # Clear old balances
         db.query(PortfolioBalance).delete()
         
         # Calculate total portfolio value
+        # Track both raw assets (for display) and collateral (after haircut, for Wallet Balance)
         total_usd = 0.0
+        total_collateral_usd = 0.0
         balances_to_insert = []
+        
+        # Initialize asset breakdown list for debug output
+        asset_breakdown = []
         
         logger.info(f"Processing {len(balance_data.get('accounts', []))} account balances from Crypto.com...")
         
@@ -228,13 +191,40 @@ def update_portfolio_cache(db: Session) -> Dict:
             available = float(account.get("available", account.get("balance", 0)))
             reserved = float(account.get("reserved", balance - available))
             
-            # Use market_value from Crypto.com if available (most accurate)
-            # market_value comes as string from get_account_summary
+            # Extract haircut from API response (for margin collateral calculation)
+            # Crypto.com Margin Wallet Balance uses collateral = raw_value * (1 - haircut)
+            # Check multiple possible field names
+            haircut = 0.0
+            haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+            if haircut_raw is not None:
+                try:
+                    if isinstance(haircut_raw, str):
+                        # Handle "--" or empty strings as 0
+                        haircut_str = haircut_raw.strip().replace("--", "").strip()
+                        if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                            haircut = float(haircut_str)
+                    else:
+                        haircut = float(haircut_raw)
+                except (ValueError, TypeError):
+                    haircut = 0.0
+            
+            # Stablecoins and USD should have 0 haircut (or use API value if provided)
+            if currency in ["USD", "USDT", "USDC"]:
+                haircut = 0.0
+            
+            # CRITICAL: Use market_value from Crypto.com API if available (matches Crypto.com UI exactly)
+            # Crypto.com Exchange UI shows portfolio value using market_value from account summary
+            # This is the source of truth - do NOT calculate from external prices if market_value exists
             market_value_from_api = account.get("market_value")
-            logger.debug(f"Processing {currency}: balance={balance:.8f}, market_value_from_api={market_value_from_api} (type: {type(market_value_from_api).__name__})")
+            price_source = None
+            price_used = None
+            
+            if PORTFOLIO_DEBUG:
+                logger.debug(f"[PORTFOLIO_DEBUG] Processing {currency}: balance={balance:.8f}, available={available:.8f}, reserved={reserved:.8f}, market_value_from_api={market_value_from_api}, haircut={haircut}")
+            
             usd_value = 0.0
             
-            # Try to use market_value from API first (most accurate)
+            # PRIORITY 1: Use market_value from Crypto.com API (matches Crypto.com UI exactly)
             if market_value_from_api:
                 try:
                     # Handle both string and numeric formats
@@ -246,6 +236,8 @@ def update_portfolio_cache(db: Session) -> Dict:
                             parsed_value = float(market_value_str)
                             if parsed_value > 0:
                                 usd_value = parsed_value
+                                price_source = "crypto_com_market_value"
+                                price_used = None  # market_value is already USD, no price needed
                                 logger.info(f"✅ Using market_value from Crypto.com API for {currency}: ${usd_value:.2f} (from string '{market_value_from_api}')")
                             else:
                                 logger.debug(f"market_value parsed as 0 for {currency}, will calculate from prices")
@@ -258,6 +250,8 @@ def update_portfolio_cache(db: Session) -> Dict:
                         parsed_value = float(market_value_from_api)
                         if parsed_value > 0:
                             usd_value = parsed_value
+                            price_source = "crypto_com_market_value"
+                            price_used = None  # market_value is already USD, no price needed
                             logger.info(f"✅ Using market_value from Crypto.com API for {currency}: ${usd_value:.2f} (from numeric {market_value_from_api})")
                         else:
                             logger.debug(f"market_value is 0 for {currency}, will calculate from prices")
@@ -268,19 +262,23 @@ def update_portfolio_cache(db: Session) -> Dict:
             else:
                 logger.debug(f"No market_value from API for {currency}, will calculate from prices")
             
-            # If no valid market_value from API, calculate it ourselves using prices
+            # PRIORITY 2: If no market_value, calculate using Crypto.com ticker prices ONLY
+            # Do NOT use CoinGecko or other external sources - they cause mismatches with Crypto.com UI
             if usd_value == 0 or usd_value is None:
-                logger.debug(f"Calculating USD value for {currency} from prices (balance: {balance:.8f})")
+                logger.debug(f"Calculating USD value for {currency} from Crypto.com prices (balance: {balance:.8f})")
                 if currency == "USDT" or currency == "USD" or currency == "USDC":
                     usd_value = balance
+                    price_source = "stablecoin_1to1"
+                    price_used = 1.0
                     logger.info(f"✅ {currency}: stablecoin, calculated USD value: ${usd_value:.2f}")
                 elif currency in all_prices:
                     price = all_prices[currency]
+                    price_source = "crypto_com_ticker_cache"
+                    price_used = price
                     usd_value = balance * price
-                    logger.info(f"✅ {currency}: calculated USD value from cached price ${price:.8f} × {balance:.8f} = ${usd_value:.2f}")
+                    logger.info(f"✅ {currency}: calculated USD value from Crypto.com ticker ${price:.8f} × {balance:.8f} = ${usd_value:.2f}")
                 else:
-                    # Try multiple sources to find price
-                    logger.debug(f"Price not found for {currency} in cache, attempting to fetch from multiple sources...")
+                    # Try Crypto.com API directly for this specific currency (USDT pair first, then USD)
                     price_found = False
                     
                     # Try Crypto.com API directly for this specific currency (USDT pair)
@@ -294,6 +292,8 @@ def update_portfolio_cache(db: Session) -> Dict:
                                 price = float(ticker.get("a", 0))  # ask price
                                 if price > 0:
                                     all_prices[currency] = price
+                                    price_source = "crypto_com_ticker_api_usdt"
+                                    price_used = price
                                     usd_value = balance * price
                                     logger.info(f"✅ Found price for {currency}: ${price:.8f} via Crypto.com API (USDT pair) → USD value: ${usd_value:.2f} (balance: {balance:.8f})")
                                     price_found = True
@@ -314,6 +314,8 @@ def update_portfolio_cache(db: Session) -> Dict:
                                     price = float(ticker.get("a", 0))  # ask price
                                     if price > 0:
                                         all_prices[currency] = price
+                                        price_source = "crypto_com_ticker_api_usd"
+                                        price_used = price
                                         usd_value = balance * price
                                         logger.info(f"✅ Found price for {currency}: ${price:.8f} via Crypto.com API (USD pair) → USD value: ${usd_value:.2f} (balance: {balance:.8f})")
                                         price_found = True
@@ -322,28 +324,12 @@ def update_portfolio_cache(db: Session) -> Dict:
                         except Exception as e:
                             logger.debug(f"Could not fetch price for {currency}_USD from Crypto.com: {e}")
                     
-                    # If still not found, try CoinGecko search API
-                    if not price_found and currency in gecko_ids:
-                        try:
-                            gecko_id = gecko_ids[currency]
-                            gecko_url_single = f"https://api.coingecko.com/api/v3/simple/price?ids={gecko_id}&vs_currencies=usd"
-                            gecko_response = http_get(gecko_url_single, timeout=5, calling_module="portfolio_cache")
-                            if gecko_response.status_code == 200:
-                                gecko_data = gecko_response.json()
-                                if gecko_id in gecko_data and "usd" in gecko_data[gecko_id]:
-                                    price = float(gecko_data[gecko_id]["usd"])
-                                    if price > 0:
-                                        all_prices[currency] = price
-                                        usd_value = balance * price
-                                        logger.info(f"✅ Found price for {currency}: ${price:.8f} via CoinGecko → USD value: ${usd_value:.2f} (balance: {balance:.8f})")
-                                        price_found = True
-                                    else:
-                                        logger.debug(f"Price from CoinGecko is 0 for {currency}")
-                        except Exception as e:
-                            logger.debug(f"Could not fetch price for {currency} from CoinGecko: {e}")
-                    
+                    # CRITICAL: Do NOT use CoinGecko or other external sources
+                    # Crypto.com UI only uses Crypto.com prices, so we must match that
                     if not price_found:
-                        logger.warning(f"⚠️ Could not find price for {currency} from any source")
+                        logger.warning(f"⚠️ Could not find Crypto.com price for {currency} - asset will have $0 USD value (may cause mismatch with Crypto.com UI)")
+                        price_source = "not_found"
+                        price_used = None
             
             # Only skip negative balances (debts/loans), but save zero balances
             # This ensures all assets are tracked even if balance is temporarily 0
@@ -357,15 +343,45 @@ def update_portfolio_cache(db: Session) -> Dict:
                 usd_value = balance
                 logger.info(f"✅ {currency}: stablecoin fallback, using balance as USD value: ${usd_value:.2f}")
             
+            # Calculate collateral value (after haircut) for margin Wallet Balance
+            # collateral_value = raw_value * (1 - haircut)
+            collateral_value = usd_value * (1 - haircut) if usd_value > 0 else 0.0
+            
+            # Store diagnostic data if enabled
+            if PORTFOLIO_DEBUG and diagnostic_data is not None:
+                diagnostic_data.append({
+                    "symbol": currency,
+                    "quantity": balance,
+                    "price_used": price_used,
+                    "price_source": price_source,
+                    "computed_usd_value": usd_value,
+                    "haircut": haircut,
+                    "collateral_value": collateral_value,
+                    "included": usd_value > 0,
+                    "reason": "positive_usd_value" if usd_value > 0 else ("zero_balance" if balance == 0 else "no_price_found")
+                })
+            
+            # Store asset breakdown data for verification (always track, log only if PORTFOLIO_DEBUG)
+            if usd_value > 0:
+                asset_breakdown.append({
+                    "symbol": currency,
+                    "quantity": balance,
+                    "raw_value_usd": usd_value,
+                    "haircut": haircut,
+                    "collateral_value_usd": collateral_value
+                })
+            
             # Always save the balance to database, even if usd_value is 0 (might be updated later or price data missing)
             # This ensures we have a record of all balances
+            # Track raw assets (for display) and collateral (for Wallet Balance calculation)
             if usd_value > 0:
-                total_usd += usd_value
-                logger.info(f"✅ {currency}: balance={balance:.8f}, usd_value=${usd_value:.2f} → added to total (total now: ${total_usd:.2f})")
+                total_usd += usd_value  # Raw gross assets
+                total_collateral_usd += collateral_value  # Collateral after haircut
+                logger.info(f"✅ {currency}: balance={balance:.8f}, raw_value=${usd_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f} → added to totals")
             else:
                 # Warn for non-stablecoins with balance > 0 but no USD value
                 if currency not in ["USD", "USDT", "USDC"]:
-                    logger.warning(f"⚠️ Could not calculate USD value for {currency} (balance: {balance:.8f}) - price data may be missing or balance is 0")
+                    logger.warning(f"⚠️ Could not calculate USD value for {currency} (balance: {balance:.8f}) - Crypto.com price not found (may cause mismatch with Crypto.com UI)")
                 else:
                     logger.debug(f"{currency}: balance is 0, skipping USD calculation")
             
@@ -468,14 +484,61 @@ def update_portfolio_cache(db: Session) -> Dict:
             logger.info("No loans found in account data")
         
         # Create portfolio snapshot
+        # Store both raw assets (for display) and collateral (for Wallet Balance calculation)
+        # Note: PortfolioSnapshot.total_usd stores raw assets, we'll add collateral calculation in get_portfolio_summary
         snapshot = PortfolioSnapshot(total_usd=total_usd)
         db.add(snapshot)
+        
+        # Store total_collateral_usd in a way we can retrieve it
+        # For now, we'll recalculate it in get_portfolio_summary from fresh API data
+        # This ensures we always use current haircuts
         
         db.commit()
         
         last_updated = time.time()
         
-        logger.info(f"Portfolio cache updated successfully. Total USD: ${total_usd:,.2f}")
+        # Log diagnostic table if enabled
+        if PORTFOLIO_DEBUG and diagnostic_data:
+            logger.info(f"[PORTFOLIO_DEBUG] ========== PORTFOLIO VALUATION BREAKDOWN (with haircuts) ==========")
+            logger.info(f"[PORTFOLIO_DEBUG] {'Symbol':<12} {'Quantity':<20} {'Price':<15} {'Price Source':<25} {'Raw USD':<12} {'Haircut':<10} {'Collateral':<12} {'Included':<10}")
+            logger.info(f"[PORTFOLIO_DEBUG] {'-'*12} {'-'*20} {'-'*15} {'-'*25} {'-'*12} {'-'*10} {'-'*12} {'-'*10}")
+            
+            # Sort by USD value descending
+            sorted_diag = sorted(diagnostic_data, key=lambda x: x["computed_usd_value"], reverse=True)
+            for item in sorted_diag:
+                price_str = f"${item['price_used']:.8f}" if item['price_used'] else "N/A"
+                raw_val = item['computed_usd_value']
+                haircut_val = item.get('haircut', 0.0)
+                collateral_val = item.get('collateral_value', raw_val)
+                logger.info(f"[PORTFOLIO_DEBUG] {item['symbol']:<12} {item['quantity']:<20.8f} {price_str:<15} {item['price_source']:<25} ${raw_val:<11.2f} {haircut_val:<9.4f} ${collateral_val:<11.2f} {'YES' if item['included'] else 'NO':<10}")
+            
+            logger.info(f"[PORTFOLIO_DEBUG] {'-'*12} {'-'*20} {'-'*15} {'-'*25} {'-'*12} {'-'*10} {'-'*12} {'-'*10}")
+            logger.info(f"[PORTFOLIO_DEBUG] TOTAL RAW ASSETS USD: ${total_usd:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] TOTAL COLLATERAL USD: ${total_collateral_usd:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] ==================================================")
+        
+        # Calculate total borrowed for breakdown totals
+        total_borrowed_usd_for_breakdown = sum(loan.get("borrowed_usd_value", 0) for loan in loans_found) if loans_found else 0.0
+        
+        # Log asset breakdown table (matches Crypto.com Wallet Balances table format)
+        if PORTFOLIO_DEBUG and asset_breakdown:
+            logger.info(f"[PORTFOLIO_DEBUG] ========== ASSET BREAKDOWN (Crypto.com Wallet Balance format) ==========")
+            logger.info(f"[PORTFOLIO_DEBUG] {'Symbol':<12} {'Quantity':<20} {'Raw Value USD':<15} {'Haircut':<10} {'Collateral USD':<15}")
+            logger.info(f"[PORTFOLIO_DEBUG] {'-'*12} {'-'*20} {'-'*15} {'-'*10} {'-'*15}")
+            
+            # Sort by raw_value_usd descending
+            sorted_breakdown = sorted(asset_breakdown, key=lambda x: x["raw_value_usd"], reverse=True)
+            for item in sorted_breakdown:
+                logger.info(f"[PORTFOLIO_DEBUG] {item['symbol']:<12} {item['quantity']:<20.8f} ${item['raw_value_usd']:<14.2f} {item['haircut']:<9.4f} ${item['collateral_value_usd']:<14.2f}")
+            
+            logger.info(f"[PORTFOLIO_DEBUG] {'-'*12} {'-'*20} {'-'*15} {'-'*10} {'-'*15}")
+            logger.info(f"[PORTFOLIO_DEBUG] TOTAL RAW ASSETS USD: ${total_usd:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] TOTAL COLLATERAL USD: ${total_collateral_usd:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] TOTAL BORROWED USD: ${total_borrowed_usd_for_breakdown:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] NET WALLET BALANCE USD: ${total_collateral_usd - total_borrowed_usd_for_breakdown:,.2f}")
+            logger.info(f"[PORTFOLIO_DEBUG] ==================================================")
+        
+        logger.info(f"Portfolio cache updated successfully. Raw assets: ${total_usd:,.2f}, Collateral: ${total_collateral_usd:,.2f}")
         
         result = {
             "success": True,
@@ -658,6 +721,59 @@ def get_portfolio_summary(db: Session) -> Dict:
         total_assets_usd = sum(float(usd_value) for _, _, usd_value in balances_data 
                               if usd_value is not None and float(usd_value) > 0)
         
+        # Calculate total_collateral_usd (after haircuts) for Margin Wallet Balance
+        # Crypto.com Margin "Wallet Balance" = Σ(collateral_value) - borrowed
+        # where collateral_value = raw_value * (1 - haircut)
+        # We need fresh API data to get current haircuts
+        total_collateral_usd = 0.0
+        try:
+            from app.services.brokers.crypto_com_trade import trade_client
+            balance_data = trade_client.get_account_summary()
+            
+            # Build a map of currency -> raw USD value from cached balances (balances_data from query)
+            raw_values_by_currency = {_normalize_currency_name(currency): float(usd_value) 
+                                     for currency, _, usd_value in balances_data 
+                                     if usd_value is not None and float(usd_value) > 0}
+            
+            # Extract haircuts from fresh API data and calculate collateral
+            for account in balance_data.get("accounts", []):
+                currency = _normalize_currency_name(
+                    account.get("currency") or account.get("instrument_name") or account.get("symbol")
+                )
+                if not currency or currency not in raw_values_by_currency:
+                    continue
+                
+                raw_value = raw_values_by_currency[currency]
+                
+                # Extract haircut (same logic as update_portfolio_cache)
+                haircut = 0.0
+                haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+                if haircut_raw is not None:
+                    try:
+                        if isinstance(haircut_raw, str):
+                            haircut_str = haircut_raw.strip().replace("--", "").strip()
+                            if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                                haircut = float(haircut_str)
+                        else:
+                            haircut = float(haircut_raw)
+                    except (ValueError, TypeError):
+                        haircut = 0.0
+                
+                # Stablecoins have 0 haircut
+                if currency in ["USD", "USDT", "USDC"]:
+                    haircut = 0.0
+                
+                # Calculate collateral value
+                collateral_value = raw_value * (1 - haircut)
+                total_collateral_usd += collateral_value
+                
+                if PORTFOLIO_DEBUG:
+                    logger.debug(f"[PORTFOLIO_DEBUG] {currency}: raw=${raw_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f}")
+        except Exception as e:
+            logger.warning(f"Could not fetch haircuts from API for collateral calculation: {e}. Using raw assets as fallback.")
+            # Fallback: use raw assets if API call fails
+            total_collateral_usd = total_assets_usd
+        
         # OPTIMIZATION 3: Use cached table existence check
         total_borrowed_usd = 0.0
         loans = []
@@ -685,8 +801,17 @@ def get_portfolio_summary(db: Session) -> Dict:
             except Exception as loan_err:
                 logger.debug(f"Could not get loans data: {loan_err}")
         
-        # Calculate net portfolio value (assets - crypto loans only, USD loans are capital)
-        total_usd = total_assets_usd - total_borrowed_usd
+        # CRITICAL: Crypto.com Margin "Wallet Balance" = total_collateral_usd - total_borrowed_usd
+        # This matches Crypto.com Exchange UI "Wallet Balance" in Margin wallet
+        # 
+        # Computed fields:
+        # - total_assets_usd: GROSS raw assets (sum of all asset USD values, before haircut and borrowed)
+        # - total_collateral_usd: Collateral value after applying haircuts (Σ raw_value * (1 - haircut))
+        # - total_borrowed_usd: Total borrowed/margin amounts (crypto loans only, USD loans excluded)
+        # - total_usd: NET Wallet Balance (total_collateral_usd - total_borrowed_usd) - matches Crypto.com "Wallet Balance"
+        #
+        # The frontend should use total_usd (NET Wallet Balance) as "Total Value" to match Crypto.com UI exactly.
+        total_usd = total_collateral_usd - total_borrowed_usd  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
         
         # OPTIMIZATION 4: Get last updated timestamp (single query, should be fast with index)
         snapshot = db.query(PortfolioSnapshot).order_by(
@@ -728,10 +853,22 @@ def get_portfolio_summary(db: Session) -> Dict:
             for loan in loans:
                 logger.debug(f"  {loan['currency']}: ${loan['borrowed_usd_value']:,.2f} borrowed")
         
+        # Invariant: Total Value shown to users must equal Crypto.com Margin "Wallet Balance" (NET).
+        # This contract must be maintained - frontend relies on total_usd for "Total Value" display.
+        # All values are always returned:
+        # - total_usd: NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
+        # - total_assets_usd: GROSS raw assets (before haircut and borrowed) - informational only
+        # - total_collateral_usd: Collateral value after haircuts - informational only
+        # - total_borrowed_usd: Borrowed amounts (shown separately, NOT added to totals)
+        
+        if PORTFOLIO_DEBUG:
+            logger.info(f"[PORTFOLIO_DEBUG] Portfolio summary: net=${total_usd:,.2f}, gross=${total_assets_usd:,.2f}, collateral=${total_collateral_usd:,.2f}, borrowed=${total_borrowed_usd:,.2f}, pricing_source=crypto_com_api")
+        
         return {
             "balances": balances,
             "total_usd": total_usd,
             "total_assets_usd": total_assets_usd,
+            "total_collateral_usd": total_collateral_usd,
             "total_borrowed_usd": total_borrowed_usd,
             "loans": loans,
             "last_updated": last_updated
