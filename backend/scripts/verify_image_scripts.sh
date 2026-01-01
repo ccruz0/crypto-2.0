@@ -16,9 +16,13 @@ echo ""
 echo "1) Finding backend-aws container..."
 CID=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || echo "")
 if [ -z "$CID" ]; then
-    echo "❌ ERROR: backend-aws container not found"
-    echo "   Make sure docker compose --profile aws is running"
-    exit 1
+    # Fallback: try to find by container name pattern
+    CID=$(docker ps --filter "name=automated-trading-platform-backend-aws" --format '{{.ID}}' | head -1)
+    if [ -z "$CID" ]; then
+        echo "❌ ERROR: backend-aws container not found"
+        echo "   Make sure docker compose --profile aws is running"
+        exit 1
+    fi
 fi
 echo "   Container ID: $CID"
 echo ""

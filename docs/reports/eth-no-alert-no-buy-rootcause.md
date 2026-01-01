@@ -353,18 +353,51 @@ grep "PRICE_MOVE_ALERT_SENT" /path/to/logs
 
 ### Deployment Record
 
-**Deployment Date**: _[To be filled after deployment]_
+**Pre-Deployment Verification** (Local):
+- ✅ Regression tests pass: `5 passed`
+- ✅ TRADE execution verified: Not blocked by alerts (`blocked_by=none` when trade_enabled=True)
+- ✅ Docker-compose config verified: Env vars present in `backend-aws` and `market-updater-aws`
+
+**Deployment Date**: _[To be filled after AWS deployment]_
+
+**Deployment Steps**:
+```bash
+# From repo root
+cd /path/to/automated-trading-platform
+docker compose --profile aws up -d --build backend-aws market-updater-aws
+docker compose --profile aws restart backend-aws market-updater-aws
+```
 
 **Status**: 
-- [ ] Deployed
+- [ ] Deployed to AWS
 - [ ] PRICE_MOVE_ALERT_SENT observed in production logs
 - [ ] Telegram alerts confirmed
+
+**Production Log Evidence**:
+```
+# After deployment, run:
+docker logs -f market-updater-aws | grep "PRICE_MOVE_ALERT_SENT"
+
+# Expected format:
+PRICE_MOVE_ALERT_SENT symbol=... change_pct=... price=$... threshold=... cooldown_s=...
+```
+
+**Observed Log Line**: _[Paste exact PRICE_MOVE_ALERT_SENT line from production logs]_
 
 **Configuration Used**:
 - `PRICE_MOVE_ALERT_PCT`: 0.50 (default)
 - `PRICE_MOVE_ALERT_COOLDOWN_SECONDS`: 300 (default)
 
+**Final Thresholds** (after any tuning):
+- `PRICE_MOVE_ALERT_PCT`: _[Fill after deployment/verification]_
+- `PRICE_MOVE_ALERT_COOLDOWN_SECONDS`: _[Fill after deployment/verification]_
+
 **Tuning Applied**: _[None / Document any threshold adjustments]_
+
+**Troubleshooting Notes** (if needed):
+- If no alerts appear, temporarily set `PRICE_MOVE_ALERT_PCT=0.10` in `.env.aws` to force triggers
+- Verify `alert_enabled=True` for watchlist items
+- Check that market-updater-aws service is running and processing symbols
 
 **Notes**: _[Any operational observations or tuning decisions]_
 
