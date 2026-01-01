@@ -67,6 +67,10 @@ SKIP_NO_PRICE = "SKIP_NO_PRICE"
 EXEC_ALERT_SENT = "EXEC_ALERT_SENT"
 EXEC_ORDER_PLACED = "EXEC_ORDER_PLACED"
 
+# Open order statuses that count toward open positions limit
+# Only includes enum members that actually exist (PENDING does not exist)
+OPEN_STATUSES = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
+
 
 class AuditResult:
     """Container for audit results"""
@@ -325,7 +329,7 @@ def check_trade_system_sanity(db: Session) -> Dict:
             # Count open orders for this symbol
             open_orders = db.query(ExchangeOrder).filter(
                 ExchangeOrder.symbol == symbol,
-                ExchangeOrder.status.in_([OrderStatusEnum.PENDING, OrderStatusEnum.NEW, OrderStatusEnum.PARTIALLY_FILLED])
+                ExchangeOrder.status.in_(OPEN_STATUSES)
             ).count()
             
             if open_orders >= result["max_open_orders"]:
@@ -514,7 +518,7 @@ def analyze_symbol(
             # Check open orders limit
             open_orders = db.query(ExchangeOrder).filter(
                 ExchangeOrder.symbol == symbol,
-                ExchangeOrder.status.in_([OrderStatusEnum.PENDING, OrderStatusEnum.NEW, OrderStatusEnum.PARTIALLY_FILLED])
+                ExchangeOrder.status.in_(OPEN_STATUSES)
             ).count()
             
             if open_orders >= signal_monitor_service.MAX_OPEN_ORDERS_PER_SYMBOL:
