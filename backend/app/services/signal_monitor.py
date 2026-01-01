@@ -933,10 +933,20 @@ class SignalMonitorService:
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
         try:
+            # Check Telegram health before processing
+            if not telegram_notifier.enabled:
+                logger.warning(
+                    "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. "
+                    "Check ENVIRONMENT=aws and TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID_AWS"
+                )
+            
             # Fetch watchlist items in a thread pool to avoid blocking the event loop
             watchlist_items = await asyncio.to_thread(self._fetch_watchlist_items_sync, db)
             
             if not watchlist_items:
+                logger.warning(
+                    "[GLOBAL_BLOCKER] No watchlist items with alert_enabled=True found - no alerts will be sent"
+                )
                 return
             
             # DIAG_MODE: Filter to only diagnostic symbol if set
@@ -5018,6 +5028,14 @@ class SignalMonitorService:
                     self.last_run_at = datetime.now(timezone.utc)
                     self._persist_status("cycle_started")
                     logger.info("SignalMonitorService cycle #%s started (is_running=%s)", cycle_count, self.is_running)
+                    
+                    # Heartbeat log every 10 cycles (every ~5 minutes with 30s interval)
+                    if cycle_count % 10 == 0:
+                        logger.info(
+                            "[HEARTBEAT] SignalMonitorService alive - cycle=%d last_run=%s",
+                            cycle_count,
+                            self.last_run_at.isoformat() if self.last_run_at else "None"
+                        )
 
                     db = SessionLocal()
                     try:

@@ -222,8 +222,9 @@ class TelegramNotifier:
         if not self.enabled:
             preview = message[:200] + "..." if len(message) > 200 else message
             env_value = os.getenv("ENVIRONMENT") or os.getenv("APP_ENV") or "local"
-            logger.debug(
-                f"[TELEGRAM_BLOCKED] Skipping Telegram send (ENV={env_value}, not 'aws'). "
+            # Log at WARNING level when blocking alerts (not just debug)
+            logger.warning(
+                f"[TELEGRAM_BLOCKED] Skipping Telegram send (ENV={env_value}, not 'aws' or missing credentials). "
                 f"Message would have been: {preview}"
             )
             # Register in dashboard for debugging, but mark as blocked
@@ -283,7 +284,7 @@ class TelegramNotifier:
                 payload["reply_markup"] = reply_markup
             
             try:
-                response = http_post(url, json=payload, timeout=timeout_seconds, calling_module="telegram_notifier.send_telegram_message")
+                response = http_post(url, json=payload, timeout=10, calling_module="telegram_notifier.send_telegram_message")
                 
                 # ============================================================
                 # [TELEGRAM_RESPONSE] - Response details
