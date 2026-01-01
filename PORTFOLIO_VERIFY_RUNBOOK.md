@@ -77,6 +77,11 @@ Returns only essential fields: `pass`, `dashboard_net_usd`, `crypto_com_net_usd`
 - `pass`: `true` if `abs(diff_usd) <= 5.0`
 - `tolerance_usd`: Maximum allowed difference ($5, full endpoint only)
 
+**Portfolio Value Source**:
+The dashboard portfolio response includes `portfolio_value_source` field indicating the calculation method:
+- `"exchange_margin_equity"`: Uses Crypto.com's pre-computed margin equity/wallet balance (most accurate, includes all adjustments)
+- `"derived_collateral_minus_borrowed"`: Fallback calculation using (collateral - borrowed) when exchange field is unavailable
+
 ## Local Verification
 
 ### Step 1: Set Environment Variables

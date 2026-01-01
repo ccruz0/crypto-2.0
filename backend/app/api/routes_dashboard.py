@@ -675,6 +675,7 @@ async def _compute_dashboard_state(db: Session) -> dict:
         total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
         total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)  # Borrowed (separate)
         total_usd_value = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
+        portfolio_value_source = portfolio_summary.get("portfolio_value_source", "derived_collateral_minus_borrowed")  # Calculation method
         last_updated = portfolio_summary.get("last_updated")
         
         # Log raw data for debugging
@@ -1019,6 +1020,7 @@ async def _compute_dashboard_state(db: Session) -> dict:
                 "total_assets_usd": total_assets_usd,  # GROSS raw assets (before haircut and borrowed)
                 "total_collateral_usd": total_collateral_usd,  # Collateral after haircuts (informational)
                 "total_borrowed_usd": total_borrowed_usd,  # Borrowed amounts (shown separately)
+                "portfolio_value_source": portfolio_value_source,  # Calculation method: "exchange_margin_equity" or "derived_collateral_minus_borrowed"
                 "exchange": "Crypto.com Exchange"
             },
             # Invariant: Total Value shown to users must equal Crypto.com Margin "Wallet Balance" (NET).

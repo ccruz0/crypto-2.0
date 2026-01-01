@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential gcc curl libpq-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./requirements.txt
+COPY backend/requirements.txt ./requirements.txt
 
 RUN pip install --upgrade pip wheel 'setuptools>=70.0.0' \
     && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
@@ -42,7 +42,7 @@ RUN useradd -m -u 10001 appuser
 COPY --from=builder /wheels /wheels
 
 # Copy requirements.txt for installation
-COPY requirements.txt ./requirements.txt
+COPY backend/requirements.txt ./requirements.txt
 
 # Instalar solo dependencias de producción desde wheels
 # (dev deps como pytest, black, isort, flake8 están comentadas en requirements.txt)
@@ -53,14 +53,17 @@ ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 
 # Copiar código de la app (needed before we can check .git)
-COPY . .
+# CRITICAL: Build context is "." (repo root), so we copy backend/ directory contents
+COPY backend/ .
 
 # Explicitly copy scripts directory to ensure it's included in the image
 # This prevents regression if .dockerignore or COPY . . behavior changes
-COPY scripts/ /app/scripts/
+# CRITICAL: Build context must be "." (repo root) not "./backend" for this to work
+COPY backend/scripts/ /app/scripts/
 
-# Build-time assertion: fail loudly if critical scripts are missing
+# Build-time assertions: fail loudly if required files/directories are missing
 # This ensures the build fails immediately rather than silently missing files at runtime
+RUN test -d /app/scripts || (echo "ERROR: /app/scripts directory is missing in image" >&2 && exit 1)
 RUN test -f /app/scripts/print_api_fingerprints.py || (echo "ERROR: /app/scripts/print_api_fingerprints.py is missing in image" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
@@ -84,7 +87,7 @@ ENV ATP_GIT_SHA=${GIT_SHA} \
     ATP_BUILD_TIME=${BUILD_TIME}
 
 # Copy entrypoint script and make it executable
-COPY entrypoint.sh /app/entrypoint.sh
+COPY backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # FIX: Change ownership of /app to appuser so it can write trading_config.json

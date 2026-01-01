@@ -119,8 +119,8 @@ services:
   # ============================================
   backend-aws:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
@@ -165,6 +165,9 @@ services:
       # Diagnostics endpoints (for portfolio verification)
       - ENABLE_DIAGNOSTICS_ENDPOINTS=${ENABLE_DIAGNOSTICS_ENDPOINTS:-0}
       - DIAGNOSTICS_API_KEY=${DIAGNOSTICS_API_KEY}
+      # Price move alert configuration
+      - PRICE_MOVE_ALERT_PCT=${PRICE_MOVE_ALERT_PCT:-0.50}
+      - PRICE_MOVE_ALERT_COOLDOWN_SECONDS=${PRICE_MOVE_ALERT_COOLDOWN_SECONDS:-300}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
@@ -256,6 +259,9 @@ services:
       - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
+      # Price move alert configuration (market-updater runs signal monitor loop)
+      - PRICE_MOVE_ALERT_PCT=${PRICE_MOVE_ALERT_PCT:-0.50}
+      - PRICE_MOVE_ALERT_COOLDOWN_SECONDS=${PRICE_MOVE_ALERT_COOLDOWN_SECONDS:-300}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
     depends_on:
       db:

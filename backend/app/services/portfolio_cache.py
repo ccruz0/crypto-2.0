@@ -801,17 +801,61 @@ def get_portfolio_summary(db: Session) -> Dict:
             except Exception as loan_err:
                 logger.debug(f"Could not get loans data: {loan_err}")
         
-        # CRITICAL: Crypto.com Margin "Wallet Balance" = total_collateral_usd - total_borrowed_usd
-        # This matches Crypto.com Exchange UI "Wallet Balance" in Margin wallet
-        # 
+        # CRITICAL: Prefer exchange-reported margin equity over derived calculation.
+        # Crypto.com margin wallet provides pre-computed NET balance that includes:
+        # - haircuts
+        # - borrowed amounts
+        # - accrued interest
+        # - unrealized PnL
+        # - mark price adjustments
+        # This is more accurate than our derived calculation.
+        
+        # Check if API provided margin_equity (pre-computed NET balance)
+        margin_equity_from_api = None
+        portfolio_value_source = None
+        try:
+            from app.services.brokers.crypto_com_trade import trade_client
+            balance_data_fresh = trade_client.get_account_summary()
+            margin_equity_from_api = balance_data_fresh.get("margin_equity")
+            if margin_equity_from_api is not None:
+                try:
+                    margin_equity_from_api = float(margin_equity_from_api)
+                    logger.info(f"✅ Using exchange-reported margin equity: ${margin_equity_from_api:,.2f}")
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not parse margin_equity from API: {margin_equity_from_api}")
+                    margin_equity_from_api = None
+        except Exception as e:
+            logger.debug(f"Could not fetch margin equity from API: {e}")
+        
+        # Calculate derived value for comparison
+        derived_equity = total_collateral_usd - total_borrowed_usd
+        
+        # Use exchange-reported equity if available, otherwise fall back to derived calculation
+        if margin_equity_from_api is not None:
+            total_usd = margin_equity_from_api  # Prefer exchange-reported margin equity
+            portfolio_value_source = "exchange_margin_equity"
+            logger.info(f"✅ Using exchange-reported margin equity as total_usd: ${total_usd:,.2f}")
+            
+            if PORTFOLIO_DEBUG:
+                delta = abs(margin_equity_from_api - derived_equity)
+                logger.info(f"[PORTFOLIO_DEBUG] total_value_source=exchange_margin_equity exchange_equity=${margin_equity_from_api:,.2f} derived_equity=${derived_equity:,.2f} delta=${delta:,.2f}")
+        else:
+            # Fallback: Calculate NET Wallet Balance from collateral and borrowed
+            # Crypto.com Margin "Wallet Balance" = total_collateral_usd - total_borrowed_usd
+            total_usd = derived_equity
+            portfolio_value_source = "derived_collateral_minus_borrowed"
+            logger.debug(f"Using derived calculation: collateral ${total_collateral_usd:,.2f} - borrowed ${total_borrowed_usd:,.2f} = ${total_usd:,.2f}")
+            
+            if PORTFOLIO_DEBUG:
+                logger.info(f"[PORTFOLIO_DEBUG] total_value_source=derived_collateral_minus_borrowed exchange_equity=None derived_equity=${derived_equity:,.2f} delta=N/A")
+        
         # Computed fields:
         # - total_assets_usd: GROSS raw assets (sum of all asset USD values, before haircut and borrowed)
         # - total_collateral_usd: Collateral value after applying haircuts (Σ raw_value * (1 - haircut))
         # - total_borrowed_usd: Total borrowed/margin amounts (crypto loans only, USD loans excluded)
-        # - total_usd: NET Wallet Balance (total_collateral_usd - total_borrowed_usd) - matches Crypto.com "Wallet Balance"
+        # - total_usd: NET Wallet Balance (prefer exchange-reported margin_equity, fallback to collateral - borrowed)
         #
         # The frontend should use total_usd (NET Wallet Balance) as "Total Value" to match Crypto.com UI exactly.
-        total_usd = total_collateral_usd - total_borrowed_usd  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
         
         # OPTIMIZATION 4: Get last updated timestamp (single query, should be fast with index)
         snapshot = db.query(PortfolioSnapshot).order_by(

@@ -45,6 +45,11 @@ FORCE_SELL_DIAGNOSTIC_SYMBOL = os.getenv("FORCE_SELL_DIAGNOSTIC_SYMBOL", "").upp
 
 # Single symbol diagnostic mode (for throttle reset investigation)
 DIAG_SYMBOL = os.getenv("DIAG_SYMBOL", "").upper()
+DIAG_FORCE_SIGNAL_BUY = os.getenv("DIAG_FORCE_SIGNAL_BUY", "").strip() == "1"
+
+# Price move alert configuration
+PRICE_MOVE_ALERT_PCT = float(os.getenv("PRICE_MOVE_ALERT_PCT", "0.50"))  # Default 0.50%
+PRICE_MOVE_ALERT_COOLDOWN_SECONDS = float(os.getenv("PRICE_MOVE_ALERT_COOLDOWN_SECONDS", "300"))  # Default 5 minutes
 
 if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
     target_symbol = FORCE_SELL_DIAGNOSTIC_SYMBOL or "TRX_USDT"
@@ -1337,6 +1342,11 @@ class SignalMonitorService:
                     f"sell_signal={sell_signal} from calculate_trading_signals"
                 )
             
+            # DIAG_MODE: Force buy_signal if DIAG_FORCE_SIGNAL_BUY is set
+            if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL and DIAG_FORCE_SIGNAL_BUY:
+                buy_signal = True
+                logger.info(f"🔧 [DIAG_MODE] Forcing buy_signal=True for {symbol} (DIAG_FORCE_SIGNAL_BUY=1)")
+            
             # Log result for UNI_USD debugging
             if symbol == "UNI_USD":
                 logger.info(f"🔍 {symbol} calculate_trading_signals returned: sell_signal={sell_signal}")
@@ -1452,6 +1462,52 @@ class SignalMonitorService:
             # Also log normally
             logger.info("=" * 80)
             logger.info(f"===== TRACE START {symbol} =====")
+            
+            # Print signal explainability inside trace block
+            # Extract buy_flags from strategy.reasons (where they're stored)
+            buy_flags = {}
+            if signals and "strategy" in signals:
+                strategy_dict = signals.get("strategy", {})
+                if isinstance(strategy_dict, dict) and "reasons" in strategy_dict:
+                    reasons = strategy_dict.get("reasons", {})
+                    buy_flags = {
+                        "buy_rsi_ok": reasons.get("buy_rsi_ok"),
+                        "buy_ma_ok": reasons.get("buy_ma_ok"),
+                        "buy_volume_ok": reasons.get("buy_volume_ok"),
+                        "buy_target_ok": reasons.get("buy_target_ok"),
+                        "buy_price_ok": reasons.get("buy_price_ok"),
+                    }
+            
+            # Print signal inputs
+            rsi_str = f"{rsi:.1f}" if rsi else "None"
+            ma50_str = f"{ma50:.2f}" if ma50 else "None"
+            ma200_str = f"{ma200:.2f}" if ma200 else "None"
+            ema10_str = f"{ema10:.2f}" if ema10 else "None"
+            buy_target_str = f"{watchlist_item.buy_target}" if watchlist_item.buy_target else "None"
+            volume_str = f"{current_volume:.2f}" if current_volume else "None"
+            avg_volume_str = f"{avg_volume:.2f}" if avg_volume else "None"
+            
+            print(f"signal_inputs: price=${current_price:.4f} rsi={rsi_str} "
+                  f"ma50={ma50_str} ma200={ma200_str} ema10={ema10_str} buy_target={buy_target_str} "
+                  f"resistance_up=${res_up:.2f} resistance_down=${res_down:.2f} "
+                  f"volume={volume_str} avg_volume={avg_volume_str} "
+                  f"strategy_id={strategy_type.value}/{risk_approach.value}")
+            
+            # Print signal conditions (from buy_flags)
+            rsi_ok = buy_flags.get("buy_rsi_ok")
+            ma_ok = buy_flags.get("buy_ma_ok")
+            vol_ok = buy_flags.get("buy_volume_ok")
+            target_ok = buy_flags.get("buy_target_ok")
+            price_ok = buy_flags.get("buy_price_ok")
+            
+            print(f"signal_conditions: rsi_ok={rsi_ok} ma_ok={ma_ok} vol_ok={vol_ok} target_ok={target_ok} price_ok={price_ok} "
+                  f"strategy_decision={strategy_decision} buy_signal={buy_signal} sell_signal={sell_signal}")
+            
+            # Print active strategy params from DB
+            print(f"strategy_params: sl_tp_mode={watchlist_item.sl_tp_mode} "
+                  f"min_price_change_pct={watchlist_item.min_price_change_pct} "
+                  f"trade_amount_usd={watchlist_item.trade_amount_usd} "
+                  f"rsi_buy_threshold=40 rsi_sell_threshold=70")
             
             self._print_decision_trace(
                 symbol=symbol,
@@ -1654,14 +1710,13 @@ class SignalMonitorService:
             elif not buy_signal:
                 trade_guard_reason = "NO_SIGNAL"
             else:
-                # If there's a signal, use the actual guard_reason from order creation logic
-                # But we may not have reached that code path, so check common guards
-                if not buy_alert_sent_successfully:
-                    trade_guard_reason = "ALERT_NOT_SENT"
-                elif not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+                # If there's a signal, check common guards (but NOT alert sending)
+                # Trade execution is independent of alert sending
+                if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
                     trade_guard_reason = "INVALID_TRADE_AMOUNT"
                 else:
-                    # Signal exists, alert sent, trade enabled, amount valid
+                    # Signal exists, trade enabled, amount valid
+                    # Note: Alert sending is NOT a gate for trade execution
                     # Check if we would create order (this is evaluated in the order creation path)
                     # For now, assume it would be allowed if all conditions are met
                     trade_should_create = True
@@ -1679,6 +1734,87 @@ class SignalMonitorService:
                 guard_reason=trade_guard_reason,
                 evaluation_id=evaluation_id
             )
+            
+            # Price Move Alert Channel (independent of buy/sell signals)
+            # Alert on significant price changes even without buy/sell signal
+            if watchlist_item.alert_enabled:
+                # Calculate price change from most recent snapshot (BUY or SELL, whichever is more recent)
+                most_recent_snapshot = None
+                most_recent_time = None
+                if last_buy_snapshot and last_buy_snapshot.timestamp:
+                    most_recent_snapshot = last_buy_snapshot
+                    most_recent_time = last_buy_snapshot.timestamp
+                if last_sell_snapshot and last_sell_snapshot.timestamp:
+                    if most_recent_time is None or last_sell_snapshot.timestamp > most_recent_time:
+                        most_recent_snapshot = last_sell_snapshot
+                        most_recent_time = last_sell_snapshot.timestamp
+                
+                price_move_pct = None
+                if most_recent_snapshot and most_recent_snapshot.price and most_recent_snapshot.price > 0:
+                    price_move_pct = abs((current_price - most_recent_snapshot.price) / most_recent_snapshot.price * 100)
+                
+                # Check if price move exceeds threshold
+                if price_move_pct is not None and price_move_pct >= PRICE_MOVE_ALERT_PCT:
+                    # Check throttle for PRICE_MOVE_ALERT channel (separate from SIGNAL_ALERT)
+                    # Use a separate strategy_key for price move alerts to create independent throttle bucket
+                    price_move_strategy_key = f"{strategy_key}:PRICE_MOVE"
+                    
+                    # Fetch price move throttle state (using separate strategy_key)
+                    price_move_snapshots = fetch_signal_states(
+                        db, symbol=symbol, strategy_key=price_move_strategy_key
+                    )
+                    price_move_snapshot = price_move_snapshots.get("PRICE_MOVE")
+                    
+                    # Check cooldown
+                    price_move_allowed = True
+                    price_move_reason = "Price move threshold met"
+                    if price_move_snapshot and price_move_snapshot.timestamp:
+                        elapsed_seconds = (now_utc - price_move_snapshot.timestamp).total_seconds()
+                        if elapsed_seconds < PRICE_MOVE_ALERT_COOLDOWN_SECONDS:
+                            price_move_allowed = False
+                            price_move_reason = f"THROTTLED (elapsed {elapsed_seconds:.1f}s < {PRICE_MOVE_ALERT_COOLDOWN_SECONDS:.0f}s)"
+                    
+                    # DIAG_MODE: Print price move decision trace
+                    if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
+                        direction = "↑" if current_price > most_recent_snapshot.price else "↓"
+                        print(f"PRICE_MOVE decision={'EXEC' if price_move_allowed else 'SKIP'} reason={price_move_reason} "
+                              f"symbol={symbol} current_price=${current_price:.4f} reference_price=${most_recent_snapshot.price:.4f} "
+                              f"price_change_pct={direction} {price_move_pct:.2f}% threshold={PRICE_MOVE_ALERT_PCT:.2f}% "
+                              f"cooldown={PRICE_MOVE_ALERT_COOLDOWN_SECONDS:.0f}s")
+                    
+                    if price_move_allowed:
+                        # Send price move alert
+                        direction = "↑" if current_price > most_recent_snapshot.price else "↓"
+                        message = (
+                            f"📊 <b>Price Move Alert: {symbol}</b>\n\n"
+                            f"Price: ${current_price:.4f} ({direction} {price_move_pct:.2f}%)\n"
+                            f"From: ${most_recent_snapshot.price:.4f}\n"
+                            f"Time: {now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
+                            f"<i>Price move alert (independent of buy/sell signals)</i>"
+                        )
+                        try:
+                            telegram_notifier.send_message(message)
+                            # Production log line (single line, easy to grep)
+                            logger.info(
+                                f"PRICE_MOVE_ALERT_SENT symbol={symbol} change_pct={price_move_pct:.2f} "
+                                f"price=${current_price:.4f} threshold={PRICE_MOVE_ALERT_PCT:.2f} "
+                                f"cooldown_s={int(PRICE_MOVE_ALERT_COOLDOWN_SECONDS)}"
+                            )
+                            
+                            # Record price move alert event (separate throttle bucket)
+                            record_signal_event(
+                                db=db,
+                                symbol=symbol,
+                                strategy_key=price_move_strategy_key,
+                                side="PRICE_MOVE",
+                                price=current_price,
+                                emit_reason=f"Price move {direction} {price_move_pct:.2f}% >= {PRICE_MOVE_ALERT_PCT:.2f}%",
+                                config_hash=None,  # Price move alerts don't use config hash
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send price move alert for {symbol}: {e}", exc_info=True)
+                    else:
+                        logger.debug(f"📊 Price move alert throttled for {symbol}: {price_move_reason}")
             
             # Print TRACE END markers
             print(f"===== TRACE END {symbol} =====")
@@ -2409,21 +2545,27 @@ class SignalMonitorService:
                     )
                 blocked_by_limits = True
 
-            # ORDERS ONLY AFTER ALERT SENT and not blocked by limits/cooldown
+            # ORDERS: Trade execution is independent of alert sending
+            # Trade should NOT be blocked by alert throttle/cooldown
+            # Only block by order limits and cooldown (MAX_OPEN_ORDERS, RECENT_ORDERS_COOLDOWN)
             guard_reason = None
             if blocked_by_limits:
                 should_create_order = False
                 guard_reason = "MAX_OPEN_ORDERS" if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL else "RECENT_ORDERS_COOLDOWN"
-            elif not buy_alert_sent_successfully:
-                should_create_order = False
-                guard_reason = "ALERT_NOT_SENT"
-                logger.info(f"ℹ️ {symbol}: BUY alert not sent -> skipping order creation")
             else:
+                # Trade execution is independent - proceed if signal exists and trade_enabled
+                # Alert sending is informational only, not a gate for trade execution
                 should_create_order = True
-                logger.info(
-                    f"🟢 BUY alert was sent successfully for {symbol} (throttling passed). "
-                    f"Proceeding to order checks (trade_enabled, limits, cooldown)."
-                )
+                if buy_alert_sent_successfully:
+                    logger.info(
+                        f"🟢 BUY alert was sent successfully for {symbol}. "
+                        f"Proceeding to order creation (trade_enabled, limits, cooldown)."
+                    )
+                else:
+                    logger.info(
+                        f"ℹ️ {symbol}: BUY alert not sent (may be throttled/disabled), "
+                        f"but proceeding with trade execution (trade is independent of alert)."
+                    )
             
             # DIAG_MODE: Print TRADE decision trace for diagnostic symbol (BUY)
             if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:

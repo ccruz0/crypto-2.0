@@ -395,7 +395,26 @@ class CryptoComTradeClient:
                                     accounts.append(account_entry)
                     
                     logger.info(f"Retrieved {len(accounts)} account balances via proxy")
-                    return {"accounts": accounts}
+                    
+                    # Extract top-level equity/wallet balance fields if present (proxy response)
+                    response_data = {"accounts": accounts}
+                    if "result" in result and isinstance(result["result"], dict):
+                        result_data = result["result"]
+                        equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
+                                        "available_equity", "account_equity", "balance_equity"]
+                        for field in equity_fields:
+                            if field in result_data:
+                                value = result_data[field]
+                                if value is not None:
+                                    try:
+                                        equity_value = float(value) if isinstance(value, str) else float(value)
+                                        response_data["margin_equity"] = equity_value
+                                        logger.info(f"Found margin equity field '{field}' (proxy): {equity_value}")
+                                        break
+                                    except (ValueError, TypeError):
+                                        logger.debug(f"Could not parse equity field '{field}': {value}")
+                    
+                    return response_data
                 else:
                     logger.error(f"Unexpected proxy response for account summary: {result}")
                     return {"accounts": []}
@@ -683,6 +702,27 @@ class CryptoComTradeClient:
                     
                     accounts.append(account_data)
 
+                # Extract equity/wallet balance from position data or top-level result
+                margin_equity_value = None
+                
+                # Check first position element for account-level equity (common in Crypto.com API)
+                if data and len(data) > 0:
+                    first_position = data[0] if isinstance(data, list) else data
+                    if isinstance(first_position, dict):
+                        equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
+                                        "available_equity", "account_equity", "balance_equity"]
+                        for field in equity_fields:
+                            if field in first_position:
+                                value = first_position[field]
+                                if value is not None:
+                                    try:
+                                        margin_equity_value = float(value) if isinstance(value, str) else float(value)
+                                        logger.info(f"Found margin equity field '{field}' in first position element: {margin_equity_value}")
+                                        break
+                                    except (ValueError, TypeError):
+                                        logger.debug(f"Could not parse equity field '{field}': {value}")
+                
+                # Check position data array for equity fields (per-position)
                 for position in data:
                     account_type = position.get("account_type")
                     if "position_balances" in position:
@@ -691,9 +731,51 @@ class CryptoComTradeClient:
                     if "balances" in position:
                         for balance in position["balances"]:
                             _record_balance_entry(balance, account_type)
+                    
+                    # Check position-level equity fields
+                    if margin_equity_value is None:
+                        equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
+                                        "available_equity", "account_equity", "balance_equity"]
+                        for field in equity_fields:
+                            if field in position:
+                                value = position[field]
+                                if value is not None:
+                                    try:
+                                        margin_equity_value = float(value) if isinstance(value, str) else float(value)
+                                        logger.info(f"Found margin equity field '{field}' in position data: {margin_equity_value}")
+                                        break
+                                    except (ValueError, TypeError):
+                                        logger.debug(f"Could not parse equity field '{field}': {value}")
                 
                 logger.info(f"Retrieved {len(accounts)} account balances")
-                return {"accounts": accounts}
+                
+                # Extract top-level equity/wallet balance fields if present
+                # Crypto.com margin wallet may provide pre-computed NET balance
+                response_data = {"accounts": accounts}
+                
+                # Check result["result"] for equity fields (if not found in position data)
+                if margin_equity_value is None:
+                    result_data = result.get("result", {})
+                    if isinstance(result_data, dict):
+                        # Check for equity/wallet balance fields (various possible names)
+                        equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
+                                        "available_equity", "account_equity", "balance_equity"]
+                        for field in equity_fields:
+                            if field in result_data:
+                                value = result_data[field]
+                                if value is not None:
+                                    try:
+                                        # Convert to float if it's a string
+                                        margin_equity_value = float(value) if isinstance(value, str) else float(value)
+                                        logger.info(f"Found margin equity field '{field}' in result: {margin_equity_value}")
+                                        break  # Use first found field
+                                    except (ValueError, TypeError):
+                                        logger.debug(f"Could not parse equity field '{field}': {value}")
+                
+                if margin_equity_value is not None:
+                    response_data["margin_equity"] = margin_equity_value
+                
+                return response_data
             else:
                 logger.error(f"Unexpected response format: {result}")
                 raise ValueError(f"Invalid response format: {result}")
