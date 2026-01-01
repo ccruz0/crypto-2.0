@@ -134,6 +134,10 @@ services:
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=AWS
+      # Health monitoring thresholds
+      - HEALTH_STALE_MARKET_MINUTES=${HEALTH_STALE_MARKET_MINUTES:-30}
+      - HEALTH_MONITOR_STALE_MINUTES=${HEALTH_MONITOR_STALE_MINUTES:-30}
+      - SYSTEM_ALERT_COOLDOWN_HOURS=${SYSTEM_ALERT_COOLDOWN_HOURS:-24}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       # Force internal API URL for Docker service-to-service communication

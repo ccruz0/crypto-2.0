@@ -237,6 +237,12 @@ class TelegramNotifier:
                 )
             except Exception as e:
                 logger.debug(f"Could not register blocked message in dashboard: {e}")
+            # Record blocked send for health monitoring
+            try:
+                from app.services.system_health import record_telegram_send_result
+                record_telegram_send_result(False)
+            except Exception:
+                pass  # Don't fail if health module not available
             return False
         
         # If we reach here, ENV=aws and credentials are present, so send the message
@@ -285,6 +291,12 @@ class TelegramNotifier:
             
             try:
                 response = http_post(url, json=payload, timeout=10, calling_module="telegram_notifier.send_telegram_message")
+                # Record send result for health monitoring
+                try:
+                    from app.services.system_health import record_telegram_send_result
+                    record_telegram_send_result(True)
+                except Exception:
+                    pass  # Don't fail if health module not available
                 
                 # ============================================================
                 # [TELEGRAM_RESPONSE] - Response details
@@ -376,10 +388,23 @@ class TelegramNotifier:
                 logger.debug(f"Could not register Telegram message in dashboard: {e}")
                 # Non-critical, continue
             
+            # Record successful send for health monitoring
+            try:
+                from app.services.system_health import record_telegram_send_result
+                record_telegram_send_result(True)
+            except Exception:
+                pass  # Don't fail if health module not available
+            
             return True
             
         except Exception as e:
             logger.error(f"[TELEGRAM_ERROR] Failed to send message: {e}", exc_info=True)
+            # Record failed send for health monitoring
+            try:
+                from app.services.system_health import record_telegram_send_result
+                record_telegram_send_result(False)
+            except Exception:
+                pass  # Don't fail if health module not available
             return False
     
     def send_message_with_buttons(self, message: str, buttons: list) -> bool:

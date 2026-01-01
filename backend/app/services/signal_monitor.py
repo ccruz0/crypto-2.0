@@ -51,6 +51,13 @@ DIAG_FORCE_SIGNAL_BUY = os.getenv("DIAG_FORCE_SIGNAL_BUY", "").strip() == "1"
 PRICE_MOVE_ALERT_PCT = float(os.getenv("PRICE_MOVE_ALERT_PCT", "0.50"))  # Default 0.50%
 PRICE_MOVE_ALERT_COOLDOWN_SECONDS = float(os.getenv("PRICE_MOVE_ALERT_COOLDOWN_SECONDS", "300"))  # Default 5 minutes
 
+# SL/TP creation configuration
+# Failsafe behavior when SL/TP creation fails: if True, send CRITICAL alerts (default: True for safety)
+FAILSAFE_ON_SLTP_ERROR = os.getenv("FAILSAFE_ON_SLTP_ERROR", "true").lower() in ("1", "true", "yes")
+# Order fill confirmation polling configuration
+ORDER_FILL_POLL_MAX_ATTEMPTS = int(os.getenv("ORDER_FILL_POLL_MAX_ATTEMPTS", "10"))  # Max attempts to poll for fill
+ORDER_FILL_POLL_INTERVAL_SECONDS = float(os.getenv("ORDER_FILL_POLL_INTERVAL_SECONDS", "1.0"))  # Seconds between polls
+
 if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
     target_symbol = FORCE_SELL_DIAGNOSTIC_SYMBOL or "TRX_USDT"
     logger.info(
@@ -4597,6 +4604,137 @@ class SignalMonitorService:
             "avg_price": result.get("avg_price")
         }
     
+    def _poll_order_fill_confirmation(
+        self,
+        symbol: str,
+        order_id: str,
+        max_attempts: int = ORDER_FILL_POLL_MAX_ATTEMPTS,
+        poll_interval: float = ORDER_FILL_POLL_INTERVAL_SECONDS
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Poll the exchange to confirm an order is FILLED and retrieve executed quantity.
+        
+        ROOT CAUSE FIX: MARKET orders may settle asynchronously. This function polls until:
+        - Order status == FILLED
+        - Executed quantity (cumulative_quantity) is available
+        
+        Reference: Crypto.com Exchange API - orders may not be immediately FILLED
+        after placement, especially for MARKET orders during high volatility.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "ETH_USDT")
+            order_id: Exchange order ID to poll
+            max_attempts: Maximum number of polling attempts (default: 10)
+            poll_interval: Seconds to wait between attempts (default: 1.0)
+        
+        Returns:
+            Dict with keys: status, cumulative_quantity, avg_price, filled_price
+            Returns None if order not filled after max_attempts
+        """
+        logger.info(
+            f"🔄 [FILL_CONFIRMATION] Polling for order fill: {symbol} order_id={order_id} "
+            f"(max_attempts={max_attempts}, interval={poll_interval}s)"
+        )
+        
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Check open orders first (order might still be open/pending)
+                open_orders_result = trade_client.get_open_orders(page=0, page_size=200)
+                open_orders_data = open_orders_result.get("data", [])
+                
+                # Search for our order in open orders
+                order_found = False
+                for order in open_orders_data:
+                    if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
+                        order_found = True
+                        status = (order.get("status") or "NEW").upper()
+                        
+                        if status == "FILLED":
+                            # Order is filled, get details
+                            cumulative_qty = float(order.get("cumulative_quantity", 0) or 0)
+                            avg_price = float(order.get("avg_price", 0) or 0) if order.get("avg_price") else None
+                            
+                            if cumulative_qty > 0:
+                                logger.info(
+                                    f"✅ [FILL_CONFIRMATION] Order {order_id} confirmed FILLED on attempt {attempt}: "
+                                    f"qty={cumulative_qty}, avg_price={avg_price}"
+                                )
+                                return {
+                                    "status": "FILLED",
+                                    "cumulative_quantity": cumulative_qty,
+                                    "avg_price": avg_price,
+                                    "filled_price": avg_price if avg_price else None
+                                }
+                            else:
+                                logger.warning(
+                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} status is FILLED but cumulative_quantity=0 "
+                                    f"(attempt {attempt}/{max_attempts})"
+                                )
+                        else:
+                            logger.debug(
+                                f"🔄 [FILL_CONFIRMATION] Order {order_id} status={status} (not FILLED yet, attempt {attempt}/{max_attempts})"
+                            )
+                        break
+                
+                # If order not in open orders, check order history (it might have been filled and closed)
+                if not order_found:
+                    logger.debug(f"🔄 [FILL_CONFIRMATION] Order {order_id} not found in open orders, checking history (attempt {attempt}/{max_attempts})")
+                    
+                    # Get recent order history (last 5 minutes)
+                    end_time_ms = int(time.time() * 1000)
+                    start_time_ms = int((time.time() - 300) * 1000)  # Last 5 minutes
+                    history_result = trade_client.get_order_history(
+                        start_time=start_time_ms,
+                        end_time=end_time_ms,
+                        page_size=200,
+                        page=0
+                    )
+                    history_data = history_result.get("data", [])
+                    
+                    for order in history_data:
+                        if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
+                            status = (order.get("status") or "NEW").upper()
+                            cumulative_qty = float(order.get("cumulative_quantity", 0) or 0)
+                            avg_price = float(order.get("avg_price", 0) or 0) if order.get("avg_price") else None
+                            
+                            if status == "FILLED" and cumulative_qty > 0:
+                                logger.info(
+                                    f"✅ [FILL_CONFIRMATION] Order {order_id} found FILLED in history (attempt {attempt}): "
+                                    f"qty={cumulative_qty}, avg_price={avg_price}"
+                                )
+                                return {
+                                    "status": "FILLED",
+                                    "cumulative_quantity": cumulative_qty,
+                                    "avg_price": avg_price,
+                                    "filled_price": avg_price if avg_price else None
+                                }
+                            break
+                
+                # If we haven't found the order filled yet, wait before next attempt
+                if attempt < max_attempts:
+                    logger.debug(f"⏳ [FILL_CONFIRMATION] Waiting {poll_interval}s before next poll attempt...")
+                    time.sleep(poll_interval)
+                else:
+                    logger.warning(
+                        f"⚠️ [FILL_CONFIRMATION] Order {order_id} not confirmed FILLED after {max_attempts} attempts. "
+                        f"Order may still be pending or fill status unavailable."
+                    )
+                    
+            except Exception as poll_err:
+                logger.warning(
+                    f"⚠️ [FILL_CONFIRMATION] Error polling order {order_id} (attempt {attempt}/{max_attempts}): {poll_err}",
+                    exc_info=True
+                )
+                if attempt < max_attempts:
+                    time.sleep(poll_interval)
+        
+        # Order not filled after max attempts
+        logger.error(
+            f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT confirmed FILLED after {max_attempts} attempts. "
+            f"SL/TP creation will be skipped to prevent using incorrect quantity."
+        )
+        return None
+    
     async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
                                  current_price: float, res_up: float, res_down: float):
         """Create a SELL order automatically based on signal"""
@@ -4960,37 +5098,232 @@ class SignalMonitorService:
             
             logger.info(f"✅ Automatic SELL order created successfully: {symbol} - {order_id}")
             
-            # If order is filled, create TP/SL orders immediately
-            # For MARKET orders, they may not be immediately FILLED, so we check multiple conditions
-            is_filled = result_status in ["FILLED", "filled"]
-            has_avg_price = result.get("avg_price") is not None
+            # ========================================================================
+            # CURRENT ORDER LIFECYCLE LOGIC (Documented Flow)
+            # ========================================================================
+            # 
+            # FLOW FOR SELL ORDERS WITH SL/TP:
+            #   1. Place SELL MARKET order -> exchange returns order_id
+            #   2. Check initial response: if status=FILLED and cumulative_quantity available, use it
+            #   3. If not immediately filled, poll exchange (get_open_orders + get_order_history)
+            #      until status=FILLED with cumulative_quantity (up to N attempts with sleep)
+            #   4. Extract EXECUTED quantity (cumulative_quantity) from filled order response
+            #      - NEVER use requested quantity (qty) - only use executed quantity
+            #   5. Normalize executed quantity using normalize_quantity() helper:
+            #      - Rounds DOWN to stepSize (qty_tick_size)
+            #      - Enforces minQty (minimum quantity)
+            #      - Formats to exact quantity_decimals decimal places
+            #   6. Create SL/TP orders with normalized executed quantity
+            #   7. If SL/TP creation fails, send CRITICAL Telegram alert and log error
+            #
+            # KEY ASSUMPTIONS:
+            #   - MARKET orders may settle asynchronously (not immediately FILLED)
+            #   - Exchange returns cumulative_quantity only when order is FILLED
+            #   - Requested quantity (qty) may differ from executed quantity
+            #   - Quantity must match exchange precision rules (stepSize, minQty, decimals)
+            #
+            # EXCHANGE DOCUMENTATION:
+            #   - Crypto.com Exchange API: private/create-order (MARKET orders)
+            #   - Order status lifecycle: NEW -> ACTIVE -> FILLED (or CANCELLED)
+            #   - cumulative_quantity only available when order is FILLED
+            #   - See: docs/trading/crypto_com_order_formatting.md for precision rules
+            #
+            # ROOT CAUSE OF PREVIOUS FAILURE:
+            #   - Code assumed immediate fills: checked is_filled || has_avg_price
+            #   - Used requested qty as fallback when cumulative_quantity not available
+            #   - Did not poll for fill confirmation
+            #   - Did not normalize quantity to exchange rules
+            #   - Silent failures: only logged warnings, no CRITICAL alerts
+            #
+            # ========================================================================
+            # ROOT CAUSE FIX: Guaranteed fill confirmation before SL/TP placement
+            # ========================================================================
+            # PROBLEM: MARKET orders may settle asynchronously. The initial response
+            # may not have status=FILLED or cumulative_quantity yet.
+            # 
+            # SOLUTION: Poll the exchange until order is confirmed FILLED with
+            # executed quantity, then use that EXECUTED quantity (not requested) for SL/TP.
+            # ========================================================================
             
-            # Attempt SL/TP creation if order is filled or has avg_price (indicating it was filled)
-            if is_filled or has_avg_price:
-                filled_qty = float(result.get("cumulative_quantity", qty)) if result.get("cumulative_quantity") else qty
-                try:
-                    from app.services.exchange_sync import ExchangeSyncService
-                    exchange_sync = ExchangeSyncService()
-                    
-                    # Create SL/TP orders for the filled SELL order
-                    # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
-                    exchange_sync._create_sl_tp_for_filled_order(
-                        db=db,
-                        symbol=symbol,
-                        side="SELL",
-                        filled_price=float(filled_price),
-                        filled_qty=filled_qty,
-                        order_id=str(order_id)
-                    )
-                    logger.info(f"✅ SL/TP orders created for SELL {symbol} order {order_id}")
-                except Exception as sl_tp_err:
-                    logger.warning(f"⚠️ Could not create SL/TP orders immediately for SELL {symbol}: {sl_tp_err}. Exchange sync will handle this when order becomes FILLED.", exc_info=True)
+            # Check if order is already filled in initial response
+            is_filled_immediately = result_status in ["FILLED", "filled"]
+            has_cumulative_qty = result.get("cumulative_quantity") and float(result.get("cumulative_quantity", 0) or 0) > 0
+            
+            filled_confirmation = None
+            
+            if is_filled_immediately and has_cumulative_qty:
+                # Order is already filled, use data from response
+                logger.info(f"✅ [SL/TP] Order {order_id} already FILLED in initial response")
+                filled_confirmation = {
+                    "status": "FILLED",
+                    "cumulative_quantity": float(result.get("cumulative_quantity")),
+                    "avg_price": float(result.get("avg_price")) if result.get("avg_price") else filled_price,
+                    "filled_price": float(result.get("avg_price")) if result.get("avg_price") else filled_price
+                }
             else:
-                # MARKET order not yet filled - exchange_sync will create SL/TP when it becomes FILLED
-                # Ensure the order is saved to database so exchange_sync can find it
-                logger.info(f"ℹ️ SELL MARKET order {order_id} for {symbol} not yet filled (status: {result_status}). Exchange sync will create SL/TP when order becomes FILLED.")
+                # Order may not be filled yet - poll for confirmation
+                logger.info(
+                    f"🔄 [SL/TP] Order {order_id} not immediately FILLED (status={result_status}, "
+                    f"has_cumulative_qty={has_cumulative_qty}). Polling for fill confirmation..."
+                )
+                filled_confirmation = self._poll_order_fill_confirmation(
+                    symbol=symbol,
+                    order_id=str(order_id),
+                    max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
+                    poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS
+                )
             
-            filled_quantity = float(result.get("cumulative_quantity", qty)) if result.get("cumulative_quantity") else qty
+            # Attempt SL/TP creation only if order is confirmed FILLED
+            if filled_confirmation and filled_confirmation.get("status") == "FILLED":
+                # CRITICAL: Use EXECUTED quantity (cumulative_quantity), never requested quantity
+                executed_qty_raw = filled_confirmation.get("cumulative_quantity")
+                executed_avg_price = filled_confirmation.get("filled_price") or filled_price
+                
+                if not executed_qty_raw or executed_qty_raw <= 0:
+                    error_msg = (
+                        f"Order {order_id} confirmed FILLED but executed quantity is invalid: {executed_qty_raw}. "
+                        f"Cannot create SL/TP with invalid quantity."
+                    )
+                    logger.error(f"❌ [SL/TP] {error_msg}")
+                    
+                    # Send CRITICAL alert
+                    try:
+                        telegram_notifier.send_message(
+                            f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"📋 Order ID: {order_id}\n"
+                            f"🔴 Side: SELL\n"
+                            f"❌ Error: {error_msg}\n\n"
+                            f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                            f"Please manually create protection orders or close the position."
+                        )
+                    except Exception as alert_err:
+                        logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                    
+                    # Use executed quantity from confirmation (fallback to requested qty for return value only)
+                    filled_quantity = executed_qty_raw if executed_qty_raw and executed_qty_raw > 0 else qty
+                else:
+                    # Normalize executed quantity to exchange rules (stepSize, minQty)
+                    # CRITICAL: Use normalize_quantity to ensure quantity matches exchange requirements
+                    logger.info(
+                        f"🔄 [SL/TP] Normalizing executed quantity: raw={executed_qty_raw}, symbol={symbol}"
+                    )
+                    
+                    normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw)
+                    
+                    if not normalized_qty_str:
+                        error_msg = (
+                            f"Order {order_id} executed quantity {executed_qty_raw} failed normalization for {symbol}. "
+                            f"Cannot create SL/TP - quantity may be below minQty or instrument rules unavailable."
+                        )
+                        logger.error(f"❌ [SL/TP] {error_msg}")
+                        
+                        # Send CRITICAL alert
+                        try:
+                            telegram_notifier.send_message(
+                                f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"📋 Order ID: {order_id}\n"
+                                f"🔴 Side: SELL\n"
+                                f"📦 Executed Quantity (raw): {executed_qty_raw}\n"
+                                f"❌ Error: {error_msg}\n\n"
+                                f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                                f"Please manually create protection orders or close the position."
+                            )
+                        except Exception as alert_err:
+                            logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                        
+                        filled_quantity = executed_qty_raw  # Use raw for return value
+                    else:
+                        normalized_qty = float(normalized_qty_str)
+                        logger.info(
+                            f"✅ [SL/TP] Quantity normalized: raw={executed_qty_raw} -> normalized={normalized_qty} "
+                            f"(symbol={symbol})"
+                        )
+                        
+                        # Create SL/TP orders with normalized executed quantity
+                        try:
+                            from app.services.exchange_sync import ExchangeSyncService
+                            exchange_sync = ExchangeSyncService()
+                            
+                            logger.info(
+                                f"🔒 [SL/TP] Creating protection orders for SELL {symbol} order {order_id}: "
+                                f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
+                                f"(normalized from {executed_qty_raw})"
+                            )
+                            
+                            # Create SL/TP orders for the filled SELL order
+                            # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
+                            exchange_sync._create_sl_tp_for_filled_order(
+                                db=db,
+                                symbol=symbol,
+                                side="SELL",
+                                filled_price=float(executed_avg_price),
+                                filled_qty=normalized_qty,  # CRITICAL: Use normalized executed quantity
+                                order_id=str(order_id)
+                            )
+                            logger.info(f"✅ [SL/TP] Protection orders created for SELL {symbol} order {order_id}")
+                            
+                            filled_quantity = normalized_qty
+                            
+                        except Exception as sl_tp_err:
+                            # SL/TP creation failed - send CRITICAL alert
+                            error_details = str(sl_tp_err)
+                            logger.error(
+                                f"❌ [SL/TP] CRITICAL: Failed to create SL/TP orders for SELL {symbol} order {order_id}: {error_details}",
+                                exc_info=True
+                            )
+                            
+                            # Send CRITICAL Telegram alert with full details
+                            try:
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 Order ID: {order_id}\n"
+                                    f"🔴 Side: SELL\n"
+                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n"
+                                    f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw})\n"
+                                    f"❌ Error: {error_details}\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                                    f"Please manually create protection orders or close the position immediately."
+                                )
+                            except Exception as alert_err:
+                                logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                            
+                            # If failsafe is enabled, we could trigger additional safety actions here
+                            # (e.g., disable trading for this symbol, send additional alerts, etc.)
+                            if FAILSAFE_ON_SLTP_ERROR:
+                                logger.error(
+                                    f"🚨 [FAILSAFE] SL/TP creation failed for {symbol} order {order_id}. "
+                                    f"Position is unprotected. Consider manual intervention."
+                                )
+                            
+                            # Use normalized quantity for return value
+                            filled_quantity = normalized_qty
+            else:
+                # Order not confirmed FILLED after polling - do NOT create SL/TP
+                error_msg = (
+                    f"Order {order_id} not confirmed FILLED after polling. "
+                    f"SL/TP creation skipped to prevent using incorrect quantity. "
+                    f"Exchange sync will handle SL/TP when order becomes FILLED."
+                )
+                logger.warning(f"⚠️ [SL/TP] {error_msg}")
+                
+                # Send alert that order is pending and SL/TP will be created later
+                try:
+                    telegram_notifier.send_message(
+                        f"⏳ <b>SL/TP PENDING</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"📋 Order ID: {order_id}\n"
+                        f"🔴 Side: SELL\n"
+                        f"ℹ️ Order fill confirmation pending. SL/TP will be created automatically when order is filled.\n\n"
+                        f"The exchange sync service will create protection orders when the order status becomes FILLED."
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Failed to send pending alert: {alert_err}")
+                
+                # Use requested quantity for return value (order not filled yet)
+                filled_quantity = qty
             
             return {
                 "order_id": str(order_id),
@@ -5046,10 +5379,10 @@ class SignalMonitorService:
                                     f"[SIGNAL_MONITOR_WATCHDOG] ⚠️ No cycle recorded in {time_since_last.total_seconds():.0f}s "
                                     f"(threshold: {self.monitor_interval * 2}s). Scheduler may be stalled."
                                 )
-                                # Send system alert (throttled to once per 24h)
+                                # Send system alert using health-based evaluation (throttled to once per 24h)
                                 try:
-                                    from app.services.system_alerts import check_and_alert_stalled_scheduler
-                                    check_and_alert_stalled_scheduler()
+                                    from app.services.system_alerts import evaluate_and_maybe_send_system_alert
+                                    evaluate_and_maybe_send_system_alert(db=db)
                                 except Exception:
                                     pass  # Don't fail monitor if alert fails
 

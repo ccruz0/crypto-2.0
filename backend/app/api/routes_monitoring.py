@@ -18,6 +18,28 @@ from datetime import datetime, timezone, timedelta
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
 
+@router.get("/health/system")
+async def get_system_health_endpoint(db: Session = Depends(get_db)):
+    """
+    Get system health status.
+    Single source of truth for health monitoring.
+    """
+    try:
+        from app.services.system_health import get_system_health
+        health = get_system_health(db)
+        return JSONResponse(content=health, headers=_NO_CACHE_HEADERS)
+    except Exception as e:
+        log.error(f"Error computing system health: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "global_status": "FAIL",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": str(e)
+            },
+            headers=_NO_CACHE_HEADERS
+        )
+
 # ---------------------------------------------------------------------------
 # Helpers for parsing TelegramMessage text into structured throttle events.
 # The Monitoring UI "Throttle (Mensajes Enviados)" expects BUY/SELL signal events,

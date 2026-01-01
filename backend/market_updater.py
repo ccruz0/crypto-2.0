@@ -920,10 +920,10 @@ async def run_updater():
                         
                         if total_symbols > 0 and stale_symbols == total_symbols:
                             logger.warning(f"[MARKET_DATA_STALE_GLOBAL] ⚠️ ALL {total_symbols} symbols have stale prices (>30min old). Market data updater may be failing.")
-                            # Send system alert (throttled to once per 24h)
+                            # Send system alert using health-based evaluation (throttled to once per 24h)
                             try:
-                                from app.services.system_alerts import check_and_alert_stale_market_data
-                                check_and_alert_stale_market_data()
+                                from app.services.system_alerts import evaluate_and_maybe_send_system_alert
+                                evaluate_and_maybe_send_system_alert(db=db)
                             except Exception:
                                 pass  # Don't fail updater if alert fails
                     except Exception as check_err:
