@@ -890,12 +890,49 @@ async def run_updater():
     logger.info("Running initial update...")
     await update_market_data()
     
+    # Track update count for heartbeat
+    update_count = 0
+    last_heartbeat_time = time.time()
+    
     # Then update every 60 seconds
     while True:
         try:
             await asyncio.sleep(60)
+            update_count += 1
             logger.info("Scheduled update: running update_market_data()")
             await update_market_data()
+            
+            # Heartbeat log every 10 updates (~10 minutes)
+            current_time = time.time()
+            if update_count % 10 == 0 or (current_time - last_heartbeat_time) >= 600:
+                logger.info(f"[MARKET_UPDATER_HEARTBEAT] Market updater alive - update_count={update_count} last_update={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))}")
+                last_heartbeat_time = current_time
+                
+                # Check for stale data and log warning if ALL symbols are stale
+                try:
+                    db = SessionLocal()
+                    try:
+                        from app.models.market_price import MarketPrice
+                        from datetime import datetime, timedelta, timezone
+                        stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
+                        total_symbols = db.query(MarketPrice).count()
+                        stale_symbols = db.query(MarketPrice).filter(MarketPrice.updated_at < stale_threshold).count()
+                        
+                        if total_symbols > 0 and stale_symbols == total_symbols:
+                            logger.warning(f"[MARKET_DATA_STALE_GLOBAL] ⚠️ ALL {total_symbols} symbols have stale prices (>30min old). Market data updater may be failing.")
+                            # Send system alert (throttled to once per 24h)
+                            try:
+                                from app.services.system_alerts import check_and_alert_stale_market_data
+                                check_and_alert_stale_market_data()
+                            except Exception:
+                                pass  # Don't fail updater if alert fails
+                    except Exception as check_err:
+                        logger.debug(f"Error checking stale data: {check_err}")
+                    finally:
+                        db.close()
+                except Exception:
+                    pass  # Don't fail updater if stale check fails
+                    
         except KeyboardInterrupt:
             logger.info("Updater stopped by user")
             break

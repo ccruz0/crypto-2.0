@@ -5036,6 +5036,22 @@ class SignalMonitorService:
                             cycle_count,
                             self.last_run_at.isoformat() if self.last_run_at else "None"
                         )
+                        
+                        # Watchdog: Check if cycles are advancing (if last_run_at is old, alert)
+                        if self.last_run_at:
+                            time_since_last = datetime.now(timezone.utc) - self.last_run_at
+                            # If no cycle in > 2 intervals (60s with 30s interval), log warning
+                            if time_since_last > timedelta(seconds=self.monitor_interval * 2):
+                                logger.error(
+                                    f"[SIGNAL_MONITOR_WATCHDOG] ⚠️ No cycle recorded in {time_since_last.total_seconds():.0f}s "
+                                    f"(threshold: {self.monitor_interval * 2}s). Scheduler may be stalled."
+                                )
+                                # Send system alert (throttled to once per 24h)
+                                try:
+                                    from app.services.system_alerts import check_and_alert_stalled_scheduler
+                                    check_and_alert_stalled_scheduler()
+                                except Exception:
+                                    pass  # Don't fail monitor if alert fails
 
                     db = SessionLocal()
                     try:
