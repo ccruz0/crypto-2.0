@@ -14,6 +14,7 @@ from fastapi import Depends
 import sys
 import os
 from datetime import datetime, timezone
+import requests
 
 # Add paths to find simple_price_fetcher (can be in /app or /app/app)
 backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # /app
@@ -35,6 +36,7 @@ from app.services.signal_throttle import (
     build_strategy_key,
     compute_config_hash,
 )
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -996,22 +998,30 @@ def get_top_coins_with_prices(
                         logger.debug(f"Error serializing datetime for {symbol}: {dt_err}")
                         updated_at = None
                     
+                    # CRITICAL: Always resolve strategy first (separate from signal calculation)
+                    # This ensures strategy_key is always populated, even if signal calculation fails
+                    resolved_strategy_type = None
+                    resolved_risk_approach = None
+                    try:
+                        strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+                        resolved_strategy_type = strategy_type
+                        resolved_risk_approach = risk_approach
+                    except Exception as strategy_err:
+                        logger.warning(f"Strategy resolution failed for {symbol}, using defaults: {strategy_err}")
+                        # Fallback to defaults (strategy_profiles.resolve_strategy_profile has internal fallbacks too)
+                        from app.services.strategy_profiles import StrategyType, RiskApproach
+                        resolved_strategy_type = StrategyType.SWING
+                        resolved_risk_approach = RiskApproach.CONSERVATIVE
+                    
                     # Calculate trading signal (BUY/WAIT/SELL)
                     signal = "WAIT"
                     strategy_state = None  # FIX: Initialize strategy_state to None
-                    resolved_strategy_type = None
-                    resolved_risk_approach = None
                     try:
                         if current_price and current_price > 0:
                             
                             # Get buy_target and last_buy_price from watchlist_item if available
                             buy_target = watchlist_item.buy_target if watchlist_item else None
                             last_buy_price = watchlist_item.purchase_price if watchlist_item and watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None
-                            
-                            strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
-                            # Expose backend-resolved profile to frontend for consistent tooltips.
-                            resolved_strategy_type = strategy_type
-                            resolved_risk_approach = risk_approach
 
                             # CRITICAL: Use current_volume (hourly) for signal calculation, not volume_24h
                             # This ensures consistent signal calculation across all endpoints
@@ -1048,8 +1058,8 @@ def get_top_coins_with_prices(
                                 position_size_usd=watchlist_item.trade_amount_usd if watchlist_item and watchlist_item.trade_amount_usd else 100.0,
                                 rsi_buy_threshold=40,
                                 rsi_sell_threshold=70,
-                                strategy_type=strategy_type,
-                                risk_approach=risk_approach,
+                                strategy_type=resolved_strategy_type,  # Use pre-resolved strategy
+                                risk_approach=resolved_risk_approach,  # Use pre-resolved risk approach
                             )
                             
                             if signals.get("buy_signal"):
@@ -1121,6 +1131,12 @@ def get_top_coins_with_prices(
                         # Use stored ratio only if we don't have current values
                         volume_ratio_value = md.volume_ratio
                     
+                    # CRITICAL: Calculate strategy values before building coin dict
+                    # Ensure we always have valid strategy values (resolve_strategy_profile has fallbacks, but defensive coding)
+                    strategy_preset_value = getattr(resolved_strategy_type, "value", None) if resolved_strategy_type else "swing"
+                    strategy_risk_value = getattr(resolved_risk_approach, "value", None) if resolved_risk_approach else "conservative"
+                    strategy_key_value = f"{strategy_preset_value}-{strategy_risk_value}"
+                    
                     coin = {
                         "instrument_name": symbol,
                         "current_price": current_price,
@@ -1146,7 +1162,13 @@ def get_top_coins_with_prices(
                         "signal": signal,
                         # FIX: Include strategy_state with buy_volume_ok for frontend
                         "strategy_state": strategy_state,
-                        # CANONICAL: expose backend-resolved strategy profile for UI consistency
+                        # CRITICAL: Add strategy fields at top level for frontend compatibility
+                        # These fields must match the TopCoin interface in frontend
+                        "strategy_preset": strategy_preset_value,
+                        "strategy_risk": strategy_risk_value,
+                        # Create canonical strategy key (e.g., "swing-conservative") - always have a value
+                        "strategy_key": strategy_key_value,
+                        # CANONICAL: expose backend-resolved strategy profile for UI consistency (kept for backward compatibility)
                         "strategy_profile": {
                             "preset": getattr(resolved_strategy_type, "value", None),
                             "approach": getattr(resolved_risk_approach, "value", None),
@@ -1265,7 +1287,6 @@ def update_watchlist_alert(
 ):
     """Update alert_enabled for a watchlist item (legacy endpoint - kept for backward compatibility)"""
     import time
-    from app.utils.http_client import http_get, http_post
     start_time = time.time()
     symbol_upper = symbol.upper()
     
