@@ -39,6 +39,148 @@ from app.services.signal_throttle import (
 
 logger = logging.getLogger(__name__)
 
+
+def _emit_lifecycle_event(
+    db: Session,
+    symbol: str,
+    strategy_key: str,
+    side: str,
+    price: Optional[float],
+    event_type: str,
+    event_reason: str,
+    order_id: Optional[str] = None,
+    error_message: Optional[str] = None,
+    sl_order_id: Optional[str] = None,
+    tp_order_id: Optional[str] = None,
+) -> None:
+    """
+    Emit a lifecycle event to both throttle (SignalThrottleState) and monitoring (TelegramMessage).
+    
+    This ensures all lifecycle events are consistently recorded for audit and UI display.
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol
+        strategy_key: Strategy key (e.g., "swing:conservative")
+        side: Order side ("BUY" or "SELL")
+        price: Current price
+        event_type: Event type (e.g., "TRADE_BLOCKED", "ORDER_CREATED", "ORDER_FAILED", "SLTP_CREATED", "SLTP_FAILED")
+        event_reason: Reason for the event (e.g., "SKIP_DISABLED_TRADE", "order_id=12345")
+        order_id: Optional order ID (for order-related events)
+        error_message: Optional error message (for failure events)
+        sl_order_id: Optional SL order ID (for SLTP events)
+        tp_order_id: Optional TP order ID (for SLTP events)
+    """
+    try:
+        # Record to SignalThrottleState (canonical source)
+        record_signal_event(
+            db=db,
+            symbol=symbol,
+            strategy_key=strategy_key,
+            side=side,
+            price=price,
+            source=f"lifecycle_{event_type.lower()}",
+            emit_reason=f"{event_type}: {event_reason}",
+        )
+        
+        # Also add to monitoring/telegram message system (for UI display)
+        from app.api.routes_monitoring import add_telegram_message
+        
+        # Build message based on event type
+        if event_type == "TRADE_BLOCKED":
+            message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
+            if error_message:
+                message += f"\nError: {error_message}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=True,
+                throttle_status="TRADE_BLOCKED",
+                throttle_reason=event_reason,
+                db=db,
+            )
+        elif event_type == "ORDER_ATTEMPT":
+            message = f"🔄 ORDER_ATTEMPT: {symbol} {side} - {event_reason}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                order_attempt=True,
+                db=db,
+            )
+        elif event_type == "ORDER_CREATED":
+            message = f"✅ ORDER_CREATED: {symbol} {side} - order_id={order_id}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                order_created=True,
+                db=db,
+            )
+        elif event_type == "ORDER_FAILED":
+            message = f"❌ ORDER_FAILED: {symbol} {side} - {event_reason}"
+            if error_message:
+                message += f"\nError: {error_message}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                order_failed=True,
+                error_message=error_message or event_reason,
+                db=db,
+            )
+        elif event_type == "SLTP_ATTEMPT":
+            message = f"🔄 SLTP_ATTEMPT: {symbol} {side} - {event_reason}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                sltp_attempt=True,
+                db=db,
+            )
+        elif event_type == "SLTP_CREATED":
+            message = f"✅ SLTP_CREATED: {symbol} {side} - SL={sl_order_id or 'N/A'}, TP={tp_order_id or 'N/A'}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                sltp_created=True,
+                db=db,
+            )
+        elif event_type == "SLTP_FAILED":
+            message = f"🚨 SLTP_FAILED: {symbol} {side} - {event_reason}"
+            if error_message:
+                message += f"\nError: {error_message}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                sltp_failed=True,
+                error_message=error_message or event_reason,
+                db=db,
+            )
+        elif event_type == "ORDER_EXECUTED":
+            message = f"✅ ORDER_EXECUTED: {symbol} {side} - {event_reason}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                order_executed=True,
+                db=db,
+            )
+        elif event_type == "ORDER_CANCELED":
+            message = f"❌ ORDER_CANCELED: {symbol} {side} - {event_reason}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=False,
+                order_canceled=True,
+                db=db,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to emit lifecycle event {event_type} for {symbol}: {e}", exc_info=True)
+
+
 # Force diagnostic flags (env-gated, default OFF)
 FORCE_SELL_DIAGNOSTIC = os.getenv("FORCE_SELL_DIAGNOSTIC", "0").lower() in ("1", "true", "yes")
 FORCE_SELL_DIAGNOSTIC_SYMBOL = os.getenv("FORCE_SELL_DIAGNOSTIC_SYMBOL", "").upper()
@@ -57,6 +199,9 @@ FAILSAFE_ON_SLTP_ERROR = os.getenv("FAILSAFE_ON_SLTP_ERROR", "true").lower() in 
 # Order fill confirmation polling configuration
 ORDER_FILL_POLL_MAX_ATTEMPTS = int(os.getenv("ORDER_FILL_POLL_MAX_ATTEMPTS", "10"))  # Max attempts to poll for fill
 ORDER_FILL_POLL_INTERVAL_SECONDS = float(os.getenv("ORDER_FILL_POLL_INTERVAL_SECONDS", "1.0"))  # Seconds between polls
+
+# Debug logging flag for trading flow
+DEBUG_TRADING = os.getenv("DEBUG_TRADING", "0") == "1"  # Enable detailed trading flow logging
 
 if FORCE_SELL_DIAGNOSTIC or FORCE_SELL_DIAGNOSTIC_SYMBOL:
     target_symbol = FORCE_SELL_DIAGNOSTIC_SYMBOL or "TRX_USDT"
@@ -2367,8 +2512,9 @@ class SignalMonitorService:
             
             # CRITICAL: Check database for recent orders BEFORE creating new ones
             # This prevents consecutive orders even if service restarts or state is lost
-            from sqlalchemy import or_
-            recent_orders_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)  # 5 minute cooldown
+            from sqlalchemy import or_, func
+            COOLDOWN_SECONDS = 300  # 5 minutes cooldown (persistent, DB-based)
+            recent_orders_threshold = datetime.now(timezone.utc) - timedelta(seconds=COOLDOWN_SECONDS)
             
             # Query database for recent BUY orders for this symbol
             # Check both exchange_create_time and created_at (fallback) to handle timezone issues
@@ -2554,6 +2700,8 @@ class SignalMonitorService:
                         f"(most recent: {time_since_last:.1f} minutes ago, order_id: {most_recent_order.exchange_order_id}). "
                         f"Cooldown period active - skipping new order to prevent consecutive orders."
                     )
+                    if DEBUG_TRADING:
+                        logger.info(f"[DEBUG_TRADING] {symbol} BUY: COOLDOWN BLOCKED - {time_since_last:.1f} minutes since last order (threshold: 5 minutes)")
                 else:
                     logger.warning(
                         f"🚫 BLOCKED: {symbol} has {len(recent_buy_orders)} recent BUY order(s) "
@@ -2648,12 +2796,77 @@ class SignalMonitorService:
                     return  # Exit early - be conservative when count fails
                 
                 if final_recent_check > 0:
+                    # Get most recent order time for logging
+                    most_recent = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.symbol.like(f"{symbol_base_final}_%"),
+                        ExchangeOrder.side == OrderSideEnum.BUY,
+                        or_(
+                            ExchangeOrder.exchange_create_time >= recent_orders_threshold,
+                            ExchangeOrder.created_at >= recent_orders_threshold
+                        )
+                    ).order_by(
+                        func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
+                    ).first()
+                    
+                    if most_recent:
+                        recent_time = most_recent.exchange_create_time or most_recent.created_at
+                        if recent_time:
+                            now_utc = datetime.now(timezone.utc)
+                            if recent_time.tzinfo is None:
+                                recent_time = recent_time.replace(tzinfo=timezone.utc)
+                            seconds_remaining = COOLDOWN_SECONDS - (now_utc - recent_time).total_seconds()
+                            if DEBUG_TRADING:
+                                logger.info(f"[DEBUG_TRADING] GUARD cooldown_blocked symbol={symbol} seconds_remaining={seconds_remaining:.1f}")
+                            logger.warning(
+                                f"🚫 BLOCKED: {symbol} - Found {final_recent_check} recent order(s) in final check. "
+                                f"Order creation cancelled to prevent duplicate. "
+                                f"GUARD cooldown_blocked symbol={symbol} seconds_remaining={seconds_remaining:.1f}"
+                            )
+                    else:
+                        if DEBUG_TRADING:
+                            logger.info(f"[DEBUG_TRADING] GUARD cooldown_blocked symbol={symbol} seconds_remaining=unknown")
+                        logger.warning(
+                            f"🚫 BLOCKED: {symbol} - Found {final_recent_check} recent order(s) in final check. "
+                            f"Order creation cancelled to prevent duplicate."
+                        )
+                    should_create_order = False
+                    return  # Exit early
+                
+                # IDEMPOTENCY GUARD: Check if order already exists for this signal
+                # signal_key = symbol + side + time_bucket (minute-level bucket)
+                signal_time_bucket = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+                signal_key = f"{symbol}:BUY:{signal_time_bucket.isoformat()}"
+                
+                # Check if order was already created for this signal_key in the last 24 hours
+                idempotency_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
+                existing_order_for_signal = db.query(ExchangeOrder).filter(
+                    ExchangeOrder.symbol == symbol,
+                    ExchangeOrder.side == OrderSideEnum.BUY,
+                    or_(
+                        ExchangeOrder.exchange_create_time >= idempotency_threshold,
+                        ExchangeOrder.created_at >= idempotency_threshold
+                    )
+                ).filter(
+                    # Check if order was created in the same minute bucket
+                    or_(
+                        func.date_trunc('minute', func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at)) == signal_time_bucket,
+                        func.date_trunc('minute', ExchangeOrder.created_at) == signal_time_bucket
+                    )
+                ).first()
+                
+                if existing_order_for_signal:
+                    if DEBUG_TRADING:
+                        logger.info(f"[DEBUG_TRADING] GUARD idempotency_blocked signal_key={signal_key} existing_order_id={existing_order_for_signal.exchange_order_id}")
                     logger.warning(
-                        f"🚫 BLOCKED: {symbol} - Found {final_recent_check} recent order(s) in final check. "
-                        f"Order creation cancelled to prevent duplicate."
+                        f"🚫 BLOCKED: {symbol} - Order already exists for signal_key={signal_key}. "
+                        f"GUARD idempotency_blocked signal_key={signal_key} existing_order_id={existing_order_for_signal.exchange_order_id}"
                     )
                     should_create_order = False
                     return  # Exit early
+                
+                if DEBUG_TRADING:
+                    logger.info(f"[DEBUG_TRADING] GUARD cooldown_passed symbol={symbol}")
+                    logger.info(f"[DEBUG_TRADING] GUARD idempotency_passed signal_key={signal_key}")
                 
                 # CRITICAL FIX: Also check total open positions in final check, not just recent orders
                 if final_unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL:
@@ -2847,6 +3060,12 @@ class SignalMonitorService:
                                 exchange_order_id = order_result.get("exchange_order_id") or "N/A"
                                 filled_price = order_result.get("filled_price") or current_price
                                 quantity = order_result.get("quantity") or 0
+                                
+                                # CRITICAL: Log ORDER_PLACED for verification
+                                if DEBUG_TRADING:
+                                    logger.info(f"[DEBUG_TRADING] ORDER_PLACED side=BUY symbol={symbol} order_id={order_id}")
+                                logger.info(f"ORDER_PLACED side=BUY symbol={symbol} order_id={order_id}")
+                                
                                 logger.info(
                                     f"[EVAL_{evaluation_id}] {symbol} BUY order creation SUCCESS | "
                                     f"order_id={order_id} | "
@@ -3707,6 +3926,10 @@ class SignalMonitorService:
         """Create a BUY order automatically based on signal"""
         symbol = watchlist_item.symbol
         
+        # Resolve strategy for event emission
+        strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+        strategy_key = build_strategy_key(strategy_type, risk_approach)
+        
         # CRITICAL: Double-check trade_enabled flag before proceeding
         # This prevents order creation attempts when trade_enabled is False
         if not getattr(watchlist_item, 'trade_enabled', False):
@@ -3714,12 +3937,34 @@ class SignalMonitorService:
                 f"🚫 Blocked BUY order creation for {symbol}: trade_enabled=False. "
                 f"This function should not be called when trade is disabled."
             )
+            # Emit TRADE_BLOCKED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason="SKIP_DISABLED_TRADE",
+            )
             return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
         # Validate that trade_amount_usd is configured - REQUIRED, no default
         if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
             logger.error(f"Cannot create BUY order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
+            
+            # Emit TRADE_BLOCKED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason="SKIP_INVALID_TRADE_AMOUNT",
+                error_message=f"trade_amount_usd={watchlist_item.trade_amount_usd}",
+            )
             
             # Send error notification to Telegram
             try:
@@ -3930,6 +4175,17 @@ class SignalMonitorService:
             # MARGIN TRADING: Use the leverage from trading_decision (already calculated above)
             # leverage_value is already set from trading_decision above
             logger.info(f"📊 ORDER PARAMETERS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}")
+            
+            # Emit ORDER_ATTEMPT event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                price=current_price,
+                event_type="ORDER_ATTEMPT",
+                event_reason=f"notional={amount_usd}, margin={use_margin}, leverage={leverage_value}",
+            )
             
             for attempt in range(max_retries + 1):
                 try:
@@ -4373,6 +4629,18 @@ class SignalMonitorService:
                     except Exception as verify_err:
                         logger.warning(f"⚠️ Could not verify trade_enabled state for {symbol} after order failure: {verify_err}")
                     
+                    # Emit ORDER_FAILED event
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="ORDER_FAILED",
+                        event_reason="order_placement_failed",
+                        error_message=error_msg,
+                    )
+                    
                     # Send Telegram notification about the error
                     try:
                         error_details = error_msg
@@ -4418,7 +4686,13 @@ class SignalMonitorService:
                 filled_price = current_price
             
             # Send Telegram notification when order is created
+            if DEBUG_TRADING:
+                logger.info(f"[DEBUG_TRADING] {symbol} BUY: About to send Telegram notification for order {order_id}")
             try:
+                # CRITICAL: Explicitly pass origin to ensure notifications are sent
+                alert_origin = get_runtime_origin()
+                if DEBUG_TRADING:
+                    logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling send_order_created with origin={alert_origin}")
                 telegram_notifier.send_order_created(
                     symbol=symbol,
                     side="BUY",
@@ -4428,11 +4702,28 @@ class SignalMonitorService:
                     margin=use_margin,
                     leverage=10 if use_margin else None,
                     dry_run=dry_run_mode,
-                    order_type="MARKET"
+                    order_type="MARKET",
+                    origin=alert_origin  # CRITICAL: Explicitly pass origin to ensure notifications are sent
                 )
-                logger.info(f"Sent Telegram notification for automatic order: {symbol} BUY - {order_id}")
+                logger.info(f"✅ Sent Telegram notification for automatic BUY order: {symbol} - {order_id} (origin={alert_origin})")
+                if DEBUG_TRADING:
+                    logger.info(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification sent successfully")
             except Exception as telegram_err:
-                logger.warning(f"Failed to send Telegram notification for order creation: {telegram_err}")
+                logger.error(f"❌ Failed to send Telegram notification for BUY order creation: {telegram_err}", exc_info=True)
+                if DEBUG_TRADING:
+                    logger.error(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification FAILED - {telegram_err}", exc_info=True)
+            
+            # Emit ORDER_CREATED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                price=filled_price or current_price,
+                event_type="ORDER_CREATED",
+                event_reason=f"order_id={order_id}",
+                order_id=str(order_id),
+            )
             
             # Save order to database (BOTH order_history_db AND ExchangeOrder for immediate visibility)
             try:
@@ -4596,6 +4887,269 @@ class SignalMonitorService:
         # Get order status
         order_status = result.get("status", "UNKNOWN")
         
+        # ========================================================================
+        # CRITICAL FIX: Create SL/TP orders immediately after BUY order is placed/filled
+        # This restores the previous working flow where protection orders were created
+        # right after buy orders, similar to how SELL orders work.
+        # ========================================================================
+        if DEBUG_TRADING:
+            logger.info(f"[DEBUG_TRADING] {symbol} BUY: Starting SL/TP creation flow for order {order_id}")
+        result_status = result.get("status", "").upper()
+        is_filled_immediately = result_status in ["FILLED", "filled"]
+        has_cumulative_qty = result.get("cumulative_quantity") and float(result.get("cumulative_quantity", 0) or 0) > 0
+        
+        filled_confirmation = None
+        
+        if is_filled_immediately and has_cumulative_qty:
+            # Order is already filled, use data from response
+            from decimal import Decimal, InvalidOperation
+            cumulative_qty_raw = result.get("cumulative_quantity")
+            try:
+                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw)) if cumulative_qty_raw else None
+                avg_price_raw = result.get("avg_price")
+                avg_price_value = float(avg_price_raw) if avg_price_raw else filled_price
+            except (ValueError, TypeError, Exception) as e:
+                logger.warning(f"⚠️ [SL/TP] Failed to parse immediate fill quantities for BUY order: {e}")
+                cumulative_qty_decimal = None
+                avg_price_value = filled_price
+            
+            if cumulative_qty_decimal and cumulative_qty_decimal > 0:
+                logger.info(f"✅ [SL/TP] BUY order {order_id} already FILLED in initial response (qty={cumulative_qty_decimal})")
+                filled_confirmation = {
+                    "status": "FILLED",
+                    "cumulative_quantity": cumulative_qty_decimal,
+                    "avg_price": avg_price_value,
+                    "filled_price": avg_price_value
+                }
+            else:
+                logger.warning(f"⚠️ [SL/TP] BUY order {order_id} marked FILLED but cumulative_quantity invalid. Will poll for confirmation.")
+                filled_confirmation = None
+        else:
+            # Order may not be filled yet - poll for confirmation
+            logger.info(
+                f"🔄 [SL/TP] BUY order {order_id} not immediately FILLED (status={result_status}, "
+                f"has_cumulative_qty={has_cumulative_qty}). Polling for fill confirmation..."
+            )
+            filled_confirmation = self._poll_order_fill_confirmation(
+                symbol=symbol,
+                order_id=str(order_id),
+                max_attempts=ORDER_FILL_POLL_MAX_ATTEMPTS,
+                poll_interval=ORDER_FILL_POLL_INTERVAL_SECONDS
+            )
+        
+        # Attempt SL/TP creation only if order is confirmed FILLED
+        if filled_confirmation and filled_confirmation.get("status") == "FILLED":
+            from decimal import Decimal, InvalidOperation
+            
+            executed_qty_raw_decimal = filled_confirmation.get("cumulative_quantity")
+            executed_avg_price = filled_confirmation.get("filled_price") or filled_price
+            
+            if not executed_qty_raw_decimal or not isinstance(executed_qty_raw_decimal, Decimal) or executed_qty_raw_decimal <= 0:
+                executed_qty_str = str(executed_qty_raw_decimal) if executed_qty_raw_decimal else "None"
+                error_msg = (
+                    f"BUY order {order_id} confirmed FILLED but executed quantity is invalid: {executed_qty_str}. "
+                    f"Must be Decimal > 0. Cannot create SL/TP with invalid quantity."
+                )
+                logger.error(f"❌ [SL/TP] {error_msg}")
+                
+                try:
+                    telegram_notifier.send_message(
+                        f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"📋 BUY Order ID: {order_id}\n"
+                        f"🟢 Side: BUY\n"
+                        f"❌ Error: {error_msg}\n\n"
+                        f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                        f"Please manually create protection orders or close the position."
+                    )
+                except Exception as alert_err:
+                    logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                
+                filled_quantity = float(executed_qty_raw_decimal) if executed_qty_raw_decimal and isinstance(executed_qty_raw_decimal, Decimal) else filled_quantity
+            else:
+                executed_qty_raw_float = float(executed_qty_raw_decimal)
+                
+                logger.info(
+                    f"🔄 [SL/TP] Normalizing executed quantity for BUY order: raw={executed_qty_raw_decimal} (Decimal) -> {executed_qty_raw_float} (float), symbol={symbol}"
+                )
+                
+                normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw_float)
+                
+                if not normalized_qty_str:
+                    error_msg = (
+                        f"BUY order {order_id} executed quantity {executed_qty_raw_decimal} failed normalization for {symbol}. "
+                        f"Cannot create SL/TP - quantity may be below minQty/stepSize or instrument rules unavailable."
+                    )
+                    logger.error(f"❌ [SL/TP] {error_msg}")
+                    
+                    try:
+                        telegram_notifier.send_message(
+                            f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"📋 BUY Order ID: {order_id}\n"
+                            f"🟢 Side: BUY\n"
+                            f"📦 Executed Quantity (raw): {executed_qty_raw_decimal}\n"
+                            f"❌ Error: {error_msg}\n\n"
+                            f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                            f"Please manually create protection orders or close the position."
+                        )
+                    except Exception as alert_err:
+                        logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                    
+                    filled_quantity = executed_qty_raw_float
+                else:
+                    normalized_qty = float(normalized_qty_str)
+                    logger.info(
+                        f"✅ [SL/TP] Quantity normalized for BUY order: raw={executed_qty_raw_decimal} (Decimal) -> normalized={normalized_qty} (string: {normalized_qty_str}) "
+                        f"(symbol={symbol})"
+                    )
+                    
+                    # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order
+                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                    existing_sl_tp = db.query(ExchangeOrder).filter(
+                        ExchangeOrder.parent_order_id == str(order_id),
+                        ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                    ).all()
+                    
+                    if existing_sl_tp:
+                        existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
+                        logger.info(
+                            f"⚠️ [SL/TP] Idempotency guard: SL/TP orders already exist for BUY order {order_id} ({symbol}): {existing_order_ids}. "
+                            f"Skipping duplicate creation."
+                        )
+                        filled_quantity = normalized_qty
+                    else:
+                        # Create SL/TP orders with normalized executed quantity
+                        try:
+                            from app.services.exchange_sync import ExchangeSyncService
+                            exchange_sync = ExchangeSyncService()
+                            
+                            logger.info(
+                                f"🔒 [SL/TP] Creating protection orders for BUY {symbol} order {order_id}: "
+                                f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
+                                f"(normalized from {executed_qty_raw_decimal})"
+                            )
+                            
+                            # Emit SLTP_ATTEMPT event
+                            _emit_lifecycle_event(
+                                db=db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="BUY",
+                                price=executed_avg_price,
+                                event_type="SLTP_ATTEMPT",
+                                event_reason=f"primary_order_id={order_id}, filled_price={executed_avg_price}, qty={normalized_qty}",
+                                order_id=str(order_id),
+                            )
+                            
+                            # Create SL/TP orders for the filled BUY order
+                            # For BUY orders: TP is SELL side (sell at profit), SL is SELL side (sell at loss)
+                            if DEBUG_TRADING:
+                                logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling _create_sl_tp_for_filled_order with side=BUY, price={executed_avg_price}, qty={normalized_qty}")
+                            sl_tp_result = exchange_sync._create_sl_tp_for_filled_order(
+                                db=db,
+                                symbol=symbol,
+                                side="BUY",
+                                filled_price=float(executed_avg_price),
+                                filled_qty=normalized_qty,
+                                order_id=str(order_id)
+                            )
+                            
+                            # Extract SL/TP order IDs from result
+                            sl_order_id = None
+                            tp_order_id = None
+                            if isinstance(sl_tp_result, dict):
+                                sl_result = sl_tp_result.get("sl_result", {})
+                                tp_result = sl_tp_result.get("tp_result", {})
+                                if isinstance(sl_result, dict):
+                                    sl_order_id = sl_result.get("order_id")
+                                if isinstance(tp_result, dict):
+                                    tp_order_id = tp_result.get("order_id")
+                            
+                            logger.info(
+                                f"✅ [SL/TP] Protection orders created for BUY {symbol} order {order_id}: "
+                                f"SL={sl_order_id}, TP={tp_order_id}"
+                            )
+                            if DEBUG_TRADING:
+                                logger.info(f"[DEBUG_TRADING] {symbol} BUY: SL/TP creation SUCCESS - SL={sl_order_id}, TP={tp_order_id}")
+                            
+                            # Emit SLTP_CREATED event
+                            _emit_lifecycle_event(
+                                db=db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="BUY",
+                                price=executed_avg_price,
+                                event_type="SLTP_CREATED",
+                                event_reason=f"primary_order_id={order_id}",
+                                order_id=str(order_id),
+                                sl_order_id=str(sl_order_id) if sl_order_id else None,
+                                tp_order_id=str(tp_order_id) if tp_order_id else None,
+                            )
+                            
+                            # Send Telegram notification with order IDs
+                            try:
+                                telegram_notifier.send_message(
+                                    f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
+                                    f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
+                                    f"📦 Quantity: {normalized_qty} (normalized)\n"
+                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
+                                    f"Protection orders created successfully."
+                                )
+                            except Exception as notify_err:
+                                logger.warning(f"Failed to send SL/TP success notification: {notify_err}")
+                            
+                            filled_quantity = normalized_qty
+                        
+                        except Exception as sl_tp_err:
+                            error_details = str(sl_tp_err)
+                            logger.error(
+                                f"❌ [SL/TP] CRITICAL: Failed to create SL/TP orders for BUY {symbol} order {order_id}: {error_details}",
+                                exc_info=True
+                            )
+                            if DEBUG_TRADING:
+                                logger.error(f"[DEBUG_TRADING] {symbol} BUY: SL/TP creation FAILED - {error_details}", exc_info=True)
+                            
+                            # Emit SLTP_FAILED event
+                            _emit_lifecycle_event(
+                                db=db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="BUY",
+                                price=executed_avg_price,
+                                event_type="SLTP_FAILED",
+                                event_reason="sltp_creation_failed",
+                                order_id=str(order_id),
+                                error_message=error_details,
+                            )
+                            
+                            try:
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"🟢 Side: BUY\n"
+                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n"
+                                    f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw_decimal})\n"
+                                    f"❌ Error: {error_details}\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                                    f"Please manually create protection orders or close the position immediately."
+                                )
+                            except Exception as alert_err:
+                                logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                            
+                            filled_quantity = normalized_qty
+        else:
+            # Order not confirmed FILLED after polling - do NOT create SL/TP
+            logger.warning(
+                f"⚠️ [SL/TP] BUY order {order_id} not confirmed FILLED after polling. "
+                f"SL/TP creation skipped. Exchange sync will handle SL/TP when order becomes FILLED."
+            )
+        
         return {
             "order_id": str(order_id),
             "filled_price": filled_price,
@@ -4616,10 +5170,14 @@ class SignalMonitorService:
         
         ROOT CAUSE FIX: MARKET orders may settle asynchronously. This function polls until:
         - Order status == FILLED
-        - Executed quantity (cumulative_quantity) is available
+        - Executed quantity (cumulative_quantity) > 0 (strict validation)
         
         Reference: Crypto.com Exchange API - orders may not be immediately FILLED
         after placement, especially for MARKET orders during high volatility.
+        
+        Endpoints used:
+        - get_open_orders(): Check if order is still open/pending
+        - get_order_history(): Check if order was filled and moved to history
         
         Args:
             symbol: Trading pair symbol (e.g., "ETH_USDT")
@@ -4628,13 +5186,17 @@ class SignalMonitorService:
             poll_interval: Seconds to wait between attempts (default: 1.0)
         
         Returns:
-            Dict with keys: status, cumulative_quantity, avg_price, filled_price
-            Returns None if order not filled after max_attempts
+            Dict with keys: status, cumulative_quantity (Decimal), avg_price, filled_price
+            Returns None if order not filled after max_attempts or not found
         """
+        from decimal import Decimal, InvalidOperation
+        
         logger.info(
             f"🔄 [FILL_CONFIRMATION] Polling for order fill: {symbol} order_id={order_id} "
             f"(max_attempts={max_attempts}, interval={poll_interval}s)"
         )
+        
+        order_seen_in_any_source = False  # Track if we've ever seen this order
         
         for attempt in range(1, max_attempts + 1):
             try:
@@ -4643,32 +5205,43 @@ class SignalMonitorService:
                 open_orders_data = open_orders_result.get("data", [])
                 
                 # Search for our order in open orders
-                order_found = False
+                order_found_in_open = False
                 for order in open_orders_data:
                     if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
-                        order_found = True
+                        order_seen_in_any_source = True
+                        order_found_in_open = True
                         status = (order.get("status") or "NEW").upper()
                         
                         if status == "FILLED":
-                            # Order is filled, get details
-                            cumulative_qty = float(order.get("cumulative_quantity", 0) or 0)
-                            avg_price = float(order.get("avg_price", 0) or 0) if order.get("avg_price") else None
+                            # Order is filled, get details - use Decimal for precision
+                            cumulative_qty_raw = order.get("cumulative_quantity", 0) or 0
+                            try:
+                                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw))
+                                avg_price_raw = order.get("avg_price")
+                                avg_price_decimal = Decimal(str(avg_price_raw)) if avg_price_raw else None
+                            except (ValueError, TypeError, InvalidOperation) as e:
+                                logger.warning(
+                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} FILLED but failed to parse quantities: {e} "
+                                    f"(attempt {attempt}/{max_attempts})"
+                                )
+                                break
                             
-                            if cumulative_qty > 0:
+                            # STRICT VALIDATION: Must have cumulative_quantity > 0
+                            if cumulative_qty_decimal > 0:
                                 logger.info(
                                     f"✅ [FILL_CONFIRMATION] Order {order_id} confirmed FILLED on attempt {attempt}: "
-                                    f"qty={cumulative_qty}, avg_price={avg_price}"
+                                    f"qty={cumulative_qty_decimal}, avg_price={avg_price_decimal}"
                                 )
                                 return {
                                     "status": "FILLED",
-                                    "cumulative_quantity": cumulative_qty,
-                                    "avg_price": avg_price,
-                                    "filled_price": avg_price if avg_price else None
+                                    "cumulative_quantity": cumulative_qty_decimal,  # Return as Decimal
+                                    "avg_price": float(avg_price_decimal) if avg_price_decimal else None,
+                                    "filled_price": float(avg_price_decimal) if avg_price_decimal else None
                                 }
                             else:
                                 logger.warning(
-                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} status is FILLED but cumulative_quantity=0 "
-                                    f"(attempt {attempt}/{max_attempts})"
+                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} status is FILLED but cumulative_quantity <= 0 "
+                                    f"(value: {cumulative_qty_decimal}, attempt {attempt}/{max_attempts})"
                                 )
                         else:
                             logger.debug(
@@ -4677,7 +5250,7 @@ class SignalMonitorService:
                         break
                 
                 # If order not in open orders, check order history (it might have been filled and closed)
-                if not order_found:
+                if not order_found_in_open:
                     logger.debug(f"🔄 [FILL_CONFIRMATION] Order {order_id} not found in open orders, checking history (attempt {attempt}/{max_attempts})")
                     
                     # Get recent order history (last 5 minutes)
@@ -4691,22 +5264,36 @@ class SignalMonitorService:
                     )
                     history_data = history_result.get("data", [])
                     
+                    order_found_in_history = False
                     for order in history_data:
                         if str(order.get("order_id") or order.get("client_order_id") or "") == str(order_id):
+                            order_seen_in_any_source = True
+                            order_found_in_history = True
                             status = (order.get("status") or "NEW").upper()
-                            cumulative_qty = float(order.get("cumulative_quantity", 0) or 0)
-                            avg_price = float(order.get("avg_price", 0) or 0) if order.get("avg_price") else None
+                            cumulative_qty_raw = order.get("cumulative_quantity", 0) or 0
                             
-                            if status == "FILLED" and cumulative_qty > 0:
+                            try:
+                                cumulative_qty_decimal = Decimal(str(cumulative_qty_raw))
+                                avg_price_raw = order.get("avg_price")
+                                avg_price_decimal = Decimal(str(avg_price_raw)) if avg_price_raw else None
+                            except (ValueError, TypeError, InvalidOperation) as e:
+                                logger.warning(
+                                    f"⚠️ [FILL_CONFIRMATION] Order {order_id} found in history but failed to parse quantities: {e} "
+                                    f"(attempt {attempt}/{max_attempts})"
+                                )
+                                break
+                            
+                            # STRICT VALIDATION: Must be FILLED AND cumulative_quantity > 0
+                            if status == "FILLED" and cumulative_qty_decimal > 0:
                                 logger.info(
                                     f"✅ [FILL_CONFIRMATION] Order {order_id} found FILLED in history (attempt {attempt}): "
-                                    f"qty={cumulative_qty}, avg_price={avg_price}"
+                                    f"qty={cumulative_qty_decimal}, avg_price={avg_price_decimal}"
                                 )
                                 return {
                                     "status": "FILLED",
-                                    "cumulative_quantity": cumulative_qty,
-                                    "avg_price": avg_price,
-                                    "filled_price": avg_price if avg_price else None
+                                    "cumulative_quantity": cumulative_qty_decimal,  # Return as Decimal
+                                    "avg_price": float(avg_price_decimal) if avg_price_decimal else None,
+                                    "filled_price": float(avg_price_decimal) if avg_price_decimal else None
                                 }
                             break
                 
@@ -4714,11 +5301,6 @@ class SignalMonitorService:
                 if attempt < max_attempts:
                     logger.debug(f"⏳ [FILL_CONFIRMATION] Waiting {poll_interval}s before next poll attempt...")
                     time.sleep(poll_interval)
-                else:
-                    logger.warning(
-                        f"⚠️ [FILL_CONFIRMATION] Order {order_id} not confirmed FILLED after {max_attempts} attempts. "
-                        f"Order may still be pending or fill status unavailable."
-                    )
                     
             except Exception as poll_err:
                 logger.warning(
@@ -4728,17 +5310,27 @@ class SignalMonitorService:
                 if attempt < max_attempts:
                     time.sleep(poll_interval)
         
-        # Order not filled after max attempts
-        logger.error(
-            f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT confirmed FILLED after {max_attempts} attempts. "
-            f"SL/TP creation will be skipped to prevent using incorrect quantity."
-        )
+        # Order not filled after max attempts - provide detailed error message
+        if not order_seen_in_any_source:
+            logger.error(
+                f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT FOUND in open orders or history after {max_attempts} attempts. "
+                f"Order may have been cancelled, or order_id is incorrect. SL/TP creation will be skipped."
+            )
+        else:
+            logger.error(
+                f"❌ [FILL_CONFIRMATION] Order {order_id} ({symbol}) NOT confirmed FILLED after {max_attempts} attempts. "
+                f"Order was seen but status is not FILLED or cumulative_quantity is invalid. SL/TP creation will be skipped."
+            )
         return None
     
     async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
                                  current_price: float, res_up: float, res_down: float):
         """Create a SELL order automatically based on signal"""
         symbol = watchlist_item.symbol
+        
+        # Resolve strategy for event emission
+        strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
+        strategy_key = build_strategy_key(strategy_type, risk_approach)
         
         # CRITICAL SAFETY GUARD: Block execution if forced diagnostics are enabled for this symbol
         # This prevents any accidental order placement during diagnostic mode
@@ -4766,12 +5358,34 @@ class SignalMonitorService:
                 f"🚫 Blocked SELL order creation for {symbol}: trade_enabled=False. "
                 f"This function should not be called when trade is disabled."
             )
+            # Emit TRADE_BLOCKED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason="SKIP_DISABLED_TRADE",
+            )
             return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
         # Validate that trade_amount_usd is configured - REQUIRED, no default
         if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
             logger.error(f"Cannot create SELL order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
+            
+            # Emit TRADE_BLOCKED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason="SKIP_INVALID_TRADE_AMOUNT",
+                error_message=f"trade_amount_usd={watchlist_item.trade_amount_usd}",
+            )
             
             # Send error notification to Telegram
             try:
@@ -4879,6 +5493,18 @@ class SignalMonitorService:
             
             # SELL market order: use quantity (exchange will format it according to symbol precision)
             # place_market_order has logic to fetch instrument info and format quantity correctly
+            
+            # Emit ORDER_ATTEMPT event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                price=current_price,
+                event_type="ORDER_ATTEMPT",
+                event_reason=f"qty={qty}, margin={use_margin}, leverage={leverage_value}",
+            )
+            
             result = trade_client.place_market_order(
                 symbol=symbol,
                 side=side_upper,
@@ -4891,6 +5517,18 @@ class SignalMonitorService:
             if not result or "error" in result:
                 error_msg = result.get("error", "Unknown error") if result else "No response"
                 logger.error(f"❌ SELL order creation failed for {symbol}: {error_msg}")
+                
+                # Emit ORDER_FAILED event
+                _emit_lifecycle_event(
+                    db=db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side="SELL",
+                    price=current_price,
+                    event_type="ORDER_FAILED",
+                    event_reason="order_placement_failed",
+                    error_message=error_msg,
+                )
                 
                 # ========================================================================
                 # AUTHENTICATION ERROR HANDLING: Do NOT attempt fallbacks for auth errors
@@ -4965,6 +5603,8 @@ class SignalMonitorService:
             
             # Send Telegram notification
             try:
+                # CRITICAL: Explicitly pass origin to ensure notifications are sent
+                alert_origin = get_runtime_origin()
                 telegram_notifier.send_order_created(
                     symbol=symbol,
                     side="SELL",
@@ -4974,11 +5614,24 @@ class SignalMonitorService:
                     margin=use_margin,
                     leverage=leverage_value if use_margin else None,
                     dry_run=dry_run_mode,
-                    order_type="MARKET"
+                    order_type="MARKET",
+                    origin=alert_origin  # CRITICAL: Explicitly pass origin to ensure notifications are sent
                 )
-                logger.info(f"Sent Telegram notification for automatic SELL order: {symbol} - {order_id}")
+                logger.info(f"✅ Sent Telegram notification for automatic SELL order: {symbol} - {order_id} (origin={alert_origin})")
             except Exception as telegram_err:
-                logger.warning(f"Failed to send Telegram notification for SELL order creation: {telegram_err}")
+                logger.error(f"❌ Failed to send Telegram notification for SELL order creation: {telegram_err}", exc_info=True)
+            
+            # Emit ORDER_CREATED event
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="SELL",
+                price=filled_price or current_price,
+                event_type="ORDER_CREATED",
+                event_reason=f"order_id={order_id}",
+                order_id=str(order_id),
+            )
             
             # Save order to database
             try:
@@ -5153,13 +5806,29 @@ class SignalMonitorService:
             
             if is_filled_immediately and has_cumulative_qty:
                 # Order is already filled, use data from response
-                logger.info(f"✅ [SL/TP] Order {order_id} already FILLED in initial response")
-                filled_confirmation = {
-                    "status": "FILLED",
-                    "cumulative_quantity": float(result.get("cumulative_quantity")),
-                    "avg_price": float(result.get("avg_price")) if result.get("avg_price") else filled_price,
-                    "filled_price": float(result.get("avg_price")) if result.get("avg_price") else filled_price
-                }
+                # Convert to Decimal for consistency with polling path
+                from decimal import Decimal, InvalidOperation
+                cumulative_qty_raw = result.get("cumulative_quantity")
+                try:
+                    cumulative_qty_decimal = Decimal(str(cumulative_qty_raw)) if cumulative_qty_raw else None
+                    avg_price_raw = result.get("avg_price")
+                    avg_price_value = float(avg_price_raw) if avg_price_raw else filled_price
+                except (ValueError, TypeError, Exception) as e:
+                    logger.warning(f"⚠️ [SL/TP] Failed to parse immediate fill quantities: {e}")
+                    cumulative_qty_decimal = None
+                    avg_price_value = filled_price
+                
+                if cumulative_qty_decimal and cumulative_qty_decimal > 0:
+                    logger.info(f"✅ [SL/TP] Order {order_id} already FILLED in initial response (qty={cumulative_qty_decimal})")
+                    filled_confirmation = {
+                        "status": "FILLED",
+                        "cumulative_quantity": cumulative_qty_decimal,  # Use Decimal for consistency
+                        "avg_price": avg_price_value,
+                        "filled_price": avg_price_value
+                    }
+                else:
+                    logger.warning(f"⚠️ [SL/TP] Order {order_id} marked FILLED but cumulative_quantity invalid. Will poll for confirmation.")
+                    filled_confirmation = None  # Force polling
             else:
                 # Order may not be filled yet - poll for confirmation
                 logger.info(
@@ -5175,14 +5844,19 @@ class SignalMonitorService:
             
             # Attempt SL/TP creation only if order is confirmed FILLED
             if filled_confirmation and filled_confirmation.get("status") == "FILLED":
+                from decimal import Decimal, InvalidOperation
+                
                 # CRITICAL: Use EXECUTED quantity (cumulative_quantity), never requested quantity
-                executed_qty_raw = filled_confirmation.get("cumulative_quantity")
+                # cumulative_quantity is returned as Decimal from _poll_order_fill_confirmation
+                executed_qty_raw_decimal = filled_confirmation.get("cumulative_quantity")
                 executed_avg_price = filled_confirmation.get("filled_price") or filled_price
                 
-                if not executed_qty_raw or executed_qty_raw <= 0:
+                # STRICT VALIDATION: Must be Decimal and > 0
+                if not executed_qty_raw_decimal or not isinstance(executed_qty_raw_decimal, Decimal) or executed_qty_raw_decimal <= 0:
+                    executed_qty_str = str(executed_qty_raw_decimal) if executed_qty_raw_decimal else "None"
                     error_msg = (
-                        f"Order {order_id} confirmed FILLED but executed quantity is invalid: {executed_qty_raw}. "
-                        f"Cannot create SL/TP with invalid quantity."
+                        f"Order {order_id} confirmed FILLED but executed quantity is invalid: {executed_qty_str}. "
+                        f"Must be Decimal > 0. Cannot create SL/TP with invalid quantity."
                     )
                     logger.error(f"❌ [SL/TP] {error_msg}")
                     
@@ -5191,7 +5865,7 @@ class SignalMonitorService:
                         telegram_notifier.send_message(
                             f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"📋 Order ID: {order_id}\n"
+                            f"📋 SELL Order ID: {order_id}\n"
                             f"🔴 Side: SELL\n"
                             f"❌ Error: {error_msg}\n\n"
                             f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
@@ -5200,21 +5874,25 @@ class SignalMonitorService:
                     except Exception as alert_err:
                         logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
                     
-                    # Use executed quantity from confirmation (fallback to requested qty for return value only)
-                    filled_quantity = executed_qty_raw if executed_qty_raw and executed_qty_raw > 0 else qty
+                    # Use requested qty for return value only (order was filled but quantity invalid)
+                    filled_quantity = float(executed_qty_raw_decimal) if executed_qty_raw_decimal and isinstance(executed_qty_raw_decimal, Decimal) else qty
                 else:
+                    # Convert Decimal to float for normalize_quantity (it expects float)
+                    executed_qty_raw_float = float(executed_qty_raw_decimal)
+                    
                     # Normalize executed quantity to exchange rules (stepSize, minQty)
                     # CRITICAL: Use normalize_quantity to ensure quantity matches exchange requirements
+                    # normalize_quantity enforces: stepSize (round DOWN), minQty, returns string
                     logger.info(
-                        f"🔄 [SL/TP] Normalizing executed quantity: raw={executed_qty_raw}, symbol={symbol}"
+                        f"🔄 [SL/TP] Normalizing executed quantity: raw={executed_qty_raw_decimal} (Decimal) -> {executed_qty_raw_float} (float), symbol={symbol}"
                     )
                     
-                    normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw)
+                    normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw_float)
                     
                     if not normalized_qty_str:
                         error_msg = (
-                            f"Order {order_id} executed quantity {executed_qty_raw} failed normalization for {symbol}. "
-                            f"Cannot create SL/TP - quantity may be below minQty or instrument rules unavailable."
+                            f"Order {order_id} executed quantity {executed_qty_raw_decimal} failed normalization for {symbol}. "
+                            f"Cannot create SL/TP - quantity may be below minQty/stepSize or instrument rules unavailable."
                         )
                         logger.error(f"❌ [SL/TP] {error_msg}")
                         
@@ -5223,9 +5901,9 @@ class SignalMonitorService:
                             telegram_notifier.send_message(
                                 f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
-                                f"📋 Order ID: {order_id}\n"
+                                f"📋 SELL Order ID: {order_id}\n"
                                 f"🔴 Side: SELL\n"
-                                f"📦 Executed Quantity (raw): {executed_qty_raw}\n"
+                                f"📦 Executed Quantity (raw): {executed_qty_raw_decimal}\n"
                                 f"❌ Error: {error_msg}\n\n"
                                 f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
                                 f"Please manually create protection orders or close the position."
@@ -5233,73 +5911,186 @@ class SignalMonitorService:
                         except Exception as alert_err:
                             logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
                         
-                        filled_quantity = executed_qty_raw  # Use raw for return value
+                        filled_quantity = executed_qty_raw_float  # Use raw float for return value
                     else:
                         normalized_qty = float(normalized_qty_str)
                         logger.info(
-                            f"✅ [SL/TP] Quantity normalized: raw={executed_qty_raw} -> normalized={normalized_qty} "
+                            f"✅ [SL/TP] Quantity normalized: raw={executed_qty_raw_decimal} (Decimal) -> normalized={normalized_qty} (string: {normalized_qty_str}) "
                             f"(symbol={symbol})"
                         )
                         
-                        # Create SL/TP orders with normalized executed quantity
-                        try:
-                            from app.services.exchange_sync import ExchangeSyncService
-                            exchange_sync = ExchangeSyncService()
-                            
+                        # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order before creating
+                        # This prevents duplicate creation if this function is called multiple times
+                        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                        existing_sl_tp = db.query(ExchangeOrder).filter(
+                            ExchangeOrder.parent_order_id == str(order_id),
+                            ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
+                        ).all()
+                        
+                        if existing_sl_tp:
+                            existing_order_ids = [str(o.exchange_order_id) for o in existing_sl_tp]
                             logger.info(
-                                f"🔒 [SL/TP] Creating protection orders for SELL {symbol} order {order_id}: "
-                                f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
-                                f"(normalized from {executed_qty_raw})"
+                                f"⚠️ [SL/TP] Idempotency guard: SL/TP orders already exist for SELL order {order_id} ({symbol}): {existing_order_ids}. "
+                                f"Skipping duplicate creation."
                             )
-                            
-                            # Create SL/TP orders for the filled SELL order
-                            # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
-                            exchange_sync._create_sl_tp_for_filled_order(
-                                db=db,
-                                symbol=symbol,
-                                side="SELL",
-                                filled_price=float(executed_avg_price),
-                                filled_qty=normalized_qty,  # CRITICAL: Use normalized executed quantity
-                                order_id=str(order_id)
-                            )
-                            logger.info(f"✅ [SL/TP] Protection orders created for SELL {symbol} order {order_id}")
-                            
+                            # SL/TP already exist, use normalized quantity for return value
                             filled_quantity = normalized_qty
-                            
-                        except Exception as sl_tp_err:
-                            # SL/TP creation failed - send CRITICAL alert
-                            error_details = str(sl_tp_err)
-                            logger.error(
-                                f"❌ [SL/TP] CRITICAL: Failed to create SL/TP orders for SELL {symbol} order {order_id}: {error_details}",
-                                exc_info=True
-                            )
-                            
-                            # Send CRITICAL Telegram alert with full details
+                        else:
+                            # Create SL/TP orders with normalized executed quantity
                             try:
-                                telegram_notifier.send_message(
-                                    f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                    f"📋 Order ID: {order_id}\n"
-                                    f"🔴 Side: SELL\n"
-                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n"
-                                    f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw})\n"
-                                    f"❌ Error: {error_details}\n\n"
-                                    f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
-                                    f"Please manually create protection orders or close the position immediately."
+                                from app.services.exchange_sync import ExchangeSyncService
+                                exchange_sync = ExchangeSyncService()
+                                
+                                logger.info(
+                                    f"🔒 [SL/TP] Creating protection orders for SELL {symbol} order {order_id}: "
+                                    f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
+                                    f"(normalized from {executed_qty_raw_decimal})"
                                 )
-                            except Exception as alert_err:
-                                logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                                
+                                # Emit SLTP_ATTEMPT event
+                                _emit_lifecycle_event(
+                                    db=db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="SELL",
+                                    price=executed_avg_price,
+                                    event_type="SLTP_ATTEMPT",
+                                    event_reason=f"primary_order_id={order_id}, filled_price={executed_avg_price}, qty={normalized_qty}",
+                                    order_id=str(order_id),
+                                )
+                                
+                                # Create SL/TP orders for the filled SELL order
+                                # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
+                                sl_tp_result = exchange_sync._create_sl_tp_for_filled_order(
+                                    db=db,
+                                    symbol=symbol,
+                                    side="SELL",
+                                    filled_price=float(executed_avg_price),
+                                    filled_qty=normalized_qty,  # CRITICAL: Use normalized executed quantity
+                                    order_id=str(order_id)
+                                )
+                                
+                                # Extract SL/TP order IDs from result for logging
+                                # _create_sl_tp_for_filled_order returns dict with sl_result and tp_result keys
+                                sl_order_id = None
+                                tp_order_id = None
+                                if isinstance(sl_tp_result, dict):
+                                    sl_result = sl_tp_result.get("sl_result", {})
+                                    tp_result = sl_tp_result.get("tp_result", {})
+                                    if isinstance(sl_result, dict):
+                                        sl_order_id = sl_result.get("order_id")
+                                    if isinstance(tp_result, dict):
+                                        tp_order_id = tp_result.get("order_id")
+                                
+                                logger.info(
+                                    f"✅ [SL/TP] Protection orders created for SELL {symbol} order {order_id}: "
+                                    f"SL={sl_order_id}, TP={tp_order_id}"
+                                )
+                                
+                                # Emit SLTP_CREATED event
+                                _emit_lifecycle_event(
+                                    db=db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="SELL",
+                                    price=executed_avg_price,
+                                    event_type="SLTP_CREATED",
+                                    event_reason=f"primary_order_id={order_id}",
+                                    order_id=str(order_id),
+                                    sl_order_id=str(sl_order_id) if sl_order_id else None,
+                                    tp_order_id=str(tp_order_id) if tp_order_id else None,
+                                )
+                                
+                                # Send Telegram notification with order IDs
+                                try:
+                                    telegram_notifier.send_message(
+                                        f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 SELL Order ID: {order_id}\n"
+                                        f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
+                                        f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
+                                        f"📦 Quantity: {normalized_qty} (normalized)\n"
+                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
+                                        f"Protection orders created successfully."
+                                    )
+                                except Exception as notify_err:
+                                    logger.warning(f"Failed to send SL/TP success notification: {notify_err}")
+                                
+                                filled_quantity = normalized_qty
                             
-                            # If failsafe is enabled, we could trigger additional safety actions here
-                            # (e.g., disable trading for this symbol, send additional alerts, etc.)
-                            if FAILSAFE_ON_SLTP_ERROR:
+                            except Exception as sl_tp_err:
+                                # SL/TP creation failed - send CRITICAL alert and trigger failsafe
+                                error_details = str(sl_tp_err)
                                 logger.error(
-                                    f"🚨 [FAILSAFE] SL/TP creation failed for {symbol} order {order_id}. "
-                                    f"Position is unprotected. Consider manual intervention."
+                                    f"❌ [SL/TP] CRITICAL: Failed to create SL/TP orders for SELL {symbol} order {order_id}: {error_details}",
+                                    exc_info=True
                                 )
-                            
-                            # Use normalized quantity for return value
-                            filled_quantity = normalized_qty
+                                
+                                # Emit SLTP_FAILED event
+                                _emit_lifecycle_event(
+                                    db=db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="SELL",
+                                    price=executed_avg_price,
+                                    event_type="SLTP_FAILED",
+                                    event_reason="sltp_creation_failed",
+                                    order_id=str(order_id),
+                                    error_message=error_details,
+                                )
+                                
+                                # Send CRITICAL Telegram alert with full details including SELL order ID
+                                try:
+                                    telegram_notifier.send_message(
+                                        f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 SELL Order ID: {order_id}\n"
+                                        f"🔴 Side: SELL\n"
+                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n"
+                                        f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw_decimal})\n"
+                                        f"❌ Error: {error_details}\n\n"
+                                        f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                                        f"Please manually create protection orders or close the position immediately."
+                                    )
+                                except Exception as alert_err:
+                                    logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                                
+                                # FAILSAFE: Trigger real actions when SL/TP creation fails
+                                # For SELL orders: This typically closes a long position (reduces exposure)
+                                # We should send additional alerts and optionally disable trading for this symbol
+                                if FAILSAFE_ON_SLTP_ERROR:
+                                    logger.error(
+                                        f"🚨 [FAILSAFE] SL/TP creation failed for {symbol} SELL order {order_id}. "
+                                        f"Position is unprotected. FAILSAFE actions triggered."
+                                    )
+                                    
+                                    # Send additional failsafe alert
+                                    try:
+                                        telegram_notifier.send_message(
+                                            f"🚨 <b>FAILSAFE ALERT: UNPROTECTED POSITION</b>\n\n"
+                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                            f"📋 SELL Order ID: {order_id}\n"
+                                            f"🔴 Side: SELL (likely closed long position)\n"
+                                            f"⚠️ <b>NO PROTECTION ORDERS</b> - SL/TP creation failed.\n\n"
+                                            f"💡 <b>Recommended Actions:</b>\n"
+                                            f"• Manually create SL/TP orders\n"
+                                            f"• Close the position if desired\n"
+                                            f"• Review logs for error details\n\n"
+                                            f"🔒 Trading for this symbol should be reviewed before next order."
+                                        )
+                                    except Exception as failsafe_alert_err:
+                                        logger.error(f"Failed to send FAILSAFE alert: {failsafe_alert_err}", exc_info=True)
+                                    
+                                    # TODO: Could implement circuit breaker here (disable trading for symbol temporarily)
+                                    # This would require adding a flag to watchlist_item or a separate circuit breaker service
+                                    logger.warning(
+                                        f"⚠️ [FAILSAFE] Consider implementing circuit breaker to disable trading for {symbol} "
+                                        f"until SL/TP protection is manually verified/created."
+                                    )
+                                
+                                # Use normalized quantity for return value
+                                filled_quantity = normalized_qty
             else:
                 # Order not confirmed FILLED after polling - do NOT create SL/TP
                 error_msg = (
@@ -5386,22 +6177,60 @@ class SignalMonitorService:
                                 except Exception:
                                     pass  # Don't fail monitor if alert fails
 
+                    # CRITICAL: Use Postgres advisory lock to prevent duplicate runners
+                    # Lock ID: 123456 (arbitrary but unique for signal monitor)
                     db = SessionLocal()
+                    run_id = f"{os.getpid()}_{int(time.time())}"
+                    host = os.getenv("HOSTNAME", "unknown")
+                    
                     try:
-                        await self.monitor_signals(db)
-                        # Commit changes if monitor_signals made any database modifications
+                        # Try to acquire advisory lock (non-blocking)
+                        from sqlalchemy import text
+                        lock_result = db.execute(text("SELECT pg_try_advisory_lock(123456)")).scalar()
+                        
+                        if not lock_result:
+                            # Lock is held by another process
+                            if DEBUG_TRADING:
+                                logger.warning(f"[DEBUG_TRADING] RUN_LOCKED run_id={run_id} pid={os.getpid()} host={host}")
+                            logger.warning(f"RUN_LOCKED: Signal monitor lock held by another process. Skipping cycle #{cycle_count}")
+                            db.close()
+                            await asyncio.sleep(self.monitor_interval)
+                            continue
+                        
+                        # Lock acquired - log RUN_START
+                        if DEBUG_TRADING:
+                            logger.info(f"[DEBUG_TRADING] RUN_START run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                        logger.info(f"RUN_START run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                        
                         try:
-                            db.commit()
-                            logger.debug("SignalMonitorService: Committed database changes")
-                        except Exception as commit_err:
-                            logger.error(f"SignalMonitorService: Error committing changes: {commit_err}", exc_info=True)
+                            await self.monitor_signals(db)
+                            # Commit changes if monitor_signals made any database modifications
+                            try:
+                                db.commit()
+                                logger.debug("SignalMonitorService: Committed database changes")
+                            except Exception as commit_err:
+                                logger.error(f"SignalMonitorService: Error committing changes: {commit_err}", exc_info=True)
+                                db.rollback()
+                        except Exception as monitor_err:
+                            logger.error(f"SignalMonitorService: Error in monitor_signals: {monitor_err}", exc_info=True)
                             db.rollback()
-                    except Exception as monitor_err:
-                        logger.error(f"SignalMonitorService: Error in monitor_signals: {monitor_err}", exc_info=True)
-                        db.rollback()
-                        raise
-                    finally:
+                            raise
+                        finally:
+                            # Release lock and log RUN_END
+                            try:
+                                db.execute(text("SELECT pg_advisory_unlock(123456)"))
+                                if DEBUG_TRADING:
+                                    logger.info(f"[DEBUG_TRADING] RUN_END run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                                logger.info(f"RUN_END run_id={run_id} pid={os.getpid()} host={host} cycle={cycle_count}")
+                            except Exception as unlock_err:
+                                logger.error(f"Error releasing advisory lock: {unlock_err}", exc_info=True)
+                            db.close()
+                    except Exception as lock_err:
+                        logger.error(f"Error acquiring advisory lock: {lock_err}", exc_info=True)
                         db.close()
+                        # Continue to next cycle even if lock fails
+                        await asyncio.sleep(self.monitor_interval)
+                        continue
 
                     logger.info(
                         "SignalMonitorService cycle #%s completed. Next check in %ss",

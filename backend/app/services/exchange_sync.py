@@ -315,9 +315,40 @@ class ExchangeSyncService:
                         
                         # For LIMIT orders, mark as CANCELLED if not found in open orders or history
                         # At this point, we've verified the order is not FILLED (checked above)
+                        old_status = order.status
                         order.status = OrderStatusEnum.CANCELLED
                         order.exchange_update_time = datetime.now(timezone.utc)
                         logger.info(f"Order {order.exchange_order_id} ({order.symbol}) marked as CANCELLED - not found in open orders and not FILLED")
+                        
+                        # Emit ORDER_CANCELED event if status actually changed
+                        if old_status != OrderStatusEnum.CANCELLED:
+                            try:
+                                from app.services.signal_monitor import _emit_lifecycle_event
+                                from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                from app.models.watchlist import WatchlistItem
+                                
+                                # Resolve strategy for event emission
+                                watchlist_item = db.query(WatchlistItem).filter(
+                                    WatchlistItem.symbol == order.symbol
+                                ).first()
+                                strategy_type, risk_approach = resolve_strategy_profile(
+                                    order.symbol, db, watchlist_item
+                                )
+                                strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                
+                                _emit_lifecycle_event(
+                                    db=db,
+                                    symbol=order.symbol,
+                                    strategy_key=strategy_key,
+                                    side=order.side.value if hasattr(order.side, 'value') else str(order.side),
+                                    price=float(order.price) if order.price else None,
+                                    event_type="ORDER_CANCELED",
+                                    event_reason=f"order_id={order.exchange_order_id}, reason=not_found_in_open_orders",
+                                    order_id=order.exchange_order_id,
+                                )
+                            except Exception as emit_err:
+                                logger.warning(f"Failed to emit ORDER_CANCELED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
+                        
                         cancelled_orders.append(order)
                 
                 # Send Telegram notification for cancelled orders (batched)
@@ -2052,8 +2083,38 @@ class ExchangeSyncService:
                         logger.debug(f"Updating order {order_id} data from Crypto.com (status={status_str})")
                         
                         # Update status if provided and valid
+                        old_status = existing.status
                         if status_str in ('FILLED', 'PARTIALLY_FILLED', 'NEW', 'ACTIVE', 'CANCELLED', 'REJECTED', 'EXPIRED'):
                             existing.status = OrderStatusEnum(status_str)
+                            
+                            # Emit ORDER_CANCELED event if status changed to CANCELLED
+                            if status_str == 'CANCELLED' and old_status != OrderStatusEnum.CANCELLED:
+                                try:
+                                    from app.services.signal_monitor import _emit_lifecycle_event
+                                    from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                    from app.models.watchlist import WatchlistItem
+                                    
+                                    # Resolve strategy for event emission
+                                    watchlist_item = db.query(WatchlistItem).filter(
+                                        WatchlistItem.symbol == (symbol or existing.symbol)
+                                    ).first()
+                                    strategy_type, risk_approach = resolve_strategy_profile(
+                                        symbol or existing.symbol, db, watchlist_item
+                                    )
+                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                    
+                                    _emit_lifecycle_event(
+                                        db=db,
+                                        symbol=symbol or existing.symbol,
+                                        strategy_key=strategy_key,
+                                        side=side or (existing.side.value if existing.side else 'BUY'),
+                                        price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or None,
+                                        event_type="ORDER_CANCELED",
+                                        event_reason=f"order_id={order_id}, reason=status_changed_to_cancelled",
+                                        order_id=order_id,
+                                    )
+                                except Exception as emit_err:
+                                    logger.warning(f"Failed to emit ORDER_CANCELED event for {order_id}: {emit_err}", exc_info=True)
                         # Always use data from Crypto.com history (more accurate)
                         existing.price = order_price_float if order_price_float else existing.price
                         existing.quantity = executed_qty if executed_qty > 0 else (quantity_float if quantity_float > 0 else existing.quantity)
@@ -2252,6 +2313,34 @@ class ExchangeSyncService:
                                     notification_sent=True
                                 )
                                 logger.info(f"Sent Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id} (reason: {notify_reason})")
+                                
+                                # Emit ORDER_EXECUTED event
+                                try:
+                                    from app.services.signal_monitor import _emit_lifecycle_event
+                                    from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                    from app.models.watchlist import WatchlistItem
+                                    
+                                    # Resolve strategy for event emission
+                                    watchlist_item = db.query(WatchlistItem).filter(
+                                        WatchlistItem.symbol == (symbol or existing.symbol)
+                                    ).first()
+                                    strategy_type, risk_approach = resolve_strategy_profile(
+                                        symbol or existing.symbol, db, watchlist_item
+                                    )
+                                    strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                    
+                                    _emit_lifecycle_event(
+                                        db=db,
+                                        symbol=symbol or existing.symbol,
+                                        strategy_key=strategy_key,
+                                        side=side or (existing.side.value if existing.side else 'BUY'),
+                                        price=order_price_float or (existing.avg_price if existing.avg_price else existing.price) or 0,
+                                        event_type="ORDER_EXECUTED",
+                                        event_reason=f"order_id={order_id}, filled_qty={current_filled_qty}, status={current_status_str}",
+                                        order_id=order_id,
+                                    )
+                                except Exception as emit_err:
+                                    logger.warning(f"Failed to emit ORDER_EXECUTED event for {order_id}: {emit_err}", exc_info=True)
                             else:
                                 logger.warning(f"Failed to send Telegram notification for executed order: {symbol or existing.symbol} {side or (existing.side.value if existing.side else 'BUY')} - {order_id}")
                         except Exception as telegram_err:

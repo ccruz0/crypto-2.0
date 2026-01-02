@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import Enum
 from os import getpid
 import pytz
+import requests
 from app.core.config import Settings
 from app.core.runtime import is_aws_runtime, get_runtime_origin
 from app.database import SessionLocal
@@ -185,7 +186,7 @@ class TelegramNotifier:
             logger.error(f"Failed to set bot commands: {e}")
             return False
     
-    def send_message(self, message: str, reply_markup: Optional[dict] = None, origin: Optional[str] = None) -> bool:
+    def send_message(self, message: str, reply_markup: Optional[dict] = None, origin: Optional[str] = None, symbol: Optional[str] = None) -> bool:
         """
         Send a message to Telegram with optional inline keyboard.
         
@@ -201,21 +202,27 @@ class TelegramNotifier:
             reply_markup: Optional inline keyboard markup
             origin: Origin identifier ("AWS" or "LOCAL"). If None, defaults to runtime origin.
                     Only "AWS" origin will actually send to Telegram.
+            symbol: Optional trading symbol (e.g., "BTC_USDT"). If not provided, will be extracted from message.
             
         Returns:
             True if message sent successfully, False otherwise
         """
         # Extract symbol for logging (used later in TELEGRAM_SEND)
-        symbol = None
-        try:
-            import re
-            symbol_match = re.search(r'([A-Z]+_[A-Z]+|[A-Z]{2,5}(?:\s|:))', message)
-            if symbol_match:
-                potential_symbol = symbol_match.group(1).strip().rstrip(':').rstrip()
-                if '_' in potential_symbol or len(potential_symbol) >= 2:
-                    symbol = potential_symbol
-        except Exception:
-            pass
+        # Use provided symbol if available, otherwise extract from message
+        if symbol is None:
+            try:
+                import re
+                # First try to find a trading symbol with underscore (most specific)
+                symbol_match = re.search(r'\b([A-Z]{2,10}_[A-Z]{2,10})\b', message)
+                if symbol_match:
+                    symbol = symbol_match.group(1)
+                else:
+                    # Fallback: look for symbol pattern after "Symbol:" or similar
+                    symbol_match = re.search(r'Symbol[:\s]*<b>([A-Z]{2,10}_[A-Z]{2,10})</b>', message, re.IGNORECASE)
+                    if symbol_match:
+                        symbol = symbol_match.group(1)
+            except Exception:
+                pass
         
         # CENTRAL GATEKEEPER: Telegram is ONLY enabled when ENV=aws
         # This check happens before any other logic
@@ -973,7 +980,7 @@ class TelegramNotifier:
         if origin is None:
             origin = get_runtime_origin()
         
-        result = self.send_message(message.strip(), origin=origin)
+        result = self.send_message(message.strip(), origin=origin, symbol=symbol)
         
         # Register sent message
         if result:
@@ -1094,7 +1101,7 @@ class TelegramNotifier:
         if origin is None:
             origin = get_runtime_origin()
         
-        result = self.send_message(message.strip(), origin=origin)
+        result = self.send_message(message.strip(), origin=origin, symbol=symbol)
         
         # Register sent message
         if result:

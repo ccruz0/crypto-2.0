@@ -651,9 +651,10 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
             one_month_ago = datetime.now() - timedelta(days=30)
             
             # Query from database - ONLY blocked messages
+            # Use is_(True) instead of == True for proper boolean comparison in SQLAlchemy
             db_messages = db.query(TelegramMessage).filter(
                 TelegramMessage.timestamp >= one_month_ago,
-                TelegramMessage.blocked == True  # Only blocked messages
+                TelegramMessage.blocked.is_(True)  # Only blocked messages
             ).order_by(TelegramMessage.timestamp.desc()).limit(500).all()
             
             # Convert to dict format for API response
@@ -694,7 +695,7 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
     for msg in _telegram_messages:
         # Only include blocked messages
         if (datetime.fromisoformat(msg["timestamp"]) >= one_month_ago and 
-            msg.get("blocked") == True):
+            msg.get("blocked") is True):
             # Ensure order_skipped is always a boolean
             order_skipped_val = msg.get("order_skipped")
             if order_skipped_val is None:
@@ -716,6 +717,77 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
         "messages": recent_messages,
         "total": len(recent_messages)
     }
+
+@router.get("/monitoring/lifecycle-events")
+async def get_lifecycle_events(limit: int = 200, db: Session = Depends(get_db)):
+    """Get lifecycle events from SignalThrottleState (canonical source).
+    
+    Returns all lifecycle events (TRADE_BLOCKED, ORDER_CREATED, ORDER_FAILED, 
+    SLTP_CREATED, SLTP_FAILED, etc.) for the Throttle tab.
+    """
+    log.debug("Fetching lifecycle events (limit=%s)", limit)
+    if db is None:
+        return {"events": [], "total": 0}
+    
+    try:
+        from app.models.signal_throttle import SignalThrottleState
+        from datetime import timedelta
+        
+        bounded_limit = max(1, min(limit, 500))
+        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        
+        # Query SignalThrottleState for lifecycle events
+        events = (
+            db.query(SignalThrottleState)
+            .filter(SignalThrottleState.last_time >= one_week_ago)
+            .filter(SignalThrottleState.emit_reason.isnot(None))
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        
+        # Convert to API format
+        event_list = []
+        for event in events:
+            # Parse event type from emit_reason
+            event_type = "UNKNOWN"
+            if event.emit_reason:
+                if event.emit_reason.startswith("TRADE_BLOCKED"):
+                    event_type = "TRADE_BLOCKED"
+                elif event.emit_reason.startswith("ORDER_ATTEMPT"):
+                    event_type = "ORDER_ATTEMPT"
+                elif event.emit_reason.startswith("ORDER_CREATED"):
+                    event_type = "ORDER_CREATED"
+                elif event.emit_reason.startswith("ORDER_FAILED"):
+                    event_type = "ORDER_FAILED"
+                elif event.emit_reason.startswith("SLTP_ATTEMPT"):
+                    event_type = "SLTP_ATTEMPT"
+                elif event.emit_reason.startswith("SLTP_CREATED"):
+                    event_type = "SLTP_CREATED"
+                elif event.emit_reason.startswith("SLTP_FAILED"):
+                    event_type = "SLTP_FAILED"
+                elif "ALERT" in event.emit_reason.upper():
+                    event_type = "ALERT_EMITTED"
+            
+            event_list.append({
+                "symbol": event.symbol,
+                "side": event.side,
+                "strategy_key": event.strategy_key,
+                "event_type": event_type,
+                "emit_reason": event.emit_reason,
+                "price": float(event.last_price) if event.last_price else None,
+                "timestamp": event.last_time.isoformat() if event.last_time else None,
+                "source": event.last_source,
+            })
+        
+        return {
+            "events": event_list,
+            "total": len(event_list)
+        }
+    except Exception as e:
+        log.error(f"Error fetching lifecycle events: {e}", exc_info=True)
+        return {"events": [], "total": 0, "error": str(e)}
+
 
 @router.get("/monitoring/signal-throttle")
 async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
@@ -740,7 +812,7 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
         # not generic Telegram notifications (orders/workflows/etc) which cause UNKNOWN side / empty fields.
         sent_messages = (
             db.query(TelegramMessage)
-            .filter(TelegramMessage.blocked == False)  # Only messages that were sent
+            .filter(TelegramMessage.blocked.is_(False))  # Only messages that were sent
             .order_by(TelegramMessage.timestamp.desc())
             .limit(bounded_limit * 15)  # Get more to account for filtering + dedup
             .all()
@@ -825,6 +897,85 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
             .limit(max(200, bounded_limit * 10))
             .all()
         )
+        
+        # 2b) Also load lifecycle events (ORDER_*, SLTP_*, TRADE_BLOCKED) from SignalThrottleState
+        # These may not have corresponding Telegram messages, so we add them separately
+        from datetime import timedelta
+        one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        lifecycle_states = (
+            db.query(SignalThrottleState)
+            .filter(SignalThrottleState.last_time >= one_week_ago)
+            .filter(SignalThrottleState.emit_reason.isnot(None))
+            .filter(
+                or_(
+                    SignalThrottleState.emit_reason.like("TRADE_BLOCKED%"),
+                    SignalThrottleState.emit_reason.like("ORDER_ATTEMPT%"),
+                    SignalThrottleState.emit_reason.like("ORDER_CREATED%"),
+                    SignalThrottleState.emit_reason.like("ORDER_FAILED%"),
+                    SignalThrottleState.emit_reason.like("SLTP_ATTEMPT%"),
+                    SignalThrottleState.emit_reason.like("SLTP_CREATED%"),
+                    SignalThrottleState.emit_reason.like("SLTP_FAILED%"),
+                )
+            )
+            .order_by(SignalThrottleState.last_time.desc())
+            .limit(bounded_limit)
+            .all()
+        )
+        
+        # Add lifecycle events to events list
+        for state in lifecycle_states:
+            if not state.symbol or not state.side:
+                continue
+            symbol_value = state.symbol.upper()
+            side = state.side.upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            
+            # Parse event type from emit_reason
+            event_type = "UNKNOWN"
+            if state.emit_reason:
+                if state.emit_reason.startswith("TRADE_BLOCKED"):
+                    event_type = "TRADE_BLOCKED"
+                elif state.emit_reason.startswith("ORDER_ATTEMPT"):
+                    event_type = "ORDER_ATTEMPT"
+                elif state.emit_reason.startswith("ORDER_CREATED"):
+                    event_type = "ORDER_CREATED"
+                elif state.emit_reason.startswith("ORDER_FAILED"):
+                    event_type = "ORDER_FAILED"
+                elif state.emit_reason.startswith("SLTP_ATTEMPT"):
+                    event_type = "SLTP_ATTEMPT"
+                elif state.emit_reason.startswith("SLTP_CREATED"):
+                    event_type = "SLTP_CREATED"
+                elif state.emit_reason.startswith("SLTP_FAILED"):
+                    event_type = "SLTP_FAILED"
+            
+            # Only add if it's a lifecycle event (not already covered by signal alerts)
+            if event_type != "UNKNOWN":
+                state_time = state.last_time
+                if state_time and state_time.tzinfo is None:
+                    state_time = state_time.replace(tzinfo=timezone.utc)
+                
+                minute_bucket = int(state_time.timestamp() // 60) if state_time else 0
+                bucket_key = (symbol_value, side, minute_bucket)
+                
+                # Add as lifecycle event (don't overwrite signal alerts)
+                if bucket_key not in best_by_bucket:
+                    best_by_bucket[bucket_key] = {
+                        "_score": 0,  # Lower score than signal alerts
+                        "msg": None,  # No Telegram message
+                        "symbol": symbol_value,
+                        "side": side,
+                        "msg_time": state_time,
+                        "parsed_text": f"{event_type}: {state.emit_reason}",
+                        "price": float(state.last_price) if state.last_price else None,
+                        "parsed_reason": state.emit_reason,
+                        "parsed_strategy_key": state.strategy_key,
+                        "is_lifecycle_event": True,
+                        "event_type": event_type,
+                    }
+        
+        # Rebuild events list with lifecycle events included
+        events = list(best_by_bucket.values())
         states_by_key: Dict[tuple, list] = {}
         for st in states:
             if not st.symbol or not st.side:
@@ -968,6 +1119,23 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                 else None
             )
 
+            # Check if this is a lifecycle event (not a signal alert)
+            is_lifecycle_event = e.get("is_lifecycle_event", False)
+            event_type = e.get("event_type", None)
+            
+            # For lifecycle events without Telegram messages, use state data directly
+            if is_lifecycle_event and not msg_obj:
+                # Use state data for lifecycle events
+                state_for_event = chosen_state if chosen_state else None
+                if state_for_event:
+                    event_time = state_for_event.last_time
+                    if event_time and event_time.tzinfo is None:
+                        event_time = event_time.replace(tzinfo=timezone.utc)
+                    last_price = float(state_for_event.last_price) if state_for_event.last_price else None
+                    emit_reason = state_for_event.emit_reason or emit_reason
+                    strategy_key = state_for_event.strategy_key or strategy_key
+                    seconds_since = max(0, int((now - event_time).total_seconds())) if event_time else None
+            
             payload.append(
                 {
                     "symbol": symbol_value,
@@ -975,6 +1143,8 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     "side": side,
                     "last_price": last_price,
                     "last_time": event_time.isoformat() if event_time else None,
+                    "is_lifecycle_event": is_lifecycle_event,
+                    "event_type": event_type,
                     "seconds_since_last": seconds_since,
                     "price_change_pct": round(price_change_pct, 2) if price_change_pct is not None else None,
                     "emit_reason": emit_reason,
