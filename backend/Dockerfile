@@ -46,7 +46,16 @@ COPY backend/requirements.txt ./requirements.txt
 
 # Instalar solo dependencias de producción desde wheels
 # (dev deps como pytest, black, isort, flake8 están comentadas en requirements.txt)
-RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt
+# First try from wheels, then fallback to PyPI if any package is missing
+RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt 2>&1 | tee /tmp/wheel_install.log || \
+    (echo "WARNING: Some packages not found in wheels, installing from PyPI..." && \
+     pip install --no-cache-dir -r requirements.txt)
+
+# Ensure critical packages are installed (explicit verification)
+# Verify pydantic-settings is installed (critical dependency)
+RUN pip install --no-cache-dir pydantic-settings==2.5.2 && \
+    python -c "import pydantic_settings; print('pydantic-settings installed successfully')" || \
+    (echo "ERROR: pydantic-settings installation failed" && exit 1)
 
 # Build fingerprint: capture git commit and build time
 ARG GIT_SHA=unknown

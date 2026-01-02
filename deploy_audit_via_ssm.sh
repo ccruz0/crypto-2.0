@@ -25,8 +25,9 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || { echo '❌ Cannot find project directory' && exit 1; }\",
+    \"cd /home/ubuntu/automated-trading-platform || { echo '❌ Cannot find project directory' && exit 1; }\",
     \"echo '📥 Pulling latest code...'\",
+    \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform || true\",
     \"git pull origin main || echo 'Git pull failed, continuing...'\",
     \"echo '🔧 Making scripts executable...'\",
     \"chmod +x deploy_audit_fixes.sh run_audit_in_production.sh 2>/dev/null || true\",
@@ -39,20 +40,26 @@ COMMAND_ID=$(aws ssm send-command \
     \"echo ''\",
     \"echo '⏳ Waiting 30 seconds for service to start...'\",
     \"sleep 30\",
+    \"echo '🔍 Finding container name...'\",
+    \"CONTAINER=\\\$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker ps -q --filter 'name=backend-aws' | head -1)\",
+    \"if [ -z \\\"\\\$CONTAINER\\\" ]; then CONTAINER=\\\$(docker ps --format '{{.Names}}' | grep backend | head -1); fi\",
+    \"echo 'Container: '\\\$CONTAINER\",
     \"echo '🔍 Verifying deployment...'\",
-    \"docker logs backend-aws | grep 'Signal monitor service' | tail -3 || echo '⚠️ Signal monitor service log not found'\",
+    \"docker logs \\\$CONTAINER 2>/dev/null | grep 'Signal monitor service' | tail -3 || echo '⚠️ Signal monitor service log not found'\",
     \"echo ''\",
     \"echo '📊 Running audit...'\",
-    \"docker exec backend-aws python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24 --output docs/reports/no-alerts-no-trades-audit-\\\$(date +%Y%m%d-%H%M%S).md || echo '⚠️ Audit failed'\",
+    \"TIMESTAMP=\\\$(date +%Y%m%d-%H%M%S 2>/dev/null || echo 'manual')\",
+    \"AUDIT_FILE=\\\"docs/reports/no-alerts-no-trades-audit-\\\$TIMESTAMP.md\\\"\",
+    \"docker exec \\\$CONTAINER python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24 --output \\\$AUDIT_FILE || echo '⚠️ Audit failed'\",
     \"echo ''\",
     \"echo '📄 Audit report location:'\",
-    \"docker exec backend-aws ls -la docs/reports/no-alerts-no-trades-audit-*.md | tail -1 || echo 'Report not found'\",
+    \"docker exec \\\$CONTAINER ls -la docs/reports/no-alerts-no-trades-audit-*.md 2>/dev/null | tail -1 || echo 'Report not found'\",
     \"echo ''\",
     \"echo '💓 Checking for heartbeat (last 5):'\",
-    \"docker logs backend-aws | grep HEARTBEAT | tail -5 || echo 'No heartbeat found yet (may take ~5 minutes)'\",
+    \"docker logs \\\$CONTAINER 2>/dev/null | grep HEARTBEAT | tail -5 || echo 'No heartbeat found yet (may take ~5 minutes)'\",
     \"echo ''\",
     \"echo '🚨 Checking for global blockers:'\",
-    \"docker logs backend-aws | grep GLOBAL_BLOCKER | tail -5 || echo 'No global blockers found'\"
+    \"docker logs \\\$CONTAINER 2>/dev/null | grep GLOBAL_BLOCKER | tail -5 || echo 'No global blockers found'\"
   ]" \
   --output text \
   --query "Command.CommandId")

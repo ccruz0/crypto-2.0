@@ -2743,12 +2743,17 @@ def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: 
         else:
             for msg in messages[:10]:  # Show last 10
                 timestamp = msg.get("timestamp", "N/A")
-                content = msg.get("content", "")[:50]  # Truncate long messages
-                reason = msg.get("block_reason", "Unknown")
+                # Use 'message' field (not 'content') as returned by the API
+                msg_content = msg.get("message", "")
+                # Truncate long messages
+                content = msg_content[:100] + "..." if len(msg_content) > 100 else msg_content
+                # Use 'throttle_reason' or 'message' for reason
+                reason = msg.get("throttle_reason") or msg.get("reason") or "Unknown"
+                symbol = msg.get("symbol", "N/A")
                 
-                message += f"🚫 <b>{timestamp}</b>\n"
+                message += f"🚫 <b>{symbol}</b> - {timestamp}\n"
                 message += f"   Reason: {reason}\n"
-                message += f"   {content}...\n\n"
+                message += f"   {content}\n\n"
         
         keyboard = _build_keyboard([
             [{"text": "🔄 Refresh", "callback_data": "monitoring:blocked"}],

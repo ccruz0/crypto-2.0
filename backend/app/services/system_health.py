@@ -47,21 +47,23 @@ def get_system_health(db: Session) -> Dict:
     
     # Compute component health
     market_data = _check_market_data_health(db, stale_market_minutes)
+    market_updater = _check_market_updater_health(market_data, stale_market_minutes)
     signal_monitor = _check_signal_monitor_health(monitor_stale_minutes)
     telegram = _check_telegram_health()
     trade_system = _check_trade_system_health(db)
     
     # Compute global status
     global_status = "PASS"
-    if any(comp["status"] == "FAIL" for comp in [market_data, signal_monitor, telegram, trade_system]):
+    if any(comp["status"] == "FAIL" for comp in [market_data, market_updater, signal_monitor, telegram, trade_system]):
         global_status = "FAIL"
-    elif any(comp["status"] == "WARN" for comp in [market_data, signal_monitor, telegram, trade_system]):
+    elif any(comp["status"] == "WARN" for comp in [market_data, market_updater, signal_monitor, telegram, trade_system]):
         global_status = "WARN"
     
     return {
         "global_status": global_status,
         "timestamp": timestamp,
         "market_data": market_data,
+        "market_updater": market_updater,
         "signal_monitor": signal_monitor,
         "telegram": telegram,
         "trade_system": trade_system,
@@ -190,6 +192,41 @@ def _check_telegram_health() -> Dict:
             "enabled": False,
             "chat_id_set": False,
             "last_send_ok": None,
+        }
+
+def _check_market_updater_health(market_data: Dict, stale_threshold_minutes: float) -> Dict:
+    """Check market updater health using market data freshness as heartbeat proxy"""
+    try:
+        max_age_minutes = market_data.get("max_age_minutes")
+        
+        # If max_age_minutes is below threshold, updater is running
+        # Otherwise, it's likely stopped or stalled
+        if max_age_minutes is None:
+            # No market data at all
+            is_running = False
+            last_heartbeat_age_minutes = None
+        elif max_age_minutes < stale_threshold_minutes:
+            # Fresh data indicates updater is running
+            is_running = True
+            last_heartbeat_age_minutes = max_age_minutes
+        else:
+            # Stale data indicates updater may be stopped
+            is_running = False
+            last_heartbeat_age_minutes = max_age_minutes
+        
+        status = "PASS" if is_running else "FAIL"
+        
+        return {
+            "status": status,
+            "is_running": is_running,
+            "last_heartbeat_age_minutes": round(last_heartbeat_age_minutes, 2) if last_heartbeat_age_minutes is not None else None,
+        }
+    except Exception as e:
+        logger.error(f"Error checking market updater health: {e}", exc_info=True)
+        return {
+            "status": "FAIL",
+            "is_running": False,
+            "last_heartbeat_age_minutes": None,
         }
 
 def _check_trade_system_health(db: Session) -> Dict:
