@@ -776,16 +776,23 @@ def get_portfolio_summary(db: Session) -> Dict:
         
         # OPTIMIZATION 3: Use cached table existence check
         total_borrowed_usd = 0.0
+        total_borrowed_usd_for_display = 0.0  # Include ALL loans for display
         loans = []
         if _table_exists(db, 'portfolio_loans'):
             try:
                 # Get total borrowed amount (loans) using SQL aggregation
-                # IMPORTANT: Only subtract crypto loans, NOT USD loans
+                # IMPORTANT: Only subtract crypto loans, NOT USD loans (for net wallet balance calculation)
                 total_borrowed_result = db.query(func.sum(PortfolioLoan.borrowed_usd_value)).filter(
                     PortfolioLoan.is_active == True,
                     PortfolioLoan.currency != 'USD'  # Exclude USD loans from subtraction
                 ).scalar()
                 total_borrowed_usd = float(total_borrowed_result) if total_borrowed_result else 0.0
+                
+                # Get total borrowed for DISPLAY purposes (includes ALL loans, including USD)
+                total_borrowed_display_result = db.query(func.sum(PortfolioLoan.borrowed_usd_value)).filter(
+                    PortfolioLoan.is_active == True
+                ).scalar()
+                total_borrowed_usd_for_display = float(total_borrowed_display_result) if total_borrowed_display_result else 0.0
                 
                 # Get loan details for display
                 loans_query = db.query(PortfolioLoan).filter(
@@ -852,8 +859,9 @@ def get_portfolio_summary(db: Session) -> Dict:
         # Computed fields:
         # - total_assets_usd: GROSS raw assets (sum of all asset USD values, before haircut and borrowed)
         # - total_collateral_usd: Collateral value after applying haircuts (Σ raw_value * (1 - haircut))
-        # - total_borrowed_usd: Total borrowed/margin amounts (crypto loans only, USD loans excluded)
+        # - total_borrowed_usd: Total borrowed/margin amounts (ALL loans including USD - for display purposes)
         # - total_usd: NET Wallet Balance (prefer exchange-reported margin_equity, fallback to collateral - borrowed)
+        #   Note: For net wallet balance calculation, only crypto loans (not USD) are subtracted
         #
         # The frontend should use total_usd (NET Wallet Balance) as "Total Value" to match Crypto.com UI exactly.
         
@@ -913,7 +921,7 @@ def get_portfolio_summary(db: Session) -> Dict:
             "total_usd": total_usd,
             "total_assets_usd": total_assets_usd,
             "total_collateral_usd": total_collateral_usd,
-            "total_borrowed_usd": total_borrowed_usd,
+            "total_borrowed_usd": total_borrowed_usd_for_display,  # Use display value (includes ALL loans)
             "loans": loans,
             "last_updated": last_updated
         }
