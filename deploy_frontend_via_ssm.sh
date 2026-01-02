@@ -26,12 +26,11 @@ COMMAND_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
     \"cd /home/ubuntu/automated-trading-platform\",
-    \"PROJECT_DIR=\\\$(pwd)\",
     \"echo '📥 Pulling latest code...'\",
     \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform || true\",
     \"git pull origin main || echo 'Git pull failed, continuing...'\",
     \"echo '📦 Updating frontend submodule...'\",
-    \"if [ -d frontend ]; then cd frontend; git pull origin main || echo 'Frontend git pull failed, continuing...'; cd \\\$PROJECT_DIR; else echo 'Frontend directory not found, skipping...'; fi\",
+    \"if [ -d frontend ]; then cd frontend; git pull origin main || echo 'Frontend git pull failed, continuing...'; cd /home/ubuntu/automated-trading-platform; else echo 'Frontend directory not found, skipping...'; fi\",
     \"echo '🔨 Rebuilding frontend-aws container...'\",
     \"docker compose --profile aws build frontend-aws\",
     \"echo '🔄 Restarting frontend-aws container...'\",
