@@ -25,7 +25,7 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd /home/ubuntu/automated-trading-platform || { echo '❌ Cannot find project directory' && exit 1; }\",
+    \"cd /home/ubuntu/automated-trading-platform\",
     \"PROJECT_DIR=\\\$(pwd)\",
     \"echo '📥 Pulling latest code...'\",
     \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform || true\",
