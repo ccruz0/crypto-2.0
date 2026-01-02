@@ -912,6 +912,8 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     SignalThrottleState.emit_reason.like("ORDER_ATTEMPT%"),
                     SignalThrottleState.emit_reason.like("ORDER_CREATED%"),
                     SignalThrottleState.emit_reason.like("ORDER_FAILED%"),
+                    SignalThrottleState.emit_reason.like("ORDER_EXECUTED%"),
+                    SignalThrottleState.emit_reason.like("ORDER_CANCELED%"),
                     SignalThrottleState.emit_reason.like("SLTP_ATTEMPT%"),
                     SignalThrottleState.emit_reason.like("SLTP_CREATED%"),
                     SignalThrottleState.emit_reason.like("SLTP_FAILED%"),
@@ -942,6 +944,10 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     event_type = "ORDER_CREATED"
                 elif state.emit_reason.startswith("ORDER_FAILED"):
                     event_type = "ORDER_FAILED"
+                elif state.emit_reason.startswith("ORDER_EXECUTED"):
+                    event_type = "ORDER_EXECUTED"
+                elif state.emit_reason.startswith("ORDER_CANCELED"):
+                    event_type = "ORDER_CANCELED"
                 elif state.emit_reason.startswith("SLTP_ATTEMPT"):
                     event_type = "SLTP_ATTEMPT"
                 elif state.emit_reason.startswith("SLTP_CREATED"):
@@ -956,23 +962,26 @@ async def get_signal_throttle(limit: int = 200, db: Session = Depends(get_db)):
                     state_time = state_time.replace(tzinfo=timezone.utc)
                 
                 minute_bucket = int(state_time.timestamp() // 60) if state_time else 0
-                bucket_key = (symbol_value, side, minute_bucket)
+                # Use event_type in bucket key to prevent lifecycle events from being dropped
+                # when they occur in the same minute as signal alerts
+                # Format: (symbol, side, minute_bucket, event_type) for lifecycle events
+                bucket_key = (symbol_value, side, minute_bucket, event_type)
                 
-                # Add as lifecycle event (don't overwrite signal alerts)
-                if bucket_key not in best_by_bucket:
-                    best_by_bucket[bucket_key] = {
-                        "_score": 0,  # Lower score than signal alerts
-                        "msg": None,  # No Telegram message
-                        "symbol": symbol_value,
-                        "side": side,
-                        "msg_time": state_time,
-                        "parsed_text": f"{event_type}: {state.emit_reason}",
-                        "price": float(state.last_price) if state.last_price else None,
-                        "parsed_reason": state.emit_reason,
-                        "parsed_strategy_key": state.strategy_key,
-                        "is_lifecycle_event": True,
-                        "event_type": event_type,
-                    }
+                # Always add lifecycle events - they use a different bucket key format
+                # that includes event_type, so they won't collide with signal alerts
+                best_by_bucket[bucket_key] = {
+                    "_score": 0,  # Lower score than signal alerts
+                    "msg": None,  # No Telegram message
+                    "symbol": symbol_value,
+                    "side": side,
+                    "msg_time": state_time,
+                    "parsed_text": f"{event_type}: {state.emit_reason}",
+                    "price": float(state.last_price) if state.last_price else None,
+                    "parsed_reason": state.emit_reason,
+                    "parsed_strategy_key": state.strategy_key,
+                    "is_lifecycle_event": True,
+                    "event_type": event_type,
+                }
         
         # Rebuild events list with lifecycle events included
         events = list(best_by_bucket.values())
