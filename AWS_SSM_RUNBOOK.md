@@ -64,7 +64,19 @@ ls -la scripts/verify_ec2_ip_and_health.sh
 
 ---
 
-## Step 3: Run EC2 Verification Script
+## Step 3: Generate and Run EC2 Verification Script
+
+If the verification script doesn't exist or needs to be regenerated:
+
+```bash
+# Generate the script (avoids paste truncation issues)
+python3 scripts/write_verify_ec2_ip_and_health.py
+
+# Run the verification script
+./scripts/verify_ec2_ip_and_health.sh
+```
+
+If the script already exists and is correct:
 
 ```bash
 ./scripts/verify_ec2_ip_and_health.sh
