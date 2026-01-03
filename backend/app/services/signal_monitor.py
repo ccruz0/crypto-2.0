@@ -159,6 +159,16 @@ def _emit_lifecycle_event(
                 error_message=error_message or event_reason,
                 db=db,
             )
+        elif event_type == "SLTP_BLOCKED":
+            message = f"🚫 SLTP_BLOCKED: {symbol} {side} - {event_reason}"
+            add_telegram_message(
+                message=message,
+                symbol=symbol,
+                blocked=True,
+                throttle_status="SLTP_BLOCKED",
+                throttle_reason=event_reason,
+                db=db,
+            )
         elif event_type == "ORDER_EXECUTED":
             message = f"✅ ORDER_EXECUTED: {symbol} {side} - {event_reason}"
             add_telegram_message(
@@ -4175,6 +4185,41 @@ class SignalMonitorService:
             # MARGIN TRADING: Use the leverage from trading_decision (already calculated above)
             # leverage_value is already set from trading_decision above
             logger.info(f"📊 ORDER PARAMETERS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}")
+            
+            # Check trading guardrails before order placement
+            from app.utils.trading_guardrails import can_place_real_order
+            allowed, block_reason = can_place_real_order(
+                db=db,
+                symbol=symbol,
+                order_usd_value=amount_usd,
+                side="BUY",
+            )
+            if not allowed:
+                # Emit TRADE_BLOCKED lifecycle event
+                _emit_lifecycle_event(
+                    db=db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side="BUY",
+                    price=current_price,
+                    event_type="TRADE_BLOCKED",
+                    event_reason=block_reason,
+                )
+                # Send Telegram alert
+                try:
+                    telegram_notifier.send_message(
+                        f"🚫 <b>TRADE BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔄 Side: BUY\n"
+                        f"💵 Value: ${amount_usd:.2f}\n\n"
+                        f"🚫 <b>Reason:</b> {block_reason}",
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
+                
+                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} BUY - {block_reason}")
+                return None  # Block order
             
             # Emit ORDER_ATTEMPT event
             _emit_lifecycle_event(

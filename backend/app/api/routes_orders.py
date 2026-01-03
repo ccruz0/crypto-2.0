@@ -78,17 +78,83 @@ def place_order(
     """Place order on specified exchange"""
     _ensure_exchange(request.exchange)
     
-    from app.utils.live_trading import get_live_trading_status
-    from app.database import SessionLocal
-    db = SessionLocal()
-    try:
-        live_trading = get_live_trading_status(db)
-    finally:
-        db.close()
-    
     # Validate LIMIT orders have price
     if request.type == OrderType.LIMIT and request.price is None:
         raise HTTPException(status_code=400, detail="Price required for LIMIT orders")
+    
+    from app.utils.live_trading import get_live_trading_status
+    from app.database import SessionLocal
+    from app.utils.trading_guardrails import can_place_real_order
+    from app.services.telegram_notifier import telegram_notifier
+    
+    db = SessionLocal()
+    try:
+        live_trading = get_live_trading_status(db)
+        
+        # Calculate USD value for guardrails
+        order_usd_value = None
+        if request.type == OrderType.LIMIT and request.price:
+            order_usd_value = request.price * request.qty
+        elif request.type == OrderType.MARKET:
+            # Try to get current price for market orders
+            try:
+                from app.utils.http_client import http_get
+                ticker_url = f"https://api.crypto.com/exchange/v1/public/get-ticker?instrument_name={request.symbol}"
+                response = http_get(ticker_url, timeout=5, calling_module="routes_orders.guardrails")
+                if response.status_code == 200:
+                    data = response.json()
+                    if "result" in data and "data" in data["result"]:
+                        ticker_data = data["result"]["data"]
+                        if isinstance(ticker_data, list) and len(ticker_data) > 0:
+                            last_price = float(ticker_data[0].get("a", 0))  # 'a' is last price
+                            if last_price > 0:
+                                order_usd_value = last_price * request.qty
+            except Exception as e:
+                logger.warning(f"Could not get current price for {request.symbol} to check MAX_USD_PER_ORDER: {e}")
+        
+        # Check trading guardrails (skip MAX_USD_PER_ORDER if price unavailable)
+        if order_usd_value is not None:
+            allowed, block_reason = can_place_real_order(
+                db=db,
+                symbol=request.symbol,
+                order_usd_value=order_usd_value,
+                side=request.side.value,
+            )
+        else:
+            # For market orders without price, use high estimate for MAX_USD_PER_ORDER check
+            # This is conservative - will block if qty suggests order > $100k
+            estimated_usd = request.qty * 100000  # Conservative high estimate
+            allowed, block_reason = can_place_real_order(
+                db=db,
+                symbol=request.symbol,
+                order_usd_value=estimated_usd,
+                side=request.side.value,
+            )
+            # If blocked only due to MAX_USD_PER_ORDER and we don't have real price, allow it
+            # (other checks like Live toggle, kill switch, Trade Yes, etc. still apply)
+            if not allowed and "MAX_USD_PER_ORDER" in block_reason:
+                logger.info(f"MAX_USD_PER_ORDER check skipped for MARKET order {request.symbol} (price unavailable)")
+                allowed = True
+        
+        if not allowed:
+            # Send Telegram alert
+            try:
+                value_text = f"💵 Value: ${order_usd_value:.2f}\n" if order_usd_value else ""
+                telegram_notifier.send_message(
+                    f"🚫 <b>TRADE BLOCKED</b>\n\n"
+                    f"📊 Symbol: <b>{request.symbol}</b>\n"
+                    f"🔄 Side: {request.side.value}\n"
+                    f"📋 Type: {request.type.value}\n"
+                    f"{value_text}"
+                    f"🚫 <b>Reason:</b> {block_reason}",
+                    symbol=request.symbol,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
+            
+            raise HTTPException(status_code=400, detail=f"Order blocked by guardrails: {block_reason}")
+    finally:
+        db.close()
     
     try:
         if request.type == OrderType.MARKET:

@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.services.brokers.crypto_com_trade import trade_client
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+from app.utils.trading_guardrails import can_place_real_order
+from app.services.telegram_notifier import telegram_notifier
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +166,49 @@ def create_take_profit_order(
             f"  source={source}"
         )
         
+        # Check guardrails before placing TP order (ignore Trade Yes since this is for existing position)
+        if not dry_run:
+            order_usd_value = tp_execution_price * quantity
+            allowed, block_reason = can_place_real_order(
+                db=db,
+                symbol=symbol,
+                order_usd_value=order_usd_value,
+                side=tp_side,
+                ignore_trade_yes=True,  # SL/TP is for existing positions
+            )
+            if not allowed:
+                # Emit lifecycle event and send Telegram notification
+                try:
+                    from app.services.signal_monitor import _emit_lifecycle_event
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key="",  # Not available for SL/TP
+                        side=tp_side,
+                        price=tp_execution_price,
+                        event_type="SLTP_BLOCKED",
+                        event_reason=f"TP blocked: {block_reason}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit lifecycle event for blocked TP: {e}")
+                
+                # Send Telegram notification
+                try:
+                    telegram_notifier.send_message(
+                        f"🚫 <b>SL/TP BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔄 Type: TAKE PROFIT\n"
+                        f"💰 Price: ${tp_execution_price:.4f}\n"
+                        f"📦 Quantity: {quantity}\n\n"
+                        f"🚫 <b>Reason:</b> {block_reason}",
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram alert for blocked TP: {e}")
+                
+                logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} TP {tp_side} - {block_reason}")
+                return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
+        
         # Create TAKE_PROFIT_LIMIT order with trigger_price and price both equal to tp_price
         tp_order = trade_client.place_take_profit_order(
             symbol=symbol,
@@ -298,6 +343,49 @@ def create_stop_loss_order(
             f"  dry_run={dry_run}\n"
             f"  source={source}"
         )
+        
+        # Check guardrails before placing SL order (ignore Trade Yes since this is for existing position)
+        if not dry_run:
+            order_usd_value = sl_price * quantity
+            allowed, block_reason = can_place_real_order(
+                db=db,
+                symbol=symbol,
+                order_usd_value=order_usd_value,
+                side=sl_side,
+                ignore_trade_yes=True,  # SL/TP is for existing positions
+            )
+            if not allowed:
+                # Emit lifecycle event and send Telegram notification
+                try:
+                    from app.services.signal_monitor import _emit_lifecycle_event
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key="",  # Not available for SL/TP
+                        side=sl_side,
+                        price=sl_price,
+                        event_type="SLTP_BLOCKED",
+                        event_reason=f"SL blocked: {block_reason}",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit lifecycle event for blocked SL: {e}")
+                
+                # Send Telegram notification
+                try:
+                    telegram_notifier.send_message(
+                        f"🚫 <b>SL/TP BLOCKED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔄 Type: STOP LOSS\n"
+                        f"💰 Price: ${sl_price:.4f}\n"
+                        f"📦 Quantity: {quantity}\n\n"
+                        f"🚫 <b>Reason:</b> {block_reason}",
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram alert for blocked SL: {e}")
+                
+                logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} SL {sl_side} - {block_reason}")
+                return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
         
         sl_order = trade_client.place_stop_loss_order(
             symbol=symbol,

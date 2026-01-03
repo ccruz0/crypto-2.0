@@ -19,6 +19,7 @@ from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import is_aws_runtime
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.sql import func
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
@@ -883,7 +884,8 @@ def setup_bot_commands():
             {"command": "create_sl", "description": "Crear solo SL para una posición"},
             {"command": "create_tp", "description": "Crear solo TP para una posición"},
             {"command": "skip_sl_tp_reminder", "description": "No preguntar más sobre SL/TP"},
-            {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"}
+            {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"},
+            {"command": "kill", "description": "🛑 Kill switch: on/off/status - Global trading kill switch"}
         ]
         
         payload = {
@@ -3375,6 +3377,131 @@ def handle_panic_command(chat_id: str, text: str, db: Session = None) -> bool:
         return send_command_response(chat_id, f"❌ Error executing panic command: {str(e)}")
 
 
+def handle_kill_command(chat_id: str, text: str, db: Session = None) -> bool:
+    """Handle /kill command - Control global trading kill switch
+    
+    Commands:
+    - /kill on     -> Enable kill switch (disable all trading)
+    - /kill off    -> Disable kill switch (allow trading if other conditions met)
+    - /kill status -> Show current status of Live toggle and Kill switch
+    """
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        from app.models.trading_settings import TradingSettings
+        from app.utils.live_trading import get_live_trading_status
+        from app.utils.trading_guardrails import _get_telegram_kill_switch_status
+        from sqlalchemy.sql import func
+        
+        # Parse command
+        parts = text.strip().split()
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        
+        if action == "on":
+            # Set kill switch ON (disable trading)
+            try:
+                db.rollback()  # Start fresh
+                setting = db.query(TradingSettings).filter(
+                    TradingSettings.setting_key == "TRADING_KILL_SWITCH"
+                ).first()
+                
+                if setting:
+                    setting.setting_value = "true"
+                    setting.updated_at = func.now()
+                else:
+                    setting = TradingSettings(
+                        setting_key="TRADING_KILL_SWITCH",
+                        setting_value="true",
+                        description="Global Telegram kill switch to disable all trading"
+                    )
+                    db.add(setting)
+                
+                db.commit()
+                logger.warning(f"[TG][KILL] Kill switch enabled by chat_id={chat_id}")
+                
+                message = "🔴 <b>KILL SWITCH ACTIVATED</b>\n\n"
+                message += "⛔ <b>ALL TRADING DISABLED</b>\n\n"
+                message += "⚠️ No orders will be placed until kill switch is turned OFF.\n"
+                message += "💡 Use /kill off to re-enable trading."
+                
+                return send_command_response(chat_id, message)
+            except Exception as e:
+                logger.error(f"[TG][ERROR] Failed to enable kill switch: {e}", exc_info=True)
+                db.rollback()
+                return send_command_response(chat_id, f"❌ Error enabling kill switch: {str(e)}")
+        
+        elif action == "off":
+            # Set kill switch OFF (allow trading if other conditions met)
+            try:
+                db.rollback()  # Start fresh
+                setting = db.query(TradingSettings).filter(
+                    TradingSettings.setting_key == "TRADING_KILL_SWITCH"
+                ).first()
+                
+                if setting:
+                    setting.setting_value = "false"
+                    setting.updated_at = func.now()
+                    db.commit()
+                else:
+                    # Setting doesn't exist, which means kill switch is OFF (default)
+                    db.rollback()
+                
+                logger.info(f"[TG][KILL] Kill switch disabled by chat_id={chat_id}")
+                
+                message = "🟢 <b>KILL SWITCH DEACTIVATED</b>\n\n"
+                message += "✅ Trading is now allowed (subject to other conditions).\n"
+                message += "💡 Use /kill status to check current status."
+                
+                return send_command_response(chat_id, message)
+            except Exception as e:
+                logger.error(f"[TG][ERROR] Failed to disable kill switch: {e}", exc_info=True)
+                db.rollback()
+                return send_command_response(chat_id, f"❌ Error disabling kill switch: {str(e)}")
+        
+        elif action == "status":
+            # Show current status
+            try:
+                live_enabled = get_live_trading_status(db)
+                kill_switch_on = _get_telegram_kill_switch_status(db)
+                
+                message = "📊 <b>TRADING STATUS</b>\n\n"
+                message += f"🔴 Live Toggle: <b>{'ON' if live_enabled else 'OFF'}</b>\n"
+                message += f"🛑 Kill Switch: <b>{'ON' if kill_switch_on else 'OFF'}</b>\n\n"
+                
+                if kill_switch_on:
+                    message += "⛔ <b>TRADING IS DISABLED</b> (Kill switch is ON)\n"
+                elif not live_enabled:
+                    message += "⛔ <b>TRADING IS DISABLED</b> (Live toggle is OFF)\n"
+                else:
+                    message += "✅ Trading is enabled (subject to Trade Yes per symbol)\n"
+                
+                message += "\n💡 Commands:\n"
+                message += "  /kill on    - Enable kill switch\n"
+                message += "  /kill off   - Disable kill switch\n"
+                message += "  /kill status - Show this status"
+                
+                return send_command_response(chat_id, message)
+            except Exception as e:
+                logger.error(f"[TG][ERROR] Failed to get kill switch status: {e}", exc_info=True)
+                return send_command_response(chat_id, f"❌ Error getting status: {str(e)}")
+        
+        else:
+            # Invalid action
+            message = "❓ <b>Invalid /kill command</b>\n\n"
+            message += "Usage:\n"
+            message += "  /kill on     - Enable kill switch\n"
+            message += "  /kill off    - Disable kill switch\n"
+            message += "  /kill status - Show current status"
+            return send_command_response(chat_id, message)
+            
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to execute kill command: {e}", exc_info=True)
+        if db:
+            db.rollback()
+        return send_command_response(chat_id, f"❌ Error executing kill command: {str(e)}")
+
+
 def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
@@ -3895,6 +4022,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         handle_skip_sl_tp_reminder_command(chat_id, text, db)
     elif text.startswith("/panic"):
         handle_panic_command(chat_id, text, db)
+    elif text.startswith("/kill"):
+        handle_kill_command(chat_id, text, db)
     elif text.startswith("/"):
         send_command_response(chat_id, "❓ Unknown command. Use /help")
 
