@@ -48,3 +48,5 @@ If build context is wrong (`context: ./backend`), you'll see:
 
 The Dockerfile includes build-time assertions that will fail if scripts are missing, but only if the COPY command actually runs. If the build context doesn't include the scripts directory, the COPY will fail the build, which is the desired behavior.
 
+
+

@@ -281,3 +281,5 @@ def test_reset_both_sides(db: Session):
     assert buy_state.last_price == 105.0
     assert sell_state.last_price == 105.0
 
+
+

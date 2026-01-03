@@ -79,6 +79,9 @@ class CryptoComTradeClient:
         self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
         self.crypto_auth_diag = os.getenv("CRYPTO_AUTH_DIAG", "false").lower() == "true"
         
+        # In-memory cache for instrument metadata (per run)
+        self._instrument_cache: Dict[str, dict] = {}
+        
         # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
         if self.crypto_auth_diag:
             logger.info("[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED (SAFE) ===")
@@ -1298,6 +1301,49 @@ class CryptoComTradeClient:
         else:
             raise ValueError(f"Invalid side: {side}. Must be 'BUY' or 'SELL'")
         
+        # Check verification mode BEFORE dry_run check (for SELL orders, need to normalize first)
+        verify_mode = os.getenv("VERIFY_ORDER_FORMAT", "0") == "1"
+        if verify_mode and side_upper == "SELL":
+            # For verification mode on SELL orders, we need instrument metadata
+            inst_meta = self._get_instrument_metadata(symbol)
+            if inst_meta:
+                quantity_decimals = inst_meta["quantity_decimals"]
+                qty_tick_size = inst_meta["qty_tick_size"]
+                min_quantity = inst_meta.get("min_quantity", "0.001")
+            else:
+                quantity_decimals = 2
+                qty_tick_size = "0.01"
+                min_quantity = "0.001"
+            
+            raw_quantity = float(qty)
+            normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
+            
+            logger.info("=" * 80)
+            logger.info(f"[VERIFY_ORDER_FORMAT] VERIFICATION MODE - Order will NOT be placed")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Symbol: {symbol}")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Side: {side_upper}")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Order Type: MARKET")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Raw Quantity: {raw_quantity}")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Instrument Rules:")
+            logger.info(f"  - quantity_decimals: {quantity_decimals}")
+            logger.info(f"  - qty_tick_size: {qty_tick_size}")
+            logger.info(f"  - min_quantity: {min_quantity}")
+            logger.info(f"[VERIFY_ORDER_FORMAT] Normalized Quantity: {normalized_qty_str}")
+            logger.info("=" * 80)
+            return {
+                "verify_mode": True,
+                "symbol": symbol,
+                "side": side_upper,
+                "type": "MARKET",
+                "raw_quantity": raw_quantity,
+                "normalized_quantity": normalized_qty_str,
+                "instrument_rules": {
+                    "quantity_decimals": quantity_decimals,
+                    "qty_tick_size": qty_tick_size,
+                    "min_quantity": min_quantity,
+                }
+            }
+        
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_market_order - {symbol} {side_upper} {order_type}={order_amount}")
             return {
@@ -1336,86 +1382,53 @@ class CryptoComTradeClient:
                 notional_str = f"{float(notional):.2f}" if float(notional) >= 1 else f"{float(notional):.4f}"
                 params["notional"] = notional_str
         else:  # SELL
-            # CRITICAL: Format quantity immediately to prevent "Invalid quantity format" errors
-            # The exchange requires specific decimal precision per symbol
-            import decimal
-            
-            # Convert to Decimal immediately to preserve precision
-            qty_decimal = decimal.Decimal(str(qty))
-            
-            # Get instrument info to determine exact quantity precision required
-            quantity_decimals = 2
-            qty_tick_size = 0.01
-            got_instrument_info = False
-            
-            try:
-                import requests as req
-                inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-                # Increased timeout to 10 seconds to avoid timeout issues
-                inst_response = req.get(inst_url, timeout=10)
-                if inst_response.status_code == 200:
-                    inst_data = inst_response.json()
-                    if "result" in inst_data and "instruments" in inst_data["result"]:
-                        for inst in inst_data["result"]["instruments"]:
-                            inst_name = inst.get("instrument_name", "") or inst.get("symbol", "")
-                            if inst_name.upper() == symbol.upper():
-                                quantity_decimals = inst.get("quantity_decimals", 2)
-                                qty_tick_size_str = inst.get("qty_tick_size", "0.01")
-                                try:
-                                    qty_tick_size = float(qty_tick_size_str)
-                                except:
-                                    qty_tick_size = 10 ** -quantity_decimals if quantity_decimals else 0.01
-                                got_instrument_info = True
-                                logger.info(f"✅ Got instrument info for MARKET SELL {symbol}: quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size}")
-                                break
-            except Exception as e:
-                logger.warning(f"⚠️ Could not fetch instrument info for MARKET SELL {symbol}: {e}. Using fallback precision.")
-            
-            # Format quantity with instrument-specific precision
-            if got_instrument_info and qty_tick_size:
-                # Round to nearest tick size (round DOWN to avoid exceeding balance)
-                tick_decimal = decimal.Decimal(str(qty_tick_size))
-                # CRITICAL FIX: Use the original qty_decimal, not divide by itself
-                qty_decimal_rounded = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
-                # Format with exact precision required - DO NOT strip trailing zeros
-                # The exchange requires exactly quantity_decimals decimal places
-                qty_str = f"{qty_decimal_rounded:.{quantity_decimals}f}"
-                logger.info(f"✅ Formatted quantity for MARKET SELL {symbol}: {qty} -> {qty_str} (quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size})")
+            # Get instrument metadata for debug logging
+            inst_meta = self._get_instrument_metadata(symbol)
+            if inst_meta:
+                quantity_decimals = inst_meta["quantity_decimals"]
+                qty_tick_size = inst_meta["qty_tick_size"]
+                min_quantity = inst_meta.get("min_quantity", "0.001")
             else:
-                # Fallback: Use conservative precision to avoid "Invalid quantity format" errors
-                # FIX: Based on ETH_USDT error, use max 4 decimals for quantities between 0.001 and 1
-                # Most exchanges require 2 decimals for quantities >= 1
-
-                # DEBUG: Log the exact qty value and type for troubleshooting
-                logger.info(f"🔍 [QUANTITY_DEBUG] Fallback formatting for {symbol}: qty={qty} (type: {type(qty).__name__}), qty >= 1: {qty >= 1}, qty >= 0.001: {qty >= 0.001}")
-
-                if qty >= 1:
-                    # For quantities >= 1, use 2 decimals (most common requirement)
-                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal_rounded:.2f}"
-                elif qty >= 0.001:
-                    # For quantities between 0.001 and 1, use 4 decimals max (works for ETH_USDT and BTC_USDT)
-                    # CRITICAL FIX: Round DOWN to avoid "Invalid quantity format" error for ETH_USDT
-                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.0001'), rounding=decimal.ROUND_DOWN)
-                    qty_str = f"{qty_decimal_rounded:.4f}"
-                    logger.info(f"🔧 [QUANTITY_FIX] ETH_USDT style formatting: {qty} -> {qty_str} (4 decimals, rounded down)")
-                else:
-                    # For quantities < 0.001, use 8 decimals but round down
-                    # CRITICAL: Don't strip trailing zeros - exchange may require exact format
-                    qty_decimal_rounded = qty_decimal.quantize(decimal.Decimal('0.00000001'), rounding=decimal.ROUND_DOWN)
-                    # Format with 8 decimals and keep trailing zeros (exchange may require them)
-                    qty_str = f"{qty_decimal_rounded:.8f}"
-                logger.warning(f"⚠️ Using fallback precision for MARKET SELL {symbol}: {qty} -> {qty_str} (instrument info not available)")
+                quantity_decimals = 2
+                qty_tick_size = "0.01"
+                min_quantity = "0.001"
             
-            # CRITICAL: Store as string to prevent any float conversion
-            params["quantity"] = str(qty_str)
-            logger.info(f"🔍 [QUANTITY_FORMAT] Final quantity string for {symbol}: '{params['quantity']}' (type: {type(params['quantity']).__name__})")
-            logger.info(f"🔍 [QUANTITY_FORMAT] Original qty={qty}, Formatted qty_str='{qty_str}', params['quantity']='{params['quantity']}'")
+            # Normalize quantity using shared helper
+            raw_quantity = float(qty)
+            normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
             
-            # Double-check: Ensure it's a string, not a float
-            if not isinstance(params["quantity"], str):
-                logger.error(f"❌ [QUANTITY_FORMAT] ERROR: params['quantity'] is not a string! Type: {type(params['quantity']).__name__}, Value: {params['quantity']}")
-                params["quantity"] = str(qty_str)  # Force conversion
+            # Check if normalized quantity is valid
+            if normalized_qty_str is None:
+                error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
+                logger.error(f"❌ {error_msg}")
+                # Send Telegram alert if possible (non-blocking)
+                try:
+                    from app.services.telegram_service import send_telegram_message
+                    send_telegram_message(f"⚠️ Order failed: {error_msg}")
+                except Exception:
+                    pass  # Non-blocking
+                return {
+                    "error": error_msg,
+                    "status": "FAILED",
+                    "reason": "quantity_below_min"
+                }
+            
+            # Deterministic debug logs (before sending order)
+            logger.info("=" * 80)
+            logger.info(f"[ORDER_PLACEMENT] Preparing MARKET SELL order")
+            logger.info(f"  Symbol: {symbol}")
+            logger.info(f"  Side: {side_upper}")
+            logger.info(f"  Order Type: MARKET")
+            logger.info(f"  Raw Quantity: {raw_quantity}")
+            logger.info(f"  Final Quantity: {normalized_qty_str}")
+            logger.info(f"  Instrument Rules:")
+            logger.info(f"    - quantity_decimals: {quantity_decimals}")
+            logger.info(f"    - qty_tick_size: {qty_tick_size}")
+            logger.info(f"    - min_quantity: {min_quantity}")
+            logger.info("=" * 80)
+            
+            # Store normalized quantity as string
+            params["quantity"] = normalized_qty_str
         
         # MARGIN TRADING: Include leverage parameter when is_margin = True
         # Crypto.com Exchange API: The presence of 'leverage' parameter makes the order a margin order
@@ -1855,49 +1868,73 @@ class CryptoComTradeClient:
         # Build params according to Crypto.com Exchange API v1 documentation
         # Required params: instrument_name, side, type, price (for LIMIT), quantity
         # Optional but recommended: time_in_force (defaults to GOOD_TILL_CANCEL for LIMIT)
-        # Format price and quantity to match existing orders format
-        # Based on documentation and testing, use sufficient precision
-        # For high prices (>= 100): use 2-4 decimal places
-        # For medium prices (>= 1): use 4-6 decimal places
-        # For small prices (< 1): use 8 decimal places
-        # Keep decimal precision but remove unnecessary trailing zeros for readability
+        # Format price and quantity according to documented logic (docs/trading/crypto_com_order_formatting.md)
+        
+        # Format price - keep existing logic for now (price formatting is separate from quantity)
         if price >= 100:
-            # For ETH/BTC prices: use 2 decimal places minimum (e.g., "3857.76")
             price_str = f"{price:.2f}" if price % 1 == 0 else f"{price:.4f}".rstrip('0').rstrip('.')
         elif price >= 1:
             price_str = f"{price:.4f}".rstrip('0').rstrip('.')
         else:
             price_str = f"{price:.8f}".rstrip('0').rstrip('.')
         
-        # For quantity: use sufficient precision
-        # Small quantities (< 1) may need 8 decimals for accuracy
-        if qty >= 1:
-            qty_str = f"{qty:.3f}".rstrip('0').rstrip('.')
+        # Normalize quantity using shared helper (per documented logic)
+        raw_quantity = float(qty)
+        normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
+        
+        # Fail-safe: block order if normalization failed
+        if normalized_qty_str is None:
+            inst_meta = self._get_instrument_metadata(symbol)
+            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
+            logger.error(f"❌ [LIMIT_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_service import send_telegram_message
+                send_telegram_message(f"⚠️ LIMIT order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "quantity_below_min"
+            }
+        
+        # Get instrument metadata for debug logging
+        inst_meta = self._get_instrument_metadata(symbol)
+        if inst_meta:
+            quantity_decimals = inst_meta["quantity_decimals"]
+            qty_tick_size = inst_meta["qty_tick_size"]
+            min_quantity = inst_meta.get("min_quantity", "0.001")
         else:
-            # For small quantities, use 8 decimals but remove trailing zeros
-            qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
-            # Ensure at least 2 significant decimals for very small values
-            if '.' in qty_str and len(qty_str.split('.')[1]) < 2:
-                qty_str = f"{qty:.8f}"
+            quantity_decimals = 2
+            qty_tick_size = "0.01"
+            min_quantity = "0.001"
+        
+        # Deterministic debug logs (before sending order)
+        logger.info("=" * 80)
+        logger.info(f"[ORDER_PLACEMENT] Preparing LIMIT order")
+        logger.info(f"  Symbol: {symbol}")
+        logger.info(f"  Side: {side.upper()}")
+        logger.info(f"  Order Type: LIMIT")
+        logger.info(f"  Price: {price} -> {price_str}")
+        logger.info(f"  Raw Quantity: {raw_quantity}")
+        logger.info(f"  Final Quantity: {normalized_qty_str}")
+        logger.info(f"  Instrument Rules:")
+        logger.info(f"    - quantity_decimals: {quantity_decimals}")
+        logger.info(f"    - qty_tick_size: {qty_tick_size}")
+        logger.info(f"    - min_quantity: {min_quantity}")
+        logger.info("=" * 80)
         
         # Build params according to Crypto.com Exchange API v1 documentation
-        # Required params: instrument_name, side, type, price (for LIMIT), quantity
-        # Optional: time_in_force, client_oid, exec_inst
-        # Add client_oid as shown in documentation example (may help with validation)
-        # uuid is now imported at the top of the file
         client_oid = str(uuid.uuid4())
-        
-        # Build params exactly as per documentation example that works
-        # Key finding: side must be 'BUY'/'SELL' in UPPERCASE, not lowercase
-        # Also include time_in_force for LIMIT orders (required for proper validation)
         params = {
             "instrument_name": symbol,
-            "side": side.upper(),  # Use UPPERCASE as per documentation example (verified to work)
+            "side": side.upper(),
             "type": "LIMIT",
-            "price": price_str,  # Formatted to match existing orders
-            "quantity": qty_str,  # Formatted to match existing orders
-            "client_oid": client_oid,  # Add client_oid as per documentation example
-            "time_in_force": "GOOD_TILL_CANCEL"  # Required for LIMIT orders (verified to work)
+            "price": price_str,
+            "quantity": normalized_qty_str,  # Use normalized quantity
+            "client_oid": client_oid,
+            "time_in_force": "GOOD_TILL_CANCEL"
         }
         
         # MARGIN TRADING: Include leverage parameter when is_margin = True
@@ -2303,57 +2340,55 @@ class CryptoComTradeClient:
                 price_str = f"{price_decimal:.4f}"
                 logger.debug(f"Formatted price for STOP_LIMIT {symbol} with default precision (4 decimals, 0.0001 tick): {price} -> {price_str}")
         
-        # Format quantity according to Crypto.com API requirements for STOP_LIMIT
-        # Different instruments have different quantity_decimals (e.g., APT_USDT=2, DOGE_USDT=8)
-        # Try multiple precision levels automatically
-        import decimal
+        # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
+        raw_quantity = float(qty)
+        normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
         
-        # Common precision levels to try
-        # APT_USDT, most USDT pairs: 2 decimals (0.01 tick)
-        # DOGE_USDT, low-value coins: 8 decimals (0.00000001 tick)
-        # BTC_USDT, high-value coins: 6 decimals (0.000001 tick)
-        # Use Decimal for precision to avoid floating point issues
-        import decimal as dec
-        precision_levels = [
-            (2, dec.Decimal('0.01')),      # Most common: 2 decimals
-            (8, dec.Decimal('0.00000001')), # Low-value coins like DOGE
-            (6, dec.Decimal('0.000001')),   # High-value coins like BTC
-            (4, dec.Decimal('0.0001')),     # Medium precision
-            (3, dec.Decimal('0.001')),      # Some coins use 3 decimals
-            (1, dec.Decimal('0.1')),        # Some coins use 1 decimal
-            (0, dec.Decimal('1')),          # Whole numbers only
-        ]
+        # Fail-safe: block order if normalization failed
+        if normalized_qty_str is None:
+            inst_meta = self._get_instrument_metadata(symbol)
+            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
+            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_service import send_telegram_message
+                send_telegram_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "quantity_below_min"
+            }
         
-        # Use quantity_decimals and qty_tick_size already obtained from instrument info above
-        
-        # Format quantity - will try different precisions in the retry loop
-        qty_decimal = decimal.Decimal(str(qty))
-        
-        # If we got instrument info, use it directly
-        if got_instrument_info:
-            tick_decimal = decimal.Decimal(str(qty_tick_size))
-            qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-            qty_float = float(qty_decimal)
-            qty_str = f"{qty_float:.{quantity_decimals}f}"
-            logger.info(f"✅ Formatted quantity for STOP_LIMIT {symbol}: {qty} -> {qty_str} ({quantity_decimals} decimals)")
+        # Get instrument metadata for debug logging
+        inst_meta = self._get_instrument_metadata(symbol)
+        if inst_meta:
+            quantity_decimals = inst_meta["quantity_decimals"]
+            qty_tick_size = inst_meta["qty_tick_size"]
+            min_quantity = inst_meta.get("min_quantity", "0.001")
         else:
-            # Default: Try to preserve original precision, but use at least 4 decimals to avoid rounding errors
-            # For ETH with 0.0051, we need at least 4 decimals (0.0051), not 2 (which would round to 0.01)
-            # Calculate required decimals from the original quantity
-            qty_str_original = f"{qty:.10f}".rstrip('0').rstrip('.')
-            if '.' in qty_str_original:
-                decimals_needed = len(qty_str_original.split('.')[1])
-                # Use at least 4 decimals, but preserve original precision if higher
-                decimals_to_use = max(4, decimals_needed)
-            else:
-                decimals_to_use = 4
-            
-            # Use appropriate tick size based on decimals needed
-            tick_size = decimal.Decimal('0.1') ** decimals_to_use
-            qty_decimal = (qty_decimal / tick_size).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_size
-            qty_float = float(qty_decimal)
-            qty_str = f"{qty_float:.{decimals_to_use}f}"
-            logger.info(f"✅ Formatted quantity for STOP_LIMIT {symbol}: {qty} -> {qty_str} (preserving precision: {decimals_to_use} decimals, will try others if needed)")
+            quantity_decimals = 2
+            qty_tick_size = "0.01"
+            min_quantity = "0.001"
+        
+        # Deterministic debug logs (before sending order)
+        logger.info("=" * 80)
+        logger.info(f"[ORDER_PLACEMENT] Preparing STOP_LIMIT order")
+        logger.info(f"  Symbol: {symbol}")
+        logger.info(f"  Side: {side}")
+        logger.info(f"  Order Type: STOP_LIMIT")
+        logger.info(f"  Price: {price} -> {price_str}")
+        logger.info(f"  Trigger Price: {trigger_price}")
+        logger.info(f"  Raw Quantity: {raw_quantity}")
+        logger.info(f"  Final Quantity: {normalized_qty_str}")
+        logger.info(f"  Instrument Rules:")
+        logger.info(f"    - quantity_decimals: {quantity_decimals}")
+        logger.info(f"    - qty_tick_size: {qty_tick_size}")
+        logger.info(f"    - min_quantity: {min_quantity}")
+        logger.info("=" * 80)
+        
+        qty_str = normalized_qty_str
         
         # Format trigger_price with same precision as price
         trigger_decimal = decimal.Decimal(str(trigger_price))
@@ -3118,27 +3153,54 @@ class CryptoComTradeClient:
         else:
             price_str = f"{price:.8f}".rstrip('0').rstrip('.')
         
-        # Format quantity with instrument-specific precision
-        # IMPORTANT: Round DOWN to avoid exceeding available balance
-        qty_decimal = decimal.Decimal(str(qty))
+        # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
+        raw_quantity = float(qty)
+        normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
         
-        if got_instrument_info and qty_tick_size:
-            # Use instrument-specific tick size
-            tick_decimal = decimal.Decimal(str(qty_tick_size))
-            # Round DOWN (ROUND_FLOOR) to ensure we don't exceed available balance
-            qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR) * tick_decimal
-            # Format with exact decimals - DO NOT strip trailing zeros
-            # The exchange requires exactly quantity_decimals decimal places
-            qty_str = f"{qty_decimal:.{quantity_decimals}f}"
+        # Fail-safe: block order if normalization failed
+        if normalized_qty_str is None:
+            inst_meta = self._get_instrument_metadata(symbol)
+            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
+            logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_service import send_telegram_message
+                send_telegram_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "quantity_below_min"
+            }
+        
+        # Get instrument metadata for debug logging
+        inst_meta = self._get_instrument_metadata(symbol)
+        if inst_meta:
+            quantity_decimals = inst_meta["quantity_decimals"]
+            qty_tick_size = inst_meta["qty_tick_size"]
+            min_quantity = inst_meta.get("min_quantity", "0.001")
         else:
-            # Preserve original precision with at least 4 decimals
-            qty_str_original = f"{qty:.10f}".rstrip('0').rstrip('.')
-            if '.' in qty_str_original:
-                decimals_needed = len(qty_str_original.split('.')[1])
-                decimals_to_use = max(4, decimals_needed)
-            else:
-                decimals_to_use = 4
-            qty_str = f"{qty:.{decimals_to_use}f}"
+            quantity_decimals = 4
+            qty_tick_size = "0.0001"
+            min_quantity = "0.001"
+        
+        # Deterministic debug logs (before sending order)
+        logger.info("=" * 80)
+        logger.info(f"[ORDER_PLACEMENT] Preparing TAKE_PROFIT_LIMIT order")
+        logger.info(f"  Symbol: {symbol}")
+        logger.info(f"  Side: {side}")
+        logger.info(f"  Order Type: TAKE_PROFIT_LIMIT")
+        logger.info(f"  Price: {price} -> {price_str}")
+        logger.info(f"  Raw Quantity: {raw_quantity}")
+        logger.info(f"  Final Quantity: {normalized_qty_str}")
+        logger.info(f"  Instrument Rules:")
+        logger.info(f"    - quantity_decimals: {quantity_decimals}")
+        logger.info(f"    - qty_tick_size: {qty_tick_size}")
+        logger.info(f"    - min_quantity: {min_quantity}")
+        logger.info("=" * 80)
+        
+        qty_str = normalized_qty_str
         
         # Format trigger_price if provided (should be equal to price for TAKE_PROFIT_LIMIT)
         # IMPORTANT: For TAKE_PROFIT_LIMIT, trigger_price MUST equal price (TP Value)
@@ -3772,6 +3834,162 @@ class CryptoComTradeClient:
         # All variations failed
         logger.error(f"❌ All TAKE_PROFIT_LIMIT price/trigger format variations failed. Last error: {last_error}")
         return {"error": f"All format variations failed. Last error: {last_error}"}
+    
+    def _get_instrument_metadata(self, symbol: str) -> Optional[dict]:
+        """
+        Get instrument metadata for a symbol from Crypto.com Exchange API.
+        Caches results in-memory for the run to avoid repeated API calls.
+        
+        Returns dict with keys:
+        - quantity_decimals: int
+        - qty_tick_size: str (e.g., "0.1")
+        - min_quantity: str (optional)
+        - price_decimals: int
+        - price_tick_size: str
+        Returns None if instrument not found or API call fails.
+        """
+        symbol_upper = symbol.upper()
+        
+        # Check cache first
+        if symbol_upper in self._instrument_cache:
+            return self._instrument_cache[symbol_upper]
+        
+        try:
+            public_url = f"{REST_BASE}/public/get-instruments"
+            response = http_get(public_url, timeout=10, calling_module="crypto_com_trade._get_instrument_metadata")
+            response.raise_for_status()
+            result = response.json()
+            
+            if "result" in result:
+                # Crypto.com API v1 uses "data" field (not "instruments")
+                instruments = result["result"].get("data", result["result"].get("instruments", []))
+                for inst in instruments:
+                    # Crypto.com API uses "symbol" field
+                    inst_name = inst.get("symbol", "") or inst.get("instrument_name", "")
+                    if inst_name.upper() == symbol_upper:
+                        # Extract and preserve as strings (NO float conversion - per Rule 1)
+                        qty_tick_size_raw = inst.get("qty_tick_size")
+                        min_quantity_raw = inst.get("min_quantity")
+                        price_tick_size_raw = inst.get("price_tick_size")
+                        
+                        # VALIDATION: Ensure qty_tick_size exists and is valid
+                        if not qty_tick_size_raw or qty_tick_size_raw == "":
+                            logger.error(f"❌ Missing qty_tick_size for {symbol_upper} in instrument data")
+                            self._instrument_cache[symbol_upper] = None
+                            return None
+                        
+                        metadata = {
+                            "quantity_decimals": inst.get("quantity_decimals", 2),
+                            "qty_tick_size": str(qty_tick_size_raw),  # Keep as string (no float conversion)
+                            "min_quantity": str(min_quantity_raw) if min_quantity_raw is not None else "0.001",  # Keep as string
+                            "price_decimals": inst.get("price_decimals", 2),
+                            "price_tick_size": str(price_tick_size_raw) if price_tick_size_raw is not None else "0.0001",  # Keep as string
+                        }
+                        
+                        # Log full raw instrument entry for validation
+                        logger.info(f"✅ [INSTRUMENT_METADATA] Fetched for {symbol_upper}:")
+                        logger.info(f"   Full raw API entry: {json.dumps(inst, indent=2)}")
+                        logger.info(f"   Parsed metadata: qty_tick_size='{metadata['qty_tick_size']}' (type: str), quantity_decimals={metadata['quantity_decimals']}, min_quantity='{metadata['min_quantity']}'")
+                        
+                        # Cache it
+                        self._instrument_cache[symbol_upper] = metadata
+                        return metadata
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch instrument metadata for {symbol_upper}: {e}")
+        
+        # Not found - cache None to avoid repeated failed lookups
+        self._instrument_cache[symbol_upper] = None
+        return None
+    
+    def normalize_quantity(self, symbol: str, raw_quantity: float) -> Optional[str]:
+        """
+        Normalize quantity according to Crypto.com Exchange instrument rules.
+        
+        REFERENCE: See docs/trading/crypto_com_order_formatting.md for documented decimal/step-size logic.
+        This function implements Rule 2 (Quantize to step_size), Rule 3 (Round DOWN), and Rule 4 (String output).
+        
+        Rules:
+        - Round DOWN to the allowed step size (qty_tick_size) - per Rule 3 (all quantities use ROUND_DOWN)
+        - Format to exact quantity_decimals decimal places - per Rule 4 (exact decimals, no scientific notation)
+        - Ensure quantity >= min_quantity (returns None if below)
+        - Returns quantity as string (never float, never scientific notation)
+        
+        FAIL-SAFE: If instrument rules cannot be loaded, returns None to block order placement.
+        This prevents "Invalid quantity format (code: 213)" errors when rules are unavailable.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "NEAR_USDT")
+            raw_quantity: Raw quantity value (float)
+        
+        Returns:
+            Normalized quantity as string, or None if:
+            - Below min_quantity after normalization
+            - Instrument rules unavailable (fail-safe behavior)
+        """
+        import decimal
+        
+        # Get instrument metadata (FAIL-SAFE: must succeed, no fallbacks)
+        inst_meta = self._get_instrument_metadata(symbol)
+        
+        if not inst_meta:
+            # FAIL-SAFE: Instrument rules unavailable - block order to prevent code 213
+            logger.error(f"❌ Instrument rules unavailable for {symbol} - blocking order to prevent 'Invalid quantity format (code: 213)'")
+            try:
+                from app.services.telegram_service import send_telegram_message
+                send_telegram_message(f"⚠️ Order blocked for {symbol}: Instrument rules unavailable; order blocked to prevent code 213.")
+            except Exception:
+                pass  # Non-blocking
+            return None
+        
+        quantity_decimals = inst_meta["quantity_decimals"]
+        qty_tick_size_str = inst_meta["qty_tick_size"]
+        min_quantity_str = inst_meta.get("min_quantity", "0.001")
+        
+        # VALIDATION: Ensure step_size is valid (not missing or zero)
+        if not qty_tick_size_str or qty_tick_size_str == "0" or qty_tick_size_str == "":
+            logger.error(f"❌ Invalid qty_tick_size for {symbol}: '{qty_tick_size_str}' - blocking order")
+            try:
+                from app.services.telegram_service import send_telegram_message
+                send_telegram_message(f"⚠️ Order blocked for {symbol}: Invalid qty_tick_size ({qty_tick_size_str}); order blocked to prevent code 213.")
+            except Exception:
+                pass
+            return None
+        
+        # Convert to Decimal for precise arithmetic (NO float conversion)
+        qty_decimal = decimal.Decimal(str(raw_quantity))
+        tick_decimal = decimal.Decimal(str(qty_tick_size_str))  # Keep as string → Decimal (no float)
+        min_qty_decimal = decimal.Decimal(str(min_quantity_str))
+        
+        # Log detailed normalization math for validation
+        logger.debug(f"[NORMALIZE_QUANTITY] {symbol}: raw_qty={raw_quantity}, step_size={qty_tick_size_str} (type: {type(qty_tick_size_str).__name__}), quantity_decimals={quantity_decimals}")
+        logger.debug(f"[NORMALIZE_QUANTITY] {symbol}: qty_decimal={qty_decimal}, tick_decimal={tick_decimal}, min_qty_decimal={min_qty_decimal}")
+        
+        # Round DOWN to nearest tick size (per Rule 2 and Rule 3 from docs/trading/crypto_com_order_formatting.md)
+        # Formula: floor(qty / tick_size) * tick_size
+        division_result = qty_decimal / tick_decimal
+        floored_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR)
+        qty_normalized = floored_result * tick_decimal
+        
+        logger.debug(f"[NORMALIZE_QUANTITY] {symbol}: raw_qty/step_size={division_result}, floored={floored_result}, normalized={qty_normalized}")
+        
+        # WARNING: Check for suspiciously large step_size (e.g., >= 0.1 for assets that usually allow more precision)
+        tick_decimal_val = float(qty_tick_size_str)  # Only for comparison, not for calculation
+        if tick_decimal_val >= 0.1:
+            logger.warning(f"⚠️ [NORMALIZE_QUANTITY] {symbol} has large step_size={qty_tick_size_str} (quantity_decimals={quantity_decimals}) - this may limit precision")
+        
+        # Check minimum quantity
+        if qty_normalized < min_qty_decimal:
+            logger.warning(
+                f"⚠️ Normalized quantity {qty_normalized} for {symbol} is below min_quantity {min_qty_decimal}. "
+                f"Raw quantity was {raw_quantity}"
+            )
+            return None
+        
+        # Format to exact decimal places required by exchange
+        # Use format() to avoid scientific notation
+        qty_str = format(qty_normalized, f'.{quantity_decimals}f')
+        
+        return qty_str
     
     def get_instruments(self) -> list:
         """Get list of available trading instruments (public endpoint)"""

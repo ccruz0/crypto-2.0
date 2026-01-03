@@ -5,9 +5,14 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError
 
 from app.database import Base
 from app.models.exchange_balance import ExchangeBalance
+# Import models to ensure they're registered with Base.metadata before table creation
+from app.models.exchange_order import ExchangeOrder
+from app.models.telegram_message import TelegramMessage
+from app.models.signal_throttle import SignalThrottleState
 from app.services.exchange_sync import ExchangeSyncService
 
 
@@ -16,7 +21,24 @@ def db_session():
     """Provide an isolated in-memory database session for each test."""
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
+    
+    # Create tables manually, skipping indexes to avoid conflicts
+    # Create each table individually to handle errors gracefully
+    for table in Base.metadata.tables.values():
+        try:
+            table.create(bind=engine, checkfirst=True)
+        except OperationalError as e:
+            if "already exists" not in str(e).lower():
+                raise
+    
+    # Create indexes separately, ignoring "already exists" errors
+    for table in Base.metadata.tables.values():
+        for index in table.indexes:
+            try:
+                index.create(bind=engine)
+            except OperationalError as e:
+                if "already exists" not in str(e).lower():
+                    raise
 
     session = TestingSessionLocal()
     try:

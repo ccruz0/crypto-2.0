@@ -48,6 +48,68 @@ class ExchangeSyncService:
         if stale_ids:
             logger.debug(f"Purged {len(stale_ids)} stale processed order IDs")
     
+    def _resolve_order_status_from_exchange(self, order_id: str, order_created_at: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Resolve order status from exchange by querying order history.
+        
+        Args:
+            order_id: Exchange order ID to look up
+            order_created_at: Optional order creation time to limit search window
+            
+        Returns:
+            Dict with 'status', 'cumulative_quantity', 'price', 'quantity' if found, None otherwise
+        """
+        try:
+            # Calculate time window: last 24 hours or since order creation (whichever is more recent)
+            from datetime import timedelta
+            end_time_ms = int(time.time() * 1000)
+            
+            if order_created_at:
+                # Search from order creation time to now (with 1 hour buffer before creation)
+                start_time = order_created_at - timedelta(hours=1)
+                start_time_ms = int(start_time.timestamp() * 1000)
+            else:
+                # Default: last 24 hours
+                start_time_ms = int((datetime.now(timezone.utc) - timedelta(hours=24)).timestamp() * 1000)
+            
+            # Query order history (first page should be enough for recent orders)
+            response = trade_client.get_order_history(
+                page_size=200,
+                page=0,
+                start_time=start_time_ms,
+                end_time=end_time_ms
+            )
+            
+            if not response or 'data' not in response:
+                logger.debug(f"Order history query failed for {order_id}")
+                return None
+            
+            orders = response.get('data', [])
+            
+            # Search for the specific order_id
+            for order_data in orders:
+                if str(order_data.get('order_id', '')) == order_id:
+                    status_str = order_data.get('status', '').upper()
+                    cumulative_qty = float(order_data.get('cumulative_quantity', 0) or 0)
+                    price = order_data.get('limit_price') or order_data.get('price') or order_data.get('avg_price')
+                    quantity = float(order_data.get('quantity', 0) or 0)
+                    
+                    logger.info(f"Found order {order_id} in exchange history: status={status_str}, cumulative_qty={cumulative_qty}")
+                    
+                    return {
+                        'status': status_str,
+                        'cumulative_quantity': cumulative_qty,
+                        'price': float(price) if price else None,
+                        'quantity': quantity
+                    }
+            
+            logger.debug(f"Order {order_id} not found in exchange order history (searched last 24h)")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error resolving order status from exchange for {order_id}: {e}", exc_info=True)
+            return None
+    
     def _mark_order_processed(self, order_id: str):
         """Mark an order as processed with current timestamp"""
         self.processed_order_ids[order_id] = time.time()
@@ -306,50 +368,103 @@ class ExchangeSyncService:
                     ).first()
                     
                     if not filled_order:
-                        # For MARKET orders, check if they were immediately filled by looking at order history
-                        # MARKET orders typically execute immediately and may not appear in open_orders
-                        if order.order_type == "MARKET":
-                            # Don't mark MARKET orders as CANCELLED immediately - let order history sync determine status
-                            logger.debug(f"MARKET order {order.exchange_order_id} ({order.symbol}) not in open orders - will check history on next sync")
+                        # CRITICAL FIX: Resolve real final status from exchange before marking as canceled
+                        # "Order not found in Open Orders" ≠ "Order canceled" - order may have been FILLED
+                        order_info = self._resolve_order_status_from_exchange(
+                            order.exchange_order_id,
+                            order.exchange_create_time or order.created_at
+                        )
+                        
+                        if order_info:
+                            # Order found in exchange history - use confirmed status
+                            resolved_status = order_info['status']
+                            old_status = order.status
+                            
+                            if resolved_status == 'FILLED':
+                                # Order was FILLED - update status and emit ORDER_EXECUTED
+                                order.status = OrderStatusEnum.FILLED
+                                order.cumulative_quantity = order_info.get('cumulative_quantity', order.quantity)
+                                if order_info.get('price'):
+                                    order.avg_price = order_info['price']
+                                order.exchange_update_time = datetime.now(timezone.utc)
+                                logger.info(f"Order {order.exchange_order_id} ({order.symbol}) confirmed as FILLED via exchange history")
+                                
+                                # Emit ORDER_EXECUTED event
+                                if old_status != OrderStatusEnum.FILLED:
+                                    try:
+                                        from app.services.signal_monitor import _emit_lifecycle_event
+                                        from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                        from app.models.watchlist import WatchlistItem
+                                        
+                                        watchlist_item = db.query(WatchlistItem).filter(
+                                            WatchlistItem.symbol == order.symbol
+                                        ).first()
+                                        strategy_type, risk_approach = resolve_strategy_profile(
+                                            order.symbol, db, watchlist_item
+                                        )
+                                        strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                        
+                                        _emit_lifecycle_event(
+                                            db=db,
+                                            symbol=order.symbol,
+                                            strategy_key=strategy_key,
+                                            side=order.side.value if hasattr(order.side, 'value') else str(order.side),
+                                            price=order_info.get('price') or (float(order.price) if order.price else None),
+                                            event_type="ORDER_EXECUTED",
+                                            event_reason=f"order_id={order.exchange_order_id}, qty={order_info.get('cumulative_quantity', 0)}, status_source=order_history",
+                                            order_id=order.exchange_order_id,
+                                        )
+                                    except Exception as emit_err:
+                                        logger.warning(f"Failed to emit ORDER_EXECUTED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
+                                
+                                # Don't add to cancelled_orders - order was executed
+                                continue
+                                
+                            elif resolved_status in ('CANCELLED', 'EXPIRED', 'REJECTED'):
+                                # Order was canceled/expired/rejected - update status and emit ORDER_CANCELED
+                                order.status = OrderStatusEnum(resolved_status)
+                                order.exchange_update_time = datetime.now(timezone.utc)
+                                logger.info(f"Order {order.exchange_order_id} ({order.symbol}) confirmed as {resolved_status} via exchange history")
+                                
+                                # Emit ORDER_CANCELED event if status actually changed
+                                if old_status != OrderStatusEnum(resolved_status):
+                                    try:
+                                        from app.services.signal_monitor import _emit_lifecycle_event
+                                        from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                        from app.models.watchlist import WatchlistItem
+                                        
+                                        watchlist_item = db.query(WatchlistItem).filter(
+                                            WatchlistItem.symbol == order.symbol
+                                        ).first()
+                                        strategy_type, risk_approach = resolve_strategy_profile(
+                                            order.symbol, db, watchlist_item
+                                        )
+                                        strategy_key = build_strategy_key(strategy_type, risk_approach)
+                                        
+                                        _emit_lifecycle_event(
+                                            db=db,
+                                            symbol=order.symbol,
+                                            strategy_key=strategy_key,
+                                            side=order.side.value if hasattr(order.side, 'value') else str(order.side),
+                                            price=float(order.price) if order.price else None,
+                                            event_type="ORDER_CANCELED",
+                                            event_reason=f"order_id={order.exchange_order_id}, status={resolved_status}, status_source=order_history",
+                                            order_id=order.exchange_order_id,
+                                        )
+                                    except Exception as emit_err:
+                                        logger.warning(f"Failed to emit ORDER_CANCELED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
+                                
+                                cancelled_orders.append(order)
+                                continue
+                            else:
+                                # Status is NEW, ACTIVE, PARTIALLY_FILLED - order still pending, don't mark as canceled
+                                logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) status is {resolved_status} - still pending, not marking as canceled")
+                                continue
+                        else:
+                            # Order not found in exchange history - cannot determine status
+                            # Do NOT mark as canceled - leave it for next sync cycle
+                            logger.debug(f"Order {order.exchange_order_id} ({order.symbol}) not found in exchange history - status unknown, leaving for next sync")
                             continue
-                        
-                        # For LIMIT orders, mark as CANCELLED if not found in open orders or history
-                        # At this point, we've verified the order is not FILLED (checked above)
-                        old_status = order.status
-                        order.status = OrderStatusEnum.CANCELLED
-                        order.exchange_update_time = datetime.now(timezone.utc)
-                        logger.info(f"Order {order.exchange_order_id} ({order.symbol}) marked as CANCELLED - not found in open orders and not FILLED")
-                        
-                        # Emit ORDER_CANCELED event if status actually changed
-                        if old_status != OrderStatusEnum.CANCELLED:
-                            try:
-                                from app.services.signal_monitor import _emit_lifecycle_event
-                                from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
-                                from app.models.watchlist import WatchlistItem
-                                
-                                # Resolve strategy for event emission
-                                watchlist_item = db.query(WatchlistItem).filter(
-                                    WatchlistItem.symbol == order.symbol
-                                ).first()
-                                strategy_type, risk_approach = resolve_strategy_profile(
-                                    order.symbol, db, watchlist_item
-                                )
-                                strategy_key = build_strategy_key(strategy_type, risk_approach)
-                                
-                                _emit_lifecycle_event(
-                                    db=db,
-                                    symbol=order.symbol,
-                                    strategy_key=strategy_key,
-                                    side=order.side.value if hasattr(order.side, 'value') else str(order.side),
-                                    price=float(order.price) if order.price else None,
-                                    event_type="ORDER_CANCELED",
-                                    event_reason=f"order_id={order.exchange_order_id}, reason=not_found_in_open_orders",
-                                    order_id=order.exchange_order_id,
-                                )
-                            except Exception as emit_err:
-                                logger.warning(f"Failed to emit ORDER_CANCELED event for {order.exchange_order_id}: {emit_err}", exc_info=True)
-                        
-                        cancelled_orders.append(order)
                 
                 # Send Telegram notification for cancelled orders (batched)
                 if cancelled_orders:
@@ -369,8 +484,9 @@ class ExchangeSyncService:
                                 f"📊 Symbol: <b>{order.symbol}</b>\n"
                                 f"🔄 Side: {side}\n"
                                 f"🎯 Type: {order_type}{order_role}\n"
-                                f"📋 Order ID: <code>{order.exchange_order_id}</code>{price_text}{qty_text}\n\n"
-                                f"💡 <b>Reason:</b> Order not found in exchange open orders during sync"
+                                f"📋 Order ID: <code>{order.exchange_order_id}</code>{price_text}{qty_text}\n"
+                                f"📋 Status Source: order_history\n\n"
+                                f"💡 <b>Reason:</b> Order confirmed as CANCELLED via exchange order history"
                             )
                         else:
                             message = (
