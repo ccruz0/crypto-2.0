@@ -117,6 +117,20 @@ def update_portfolio_cache(db: Session) -> Dict:
     try:
         logger.info("Starting portfolio cache update - fetching ALL data from Crypto.com...")
         
+        # Update trade_client credentials using resolver (same as portfolio_snapshot)
+        # This ensures we use the same credential resolution logic
+        from app.utils.credential_resolver import resolve_crypto_credentials
+        api_key, api_secret, used_pair_name, _ = resolve_crypto_credentials()
+        
+        if api_key and api_secret:
+            # Update trade_client with resolved credentials if different
+            if trade_client.api_key != api_key or trade_client.api_secret != api_secret:
+                logger.debug(f"[PORTFOLIO_CACHE] Updating trade_client credentials from pair: {used_pair_name}")
+                trade_client.api_key = api_key
+                trade_client.api_secret = api_secret
+        elif not api_key or not api_secret:
+            logger.warning("[PORTFOLIO_CACHE] No credentials found via resolver, using trade_client defaults")
+        
         # Fetch balance from Crypto.com (NO SIMULATED DATA)
         # Catch authentication errors specifically to provide better error messages
         try:
@@ -728,6 +742,14 @@ def get_portfolio_summary(db: Session) -> Dict:
         total_collateral_usd = 0.0
         try:
             from app.services.brokers.crypto_com_trade import trade_client
+            # Ensure credentials are updated before API call
+            from app.utils.credential_resolver import resolve_crypto_credentials
+            api_key, api_secret, _, _ = resolve_crypto_credentials()
+            if api_key and api_secret:
+                if trade_client.api_key != api_key or trade_client.api_secret != api_secret:
+                    trade_client.api_key = api_key
+                    trade_client.api_secret = api_secret
+            
             balance_data = trade_client.get_account_summary()
             
             # Build a map of currency -> raw USD value from cached balances (balances_data from query)
@@ -823,6 +845,14 @@ def get_portfolio_summary(db: Session) -> Dict:
         portfolio_value_source = None
         try:
             from app.services.brokers.crypto_com_trade import trade_client
+            # Ensure credentials are updated before API call
+            from app.utils.credential_resolver import resolve_crypto_credentials
+            api_key, api_secret, _, _ = resolve_crypto_credentials()
+            if api_key and api_secret:
+                if trade_client.api_key != api_key or trade_client.api_secret != api_secret:
+                    trade_client.api_key = api_key
+                    trade_client.api_secret = api_secret
+            
             balance_data_fresh = trade_client.get_account_summary()
             margin_equity_from_api = balance_data_fresh.get("margin_equity")
             if margin_equity_from_api is not None:
