@@ -23,6 +23,7 @@ from app.api.routes_monitoring import router as monitoring_router
 from app.api.routes_diag import router as diag_router
 from app.api.routes_reports import router as reports_router
 from app.api.routes_admin import router as admin_router
+from app.api.routes_portfolio import router as portfolio_router
 import os
 import logging
 import time
@@ -98,20 +99,24 @@ app = FastAPI(
 # CORS middleware - ALWAYS enabled for browser requests (required for frontend)
 # This must be added BEFORE routers to handle OPTIONS preflight requests
 from fastapi.middleware.cors import CORSMiddleware
-cors_origins = [
-    "http://localhost:3000",
-    "http://localhost:3001", 
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3001",
-    "https://dashboard.hilovivo.com",
-    "https://www.dashboard.hilovivo.com"
-]
+from app.core.environment import get_cors_origins, is_local
+
+# Use environment-aware CORS origins (local dev gets localhost:3000, AWS gets production origins)
+cors_origins = get_cors_origins()
+
+# For local dev, ensure localhost:3000 is always included
+if is_local():
+    if "http://localhost:3000" not in cors_origins:
+        cors_origins.append("http://localhost:3000")
+    if "http://127.0.0.1:3000" not in cors_origins:
+        cors_origins.append("http://127.0.0.1:3000")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods including OPTIONS
-    allow_headers=["*"],
+    allow_headers=["*"],  # Allow all headers including X-Req-Id and custom headers
     expose_headers=["*"],
     max_age=3600,  # Cache preflight requests for 1 hour
     )
@@ -126,6 +131,7 @@ class BuildFingerprintMiddleware(BaseHTTPMiddleware):
         build_time = os.getenv("ATP_BUILD_TIME", "unknown")
         response.headers["X-ATP-Backend-Commit"] = git_sha
         response.headers["X-ATP-Backend-BuildTime"] = build_time
+        response.headers["X-ATP-Backend-Buildtime"] = build_time  # Lowercase variant for compatibility
         
         # Add DB fingerprint headers (for verification scripts to match DB)
         import hashlib
@@ -520,23 +526,13 @@ def health():
     logger.info(f"PERF: /health handler executed in {elapsed_ms:.2f}ms")
     return result
 
-# Alias health under /api for reverse-proxy setups that expect /api/health
-@app.get("/api/health")
-def api_health():
-    # Reuse same simple response as /health
-    t0 = time.perf_counter()
-    result = {"status": "ok", "path": "/api/health"}
-    t1 = time.perf_counter()
-    elapsed_ms = (t1 - t0) * 1000
-    logger.info(f"PERF: /api/health handler executed in {elapsed_ms:.2f}ms")
-    return result
-
-# Include routers AFTER simple endpoints
+# Include routers BEFORE /api/health to allow /api/health/system to work
 app.include_router(account_router, prefix="/api", tags=["account"])
 app.include_router(internal_router, prefix="/api", tags=["internal"])
 app.include_router(orders_router, prefix="/api", tags=["orders"])
 app.include_router(instruments_router, prefix="/api", tags=["instruments"])
 app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
+app.include_router(portfolio_router, prefix="/api", tags=["portfolio"])
 app.include_router(engine_router, prefix="/api", tags=["engine"])
 app.include_router(market_router, prefix="/api", tags=["market"])
 app.include_router(signals_router, prefix="/api", tags=["signals"])
@@ -553,3 +549,15 @@ app.include_router(debug_router, prefix="/api", tags=["debug"])
 app.include_router(diag_router, prefix="/api", tags=["diagnostics"])
 app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
+
+# Alias health under /api for reverse-proxy setups that expect /api/health
+# Defined AFTER routers so /api/health/system can be matched first
+@app.get("/api/health")
+def api_health():
+    # Reuse same simple response as /health
+    t0 = time.perf_counter()
+    result = {"status": "ok", "path": "/api/health"}
+    t1 = time.perf_counter()
+    elapsed_ms = (t1 - t0) * 1000
+    logger.info(f"PERF: /api/health handler executed in {elapsed_ms:.2f}ms")
+    return result

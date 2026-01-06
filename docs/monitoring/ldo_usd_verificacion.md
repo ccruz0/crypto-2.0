@@ -65,3 +65,6 @@ Hay 11 watchlist items para LDO_USD. El sistema ahora usa correctamente el item 
 
 
 
+
+
+

@@ -34,6 +34,23 @@ def get_environment() -> str:
     return os.getenv("ENVIRONMENT", "local")
 
 
+def getRuntimeEnv() -> Literal["local", "aws"]:
+    """
+    Get normalized runtime environment.
+    
+    Returns:
+        "local" or "aws" (normalized, lowercase)
+    
+    This is the authoritative function for environment detection.
+    Uses ENVIRONMENT env var, normalizes to "local" or "aws".
+    """
+    env = (os.getenv("ENVIRONMENT") or "local").strip().lower()
+    if env == "aws":
+        return "aws"
+    else:
+        return "local"  # Default to local for safety
+
+
 def is_local() -> bool:
     """Check if running in local environment"""
     return get_environment() == "local"

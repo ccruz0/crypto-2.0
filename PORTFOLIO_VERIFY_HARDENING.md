@@ -131,3 +131,6 @@ python -m tools.verify_portfolio --full  # Uses full endpoint
 - ✅ Reminder to keep endpoints disabled by default
 - ✅ Minimal diffs (only security hardening, no refactors)
 
+
+
+

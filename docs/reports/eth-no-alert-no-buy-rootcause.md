@@ -401,3 +401,152 @@ PRICE_MOVE_ALERT_SENT symbol=... change_pct=... price=$... threshold=... cooldow
 
 **Notes**: _[Any operational observations or tuning decisions]_
 
+---
+
+## AWS Deployment Handoff (Ready to Execute)
+
+This section provides exact copy-paste ready commands to deploy and verify the PRICE_MOVE alert feature in AWS production. **All commands must be run on the AWS deployment server** where `docker compose --profile aws` is available.
+
+### Deployment Commands
+
+Execute these commands **in order** (copy-paste each command block):
+
+#### a) Git sync
+
+```bash
+cd /path/to/automated-trading-platform
+git pull
+git log -1 --oneline
+```
+
+#### b) Optional env overrides
+
+**Optional**: Check if `.env.aws` has overrides (defaults from docker-compose.yml are 0.50 and 300):
+
+```bash
+cd /path/to/automated-trading-platform
+cat .env.aws | grep -E "PRICE_MOVE_ALERT_PCT|PRICE_MOVE_ALERT_COOLDOWN_SECONDS" || true
+```
+
+**Note**: If no overrides are found, defaults from docker-compose.yml are used (PRICE_MOVE_ALERT_PCT=0.50, PRICE_MOVE_ALERT_COOLDOWN_SECONDS=300). To override, add these lines to `.env.aws`:
+```
+PRICE_MOVE_ALERT_PCT=0.50
+PRICE_MOVE_ALERT_COOLDOWN_SECONDS=300
+```
+
+#### c) Deploy
+
+```bash
+cd /path/to/automated-trading-platform
+docker compose --profile aws up -d --build backend-aws market-updater-aws
+```
+
+#### d) Restart
+
+```bash
+cd /path/to/automated-trading-platform
+docker compose --profile aws restart backend-aws market-updater-aws
+```
+
+#### e) Status
+
+Verify both services are running:
+
+```bash
+cd /path/to/automated-trading-platform
+docker compose --profile aws ps
+```
+
+**Required**: Both `backend-aws` and `market-updater-aws` must show status `Up`. If either service shows a different status, deployment has failed.
+
+#### f) Verification
+
+Monitor logs for PRICE_MOVE alert dispatches:
+
+```bash
+cd /path/to/automated-trading-platform
+docker logs -f market-updater-aws | grep "PRICE_MOVE_ALERT_SENT"
+```
+
+**Important**: This command will **block and wait** until a price move exceeds the threshold and an alert is dispatched. The command does not return until a matching log line appears.
+
+### Success Proof
+
+Deployment is successful **ONLY if** at least one `PRICE_MOVE_ALERT_SENT` log line appears in production logs. If no such log line appears, deployment has failed.
+
+The log line must match this exact format:
+```
+PRICE_MOVE_ALERT_SENT symbol=ETH_USDT change_pct=0.63 price=$3400.00 threshold=0.50 cooldown_s=300
+```
+
+This log line confirms:
+- The PRICE_MOVE alert feature is active
+- Alerts are being dispatched when price moves exceed the threshold
+- The production logging is working correctly
+
+### If no PRICE_MOVE alerts appear
+
+If no `PRICE_MOVE_ALERT_SENT` log lines appear in production logs (after running step f) and waiting), follow these steps:
+
+1. **Temporarily lower threshold to 0.10 in `.env.aws`**:
+   Edit `.env.aws` and add or update this line:
+   ```
+   PRICE_MOVE_ALERT_PCT=0.10
+   ```
+
+2. **Re-deploy and restart services**:
+   ```bash
+   cd /path/to/automated-trading-platform
+   docker compose --profile aws up -d backend-aws market-updater-aws
+   cd /path/to/automated-trading-platform
+   docker compose --profile aws restart backend-aws market-updater-aws
+   ```
+
+3. **Re-check logs** (this command will wait/block until an alert is dispatched):
+   ```bash
+   cd /path/to/automated-trading-platform
+   docker logs -f market-updater-aws | grep "PRICE_MOVE_ALERT_SENT"
+   ```
+
+4. **Inspect last 200 log lines for diagnostics**:
+   ```bash
+   cd /path/to/automated-trading-platform
+   docker logs --tail 200 market-updater-aws
+   ```
+   
+   Verify the following in the logs:
+   - Service is running and processing symbols
+   - No exceptions in Telegram sending
+   - Signal monitor loop is active
+   - Watchlist items have `alert_enabled=True`
+
+### Deployment Checklist
+
+Before marking deployment as complete, you must verify all of the following (all items must be checked):
+
+- [ ] Tests passed locally: `pytest tests/test_trade_alert_decoupling.py -q` (must show `5 passed`)
+- [ ] Env vars verified in docker-compose.yml: Both `backend-aws` and `market-updater-aws` services must have `PRICE_MOVE_ALERT_PCT` and `PRICE_MOVE_ALERT_COOLDOWN_SECONDS` environment variables
+- [ ] Services deployed: `docker compose --profile aws up -d --build` command completed with exit code 0
+- [ ] Services restarted: `docker compose --profile aws restart` command completed with exit code 0
+- [ ] PRICE_MOVE_ALERT_SENT observed: At least one log line matching the exact format in Success Proof section appears in production logs (this is the binary success criterion)
+- [ ] Deployment record completed: All fields below are filled in with actual values (not placeholders)
+
+### Deployment Record
+
+Fill in this record **only after** successful deployment and verification. **Do not fill this record until** all checklist items are completed and at least one PRICE_MOVE_ALERT_SENT log line has been observed in production logs:
+
+**Deployment date**: _[YYYY-MM-DD HH:MM:SS UTC]_
+
+**Deployed by**: _[Name/username]_
+
+**PRICE_MOVE_ALERT_PCT**: _[0.50 / or override value if different]_
+
+**PRICE_MOVE_ALERT_COOLDOWN_SECONDS**: _[300 / or override value if different]_
+
+**Proof log line** (paste exact line from production logs):
+```
+_[Paste exact PRICE_MOVE_ALERT_SENT line from production logs here]_
+```
+
+Status: Deployment handoff verified and ready for execution.
+

@@ -78,3 +78,6 @@ echo "   ssh $EC2_USER@$EC2_HOST 'cd ~/automated-trading-platform && docker comp
 
 
 
+
+
+

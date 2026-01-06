@@ -90,3 +90,6 @@ The verification endpoint (`/api/diagnostics/portfolio-verify-lite`) now:
 
 Dashboard "Total Value" should now match Crypto.com Margin "Wallet Balance" within $5 tolerance.
 
+
+
+

@@ -1531,7 +1531,8 @@ def get_order_history(
             try:
                 from app.services.exchange_sync import exchange_sync_service
                 logger.info("🔄 /orders/history sync=true - syncing order history from exchange before query")
-                exchange_sync_service.sync_order_history(db, page_size=200, max_pages=10)
+                # Use larger window and more pages for manual sync to capture all orders
+                exchange_sync_service.sync_order_history(db, page_size=200, max_pages=50)
                 db.commit()
             except Exception as sync_err:
                 # Don't fail the history endpoint if the exchange is temporarily unreachable.

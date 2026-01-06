@@ -198,3 +198,6 @@ docker compose --profile aws up -d --build --force-recreate backend-aws
 
 
 
+
+
+

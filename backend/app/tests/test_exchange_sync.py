@@ -1,4 +1,3 @@
-import asyncio
 import time
 from decimal import Decimal
 
@@ -81,7 +80,7 @@ def test_sync_balances_zeroes_missing_assets(db_session, monkeypatch):
     monkeypatch.setattr("app.services.exchange_sync.trade_client", _StubTradeClient())
 
     service = ExchangeSyncService()
-    asyncio.run(service.sync_balances(db_session))
+    service.sync_balances(db_session)
 
     eth_balance = db_session.query(ExchangeBalance).filter_by(asset="ETH").one()
     assert float(eth_balance.total) == pytest.approx(2.0)

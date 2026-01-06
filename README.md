@@ -211,6 +211,22 @@ If the dashboard at https://dashboard.hilovivo.com is not loading:
    - Common failure modes and solutions
    - Integration with runbook
 
+## Order Lifecycle Documentation
+
+For understanding order states, sync behavior, and Telegram notifications:
+
+- **[Order Lifecycle Guide](docs/ORDER_LIFECYCLE_GUIDE.md)** - User-facing guide for traders
+- **[System Map](docs/SYSTEM_MAP.md)** - Complete technical architecture and order lifecycle
+- **[Order Cancellation Notifications](docs/ORDER_CANCELLATION_NOTIFICATIONS.md)** - All cancellation scenarios
+- **[Lifecycle Events](docs/LIFECYCLE_EVENTS_COMPLETE.md)** - Event semantics and implementation
+
+**Key Points:**
+- Order states: CREATED → EXECUTED (FILLED) or CANCELED
+- "Order not found in Open Orders" ≠ "Order canceled" - system must confirm via exchange history
+- ORDER_EXECUTED is the only confirmation that a trade actually happened
+- ORDER_CANCELED means trade did NOT execute
+- Sync messages show status source (order_history, trade_history)
+
 ## Environment Variables
 
 See `.env.example` for all available environment variables and their descriptions.

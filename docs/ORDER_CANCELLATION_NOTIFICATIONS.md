@@ -190,11 +190,20 @@ This document describes all order cancellation scenarios and their associated Te
 
 **Location:** `backend/app/services/exchange_sync.py:sync_open_orders()`
 
-**Description:** When orders are not found in the exchange's open orders list during sync and are marked as CANCELLED in the database.
+**Description:** When orders are not found in the exchange's open orders list during sync, the system MUST resolve the actual final state before marking as CANCELLED.
 
-**Notification:** ✅ **SENT** (Batched)
+**⚠️ CRITICAL: "Not Found in Open Orders" ≠ "Canceled"**
 
-- Single order: Detailed notification
+**Process:**
+1. Order missing from exchange open orders
+2. System queries exchange order history to determine actual final state
+3. System queries trade history if order history shows FILLED
+4. Only after confirmation from exchange history is the order marked as CANCELLED or EXECUTED
+5. Notification sent only after final state is confirmed
+
+**Notification:** ✅ **SENT** (Batched) - Only after confirmation
+
+- Single order: Detailed notification with status source
 - Multiple orders: Batched notification listing all cancelled orders (up to 10, with count if more)
 - Notification includes:
   - Symbol
@@ -202,7 +211,8 @@ This document describes all order cancellation scenarios and their associated Te
   - Side (BUY/SELL)
   - Order ID
   - Price and quantity (if available)
-  - Reason: Order not found in exchange open orders during sync
+  - Status source: order_history or trade_history
+  - Reason: Order confirmed as CANCELLED via exchange history (not just "missing from open orders")
 
 **Example Notification (Single Order):**
 ```
@@ -214,8 +224,9 @@ This document describes all order cancellation scenarios and their associated Te
 📋 Order ID: 1234567890
 💵 Price: $50000.00
 📦 Quantity: 0.00100000
+📋 Status Source: order_history
 
-💡 Reason: Order not found in exchange open orders during sync
+💡 Reason: Order confirmed as CANCELLED via exchange order history
 ```
 
 ---

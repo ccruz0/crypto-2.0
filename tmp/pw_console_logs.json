@@ -1,0 +1,152 @@
+[
+  {
+    "type": "debug",
+    "text": "[signals] call#1 for ALGO_USDT",
+    "timestamp": "2026-01-03T11:54:21.358Z",
+    "ts": 1767441261404
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] symbol=ALGO_USDT t=1767441261359 caller=getTradingSignals count=1 rid=sig_ALGO_USDT_1767441261358_be7909d3edae18",
+    "timestamp": "2026-01-03T11:54:21.416Z",
+    "ts": 1767441261416
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] STACK for ALGO_USDT:\nError\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:831:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3807:35)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3804:73)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3956:25)",
+    "timestamp": "2026-01-03T11:54:21.416Z",
+    "ts": 1767441261416
+  },
+  {
+    "type": "log",
+    "text": "🌐 fetchAPI: Making request to: http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT",
+    "timestamp": "2026-01-03T11:54:21.416Z",
+    "ts": 1767441261416
+  },
+  {
+    "type": "log",
+    "text": "🌐 endpoint: /signals?exchange=CRYPTO_COM&symbol=ALGO_USDT",
+    "timestamp": "2026-01-03T11:54:21.417Z",
+    "ts": 1767441261417
+  },
+  {
+    "type": "log",
+    "text": "🔄 Iniciando fetch para /signals?exchange=CRYPTO_COM&symbol=ALGO_USDT con timeout de 15000ms",
+    "timestamp": "2026-01-03T11:54:21.417Z",
+    "ts": 1767441261417
+  },
+  {
+    "type": "debug",
+    "text": "[signals dedupe MISS] ALGO_USDT - created new promise",
+    "timestamp": "2026-01-03T11:54:21.418Z",
+    "ts": 1767441261418
+  },
+  {
+    "type": "log",
+    "text": "✅ Fetch completado para /signals?exchange=CRYPTO_COM&symbol=ALGO_USDT en 2429ms",
+    "timestamp": "2026-01-03T11:54:23.791Z",
+    "ts": 1767441263791
+  },
+  {
+    "type": "info",
+    "text": "[2026-01-03T11:54:23.790Z] [INFO] 📊 Updated signals for ALGO_USDT: 0.12495",
+    "timestamp": "2026-01-03T11:54:23.795Z",
+    "ts": 1767441263795
+  },
+  {
+    "type": "debug",
+    "text": "[signals] call#1 for AAVE_USDT",
+    "timestamp": "2026-01-03T11:54:24.795Z",
+    "ts": 1767441264795
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] symbol=AAVE_USDT t=1767441264792 caller=getTradingSignals count=1 rid=sig_AAVE_USDT_1767441264792_25c9cb686a921",
+    "timestamp": "2026-01-03T11:54:24.797Z",
+    "ts": 1767441264797
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] STACK for AAVE_USDT:\nError\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:831:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3807:35)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3804:73)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3956:25)",
+    "timestamp": "2026-01-03T11:54:24.797Z",
+    "ts": 1767441264797
+  },
+  {
+    "type": "log",
+    "text": "🌐 fetchAPI: Making request to: http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT",
+    "timestamp": "2026-01-03T11:54:24.797Z",
+    "ts": 1767441264797
+  },
+  {
+    "type": "log",
+    "text": "🌐 endpoint: /signals?exchange=CRYPTO_COM&symbol=AAVE_USDT",
+    "timestamp": "2026-01-03T11:54:24.797Z",
+    "ts": 1767441264797
+  },
+  {
+    "type": "log",
+    "text": "🔄 Iniciando fetch para /signals?exchange=CRYPTO_COM&symbol=AAVE_USDT con timeout de 15000ms",
+    "timestamp": "2026-01-03T11:54:24.797Z",
+    "ts": 1767441264797
+  },
+  {
+    "type": "debug",
+    "text": "[signals dedupe MISS] AAVE_USDT - created new promise",
+    "timestamp": "2026-01-03T11:54:24.798Z",
+    "ts": 1767441264798
+  },
+  {
+    "type": "log",
+    "text": "✅ Fetch completado para /signals?exchange=CRYPTO_COM&symbol=AAVE_USDT en 2478ms",
+    "timestamp": "2026-01-03T11:54:27.287Z",
+    "ts": 1767441267287
+  },
+  {
+    "type": "info",
+    "text": "[2026-01-03T11:54:27.274Z] [INFO] 📊 Updated signals for AAVE_USDT: 159.454",
+    "timestamp": "2026-01-03T11:54:27.310Z",
+    "ts": 1767441267310
+  },
+  {
+    "type": "debug",
+    "text": "[signals] call#1 for BTC_USDT",
+    "timestamp": "2026-01-03T11:54:28.288Z",
+    "ts": 1767441268288
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] symbol=BTC_USDT t=1767441268280 caller=getTradingSignals count=1 rid=sig_BTC_USDT_1767441268278_cd7532ad8b7b88",
+    "timestamp": "2026-01-03T11:54:28.288Z",
+    "ts": 1767441268288
+  },
+  {
+    "type": "log",
+    "text": "[signals-http] STACK for BTC_USDT:\nError\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:831:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3807:35)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3804:73)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3956:25)",
+    "timestamp": "2026-01-03T11:54:28.288Z",
+    "ts": 1767441268288
+  },
+  {
+    "type": "log",
+    "text": "🌐 fetchAPI: Making request to: http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT",
+    "timestamp": "2026-01-03T11:54:28.289Z",
+    "ts": 1767441268289
+  },
+  {
+    "type": "log",
+    "text": "🌐 endpoint: /signals?exchange=CRYPTO_COM&symbol=BTC_USDT",
+    "timestamp": "2026-01-03T11:54:28.289Z",
+    "ts": 1767441268289
+  },
+  {
+    "type": "log",
+    "text": "🔄 Iniciando fetch para /signals?exchange=CRYPTO_COM&symbol=BTC_USDT con timeout de 15000ms",
+    "timestamp": "2026-01-03T11:54:28.289Z",
+    "ts": 1767441268289
+  },
+  {
+    "type": "debug",
+    "text": "[signals dedupe MISS] BTC_USDT - created new promise",
+    "timestamp": "2026-01-03T11:54:28.289Z",
+    "ts": 1767441268289
+  }
+]

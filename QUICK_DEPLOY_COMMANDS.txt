@@ -1,0 +1,35 @@
+# Quick Deploy Commands - Copy and paste these on your AWS server
+
+# 1. Navigate to project
+cd /path/to/automated-trading-platform
+
+# 2. Pull latest code
+git pull
+
+# 3. Make scripts executable
+chmod +x deploy_audit_fixes.sh run_audit_in_production.sh
+
+# 4. Deploy fixes
+./deploy_audit_fixes.sh
+
+# 5. Wait for deployment (30 seconds)
+sleep 30
+
+# 6. Verify heartbeat (should appear every ~5 minutes)
+docker logs backend-aws | grep HEARTBEAT
+
+# 7. Run audit
+./run_audit_in_production.sh
+
+# 8. View report
+cat docs/reports/no-alerts-no-trades-audit.md
+
+# 9. Check for global blockers
+docker logs backend-aws | grep GLOBAL_BLOCKER
+
+# 10. Verify SignalMonitorService started
+docker logs backend-aws | grep "Signal monitor service"
+
+
+
+

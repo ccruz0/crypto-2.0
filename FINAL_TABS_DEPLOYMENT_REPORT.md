@@ -428,3 +428,6 @@ curl "http://localhost:8002/api/dashboard/expected-take-profit/BTC_USDT" | jq '.
 
 **Confidence**: High - All code changes are correct and ready. Once deployed, all tabs should work correctly with no infinite loading states.
 
+
+
+

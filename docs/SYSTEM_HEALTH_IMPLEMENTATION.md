@@ -205,3 +205,6 @@ docker logs --tail 200 market-updater-aws | grep SYSTEM_DOWN
 
 4. Monitor logs for SYSTEM_DOWN alerts (should be throttled to once per 24h)
 
+
+
+

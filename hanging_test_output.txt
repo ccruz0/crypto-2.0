@@ -1,0 +1,84 @@
+🔍 Starting Playwright reproduction test...
+📱 Navigating to http://localhost:3000...
+✅ Initial DOM loaded
+[REQUEST] GET http://localhost:8002/api/monitoring/telegram-messages
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[REQUEST] GET http://localhost:8002/api/dashboard/open-orders-summary
+[REQUEST] GET http://localhost:8002/api/market/top-coins-data
+[REQUEST] GET http://localhost:8002/api/orders/history?limit=200&offset=0
+[REQUEST] GET http://localhost:8002/api/data-sources/status
+[REQUEST] GET http://localhost:8002/api/config
+[REQUEST] GET http://localhost:8002/api/dashboard
+[RESPONSE] 200 http://localhost:8002/api/data-sources/status (146ms)
+📸 Screenshot: pw_initial.png
+⏳ Waiting 10 seconds...
+[RESPONSE] 200 http://localhost:8002/api/config (174ms)
+[RESPONSE] 200 http://localhost:8002/api/monitoring/telegram-messages (180ms)
+[REQUEST] GET http://localhost:8002/api/monitoring/telegram-messages
+[RESPONSE] 200 http://localhost:8002/api/orders/history?limit=200&offset=0 (455ms)
+[RESPONSE] 200 http://localhost:8002/api/dashboard/snapshot (455ms)
+[RESPONSE] 200 http://localhost:8002/api/monitoring/telegram-messages (276ms)
+[REQUEST] GET http://localhost:8002/api/dashboard/state
+[RESPONSE] 200 http://localhost:8002/api/market/top-coins-data (489ms)
+[REQUEST] GET http://localhost:8002/api/dashboard
+[RESPONSE] 200 http://localhost:8002/api/dashboard (47ms)
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=DOT_USDT
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ADA_USD
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT
+[REQUEST] GET http://localhost:8002/api/market/top-coins-data
+[REQUEST] GET http://localhost:8002/api/dashboard/state
+[RESPONSE] 200 http://localhost:8002/api/market/top-coins-data (344ms)
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[RESPONSE] 200 http://localhost:8002/api/dashboard/open-orders-summary (2081ms)
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ADA_USD (1903ms)
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=DOT_USDT (1932ms)
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT (1594ms)
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=SUI_USDT
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT (2047ms)
+[RESPONSE] 200 http://localhost:8002/api/dashboard/state (2150ms)
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[RESPONSE] 200 http://localhost:8002/api/dashboard/snapshot (71ms)
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT (2935ms)
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=SUI_USDT (1747ms)
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT (1815ms)
+🔍 Found 0 loading indicators after 10s
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT
+📸 Screenshot: pw_10s.png
+⏳ Waiting 20 more seconds (total 30s)...
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT (2481ms)
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[RESPONSE] 200 http://localhost:8002/api/dashboard/snapshot (74ms)
+[REQUEST] GET http://localhost:8002/api/monitoring/telegram-messages
+[RESPONSE] 200 http://localhost:8002/api/monitoring/telegram-messages (56ms)
+[REQUEST] GET http://localhost:8002/api/market/top-coins-data
+[RESPONSE] 200 http://localhost:8002/api/market/top-coins-data (28ms)
+[REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[RESPONSE] 200 http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT (1718ms)
+[REQUEST] GET http://localhost:8002/api/dashboard/snapshot
+[RESPONSE] 200 http://localhost:8002/api/dashboard/snapshot (76ms)
+🔍 Found 0 loading indicators after 30s
+📸 Screenshot: pw_30s.png
+
+📊 SUMMARY:
+============================================================
+HANGING: NO
+
+Console Errors (0):
+
+Network Errors (0):
+
+Top 5 Longest Requests:
+  - GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT: 2481ms (status: 200)
+  - GET http://localhost:8002/api/dashboard/state: 2150ms (status: 200)
+  - GET http://localhost:8002/api/dashboard/open-orders-summary: 2081ms (status: 200)
+  - GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=DOT_USDT: 1932ms (status: 200)
+  - GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ADA_USD: 1903ms (status: 200)
+
+All Pending Requests (0):
+============================================================

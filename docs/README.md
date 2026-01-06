@@ -27,10 +27,27 @@
 
 ## 📋 Gestión de Órdenes y Notificaciones
 
+- **[Order Lifecycle Guide](ORDER_LIFECYCLE_GUIDE.md)**: Guía completa para traders sobre el ciclo de vida de órdenes
+  - Estados de órdenes (CREATED, EXECUTED, CANCELED)
+  - Interpretación de notificaciones de Telegram
+  - Guía de lectura de alertas
+  - Escenarios comunes y troubleshooting
+
 - **[Order Cancellation Notifications](ORDER_CANCELLATION_NOTIFICATIONS.md)**: Documentación completa sobre notificaciones de Telegram para órdenes canceladas
   - 7 escenarios de cancelación cubiertos
   - Guía de testing y troubleshooting
   - Ejemplos de API y formato de notificaciones
+  - ⚠️ Clarificación: "Order not found in open orders" ≠ "Order canceled"
+
+- **[System Map](SYSTEM_MAP.md)**: Arquitectura técnica completa y ciclo de vida de órdenes
+  - Lógica de sincronización (sync)
+  - Semántica de eventos
+  - Flujo completo de datos
+
+- **[Lifecycle Events](LIFECYCLE_EVENTS_COMPLETE.md)**: Semántica e implementación de eventos
+  - Qué significa cada evento
+  - Cuándo se emite cada evento
+  - Qué NO significa cada evento
 
 ## 🤖 Desarrollo y Uso de Agentes AI
 

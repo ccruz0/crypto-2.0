@@ -74,3 +74,6 @@ echo "   - Expected TP: loads correctly"
 echo "   - Expected TP Details: modal shows real data"
 echo "3. Check DevTools Network and Console tabs"
 
+
+
+

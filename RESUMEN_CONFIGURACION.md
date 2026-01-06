@@ -192,3 +192,6 @@ chmod 600 .env.aws
 
 
 
+
+
+

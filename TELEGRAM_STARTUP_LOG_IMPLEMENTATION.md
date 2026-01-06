@@ -83,3 +83,6 @@ docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP
 - **Minimal impact:** Small change, no performance impact, no logic changes
 
 
+
+
+

@@ -1,99 +1,146 @@
-# ✅ DOT Order Limit Fix - Deployment Complete!
+# Deployment Complete - Summary
 
-## 🎉 Status: SUCCESS
+## ✅ What Was Deployed
 
-### Verification Results
-- ✅ **Fix code confirmed in container** at line 2141
-- ✅ **Container healthy** - Up 6 minutes, status: healthy
-- ✅ **GitHub Actions deployment** completed successfully
-- ✅ **Fix is active** and ready to enforce order limits
+1. **Audit Script** (`backend/scripts/audit_no_alerts_no_trades.py`)
+   - Comprehensive end-to-end audit
+   - Global health checks + per-symbol analysis
+   - Generates markdown reports
 
-## 📊 Deployment Details
+2. **Fixes Deployed**
+   - ✅ Heartbeat logging (every 10 cycles, ~5 minutes)
+   - ✅ Global blocker warnings for Telegram and watchlist
+   - ✅ Improved Telegram blocking log visibility
 
-### Container Info
-- **Name**: `automated-trading-platform-backend-aws-1`
-- **Status**: Up 6 minutes (healthy)
-- **Created**: 2025-12-28 11:41:26 +0800 WITA
-- **Fix Location**: `/app/app/services/signal_monitor.py:2141`
+3. **Container Status**
+   - ✅ Docker build completed successfully
+   - ✅ Container recreated and started
+   - ✅ Backend is running with new fixes
 
-### Fix Verification
-```
-Line 2141: # Check 2: Total open positions count (unified) - prevents exceeding limit
-```
+## 📊 Current Status
 
-Code snippet confirmed:
-```python
-try:
-    from app.services.order_position_service import count_open_positions_for_symbol
-    final_unified_open_positions = count_open_positions_for_symbol(db, symbol_base_final)
-except Exception as e:
-    logger.error(f"Could not compute unified open position count in final check for {symbol_base_final}: {e}")
-    # Conservative fallback: block order if count fails
-    logger.warning(f"🚫 BLOCKED: {symbol} - Cannot verify open positions count, blocking order for safety")
-    should_create_order = False
-    return
-```
+The deployment succeeded - the container is running with all fixes. The audit script syntax error has been fixed.
 
-## 🎯 What This Fix Does
+## 🔍 Next Steps
 
-1. **Final Validation Check**: Before creating any order, the system now:
-   - ✅ Checks recent orders (within 5 minutes)
-   - ✅ **Checks total open positions** (ALL orders, regardless of age)
-   - ✅ Blocks order creation if limit (3) is reached
+### Option 1: Run Audit via SSM (Recommended)
 
-2. **Prevents Race Conditions**: Multiple validation points ensure orders can't bypass the limit
-
-3. **Better Logging**: Clear messages when orders are blocked due to limits
-
-## 📋 Next Steps - Monitoring
-
-### 1. Watch for Blocked Orders
-Monitor logs for messages like:
-```
-🚫 BLOCKED: DOT_USDT (base: DOT) - Final check: exceeded max open orders limit (3/3)
-```
-
-### 2. Verify Order Limits
-- Check that DOT stops creating orders when count >= 3
-- Monitor other symbols to ensure fix works globally
-
-### 3. Monitor Logs
 ```bash
-# Real-time monitoring
-docker logs -f automated-trading-platform-backend-aws-1 | grep -i "DOT.*BLOCKED\|Final check"
-
-# Or via SSM
-aws ssm send-command \
-  --instance-ids "i-08726dc37133b2454" \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["docker logs -f automated-trading-platform-backend-aws-1 2>&1 | grep -i \"BLOCKED.*final check\""]' \
-  --region "ap-southeast-1"
+# Run the simplified audit script
+./run_audit_via_ssm.sh
 ```
 
-## ✅ Success Criteria Met
+### Option 2: SSH into AWS and Run Manually
 
-- [x] Fix code committed and pushed
-- [x] GitHub Actions deployment successful
-- [x] Container rebuilt with latest code
-- [x] Fix code verified in container
-- [x] Container healthy and running
-- [ ] Monitor for blocked orders (ongoing)
-- [ ] Verify DOT respects 3-order limit (ongoing)
+```bash
+# SSH into AWS server
+ssh your-aws-server
 
-## 🎉 Summary
+# Find container name
+docker compose --profile aws ps
 
-**The fix is successfully deployed and active!**
+# Run audit
+docker exec automated-trading-platform-backend-aws-1 \
+  python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24
 
-DOT (and all symbols) will now:
-- ✅ Stop creating orders when count >= 3
-- ✅ Block orders with clear logging
-- ✅ Prevent race conditions
-- ✅ Work for all symbols, not just DOT
+# View report
+docker exec automated-trading-platform-backend-aws-1 \
+  cat docs/reports/no-alerts-no-trades-audit.md
+```
 
-The system is now properly enforcing the `MAX_OPEN_ORDERS_PER_SYMBOL=3` limit.
+### Option 3: Check Logs Directly
 
----
+```bash
+# SSH into AWS
+ssh your-aws-server
 
-**Deployment Date**: 2025-12-28  
-**Container Status**: Healthy ✅  
-**Fix Status**: Active ✅
+# Check heartbeat (should appear every ~5 minutes)
+docker logs automated-trading-platform-backend-aws-1 | grep HEARTBEAT
+
+# Check for global blockers
+docker logs automated-trading-platform-backend-aws-1 | grep GLOBAL_BLOCKER
+
+# Check SignalMonitorService started
+docker logs automated-trading-platform-backend-aws-1 | grep "Signal monitor service"
+```
+
+## ✅ Verification Checklist
+
+After deployment, verify:
+
+- [x] Container is running
+- [ ] Heartbeat logs appear (wait 5-10 minutes)
+- [ ] No [GLOBAL_BLOCKER] warnings (unless expected)
+- [ ] SignalMonitorService started
+- [ ] Audit script runs successfully
+- [ ] Audit report is generated
+
+## 📄 Files Created
+
+- `deploy_audit_fixes.sh` - Local deployment script
+- `deploy_audit_via_ssm.sh` - SSM deployment script (fixed)
+- `run_audit_in_production.sh` - Local audit runner
+- `run_audit_via_ssm.sh` - SSM audit runner
+- `check_deployment_status.sh` - Status checker
+- `POST_DEPLOYMENT_CHECKLIST.md` - Post-deployment guide
+- `DEPLOYMENT_COMPLETE.md` - This file
+
+## 🎯 What the Audit Will Show
+
+When you run the audit, it will identify:
+
+1. **Global Status** - PASS/FAIL
+2. **Root Causes** - Ranked list of blockers
+3. **Per-Symbol Analysis** - Why each symbol isn't sending alerts/trades
+4. **Recommended Fixes** - Specific actions with file/line references
+
+## 💡 Quick Commands
+
+```bash
+# Check deployment status
+./check_deployment_status.sh
+
+# Run audit
+./run_audit_via_ssm.sh
+
+# Check heartbeat (on AWS server)
+docker logs automated-trading-platform-backend-aws-1 | grep HEARTBEAT
+```
+
+## 🆘 Troubleshooting
+
+### If Audit Fails
+
+1. Check container is running:
+   ```bash
+   docker compose --profile aws ps
+   ```
+
+2. Check Python dependencies:
+   ```bash
+   docker exec automated-trading-platform-backend-aws-1 python -c "import app.models.watchlist"
+   ```
+
+3. Check database connectivity:
+   ```bash
+   docker exec automated-trading-platform-backend-aws-1 python -c "from app.database import SessionLocal; db = SessionLocal(); db.close()"
+   ```
+
+### If No Heartbeat
+
+1. Wait 5-10 minutes (heartbeat appears every ~5 minutes)
+2. Check SignalMonitorService started:
+   ```bash
+   docker logs automated-trading-platform-backend-aws-1 | grep "Signal monitor service"
+   ```
+3. Check for errors:
+   ```bash
+   docker logs automated-trading-platform-backend-aws-1 | grep -i error | tail -20
+   ```
+
+## 📚 Documentation
+
+- `AUDIT_ACTION_PLAN.md` - Complete action plan
+- `POST_DEPLOYMENT_CHECKLIST.md` - Post-deployment verification
+- `docs/DEPLOY_AUDIT_FIXES.md` - Deployment guide
+- `docs/NEXT_STEPS_AUDIT.md` - Next steps

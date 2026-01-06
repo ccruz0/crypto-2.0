@@ -2048,14 +2048,15 @@ class ExchangeSyncService:
             # cause missing orders on the same day (or after DB resets) and create discrepancies
             # between Crypto.com "Order History" and the dashboard.
             #
-            # Crypto.com UI supports up to ~180d, but fetching that on every sync is expensive.
-            # A 30-day rolling window is a good balance and matches the default behavior in
-            # crypto_com_trade.get_order_history() when no range is provided.
+            # Crypto.com UI supports up to ~180d. For manual syncs (max_pages > 10), use 180 days.
+            # For automatic syncs, use 30 days to balance performance.
             from datetime import timedelta
             end_time_ms = int(time.time() * 1000)
-            start_time = datetime.now(timezone.utc) - timedelta(days=30)
+            # Use 180 days for manual syncs (when max_pages > 10), otherwise 30 days
+            sync_days = 180 if max_pages > 10 else 30
+            start_time = datetime.now(timezone.utc) - timedelta(days=sync_days)
             start_time_ms = int(start_time.timestamp() * 1000)
-            logger.info(f"Using order history date range: last 30 days ({start_time} to now)")
+            logger.info(f"Using order history date range: last {sync_days} days ({start_time} to now), max_pages={max_pages}")
             
             for page_num in range(max_pages):
                 response = trade_client.get_order_history(

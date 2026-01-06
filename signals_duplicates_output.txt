@@ -1,0 +1,35 @@
+🔍 Checking for duplicate signals requests...
+📱 Navigating to http://localhost:3000...
+⏳ Waiting 10 seconds to capture all signals requests...
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=DOT_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ADA_USD
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT
+[SIGNALS REQUEST] GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=SUI_USDT
+📸 Screenshot: net_signals_filter.png
+
+📊 SIGNALS REQUESTS SUMMARY (first 10s):
+============================================================
+DOT_USDT: 1 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=DOT_USDT (at 0ms)
+ALGO_USDT: 3 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT (at 1ms)
+  2. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT (at 6ms)
+  3. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ALGO_USDT (at 689ms)
+ADA_USD: 1 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=ADA_USD (at 4ms)
+AAVE_USDT: 1 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=AAVE_USDT (at 6ms)
+BTC_USDT: 1 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=BTC_USDT (at 6ms)
+SUI_USDT: 1 request(s)
+  1. GET http://localhost:8002/api/signals?exchange=CRYPTO_COM&symbol=SUI_USDT (at 2453ms)
+
+🔍 ALGO_USDT requests in first 10s: 3
+⚠️ DUPLICATE DETECTED: ALGO_USDT requested 3 times!
+
+Total signals requests: 8
+============================================================

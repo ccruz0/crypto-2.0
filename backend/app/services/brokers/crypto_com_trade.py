@@ -10,6 +10,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 from contextvars import ContextVar
 
+# Import requests for exception types (used in exception handlers)
+import requests
+
 # Use mandatory http_client wrapper for all outbound HTTP requests
 from app.utils.http_client import http_get, http_post
 

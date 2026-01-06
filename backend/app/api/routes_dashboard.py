@@ -653,33 +653,94 @@ async def _compute_dashboard_state(db: Session) -> dict:
     log.info("Starting dashboard state fetch")
     
     try:
-        # Load portfolio data from cache (v4.0 behavior)
-        # Execute in thread pool to prevent blocking the worker
-        
+        # Try to get fresh portfolio snapshot first (if available and fresh)
         portfolio_start = time.time()
-        # Portfolio data is sourced from PortfolioBalance rows populated by portfolio_cache.update_portfolio_cache().
-        # get_portfolio_summary normalizes currencies and deduplicates balances per symbol so the frontend sees canonical assets.
-        portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db)
-        portfolio_elapsed = time.time() - portfolio_start
-        log.info(f"Portfolio summary loaded in {portfolio_elapsed:.3f}s")
+        portfolio_snapshot = None
+        try:
+            from app.services.portfolio_snapshot import get_latest_portfolio_snapshot
+            portfolio_snapshot = await asyncio.to_thread(get_latest_portfolio_snapshot, db, max_age_minutes=5)
+            if portfolio_snapshot:
+                log.info(f"Using fresh portfolio snapshot: {len(portfolio_snapshot.get('assets', []))} assets, source={portfolio_snapshot.get('portfolio_value_source')}")
+        except Exception as snapshot_err:
+            log.debug(f"Could not get portfolio snapshot: {snapshot_err}")
         
-        # Extract balances from portfolio summary
-        balances_list = portfolio_summary.get("balances", [])
-        # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
-        # Backend returns values explicitly:
-        # - total_usd: NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
-        # - total_assets_usd: GROSS raw assets (before haircut and borrowed) - informational only
-        # - total_collateral_usd: Collateral value after haircuts - informational only
-        # - total_borrowed_usd: Total borrowed amounts (shown separately, NOT added to totals)
-        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)  # GROSS raw assets
-        total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
-        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)  # Borrowed (separate)
-        total_usd_value = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
-        portfolio_value_source = portfolio_summary.get("portfolio_value_source", "derived_collateral_minus_borrowed")  # Calculation method
-        last_updated = portfolio_summary.get("last_updated")
+        # Load portfolio data from cache (v4.0 behavior) - fallback if no snapshot
+        # Execute in thread pool to prevent blocking the worker
+        if not portfolio_snapshot:
+            # Portfolio data is sourced from PortfolioBalance rows populated by portfolio_cache.update_portfolio_cache().
+            # get_portfolio_summary normalizes currencies and deduplicates balances per symbol so the frontend sees canonical assets.
+            portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db, request_context)
+            portfolio_elapsed = time.time() - portfolio_start
+            log.info(f"Portfolio summary loaded in {portfolio_elapsed:.3f}s")
+        else:
+            portfolio_summary = None
+            portfolio_elapsed = time.time() - portfolio_start
+            log.info(f"Portfolio snapshot loaded in {portfolio_elapsed:.3f}s")
+        
+        # Use portfolio snapshot if available, otherwise fall back to portfolio_summary
+        portfolio_reconcile_data = None
+        if portfolio_snapshot:
+            # Use snapshot data
+            portfolio_assets = portfolio_snapshot.get("assets", [])
+            balances_list = [
+                {
+                    "currency": asset.get("symbol") or asset.get("coin") or asset.get("currency"),
+                    "balance": asset.get("balance") or asset.get("total", 0),
+                    "usd_value": asset.get("value_usd") or asset.get("usd_value", 0)
+                }
+                for asset in portfolio_assets
+            ]
+            total_assets_usd = portfolio_snapshot.get("total_assets_usd", 0.0)
+            total_collateral_usd = portfolio_snapshot.get("total_collateral_usd", 0.0)
+            total_borrowed_usd = portfolio_snapshot.get("total_borrowed_usd", 0.0)
+            total_usd_value = portfolio_snapshot.get("total_value_usd", 0.0)
+            portfolio_value_source = portfolio_snapshot.get("portfolio_value_source", "crypto_com_live")
+            # Capture reconcile data from snapshot if present
+            portfolio_reconcile_data = portfolio_snapshot.get("reconcile")
+            # Parse as_of timestamp
+            as_of_str = portfolio_snapshot.get("as_of")
+            if as_of_str:
+                try:
+                    last_updated = datetime.fromisoformat(as_of_str.replace("Z", "+00:00")).timestamp()
+                except:
+                    last_updated = time.time()
+            else:
+                last_updated = time.time()
+        else:
+            # Extract balances from portfolio summary (fallback)
+            balances_list = portfolio_summary.get("balances", [])
+            # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
+            # Backend returns values explicitly:
+            # - total_usd: NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
+            # - total_assets_usd: GROSS raw assets (before haircut and borrowed) - informational only
+            # - total_collateral_usd: Collateral value after haircuts - informational only
+            # - total_borrowed_usd: Total borrowed amounts (shown separately, NOT added to totals)
+            total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)  # GROSS raw assets
+            total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
+            total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)  # Borrowed (separate)
+            total_usd_value = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
+            portfolio_value_source = portfolio_summary.get("portfolio_value_source", "derived:collateral_minus_borrowed")  # Calculation method
+            last_updated = portfolio_summary.get("last_updated")
+            
+            # Capture reconcile data from portfolio_summary if present (debug mode)
+            portfolio_reconcile_data = portfolio_summary.get("reconcile")
+            
+            # Convert balances to portfolio assets format
+            portfolio_assets = [
+                {
+                    "coin": bal.get("currency", ""),
+                    "currency": bal.get("currency", ""),
+                    "symbol": bal.get("currency", ""),
+                    "balance": float(bal.get("balance", 0) or 0),
+                    "value_usd": float(bal.get("usd_value", 0) or 0),
+                    "usd_value": float(bal.get("usd_value", 0) or 0),
+                }
+                for bal in balances_list
+                if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) > 0 or float(bal.get("balance", 0) or 0) > 0)
+            ]
         
         # Log raw data for debugging
-        log.debug(f"Raw portfolio_summary: balances={len(balances_list)}, total_usd={total_usd_value}, last_updated={last_updated}")
+        log.debug(f"Portfolio data: assets={len(portfolio_assets)}, balances={len(balances_list)}, total_usd={total_usd_value}, source={portfolio_value_source}, last_updated={last_updated}")
         
         # Get unified open orders from cache - Crypto.com API is the source of truth
         unified_orders_start = time.time()
@@ -960,7 +1021,7 @@ async def _compute_dashboard_state(db: Session) -> dict:
                     update_result = await asyncio.to_thread(update_portfolio_cache, db)
                     if update_result.get("success"):
                         log.info("   - Portfolio cache updated successfully, retrying get_portfolio_summary")
-                        portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db)
+                        portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db, request_context)
                         balances_list = portfolio_summary.get("balances", [])
                         # Bug 3 Fix: Use total_usd from portfolio_summary (correctly calculated)
                         total_usd_value = portfolio_summary.get("total_usd", 0.0)
@@ -1020,8 +1081,12 @@ async def _compute_dashboard_state(db: Session) -> dict:
                 "total_assets_usd": total_assets_usd,  # GROSS raw assets (before haircut and borrowed)
                 "total_collateral_usd": total_collateral_usd,  # Collateral after haircuts (informational)
                 "total_borrowed_usd": total_borrowed_usd,  # Borrowed amounts (shown separately)
-                "portfolio_value_source": portfolio_value_source,  # Calculation method: "exchange_margin_equity" or "derived_collateral_minus_borrowed"
-                "exchange": "Crypto.com Exchange"
+                "portfolio_value_source": portfolio_value_source,  # Calculation method: "exchange:{field_path}" | "derived:collateral_minus_borrowed"
+                "exchange": "Crypto.com Exchange",
+                "as_of": datetime.fromtimestamp(last_updated, tz=timezone.utc).isoformat() if last_updated else None,  # Timestamp when snapshot was taken
+                # Include reconcile data if PORTFOLIO_RECONCILE_DEBUG=1 (only in debug mode, safe - no secrets)
+                **({"reconcile": portfolio_reconcile_data} if portfolio_reconcile_data else {}),
+                **({"reconcile": portfolio_summary.get("reconcile")} if not portfolio_reconcile_data and portfolio_summary and portfolio_summary.get("reconcile") else {})
             },
             # Invariant: Total Value shown to users must equal Crypto.com Margin "Wallet Balance" (NET).
             # This is enforced by using total_usd from portfolio_summary, which is calculated as:
@@ -1070,15 +1135,36 @@ async def _compute_dashboard_state(db: Session) -> dict:
 
 @router.get("/dashboard/state")
 async def get_dashboard_state(
-    db: Session = Depends(get_db)
+    request: Request,
+    db: Session = Depends(get_db),
+    reconcile_debug: Optional[bool] = None
 ):
     """
     FastAPI route handler for /dashboard/state endpoint.
     Delegates to _compute_dashboard_state to avoid circular dependencies.
+    
+    Args:
+        reconcile_debug: Optional query parameter to enable reconcile debug (for SSM/local debugging)
     """
     log.info("[DASHBOARD_STATE_DEBUG] GET /api/dashboard/state received")
     try:
-        result = await _compute_dashboard_state(db)
+        # Pass request context for reconcile debug (header or query param toggle for SSM/local)
+        # FastAPI headers are case-insensitive, access as dict
+        request_headers = {}
+        for key, value in request.headers.items():
+            request_headers[key.lower()] = value
+        
+        # Check query parameter (easier for testing via curl)
+        if reconcile_debug is None:
+            # Check query string
+            query_params = dict(request.query_params)
+            reconcile_debug = query_params.get("reconcile_debug", "").lower() in ("1", "true", "yes")
+        
+        request_context = {
+            "headers": request_headers,
+            "reconcile_debug": reconcile_debug
+        }
+        result = await _compute_dashboard_state(db, request_context=request_context)
         # FIX: Check portfolio.assets (v4.0 format) instead of portfolio.balances
         # portfolio.balances doesn't exist - balances is at top level for backward compatibility
         # portfolio.assets is the main portfolio data structure
@@ -3397,3 +3483,53 @@ def diagnostics_portfolio_verify_lite(
     except Exception as e:
         log.error(f"Error in portfolio verification (lite): {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
+@router.get("/diagnostics/portfolio/reconcile", tags=["diagnostics"])
+def get_portfolio_reconcile_diagnostics(db: Session = Depends(get_db)):
+    """
+    Diagnostics endpoint for portfolio reconcile evidence.
+    Returns ONLY safe portfolio reconcile data (no secrets, API keys, account IDs, or full raw exchange payload).
+    
+    Gated by: ENVIRONMENT=local OR PORTFOLIO_DEBUG=1
+    """
+    import os
+    from app.core.environment import getRuntimeEnv
+    
+    # Gate access: only allow in local environment or when PORTFOLIO_DEBUG=1
+    environment = getRuntimeEnv()
+    portfolio_debug = os.getenv("PORTFOLIO_DEBUG", "0") == "1"
+    
+    if environment != "local" and not portfolio_debug:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. This endpoint is only available when ENVIRONMENT=local or PORTFOLIO_DEBUG=1"
+        )
+    
+    try:
+        from app.services.portfolio_cache import get_portfolio_summary
+        
+        # Get portfolio summary with reconcile data (request_context enables debug for this call)
+        portfolio_summary = get_portfolio_summary(db, request_context={"reconcile_debug": True})
+        
+        # Get exchange name
+        exchange_name = "crypto_com"
+        
+        # Extract reconcile data (safe fields only)
+        reconcile = portfolio_summary.get("reconcile", {})
+        
+        # Build safe response (no secrets, no API keys, no account IDs, no full raw payload)
+        result = {
+            "exchange": exchange_name,
+            "total_value_usd": portfolio_summary.get("total_value_usd"),
+            "portfolio_value_source": portfolio_summary.get("portfolio_value_source"),
+            "raw_fields": reconcile.get("raw_fields", {}),
+            "candidates": reconcile.get("candidates", {}),
+            "chosen": reconcile.get("chosen", {})
+        }
+        
+        return result
+        
+    except Exception as e:
+        log.error(f"Error in portfolio reconcile diagnostics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Diagnostics failed: {str(e)}")

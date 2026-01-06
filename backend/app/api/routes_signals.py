@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Query, HTTPException, Depends
+from fastapi import APIRouter, Query, HTTPException, Depends, Request
 import logging
 from typing import List, Optional, Dict
 import numpy as np
 import random
+import os
+import time
 
 # Import database session if available
 try:
@@ -14,6 +16,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Temporary debug: in-memory per-symbol lock to block duplicates
+# Only active if SIGNALS_DUP_GUARD=1 env var is set
+SIGNALS_DUP_GUARD_ENABLED = os.getenv("SIGNALS_DUP_GUARD", "0") == "1"
+_signals_in_flight: Dict[str, float] = {}  # symbol -> timestamp when request started
 
 def calculate_rsi(prices: List[float], period: int = 14) -> float:
     """Calculate Relative Strength Index (RSI)"""
@@ -394,6 +401,7 @@ def get_data_sources_status():
 
 @router.get("/signals")
 def get_signals(
+    request: Request,
     exchange: str = Query(..., description="Exchange name"),
     symbol: str = Query(..., description="Trading symbol"),
     rsi_period: int = Query(14, description="RSI period"),
@@ -415,7 +423,39 @@ def get_signals(
     start_time = time_module.time()
     MAX_TIME_BUDGET_S = 2.0  # Hard cap to keep the endpoint responsive under load
     
-    logger.info(f"🔍 [SIGNALS] Starting request for {symbol} (exchange: {exchange})")
+    # Extract request ID from header for duplicate tracking
+    rid = request.headers.get("X-Req-Id", "unknown") if request else "unknown"
+    ts = time_module.time()
+    
+    # Temporary debug: Check for duplicate requests (if guard enabled)
+    if SIGNALS_DUP_GUARD_ENABLED:
+        if symbol in _signals_in_flight:
+            elapsed = ts - _signals_in_flight[symbol]
+            if elapsed < 2.0:  # Within 2 seconds
+                # Duplicate detected - block it
+                logger.warning(f"[signals] DUP_BLOCK symbol={symbol} rid={rid} ts={ts} elapsed={elapsed:.3f}s")
+                print(f"[signals] DUP_BLOCK symbol={symbol} rid={rid} ts={ts} elapsed={elapsed:.3f}s")
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "ok": False,
+                        "error": "DUPLICATE_BLOCKED",
+                        "symbol": symbol,
+                        "rid": rid,
+                        "elapsed": elapsed
+                    }
+                )
+        # Mark as in-flight
+        _signals_in_flight[symbol] = ts
+        # Clean up old entries (older than 2s)
+        _signals_in_flight = {k: v for k, v in _signals_in_flight.items() if (ts - v) < 2.0}
+    
+    # Log every request with symbol + request ID + timestamp
+    logger.info(f"[signals] symbol={symbol} rid={rid} ts={ts}")
+    print(f"[signals] symbol={symbol} rid={rid} ts={ts}")
+    
+    logger.info(f"🔍 [SIGNALS] Starting request for {symbol} (exchange: {exchange}, rid: {rid})")
     try:
         # Try to get data from database first (fast, < 100ms)
         # This avoids external API calls completely

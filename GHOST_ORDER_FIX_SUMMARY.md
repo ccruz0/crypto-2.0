@@ -91,3 +91,6 @@ The Trading Dashboard showed a BTC_USDT BUY LIMIT order as ACTIVE, but this orde
 - ✅ Guardrails added (logging + invariant)
 - ✅ Every order shown must exist in Crypto.com API response
 
+
+
+

@@ -27,7 +27,6 @@ class TelegramMessage(Base):
     
     # Index for efficient queries
     __table_args__ = (
-        Index('ix_telegram_messages_timestamp', 'timestamp'),
         Index('ix_telegram_messages_symbol_blocked', 'symbol', 'blocked'),
     )
     

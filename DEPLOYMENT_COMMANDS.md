@@ -109,3 +109,6 @@ Both services configured:
 - `backend-aws` (lines 169-170)
 - `market-updater-aws` (lines 263-264)
 
+
+
+

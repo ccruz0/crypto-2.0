@@ -18,7 +18,7 @@ from datetime import datetime, timezone, timedelta
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
 
-@router.get("/health/system")
+@router.get("/health/system", name="get_system_health")
 async def get_system_health_endpoint(db: Session = Depends(get_db)):
     """
     Get system health status.

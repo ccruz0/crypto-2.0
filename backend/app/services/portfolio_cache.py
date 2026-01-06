@@ -912,6 +912,9 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
         # - mark price adjustments
         # This is more accurate than our derived calculation.
         
+        # Determine if reconcile debug should be enabled for this request
+        reconcile_debug_enabled = _should_enable_reconcile_debug(request_context)
+        
         # Initialize reconciliation data (only populated if reconcile_debug_enabled=1)
         # Always initialize to ensure structure exists even if debug is disabled (prevents KeyError)
         reconcile_data = {
@@ -961,6 +964,13 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                 "total_balance_after_haircut",
                 "account_balance_after_haircut",
                 "equity_after_haircut",
+                # camelCase variants
+                "walletBalanceAfterHaircut",
+                "walletBalanceAfHaircut",
+                "balanceAfterHaircut",
+                "totalBalanceAfterHaircut",
+                "accountBalanceAfterHaircut",
+                "equityAfterHaircut",
             ]
             
             # Priority 1: Standard wallet/balance fields
@@ -969,6 +979,11 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                 "account_balance",
                 "total_balance",
                 "net_balance",
+                # camelCase variants
+                "walletBalance",
+                "accountBalance",
+                "totalBalance",
+                "netBalance",
             ]
             
             # Priority 2: Equity fields
@@ -976,11 +991,16 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                 "equity",
                 "net_equity",
                 "total_equity",
+                # camelCase variants
+                "netEquity",
+                "totalEquity",
             ]
             
             # Priority 3: Margin-specific fields
             margin_fields = [
                 "margin_equity",
+                # camelCase variants
+                "marginEquity",
             ]
             
             # Other equity-like fields
@@ -988,17 +1008,33 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                 "account_equity",
                 "available_equity",
                 "balance_equity",
+                # camelCase variants
+                "accountEquity",
+                "availableEquity",
+                "balanceEquity",
             ]
             
             # Combine all candidates for scanning
             all_candidates = after_haircut_patterns + wallet_balance_fields + equity_fields + margin_fields + other_equity_fields
             
-            # Check all candidate fields at this level
-            for field in all_candidates:
-                if field in data:
-                    value = normalize_numeric_value(data[field])
+            # Check all candidate fields at this level (case-insensitive matching)
+            data_keys_lower = {k.lower(): k for k in data.keys()}
+            
+            for candidate in all_candidates:
+                # Try exact match first
+                if candidate in data:
+                    value = normalize_numeric_value(data[candidate])
                     if value is not None and value != 0:
-                        field_path = f"{prefix}.{field}" if prefix else field
+                        field_path = f"{prefix}.{candidate}" if prefix else candidate
+                        found_fields[field_path] = value
+                        if reconcile_debug_enabled:
+                            reconcile_data["raw_fields"][field_path] = value
+                # Try case-insensitive match
+                elif candidate.lower() in data_keys_lower:
+                    actual_key = data_keys_lower[candidate.lower()]
+                    value = normalize_numeric_value(data[actual_key])
+                    if value is not None and value != 0:
+                        field_path = f"{prefix}.{actual_key}" if prefix else actual_key
                         found_fields[field_path] = value
                         if reconcile_debug_enabled:
                             reconcile_data["raw_fields"][field_path] = value
@@ -1082,20 +1118,23 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                 chosen_field_path = None
                 
                 # Priority 0: Fields that explicitly indicate "after haircut" (matches Crypto.com UI "Wallet Balance (after haircut)")
+                # Support both snake_case and camelCase
                 after_haircut_patterns = [
                     "wallet_balance_after_haircut", "wallet_balance_af_haircut",
                     "balance_after_haircut", "total_balance_after_haircut",
-                    "account_balance_after_haircut", "equity_after_haircut"
+                    "account_balance_after_haircut", "equity_after_haircut",
+                    "walletbalanceafterhaircut", "walletbalanceafhaircut",
+                    "balanceafterhaircut", "totalbalanceafterhaircut",
+                    "accountbalanceafterhaircut", "equityafterhaircut"
                 ]
                 
-                # Find all after_haircut fields
+                # Find all after_haircut fields (case-insensitive, supports both snake_case and camelCase)
                 after_haircut_candidates = {}
                 for field_path, value in all_equity_fields.items():
-                    field_name_lower = field_path.split(".")[-1].split("[")[0].lower()
-                    for pattern in after_haircut_patterns:
-                        if pattern in field_name_lower or "after_haircut" in field_name_lower or "af_haircut" in field_name_lower:
-                            after_haircut_candidates[field_path] = value
-                            break
+                    field_name_lower = field_path.split(".")[-1].split("[")[0].lower().replace("_", "").replace("-", "")
+                    # Check for after_haircut or afterHaircut patterns
+                    if "afterhaircut" in field_name_lower or "afhaircut" in field_name_lower:
+                        after_haircut_candidates[field_path] = value
                 
                 if after_haircut_candidates:
                     # Priority within after_haircut: wallet_balance* > account_balance* > equity*
@@ -1121,11 +1160,13 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                         logger.info(f"✅ [PRIORITY 0] Using after_haircut field '{field_path}': ${exchange_equity_value:,.2f}")
                 
                 # Priority 1: wallet_balance / account_balance / total_balance (even if not labeled after haircut)
+                # Support both snake_case and camelCase
                 if exchange_equity_value is None:
-                    priority_1_fields = ["wallet_balance", "account_balance", "total_balance", "net_balance"]
+                    priority_1_fields = ["wallet_balance", "account_balance", "total_balance", "net_balance",
+                                         "walletbalance", "accountbalance", "totalbalance", "netbalance"]
                     for field_path, value in all_equity_fields.items():
-                        field_name = field_path.split(".")[-1].split("[")[0].lower()
-                        if field_name in priority_1_fields:
+                        field_name = field_path.split(".")[-1].split("[")[0].lower().replace("_", "").replace("-", "")
+                        if field_name in [f.replace("_", "").replace("-", "") for f in priority_1_fields]:
                             exchange_equity_value = value
                             portfolio_value_source = f"exchange:{field_path}"
                             chosen_field_path = field_path
@@ -1133,22 +1174,24 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                             break
                 
                 # Priority 2: equity / net_equity / total_equity
+                # Support both snake_case and camelCase
                 if exchange_equity_value is None:
-                    priority_2_fields = ["equity", "net_equity", "total_equity"]
+                    priority_2_fields = ["equity", "net_equity", "total_equity",
+                                         "netequity", "totalequity"]
                     for field_path, value in all_equity_fields.items():
-                        field_name = field_path.split(".")[-1].split("[")[0].lower()
-                        if field_name in priority_2_fields:
+                        field_name = field_path.split(".")[-1].split("[")[0].lower().replace("_", "").replace("-", "")
+                        if field_name in [f.replace("_", "").replace("-", "") for f in priority_2_fields]:
                             exchange_equity_value = value
                             portfolio_value_source = f"exchange:{field_path}"
                             chosen_field_path = field_path
                             logger.info(f"✅ [PRIORITY 2] Found equity field '{field_path}': ${exchange_equity_value:,.2f}")
                             break
                 
-                # Priority 3: margin_equity
+                # Priority 3: margin_equity (supports both snake_case and camelCase)
                 if exchange_equity_value is None:
                     for field_path, value in all_equity_fields.items():
-                        field_name = field_path.split(".")[-1].split("[")[0].lower()
-                        if field_name == "margin_equity":
+                        field_name = field_path.split(".")[-1].split("[")[0].lower().replace("_", "").replace("-", "")
+                        if field_name == "marginequity":
                             exchange_equity_value = value
                             portfolio_value_source = f"exchange:{field_path}"
                             chosen_field_path = field_path

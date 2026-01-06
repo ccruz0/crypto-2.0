@@ -798,6 +798,8 @@ async def update_market_data():
                             db.add(market_data)
                         
                         # CRITICAL: Also update watchlist_master table (source of truth for UI)
+                        # Use a savepoint to isolate this update so it doesn't abort the main transaction
+                        savepoint = db.begin_nested()
                         try:
                             from app.models.watchlist_master import WatchlistMaster
                             from datetime import datetime, timezone
@@ -838,10 +840,14 @@ async def update_market_data():
                                     master.update_field('res_down', res_down, now)
                                 
                                 master.updated_at = now
+                                savepoint.commit()
                             else:
                                 # Master row doesn't exist - will be created by seeding on next API call
                                 logger.debug(f"watchlist_master row not found for {symbol}, will be seeded on next API call")
+                                savepoint.rollback()
                         except Exception as master_err:
+                            # Rollback the savepoint to prevent aborting the main transaction
+                            savepoint.rollback()
                             # Don't fail the entire update if master table update fails
                             logger.warning(f"Error updating watchlist_master for {symbol}: {master_err}")
                     

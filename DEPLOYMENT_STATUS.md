@@ -1,64 +1,136 @@
-# DOT Order Limit Fix - Deployment Status
+# Deployment Status
 
-## ✅ Code Status
-- **Fix implemented**: ✅ Present in codebase (line 2141 in signal_monitor.py)
-- **Committed**: ✅ Already in commit `5dbb99c` (from previous work)
-- **Pushed to main**: ✅ Yes (commit is in remote)
+## Current Status
 
-## 🔄 Deployment Status
+Deployment command has been sent to AWS instance `i-08726dc37133b2454`.
 
-### Option 1: GitHub Actions (Recommended)
-- **Status**: 2 deployments currently in progress
-- **Workflow**: `.github/workflows/deploy_session_manager.yml`
-- **Auto-triggered**: Yes, on push to main
-- **Action**: Wait for current deployments to complete (~5-10 minutes)
+**Command ID**: `aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5`
 
-Check status:
+## What's Happening
+
+The deployment script is:
+1. ✅ Pulling latest code from git
+2. 🔄 Building Docker image (backend-aws)
+3. ⏳ Starting/restarting container
+4. ⏳ Waiting for service to start
+5. ⏳ Running audit script
+
+This process typically takes **3-5 minutes**.
+
+## Check Status
+
 ```bash
-gh run list --workflow=deploy_session_manager.yml --limit 5
+# Check deployment status
+./check_deployment_status.sh
+
+# Or manually
+aws ssm get-command-invocation \
+  --command-id aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5 \
+  --instance-id i-08726dc37133b2454 \
+  --region ap-southeast-1 \
+  --query "Status" \
+  --output text
 ```
 
-### Option 2: Manual Deployment
-- **Script created**: `deploy_dot_fix.sh`
-- **Status**: Ready to use
-- **Issue**: Previous rebuild attempts failed (likely Docker Compose issues)
+## What to Expect
 
-Manual deployment:
-```bash
-./deploy_dot_fix.sh
-```
+### When Deployment Completes:
 
-## 📋 Next Steps
+1. **Container Status**
+   - Container should be running
+   - Check: `docker compose --profile aws ps`
 
-### Immediate (Recommended)
-1. **Wait for GitHub Actions** - The deployments in progress should include the fix
-2. **Verify after completion** - Run `./verify_dot_fix.sh` once deployments finish
-
-### If GitHub Actions Fails
-1. Check deployment logs in GitHub Actions
-2. SSH into server and manually rebuild:
-   ```bash
-   ssh ubuntu@54.254.150.31
-   cd ~/automated-trading-platform
-   git pull origin main
-   docker compose --profile aws build backend-aws
-   docker compose --profile aws up -d backend-aws
+2. **Heartbeat Logs** (appear every ~5 minutes)
+   ```
+   [HEARTBEAT] SignalMonitorService alive - cycle=10 last_run=...
    ```
 
-## 🔍 Verification
+3. **Audit Report**
+   - Location: `docs/reports/no-alerts-no-trades-audit-*.md`
+   - Contains root causes and recommended fixes
 
-Once deployed, verify fix is active:
+4. **Global Blockers** (if any)
+   ```
+   [GLOBAL_BLOCKER] Telegram notifier is disabled
+   [GLOBAL_BLOCKER] No watchlist items with alert_enabled=True found
+   ```
+
+## Next Steps After Deployment
+
+1. **Check Status**
+   ```bash
+   ./check_deployment_status.sh
+   ```
+
+2. **Verify Deployment**
+   ```bash
+   # SSH into AWS server
+   ssh your-aws-server
+   
+   # Check container
+   docker compose --profile aws ps
+   
+   # Check logs
+   docker logs automated-trading-platform-backend-aws-1 | grep HEARTBEAT
+   ```
+
+3. **View Audit Report**
+   ```bash
+   # On AWS server
+   cat docs/reports/no-alerts-no-trades-audit-*.md | tail -1
+   
+   # Or download locally
+   scp your-aws-server:/path/to/repo/docs/reports/no-alerts-no-trades-audit-*.md ./
+   ```
+
+4. **Fix Issues Based on Audit**
+   - Review the audit report
+   - Apply recommended fixes
+   - Re-run audit to verify
+
+## Troubleshooting
+
+### If Deployment Fails
+
+1. Check command output:
+   ```bash
+   aws ssm get-command-invocation \
+     --command-id aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5 \
+     --instance-id i-08726dc37133b2454 \
+     --region ap-southeast-1
+   ```
+
+2. Common issues:
+   - Git pull failed (ownership issues) - Already handled in script
+   - Container name mismatch - Script now auto-detects container name
+   - Build timeout - May need to increase timeout
+
+### If Audit Fails
+
+1. Check container is running
+2. Check database connectivity
+3. Run audit manually:
+   ```bash
+   docker exec <container-name> python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24
+   ```
+
+## Manual Deployment (If SSM Fails)
+
+If SSM deployment fails, you can deploy manually:
+
 ```bash
-./verify_dot_fix.sh
+# SSH into AWS server
+ssh your-aws-server
+
+# Navigate to project
+cd /home/ubuntu/automated-trading-platform
+
+# Pull latest code
+git pull origin main
+
+# Deploy
+./deploy_audit_fixes.sh
+
+# Run audit
+./run_audit_in_production.sh
 ```
-
-Expected output:
-- ✅ Fix code verified in container (should show "1")
-- Recent DOT order activity in logs
-- Blocked order messages when limit reached
-
-## 📝 Summary
-
-**The fix code is ready and in the repository.** The deployment is happening via GitHub Actions automatically. Once the current deployments complete, the fix should be active in production.
-
-**No further action needed** - just wait for GitHub Actions to complete and then verify.

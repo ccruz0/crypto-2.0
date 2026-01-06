@@ -1,0 +1,23 @@
+{
+  "ALGO_USDT": [
+    {
+      "ts": 1767438996601,
+      "rid": "sig_ALGO_USDT_1767438996600_0dd315e7432068",
+      "stack": "Error\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:812:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3789:80)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3788:64)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3912:25)"
+    }
+  ],
+  "AAVE_USDT": [
+    {
+      "ts": 1767438999645,
+      "rid": "sig_AAVE_USDT_1767438999645_5ffff7b64e60b",
+      "stack": "Error\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:812:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3789:80)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3788:64)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3912:25)"
+    }
+  ],
+  "BTC_USDT": [
+    {
+      "ts": 1767439002535,
+      "rid": "sig_BTC_USDT_1767439002535_a5a781ef169578",
+      "stack": "Error\n    at http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:744:35\n    at getTradingSignals (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_443603df._.js:812:7)\n    at DashboardPageContent.useCallback[fetchSignals] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3696:232)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3789:80)\n    at Array.map (<anonymous>)\n    at DashboardPageContent.useCallback[runFastTick] (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3788:64)\n    at async DashboardPageContent.useCallback[scheduleFastTick].tick (http://localhost:3000/_next/static/chunks/automated-trading-platform_frontend_src_app_page_tsx_51023cf4._.js:3912:25)"
+    }
+  ]
+}

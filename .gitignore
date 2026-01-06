@@ -5,6 +5,7 @@
 .env.development.local
 .env.test.local
 .env.production.local
+.env.secrets.local
 
 # Python
 __pycache__/
@@ -88,3 +89,6 @@ dmypy.json
 # Secrets
 secrets/
 *.tar.gz
+
+# Local portfolio data (fallback for local dev)
+backend/app/data/local_portfolio.json

@@ -1,142 +1,129 @@
 # Portfolio Total Value Fix Summary
 
-## Problem
-The Trading Dashboard "Total Value" (12,255.72 USD) did NOT match Crypto.com Exchange "Portfolio balance" (11,814.17 USD). Difference: ~441 USD.
+## Goal
+Fix portfolio total value to match Crypto.com Dashboard "Wallet Balance" exactly by prioritizing exchange-reported equity over derived calculations.
 
-## Root Cause Analysis
+## Changes Made
 
-### Issue 1: Multiple Price Sources
-**File**: `backend/app/services/portfolio_cache.py`
+### Backend (`backend/app/services/portfolio_cache.py`)
 
-**Problem**: The code was using multiple price sources:
-1. Crypto.com `market_value` (correct - matches Crypto.com UI)
-2. Crypto.com ticker prices (correct - matches Crypto.com UI)
-3. **CoinGecko prices (WRONG - causes mismatches)**
+1. **Updated Debug Flag** (line ~21):
+   - Changed from `reconcile_debug_enabled = os.getenv("reconcile_debug_enabled", "0")` 
+   - To: `PORTFOLIO_RECONCILE_DEBUG = os.getenv("PORTFOLIO_RECONCILE_DEBUG", "0") == "1"`
+   - Added alias: `reconcile_debug_enabled = PORTFOLIO_RECONCILE_DEBUG` for backward compatibility
 
-CoinGecko prices can differ from Crypto.com prices, causing the portfolio value to not match Crypto.com UI.
+2. **Enhanced Equity Field Priority** (lines ~956-968):
+   - Reorganized equity field candidates list with clear priority ordering
+   - Primary fields: `equity`, `wallet_balance`, `account_balance`, `total_balance`, `net_balance`
+   - Secondary fields: `margin_equity`, `total_equity`, `account_equity`, `net_equity`, etc.
 
-### Issue 2: Net vs Gross Calculation
-**File**: `backend/app/api/routes_dashboard.py`
+3. **Existing Implementation** (already correct):
+   - ✅ Comprehensive equity field scanning via `scan_for_equity_fields()` function
+   - ✅ Recursive scanning through `result.result`, `result.data[0]`, and nested structures
+   - ✅ Priority-based selection: exchange equity → margin equity → derived calculation
+   - ✅ Debug support via `PORTFOLIO_RECONCILE_DEBUG=1` includes `raw_fields`, `candidates`, `chosen`
 
-**Problem**: The dashboard was using `total_usd` (net equity = assets - borrowed) instead of `total_assets_usd` (gross assets).
+### Frontend (`frontend/src/app/components/tabs/PortfolioTab.tsx`)
 
-Crypto.com Exchange UI shows "Portfolio balance" as **gross assets** (sum of all asset values), NOT net equity. Borrowed amounts are shown separately.
+1. **Updated Badge Labels** (lines ~229-237):
+   - Exchange source: Shows "Crypto.com Balance" (with "(AWS)" if applicable)
+   - Derived source: Changed from "Derived (collateral − borrowed)" to "Derived (fallback)"
+   - Badge colors: Green for exchange, Yellow for derived
 
-## Solution
+2. **Existing Implementation** (already correct):
+   - ✅ Uses `portfolio.total_value_usd` directly from backend (no recalculation)
+   - ✅ Displays portfolio even when `assets` array is empty if `total_value_usd` exists
+   - ✅ Shows source badge based on `portfolio_value_source` field
 
-### 1. Removed CoinGecko Fallback
-**File**: `backend/app/services/portfolio_cache.py`
+## How It Works
 
-**Changes**:
-- Removed CoinGecko price fetching
-- Now uses ONLY Crypto.com data:
-  1. `market_value` from Crypto.com API (when available) - **matches Crypto.com UI exactly**
-  2. Crypto.com ticker prices (USDT/USD pairs) - **matches Crypto.com UI**
-  3. Stablecoin 1:1 conversion (USDT/USD/USDC)
+### Backend Priority Logic
 
-**Priority order**:
-1. `market_value` from Crypto.com API (if available)
-2. Crypto.com ticker prices (from `get-tickers` or `get-ticker` API)
-3. Stablecoin 1:1 (for USDT/USD/USDC)
+1. **Priority 1**: Exchange-reported balance/equity
+   - Scans for: `equity`, `wallet_balance`, `account_balance`, `total_balance`, `net_balance`
+   - Sets: `portfolio_value_source = "exchange_{field_name}"`
+   - Example: `"exchange_wallet_balance"`
 
-### 2. Fixed Total Value to Match Crypto.com UI
-**File**: `backend/app/api/routes_dashboard.py`
+2. **Priority 2**: Exchange-reported margin equity
+   - Scans for: `margin_equity`
+   - Sets: `portfolio_value_source = "exchange_margin_equity"`
 
-**Changes**:
-- Changed `total_usd_value = portfolio_summary.get("total_usd", 0.0)` 
-- To: `total_usd_value = total_assets_usd` (gross assets, matches Crypto.com UI)
-- Added comment explaining that Crypto.com UI shows gross assets, not net equity
+3. **Priority 3**: Derived calculation (fallback only)
+   - Calculates: `total_collateral_usd - total_borrowed_usd`
+   - Sets: `portfolio_value_source = "derived_collateral_minus_borrowed"`
+   - Logs warning when used
 
-### 3. Added Diagnostic Logging
-**File**: `backend/app/services/portfolio_cache.py`
+### Equity Field Scanning
 
-**New Feature**: Set `PORTFOLIO_DEBUG=1` environment variable to enable detailed logging:
+The `scan_for_equity_fields()` function:
+- Recursively scans entire API response structure
+- Checks top-level fields, `result.result`, `result.data[0]`, and nested objects
+- Normalizes numeric values (handles strings, commas, "--", etc.)
+- Returns all found equity fields with their paths
 
-```
-[PORTFOLIO_DEBUG] ========== PORTFOLIO VALUATION BREAKDOWN ==========
-[PORTFOLIO_DEBUG] Symbol      Quantity            Price          Price Source                    USD Value      Included  
-[PORTFOLIO_DEBUG] ------------ -------------------- --------------- ------------------------------ --------------- ----------
-[PORTFOLIO_DEBUG] BTC         0.12345678          $43210.12345678 crypto_com_market_value        $5321.45       YES       
-[PORTFOLIO_DEBUG] ETH         5.12345678          $2345.12345678  crypto_com_ticker_cache        $12034.56      YES       
-...
-[PORTFOLIO_DEBUG] TOTAL ASSETS USD: $12,255.72
-```
+### Frontend Display
 
-This allows comparing our calculation to Crypto.com UI asset-by-asset.
+- **Green Badge**: When `portfolio_value_source.startsWith("exchange_")`
+  - Text: "Crypto.com Balance" (or "Crypto.com Balance (AWS)" if AWS)
+  - Indicates: Value matches Crypto.com Dashboard exactly
+
+- **Yellow Badge**: When `portfolio_value_source === "derived_collateral_minus_borrowed"`
+  - Text: "Derived (fallback)"
+  - Indicates: Fallback calculation (may not match Crypto.com UI)
+
+## Verification
+
+### Build Status
+✅ **PASS**: `npm run build` completed successfully
+- No TypeScript errors
+- No linting errors
+
+### Expected Behavior
+
+1. **When exchange equity is found**:
+   - `total_value_usd` = exchange-reported value
+   - `portfolio_value_source` = `"exchange_{field_name}"`
+   - Frontend shows green "Crypto.com Balance" badge
+   - Value matches Crypto.com Dashboard "Wallet Balance" exactly
+
+2. **When only margin equity is found**:
+   - `total_value_usd` = margin equity value
+   - `portfolio_value_source` = `"exchange_margin_equity"`
+   - Frontend shows green "Crypto.com Balance" badge
+
+3. **When no equity fields found** (fallback):
+   - `total_value_usd` = `total_collateral_usd - total_borrowed_usd`
+   - `portfolio_value_source` = `"derived_collateral_minus_borrowed"`
+   - Frontend shows yellow "Derived (fallback)" badge
+   - Backend logs warning
+
+### Debug Mode
+
+Set `PORTFOLIO_RECONCILE_DEBUG=1` to enable:
+- `portfolio.reconcile.raw_fields`: All equity fields found in API response
+- `portfolio.reconcile.candidates`: All candidate values (exchange, derived, etc.)
+- `portfolio.reconcile.chosen`: Selected value, source, and priority
 
 ## Files Modified
 
-1. **`backend/app/services/portfolio_cache.py`**
-   - Removed CoinGecko price fetching
-   - Added `PORTFOLIO_DEBUG` diagnostic logging
-   - Ensured only Crypto.com prices are used
-   - Added price source tracking
+1. `backend/app/services/portfolio_cache.py`
+   - Line ~21: Updated debug flag to use `PORTFOLIO_RECONCILE_DEBUG`
+   - Lines ~956-968: Enhanced equity field priority list
 
-2. **`backend/app/api/routes_dashboard.py`**
-   - Changed `total_usd_value` to use `total_assets_usd` (gross) instead of `total_usd` (net)
-   - Added comments explaining Crypto.com UI behavior
+2. `frontend/src/app/components/tabs/PortfolioTab.tsx`
+   - Lines ~229-237: Updated badge labels
 
-## Expected Behavior After Fix
+## No Changes To
 
-- ✅ **Total Value** matches Crypto.com "Portfolio balance" (within $5 tolerance)
-- ✅ Only Crypto.com data sources used (market_value or Crypto.com ticker prices)
-- ✅ No external price sources (CoinGecko removed)
-- ✅ Gross assets shown (not net equity) to match Crypto.com UI
-- ✅ Borrowed amounts shown separately (unchanged)
+- Backend equity scanning logic (already comprehensive)
+- Frontend total value usage (already uses backend value directly)
+- Portfolio asset processing
+- Other tabs or components
 
-## Verification Steps
+## Result
 
-### 1. Enable Diagnostic Logging
-```bash
-export PORTFOLIO_DEBUG=1
-# Restart backend
-```
-
-### 2. Check Backend Logs
-Look for:
-```
-[PORTFOLIO_DEBUG] ========== PORTFOLIO VALUATION BREAKDOWN ==========
-```
-
-Compare each asset's USD value with Crypto.com UI.
-
-### 3. Verify Total Value
-- **Hilovivo Dashboard**: Should show `total_assets_usd` as "Total Value"
-- **Crypto.com UI**: Compare "Portfolio balance"
-- **Difference**: Should be ≤ $5 (due to rounding)
-
-### 4. Check Price Sources
-In logs, verify all prices come from:
-- `crypto_com_market_value` (preferred)
-- `crypto_com_ticker_cache` or `crypto_com_ticker_api_*` (fallback)
-- `stablecoin_1to1` (for USDT/USD/USDC)
-
-**Should NOT see**: `coingecko` or other external sources.
-
-## API Endpoints
-
-### Get Portfolio Summary
-```bash
-curl http://localhost:8000/api/dashboard/state | jq '.portfolio.total_value_usd'
-```
-
-### With Diagnostic Logging
-```bash
-PORTFOLIO_DEBUG=1 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-## Notes
-
-- **Balance Field**: Uses `balance` (total) from Crypto.com API, not `available`. This matches Crypto.com UI which shows total balance.
-- **Stablecoins**: USDT/USD/USDC are valued at 1:1 (no price lookup needed).
-- **Tiny Assets**: Assets with balance > 0 but no Crypto.com price will show $0 USD value (may cause small mismatch if Crypto.com includes them).
-- **Borrowed**: Shown separately, NOT subtracted from Total Value (matches Crypto.com UI behavior).
-
-## Minimal Fix Compliance
-
-- ✅ Only portfolio calculation logic changed
-- ✅ No trading logic changes
-- ✅ No Telegram logic changes
-- ✅ Diagnostic logging behind env var (optional)
-- ✅ Backward compatible (total_usd still calculated for other uses)
-
+✅ Portfolio total value now prioritizes exchange-reported equity
+✅ Matches Crypto.com Dashboard "Wallet Balance" when available
+✅ Clear source indication via badges
+✅ Deterministic priority: exchange → margin → derived
+✅ Debug support for troubleshooting mismatches

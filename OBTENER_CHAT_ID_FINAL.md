@@ -121,3 +121,6 @@ Esto te dará el chat_id del canal.
 
 
 
+
+
+

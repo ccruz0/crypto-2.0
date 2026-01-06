@@ -60,3 +60,6 @@ The UI now correctly displays:
 - Total Value = NET Wallet Balance (collateral - borrowed) = matches Crypto.com "Wallet Balance"
 - All supporting metrics (Gross Assets, Collateral, Borrowed) are clearly labeled and visible
 
+
+
+

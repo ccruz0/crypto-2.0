@@ -4,6 +4,60 @@
 
 All lifecycle events have been implemented and integrated into the trading platform. The system now emits structured events at every stage of the order lifecycle, ensuring complete observability and auditability.
 
+## Event Semantics (What Each Event Means)
+
+### ORDER_CREATED
+- **What it means:** Order was successfully placed on the exchange and accepted
+- **When it is emitted:** Immediately after exchange API confirms order creation
+- **What it does NOT mean:**
+  - Order is not yet executed (still pending)
+  - Order will definitely execute
+  - Trade is complete
+
+### ORDER_EXECUTED
+- **What it means:** Order was filled/executed - the trade is complete
+- **When it is emitted:** After confirmation from exchange order history or trade history (not just missing from open orders)
+- **What it does NOT mean:**
+  - Order was canceled
+  - Order is still pending
+- **Status source:** Always includes source (order_history, trade_history) to show how final state was confirmed
+
+### ORDER_CANCELED
+- **What it means:** Order was canceled - the trade did NOT execute
+- **When it is emitted:** After confirmation from exchange order history or explicit cancel API response (not just missing from open orders)
+- **What it does NOT mean:**
+  - Order was executed
+  - Order is still pending
+- **Status source:** Always includes source (order_history, explicit_cancel) to show how final state was confirmed
+
+### ORDER_FAILED
+- **What it means:** Order placement failed - order could not be created
+- **When it is emitted:** When exchange API returns an error during order creation
+- **What it does NOT mean:**
+  - Order was canceled (order never existed)
+  - Order was executed (order never existed)
+
+### SLTP_CREATED
+- **What it means:** Stop loss and take profit orders were successfully placed
+- **When it is emitted:** After SL/TP orders are confirmed created on exchange
+- **What it does NOT mean:**
+  - Primary order was executed
+  - SL/TP orders will definitely execute
+
+### SLTP_FAILED
+- **What it means:** SL/TP orders could not be created
+- **When it is emitted:** When SL/TP order creation fails
+- **What it does NOT mean:**
+  - Primary order failed
+  - Primary order was canceled
+
+### TRADE_BLOCKED
+- **What it means:** Trade was prevented by a gate (cooldown, max orders, etc.)
+- **When it is emitted:** When a trade gate blocks order placement
+- **What it does NOT mean:**
+  - An order was placed
+  - An order was canceled
+
 ## Changes Made
 
 ### 1. ORDER_EXECUTED and ORDER_CANCELED Events

@@ -122,3 +122,6 @@ The breakdown proves:
 - Collateral values = raw_value * (1 - haircut)
 - Totals match: collateral - borrowed = net wallet balance
 
+
+
+
