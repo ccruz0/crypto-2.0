@@ -15,6 +15,74 @@ logger = logging.getLogger(__name__)
 # Diagnostic logging flag (set PORTFOLIO_DEBUG=1 to enable)
 PORTFOLIO_DEBUG = os.getenv("PORTFOLIO_DEBUG", "0") == "1"
 
+# Reconciliation debug mode (set PORTFOLIO_RECONCILE_DEBUG=1 to enable)
+# When enabled, includes reconciliation bundle in portfolio response showing all candidate values
+# Can also be enabled via request context (for SSM/local debugging only)
+PORTFOLIO_RECONCILE_DEBUG = os.getenv("PORTFOLIO_RECONCILE_DEBUG", "0") == "1"
+reconcile_debug_enabled = PORTFOLIO_RECONCILE_DEBUG  # Alias for backward compatibility
+
+def _should_enable_reconcile_debug(request_context: Optional[Dict] = None) -> bool:
+    """
+    Determine if reconciliation debug should be enabled.
+    
+    Checks:
+    1. reconcile_debug_enabled env var
+    2. Request header X-Portfolio-Reconcile-Debug (only for local/SSM sessions)
+    
+    Args:
+        request_context: Optional dict with 'headers' key for request headers
+    
+    Returns:
+        bool: True if reconcile debug should be enabled
+    """
+    # Check env var first (preferred method)
+    if PORTFOLIO_RECONCILE_DEBUG:
+        return True
+    
+    # Check request context (header or query param) for local debugging via SSM
+    if request_context and isinstance(request_context, dict):
+        # Check query parameter first (easier for testing)
+        if request_context.get("reconcile_debug") is True:
+            runtime_origin = os.getenv("RUNTIME_ORIGIN", "").upper()
+            environment = os.getenv("ENVIRONMENT", "").lower()
+            if environment != "aws":  # Allow for non-AWS or unset
+                logger.info("[RECONCILE_DEBUG] Enabled via query param (env=%s, origin=%s)", environment, runtime_origin)
+                return True
+        
+        # Check request header (only for local debugging via SSM)
+        headers = request_context.get("headers", {})
+        if isinstance(headers, dict):
+            # Check for header (case-insensitive, handle both dash and underscore)
+            header_found = False
+            header_value = None
+            for key, value in headers.items():
+                key_lower = key.lower().replace("-", "_")
+                if key_lower == "x_portfolio_reconcile_debug":
+                    header_found = True
+                    header_value = str(value).lower()
+                    break
+            
+            if header_found and header_value in ("1", "true", "yes"):
+                # For SSM port-forward debugging, be more permissive
+                # Check if we're in a safe environment (local dev or SSM port-forward)
+                runtime_origin = os.getenv("RUNTIME_ORIGIN", "").upper()
+                environment = os.getenv("ENVIRONMENT", "").lower()
+                
+                # Allow if explicitly local, or if runtime origin indicates local/SSM access
+                if environment == "local" or runtime_origin in ("LOCAL", "SSM"):
+                    logger.info("[RECONCILE_DEBUG] Enabled via header (safe environment: env=%s, origin=%s)", environment, runtime_origin)
+                    return True
+                
+                # For SSM port-forward, allow if environment is not explicitly "aws" (safer default)
+                # This allows debugging via SSM without requiring env var changes
+                if environment != "aws":
+                    logger.info("[RECONCILE_DEBUG] Enabled via header (non-AWS environment: env=%s, origin=%s)", environment, runtime_origin)
+                    return True
+                else:
+                    logger.warning("[RECONCILE_DEBUG] Header present but blocked (AWS environment detected - use PORTFOLIO_RECONCILE_DEBUG=1 env var instead)")
+    
+    return False
+
 # Cache for table existence checks (avoid repeated inspector calls)
 _table_cache = {}
 _table_cache_lock = threading.Lock()
@@ -644,11 +712,15 @@ def get_last_updated(db: Session) -> float:
         return None
 
 
-def get_portfolio_summary(db: Session) -> Dict:
+def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -> Dict:
     """
     Get summary of cached portfolio data with last updated timestamp
     OPTIMIZED: Uses efficient SQL queries and caching to minimize database calls
     Includes borrowed amounts (loans) subtracted from total value
+    
+    Args:
+        db: Database session
+        request_context: Optional request context (for header-based debug toggles)
     """
     import time as time_module
     start_time = time_module.time()
@@ -831,7 +903,7 @@ def get_portfolio_summary(db: Session) -> Dict:
             except Exception as loan_err:
                 logger.debug(f"Could not get loans data: {loan_err}")
         
-        # CRITICAL: Prefer exchange-reported margin equity over derived calculation.
+        # CRITICAL: Prefer exchange-reported equity over derived calculation.
         # Crypto.com margin wallet provides pre-computed NET balance that includes:
         # - haircuts
         # - borrowed amounts
@@ -840,9 +912,115 @@ def get_portfolio_summary(db: Session) -> Dict:
         # - mark price adjustments
         # This is more accurate than our derived calculation.
         
-        # Check if API provided margin_equity (pre-computed NET balance)
-        margin_equity_from_api = None
+        # Initialize reconciliation data (only populated if reconcile_debug_enabled=1)
+        # Always initialize to ensure structure exists even if debug is disabled (prevents KeyError)
+        reconcile_data = {
+            "raw_fields": {},
+            "candidates": {},
+            "chosen": {}
+        }
+        
+        # Exhaustive equity field detection - scan all possible equity/balance fields
+        # Priority order:
+        # 1. Exchange-reported balance/equity that matches Crypto.com UI "Balance"
+        # 2. Exchange-reported margin equity (if that matches UI)
+        # 3. Fallback: derived calculation (collateral_after_haircut - borrowed)
+        
+        exchange_equity_value = None
+        exchange_margin_equity_value = None
         portfolio_value_source = None
+        balance_data_fresh = None
+        
+        def normalize_numeric_value(value):
+            """Normalize any numeric value to float, handling strings, None, etc."""
+            if value is None:
+                return None
+            try:
+                if isinstance(value, str):
+                    # Remove commas, whitespace, and handle "--" or empty strings
+                    cleaned = value.strip().replace(",", "").replace(" ", "").replace("--", "").strip()
+                    if not cleaned or cleaned.lower() in ["0", "0.0", "0.00", "null", "none"]:
+                        return None
+                    return float(cleaned)
+                return float(value)
+            except (ValueError, TypeError):
+                return None
+        
+        def scan_for_equity_fields(data, prefix=""):
+            """Recursively scan data structure for all equity/balance fields."""
+            found_fields = {}
+            if not isinstance(data, dict):
+                return found_fields
+            
+            # Exhaustive list of all possible equity/balance field names
+            # Priority 0: Fields that explicitly indicate "after haircut" (matches Crypto.com UI "Wallet Balance (after haircut)")
+            after_haircut_patterns = [
+                "wallet_balance_after_haircut",
+                "wallet_balance_af_haircut",
+                "balance_after_haircut",
+                "total_balance_after_haircut",
+                "account_balance_after_haircut",
+                "equity_after_haircut",
+            ]
+            
+            # Priority 1: Standard wallet/balance fields
+            wallet_balance_fields = [
+                "wallet_balance",
+                "account_balance",
+                "total_balance",
+                "net_balance",
+            ]
+            
+            # Priority 2: Equity fields
+            equity_fields = [
+                "equity",
+                "net_equity",
+                "total_equity",
+            ]
+            
+            # Priority 3: Margin-specific fields
+            margin_fields = [
+                "margin_equity",
+            ]
+            
+            # Other equity-like fields
+            other_equity_fields = [
+                "account_equity",
+                "available_equity",
+                "balance_equity",
+            ]
+            
+            # Combine all candidates for scanning
+            all_candidates = after_haircut_patterns + wallet_balance_fields + equity_fields + margin_fields + other_equity_fields
+            
+            # Check all candidate fields at this level
+            for field in all_candidates:
+                if field in data:
+                    value = normalize_numeric_value(data[field])
+                    if value is not None and value != 0:
+                        field_path = f"{prefix}.{field}" if prefix else field
+                        found_fields[field_path] = value
+                        if reconcile_debug_enabled:
+                            reconcile_data["raw_fields"][field_path] = value
+            
+            # Recursively check nested structures (defensive - handle all edge cases)
+            try:
+                for key, value in data.items():
+                    if isinstance(value, dict):
+                        nested_prefix = f"{prefix}.{key}" if prefix else key
+                        found_fields.update(scan_for_equity_fields(value, nested_prefix))
+                    elif isinstance(value, list) and len(value) > 0:
+                        # Check first element of array (common pattern: result.data[0])
+                        # Defensive: ensure first element is a dict before accessing
+                        if isinstance(value[0], dict):
+                            nested_prefix = f"{prefix}.{key}[0]" if prefix else f"{key}[0]"
+                            found_fields.update(scan_for_equity_fields(value[0], nested_prefix))
+            except (AttributeError, TypeError, IndexError, KeyError) as e:
+                # Silently skip problematic structures - don't crash the endpoint
+                logger.debug(f"Error scanning nested structure at prefix '{prefix}': {e}")
+            
+            return found_fields
+        
         try:
             from app.services.brokers.crypto_com_trade import trade_client
             # Ensure credentials are updated before API call
@@ -854,40 +1032,249 @@ def get_portfolio_summary(db: Session) -> Dict:
                     trade_client.api_secret = api_secret
             
             balance_data_fresh = trade_client.get_account_summary()
-            margin_equity_from_api = balance_data_fresh.get("margin_equity")
-            if margin_equity_from_api is not None:
-                try:
-                    margin_equity_from_api = float(margin_equity_from_api)
-                    logger.info(f"✅ Using exchange-reported margin equity: ${margin_equity_from_api:,.2f}")
-                except (ValueError, TypeError):
-                    logger.warning(f"Could not parse margin_equity from API: {margin_equity_from_api}")
-                    margin_equity_from_api = None
+            
+            # Defensive: ensure balance_data_fresh is a dict before scanning
+            if not isinstance(balance_data_fresh, dict):
+                logger.warning(f"get_account_summary() returned non-dict type: {type(balance_data_fresh)}")
+                balance_data_fresh = {}
+            
+            # Exhaustive scan of all equity fields in the response
+            all_equity_fields = scan_for_equity_fields(balance_data_fresh)
+            
+            if reconcile_debug_enabled:
+                logger.info(f"[RECONCILE] Found {len(all_equity_fields)} equity/balance fields in API response")
+                for field_path, value in all_equity_fields.items():
+                    logger.debug(f"[RECONCILE]   {field_path}: ${value:,.2f}")
+            
+            # Check for override field (if PORTFOLIO_EQUITY_FIELD_OVERRIDE is set)
+            override_field = os.getenv("PORTFOLIO_EQUITY_FIELD_OVERRIDE", "").strip()
+            if override_field:
+                # Fuzzy match against discovered field paths
+                matched_path = None
+                matched_value = None
+                override_lower = override_field.lower()
+                for field_path, value in all_equity_fields.items():
+                    field_path_lower = field_path.lower()
+                    if override_lower in field_path_lower or field_path_lower in override_lower:
+                        matched_path = field_path
+                        matched_value = value
+                        logger.info(f"✅ [OVERRIDE] Matched override '{override_field}' to field '{field_path}': ${value:,.2f}")
+                        break
+                
+                if matched_path:
+                    exchange_equity_value = matched_value
+                    portfolio_value_source = f"exchange:{matched_path}"
+                    chosen_field_path = matched_path
+                else:
+                    logger.warning(f"⚠️ [OVERRIDE] PORTFOLIO_EQUITY_FIELD_OVERRIDE='{override_field}' not found in API response. Available fields: {list(all_equity_fields.keys())[:10]}")
+                    if reconcile_debug_enabled:
+                        reconcile_data["chosen"] = {
+                            "value": None,
+                            "source_key": "override_not_found",
+                            "field_path": None,
+                            "error": f"Override field '{override_field}' not found in API response"
+                        }
+                    # Continue with normal priority selection
+                    override_field = None
+            
+            # Priority-based selection (only if override not set or not found)
+            if not override_field or exchange_equity_value is None:
+                chosen_field_path = None
+                
+                # Priority 0: Fields that explicitly indicate "after haircut" (matches Crypto.com UI "Wallet Balance (after haircut)")
+                after_haircut_patterns = [
+                    "wallet_balance_after_haircut", "wallet_balance_af_haircut",
+                    "balance_after_haircut", "total_balance_after_haircut",
+                    "account_balance_after_haircut", "equity_after_haircut"
+                ]
+                
+                # Find all after_haircut fields
+                after_haircut_candidates = {}
+                for field_path, value in all_equity_fields.items():
+                    field_name_lower = field_path.split(".")[-1].split("[")[0].lower()
+                    for pattern in after_haircut_patterns:
+                        if pattern in field_name_lower or "after_haircut" in field_name_lower or "af_haircut" in field_name_lower:
+                            after_haircut_candidates[field_path] = value
+                            break
+                
+                if after_haircut_candidates:
+                    # Priority within after_haircut: wallet_balance* > account_balance* > equity*
+                    priority_order = ["wallet_balance", "account_balance", "equity", "balance", "total"]
+                    for priority_term in priority_order:
+                        for field_path, value in after_haircut_candidates.items():
+                            field_name_lower = field_path.split(".")[-1].split("[")[0].lower()
+                            if priority_term in field_name_lower:
+                                exchange_equity_value = value
+                                portfolio_value_source = f"exchange:{field_path}"
+                                chosen_field_path = field_path
+                                logger.info(f"✅ [PRIORITY 0] Found after_haircut field '{field_path}': ${exchange_equity_value:,.2f}")
+                                break
+                        if exchange_equity_value is not None:
+                            break
+                    
+                    # If no priority match, use first after_haircut field
+                    if exchange_equity_value is None:
+                        field_path, value = next(iter(after_haircut_candidates.items()))
+                        exchange_equity_value = value
+                        portfolio_value_source = f"exchange:{field_path}"
+                        chosen_field_path = field_path
+                        logger.info(f"✅ [PRIORITY 0] Using after_haircut field '{field_path}': ${exchange_equity_value:,.2f}")
+                
+                # Priority 1: wallet_balance / account_balance / total_balance (even if not labeled after haircut)
+                if exchange_equity_value is None:
+                    priority_1_fields = ["wallet_balance", "account_balance", "total_balance", "net_balance"]
+                    for field_path, value in all_equity_fields.items():
+                        field_name = field_path.split(".")[-1].split("[")[0].lower()
+                        if field_name in priority_1_fields:
+                            exchange_equity_value = value
+                            portfolio_value_source = f"exchange:{field_path}"
+                            chosen_field_path = field_path
+                            logger.info(f"✅ [PRIORITY 1] Found wallet/balance field '{field_path}': ${exchange_equity_value:,.2f}")
+                            break
+                
+                # Priority 2: equity / net_equity / total_equity
+                if exchange_equity_value is None:
+                    priority_2_fields = ["equity", "net_equity", "total_equity"]
+                    for field_path, value in all_equity_fields.items():
+                        field_name = field_path.split(".")[-1].split("[")[0].lower()
+                        if field_name in priority_2_fields:
+                            exchange_equity_value = value
+                            portfolio_value_source = f"exchange:{field_path}"
+                            chosen_field_path = field_path
+                            logger.info(f"✅ [PRIORITY 2] Found equity field '{field_path}': ${exchange_equity_value:,.2f}")
+                            break
+                
+                # Priority 3: margin_equity
+                if exchange_equity_value is None:
+                    for field_path, value in all_equity_fields.items():
+                        field_name = field_path.split(".")[-1].split("[")[0].lower()
+                        if field_name == "margin_equity":
+                            exchange_equity_value = value
+                            portfolio_value_source = f"exchange:{field_path}"
+                            chosen_field_path = field_path
+                            logger.info(f"✅ [PRIORITY 3] Found margin equity field '{field_path}': ${exchange_equity_value:,.2f}")
+                            break
+                
+                # If still not found, try any other equity field (but log as lower priority)
+                if exchange_equity_value is None and all_equity_fields:
+                    field_path, value = next(iter(all_equity_fields.items()))
+                    exchange_equity_value = value
+                    portfolio_value_source = f"exchange:{field_path}"
+                    chosen_field_path = field_path
+                    logger.info(f"✅ [FALLBACK] Using any exchange equity field '{field_path}': ${exchange_equity_value:,.2f}")
+            
+            # Store account type if present (safe identifier, no secrets)
+            # Defensive: handle missing or malformed accounts data
+            try:
+                if reconcile_debug_enabled and balance_data_fresh and isinstance(balance_data_fresh, dict):
+                    if "accounts" in balance_data_fresh:
+                        accounts = balance_data_fresh["accounts"]
+                        if isinstance(accounts, list) and len(accounts) > 0:
+                            account_types = set()
+                            for acc in accounts:
+                                if isinstance(acc, dict):
+                                    acc_type = acc.get("account_type")
+                                    if acc_type:
+                                        account_types.add(str(acc_type))
+                            if account_types:
+                                reconcile_data["raw_fields"]["account_types"] = list(account_types)
+            except (AttributeError, TypeError, KeyError) as e:
+                logger.debug(f"Error extracting account types: {e}")
+                            
         except Exception as e:
-            logger.debug(f"Could not fetch margin equity from API: {e}")
+            logger.warning(f"Could not fetch equity from API: {e}", exc_info=True)
+            if PORTFOLIO_DEBUG:
+                logger.warning(f"Error fetching account summary for equity: {e}")
+            # Ensure all_equity_fields is initialized even on error
+            all_equity_fields = {}
+            balance_data_fresh = None
+            chosen_field_path = None
         
         # Calculate derived value for comparison
         # Use total_borrowed_usd_for_display (ALL loans) to match what's shown in UI
         # This ensures: Total Value = Collateral - Borrowed (where Borrowed includes all loans)
-        derived_equity = total_collateral_usd - total_borrowed_usd_for_display
+        # Defensive: ensure values are numeric
+        try:
+            total_collateral_usd = float(total_collateral_usd) if total_collateral_usd is not None else 0.0
+            total_borrowed_usd_for_display = float(total_borrowed_usd_for_display) if total_borrowed_usd_for_display is not None else 0.0
+            derived_equity = total_collateral_usd - total_borrowed_usd_for_display
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Error calculating derived equity: {e}, using 0.0")
+            derived_equity = 0.0
         
-        # Use exchange-reported equity if available, otherwise fall back to derived calculation
-        if margin_equity_from_api is not None:
-            total_usd = margin_equity_from_api  # Prefer exchange-reported margin equity
-            portfolio_value_source = "exchange_margin_equity"
-            logger.info(f"✅ Using exchange-reported margin equity as total_usd: ${total_usd:,.2f}")
+        # Build candidate values for reconciliation (SAFE: only numeric values)
+        if reconcile_debug_enabled:
+            reconcile_data["candidates"] = {}
+            
+            # Add exchange candidates (if found)
+            if exchange_equity_value is not None:
+                # Determine candidate key based on field path
+                field_name_lower = chosen_field_path.split(".")[-1].split("[")[0].lower() if chosen_field_path else ""
+                if "after_haircut" in field_name_lower or "af_haircut" in field_name_lower:
+                    if "wallet" in field_name_lower:
+                        reconcile_data["candidates"]["exchange_wallet_balance_after_haircut"] = exchange_equity_value
+                    else:
+                        reconcile_data["candidates"]["exchange_wallet_balance_after_haircut"] = exchange_equity_value  # Default
+                elif "wallet_balance" in field_name_lower:
+                    reconcile_data["candidates"]["exchange_wallet_balance"] = exchange_equity_value
+                elif "equity" in field_name_lower:
+                    reconcile_data["candidates"]["exchange_equity"] = exchange_equity_value
+                elif "margin" in field_name_lower:
+                    reconcile_data["candidates"]["exchange_margin_equity"] = exchange_equity_value
+                else:
+                    reconcile_data["candidates"][f"exchange_{field_name_lower}"] = exchange_equity_value
+            
+            # Always include derived calculation for comparison
+            reconcile_data["candidates"]["derived_collateral_minus_borrowed"] = derived_equity
+        
+        # IMPORTANT: Never pick derived if ANY wallet/balance/equity candidate exists
+        if exchange_equity_value is not None:
+            # Use exchange-reported value
+            total_usd = exchange_equity_value
+            # portfolio_value_source already set in priority selection (format: "exchange:{field_path}")
+            logger.info(f"✅ Using exchange-reported equity as total_usd: ${total_usd:,.2f} (source: {portfolio_value_source})")
             
             if PORTFOLIO_DEBUG:
-                delta = abs(margin_equity_from_api - derived_equity)
-                logger.info(f"[PORTFOLIO_DEBUG] total_value_source=exchange_margin_equity exchange_equity=${margin_equity_from_api:,.2f} derived_equity=${derived_equity:,.2f} delta=${delta:,.2f}")
+                delta = abs(exchange_equity_value - derived_equity) if derived_equity else None
+                logger.info(f"[PORTFOLIO_DEBUG] total_value_source={portfolio_value_source} exchange_equity=${exchange_equity_value:,.2f} derived_equity=${derived_equity:,.2f} delta=${delta:,.2f if delta else 'N/A'}")
+            
+            if reconcile_debug_enabled:
+                # Determine priority from portfolio_value_source
+                priority = 0
+                if "after_haircut" in portfolio_value_source.lower() or "af_haircut" in portfolio_value_source.lower():
+                    priority = 0
+                elif "wallet_balance" in portfolio_value_source.lower() or "account_balance" in portfolio_value_source.lower():
+                    priority = 1
+                elif "equity" in portfolio_value_source.lower() and "margin" not in portfolio_value_source.lower():
+                    priority = 2
+                elif "margin" in portfolio_value_source.lower():
+                    priority = 3
+                else:
+                    priority = 4
+                
+                reconcile_data["chosen"] = {
+                    "value": total_usd,
+                    "source_key": portfolio_value_source.split(":")[-1] if ":" in portfolio_value_source else portfolio_value_source,
+                    "field_path": chosen_field_path,
+                    "priority": priority
+                }
         else:
-            # Fallback: Calculate NET Wallet Balance from collateral and borrowed
-            # Crypto.com Margin "Wallet Balance" = total_collateral_usd - total_borrowed_usd (ALL loans)
+            # Fallback: Only use derived if NO exchange fields exist
             total_usd = derived_equity
-            portfolio_value_source = "derived_collateral_minus_borrowed"
-            logger.debug(f"Using derived calculation: collateral ${total_collateral_usd:,.2f} - borrowed ${total_borrowed_usd_for_display:,.2f} (all loans) = ${total_usd:,.2f}")
+            portfolio_value_source = "derived:collateral_minus_borrowed"
+            logger.warning(f"⚠️ Exchange equity not found, using derived calculation: collateral ${total_collateral_usd:,.2f} - borrowed ${total_borrowed_usd_for_display:,.2f} (all loans) = ${total_usd:,.2f}")
+            logger.warning(f"⚠️ This may not match Crypto.com Dashboard Balance. Check API response for equity fields.")
             
             if PORTFOLIO_DEBUG:
-                logger.info(f"[PORTFOLIO_DEBUG] total_value_source=derived_collateral_minus_borrowed exchange_equity=None derived_equity=${derived_equity:,.2f} delta=N/A")
+                logger.info(f"[PORTFOLIO_DEBUG] total_value_source=derived:collateral_minus_borrowed exchange_equity=None derived_equity=${derived_equity:,.2f} delta=N/A")
+            
+            if reconcile_debug_enabled:
+                reconcile_data["chosen"] = {
+                    "value": total_usd,
+                    "source_key": "derived_collateral_minus_borrowed",
+                    "field_path": None,
+                    "priority": 5  # Fallback priority
+                }
         
         # Computed fields:
         # - total_assets_usd: GROSS raw assets (sum of all asset USD values, before haircut and borrowed)
@@ -947,17 +1334,25 @@ def get_portfolio_summary(db: Session) -> Dict:
         # - total_borrowed_usd: Borrowed amounts (ALL loans including USD, shown separately, NOT added to totals)
         
         if PORTFOLIO_DEBUG:
-            logger.info(f"[PORTFOLIO_DEBUG] Portfolio summary: net=${total_usd:,.2f}, gross=${total_assets_usd:,.2f}, collateral=${total_collateral_usd:,.2f}, borrowed=${total_borrowed_usd:,.2f}, pricing_source=crypto_com_api")
+            logger.info(f"[PORTFOLIO_DEBUG] Portfolio summary: net=${total_usd:,.2f}, gross=${total_assets_usd:,.2f}, collateral=${total_collateral_usd:,.2f}, borrowed=${total_borrowed_usd:,.2f}, pricing_source=crypto_com_api, portfolio_value_source={portfolio_value_source}")
         
-        return {
+        result = {
             "balances": balances,
             "total_usd": total_usd,
             "total_assets_usd": total_assets_usd,
             "total_collateral_usd": total_collateral_usd,
             "total_borrowed_usd": total_borrowed_usd_for_display,  # Use display value (includes ALL loans)
+            "portfolio_value_source": portfolio_value_source,  # Source of total_usd calculation
             "loans": loans,
             "last_updated": last_updated
         }
+        
+        # Add reconcile data if debug mode is enabled
+        # Always include reconcile structure (even if empty) when debug is enabled to prevent KeyError in frontend
+        if reconcile_debug_enabled:
+            result["reconcile"] = reconcile_data
+        
+        return result
     except Exception as e:
         logger.error(f"Error getting portfolio summary: {e}", exc_info=True)
         return {
