@@ -1,5 +1,7 @@
 """Diagnostic endpoints for Crypto.com authentication troubleshooting"""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app.database import get_db
 import logging
 from datetime import datetime, timezone
 import time
@@ -7,6 +9,13 @@ import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _diagnostics_enabled():
+    """Check if diagnostics endpoints are enabled."""
+    env = os.getenv("ENVIRONMENT", "")
+    debug = os.getenv("PORTFOLIO_DEBUG", "0")
+    return env == "local" or debug == "1"
 
 @router.get("/diag/crypto-auth")
 def crypto_auth_diagnostic():
@@ -86,17 +95,17 @@ def whoami_diagnostic():
     Returns service info without exposing secrets.
     """
     # Gate by environment or debug flag
-    environment = os.getenv("ENVIRONMENT", "UNKNOWN")
-    portfolio_debug = os.getenv("PORTFOLIO_DEBUG", "0") == "1"
-    is_local = environment == "local" or environment == "UNKNOWN"
-    
-    if not (is_local or portfolio_debug):
-        return {
-            "error": "Diagnostic endpoint disabled. Set ENVIRONMENT=local or PORTFOLIO_DEBUG=1 to enable."
-        }
+    if not _diagnostics_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Diagnostic endpoint disabled. Set ENVIRONMENT=local or PORTFOLIO_DEBUG=1 to enable."
+        )
     
     import sys
     import platform
+    
+    # Get environment for response
+    environment = os.getenv("ENVIRONMENT", "UNKNOWN")
     
     # Get process info
     process_id = os.getpid()
@@ -155,6 +164,52 @@ def whoami_diagnostic():
         "client_path": client_path,
         "use_crypto_proxy": use_proxy
     }
+
+
+@router.get("/diagnostics/portfolio/reconcile")
+def get_portfolio_reconcile_diagnostics(db: Session = Depends(get_db)):
+    """
+    Diagnostics endpoint for portfolio reconcile evidence.
+    Returns ONLY safe portfolio reconcile data (no secrets, API keys, account IDs, or full raw exchange payload).
+    
+    Gated by: ENVIRONMENT=local OR PORTFOLIO_DEBUG=1
+    """
+    # Gate by environment or debug flag (consistent with whoami)
+    if not _diagnostics_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Diagnostic endpoint disabled. Set ENVIRONMENT=local or PORTFOLIO_DEBUG=1 to enable."
+        )
+    
+    try:
+        from app.services.portfolio_cache import get_portfolio_summary
+        
+        # Get portfolio summary with reconcile data (request_context enables debug for this call)
+        portfolio_summary = get_portfolio_summary(db, request_context={"reconcile_debug": True})
+        
+        # Get exchange name
+        exchange_name = "crypto_com"
+        
+        # Extract reconcile data (safe fields only)
+        reconcile = portfolio_summary.get("reconcile", {})
+        
+        # Build safe response (no secrets, no API keys, no account IDs, no full raw payload)
+        result = {
+            "exchange": exchange_name,
+            "total_value_usd": portfolio_summary.get("total_value_usd"),
+            "portfolio_value_source": portfolio_summary.get("portfolio_value_source"),
+            "raw_fields": reconcile.get("raw_fields", {}),
+            "candidates": reconcile.get("candidates", {}),
+            "chosen": reconcile.get("chosen", {})
+        }
+        
+        return result
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in portfolio reconcile diagnostics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Diagnostics failed: {str(e)}")
 
 
 

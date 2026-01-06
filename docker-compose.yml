@@ -150,6 +150,10 @@ services:
       - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
       - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
+      # Portfolio debug (enables diagnostics endpoints)
+      - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
+      # Portfolio reconcile debug (enables reconcile bundle in portfolio response)
+      - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
       # TELEGRAM_BOT_TOKEN_LOCAL and TELEGRAM_CHAT_ID_LOCAL are loaded from .env.local via env_file
       # Generic TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID removed - use explicit *_LOCAL vars
     ports:
@@ -244,6 +248,10 @@ services:
       - SIGNALS_DUP_GUARD=${SIGNALS_DUP_GUARD:-0}
       # Portfolio reconcile debug (enables reconcile bundle in portfolio response)
       - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
+      # Portfolio debug (enables diagnostics endpoints like /api/diagnostics/portfolio/reconcile and /api/diagnostics/whoami)
+      # Can be overridden via .env.aws (loaded via env_file above). Defaults to 1 if not set.
+      # Single source of truth: docker-compose.yml environment section (can be overridden by .env.aws)
+      - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP

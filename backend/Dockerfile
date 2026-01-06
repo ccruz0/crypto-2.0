@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential gcc curl libpq-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./requirements.txt
+COPY backend/requirements.txt ./requirements.txt
 
 RUN pip install --upgrade pip wheel 'setuptools>=70.0.0' \
     && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
@@ -42,7 +42,7 @@ RUN useradd -m -u 10001 appuser
 COPY --from=builder /wheels /wheels
 
 # Copy requirements.txt for installation
-COPY requirements.txt ./requirements.txt
+COPY backend/requirements.txt ./requirements.txt
 
 # Instalar solo dependencias de producción desde wheels
 # (dev deps como pytest, black, isort, flake8 están comentadas en requirements.txt)
@@ -62,13 +62,14 @@ ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 
 # Copiar código de la app (needed before we can check .git)
-# CRITICAL: Build context is "./backend", so we copy current directory contents
-COPY . .
+# CRITICAL: Build context is "." (root), dockerfile is "backend/Dockerfile"
+# So we copy backend/ directory contents to /app/
+COPY backend/ /app/
 
 # Explicitly copy scripts directory to ensure it's included in the image
 # This prevents regression if .dockerignore or COPY . . behavior changes
-# CRITICAL: Build context is "./backend", so scripts/ is relative to that
-COPY scripts/ /app/scripts/
+# CRITICAL: Build context is "." (root), so backend/scripts/ is the path
+COPY backend/scripts/ /app/scripts/
 
 # Build-time assertions: fail loudly if required files/directories are missing
 # This ensures the build fails immediately rather than silently missing files at runtime
@@ -96,7 +97,7 @@ ENV ATP_GIT_SHA=${GIT_SHA} \
     ATP_BUILD_TIME=${BUILD_TIME}
 
 # Copy entrypoint script and make it executable
-COPY entrypoint.sh /app/entrypoint.sh
+COPY backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # FIX: Change ownership of /app to appuser so it can write trading_config.json
