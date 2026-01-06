@@ -47,12 +47,72 @@ services:
       - aws
 
   # ============================================
+  # BACKEND-DEV - Local Profile (Hot Reload Development)
+  # ============================================
+  # Fast hot-reload development service for local development.
+  # Mounts only app code (preserves installed packages in image).
+  # Uses uvicorn --reload for automatic code reloading.
+  # ⚠️ WARNING: This is for LOCAL DEVELOPMENT ONLY
+  # Do NOT run this in parallel with AWS production backend.
+  backend-dev:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: automated-trading-platform-backend-dev
+    env_file:
+      - .env
+      - .env.local
+      - .env.secrets.local  # Optional secrets file (not committed, add to .gitignore)
+      # NOTE: .env.aws is NOT loaded for local dev to avoid AWS config conflicts
+    environment:
+      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      - ENVIRONMENT=local
+      - APP_ENV=local
+      - RUNTIME_ORIGIN=LOCAL
+      - TRADING_ENABLED=false
+      - LIVE_TRADING=false
+      - RUN_TELEGRAM=false
+      - USE_CRYPTO_PROXY=false
+      - API_BASE_URL=http://localhost:8002
+      - FRONTEND_URL=http://localhost:3000
+      - DISABLE_AUTH=true
+      - ENABLE_CORS=1
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8002:8002"
+    volumes:
+      # Mount only app code for hot-reload (preserves installed packages in image)
+      - ./backend/app:/app/app
+      - ./backend/scripts:/app/scripts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload --log-level info --access-log --timeout-keep-alive 30
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "768M"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - local
+
+  # ============================================
   # BACKEND - Local Profile (Direct Connection)
   # ============================================
   # ⚠️ WARNING: This is for LOCAL DEVELOPMENT ONLY
   # Do NOT run this in parallel with AWS production backend.
   # AWS backend is the ONLY live production runtime (trading + alerts).
   # This local profile is for development/testing only.
+  # NOTE: For hot-reload development, use backend-dev instead.
   backend:
     build:
       context: ./backend
@@ -65,8 +125,11 @@ services:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
-      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=${RUNTIME_ORIGIN:-LOCAL}
+      - TELEGRAM_BOT_TOKEN_LOCAL=${TELEGRAM_BOT_TOKEN_LOCAL:-8511567279:AAG7svLucbeqfB0cPYodcFch4uHr7pZZ7-4}
+      - TELEGRAM_CHAT_ID_LOCAL=${TELEGRAM_CHAT_ID_LOCAL:-839853931}
+      - TRADING_ENABLED=${TRADING_ENABLED:-false}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
@@ -87,15 +150,15 @@ services:
       - VPN_GATE_MAX_WAIT_SECS=${VPN_GATE_MAX_WAIT_SECS:-120}
       - VPN_GATE_BACKGROUND=${VPN_GATE_BACKGROUND:-true}
       - VPN_GATE_DEV_MAX_WAIT_SECS=${VPN_GATE_DEV_MAX_WAIT_SECS:-15}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      # TELEGRAM_BOT_TOKEN_LOCAL and TELEGRAM_CHAT_ID_LOCAL are loaded from .env.local via env_file
+      # Generic TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID removed - use explicit *_LOCAL vars
     ports:
       - "8002:8002"
     volumes:
       - ./backend:/app
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 3 --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10 --limit-concurrency 100 --backlog 2048"
+    command: sh -c "sleep 10 && python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload --log-level info --access-log --timeout-keep-alive 30 --timeout-graceful-shutdown 10"
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=3)"]
@@ -126,14 +189,17 @@ services:
         BUILD_TIME: ${BUILD_TIME:-unknown}
     env_file:
       - .env
-      - .env.local
       - .env.aws
+      # CRITICAL: Do NOT load .env.local - AWS must never have LOCAL Telegram credentials
+      # This ensures AWS backend cannot access TELEGRAM_BOT_TOKEN_LOCAL or TELEGRAM_CHAT_ID_LOCAL
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # Telegram Safety: AWS backend must use ENVIRONMENT=aws and only AWS Telegram credentials
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=AWS
+      - TRADING_ENABLED=${TRADING_ENABLED:-true}
       - TELEGRAM_CHAT_ID_AWS=839853931
       - ADMIN_ACTIONS_KEY=${ADMIN_ACTIONS_KEY}
       # Health monitoring thresholds
@@ -174,6 +240,10 @@ services:
       # Price move alert configuration
       - PRICE_MOVE_ALERT_PCT=${PRICE_MOVE_ALERT_PCT:-0.50}
       - PRICE_MOVE_ALERT_COOLDOWN_SECONDS=${PRICE_MOVE_ALERT_COOLDOWN_SECONDS:-300}
+      # Debug: duplicate request guard for signals endpoint (disabled by default, enable via .env.aws if needed)
+      - SIGNALS_DUP_GUARD=${SIGNALS_DUP_GUARD:-0}
+      # Portfolio reconcile debug (enables reconcile bundle in portfolio response)
+      - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
