@@ -104,12 +104,16 @@ from app.core.environment import get_cors_origins, is_local
 # Use environment-aware CORS origins (local dev gets localhost:3000, AWS gets production origins)
 cors_origins = get_cors_origins()
 
-# For local dev, ensure localhost:3000 is always included
+# For local dev, ensure localhost:3000 and localhost:3001 are always included
 if is_local():
     if "http://localhost:3000" not in cors_origins:
         cors_origins.append("http://localhost:3000")
     if "http://127.0.0.1:3000" not in cors_origins:
         cors_origins.append("http://127.0.0.1:3000")
+    if "http://localhost:3001" not in cors_origins:
+        cors_origins.append("http://localhost:3001")
+    if "http://127.0.0.1:3001" not in cors_origins:
+        cors_origins.append("http://127.0.0.1:3001")
 
 app.add_middleware(
     CORSMiddleware,
