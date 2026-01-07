@@ -74,7 +74,7 @@ services:
       - RUN_TELEGRAM=false
       - USE_CRYPTO_PROXY=false
       - API_BASE_URL=http://localhost:8002
-      - FRONTEND_URL=http://localhost:3001
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
       - DISABLE_AUTH=true
       - ENABLE_CORS=1
       - PYTHONUNBUFFERED=1

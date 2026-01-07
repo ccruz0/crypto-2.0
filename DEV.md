@@ -27,6 +27,10 @@ nano .env.local  # or use your preferred editor
 - Set `RUN_TELEGRAM=false` to prevent accidental Telegram alerts during development
 - Set `LIVE_TRADING=false` to prevent accidental trades
 - The default database password is `traderpass` (change if needed)
+- Frontend port is configured via `FRONTEND_PORT` in `.env.local` (defaults to 3001)
+  - The frontend dev script reads `FRONTEND_PORT` from your environment
+  - If not set, it defaults to 3001
+  - To override: `export FRONTEND_PORT=3001` before running `npm run dev`
 
 ### 2. Start Services
 
@@ -43,11 +47,11 @@ docker compose --profile local up
 **What happens:**
 - PostgreSQL database starts on port 5432
 - Backend API starts on port 8002 with **hot reload enabled** (`--reload` flag)
-- Frontend starts on port 3000 with **hot reload enabled** (`npm run dev`)
+- Frontend starts on port 3001 with **hot reload enabled** (`npm run dev`)
 
 ### 3. Access the Application
 
-- **Frontend**: http://localhost:3000
+- **Frontend**: http://localhost:3001
 - **Backend API**: http://localhost:8002
 - **API Docs**: http://localhost:8002/docs
 
@@ -63,10 +67,13 @@ docker compose --profile local ps
 docker compose --profile local logs -f
 
 # Check backend health
-curl http://localhost:8002/ping_fast
+curl http://localhost:8002/api/health
 
 # Check frontend
-curl http://localhost:3000
+curl http://localhost:3001
+
+# Or use the verification script
+./scripts/dev-check.sh
 ```
 
 ## Development Workflow
@@ -168,15 +175,17 @@ docker compose --profile local exec backend python scripts/your_migration.py
 
 1. **Check if ports are already in use:**
    ```bash
-   # Check if port 3000 is in use
-   lsof -i :3000
+   # Check if port 3001 is in use (frontend)
+   lsof -i :3001
    
-   # Check if port 8002 is in use
+   # Check if port 8002 is in use (backend)
    lsof -i :8002
    
-   # Check if port 5432 is in use
+   # Check if port 5432 is in use (database)
    lsof -i :5432
    ```
+   
+   **Note:** The frontend runs on port **3001** (not 3000). This is configured in `.env.local` via `FRONTEND_PORT=3001`.
 
 2. **Check Docker is running:**
    ```bash
@@ -199,6 +208,7 @@ docker compose --profile local exec backend python scripts/your_migration.py
 - Check frontend logs: `docker compose --profile local logs -f frontend`
 - Verify volume mount: `docker compose --profile local exec frontend ls -la /app`
 - Clear browser cache or do hard refresh (Cmd+Shift+R on Mac)
+- **Port confusion:** Ensure you're accessing http://localhost:3001 (not 3000). The frontend port is configured via `FRONTEND_PORT` in `.env.local` (defaults to 3001).
 
 ### Database Connection Errors
 
@@ -240,6 +250,52 @@ docker compose --profile local exec backend python scripts/your_migration.py
    docker compose --profile local build --no-cache backend
    docker compose --profile local up -d backend
    ```
+
+### Connection Refused (ERR_CONNECTION_REFUSED)
+
+If you see connection refused errors:
+
+1. **Frontend not running:**
+   ```bash
+   # Check if frontend is running on port 3001
+   lsof -i :3001
+   
+   # Start frontend
+   cd frontend && npm run dev
+   ```
+
+2. **Backend not running:**
+   ```bash
+   # Check if backend is running on port 8002
+   lsof -i :8002
+   
+   # Start backend
+   docker compose --profile local up -d backend-dev
+   ```
+
+3. **Wrong port:** Ensure you're accessing http://localhost:3001 (not 3000). The frontend port is configured in `.env.local` via `FRONTEND_PORT=3001`.
+
+### CORS Errors
+
+If you see CORS errors in the browser console:
+
+- The backend is configured to allow requests from `localhost:3000` and `localhost:3001` (plus `127.0.0.1` variants).
+- Ensure `FRONTEND_URL` in `docker-compose.yml` matches your frontend port.
+- If you changed the frontend port, update `.env.local` with `FRONTEND_PORT=<new_port>` and restart the backend.
+
+### Quick Verification
+
+Use the verification script to check everything at once:
+
+```bash
+./scripts/dev-check.sh
+```
+
+This checks:
+- Ports 3001 and 8002 are listening
+- Backend health endpoint responds
+- Frontend responds
+- Provides actionable error messages
 
 ### Out of Memory Errors
 
