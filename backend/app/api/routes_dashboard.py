@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db, table_has_column, engine as db_engine
 import logging
+import os
 import time
 import asyncio
 from datetime import datetime, timezone
@@ -1174,6 +1175,11 @@ async def get_dashboard_state(
         return result
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
+        # Add detailed debug logging if DEBUG_DASHBOARD is enabled
+        if os.getenv("DEBUG_DASHBOARD", "0") == "1":
+            import traceback
+            log.error(f"[DEBUG_DASHBOARD] Exception details: {type(e).__name__}: {str(e)}")
+            log.error(f"[DEBUG_DASHBOARD] Traceback: {traceback.format_exc()}")
         raise
 
 

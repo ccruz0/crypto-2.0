@@ -55,7 +55,29 @@ docker compose --profile local up
 - **Backend API**: http://localhost:8002
 - **API Docs**: http://localhost:8002/docs
 
-### 4. Verify Services are Running
+### 4. Dev Proxy (API Routing)
+
+The frontend uses Next.js rewrites to proxy API requests to the backend during development. This allows the frontend to use relative paths (e.g., `/health/system`, `/dashboard/state`) which are automatically routed to the backend API.
+
+**Proxied paths:**
+- `/health/:path*` → `${BACKEND_URL}/api/health/:path*`
+- `/dashboard/:path*` → `${BACKEND_URL}/api/dashboard/:path*`
+- `/market/:path*` → `${BACKEND_URL}/api/market/:path*`
+- `/orders/:path*` → `${BACKEND_URL}/api/orders/:path*`
+- `/signals/:path*` → `${BACKEND_URL}/api/signals/:path*`
+
+**Configuration:**
+- `BACKEND_URL` is set in `frontend/.env.local` (default: `http://localhost:8002`)
+- The proxy only works in development mode (Next.js dev server)
+- In production, API calls use absolute URLs configured via `NEXT_PUBLIC_API_URL`
+
+**Example:**
+```bash
+# Frontend request: GET http://localhost:3001/health/system
+# Proxied to: GET http://localhost:8002/api/health/system
+```
+
+### 5. Verify Services are Running
 
 ```bash
 cd /Users/carloscruz/automated-trading-platform
