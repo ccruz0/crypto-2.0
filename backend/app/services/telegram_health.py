@@ -37,10 +37,12 @@ def check_telegram_health(origin: str = "startup") -> Dict[str, Any]:
     settings = Settings()
     
     # Check RUN_TELEGRAM flag
+    # Default to "false" (OFF) unless explicitly set to "true" or "1"
+    # This ensures Telegram is OFF by default for safety
     run_telegram = (
         settings.RUN_TELEGRAM
         or os.getenv("RUN_TELEGRAM")
-        or "true"
+        or "false"  # Changed from "true" to "false" - Telegram OFF by default
     )
     run_telegram = run_telegram.strip().lower() if run_telegram else "false"
     enabled = run_telegram in ("1", "true", "yes", "on")
@@ -51,6 +53,17 @@ def check_telegram_health(origin: str = "startup") -> Dict[str, Any]:
     
     token_present = bool(token)
     chat_id_present = bool(chat_id)
+    
+    # Guardrail: Even if RUN_TELEGRAM=1, require both token and chat_id
+    # If either is missing, disable Telegram and log the reason
+    if enabled and (not token_present or not chat_id_present):
+        logger.warning(
+            "[TELEGRAM_HEALTH] RUN_TELEGRAM=1 but secrets missing - disabling Telegram. "
+            "token_present=%s chat_id_present=%s",
+            token_present,
+            chat_id_present
+        )
+        enabled = False
     
     # Determine source: if running in AWS and .env.aws is used, call it ".env.aws"
     # Otherwise "env" (could be .env, .env.local, or direct env vars)

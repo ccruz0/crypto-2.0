@@ -191,18 +191,43 @@ jobs:
            find . -type f \\( -name '*.sh' -o -name '*.bash' \\) -exec chmod +x {} \\; 2>/dev/null || true && \
            echo '✅ Permissions fixed for Docker compatibility'"
         
-        echo "🐳 Restarting services..."
-        # Fixed: Use docker compose (new syntax) with --profile aws flag to only manage AWS profile services
+        echo "🚀 Running standardized deploy script..."
+        # Use the standardized deploy script for consistent deployments
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && docker compose --profile aws down && docker compose --profile aws up -d --build"
+          "cd ~/automated-trading-platform && bash scripts/deploy_aws.sh" || {
+          echo "❌ Deployment script failed"
+          exit 1
+        }
         
-        echo "⏳ Waiting for services to start..."
-        sleep 10
+        echo "✅ Verifying deployment health..."
+        # Verify health/system endpoint - fail if market_updater or market_data freshness fails
+        HEALTH_CHECK=$(ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
+          "cd ~/automated-trading-platform && curl -sS http://localhost:8002/api/health/system" || echo "")
         
-        echo "✅ Verifying deployment..."
-        # Fixed: Use docker compose (new syntax) with --profile aws flag
-        ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && docker compose --profile aws ps"
+        if [ -z "$HEALTH_CHECK" ]; then
+          echo "❌ Health endpoint not responding"
+          exit 1
+        fi
+        
+        # Check market_updater and market_data status (requires jq)
+        if command -v jq &> /dev/null; then
+          MARKET_UPDATER_STATUS=$(echo "$HEALTH_CHECK" | jq -r '.market_updater.status // "UNKNOWN"')
+          MARKET_DATA_STALE=$(echo "$HEALTH_CHECK" | jq -r '.market_data.stale_symbols // "UNKNOWN"')
+          
+          if [ "$MARKET_UPDATER_STATUS" != "PASS" ]; then
+            echo "❌ Market updater status is not PASS: $MARKET_UPDATER_STATUS"
+            exit 1
+          fi
+          
+          if [ "$MARKET_DATA_STALE" != "0" ] && [ "$MARKET_DATA_STALE" != "null" ]; then
+            echo "❌ Market data has stale symbols: $MARKET_DATA_STALE"
+            exit 1
+          fi
+          
+          echo "✅ Health check passed: market_updater=$MARKET_UPDATER_STATUS, stale_symbols=$MARKET_DATA_STALE"
+        else
+          echo "⚠️  jq not available, skipping detailed health check"
+        fi
         
         echo "🧹 Cleaning up..."
         rm deploy_key.pem

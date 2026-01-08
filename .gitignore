@@ -1,94 +1,82 @@
-# Environment variables
-.env
-.env.local
-.env.aws
-.env.development.local
-.env.test.local
-.env.production.local
-.env.secrets.local
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
-venv/
-env/
-ENV/
-env.bak/
-venv.bak/
-
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# Next.js
-.next/
-out/
-build/
-
-# Database
-*.db
-*.sqlite3
-
-# Docker
-.dockerignore
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-logs/
-*.log
 
 # Coverage
-htmlcov/
+# Database
+# Docker
+# Environment variables
+# IDE
+# Local portfolio data (fallback for local dev)
+# Logs
+# Next.js
+# Node.js
+# OS
+# Python
+# Secrets
+# Virtual environments
+# mypy
+*$py.class
+*.cover
+*.db
+*.egg
+*.egg-info/
+*.log
+*.py[cod]
+*.so
+*.sqlite3
+*.swo
+*.swp
+*.tar.gz
+*~
+.DS_Store
+.Python
 .coverage
 .coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# mypy
-.mypy_cache/
 .dmypy.json
-dmypy.json
-
-
-# Secrets
-secrets/
-*.tar.gz
-
-# Local portfolio data (fallback for local dev)
+.dockerignore
+.eggs/
+.env
+.env.aws
+.env.aws.backup*
+.env.aws.bak*
+.env.development.local
+.env.local
+.env.production.local
+.env.secrets.local
+.env.test.local
+.hypothesis/
+.idea/
+.installed.cfg
+.mypy_cache/
+.next/
+.pnpm-debug.log*
+.pytest_cache/
+.vscode/
+ENV/
+MANIFEST
+Thumbs.db
+__pycache__/
 backend/app/data/local_portfolio.json
+build/
+coverage.xml
+develop-eggs/
+dist/
+dmypy.json
+downloads/
+eggs/
+env.bak/
+env/
+htmlcov/
+lib/
+lib64/
+logs/
+node_modules/
+npm-debug.log*
+out/
+parts/
+sdist/
+secrets/
+var/
+venv.bak/
+venv/
+wheels/
+yarn-debug.log*
+yarn-error.log*

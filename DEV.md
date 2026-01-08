@@ -413,10 +413,114 @@ This script:
 3. **Local database is separate**: Changes in local DB don't affect staging/prod
 4. **Don't commit .env.local**: It's in .gitignore for a reason
 
+## AWS Deploy-by-Commit
+
+The AWS deployment uses a standardized deploy-by-commit workflow where each commit hash corresponds to exactly what's running on AWS.
+
+### Prerequisites
+
+- AWS EC2 instance running with Docker and Docker Compose
+- `.env.aws` file configured on the EC2 instance (not in git)
+- SSH access to EC2 instance
+- GitHub Actions secrets configured (`EC2_HOST`, `EC2_KEY`)
+
+### Standard Deployment Procedure
+
+**1. Pre-deployment (Local Machine)**:
+```bash
+# Commit and push changes
+git add -A
+git commit -m "Deploy: <description>"
+git push origin main
+EXPECTED_COMMIT=$(git rev-parse HEAD)
+echo "Expected commit: $EXPECTED_COMMIT"
+```
+
+**2. Deployment (Automatic via GitHub Actions)**:
+- Push to `main` branch triggers `.github/workflows/deploy.yml`
+- Workflow syncs code to EC2 and runs `scripts/deploy_aws.sh`
+- Script ensures clean git state and deploys using `docker compose --profile aws`
+
+**3. Manual Deployment (On EC2)**:
+```bash
+# SSH into EC2
+ssh ubuntu@<EC2_IP>
+
+# Run deploy script
+cd ~/automated-trading-platform
+bash scripts/deploy_aws.sh
+```
+
+**4. Post-deployment Verification**:
+```bash
+# Verify git state
+git rev-parse HEAD
+# Should match expected commit
+
+# Verify services
+docker compose --profile aws ps
+
+# Verify health
+curl -s http://localhost:8002/api/health/system | jq .
+```
+
+### Rollback Procedure
+
+If deployment fails or issues are detected:
+
+```bash
+# On EC2
+cd ~/automated-trading-platform
+bash scripts/rollback_aws.sh <previous-commit-sha>
+
+# Example:
+bash scripts/rollback_aws.sh fd44bca06e6ff0ddd3147a46aaa6e89b06a6f580
+```
+
+The rollback script:
+1. Fetches latest from origin
+2. Checks out the specified commit
+3. Rebuilds and restarts services
+4. Verifies health
+
+### Required Environment Variables
+
+The following environment variables must be set in `.env.aws` on EC2 (names only, values are secrets):
+
+**Database**:
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL`
+
+**API Configuration**:
+- `API_BASE_URL`
+- `FRONTEND_URL`
+- `NEXT_PUBLIC_API_URL`
+
+**Exchange API** (Crypto.com):
+- `EXCHANGE_CUSTOM_API_KEY`
+- `EXCHANGE_CUSTOM_API_SECRET`
+- `EXCHANGE_CUSTOM_BASE_URL`
+- `USE_CRYPTO_PROXY` (set to `false` for direct connection)
+- `LIVE_TRADING` (set to `true` for production)
+
+**Telegram** (optional, disabled by default):
+- `RUN_TELEGRAM` (set to `1` or `true` to enable)
+- `TELEGRAM_BOT_TOKEN` (required if RUN_TELEGRAM=1)
+- `TELEGRAM_CHAT_ID` (required if RUN_TELEGRAM=1)
+
+**Security**:
+- `ADMIN_ACTIONS_KEY` (generated, required for admin endpoints)
+- `DIAGNOSTICS_API_KEY` (generated, required for diagnostics)
+
+**Note**: See `AWS_DEPLOY_PLAYBOOK.md` for complete deployment documentation.
+
 ## Next Steps
 
 Once local development is working:
 - See [DEPLOY.md](./DEPLOY.md) for deploying to staging/production
 - See [GIT_WORKFLOW.md](./GIT_WORKFLOW.md) for Git branching strategy
+- See [AWS_DEPLOY_PLAYBOOK.md](./AWS_DEPLOY_PLAYBOOK.md) for AWS deployment procedures
 
 

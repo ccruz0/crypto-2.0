@@ -28,8 +28,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-trader}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traderpass}
       POSTGRES_INITDB_ARGS: --auth=scram-sha-256
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     security_opt:
@@ -62,7 +60,7 @@ services:
     env_file:
       - .env
       - .env.local
-      - .env.secrets.local  # Optional secrets file (not committed, add to .gitignore)
+      # NOTE: .env.secrets.local is optional - if you need it, create it manually and it will be auto-loaded
       # NOTE: .env.aws is NOT loaded for local dev to avoid AWS config conflicts
     environment:
       - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
@@ -78,6 +76,7 @@ services:
       - DISABLE_AUTH=true
       - ENABLE_CORS=1
       - PYTHONUNBUFFERED=1
+      - DEBUG_DASHBOARD=1
     ports:
       - "8002:8002"
     volumes:
@@ -187,7 +186,7 @@ services:
   backend-aws:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: backend/Dockerfile.aws
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
