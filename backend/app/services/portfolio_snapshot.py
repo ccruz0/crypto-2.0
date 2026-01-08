@@ -250,20 +250,20 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
             if total == 0:
                 continue
             
-            # Get price and source
-            price_usd = prices.get(currency)
-            source = price_sources.get(currency, "unknown")
-            
-            if price_usd is None:
-                # Try with _USDT suffix
-                price_usd = prices.get(f"{currency}_USDT")
-                if price_usd:
-                    source = price_sources.get(f"{currency}_USDT", source)
-            
-            # For USD and USDT, price is always 1.0
+            # For USD, USDT, USDC: price is always 1.0 (set this FIRST before other price lookups)
             if currency in ["USD", "USDT", "USDC"]:
                 price_usd = 1.0
                 source = "stablecoin"
+            else:
+                # Get price and source for other currencies
+                price_usd = prices.get(currency)
+                source = price_sources.get(currency, "unknown")
+                
+                if price_usd is None:
+                    # Try with _USDT suffix
+                    price_usd = prices.get(f"{currency}_USDT")
+                    if price_usd:
+                        source = price_sources.get(f"{currency}_USDT", source)
             
             # Calculate USD value (can be negative for loans)
             value_usd = None
@@ -277,10 +277,16 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                 # Only count as unpriced if it's not a stablecoin
                 if currency not in ["USD", "USDT", "USDC"]:
                     unpriced_count += 1
-                price_usd = 0.0
-                source = "unpriced"
-                if PORTFOLIO_SNAPSHOT_DEBUG:
-                    logger.debug(f"[PORTFOLIO_SNAPSHOT_DEBUG] No price found for {currency}")
+                    price_usd = 0.0
+                    source = "unpriced"
+                    if PORTFOLIO_SNAPSHOT_DEBUG:
+                        logger.debug(f"[PORTFOLIO_SNAPSHOT_DEBUG] No price found for {currency}")
+                else:
+                    # This shouldn't happen for stablecoins, but handle it just in case
+                    price_usd = 1.0
+                    value_usd = total * price_usd
+                    total_assets_usd += value_usd
+                    source = "stablecoin_fallback"
             
             assets.append({
                 "symbol": currency,
