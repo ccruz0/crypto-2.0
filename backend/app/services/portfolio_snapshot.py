@@ -384,15 +384,27 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
             total_collateral_usd = total_assets_usd
             logger.debug(f"[PORTFOLIO_SNAPSHOT] No haircuts found, using total_assets_usd as collateral: ${total_collateral_usd:,.2f}")
         
-        # Try to get borrowed amount from loans
-        try:
-            from app.models.portfolio_loan import PortfolioLoan
-            loans = db.query(PortfolioLoan).filter(
-                PortfolioLoan.is_active == True
-            ).all()
-            total_borrowed_usd = sum(float(loan.borrowed_usd_value or 0) for loan in loans)
-        except Exception as e:
-            logger.debug(f"Could not fetch loans: {e}")
+        # Calculate borrowed amount from negative balances (more accurate than PortfolioLoan table)
+        # Negative balances in assets represent active loans
+        total_borrowed_usd = 0.0
+        for asset in assets:
+            if asset.get("total", 0) < 0 and asset.get("value_usd") is not None:
+                # Negative balance = loan, add absolute value
+                total_borrowed_usd += abs(float(asset.get("value_usd", 0)))
+        
+        # Fallback: Also check PortfolioLoan table if no negative balances found
+        if total_borrowed_usd == 0.0:
+            try:
+                from app.models.portfolio_loan import PortfolioLoan
+                loans = db.query(PortfolioLoan).filter(
+                    PortfolioLoan.is_active == True
+                ).all()
+                total_borrowed_usd = sum(float(loan.borrowed_usd_value or 0) for loan in loans)
+                logger.debug(f"[PORTFOLIO_SNAPSHOT] Using PortfolioLoan table for borrowed amount: ${total_borrowed_usd:,.2f}")
+            except Exception as e:
+                logger.debug(f"Could not fetch loans: {e}")
+        else:
+            logger.info(f"[PORTFOLIO_SNAPSHOT] Calculated borrowed from negative balances: ${total_borrowed_usd:,.2f}")
         
         # Calculate total value (Wallet Balance)
         # Crypto.com Wallet Balance = Collateral (after haircut) - Borrowed
