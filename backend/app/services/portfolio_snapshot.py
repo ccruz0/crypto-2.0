@@ -387,24 +387,34 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
         # Calculate borrowed amount from negative balances (more accurate than PortfolioLoan table)
         # Negative balances in assets represent active loans
         total_borrowed_usd = 0.0
+        negative_assets_count = 0
         for asset in assets:
-            if asset.get("total", 0) < 0 and asset.get("value_usd") is not None:
-                # Negative balance = loan, add absolute value
-                total_borrowed_usd += abs(float(asset.get("value_usd", 0)))
+            asset_total = asset.get("total", 0)
+            asset_value_usd = asset.get("value_usd")
+            if asset_total < 0:
+                negative_assets_count += 1
+                if asset_value_usd is not None:
+                    # Negative balance = loan, add absolute value
+                    loan_value = abs(float(asset_value_usd))
+                    total_borrowed_usd += loan_value
+                    logger.debug(f"[PORTFOLIO_SNAPSHOT] Loan: {asset.get('currency')} balance={asset_total:.8f}, value=${loan_value:.2f}")
+                else:
+                    logger.warning(f"[PORTFOLIO_SNAPSHOT] Negative balance for {asset.get('currency')} but value_usd is None")
         
         # Fallback: Also check PortfolioLoan table if no negative balances found
         if total_borrowed_usd == 0.0:
+            logger.warning(f"[PORTFOLIO_SNAPSHOT] No loans found in negative balances (found {negative_assets_count} negative assets), using PortfolioLoan table")
             try:
                 from app.models.portfolio_loan import PortfolioLoan
                 loans = db.query(PortfolioLoan).filter(
                     PortfolioLoan.is_active == True
                 ).all()
                 total_borrowed_usd = sum(float(loan.borrowed_usd_value or 0) for loan in loans)
-                logger.debug(f"[PORTFOLIO_SNAPSHOT] Using PortfolioLoan table for borrowed amount: ${total_borrowed_usd:,.2f}")
+                logger.info(f"[PORTFOLIO_SNAPSHOT] Using PortfolioLoan table for borrowed amount: ${total_borrowed_usd:,.2f}")
             except Exception as e:
                 logger.debug(f"Could not fetch loans: {e}")
         else:
-            logger.info(f"[PORTFOLIO_SNAPSHOT] Calculated borrowed from negative balances: ${total_borrowed_usd:,.2f}")
+            logger.info(f"[PORTFOLIO_SNAPSHOT] Calculated borrowed from {negative_assets_count} negative balances: ${total_borrowed_usd:,.2f}")
         
         # Calculate total value (Wallet Balance)
         # Crypto.com Wallet Balance = Collateral (after haircut) - Borrowed
