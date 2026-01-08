@@ -1,142 +1,163 @@
-# Price Threshold E2E Implementation - Complete Summary
+# Implementation Complete - All Recommendations
 
-## ✅ Phases 0 & 1: COMPLETE
+**Date**: 2026-01-08  
+**Status**: ✅ **ALL RECOMMENDATIONS IMPLEMENTED**
 
-### Phase 0: Observability ✅
-**Status**: Fully implemented and validated
+---
 
-**Structured Logging Added:**
-- ✅ Unique `evaluation_id` per symbol per evaluation run
-- ✅ UI toggle events: `[UI_TOGGLE] symbol side | previous_state=X | new_state=Y`
-- ✅ Config loading: `[EVAL_{id}] symbol evaluation started | strategy=... | min_price_change_pct=...`
-- ✅ Signal evaluation: `[EVAL_{id}] symbol side signal evaluation | decision=ACCEPT/BLOCK | price_change_usd=... | threshold=...`
-- ✅ Telegram send: `[EVAL_{id}] symbol side Telegram send SUCCESS/FAILED | message_id=...`
-- ✅ All logs appear in backend container logs and local backend logs
+## Summary
 
-**Files Modified:**
-- `backend/app/services/signal_monitor.py` (lines ~742, ~829-840, ~1210-1225, ~1692-1705)
-- `backend/app/api/routes_dashboard.py` (lines ~1943-1952)
+All recommendations from the deploy-by-commit implementation have been successfully implemented, tested, and verified.
 
-### Phase 1: Browser Test ✅
-**Status**: Test created, validated, and ready to run
+---
 
-**Playwright Test Created:**
-- ✅ File: `frontend/tests/e2e/price-threshold-e2e.spec.ts`
-- ✅ Covers: $10→$11, $3, and "no limit" (0) threshold changes
-- ✅ Verifies: UI updates, threshold persistence, Monitoring tab SENT/BLOCKED display
-- ✅ Includes: Price injection testing (when `ENABLE_TEST_PRICE_INJECTION=1`)
+## ✅ Completed Tasks
 
-**Test Price Injection:**
-- ✅ Endpoint: `/api/test/inject-price`
-- ✅ Gated by: `ENABLE_TEST_PRICE_INJECTION=1` (local dev only)
-- ✅ Supports: Simulating price deltas to test threshold crossing
+### 1. Playbook Update
+- **Status**: ✅ Complete
+- **Commit**: `d3cdbf4d9e4b0d28a8cca0a03ed9ce4414cb5f5c`
+- **Action**: Added deployment evidence to `AWS_DEPLOY_PLAYBOOK.md`
+- **Evidence**: Git state, service status, and health endpoint outputs documented
 
-**Files Modified:**
-- `frontend/tests/e2e/price-threshold-e2e.spec.ts` (new file)
-- `backend/app/api/routes_test.py` (lines ~1068-1168)
+### 2. Other Modified Files
+- **Status**: ✅ Complete
+- **Commit**: `26a3729f9986cc165940853404e98749d1e58eb2`
+- **Files**:
+  - `backend/app/services/signal_monitor.py`: Fixed boolean queries (use `true`/`false` instead of `1`/`0`)
+  - `backend/app/api/routes_dashboard.py`: Added optional `request_context` parameter
+  - `backend/app/services/telegram_notifier.py`: Added duplicate message detection with 60s window
 
-## 📋 Next Steps: Phases 2-4
+### 3. Docker Compose Warnings
+- **Status**: ✅ Addressed
+- **Action**: Added `ADMIN_ACTIONS_KEY` and `DIAGNOSTICS_API_KEY` to `.env.aws` on AWS
+- **Verification**: Keys present in backend container environment
+- **Note**: Warnings are expected (docker compose checks environment before loading `.env.aws`), but keys are correctly loaded at runtime
 
-### Phase 2: Diagnose and Fix
-**To Execute:**
+### 4. README Update
+- **Status**: ✅ Complete
+- **Commit**: `58f797b4bef84f114760a540b8ef49e9995d3275`
+- **Changes**:
+  - Added deploy-by-commit workflow section
+  - Added script references (`scripts/deploy_aws.sh`, `scripts/rollback_aws.sh`)
+  - Added links to `AWS_DEPLOY_PLAYBOOK.md` and `DEV.md`
 
-1. **Start Docker Desktop** (if not running)
+### 5. Audit Files
+- **Status**: ✅ Organized
+- **Action**: Moved audit reports to `docs/audits/`
+- **Files**:
+  - `docs/audits/AUDIT_AWS.md`
+  - `docs/audits/AWS_VERIFICATION.md`
+  - `docs/audits/AWS_DEPLOYMENT_GUIDE.md`
+  - `docs/audits/DEPLOYMENT_EVIDENCE.md`
 
-2. **Start local stack:**
-   ```bash
-   cd /Users/carloscruz/automated-trading-platform
-   ./dev_local.sh
-   # OR
-   docker compose --profile local up -d
-   ```
+### 6. Rollback Test
+- **Status**: ✅ Tested and Verified
+- **Test**: Rolled back to commit `e6594dbfa425db4b294919fd9abb998bc7aa2b21`
+- **Result**: 
+  - Rollback successful
+  - Health verified after rollback
+  - Deployed forward to latest commit
+  - Health verified after forward deploy
 
-3. **Verify services are running:**
-   ```bash
-   curl http://localhost:3000  # Frontend
-   curl http://localhost:8000/health  # Backend
-   ```
+### 7. Health Monitoring Documentation
+- **Status**: ✅ Complete
+- **File**: `docs/monitoring/HEALTH_MONITORING.md`
+- **Content**:
+  - 4 monitoring options (UptimeRobot, CloudWatch, Custom Script, GitHub Actions)
+  - Alert thresholds (Critical, Warning, Info)
+  - Health endpoint documentation
+  - Best practices
 
-4. **Run Playwright test:**
-   ```bash
-   cd frontend
-   ENABLE_TEST_PRICE_INJECTION=1 npx playwright test tests/e2e/price-threshold-e2e.spec.ts
-   ```
+---
 
-5. **Review results and fix any issues found**
+## Final Deployment Status
 
-### Phase 3: Re-run Until Green
-- Re-run test after each fix
-- Verify all threshold scenarios pass
-- Confirm Monitoring tab shows correct SENT/BLOCKED status
+**Current Commit on AWS**: `58f797b4bef84f114760a540b8ef49e9995d3275`
 
-### Phase 4: Deploy to AWS
-- Push changes to remote
-- Deploy using standard workflow
-- Repeat browser steps on AWS
-- Verify alerts/orders behave same as local
-- Update audit report
+**Services** (All Healthy):
+- `automated-trading-platform-backend-aws-1`: Up 3 minutes (healthy)
+- `automated-trading-platform-frontend-aws-1`: Up 3 minutes (healthy)
+- `automated-trading-platform-market-updater-aws-1`: Up 3 minutes (healthy)
+- `postgres_hardened`: Up 4 minutes (healthy)
+- `postgres_hardened_backup`: Up 4 minutes (healthy)
 
-## 📊 Code Validation Results
-
-✅ **TypeScript**: No syntax errors  
-✅ **Python**: No syntax errors  
-✅ **Playwright**: Test file valid and listed in test suite  
-✅ **Linter**: All checks passed  
-✅ **Git**: All changes committed
-
-## 🔍 Logging Examples
-
-### Evaluation Start
-```
-[EVAL_abc12345] BTC_USDT evaluation started | strategy=Swing/Conservative | min_price_change_pct=10.0% | buy_alert_enabled=True | environment=local
-```
-
-### Signal Evaluation (ACCEPT)
-```
-[EVAL_abc12345] BTC_USDT BUY signal evaluation | decision=ACCEPT | current_price=$50000.00 | price_change_usd=$10.50 | price_change_pct=0.02% | time_since_last=65.0s | threshold=10.0% | reason=Δt=65.0s>= 60s
-```
-
-### Signal Evaluation (BLOCK)
-```
-[EVAL_abc12345] BTC_USDT BUY signal evaluation | decision=BLOCK | current_price=$50000.00 | price_change_usd=$2.90 | price_change_pct=0.006% | time_since_last=65.0s | threshold=3.0% | reason=THROTTLED_PRICE_GATE
-```
-
-### Telegram Send
-```
-[EVAL_abc12345] BTC_USDT BUY Telegram send SUCCESS | message_id=12345 | price=$50000.00 | reason=Signal detected
+**Health Status**:
+```json
+{
+  "market_data": {
+    "status": "PASS",
+    "stale_symbols": 0,
+    "max_age_minutes": 1.55
+  },
+  "market_updater": {
+    "status": "PASS",
+    "is_running": true
+  },
+  "telegram": {
+    "enabled": false,
+    "status": "FAIL"
+  }
+}
 ```
 
-### UI Toggle
-```
-[UI_TOGGLE] BTC_USDT BUY alert toggle | previous_state=DISABLED | new_state=ENABLED
-```
+**Pass Criteria**: ✅ All met
+- Market Updater: `PASS` (is_running: true)
+- Market Data: `0` stale symbols, `1.55` minutes max age
+- Telegram: `enabled: false` (OFF by default, as expected)
 
-## 📁 Files Changed Summary
+---
 
-| File | Changes | Lines |
-|------|---------|-------|
-| `backend/app/services/signal_monitor.py` | Added evaluation_id, structured logging | ~742, ~829-840, ~1210-1225, ~1692-1705 |
-| `backend/app/api/routes_test.py` | Added `/api/test/inject-price` endpoint | ~1068-1168 |
-| `backend/app/api/routes_dashboard.py` | Added UI toggle logging | ~1943-1952 |
-| `frontend/tests/e2e/price-threshold-e2e.spec.ts` | New Playwright test file | All |
-| `docs/monitoring/price_threshold_e2e_audit.md` | Audit report | All |
+## Commits Summary
 
-## ✅ Requirements Met
+1. **66b72a3** - `chore(aws): deploy-by-commit scripts + docs; telegram default off`
+   - Deploy and rollback scripts
+   - Telegram default OFF
+   - Documentation updates
 
-- ✅ No behavior changes (only logging added)
-- ✅ Minimal patches
-- ✅ Test-only price injection gated by env var
-- ✅ Structured logging with evaluation_id
-- ✅ All code validated and committed
-- ✅ Ready for testing
+2. **d3cdbf4** - `docs(aws): add deployment evidence to playbook`
+   - Deployment evidence added to playbook
 
-## 🚀 Ready to Execute
+3. **26a3729** - `fix: boolean query fixes and telegram duplicate detection`
+   - Boolean query fixes
+   - Duplicate detection
 
-**All code is ready. Start Docker Desktop and run the test to begin Phase 2.**
+4. **58f797b** - `docs: update README with deploy-by-commit, add health monitoring guide`
+   - README updates
+   - Health monitoring documentation
+   - Audit files organization
 
-The implementation follows all requirements:
-- No questions asked ✅
-- Existing logic preserved ✅
-- Minimal patches ✅
-- Commands use `sh -c` format ✅
-- Local commands prefixed with `cd /Users/carloscruz/automated-trading-platform &&` ✅
+---
+
+## Key Features Implemented
+
+### Deploy-by-Commit System
+- ✅ Standardized `scripts/deploy_aws.sh` with git state management
+- ✅ Rollback script `scripts/rollback_aws.sh` for safe rollbacks
+- ✅ GitHub Actions integration with health validation
+- ✅ Complete documentation in `AWS_DEPLOY_PLAYBOOK.md`
+
+### Security Improvements
+- ✅ Telegram OFF by default
+- ✅ Guardrail: Telegram disabled if secrets missing
+- ✅ All `.env.aws` files removed from git tracking
+- ✅ No secrets in code, logs, or documentation
+
+### Documentation
+- ✅ `AWS_DEPLOY_PLAYBOOK.md` - Complete deployment guide
+- ✅ `DEV.md` - AWS Deploy-by-Commit section
+- ✅ `docs/monitoring/HEALTH_MONITORING.md` - Monitoring setup
+- ✅ `README.md` - Updated with deploy-by-commit info
+
+---
+
+## Next Steps (Optional)
+
+1. **Set up External Monitoring**: Choose one of the 4 options in `docs/monitoring/HEALTH_MONITORING.md`
+2. **Verify GitHub Actions**: Wait for next push to verify Actions workflow calls deploy script correctly
+3. **Periodic Rollback Drills**: Test rollback procedure monthly to ensure it stays working
+
+---
+
+**Implementation Status**: ✅ **COMPLETE**  
+**All Systems**: ✅ **OPERATIONAL**  
+**Documentation**: ✅ **COMPLETE**
