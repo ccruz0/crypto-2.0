@@ -518,7 +518,8 @@ class TradingScheduler:
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()
                 await self.check_nightly_consistency()
-                await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
+                # DISABLED: Hourly SL/TP check - use Telegram menu button instead
+                # await self.check_hourly_sl_tp_missed()  # Check for missed SL/TP every hour
                 # Update dashboard snapshot periodically (every 60 seconds)
                 await self.update_dashboard_snapshot()
                 # Check Telegram commands continuously (long polling handles timing)

@@ -1230,6 +1230,7 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
             [{"text": "🎯 Expected Take Profit", "callback_data": "menu:expected_tp"}],
             [{"text": "✅ Executed Orders", "callback_data": "menu:executed_orders"}],
             [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
+            [{"text": "🛡️ Check SL/TP", "callback_data": "cmd:check_sl_tp"}],
             [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
         logger.info(f"[TG][MENU] Building main menu for chat_id={chat_id}, keyboard structure: {keyboard}")
@@ -2275,6 +2276,97 @@ No open orders found."""
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build open orders: {e}", exc_info=True)
         return send_command_response(chat_id, f"❌ Error building open orders: {str(e)}")
+
+
+def send_check_sl_tp_message(chat_id: str, db: Session = None) -> bool:
+    """Check and display open orders/positions without SL/TP protection"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        from app.services.sl_tp_checker import sl_tp_checker_service
+        
+        logger.info(f"[TG][CMD] Checking for positions without SL/TP...")
+        
+        # Check positions for missing SL/TP
+        result = sl_tp_checker_service.check_positions_for_sl_tp(db)
+        
+        positions_missing = result.get('positions_missing_sl_tp', [])
+        total_positions = result.get('total_positions', 0)
+        
+        if not positions_missing:
+            message = f"""🛡️ <b>SL/TP Check</b>
+
+✅ All positions are protected!
+
+Total positions checked: {total_positions}
+All positions have both SL and TP orders."""
+        else:
+            message = f"""🛡️ <b>SL/TP Check</b>
+
+⚠️ <b>{len(positions_missing)} position(s) missing protection:</b>
+
+"""
+            for pos in positions_missing:
+                symbol = pos.get('symbol', 'N/A')
+                balance = pos.get('balance', 0)
+                has_sl = pos.get('has_sl', False)
+                has_tp = pos.get('has_tp', False)
+                sl_price = pos.get('sl_price')
+                tp_price = pos.get('tp_price')
+                
+                # Format balance
+                if balance >= 1:
+                    balance_str = f"{balance:,.4f}"
+                elif balance >= 0.000001:
+                    balance_str = f"{balance:,.6f}"
+                else:
+                    balance_str = f"{balance:.8f}"
+                
+                # Status indicators
+                sl_status = "✅" if has_sl else "❌"
+                tp_status = "✅" if has_tp else "❌"
+                
+                missing = []
+                if not has_sl:
+                    missing.append("SL")
+                if not has_tp:
+                    missing.append("TP")
+                
+                message += f"""🔸 <b>{symbol}</b>
+  Balance: {balance_str}
+  SL: {sl_status} | TP: {tp_status}
+  Missing: {', '.join(missing) if missing else 'None'}
+"""
+                if sl_price:
+                    message += f"  SL Price: ${sl_price:,.4f}\n"
+                if tp_price:
+                    message += f"  TP Price: ${tp_price:,.4f}\n"
+                message += "\n"
+            
+            message += f"\nTotal positions: {total_positions}"
+            message += f"\nProtected: {total_positions - len(positions_missing)}"
+            message += f"\nUnprotected: {len(positions_missing)}"
+            
+            # Add buttons to create SL/TP for each position
+            keyboard_rows = []
+            for pos in positions_missing[:5]:  # Limit to 5 buttons
+                symbol = pos.get('symbol', '')
+                if symbol:
+                    keyboard_rows.append([
+                        {"text": f"🛡️ Create SL/TP {symbol}", "callback_data": f"create_sl_tp_{symbol}"}
+                    ])
+            
+            if keyboard_rows:
+                keyboard_rows.append([{"text": "🏠 Main Menu", "callback_data": "menu:main"}])
+                keyboard = _build_keyboard(keyboard_rows)
+                return _send_menu_message(chat_id, message, keyboard)
+        
+        logger.info(f"[TG][CMD] /check_sl_tp - Found {len(positions_missing)} positions missing SL/TP")
+        return send_command_response(chat_id, message)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Failed to check SL/TP: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error checking SL/TP: {str(e)}")
 
 
 def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
@@ -3851,6 +3943,8 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_alerts_list_message(chat_id, db)
             elif cmd == "help":
                 send_help_message(chat_id)
+            elif cmd == "check_sl_tp":
+                send_check_sl_tp_message(chat_id, db)
         elif callback_data == "menu:portfolio":
             # Show portfolio sub-menu
             logger.info(f"[TG][MENU] Portfolio menu requested from chat_id={chat_id}, message_id={message_id}")
