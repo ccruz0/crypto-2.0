@@ -48,8 +48,16 @@ def check_telegram_health(origin: str = "startup") -> Dict[str, Any]:
     enabled = run_telegram in ("1", "true", "yes", "on")
     
     # Check token and chat_id
-    token = (settings.TELEGRAM_BOT_TOKEN or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (settings.TELEGRAM_CHAT_ID or os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    # For AWS, prefer TELEGRAM_BOT_TOKEN_AWS, fallback to TELEGRAM_BOT_TOKEN
+    token = (
+        settings.TELEGRAM_BOT_TOKEN_AWS or os.getenv("TELEGRAM_BOT_TOKEN_AWS") or
+        settings.TELEGRAM_BOT_TOKEN or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    ).strip()
+    # For AWS, prefer TELEGRAM_CHAT_ID_AWS, fallback to TELEGRAM_CHAT_ID
+    chat_id = (
+        settings.TELEGRAM_CHAT_ID_AWS or os.getenv("TELEGRAM_CHAT_ID_AWS") or
+        settings.TELEGRAM_CHAT_ID or os.getenv("TELEGRAM_CHAT_ID") or ""
+    ).strip()
     
     token_present = bool(token)
     chat_id_present = bool(chat_id)
