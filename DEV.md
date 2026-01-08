@@ -31,6 +31,7 @@ nano .env.local  # or use your preferred editor
   - The frontend dev script reads `FRONTEND_PORT` from your environment
   - If not set, it defaults to 3001
   - To override: `export FRONTEND_PORT=3001` before running `npm run dev`
+- **Optional**: If you need additional secrets (e.g., API keys for testing), create `.env.secrets.local` manually. It's git-ignored and will be auto-loaded by docker-compose if present.
 
 ### 2. Start Services
 
@@ -319,6 +320,21 @@ This checks:
 - Frontend responds
 - Provides actionable error messages
 
+### Docker Compose "env file not found" Errors
+
+If you see errors like:
+```
+env file .../.env.secrets.local not found: stat ... no such file or directory
+```
+
+**Solution:** This file is optional and has been removed from the required `env_file` list in `docker-compose.yml`. The error should not occur anymore. If you need additional secrets for local testing:
+
+1. Create `.env.secrets.local` manually in the repo root
+2. Add your test secrets (never commit this file - it's git-ignored)
+3. Docker Compose will automatically load it if present
+
+**Note:** For normal local development, `.env` and `.env.local` are sufficient.
+
 ### Out of Memory Errors
 
 If you get out of memory errors:
@@ -360,6 +376,33 @@ docker compose --profile local exec frontend sh
 # Clean up everything (⚠️ removes database data)
 docker compose --profile local down -v
 ```
+
+## Docker Build Contexts (Local vs AWS)
+
+The backend uses **separate Dockerfiles** for local and AWS builds to avoid context mismatches:
+
+| Environment | Build Context | Dockerfile | COPY Paths |
+|------------|---------------|------------|------------|
+| **Local** | `./backend` | `Dockerfile` | No `backend/` prefix (e.g., `COPY requirements.txt`) |
+| **AWS** | `.` (repo root) | `Dockerfile.aws` | With `backend/` prefix (e.g., `COPY backend/requirements.txt`) |
+
+**Why?** Docker COPY paths are relative to the build context. Local services use `context: ./backend`, so files are at the root. AWS uses `context: .`, so files are in `backend/` subdirectory.
+
+**Validation:** Run the verification script to ensure both builds work:
+```bash
+./scripts/verify-docker-contexts.sh
+```
+
+This script:
+- Validates docker-compose configuration
+- Builds local images (backend-dev, market-updater)
+- Builds AWS image (backend-aws)
+- Fails fast with clear errors if any build breaks
+
+**⚠️ Important:** When modifying Dockerfiles:
+- **Never** add conditional COPY logic to support both contexts
+- **Always** keep local and AWS Dockerfiles separate
+- **Always** run `./scripts/verify-docker-contexts.sh` after changes
 
 ## Safety Notes
 
