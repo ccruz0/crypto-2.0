@@ -1010,16 +1010,16 @@ class SignalMonitorService:
             # Build WHERE clause based on available columns
             where_parts = []
             if has_alert_enabled:
-                where_parts.append("alert_enabled = 1")
+                where_parts.append("alert_enabled = true")
             elif has_trade_enabled:
                 logger.warning("⚠️ alert_enabled column not found, using trade_enabled as fallback")
-                where_parts.append("trade_enabled = 1")
+                where_parts.append("trade_enabled = true")
             else:
                 logger.error("❌ Neither alert_enabled nor trade_enabled columns found!")
                 return []
             
             if has_is_deleted:
-                where_parts.append("is_deleted = 0")
+                where_parts.append("is_deleted = false")
             
             where_clause = " AND ".join(where_parts)
             sql = f"SELECT * FROM watchlist_items WHERE {where_clause}"

@@ -2,7 +2,9 @@ import os
 import logging
 import inspect
 import socket
-from typing import Optional, Literal
+import hashlib
+import time
+from typing import Optional, Literal, Dict, Tuple
 from datetime import datetime
 from enum import Enum
 from os import getpid
@@ -120,6 +122,13 @@ class TelegramNotifier:
         self.chat_id = None
         self.enabled = False  # Will be determined by send_message() guard
         
+        # Duplicate detection: track recently sent messages to prevent duplicates
+        # Format: {message_hash: (timestamp, symbol, price, side)}
+        # Messages are considered duplicates if same hash within DUPLICATE_WINDOW_SECONDS
+        # Window matches throttling time gate: 60 seconds (FIXED per ALERTAS_Y_ORDENES_NORMAS.md)
+        self.recent_messages: Dict[str, Tuple[float, str, float, str]] = {}
+        self.DUPLICATE_WINDOW_SECONDS = 60  # Matches throttling time gate (60 seconds fixed)
+        
         # Startup logging
         hostname = socket.gethostname()
         pid = getpid()
@@ -142,6 +151,91 @@ class TelegramNotifier:
         """Format current timestamp using configured timezone (Bali time)"""
         ts = datetime.now(self.timezone)
         return ts.strftime("%Y-%m-%d %H:%M:%S WIB")
+    
+    def _create_message_hash(self, symbol: str, price: float, reason: str, side: str = "BUY") -> str:
+        """
+        Create a hash for a message to detect duplicates.
+        
+        Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side).
+        BUY and SELL are treated separately, so duplicates should be checked per side.
+        
+        Args:
+            symbol: Trading symbol (e.g., "DOT_USDT")
+            price: Price value
+            reason: Reason text (includes RSI, MA values, etc.)
+            side: Signal side ("BUY" or "SELL") - required to match throttling granularity
+        
+        Returns:
+            SHA256 hash string
+        """
+        # Create a normalized string from symbol, side, price (rounded to 4 decimals), and reason
+        # Round price to 4 decimals to account for minor price fluctuations
+        # Include side to match throttling granularity (BUY and SELL are independent)
+        normalized_price = round(price, 4)
+        normalized_side = side.upper()
+        message_key = f"{symbol}:{normalized_side}:{normalized_price}:{reason}"
+        return hashlib.sha256(message_key.encode()).hexdigest()
+    
+    def _is_duplicate_message(self, symbol: str, price: float, reason: str, side: str = "BUY") -> Tuple[bool, Optional[str]]:
+        """
+        Check if a message is a duplicate of a recently sent message.
+        
+        Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side).
+        This duplicate check aligns with throttling rules: 60-second window, per (symbol, side).
+        
+        Args:
+            symbol: Trading symbol
+            price: Price value
+            reason: Reason text
+            side: Signal side ("BUY" or "SELL") - required to match throttling granularity
+        
+        Returns:
+            Tuple of (is_duplicate: bool, duplicate_info: Optional[str])
+            duplicate_info contains details about when the duplicate was sent
+        """
+        current_time = time.time()
+        message_hash = self._create_message_hash(symbol, price, reason, side)
+        
+        # Clean up old entries (older than duplicate window)
+        # Window matches throttling: 60 seconds fixed (per ALERTAS_Y_ORDENES_NORMAS.md)
+        expired_hashes = [
+            h for h, (ts, sym, pr, sd) in self.recent_messages.items()
+            if current_time - ts > self.DUPLICATE_WINDOW_SECONDS
+        ]
+        for h in expired_hashes:
+            del self.recent_messages[h]
+        
+        # Check if this message was sent recently
+        if message_hash in self.recent_messages:
+            sent_time, sent_symbol, sent_price, sent_side = self.recent_messages[message_hash]
+            age_seconds = current_time - sent_time
+            if age_seconds <= self.DUPLICATE_WINDOW_SECONDS:
+                duplicate_info = (
+                    f"Duplicate detected: Same {side} alert for {symbol} @ ${price:.4f} "
+                    f"was sent {age_seconds:.1f}s ago (within {self.DUPLICATE_WINDOW_SECONDS}s window, "
+                    f"matches throttling time gate)"
+                )
+                return True, duplicate_info
+        
+        return False, None
+    
+    def _register_sent_message(self, symbol: str, price: float, reason: str, side: str = "BUY") -> None:
+        """
+        Register a message as sent to prevent duplicates.
+        
+        Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side).
+        This registration aligns with throttling rules.
+        
+        Args:
+            symbol: Trading symbol
+            price: Price value
+            reason: Reason text
+            side: Signal side ("BUY" or "SELL") - required to match throttling granularity
+        """
+        current_time = time.time()
+        message_hash = self._create_message_hash(symbol, price, reason, side)
+        self.recent_messages[message_hash] = (current_time, symbol, price, side.upper())
+        logger.debug(f"📝 Registered sent message: {side} {symbol} @ ${price:.4f} (hash: {message_hash[:8]}...)")
     
     def set_bot_commands(self) -> bool:
         """Set bot commands menu for Telegram - only /menu command to avoid cluttering"""
@@ -949,6 +1043,27 @@ class TelegramNotifier:
             f"[TEST_ALERT_SIGNAL_ENTRY] send_buy_signal called: symbol={symbol}, origin={origin}, "
             f"source={source}, price={price:.4f}"
         )
+        
+        # Check for duplicate messages before sending
+        # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
+        is_duplicate, duplicate_info = self._is_duplicate_message(symbol, price, reason, side="BUY")
+        if is_duplicate:
+            logger.warning(
+                f"🚫 DUPLICATE ALERT BLOCKED for {symbol}: {duplicate_info}. "
+                f"Skipping send to prevent duplicate notification."
+            )
+            # Register in dashboard as blocked duplicate
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                add_telegram_message(
+                    f"[DUPLICATE BLOCKED] {symbol} @ ${price:.4f} - {duplicate_info}",
+                    symbol=symbol,
+                    blocked=True,
+                )
+            except Exception:
+                pass  # Non-critical, continue
+            return False
+        
         resolved_strategy = strategy_type
         if not resolved_strategy:
             if strategy and strategy.lower() not in {"conservative", "aggressive"}:
@@ -1022,6 +1137,10 @@ class TelegramNotifier:
         
         # Register sent message
         if result:
+            # Register in duplicate detection system to prevent future duplicates
+            # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
+            self._register_sent_message(symbol, price, reason, side="BUY")
+            
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 # Include price change in stored message
@@ -1072,6 +1191,27 @@ class TelegramNotifier:
             f"[TEST_ALERT_SIGNAL_ENTRY] send_sell_signal called: symbol={symbol}, origin={origin}, "
             f"source={source}, price={price:.4f}"
         )
+        
+        # Check for duplicate messages before sending
+        # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
+        is_duplicate, duplicate_info = self._is_duplicate_message(symbol, price, reason, side="SELL")
+        if is_duplicate:
+            logger.warning(
+                f"🚫 DUPLICATE ALERT BLOCKED for {symbol}: {duplicate_info}. "
+                f"Skipping send to prevent duplicate notification."
+            )
+            # Register in dashboard as blocked duplicate
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                add_telegram_message(
+                    f"[DUPLICATE BLOCKED] {symbol} @ ${price:.4f} - {duplicate_info}",
+                    symbol=symbol,
+                    blocked=True,
+                )
+            except Exception:
+                pass  # Non-critical, continue
+            return False
+        
         resolved_strategy = strategy_type
         if not resolved_strategy:
             if strategy and strategy.lower() not in {"conservative", "aggressive"}:
@@ -1143,6 +1283,10 @@ class TelegramNotifier:
         
         # Register sent message
         if result:
+            # Register in duplicate detection system to prevent future duplicates
+            # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
+            self._register_sent_message(symbol, price, reason, side="SELL")
+            
             try:
                 from app.api.routes_monitoring import add_telegram_message
                 # Include price change in stored message

@@ -639,19 +639,24 @@ def get_dashboard_snapshot_endpoint(
         }
 
 
-async def _compute_dashboard_state(db: Session) -> dict:
+async def _compute_dashboard_state(db: Session, request_context: Optional[dict] = None) -> dict:
     """
     Core function to compute dashboard state.
     This can be called directly without FastAPI dependencies.
     
     Args:
         db: Database session (required)
+        request_context: Optional request context dict with headers and debug flags
     
     Returns:
         dict: Dashboard state
     """
     start_time = time.time()
     log.info("Starting dashboard state fetch")
+    
+    # Default request_context if not provided
+    if request_context is None:
+        request_context = {}
     
     try:
         # Try to get fresh portfolio snapshot first (if available and fresh)
