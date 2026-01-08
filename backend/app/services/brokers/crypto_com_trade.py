@@ -518,11 +518,11 @@ class CryptoComTradeClient:
             
             # Crypto.com get-account-summary returns accounts directly in result.accounts
             # Crypto.com user-balance returns data in result.data format with position_balances
+            accounts = []  # Initialize accounts before use
             if "result" in result:
                 # Try get-account-summary format first (accounts array)
                 if "accounts" in result["result"]:
                     accounts_data = result["result"]["accounts"]
-                    accounts = []
                     for acc in accounts_data:
                         currency = acc.get("currency", "")
                         if currency:
@@ -536,7 +536,7 @@ class CryptoComTradeClient:
                             if market_value:
                                 account_entry["market_value"] = str(market_value)
                             accounts.append(account_entry)
-                logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
+                    logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
                 
                 # Extract top-level equity/wallet balance fields if present
                 # Crypto.com margin wallet may provide pre-computed NET balance
