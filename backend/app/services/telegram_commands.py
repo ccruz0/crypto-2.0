@@ -1230,6 +1230,7 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
             [{"text": "🎯 Expected Take Profit", "callback_data": "menu:expected_tp"}],
             [{"text": "✅ Executed Orders", "callback_data": "menu:executed_orders"}],
             [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
+            [{"text": "🛑 Kill Switch", "callback_data": "menu:kill_switch"}],
             [{"text": "🛡️ Check SL/TP", "callback_data": "cmd:check_sl_tp"}],
             [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
@@ -2649,6 +2650,56 @@ def show_monitoring_menu(chat_id: str, db: Session = None, message_id: Optional[
         return send_command_response(chat_id, f"❌ Error showing monitoring menu: {str(e)}")
 
 
+def show_kill_switch_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+    """Show kill switch sub-menu with status and controls"""
+    try:
+        if not db:
+            return send_command_response(chat_id, "❌ Database not available")
+        
+        # Get current kill switch status
+        from app.utils.trading_guardrails import _get_telegram_kill_switch_status
+        from app.utils.live_trading import get_live_trading_status
+        
+        try:
+            kill_switch_on = _get_telegram_kill_switch_status(db)
+            live_enabled = get_live_trading_status(db)
+            
+            status_emoji = "🔴" if kill_switch_on else "🟢"
+            live_emoji = "🟢" if live_enabled else "🔴"
+            
+            text = f"🛑 <b>Kill Switch</b>\n\n"
+            text += f"{status_emoji} <b>Kill Switch:</b> {'ON' if kill_switch_on else 'OFF'}\n"
+            text += f"{live_emoji} <b>Live Trading:</b> {'ON' if live_enabled else 'OFF'}\n\n"
+            
+            if kill_switch_on:
+                text += "⛔ <b>TRADING IS DISABLED</b>\n"
+                text += "No orders will be placed.\n\n"
+            elif not live_enabled:
+                text += "⛔ <b>TRADING IS DISABLED</b>\n"
+                text += "Live toggle is OFF.\n\n"
+            else:
+                text += "✅ Trading is enabled\n"
+                text += "(subject to Trade Yes per symbol)\n\n"
+        except Exception as e:
+            logger.warning(f"[TG][KILL] Error getting status: {e}")
+            text = "🛑 <b>Kill Switch</b>\n\n"
+            text += "⚠️ Could not retrieve current status.\n\n"
+        
+        text += "Select an action:"
+        
+        keyboard = _build_keyboard([
+            [{"text": "🔴 Turn ON (Disable Trading)", "callback_data": "kill:on"}],
+            [{"text": "🟢 Turn OFF (Enable Trading)", "callback_data": "kill:off"}],
+            [{"text": "📊 Show Status", "callback_data": "kill:status"}],
+            [{"text": "🔙 Back to Menu", "callback_data": "menu:main"}],
+        ])
+        
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing kill switch menu: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing kill switch menu: {str(e)}")
+
+
 def send_system_monitoring_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
     """Send system monitoring information - Reference Specification Section 8.1"""
     try:
@@ -3981,6 +4032,24 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_workflows_monitoring_message(chat_id, db, message_id)
             elif section == "blocked":
                 send_blocked_messages_message(chat_id, db, message_id)
+        elif callback_data == "menu:kill_switch":
+            # Show kill switch sub-menu
+            show_kill_switch_menu(chat_id, db, message_id)
+        elif callback_data.startswith("kill:"):
+            # Handle kill switch actions
+            action = callback_data.replace("kill:", "")
+            if action == "on":
+                handle_kill_command(chat_id, "/kill on", db)
+                # Refresh menu to show updated status
+                show_kill_switch_menu(chat_id, db, message_id)
+            elif action == "off":
+                handle_kill_command(chat_id, "/kill off", db)
+                # Refresh menu to show updated status
+                show_kill_switch_menu(chat_id, db, message_id)
+            elif action == "status":
+                handle_kill_command(chat_id, "/kill status", db)
+                # Refresh menu to show updated status
+                show_kill_switch_menu(chat_id, db, message_id)
         elif callback_data.startswith("setting:"):
             # Handle settings menu callbacks (e.g., setting:min_price_change_pct:select_strategy)
             _handle_setting_callback(chat_id, callback_data, callback_query.get("message", {}).get("message_id"), db)
