@@ -246,8 +246,8 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                 logger.warning(f"Could not parse balance for {currency}: {account}")
                 continue
             
-            # Skip zero balances
-            if total <= 0:
+            # Skip only zero balances (include negative balances as they represent loans)
+            if total == 0:
                 continue
             
             # Get price and source
@@ -260,13 +260,23 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                 if price_usd:
                     source = price_sources.get(f"{currency}_USDT", source)
             
-            # Calculate USD value
+            # For USD and USDT, price is always 1.0
+            if currency in ["USD", "USDT", "USDC"]:
+                price_usd = 1.0
+                source = "stablecoin"
+            
+            # Calculate USD value (can be negative for loans)
             value_usd = None
             if price_usd is not None and price_usd > 0:
                 value_usd = total * price_usd
+                # Add to total_assets_usd (negative values will subtract)
                 total_assets_usd += value_usd
+                if total < 0:
+                    logger.info(f"[PORTFOLIO_SNAPSHOT] Loan detected: {currency} balance={total:.8f}, value=${value_usd:.2f}")
             else:
-                unpriced_count += 1
+                # Only count as unpriced if it's not a stablecoin
+                if currency not in ["USD", "USDT", "USDC"]:
+                    unpriced_count += 1
                 price_usd = 0.0
                 source = "unpriced"
                 if PORTFOLIO_SNAPSHOT_DEBUG:
