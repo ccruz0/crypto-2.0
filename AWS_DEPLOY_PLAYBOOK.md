@@ -2,7 +2,9 @@
 
 **Purpose**: Standardized, repeatable, and safe deployment procedure for AWS EC2.
 
-**Last Updated**: 2026-01-08
+**Last Updated**: 2026-01-08  
+**Last Deployed**: 2026-01-08 (Commit: `66b72a319092e6de09ee3f3cb4f13cf80c4ea0ce`)  
+**Last Deployed**: 2026-01-08 (Commit: `66b72a319092e6de09ee3f3cb4f13cf80c4ea0ce`)
 
 ---
 
@@ -451,6 +453,52 @@ docker compose --profile aws logs --tail 100 <service-name>
 git rev-parse HEAD
 git status
 ```
+
+---
+
+## Deployment Evidence (2026-01-08)
+
+**Commit**: `66b72a319092e6de09ee3f3cb4f13cf80c4ea0ce`  
+**Deployment Method**: Manual (via `scripts/deploy_aws.sh`)
+
+### Verification Output
+
+**Git State**:
+```
+HEAD: 66b72a319092e6de09ee3f3cb4f13cf80c4ea0ce
+Branch: main
+```
+
+**Service Status** (all healthy):
+- `automated-trading-platform-backend-aws-1`: Up 2 minutes (healthy)
+- `automated-trading-platform-frontend-aws-1`: Up 2 minutes (healthy)
+- `automated-trading-platform-market-updater-aws-1`: Up 2 minutes (healthy)
+- `postgres_hardened`: Up 2 minutes (healthy)
+- `postgres_hardened_backup`: Up 2 minutes (healthy)
+
+**Health Endpoint** (`/api/health/system`):
+```json
+{
+  "market_data": {
+    "status": "PASS",
+    "stale_symbols": 0,
+    "max_age_minutes": 0.21
+  },
+  "market_updater": {
+    "status": "PASS",
+    "is_running": true
+  },
+  "telegram": {
+    "enabled": false,
+    "status": "FAIL"
+  }
+}
+```
+
+**Pass Criteria**: ✅ All met
+- Market Updater: `PASS`
+- Market Data: `0` stale symbols, `0.21` minutes max age
+- Telegram: `enabled: false` (OFF by default, as expected)
 
 ---
 
