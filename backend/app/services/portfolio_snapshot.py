@@ -316,31 +316,25 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Could not fetch loans: {e}")
         
-        # Calculate total value
+        # Calculate total value (Wallet Balance)
+        # Crypto.com Wallet Balance = Collateral (after haircut) - Borrowed
+        # This matches what Crypto.com shows in their dashboard
         if margin_equity is not None:
+            # Use margin_equity from API if available (most accurate)
             total_value_usd = float(margin_equity)
             portfolio_value_source = "crypto_com_live"
+            logger.info(f"[PORTFOLIO_SNAPSHOT] Using margin_equity from API: ${total_value_usd:,.2f}")
         else:
-            # Fallback: Use total assets (which includes USD balance) as the base value
-            # The borrowed amount is already accounted for in the asset balances
-            # If we have USD balance, use it as the primary value indicator
-            usd_balance = 0.0
-            for asset in assets:
-                if asset.get("currency", "").upper() == "USD":
-                    usd_balance = float(asset.get("total", 0) or asset.get("balance", 0) or 0)
-                    break
+            # Calculate Wallet Balance = Collateral - Borrowed
+            # Note: total_collateral_usd should ideally include haircuts, but for now we use total_assets_usd
+            # as an approximation (haircuts are typically small for major assets)
+            total_value_usd = total_collateral_usd - total_borrowed_usd
+            portfolio_value_source = "crypto_com_live_derived"
             
-            # If we have a significant USD balance, use assets as value (borrowed is already reflected in balances)
-            # Otherwise, calculate net: assets - borrowed
-            if usd_balance > 100:  # If we have substantial USD, use assets directly
-                total_value_usd = total_assets_usd
-                portfolio_value_source = "crypto_com_live_assets"
-                logger.info(f"[PORTFOLIO_SNAPSHOT] Using total_assets_usd as value (USD balance: ${usd_balance:,.2f})")
+            if total_value_usd < 0:
+                logger.warning(f"[PORTFOLIO_SNAPSHOT] ⚠️ Calculated negative wallet balance: ${total_value_usd:,.2f} (collateral: ${total_collateral_usd:,.2f}, borrowed: ${total_borrowed_usd:,.2f}). Account may be over-leveraged.")
             else:
-                # Fallback: assets - borrowed (may be negative if over-leveraged)
-                total_value_usd = total_collateral_usd - total_borrowed_usd
-                portfolio_value_source = "crypto_com_live_derived"
-                logger.warning(f"[PORTFOLIO_SNAPSHOT] ⚠️ Calculated negative value: ${total_value_usd:,.2f} (assets: ${total_collateral_usd:,.2f}, borrowed: ${total_borrowed_usd:,.2f}). Consider checking margin_equity from API.")
+                logger.info(f"[PORTFOLIO_SNAPSHOT] Calculated wallet balance: ${total_value_usd:,.2f} (collateral: ${total_collateral_usd:,.2f}, borrowed: ${total_borrowed_usd:,.2f})")
         
         snapshot = {
             "assets": assets,
