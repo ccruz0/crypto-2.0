@@ -538,33 +538,16 @@ class CryptoComTradeClient:
                             accounts.append(account_entry)
                     logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary")
                 
-                # Extract top-level equity/wallet balance fields if present
-                # Crypto.com margin wallet may provide pre-computed NET balance
-                response_data = {"accounts": accounts}
-                result_data = result.get("result", {})
-                
-                # Check for equity/wallet balance fields (various possible names)
-                equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
-                                "available_equity", "account_equity", "balance_equity"]
-                for field in equity_fields:
-                    if field in result_data:
-                        value = result_data[field]
-                        if value is not None:
-                            try:
-                                # Convert to float if it's a string
-                                equity_value = float(value) if isinstance(value, str) else float(value)
-                                response_data["margin_equity"] = equity_value
-                                logger.info(f"Found margin equity field '{field}': {equity_value}")
-                                break  # Use first found field
-                            except (ValueError, TypeError):
-                                logger.debug(f"Could not parse equity field '{field}': {value}")
-                
-                return response_data
-                
-                # Try user-balance format (data array with position_balances)
-                if "data" in result["result"]:
+                # If no accounts found in first format, try user-balance format (data array with position_balances)
+                if len(accounts) == 0 and "data" in result["result"]:
                     data = result["result"]["data"]
-                    accounts = []
+                    logger.info("No accounts in result.accounts, trying result.data format with position_balances...")
+                elif "data" in result["result"]:
+                    # Also check data format even if we found some accounts (might have more data)
+                    data = result["result"]["data"]
+                    logger.info("Found accounts in result.accounts, but also checking result.data format...")
+                else:
+                    data = None
                 
                 # Extract position balances and convert to standard format
                 # Crypto.com API provides: instrument_name, quantity, market_value, max_withdrawal_balance
@@ -729,14 +712,25 @@ class CryptoComTradeClient:
                                         logger.debug(f"Could not parse equity field '{field}': {value}")
                 
                 # Check position data array for equity fields (per-position)
-                for position in data:
-                    account_type = position.get("account_type")
-                    if "position_balances" in position:
-                        for balance in position["position_balances"]:
-                            _record_balance_entry(balance, account_type)
-                    if "balances" in position:
-                        for balance in position["balances"]:
-                            _record_balance_entry(balance, account_type)
+                if data:
+                    if isinstance(data, list):
+                        for position in data:
+                            account_type = position.get("account_type")
+                            if "position_balances" in position:
+                                for balance in position["position_balances"]:
+                                    _record_balance_entry(balance, account_type)
+                            if "balances" in position:
+                                for balance in position["balances"]:
+                                    _record_balance_entry(balance, account_type)
+                    elif isinstance(data, dict):
+                        # Handle single position object
+                        account_type = data.get("account_type")
+                        if "position_balances" in data:
+                            for balance in data["position_balances"]:
+                                _record_balance_entry(balance, account_type)
+                        if "balances" in data:
+                            for balance in data["balances"]:
+                                _record_balance_entry(balance, account_type)
                     
                     # Check position-level equity fields
                     if margin_equity_value is None:
@@ -753,7 +747,7 @@ class CryptoComTradeClient:
                                     except (ValueError, TypeError):
                                         logger.debug(f"Could not parse equity field '{field}': {value}")
                 
-                logger.info(f"Retrieved {len(accounts)} account balances")
+                logger.info(f"Retrieved {len(accounts)} account balances (after processing both formats)")
                 
                 # Extract top-level equity/wallet balance fields if present
                 # Crypto.com margin wallet may provide pre-computed NET balance
