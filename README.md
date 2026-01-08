@@ -78,6 +78,9 @@ ssh ubuntu@<AWS_EC2_IP>
 # Navigate to project directory
 cd /home/ubuntu/automated-trading-platform
 
+# Standardized deployment (recommended)
+bash scripts/deploy_aws.sh
+
 # Check service status
 docker compose --profile aws ps
 
@@ -85,13 +88,15 @@ docker compose --profile aws ps
 docker compose --profile aws logs -n 200 backend-aws
 docker compose --profile aws logs -n 200 frontend-aws
 
-# Restart services
-docker compose --profile aws restart backend-aws
-
-# Pull latest images and deploy
-docker compose --profile aws pull
-docker compose --profile aws up -d --remove-orphans
+# Rollback to previous commit (if needed)
+bash scripts/rollback_aws.sh <commit-sha>
 ```
+
+**Deploy-by-Commit Workflow:**
+- Each commit hash corresponds to exactly what's running on AWS
+- GitHub is the single source of truth for code
+- Deployment is automated via GitHub Actions or manual via `scripts/deploy_aws.sh`
+- See [AWS_DEPLOY_PLAYBOOK.md](AWS_DEPLOY_PLAYBOOK.md) for complete procedures
 
 **📌 AWS → Crypto.com Connection:**
 For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AWS_CRYPTO_COM_CONNECTION.md) for the standard connection configuration.
@@ -99,6 +104,8 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 **For detailed deployment procedures, see:**
 - [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) - Deployment policy and workflow
 - [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) - Single source of truth for AWS deployment commands
+- [AWS_DEPLOY_PLAYBOOK.md](AWS_DEPLOY_PLAYBOOK.md) - Complete deploy-by-commit guide with rollback procedures
+- [DEV.md](DEV.md) - Local development and AWS deploy-by-commit procedures
 
 ### Local Development (Dev Only - NOT Production)
 
