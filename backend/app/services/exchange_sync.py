@@ -145,6 +145,17 @@ class ExchangeSyncService:
                     if update_result.get("success"):
                         portfolio_summary = get_portfolio_summary(db)
                         logger.info(f"✅ Portfolio cache updated: ${update_result.get('total_usd', 0):,.2f}")
+                        
+                        # Also create a portfolio snapshot when cache is updated (for fresh dashboard data)
+                        try:
+                            from app.services.portfolio_snapshot import fetch_live_portfolio_snapshot, store_portfolio_snapshot
+                            snapshot = fetch_live_portfolio_snapshot(db)
+                            store_portfolio_snapshot(db, snapshot)
+                            logger.info(f"✅ Portfolio snapshot created: {len(snapshot.get('assets', []))} assets, total=${snapshot.get('total_value_usd', 0):,.2f}")
+                        except Exception as snapshot_err:
+                            # Don't fail the sync if snapshot creation fails - it's optional
+                            logger.debug(f"Could not create portfolio snapshot (non-critical): {snapshot_err}")
+                        
                         # Use cached portfolio data (real balances) after successful update
                         accounts = []
                         for balance in portfolio_summary.get("balances", []):

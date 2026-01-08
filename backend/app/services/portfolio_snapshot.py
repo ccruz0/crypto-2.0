@@ -358,9 +358,14 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
         # Credentials not configured - return error info
         logger.warning(f"Cannot fetch live portfolio: {e}")
         raise
+    except RuntimeError as e:
+        # Re-raise RuntimeError as-is (already has proper error message)
+        raise
     except Exception as e:
         logger.error(f"Error fetching live portfolio snapshot: {e}", exc_info=True)
-        raise RuntimeError(f"Failed to fetch portfolio from Crypto.com: {str(e)}")
+        # Make sure we don't reference any variables that might not be defined
+        error_msg = str(e) if e else "Unknown error"
+        raise RuntimeError(f"Failed to fetch portfolio from Crypto.com: {error_msg}")
 
 
 def store_portfolio_snapshot(db: Session, snapshot: Dict[str, Any]) -> PortfolioSnapshotData:
