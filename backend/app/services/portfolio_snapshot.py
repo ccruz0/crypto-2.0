@@ -301,10 +301,57 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                         continue
         
         # Calculate totals
-        # For now, we'll use total_assets_usd as collateral (no haircut in snapshot)
-        # In production, this should come from exchange margin data
-        total_collateral_usd = total_assets_usd
+        # Calculate collateral with haircuts (same logic as portfolio_cache)
+        # Crypto.com Wallet Balance = Collateral (after haircut) - Borrowed
+        total_collateral_usd = 0.0
         total_borrowed_usd = 0.0  # Will be populated from loans if available
+        
+        # Calculate collateral with haircuts from account data
+        # Build a map of currency -> raw USD value from assets
+        raw_values_by_currency = {}
+        for asset in assets:
+            currency = asset.get("currency", "").upper()
+            raw_value = float(asset.get("total_usd_value", 0) or asset.get("usd_value", 0) or 0)
+            if raw_value > 0:
+                raw_values_by_currency[currency] = raw_value
+        
+        # Extract haircuts from account_data and calculate collateral
+        if account_data and "accounts" in account_data:
+            for account in account_data["accounts"]:
+                currency = account.get("currency", "").upper()
+                if not currency or currency not in raw_values_by_currency:
+                    continue
+                
+                raw_value = raw_values_by_currency[currency]
+                
+                # Extract haircut (same logic as portfolio_cache)
+                haircut = 0.0
+                haircut_raw = account.get("haircut") or account.get("collateral_ratio") or account.get("discount") or account.get("haircut_rate")
+                if haircut_raw is not None:
+                    try:
+                        if isinstance(haircut_raw, str):
+                            haircut_str = haircut_raw.strip().replace("--", "").strip()
+                            if haircut_str and haircut_str.lower() not in ["0", "0.0", "0.00"]:
+                                haircut = float(haircut_str)
+                        else:
+                            haircut = float(haircut_raw)
+                    except (ValueError, TypeError):
+                        haircut = 0.0
+                
+                # Stablecoins have 0 haircut
+                if currency in ["USD", "USDT", "USDC"]:
+                    haircut = 0.0
+                
+                # Calculate collateral value
+                collateral_value = raw_value * (1 - haircut)
+                total_collateral_usd += collateral_value
+                
+                logger.debug(f"[PORTFOLIO_SNAPSHOT] {currency}: raw=${raw_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f}")
+        
+        # Fallback: if no account data or no haircuts found, use raw assets
+        if total_collateral_usd == 0.0:
+            total_collateral_usd = total_assets_usd
+            logger.debug(f"[PORTFOLIO_SNAPSHOT] No haircuts found, using total_assets_usd as collateral: ${total_collateral_usd:,.2f}")
         
         # Try to get borrowed amount from loans
         try:
