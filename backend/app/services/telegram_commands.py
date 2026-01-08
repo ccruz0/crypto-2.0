@@ -2658,8 +2658,10 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
         # Get system health from API
         try:
             response = http_get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health", timeout=10
-            , calling_module="telegram_commands")
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health",
+                timeout=10,
+                calling_module="telegram_commands"
+            )
             if response.status_code == 200:
                 health_data = response.json()
             else:
@@ -2720,8 +2722,11 @@ def send_throttle_message(chat_id: str, db: Session = None, message_id: Optional
         # Get recent Telegram messages from API
         try:
             response = http_get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages", params={"limit": 20}, timeout=10
-            , calling_module="telegram_commands")
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
+                params={"limit": 20},
+                timeout=10,
+                calling_module="telegram_commands"
+            )
             if response.status_code == 200:
                 messages_data = response.json()
                 messages = messages_data.get("messages", [])
@@ -2766,8 +2771,10 @@ def send_workflows_monitoring_message(chat_id: str, db: Session = None, message_
         # Get workflow status from API
         try:
             response = http_get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/workflows", timeout=10
-            , calling_module="telegram_commands")
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/workflows",
+                timeout=10,
+                calling_module="telegram_commands"
+            )
             if response.status_code == 200:
                 workflows_data = response.json()
                 workflows = workflows_data.get("workflows", [])
@@ -2817,9 +2824,10 @@ def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: 
         # Get blocked messages from API (filter for blocked=True)
         try:
             response = http_get(
-                f"{API_BASE_URL.rstrip('/', calling_module='telegram_commands')}/api/monitoring/telegram-messages",
+                f"{API_BASE_URL.rstrip('/')}/api/monitoring/telegram-messages",
                 params={"blocked": True, "limit": 20},
-                timeout=10
+                timeout=10,
+                calling_module="telegram_commands"
             )
             if response.status_code == 200:
                 messages_data = response.json()
