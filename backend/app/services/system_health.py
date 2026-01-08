@@ -169,20 +169,49 @@ def _check_signal_monitor_health(stale_threshold_minutes: float) -> Dict:
         }
 
 def _check_telegram_health() -> Dict:
-    """Check Telegram notifier health"""
+    """Check Telegram notifier health by verifying configuration"""
     try:
-        enabled = telegram_notifier.enabled
-        chat_id_set = bool(telegram_notifier.chat_id)
-        bot_token_set = bool(telegram_notifier.bot_token)
+        from app.core.runtime import is_aws_runtime
+        from app.core.config import Settings
         
-        status = "PASS"
-        if not enabled or not chat_id_set or not bot_token_set:
-            status = "FAIL"
+        runtime_env = "aws" if is_aws_runtime() else "local"
+        settings = Settings()
+        
+        # Check if Telegram is enabled via RUN_TELEGRAM env var
+        run_telegram = os.getenv("RUN_TELEGRAM", "").strip().lower()
+        enabled_by_env = run_telegram in ("true", "1", "yes")
+        
+        # Check kill switch status
+        from app.services.telegram_notifier import _get_telegram_kill_switch_status
+        kill_switch_enabled = _get_telegram_kill_switch_status(runtime_env)
+        
+        # Check credentials based on environment
+        if runtime_env == "aws":
+            bot_token = (os.getenv("TELEGRAM_BOT_TOKEN_AWS") or settings.TELEGRAM_BOT_TOKEN_AWS or "").strip()
+            chat_id = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
+        else:
+            bot_token = (os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip()
+            if not bot_token:
+                bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or settings.TELEGRAM_BOT_TOKEN or "").strip()
+            chat_id = (os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip()
+            if not chat_id:
+                chat_id = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+        
+        bot_token_set = bool(bot_token)
+        chat_id_set = bool(chat_id)
+        
+        # Telegram is enabled if: RUN_TELEGRAM is true AND kill switch is enabled AND credentials are set
+        enabled = enabled_by_env and kill_switch_enabled and bot_token_set and chat_id_set
+        
+        status = "PASS" if enabled else "FAIL"
         
         return {
             "status": status,
             "enabled": enabled,
             "chat_id_set": chat_id_set,
+            "bot_token_set": bot_token_set,
+            "run_telegram_env": enabled_by_env,
+            "kill_switch_enabled": kill_switch_enabled,
             "last_send_ok": _last_telegram_send_ok,
         }
     except Exception as e:
@@ -191,6 +220,7 @@ def _check_telegram_health() -> Dict:
             "status": "FAIL",
             "enabled": False,
             "chat_id_set": False,
+            "bot_token_set": False,
             "last_send_ok": None,
         }
 
