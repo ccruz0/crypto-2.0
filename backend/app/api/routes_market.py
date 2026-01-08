@@ -1137,6 +1137,31 @@ def get_top_coins_with_prices(
                     strategy_risk_value = getattr(resolved_risk_approach, "value", None) if resolved_risk_approach else "conservative"
                     strategy_key_value = f"{strategy_preset_value}-{strategy_risk_value}"
                     
+                    # CRITICAL: Calculate SL/TP prices if not already set in watchlist_item
+                    # This ensures frontend always has SL/TP values to display
+                    sl_price_value = watchlist_item.sl_price if watchlist_item and watchlist_item.sl_price else None
+                    tp_price_value = watchlist_item.tp_price if watchlist_item and watchlist_item.tp_price else None
+                    
+                    # If SL/TP prices are missing, calculate them from strategy
+                    if (sl_price_value is None or tp_price_value is None) and current_price and current_price > 0:
+                        try:
+                            # Import the helper function from routes_dashboard
+                            from app.api.routes_dashboard import _calculate_tp_sl_from_strategy
+                            calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+                                symbol=symbol,
+                                price=current_price,
+                                atr=atr,
+                                watchlist_item=watchlist_item,
+                                db=db
+                            )
+                            # Use calculated values if they're available and current values are None
+                            if calculated_sl is not None and sl_price_value is None:
+                                sl_price_value = calculated_sl
+                            if calculated_tp is not None and tp_price_value is None:
+                                tp_price_value = calculated_tp
+                        except Exception as sltp_err:
+                            logger.debug(f"Could not calculate SL/TP for {symbol}: {sltp_err}")
+                    
                     coin = {
                         "instrument_name": symbol,
                         "current_price": current_price,
@@ -1179,6 +1204,17 @@ def get_top_coins_with_prices(
                         "alert_enabled": watchlist_item.alert_enabled if watchlist_item else False,
                         "buy_alert_enabled": getattr(watchlist_item, "buy_alert_enabled", False) if watchlist_item else False,
                         "sell_alert_enabled": getattr(watchlist_item, "sell_alert_enabled", False) if watchlist_item else False,
+                        # Watchlist fields - include trade settings and SL/TP
+                        "trade_enabled": watchlist_item.trade_enabled if watchlist_item else False,
+                        "trade_amount_usd": watchlist_item.trade_amount_usd if watchlist_item else None,
+                        "trade_on_margin": watchlist_item.trade_on_margin if watchlist_item else False,
+                        # SL/TP fields - critical for frontend display
+                        # Use calculated values if watchlist_item values are missing
+                        "sl_price": sl_price_value,
+                        "tp_price": tp_price_value,
+                        "sl_percentage": watchlist_item.sl_percentage if watchlist_item else None,
+                        "tp_percentage": watchlist_item.tp_percentage if watchlist_item else None,
+                        "sl_tp_mode": watchlist_item.sl_tp_mode if watchlist_item else "conservative",
                     }
                     coins.append(coin)
                 
