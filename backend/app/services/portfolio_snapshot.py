@@ -316,9 +316,24 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                 raw_values_by_currency[currency] = raw_value
         
         # Extract haircuts from account_data and calculate collateral
-        if account_data and "accounts" in account_data:
-            for account in account_data["accounts"]:
-                currency = account.get("currency", "").upper()
+        # account_data can have accounts in different places: account_data["accounts"] or account_data["result"]["accounts"]
+        accounts_for_haircuts = []
+        if account_data:
+            if "accounts" in account_data:
+                accounts_for_haircuts = account_data["accounts"]
+            elif "result" in account_data:
+                result = account_data["result"]
+                if "accounts" in result:
+                    accounts_for_haircuts = result["accounts"]
+                elif "data" in result:
+                    # Handle position_balances format - extract accounts from data
+                    data = result["data"]
+                    if isinstance(data, list):
+                        accounts_for_haircuts = data
+        
+        if accounts_for_haircuts:
+            for account in accounts_for_haircuts:
+                currency = _normalize_currency_name(account.get("currency", "") or account.get("instrument_name", ""))
                 if not currency or currency not in raw_values_by_currency:
                     continue
                 
@@ -346,7 +361,7 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
                 collateral_value = raw_value * (1 - haircut)
                 total_collateral_usd += collateral_value
                 
-                logger.debug(f"[PORTFOLIO_SNAPSHOT] {currency}: raw=${raw_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f}")
+                logger.info(f"[PORTFOLIO_SNAPSHOT] {currency}: raw=${raw_value:.2f}, haircut={haircut:.4f}, collateral=${collateral_value:.2f}")
         
         # Fallback: if no account data or no haircuts found, use raw assets
         if total_collateral_usd == 0.0:
