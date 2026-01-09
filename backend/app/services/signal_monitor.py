@@ -3618,6 +3618,17 @@ class SignalMonitorService:
                         add_telegram_message(info_msg, symbol=symbol, blocked=False, order_skipped=True)
                     except Exception:
                         pass  # Non-critical, continue
+            else:
+                # should_create_order=False - alert was sent but order was blocked
+                # Decision tracing should have been emitted in guard clauses (MAX_OPEN_TRADES_REACHED, RECENT_ORDERS_COOLDOWN)
+                # But if for some reason it wasn't (e.g., guard_reason is None), log it for debugging
+                if buy_alert_sent_successfully:
+                    logger.debug(
+                        f"ℹ️ {symbol}: BUY alert was sent but should_create_order=False. "
+                        f"guard_reason={guard_reason}. Decision tracing should already be recorded in guard clauses."
+                    )
+                    # Note: Decision tracing is emitted in the guard clauses above (lines 2803-2925)
+                    # This else clause is just for logging - the actual decision events are emitted in the guard checks
             
         # ========================================================================
         # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True y sell_alert_enabled=True
