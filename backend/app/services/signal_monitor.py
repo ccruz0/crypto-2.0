@@ -2757,6 +2757,34 @@ class SignalMonitorService:
                         f"🚫 BLOCKED: {symbol} has active order creation lock "
                         f"({current_time - lock_time:.1f}s ago). Skipping to prevent duplicate orders."
                     )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.ORDER_CREATION_LOCK.value,
+                        message=f"Order creation lock active for {symbol}. Lock set {current_time - lock_time:.1f}s ago.",
+                        context={
+                            "symbol": symbol,
+                            "lock_age_seconds": current_time - lock_time,
+                            "lock_timeout_seconds": self.ORDER_CREATION_LOCK_SECONDS,
+                            "price": current_price,
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="ORDER_CREATION_LOCK",
+                        decision_reason=decision_reason,
+                    )
                     return  # Exit early if locked
                 else:
                     # Lock expired, remove it
@@ -2776,6 +2804,34 @@ class SignalMonitorService:
                 logger.warning(
                     f"🚫 BLOCKED: {symbol} has reached maximum open orders limit "
                     f"({unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}). Skipping new order."
+                )
+                # Create DecisionReason for SKIP
+                from app.utils.decision_reason import make_skip, ReasonCode
+                import uuid
+                correlation_id = str(uuid.uuid4())
+                decision_reason = make_skip(
+                    reason_code=ReasonCode.MAX_OPEN_TRADES_REACHED.value,
+                    message=f"Maximum open orders reached for {symbol}. {unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}.",
+                    context={
+                        "symbol": symbol,
+                        "open_positions": unified_open_positions,
+                        "max_open_orders": self.MAX_OPEN_ORDERS_PER_SYMBOL,
+                        "price": current_price,
+                    },
+                    source="guardrail",
+                    correlation_id=correlation_id,
+                )
+                logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                # Emit TRADE_BLOCKED event with DecisionReason
+                _emit_lifecycle_event(
+                    db=db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side="BUY",
+                    price=current_price,
+                    event_type="TRADE_BLOCKED",
+                    event_reason="MAX_OPEN_ORDERS_REACHED",
+                    decision_reason=decision_reason,
                 )
                 blocked_by_limits = True
             # SECOND CHECK: Block if there are recent orders (within 5 minutes) - prevents consecutive orders
@@ -2801,11 +2857,70 @@ class SignalMonitorService:
                     )
                     if DEBUG_TRADING:
                         logger.info(f"[DEBUG_TRADING] {symbol} BUY: COOLDOWN BLOCKED - {time_since_last:.1f} minutes since last order (threshold: 5 minutes)")
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                        message=f"Recent orders cooldown active for {symbol}. Found {len(recent_buy_orders)} recent BUY order(s) within 5 minutes (most recent: {time_since_last:.1f} minutes ago).",
+                        context={
+                            "symbol": symbol,
+                            "recent_orders_count": len(recent_buy_orders),
+                            "time_since_last_minutes": time_since_last,
+                            "cooldown_minutes": 5,
+                            "most_recent_order_id": most_recent_order.exchange_order_id,
+                            "price": current_price,
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="RECENT_ORDERS_COOLDOWN",
+                        decision_reason=decision_reason,
+                    )
                 else:
                     logger.warning(
                         f"🚫 BLOCKED: {symbol} has {len(recent_buy_orders)} recent BUY order(s) "
                         f"(order_id: {most_recent_order.exchange_order_id}, but timestamp is None). "
                         f"Cooldown period active - skipping new order to prevent consecutive orders."
+                    )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                        message=f"Recent orders cooldown active for {symbol}. Found {len(recent_buy_orders)} recent BUY order(s) (timestamp unknown).",
+                        context={
+                            "symbol": symbol,
+                            "recent_orders_count": len(recent_buy_orders),
+                            "most_recent_order_id": most_recent_order.exchange_order_id,
+                            "cooldown_minutes": 5,
+                            "price": current_price,
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="RECENT_ORDERS_COOLDOWN",
+                        decision_reason=decision_reason,
                     )
                 blocked_by_limits = True
 
@@ -2907,6 +3022,11 @@ class SignalMonitorService:
                         func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at).desc()
                     ).first()
                     
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    
                     if most_recent:
                         recent_time = most_recent.exchange_create_time or most_recent.created_at
                         if recent_time:
@@ -2921,6 +3041,37 @@ class SignalMonitorService:
                                 f"Order creation cancelled to prevent duplicate. "
                                 f"GUARD cooldown_blocked symbol={symbol} seconds_remaining={seconds_remaining:.1f}"
                             )
+                            decision_reason = make_skip(
+                                reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                                message=f"Recent orders cooldown active for {symbol} (final check). Found {final_recent_check} recent order(s) within 5 minutes. {seconds_remaining:.1f} seconds remaining.",
+                                context={
+                                    "symbol": symbol,
+                                    "base_symbol": symbol_base_final,
+                                    "recent_orders_count": final_recent_check,
+                                    "seconds_remaining": seconds_remaining,
+                                    "cooldown_seconds": COOLDOWN_SECONDS,
+                                    "most_recent_order_id": most_recent.exchange_order_id if most_recent else None,
+                                    "price": current_price,
+                                    "check_type": "final_check",
+                                },
+                                source="guardrail",
+                                correlation_id=correlation_id,
+                            )
+                        else:
+                            decision_reason = make_skip(
+                                reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                                message=f"Recent orders cooldown active for {symbol} (final check). Found {final_recent_check} recent order(s) (timestamp unknown).",
+                                context={
+                                    "symbol": symbol,
+                                    "base_symbol": symbol_base_final,
+                                    "recent_orders_count": final_recent_check,
+                                    "cooldown_seconds": COOLDOWN_SECONDS,
+                                    "price": current_price,
+                                    "check_type": "final_check",
+                                },
+                                source="guardrail",
+                                correlation_id=correlation_id,
+                            )
                     else:
                         if DEBUG_TRADING:
                             logger.info(f"[DEBUG_TRADING] GUARD cooldown_blocked symbol={symbol} seconds_remaining=unknown")
@@ -2928,6 +3079,33 @@ class SignalMonitorService:
                             f"🚫 BLOCKED: {symbol} - Found {final_recent_check} recent order(s) in final check. "
                             f"Order creation cancelled to prevent duplicate."
                         )
+                        decision_reason = make_skip(
+                            reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                            message=f"Recent orders cooldown active for {symbol} (final check). Found {final_recent_check} recent order(s).",
+                            context={
+                                "symbol": symbol,
+                                "base_symbol": symbol_base_final,
+                                "recent_orders_count": final_recent_check,
+                                "cooldown_seconds": COOLDOWN_SECONDS,
+                                "price": current_price,
+                                "check_type": "final_check",
+                            },
+                            source="guardrail",
+                            correlation_id=correlation_id,
+                        )
+                    
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="RECENT_ORDERS_COOLDOWN_FINAL_CHECK",
+                        decision_reason=decision_reason,
+                    )
                     should_create_order = False
                     return  # Exit early
                 
@@ -2960,6 +3138,34 @@ class SignalMonitorService:
                         f"🚫 BLOCKED: {symbol} - Order already exists for signal_key={signal_key}. "
                         f"GUARD idempotency_blocked signal_key={signal_key} existing_order_id={existing_order_for_signal.exchange_order_id}"
                     )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.IDEMPOTENCY_BLOCKED.value,
+                        message=f"Order already exists for signal_key={signal_key}. Idempotency check blocked duplicate order creation.",
+                        context={
+                            "symbol": symbol,
+                            "signal_key": signal_key,
+                            "existing_order_id": existing_order_for_signal.exchange_order_id,
+                            "price": current_price,
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="IDEMPOTENCY_BLOCKED",
+                        decision_reason=decision_reason,
+                    )
                     should_create_order = False
                     return  # Exit early
                 
@@ -2973,6 +3179,36 @@ class SignalMonitorService:
                         f"🚫 BLOCKED: {symbol} (base: {symbol_base_final}) - Final check: exceeded max open orders limit "
                         f"({final_unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}). "
                         f"Order creation cancelled. This may indicate a race condition was detected."
+                    )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.MAX_OPEN_TRADES_REACHED.value,
+                        message=f"Maximum open orders reached for {symbol} (final check). {final_unified_open_positions}/{self.MAX_OPEN_ORDERS_PER_SYMBOL}. Race condition detected.",
+                        context={
+                            "symbol": symbol,
+                            "base_symbol": symbol_base_final,
+                            "open_positions": final_unified_open_positions,
+                            "max_open_orders": self.MAX_OPEN_ORDERS_PER_SYMBOL,
+                            "price": current_price,
+                            "check_type": "final_check",
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="MAX_OPEN_ORDERS_REACHED_FINAL_CHECK",
+                        decision_reason=decision_reason,
                     )
                     should_create_order = False
                     return  # Exit early
@@ -3003,6 +3239,34 @@ class SignalMonitorService:
                         f"🚫 ORDEN BLOQUEADA: {symbol} - alert_enabled=False. "
                         f"No se creará orden aunque se detectó señal BUY."
                     )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.ALERT_DISABLED.value,
+                        message=f"Alerts are disabled for {symbol}. alert_enabled=False. Order creation blocked.",
+                        context={
+                            "symbol": symbol,
+                            "alert_enabled": False,
+                            "trade_enabled": getattr(watchlist_item, 'trade_enabled', None),
+                            "price": current_price,
+                        },
+                        source="precheck",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="ALERTS_DISABLED",
+                        decision_reason=decision_reason,
+                    )
                     # Remove locks and exit
                     if symbol in self.order_creation_locks:
                         del self.order_creation_locks[symbol]
@@ -3020,6 +3284,35 @@ class SignalMonitorService:
                         f"La alerta ya fue enviada, pero la orden de compra no se creará sin los indicadores técnicos necesarios."
                     )
                     logger.error(error_msg)
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.DATA_MISSING.value,
+                        message=f"Required technical indicators missing for {symbol}: {', '.join(missing_mas)}. Cannot create order without MAs.",
+                        context={
+                            "symbol": symbol,
+                            "missing_indicators": missing_mas,
+                            "ma50": ma50,
+                            "ema10": ema10,
+                            "price": current_price,
+                        },
+                        source="precheck",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="DATA_MISSING",
+                        decision_reason=decision_reason,
+                    )
                     # Send notification to Telegram since alert was sent but order wasn't created
                     try:
                         from app.api.routes_monitoring import add_telegram_message
@@ -3048,6 +3341,36 @@ class SignalMonitorService:
                             f"The BUY alert was sent, but the BUY order was blocked to prevent over-concentration."
                         )
                         logger.warning(skipped_msg)
+                        # Create DecisionReason for SKIP
+                        from app.utils.decision_reason import make_skip, ReasonCode
+                        import uuid
+                        correlation_id = str(uuid.uuid4())
+                        decision_reason = make_skip(
+                            reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+                            message=f"Portfolio value limit exceeded for {symbol}. Portfolio value ${portfolio_value:.2f} > limit ${limit_value:.2f} (3x trade_amount).",
+                            context={
+                                "symbol": symbol,
+                                "portfolio_value": portfolio_value,
+                                "limit_value": limit_value,
+                                "trade_amount_usd": trade_amount_usd,
+                                "net_quantity": net_quantity,
+                                "price": current_price,
+                            },
+                            source="guardrail",
+                            correlation_id=correlation_id,
+                        )
+                        logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                        # Emit TRADE_BLOCKED event with DecisionReason
+                        _emit_lifecycle_event(
+                            db=db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=current_price,
+                            event_type="TRADE_BLOCKED",
+                            event_reason="PORTFOLIO_VALUE_LIMIT",
+                            decision_reason=decision_reason,
+                        )
                         # Register message to monitoring ONLY (not Telegram) with order_skipped=True, blocked=False
                         # This is for monitoring/dashboard visibility only - alert was already sent to Telegram
                         try:
