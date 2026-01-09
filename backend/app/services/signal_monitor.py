@@ -3627,8 +3627,44 @@ class SignalMonitorService:
                         f"ℹ️ {symbol}: BUY alert was sent but should_create_order=False. "
                         f"guard_reason={guard_reason}. Decision tracing should already be recorded in guard clauses."
                     )
-                    # Note: Decision tracing is emitted in the guard clauses above (lines 2803-2925)
-                    # This else clause is just for logging - the actual decision events are emitted in the guard checks
+                    # FALLBACK: If guard_reason is set but decision tracing wasn't emitted (e.g., _emit_lifecycle_event failed silently),
+                    # emit a fallback decision tracing event to ensure we always have a record
+                    if guard_reason:
+                        try:
+                            from app.utils.decision_reason import make_skip, ReasonCode
+                            import uuid
+                            correlation_id = str(uuid.uuid4())
+                            fallback_reason_code = ReasonCode.MAX_OPEN_TRADES_REACHED.value if guard_reason == "MAX_OPEN_ORDERS" else ReasonCode.RECENT_ORDERS_COOLDOWN.value
+                            fallback_decision = make_skip(
+                                reason_code=fallback_reason_code,
+                                message=f"Order blocked for {symbol} after alert was sent. Guard reason: {guard_reason}",
+                                context={
+                                    "symbol": symbol,
+                                    "guard_reason": guard_reason,
+                                    "price": current_price,
+                                    "fallback": True,  # Mark as fallback decision
+                                },
+                                source="guardrail_fallback",
+                                correlation_id=correlation_id,
+                            )
+                            logger.warning(
+                                f"⚠️ {symbol}: BUY alert sent but emitting fallback decision tracing. "
+                                f"Guard reason: {guard_reason}, Reason code: {fallback_decision.reason_code}"
+                            )
+                            _emit_lifecycle_event(
+                                db=db,
+                                symbol=symbol,
+                                strategy_key=strategy_key,
+                                side="BUY",
+                                price=current_price,
+                                event_type="TRADE_BLOCKED",
+                                event_reason=f"FALLBACK_{guard_reason}",
+                                decision_reason=fallback_decision,
+                            )
+                        except Exception as fallback_err:
+                            logger.warning(f"Failed to emit fallback decision tracing for {symbol}: {fallback_err}")
+                    # Note: Decision tracing is normally emitted in the guard clauses above (lines 2803-2925)
+                    # This fallback ensures we always have a record even if guard clauses fail silently
             
         # ========================================================================
         # ENVÍO DE ALERTAS SELL: Enviar alerta SIEMPRE que sell_signal=True y sell_alert_enabled=True
