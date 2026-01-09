@@ -6184,19 +6184,8 @@ class SignalMonitorService:
             
             if not result or "error" in result:
                 error_msg = result.get("error", "Unknown error") if result else "No response"
+                last_error = error_msg
                 logger.error(f"❌ SELL order creation failed for {symbol}: {error_msg}")
-                
-                # Emit ORDER_FAILED event
-                _emit_lifecycle_event(
-                    db=db,
-                    symbol=symbol,
-                    strategy_key=strategy_key,
-                    side="SELL",
-                    price=current_price,
-                    event_type="ORDER_FAILED",
-                    event_reason="order_placement_failed",
-                    error_message=error_msg,
-                )
                 
                 # ========================================================================
                 # AUTHENTICATION ERROR HANDLING: Do NOT attempt fallbacks for auth errors
@@ -6214,6 +6203,37 @@ class SignalMonitorService:
                     logger.error(
                         f"🔐 AUTHENTICATION ERROR detected for SELL {symbol}: {error_msg}. "
                         f"This is a configuration issue (API keys, IP whitelist) and cannot be fixed by fallbacks."
+                    )
+                    # Emit ORDER_FAILED event with decision tracing
+                    from app.utils.decision_reason import make_fail, ReasonCode, classify_exchange_error
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    reason_code = ReasonCode.AUTHENTICATION_ERROR.value
+                    fail_reason = make_fail(
+                        reason_code=reason_code,
+                        message=f"Authentication error for SELL order: {error_msg}",
+                        context={
+                            "symbol": symbol,
+                            "side": "SELL",
+                            "amount_usd": amount_usd,
+                            "quantity": qty,
+                            "is_margin": use_margin,
+                            "leverage": leverage_value if use_margin else None,
+                        },
+                        exchange_error=str(error_msg),
+                        source="exchange",
+                        correlation_id=correlation_id,
+                    )
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="SELL",
+                        price=current_price,
+                        event_type="ORDER_FAILED",
+                        event_reason="AUTHENTICATION_ERROR",
+                        error_message=str(error_msg),
+                        decision_reason=fail_reason,
                     )
                     # Send specific authentication error notification
                     try:
@@ -6235,23 +6255,203 @@ class SignalMonitorService:
                     except Exception as notify_err:
                         logger.warning(f"Failed to send Telegram authentication error notification: {notify_err}")
                     
-                    # Return error details instead of None so callers can detect authentication errors
                     return {"error": "authentication", "error_type": "authentication", "message": error_msg}
                 
-                # For non-authentication errors, send generic error notification
-                try:
-                    telegram_notifier.send_message(
-                        f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"🔴 Side: SELL\n"
-                        f"💰 Amount: ${amount_usd:,.2f}\n"
-                        f"📦 Quantity: {qty:.8f}\n"
-                        f"❌ Error: {error_msg}"
+                # ========================================================================
+                # FALLBACK 1: Error 306 (INSUFFICIENT_AVAILABLE_BALANCE) - Leverage demasiado alto
+                # ========================================================================
+                # Si falla con error 306, significa que el leverage fue demasiado alto para este par
+                # Recordar el fallo e intentar con leverage reducido
+                if use_margin and error_msg and "306" in error_msg and "INSUFFICIENT_AVAILABLE_BALANCE" in error_msg:
+                    from app.services.margin_leverage_cache import get_leverage_cache
+                    leverage_cache = get_leverage_cache()
+                    
+                    # Record the failure
+                    leverage_cache.record_leverage_failure(
+                        symbol=symbol,
+                        attempted_leverage=leverage_value,
+                        error_code=306
                     )
-                except Exception as notify_err:
-                    logger.warning(f"Failed to send Telegram error notification: {notify_err}")
+                    
+                    # Get next leverage to try (reduced)
+                    next_leverage = leverage_cache.get_next_try_leverage(
+                        symbol=symbol,
+                        failed_leverage=leverage_value,
+                        min_leverage=1.0
+                    )
+                    
+                    if next_leverage and next_leverage >= 1.0:
+                        logger.info(
+                            f"🔄 SELL {symbol}: Retrying with reduced leverage {next_leverage}x "
+                            f"(down from {leverage_value}x) after error 306"
+                        )
+                        try:
+                            retry_result = trade_client.place_market_order(
+                                symbol=symbol,
+                                side=side_upper,
+                                qty=qty,
+                                is_margin=True,  # Still margin, just lower leverage
+                                leverage=next_leverage,
+                                dry_run=dry_run_mode
+                            )
+                            
+                            if retry_result and "error" not in retry_result:
+                                logger.info(f"✅ SELL {symbol}: Success with reduced leverage {next_leverage}x (learned from error 306)")
+                                result = retry_result  # Use successful retry result
+                                leverage_value = next_leverage  # Update leverage for logging
+                            else:
+                                retry_error = retry_result.get("error", "Unknown error") if retry_result else "No response"
+                                logger.warning(f"⚠️ SELL {symbol}: Retry with leverage {next_leverage}x failed: {retry_error}")
+                                
+                                # If retry also failed with 306, try even lower leverage
+                                if retry_error and "306" in retry_error and "INSUFFICIENT_AVAILABLE_BALANCE" in retry_error:
+                                    leverage_cache.record_leverage_failure(
+                                        symbol=symbol,
+                                        attempted_leverage=next_leverage,
+                                        error_code=306
+                                    )
+                                    
+                                    next_next_leverage = leverage_cache.get_next_try_leverage(
+                                        symbol=symbol,
+                                        failed_leverage=next_leverage,
+                                        min_leverage=1.0
+                                    )
+                                    
+                                    if next_next_leverage and next_next_leverage >= 1.0:
+                                        logger.info(f"🔄 SELL {symbol}: Retrying with even lower leverage {next_next_leverage}x")
+                                        try:
+                                            retry_retry_result = trade_client.place_market_order(
+                                                symbol=symbol,
+                                                side=side_upper,
+                                                qty=qty,
+                                                is_margin=True,
+                                                leverage=next_next_leverage,
+                                                dry_run=dry_run_mode
+                                            )
+                                            
+                                            if retry_retry_result and "error" not in retry_retry_result:
+                                                logger.info(f"✅ SELL {symbol}: Success with leverage {next_next_leverage}x")
+                                                result = retry_retry_result
+                                                leverage_value = next_next_leverage
+                                            else:
+                                                error_msg = f"Margin {leverage_value}x failed: {error_msg} | Margin {next_leverage}x failed: {retry_error} | Margin {next_next_leverage}x failed: {retry_retry_result.get('error', 'Unknown') if retry_retry_result else 'No response'}"
+                                        except Exception as retry_retry_err:
+                                            logger.error(f"❌ Exception during second leverage retry for SELL {symbol}: {retry_retry_err}")
+                                            error_msg = f"Margin {leverage_value}x failed: {error_msg} | Margin {next_leverage}x failed: {retry_error} | Second retry exception: {str(retry_retry_err)}"
+                                    else:
+                                        error_msg = f"Margin {leverage_value}x failed: {error_msg} | Margin {next_leverage}x failed: {retry_error}"
+                                else:
+                                    # Different error (not 306), don't continue trying leverage
+                                    logger.warning(
+                                        f"⚠️ Retry with leverage {next_leverage}x failed for SELL {symbol}: {retry_error} (not error 306, stopping leverage reduction)"
+                                    )
+                                    error_msg = f"Margin {leverage_value}x failed: {error_msg} | Margin {next_leverage}x failed: {retry_error}"
+                        except Exception as retry_err:
+                            logger.error(f"❌ Exception during leverage retry for SELL {symbol}: {retry_err}")
+                            error_msg = f"Margin {leverage_value}x failed: {error_msg} | Leverage retry exception: {str(retry_err)}"
+                    
+                    # If reduced leverage didn't work or we're at minimum, try SPOT fallback
+                    # Only try SPOT if we haven't already succeeded with a lower leverage
+                    if (not result or "error" in result) and error_msg:
+                        logger.warning(f"⚠️ SELL Margin order failed with error 306. Checking if SPOT fallback is possible for {symbol}...")
+                        
+                        # Check available balance for SPOT order (SELL needs base currency)
+                        try:
+                            account_summary = trade_client.get_account_summary()
+                            available_balance = 0
+                            
+                            if 'accounts' in account_summary:
+                                for acc in account_summary['accounts']:
+                                    currency = acc.get('currency', '').upper()
+                                    # For SELL orders, we need base currency (e.g., FIL for FIL_USDT)
+                                    if currency == base_currency:
+                                        available = float(acc.get('available', '0') or '0')
+                                        available_balance = available
+                                        break
+                            
+                            required_qty = amount_usd / current_price
+                            
+                            if available_balance >= required_qty:
+                                logger.info(f"🔄 SELL {symbol}: SPOT fallback available. Balance: {available_balance:.8f} {base_currency} >= Required: {required_qty:.8f} {base_currency}")
+                                try:
+                                    spot_result = trade_client.place_market_order(
+                                        symbol=symbol,
+                                        side=side_upper,
+                                        qty=qty,
+                                        is_margin=False,  # SPOT fallback
+                                        leverage=None,
+                                        dry_run=dry_run_mode
+                                    )
+                                    
+                                    if spot_result and "error" not in spot_result:
+                                        logger.info(f"✅ SELL {symbol}: SPOT fallback succeeded")
+                                        result = spot_result
+                                        use_margin = False  # Update for logging
+                                        leverage_value = None
+                                    else:
+                                        spot_error = spot_result.get("error", "Unknown error") if spot_result else "No response"
+                                        logger.warning(f"⚠️ SELL {symbol}: SPOT fallback also failed: {spot_error}")
+                                        error_msg = f"Margin {leverage_value}x failed: {error_msg} | SPOT fallback failed: {spot_error}"
+                                except Exception as spot_err:
+                                    logger.error(f"❌ Exception during SPOT fallback for SELL {symbol}: {spot_err}")
+                                    error_msg = f"Margin {leverage_value}x failed: {error_msg} | SPOT fallback exception: {str(spot_err)}"
+                            else:
+                                logger.warning(f"⚠️ SELL {symbol}: SPOT fallback not possible. Balance: {available_balance:.8f} {base_currency} < Required: {required_qty:.8f} {base_currency}")
+                                error_msg = f"Margin {leverage_value}x failed: {error_msg} | SPOT fallback not possible (insufficient balance)"
+                        except Exception as balance_check_err:
+                            logger.warning(f"⚠️ Could not check balance for SPOT fallback for SELL {symbol}: {balance_check_err}")
+                            error_msg = f"Margin {leverage_value}x failed: {error_msg} | SPOT fallback check failed: {str(balance_check_err)}"
                 
-                return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
+                # If we still have an error after all retries, emit ORDER_FAILED event with decision tracing
+                if not result or "error" in result:
+                    from app.utils.decision_reason import make_fail, ReasonCode, classify_exchange_error
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    reason_code = classify_exchange_error(str(error_msg))
+                    fail_reason = make_fail(
+                        reason_code=reason_code.value,
+                        message=f"SELL order placement failed: {error_msg}",
+                        context={
+                            "symbol": symbol,
+                            "side": "SELL",
+                            "amount_usd": amount_usd,
+                            "quantity": qty,
+                            "is_margin": use_margin,
+                            "leverage": leverage_value if use_margin else None,
+                            "dry_run": dry_run_mode,
+                        },
+                        exchange_error=str(error_msg),
+                        source="exchange",
+                        correlation_id=correlation_id,
+                    )
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="SELL",
+                        price=current_price,
+                        event_type="ORDER_FAILED",
+                        event_reason=fail_reason.reason_message,
+                        error_message=fail_reason.exchange_error_snippet,
+                        decision_reason=fail_reason,
+                    )
+                    
+                    # Send Telegram notification about the error
+                    try:
+                        telegram_notifier.send_message(
+                            f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"🔴 Side: SELL\n"
+                            f"💰 Amount: ${amount_usd:,.2f}\n"
+                            f"📦 Quantity: {qty:.8f}\n"
+                            f"❌ Error: {error_msg}\n\n"
+                            f"🔍 Reason Code: {fail_reason.reason_code}\n"
+                            f"📝 Reason: {fail_reason.reason_message}"
+                        )
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send Telegram error notification: {notify_err}")
+                    
+                    return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
             
             # Get order_id from result
             order_id = result.get("order_id") or result.get("client_order_id")
