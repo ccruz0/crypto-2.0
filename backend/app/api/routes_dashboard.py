@@ -27,6 +27,7 @@ from app.services.open_orders import (
 from app.services.portfolio_cache import get_portfolio_summary
 from app.services.portfolio_reconciliation import reconcile_portfolio_balances
 from app.utils.live_trading import get_live_trading_status
+from app.utils.trading_guardrails import _get_telegram_kill_switch_status
 
 router = APIRouter()
 log = logging.getLogger("app.dashboard")
@@ -599,7 +600,8 @@ def get_dashboard_snapshot_endpoint(
                     "bot_status": {
                         "is_running": True,
                         "status": "running",
-                        "reason": None
+                        "reason": None,
+                        "kill_switch_on": _get_telegram_kill_switch_status(db) if db else False
                     },
                     "partial": True,
                     "errors": ["No snapshot available yet"]
@@ -1102,7 +1104,8 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                 "status": "running",
                 "reason": None,
                 "live_trading_enabled": get_live_trading_status(db),
-                "mode": "LIVE" if get_live_trading_status(db) else "DRY_RUN"
+                "mode": "LIVE" if get_live_trading_status(db) else "DRY_RUN",
+                "kill_switch_on": _get_telegram_kill_switch_status(db)
             },
             "partial": False,
             "errors": []
@@ -1132,7 +1135,8 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                 "status": "running",
                 "reason": None,
                 "live_trading_enabled": get_live_trading_status(db) if db else False,
-                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN"
+                "mode": "LIVE" if (get_live_trading_status(db) if db else False) else "DRY_RUN",
+                "kill_switch_on": _get_telegram_kill_switch_status(db) if db else False
             },
             "partial": True,
             "errors": [str(e)]
