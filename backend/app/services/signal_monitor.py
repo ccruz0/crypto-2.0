@@ -1141,6 +1141,17 @@ class SignalMonitorService:
         # Generate unique evaluation_id for this symbol evaluation run
         evaluation_id = str(uuid.uuid4())[:8]
         
+        # EARLY CHECK: Kill switch - if ON, skip all signal processing
+        try:
+            from app.utils.trading_guardrails import _get_telegram_kill_switch_status
+            kill_switch_on = _get_telegram_kill_switch_status(db)
+            if kill_switch_on:
+                logger.debug(f"🚫 [KILL_SWITCH] Skipping signal check for {symbol} - kill switch is ON")
+                return  # Exit early - no signal processing when kill switch is on
+        except Exception as e:
+            logger.warning(f"Error checking kill switch for {symbol}: {e}")
+            # Continue processing if kill switch check fails (fail-safe: allow signals)
+        
         try:
             # IMPORTANT: Query fresh from database to get latest trade_amount_usd
             # This ensures we have the most recent value even if it was just updated from the dashboard
