@@ -3625,7 +3625,10 @@ class SignalMonitorService:
                         decision_reason=decision_reason,
                     )
                     # Note: _emit_lifecycle_event already creates the message with decision tracing, no need for duplicate
-            else:
+            
+            # Handle case when should_create_order=False (alert was sent but order was blocked)
+            # This else is at the same level as if should_create_order: (line 2971)
+            if not should_create_order:
                 # should_create_order=False - alert was sent but order was blocked
                 # Decision tracing should have been emitted in guard clauses (MAX_OPEN_TRADES_REACHED, RECENT_ORDERS_COOLDOWN)
                 # But if for some reason it wasn't (e.g., guard_reason is None), log it for debugging
