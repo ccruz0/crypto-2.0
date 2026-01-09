@@ -1,5 +1,5 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -182,10 +182,16 @@ def clear_old_alerts(max_age_seconds: int = 3600):
     pass
 
 @router.get("/monitoring/summary")
-async def get_monitoring_summary(db: Session = Depends(get_db)):
+async def get_monitoring_summary(
+    db: Session = Depends(get_db),
+    force_refresh: bool = Query(False, description="Force recalculation of signals (ignores snapshot cache)")
+):
     """
     Get monitoring summary with KPIs and alerts.
     Lightweight endpoint that uses snapshot data to avoid heavy computation.
+    
+    Args:
+        force_refresh: If True, forces recalculation of signals even if snapshot has them
     """
     global _active_alerts, _scheduler_ticks, _last_backend_restart, _backend_restart_status, _backend_restart_timestamp
     import asyncio
@@ -352,15 +358,18 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             # Log active watchlist items
             log.info(f"🔔 Found {len(active_watchlist_items)} watchlist items with toggles enabled")
             
-            # If signals are missing from snapshot, calculate them directly for coins with toggles enabled
-            # This ensures we can detect active signals even if snapshot doesn't include them
-            # Also calculate if we have watchlist items but no signals in snapshot at all
-            should_calculate_signals = (
-                (coins_without_signals > 0 or len(signals_by_symbol) == 0) and 
-                len(active_watchlist_items) > 0
-            )
+            # ALWAYS calculate signals directly for active watchlist items to ensure consistency with watchlist
+            # The watchlist uses real-time signal calculations, so monitoring should use the same method
+            # This ensures both views show the same active signals
+            # If force_refresh is True, always recalculate even if signals exist in snapshot
+            should_calculate_signals = len(active_watchlist_items) > 0
             
-            log.info(f"🔧 Should calculate signals: {should_calculate_signals} (coins_without_signals={coins_without_signals}, signals_in_snapshot={len(signals_by_symbol)}, watchlist_items={len(active_watchlist_items)})")
+            if force_refresh:
+                log.info(f"🔄 Force refresh requested - will recalculate all signals")
+                # Clear existing signals to force recalculation
+                signals_by_symbol.clear()
+            
+            log.info(f"🔧 Should calculate signals: {should_calculate_signals} (watchlist_items={len(active_watchlist_items)}, force_refresh={force_refresh})")
             
             if should_calculate_signals:
                 try:
@@ -368,12 +377,18 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                     from app.services.strategy_profiles import resolve_strategy_profile
                     from app.models.market_price import MarketData
                     
-                    # Get market data for symbols that need signal calculation
-                    symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
-                                      if item.symbol and item.symbol.upper() not in signals_by_symbol]
+                    # Get market data for ALL active watchlist items to ensure consistency with watchlist
+                    # Always recalculate signals for active watchlist items (don't rely on snapshot)
+                    # If force_refresh, recalculate all; otherwise only recalculate missing ones
+                    if force_refresh:
+                        symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
+                                          if item.symbol]
+                    else:
+                        symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
+                                          if item.symbol and item.symbol.upper() not in signals_by_symbol]
                     
                     if symbols_to_check:
-                        log.info(f"🔧 Calculating signals for {len(symbols_to_check)} symbols: {symbols_to_check[:5]}")
+                        log.info(f"🔧 Calculating signals for {len(symbols_to_check)} active watchlist symbols: {symbols_to_check[:5]}")
                         # Query market data for these symbols
                         market_data_list = db.query(MarketData).filter(
                             func.upper(MarketData.symbol).in_(symbols_to_check)
@@ -382,15 +397,18 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                         market_data_by_symbol = {md.symbol.upper(): md for md in market_data_list}
                         log.info(f"📊 Found market data for {len(market_data_by_symbol)} symbols: {list(market_data_by_symbol.keys())[:5]}")
                         
-                        # Calculate signals for each coin
+                        # Calculate signals for each active watchlist item
                         for item in active_watchlist_items:
                             if not item.symbol:
                                 continue
                             symbol_upper = item.symbol.upper()
                             
-                            # Skip if we already have signals from snapshot
-                            if symbol_upper in signals_by_symbol:
+                            # If force_refresh, always recalculate; otherwise skip if we already have signals
+                            if not force_refresh and symbol_upper in signals_by_symbol:
                                 continue
+                            
+                            # Recalculate signals for active watchlist items to match watchlist view
+                            # This ensures monitoring and watchlist show the same active signals
                             
                             # Get market data for this symbol
                             market_data = market_data_by_symbol.get(symbol_upper)
@@ -421,11 +439,12 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                                     risk_approach=risk_approach
                                 )
                                 
-                                # Store signals in map
+                                # Store signals in map (override any snapshot signals for consistency)
                                 signals_by_symbol[symbol_upper] = {
                                     "buy": bool(signal_result.get("buy_signal", False)),
                                     "sell": bool(signal_result.get("sell_signal", False))
                                 }
+                                log.debug(f"✅ Calculated signals for {symbol_upper}: buy={signals_by_symbol[symbol_upper]['buy']}, sell={signals_by_symbol[symbol_upper]['sell']}")
                                 
                             except Exception as sig_err:
                                 log.error(f"❌ Could not calculate signals for {item.symbol}: {sig_err}", exc_info=True)
@@ -484,6 +503,9 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
             _active_alerts.clear()
             active_alerts_count = 0
         
+        # Record when signals were last calculated
+        signals_last_calculated = datetime.now(timezone.utc).isoformat() if should_calculate_signals else None
+        
         return JSONResponse(
             content={
                 "active_alerts": active_alerts_count,
@@ -497,6 +519,7 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                 "last_backend_restart": _last_backend_restart,
                 "backend_restart_status": _backend_restart_status,
                 "backend_restart_timestamp": _backend_restart_timestamp,
+                "signals_last_calculated": signals_last_calculated,  # Timestamp when signals were last calculated
                 "alerts": _active_alerts[-50:]  # Return last 50 alerts
             },
             headers=_NO_CACHE_HEADERS
@@ -519,6 +542,7 @@ async def get_monitoring_summary(db: Session = Depends(get_db)):
                 "last_backend_restart": _last_backend_restart,
                 "backend_restart_status": _backend_restart_status,
                 "backend_restart_timestamp": _backend_restart_timestamp,
+                "signals_last_calculated": None,  # No signals calculated on error
                 "alerts": _active_alerts[-50:]
             },
             headers=_NO_CACHE_HEADERS

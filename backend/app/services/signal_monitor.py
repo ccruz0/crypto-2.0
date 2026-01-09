@@ -3313,12 +3313,7 @@ class SignalMonitorService:
                         event_reason="DATA_MISSING",
                         decision_reason=decision_reason,
                     )
-                    # Send notification to Telegram since alert was sent but order wasn't created
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(error_msg, symbol=symbol, blocked=False, order_skipped=True)
-                    except Exception:
-                        pass  # Non-critical, continue
+                    # Note: _emit_lifecycle_event already creates the message with decision tracing, no need for duplicate
                     # Remove locks and exit
                     if symbol in self.order_creation_locks:
                         del self.order_creation_locks[symbol]
@@ -3371,13 +3366,7 @@ class SignalMonitorService:
                             event_reason="PORTFOLIO_VALUE_LIMIT",
                             decision_reason=decision_reason,
                         )
-                        # Register message to monitoring ONLY (not Telegram) with order_skipped=True, blocked=False
-                        # This is for monitoring/dashboard visibility only - alert was already sent to Telegram
-                        try:
-                            from app.api.routes_monitoring import add_telegram_message
-                            add_telegram_message(skipped_msg, symbol=symbol, blocked=False, order_skipped=True)
-                        except Exception:
-                            pass  # Non-critical, continue
+                        # Note: _emit_lifecycle_event already creates the message with decision tracing, no need for duplicate
                         # Remove locks and exit
                         if symbol in self.order_creation_locks:
                             del self.order_creation_locks[symbol]
@@ -3607,17 +3596,35 @@ class SignalMonitorService:
                         f"ℹ️ [ORDER_CREATION_CHECK] {symbol} - trade_enabled=False, "
                         f"alert was sent but order will NOT be created (trading disabled for this symbol)"
                     )
-                    info_msg = (
-                        f"ℹ️ ORDEN NO EJECUTADA: {symbol} - trade_enabled=False. "
-                        f"La alerta ya fue enviada, pero la orden de compra no se creará porque el trading automático está deshabilitado para este símbolo."
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.TRADE_DISABLED.value,
+                        message=f"Trade disabled for {symbol}. Alert was sent but order will not be created because trade_enabled=False for this symbol.",
+                        context={
+                            "symbol": symbol,
+                            "trade_enabled": False,
+                            "alert_sent": buy_alert_sent_successfully,
+                            "price": current_price,
+                        },
+                        source="guardrail",
+                        correlation_id=correlation_id,
                     )
-                    logger.info(info_msg)
-                    # Send notification to Telegram since alert was sent but order wasn't created
-                    try:
-                        from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(info_msg, symbol=symbol, blocked=False, order_skipped=True)
-                    except Exception:
-                        pass  # Non-critical, continue
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="TRADE_DISABLED",
+                        decision_reason=decision_reason,
+                    )
+                    # Note: _emit_lifecycle_event already creates the message with decision tracing, no need for duplicate
             else:
                 # should_create_order=False - alert was sent but order was blocked
                 # Decision tracing should have been emitted in guard clauses (MAX_OPEN_TRADES_REACHED, RECENT_ORDERS_COOLDOWN)
