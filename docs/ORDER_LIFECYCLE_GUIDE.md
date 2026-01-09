@@ -85,9 +85,10 @@ Orders can have different roles:
 ❌ **Trade did NOT execute** - Order was canceled, no position change
 
 ### If you see only a signal (BUY/SELL alert)
-⚠️ **No trade necessarily happened** - This is just a signal notification
-- Check if you see ORDER_CREATED after the signal
-- If no ORDER_CREATED, trade was blocked or disabled
+⚠️ **Check for ORDER_CREATED** - Alert is sent first, then order is created
+- If you see ORDER_CREATED after the alert → Order was placed automatically
+- If you see TRADE_BLOCKED after the alert → Order was prevented (check reason)
+- If you see neither → Order creation may be disabled (`trade_enabled=False`) or still processing
 
 ### If you see a sync message
 🔄 **This is a reconciliation** - System is confirming order status from exchange
@@ -117,30 +118,54 @@ The system syncs with the exchange every 5 seconds to check order status.
 
 ---
 
+## Order Creation Sequence
+
+**Important:** Both BUY and SELL signals automatically create orders when:
+- `trade_enabled=True` for the symbol
+- `trade_amount_usd` is configured
+- All guard checks pass (balance, limits, cooldowns, etc.)
+
+### Complete Order Lifecycle Sequence
+
+1. **Signal Detected** → Trading signal (BUY/SELL) is detected
+2. **Alert Sent** → Telegram notification sent (if `alert_enabled=True`)
+3. **Order Created** → Automatic order placed on exchange (if `trade_enabled=True`)
+   - BUY orders: Buy base currency with quote currency (USDT)
+   - SELL orders: Sell base currency for quote currency (USDT)
+4. **Order Filled** → Order executed on exchange
+5. **SL/TP Created** → Stop Loss and Take Profit orders created automatically
+   - For BUY orders: SL/TP are SELL orders (sell at loss/profit)
+   - For SELL orders: SL/TP are BUY orders (buy back at loss/profit)
+6. **SL/TP Executed** → Protection order executes when price target is hit
+
+**Note:** If order creation is blocked (guard checks fail), you'll see a `TRADE_BLOCKED` message with the reason.
+
 ## Common Scenarios
 
-### Scenario 1: Signal → ORDER_CREATED → ORDER_EXECUTED
-1. Trading signal detected (BUY/SELL alert)
-2. Order placed (ORDER_CREATED)
+### Scenario 1: Signal → Alert → ORDER_CREATED → ORDER_EXECUTED → SLTP_CREATED
+1. Trading signal detected (BUY/SELL alert sent to Telegram)
+2. Order placed automatically (ORDER_CREATED)
 3. Order filled (ORDER_EXECUTED)
-**Result:** Trade completed successfully
+4. SL/TP orders created (SLTP_CREATED)
+**Result:** Trade completed successfully with protection orders active
 
-### Scenario 2: Signal → ORDER_CREATED → ORDER_CANCELED
-1. Trading signal detected (BUY/SELL alert)
+### Scenario 2: Signal → Alert → ORDER_CREATED → ORDER_CANCELED
+1. Trading signal detected (BUY/SELL alert sent to Telegram)
 2. Order placed (ORDER_CREATED)
 3. Order canceled (ORDER_CANCELED)
-**Result:** No trade - order was canceled before execution
+**Result:** No trade - order was canceled before execution, no SL/TP created
 
-### Scenario 3: Signal → TRADE_BLOCKED
-1. Trading signal detected (BUY/SELL alert)
+### Scenario 3: Signal → Alert → TRADE_BLOCKED
+1. Trading signal detected (BUY/SELL alert sent to Telegram)
 2. Trade blocked (TRADE_BLOCKED - reason shown)
-**Result:** No order placed - trade was prevented
+**Result:** No order placed - trade was prevented (cooldown, max orders, insufficient balance, etc.)
 
-### Scenario 4: Signal → ORDER_CREATED → SLTP_CREATED → ORDER_EXECUTED (TP)
-1. Trading signal detected (BUY alert)
+### Scenario 4: Signal → Alert → ORDER_CREATED → ORDER_EXECUTED → SLTP_CREATED → ORDER_EXECUTED (TP)
+1. Trading signal detected (BUY/SELL alert sent to Telegram)
 2. Order placed (ORDER_CREATED)
-3. SL/TP orders created (SLTP_CREATED)
-4. Take profit executed (ORDER_EXECUTED for TP)
+3. Order filled (ORDER_EXECUTED)
+4. SL/TP orders created (SLTP_CREATED)
+5. Take profit executed (ORDER_EXECUTED for TP)
 **Result:** Position opened and closed at profit target
 
 ### Scenario 5: Order disappears from Open Orders

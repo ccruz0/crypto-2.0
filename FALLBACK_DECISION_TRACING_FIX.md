@@ -51,7 +51,7 @@ Added a **fallback decision tracing mechanism** in the `else` clause when `shoul
 
 ## Notes
 
-- **SOL SELL alerts**: These are informational only and don't create automatic orders, so they don't need decision tracing for order execution. However, if we want to track why SELL alerts are throttled, we can add similar logic for SELL alerts.
+- **SELL orders**: SELL signals also create automatic orders when `trade_enabled=True`. Decision tracing applies to both BUY and SELL orders. The fallback mechanism works for both order types.
 
 - **Primary decision tracing**: Still emitted in guard clauses (lines 2803-2925). Fallback is a safety net.
 

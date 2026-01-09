@@ -2,7 +2,7 @@
 
 ## ✅ Implementation Status: COMPLETE
 
-All decision tracing has been implemented and deployed. The system now captures reasons for every blocked/failed buy order.
+All decision tracing has been implemented and deployed. The system now captures reasons for every blocked/failed order (both BUY and SELL orders).
 
 ## 🔧 Fix Applied: Guard Clauses Decision Tracing
 
@@ -68,14 +68,19 @@ All exchange errors now emit decision tracing:
 
 ### Complete Decision Tracing Path
 
-1. **Alert Detected** → Signal evaluation
+**Sequence:** Alert → Order Creation → Order Filled → SL/TP Creation
+
+1. **Alert Detected** → Signal evaluation (BUY or SELL)
 2. **Throttle Check** → If blocked: `THROTTLED_DUPLICATE_ALERT` (SKIPPED)
-3. **Alert Sent** → Telegram notification
+3. **Alert Sent** → Telegram notification (if `alert_enabled=True`)
 4. **Order Creation Attempt** → Multiple guard checks:
    - Each guard that blocks → Emits `TRADE_BLOCKED` with decision reason
+   - Applies to both BUY and SELL orders
 5. **Order Placement** → If attempted:
    - Success → `ORDER_CREATED`
    - Failure → `ORDER_FAILED` with decision reason + Telegram notification
+6. **Order Filled** → `ORDER_EXECUTED`
+7. **SL/TP Creation** → `SLTP_CREATED` (or `SLTP_FAILED` if creation fails)
 
 ### Database Persistence
 
