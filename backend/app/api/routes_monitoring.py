@@ -532,11 +532,25 @@ def add_telegram_message(
     db: Optional[Session] = None,
     throttle_status: Optional[str] = None,
     throttle_reason: Optional[str] = None,
+    decision_type: Optional[str] = None,
+    reason_code: Optional[str] = None,
+    reason_message: Optional[str] = None,
+    context_json: Optional[Dict[str, Any]] = None,
+    exchange_error_snippet: Optional[str] = None,
+    correlation_id: Optional[str] = None,
 ):
     """Add a Telegram message to the history (blocked or sent)
     
     Messages are kept for 1 month before being removed.
     Now persists to database instead of just in-memory for multi-worker compatibility.
+    
+    Decision tracing fields:
+    - decision_type: "SKIPPED" or "FAILED" - whether the buy was skipped before attempt or failed during attempt
+    - reason_code: Canonical reason code (e.g., "TRADE_DISABLED", "EXCHANGE_REJECTED")
+    - reason_message: Human-readable reason message
+    - context_json: JSON object with contextual data (prices, balances, thresholds, etc.)
+    - exchange_error_snippet: Raw exchange error message for FAILED decisions
+    - correlation_id: Optional correlation ID for tracing across logs
     """
     global _telegram_messages
     from datetime import timedelta
@@ -555,6 +569,12 @@ def add_telegram_message(
         "timestamp": datetime.now().isoformat(),
         "throttle_status": throttle_status,
         "throttle_reason": throttle_reason,
+        "decision_type": decision_type,
+        "reason_code": reason_code,
+        "reason_message": reason_message,
+        "context_json": context_json,
+        "exchange_error_snippet": exchange_error_snippet,
+        "correlation_id": correlation_id,
     }
     _telegram_messages.append(msg)
     
@@ -612,6 +632,12 @@ def add_telegram_message(
                 order_skipped=order_skipped,
                 throttle_status=throttle_status,
                 throttle_reason=throttle_reason,
+                decision_type=decision_type,
+                reason_code=reason_code,
+                reason_message=reason_message,
+                context_json=context_json,
+                exchange_error_snippet=exchange_error_snippet,
+                correlation_id=correlation_id,
             )
             db_session.add(telegram_msg)
             db_session.commit()
@@ -675,6 +701,12 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now().isoformat(),
                     "throttle_status": msg.throttle_status,
                     "throttle_reason": msg.throttle_reason,
+                    "decision_type": msg.decision_type,
+                    "reason_code": msg.reason_code,
+                    "reason_message": msg.reason_message,
+                    "context_json": msg.context_json,
+                    "exchange_error_snippet": msg.exchange_error_snippet,
+                    "correlation_id": msg.correlation_id,
                 })
             
             return {
@@ -708,6 +740,12 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
                 "order_skipped": order_skipped_val,
                 "throttle_status": msg.get("throttle_status"),
                 "throttle_reason": msg.get("throttle_reason"),
+                "decision_type": msg.get("decision_type"),
+                "reason_code": msg.get("reason_code"),
+                "reason_message": msg.get("reason_message"),
+                "context_json": msg.get("context_json"),
+                "exchange_error_snippet": msg.get("exchange_error_snippet"),
+                "correlation_id": msg.get("correlation_id"),
             })
     
     # Return most recent first (newest at the top)

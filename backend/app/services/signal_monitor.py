@@ -52,6 +52,7 @@ def _emit_lifecycle_event(
     error_message: Optional[str] = None,
     sl_order_id: Optional[str] = None,
     tp_order_id: Optional[str] = None,
+    decision_reason: Optional[Any] = None,  # DecisionReason object (optional for backward compatibility)
 ) -> None:
     """
     Emit a lifecycle event to both throttle (SignalThrottleState) and monitoring (TelegramMessage).
@@ -70,7 +71,9 @@ def _emit_lifecycle_event(
         error_message: Optional error message (for failure events)
         sl_order_id: Optional SL order ID (for SLTP events)
         tp_order_id: Optional TP order ID (for SLTP events)
+        decision_reason: Optional DecisionReason object with structured decision information
     """
+    from app.utils.decision_reason import DecisionReason as DecisionReasonType
     try:
         # Record to SignalThrottleState (canonical source)
         record_signal_event(
@@ -86,17 +89,42 @@ def _emit_lifecycle_event(
         # Also add to monitoring/telegram message system (for UI display)
         from app.api.routes_monitoring import add_telegram_message
         
+        # Extract decision reason fields if provided
+        decision_type = None
+        reason_code = None
+        reason_message = None
+        context_json = None
+        exchange_error_snippet = None
+        correlation_id = None
+        
+        if decision_reason and hasattr(decision_reason, 'to_dict'):
+            reason_dict = decision_reason.to_dict()
+            decision_type = reason_dict.get('decision_type')
+            reason_code = reason_dict.get('reason_code')
+            reason_message = reason_dict.get('reason_message')
+            context_json = reason_dict.get('context')
+            exchange_error_snippet = reason_dict.get('exchange_error')
+            correlation_id = reason_dict.get('correlation_id')
+        
         # Build message based on event type
         if event_type == "TRADE_BLOCKED":
             message = f"🚫 TRADE BLOCKED: {symbol} {side} - {event_reason}"
             if error_message:
                 message += f"\nError: {error_message}"
+            if reason_message:
+                message += f"\nReason: {reason_message}"
             add_telegram_message(
                 message=message,
                 symbol=symbol,
                 blocked=True,
                 throttle_status="TRADE_BLOCKED",
                 throttle_reason=event_reason,
+                decision_type=decision_type,
+                reason_code=reason_code,
+                reason_message=reason_message,
+                context_json=context_json,
+                exchange_error_snippet=exchange_error_snippet,
+                correlation_id=correlation_id,
                 db=db,
             )
         elif event_type == "ORDER_ATTEMPT":
@@ -121,12 +149,27 @@ def _emit_lifecycle_event(
             message = f"❌ ORDER_FAILED: {symbol} {side} - {event_reason}"
             if error_message:
                 message += f"\nError: {error_message}"
+            if reason_message:
+                message += f"\nReason: {reason_message}"
+            # For ORDER_FAILED, decision_type should be FAILED
+            if not decision_type:
+                decision_type = "FAILED"
+            # If we have error_message but no exchange_error_snippet, use error_message
+            if error_message and not exchange_error_snippet:
+                exchange_error_snippet = error_message
             add_telegram_message(
                 message=message,
                 symbol=symbol,
-                blocked=False,
-                order_failed=True,
-                error_message=error_message or event_reason,
+                blocked=True,  # Mark as blocked since order failed
+                order_skipped=False,  # Order was attempted, not skipped
+                throttle_status="ORDER_FAILED",
+                throttle_reason=event_reason,
+                decision_type=decision_type,
+                reason_code=reason_code,
+                reason_message=reason_message,
+                context_json=context_json,
+                exchange_error_snippet=exchange_error_snippet,
+                correlation_id=correlation_id,
                 db=db,
             )
         elif event_type == "SLTP_ATTEMPT":
@@ -1845,16 +1888,51 @@ class SignalMonitorService:
                     )
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-
+                        from app.utils.decision_reason import make_skip, ReasonCode
+                        import uuid
+                        
+                        # Create DecisionReason for SKIP (alert was blocked)
+                        correlation_id = str(uuid.uuid4())
+                        # Classify the throttle reason into a canonical code
+                        reason_code = self._classify_throttle_reason(buy_reason)
+                        # Map common throttle reasons to canonical codes
+                        if "cooldown" in buy_reason.lower() or "time" in buy_reason.lower():
+                            reason_code = ReasonCode.COOLDOWN_ACTIVE.value
+                        elif "price change" in buy_reason.lower() or "price" in buy_reason.lower():
+                            reason_code = ReasonCode.THROTTLED_DUPLICATE_ALERT.value
+                        else:
+                            reason_code = ReasonCode.THROTTLED_DUPLICATE_ALERT.value
+                        
+                        decision_reason = make_skip(
+                            reason_code=reason_code,
+                            message=f"Alert blocked for {symbol} BUY: {buy_reason}",
+                            context={
+                                "symbol": symbol,
+                                "price": current_price,
+                                "reference_price": ref_price if ref_price else None,
+                                "reference_timestamp": ref_timestamp.isoformat() if ref_timestamp else None,
+                                "throttle_reason": buy_reason,
+                                "strategy_key": strategy_key,
+                            },
+                            source="throttle",
+                            correlation_id=correlation_id,
+                        )
+                        logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                        
                         add_telegram_message(
                             blocked_msg,
                             symbol=symbol,
                             blocked=True,
                             throttle_status="BLOCKED",
                             throttle_reason=buy_reason,
+                            decision_type=decision_reason.decision_type.value,
+                            reason_code=decision_reason.reason_code,
+                            reason_message=decision_reason.reason_message,
+                            context_json=decision_reason.context,
+                            correlation_id=decision_reason.correlation_id,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to add blocked alert message with DecisionReason: {e}", exc_info=True)
                     # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
                     # The price reference should only be updated when a message is actually sent successfully
                     buy_signal = False
@@ -3958,6 +4036,23 @@ class SignalMonitorService:
                 f"🚫 Blocked BUY order creation for {symbol}: trade_enabled=False. "
                 f"This function should not be called when trade is disabled."
             )
+            # Create DecisionReason for SKIP
+            from app.utils.decision_reason import make_skip, ReasonCode
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            decision_reason = make_skip(
+                reason_code=ReasonCode.TRADE_DISABLED.value,
+                message=f"Trade is disabled for {symbol}. trade_enabled=False.",
+                context={
+                    "symbol": symbol,
+                    "trade_enabled": False,
+                    "trade_amount_usd": getattr(watchlist_item, 'trade_amount_usd', None),
+                    "price": current_price,
+                },
+                source="precheck",
+                correlation_id=correlation_id,
+            )
+            logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
             # Emit TRADE_BLOCKED event
             _emit_lifecycle_event(
                 db=db,
@@ -3967,6 +4062,7 @@ class SignalMonitorService:
                 price=current_price,
                 event_type="TRADE_BLOCKED",
                 event_reason="SKIP_DISABLED_TRADE",
+                decision_reason=decision_reason,
             )
             return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
@@ -3975,6 +4071,23 @@ class SignalMonitorService:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
             logger.error(f"Cannot create BUY order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
             
+            # Create DecisionReason for SKIP
+            from app.utils.decision_reason import make_skip, ReasonCode
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            decision_reason = make_skip(
+                reason_code=ReasonCode.INVALID_TRADE_AMOUNT.value,
+                message=f"Invalid trade amount for {symbol}. trade_amount_usd={watchlist_item.trade_amount_usd}.",
+                context={
+                    "symbol": symbol,
+                    "trade_enabled": getattr(watchlist_item, 'trade_enabled', False),
+                    "trade_amount_usd": watchlist_item.trade_amount_usd,
+                    "price": current_price,
+                },
+                source="precheck",
+                correlation_id=correlation_id,
+            )
+            logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
             # Emit TRADE_BLOCKED event
             _emit_lifecycle_event(
                 db=db,
@@ -3985,6 +4098,7 @@ class SignalMonitorService:
                 event_type="TRADE_BLOCKED",
                 event_reason="SKIP_INVALID_TRADE_AMOUNT",
                 error_message=f"trade_amount_usd={watchlist_item.trade_amount_usd}",
+                decision_reason=decision_reason,
             )
             
             # Send error notification to Telegram
@@ -4037,6 +4151,36 @@ class SignalMonitorService:
                         f"🚫 BLOQUEO POR BALANCE: {symbol} - Balance insuficiente para orden SPOT. "
                         f"Available: ${available_balance:,.2f} < Required: ${spot_required:,.2f}. "
                         f"No se intentará crear la orden para evitar error 306."
+                    )
+                    # Create DecisionReason for SKIP
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    decision_reason = make_skip(
+                        reason_code=ReasonCode.INSUFFICIENT_AVAILABLE_BALANCE.value,
+                        message=f"Insufficient balance for SPOT order for {symbol}. Available: ${available_balance:,.2f} < Required: ${spot_required:,.2f}.",
+                        context={
+                            "symbol": symbol,
+                            "available_balance": available_balance,
+                            "required_balance": spot_required,
+                            "amount_usd": amount_usd,
+                            "price": current_price,
+                            "order_type": "SPOT",
+                        },
+                        source="precheck",
+                        correlation_id=correlation_id,
+                    )
+                    logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                    # Emit TRADE_BLOCKED event with DecisionReason
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key=strategy_key,
+                        side="BUY",
+                        price=current_price,
+                        event_type="TRADE_BLOCKED",
+                        event_reason="INSUFFICIENT_BALANCE",
+                        decision_reason=decision_reason,
                     )
                     # Enviar notificación informativa (no como error crítico)
                     try:
@@ -4144,7 +4288,36 @@ class SignalMonitorService:
                     f"{base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders_final}). "
                     f"Orden cancelada justo antes de ejecutar (posible race condition detectada)."
                 )
-                # Bloquear silenciosamente - no enviar notificación a Telegram
+                # Create DecisionReason for SKIP
+                from app.utils.decision_reason import make_skip, ReasonCode
+                import uuid
+                correlation_id = str(uuid.uuid4())
+                decision_reason = make_skip(
+                    reason_code=ReasonCode.MAX_OPEN_TRADES_REACHED.value,
+                    message=f"Maximum open orders reached for {symbol}. {base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL} (global={total_open_buy_orders_final}).",
+                    context={
+                        "symbol": symbol,
+                        "base_symbol": base_symbol,
+                        "open_positions": base_open,
+                        "max_open_orders": MAX_OPEN_ORDERS_PER_SYMBOL,
+                        "global_open": total_open_buy_orders_final,
+                        "price": current_price,
+                    },
+                    source="guardrail",
+                    correlation_id=correlation_id,
+                )
+                logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+                # Emit TRADE_BLOCKED event with DecisionReason
+                _emit_lifecycle_event(
+                    db=db,
+                    symbol=symbol,
+                    strategy_key=strategy_key,
+                    side="BUY",
+                    price=current_price,
+                    event_type="TRADE_BLOCKED",
+                    event_reason="MAX_OPEN_ORDERS_REACHED",
+                    decision_reason=decision_reason,
+                )
                 return None  # Cancelar orden
             else:
                 logger.info(
@@ -4173,6 +4346,34 @@ class SignalMonitorService:
             logger.warning(
                 f"🚫 BLOCKED at final check: {symbol} has {final_recent_orders} recent BUY order(s) "
                 f"within 5 minutes. Skipping order creation to prevent race condition."
+            )
+            # Create DecisionReason for SKIP
+            from app.utils.decision_reason import make_skip, ReasonCode
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            decision_reason = make_skip(
+                reason_code=ReasonCode.RECENT_ORDERS_COOLDOWN.value,
+                message=f"Recent orders cooldown active for {symbol}. Found {final_recent_orders} recent BUY order(s) within 5 minutes.",
+                context={
+                    "symbol": symbol,
+                    "recent_orders_count": final_recent_orders,
+                    "cooldown_minutes": 5,
+                    "price": current_price,
+                },
+                source="guardrail",
+                correlation_id=correlation_id,
+            )
+            logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
+            # Emit TRADE_BLOCKED event with DecisionReason
+            _emit_lifecycle_event(
+                db=db,
+                symbol=symbol,
+                strategy_key=strategy_key,
+                side="BUY",
+                price=current_price,
+                event_type="TRADE_BLOCKED",
+                event_reason="RECENT_ORDERS_COOLDOWN",
+                decision_reason=decision_reason,
             )
             return None
         
@@ -4206,6 +4407,23 @@ class SignalMonitorService:
                 side="BUY",
             )
             if not allowed:
+                # Create DecisionReason for SKIP
+                from app.utils.decision_reason import make_skip, ReasonCode
+                import uuid
+                correlation_id = str(uuid.uuid4())
+                decision_reason = make_skip(
+                    reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+                    message=f"Trading guardrail blocked order for {symbol}: {block_reason}",
+                    context={
+                        "symbol": symbol,
+                        "price": current_price,
+                        "amount_usd": amount_usd,
+                        "guardrail_reason": block_reason,
+                    },
+                    source="guardrail",
+                    correlation_id=correlation_id,
+                )
+                logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
                 # Emit TRADE_BLOCKED lifecycle event
                 _emit_lifecycle_event(
                     db=db,
@@ -4215,6 +4433,7 @@ class SignalMonitorService:
                     price=current_price,
                     event_type="TRADE_BLOCKED",
                     event_reason=block_reason,
+                    decision_reason=decision_reason,
                 )
                 # Send Telegram alert
                 try:
@@ -4685,6 +4904,28 @@ class SignalMonitorService:
                     except Exception as verify_err:
                         logger.warning(f"⚠️ Could not verify trade_enabled state for {symbol} after order failure: {verify_err}")
                     
+                    # Create DecisionReason for FAIL
+                    from app.utils.decision_reason import make_fail, classify_exchange_error
+                    import uuid
+                    correlation_id = str(uuid.uuid4())
+                    reason_code = classify_exchange_error(error_msg)
+                    decision_reason = make_fail(
+                        reason_code=reason_code,
+                        message=f"Buy order failed for {symbol}: {error_msg}",
+                        context={
+                            "symbol": symbol,
+                            "price": current_price,
+                            "amount_usd": amount_usd,
+                            "use_margin": use_margin,
+                            "leverage": leverage_value,
+                            "dry_run": dry_run_mode,
+                            "trade_enabled": current_trade_enabled if current_trade_enabled is not None else getattr(watchlist_item, 'trade_enabled', None),
+                        },
+                        exchange_error=error_msg,
+                        source="exchange",
+                        correlation_id=correlation_id,
+                    )
+                    logger.error(f"[DECISION] symbol={symbol} decision=FAILED reason={decision_reason.reason_code} exchange_error={error_msg[:200]}")
                     # Emit ORDER_FAILED event
                     _emit_lifecycle_event(
                         db=db,
@@ -4695,6 +4936,7 @@ class SignalMonitorService:
                         event_type="ORDER_FAILED",
                         event_reason="order_placement_failed",
                         error_message=error_msg,
+                        decision_reason=decision_reason,
                     )
                     
                     # Send Telegram notification about the error
