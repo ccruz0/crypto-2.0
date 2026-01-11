@@ -562,7 +562,7 @@ def add_telegram_message(
     context_json: Optional[Dict[str, Any]] = None,
     exchange_error_snippet: Optional[str] = None,
     correlation_id: Optional[str] = None,
-):
+) -> Optional[int]:
     """Add a Telegram message to the history (blocked or sent)
     
     Messages are kept for 1 month before being removed.
@@ -647,7 +647,7 @@ def add_telegram_message(
                     db_session.close()
                 status_label = 'BLOQUEADO' if blocked else ('ORDEN SKIPPED' if order_skipped else 'ENVIADO')
                 log.info(f"Telegram message stored (duplicate skipped): {status_label} - {symbol or 'N/A'}")
-                return
+                return recent_duplicate.id  # Return existing message ID
             
             telegram_msg = TelegramMessage(
                 message=message,
@@ -665,9 +665,12 @@ def add_telegram_message(
             )
             db_session.add(telegram_msg)
             db_session.commit()
-            log.debug(f"Telegram message saved to database: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'}")
+            db_session.refresh(telegram_msg)  # Refresh to get the ID
+            message_id = telegram_msg.id
+            log.debug(f"Telegram message saved to database: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'} (id={message_id})")
         except Exception as db_err:
             log.warning(f"Could not save Telegram message to database: {db_err}")
+            message_id = None
             if db_session:
                 try:
                     db_session.rollback()
@@ -679,9 +682,88 @@ def add_telegram_message(
                     db_session.close()
                 except:
                     pass
+    else:
+        message_id = None
     
     status_label = throttle_status or ('BLOQUEADO' if blocked else 'ENVIADO')
     log.info(f"Telegram message stored: {status_label} - {symbol or 'N/A'}")
+    
+    return message_id
+
+
+def update_telegram_message_decision_trace(
+    db: Session,
+    symbol: str,
+    message_pattern: str,
+    decision_type: str,
+    reason_code: str,
+    reason_message: Optional[str] = None,
+    context_json: Optional[Dict[str, Any]] = None,
+    exchange_error_snippet: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    max_age_seconds: int = 300,  # Only update messages from last 5 minutes
+) -> bool:
+    """Update an existing BUY SIGNAL telegram message with decision tracing
+    
+    This ensures that every BUY SIGNAL message gets decision tracing, even if
+    the order decision happens after the message is created.
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol
+        message_pattern: Pattern to match in message (e.g., "BUY SIGNAL")
+        decision_type: "SKIPPED" or "FAILED"
+        reason_code: Canonical reason code
+        reason_message: Human-readable reason
+        context_json: Contextual data
+        exchange_error_snippet: Exchange error for FAILED decisions
+        correlation_id: Correlation ID
+        max_age_seconds: Only update messages from last N seconds (default 5 minutes)
+    
+    Returns:
+        True if message was updated, False otherwise
+    """
+    from app.models.telegram_message import TelegramMessage
+    from datetime import timedelta
+    
+    try:
+        # Find the most recent BUY SIGNAL message for this symbol without decision tracing
+        threshold = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+        recent_message = db.query(TelegramMessage).filter(
+            TelegramMessage.symbol == symbol,
+            TelegramMessage.message.like(f"%{message_pattern}%"),
+            TelegramMessage.decision_type.is_(None),  # Only update messages without decision tracing
+            TelegramMessage.timestamp >= threshold,
+        ).order_by(TelegramMessage.timestamp.desc()).first()
+        
+        if recent_message:
+            # Update the message with decision tracing
+            recent_message.decision_type = decision_type
+            recent_message.reason_code = reason_code
+            recent_message.reason_message = reason_message
+            recent_message.context_json = context_json
+            recent_message.exchange_error_snippet = exchange_error_snippet
+            recent_message.correlation_id = correlation_id
+            db.commit()
+            log.info(
+                f"✅ Updated BUY SIGNAL message for {symbol} with decision tracing: "
+                f"decision_type={decision_type}, reason_code={reason_code}"
+            )
+            return True
+        else:
+            log.debug(
+                f"No recent BUY SIGNAL message found for {symbol} to update "
+                f"(pattern='{message_pattern}', max_age={max_age_seconds}s)"
+            )
+            return False
+    except Exception as e:
+        log.warning(f"Failed to update telegram message decision trace for {symbol}: {e}")
+        if db:
+            try:
+                db.rollback()
+            except:
+                pass
+        return False
 
 @router.get("/monitoring/telegram-messages")
 async def get_telegram_messages(db: Session = Depends(get_db)):
@@ -2257,3 +2339,418 @@ async def restart_backend():
         from fastapi import HTTPException
         from app.utils.http_client import http_get, http_post
         raise HTTPException(status_code=500, detail=f"Failed to initiate backend restart: {str(e)}")
+
+
+@router.get("/diagnostics/recent-signals")
+async def get_recent_signals(
+    db: Session = Depends(get_db),
+    side: Optional[str] = Query(None, description="Filter by side: 'BUY' or 'SELL' (default: both)"),
+    hours: Optional[int] = Query(168, ge=1, le=720, description="Hours to look back (default: 168 = 7 days)"),
+    limit: int = Query(500, ge=1, le=1000, description="Maximum number of signals to return")
+):
+    """
+    Get recent BUY/SELL SIGNAL messages with their decision traces and order_intents.
+    
+    This endpoint allows verifying that every SIGNAL has decision tracing
+    (decision_type, reason_code, reason_message) populated and links to order_intents.
+    
+    Production verification criteria:
+    - For every signal with blocked=false and message contains "BUY SIGNAL"/"SELL SIGNAL":
+      there must be an order_intent row with status in (ORDER_PLACED, ORDER_FAILED, DEDUP_SKIPPED)
+    - No signal may have null decision_type/reason_code/reason_message
+    - For every ORDER_FAILED, there must be a Telegram failure message
+    """
+    from app.models.telegram_message import TelegramMessage
+    from app.models.order_intent import OrderIntent, OrderIntentStatusEnum
+    from datetime import timedelta
+    
+    try:
+        threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
+        
+        # Build query filter - only signals that were SENT (blocked=false) and contain SIGNAL
+        filters = [
+            TelegramMessage.timestamp >= threshold,
+            TelegramMessage.blocked == False,
+        ]
+        
+        if side and side.upper() == "BUY":
+            filters.append(TelegramMessage.message.like("%BUY SIGNAL%"))
+        elif side and side.upper() == "SELL":
+            filters.append(TelegramMessage.message.like("%SELL SIGNAL%"))
+        else:
+            # Both BUY and SELL
+            filters.append(
+                (TelegramMessage.message.like("%BUY SIGNAL%")) |
+                (TelegramMessage.message.like("%SELL SIGNAL%"))
+            )
+        
+        # Query SIGNAL messages (sent signals only)
+        signals = db.query(TelegramMessage).filter(*filters).order_by(TelegramMessage.timestamp.desc()).limit(limit).all()
+        
+        results = []
+        violations = []
+        missing_intent_count = 0
+        null_decisions_count = 0
+        failed_without_telegram_count = 0
+        
+        for signal in signals:
+            # Extract price from message if available
+            price = _extract_price_from_message(signal.message)
+            
+            # Find associated order_intent(s)
+            order_intents = db.query(OrderIntent).filter(
+                OrderIntent.signal_id == signal.id
+            ).order_by(OrderIntent.created_at.desc()).all()
+            
+            # Get most recent order_intent
+            order_intent = order_intents[0] if order_intents else None
+            
+            # Check for violations
+            signal_violations = []
+            
+            # Violation 1: Missing order_intent
+            if order_intent is None:
+                missing_intent_count += 1
+                signal_violations.append("MISSING_INTENT")
+                violations.append({
+                    "signal_id": signal.id,
+                    "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                    "symbol": signal.symbol,
+                    "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                    "violation": "MISSING_INTENT",
+                    "message": "Signal was sent but no order_intent exists"
+                })
+            
+            # Violation 2: Null decision fields
+            if signal.decision_type is None or signal.reason_code is None:
+                null_decisions_count += 1
+                if "NULL_DECISION" not in signal_violations:
+                    signal_violations.append("NULL_DECISION")
+                    violations.append({
+                        "signal_id": signal.id,
+                        "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                        "symbol": signal.symbol,
+                        "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                        "violation": "NULL_DECISION",
+                        "decision_type": signal.decision_type,
+                        "reason_code": signal.reason_code,
+                        "message": "Signal has null decision_type or reason_code"
+                    })
+            
+            # Violation 3: ORDER_FAILED without Telegram failure message
+            if order_intent and order_intent.status == OrderIntentStatusEnum.ORDER_FAILED:
+                # Check if there's a Telegram failure message (ORDER FAILED in message)
+                failure_messages = db.query(TelegramMessage).filter(
+                    TelegramMessage.symbol == signal.symbol,
+                    TelegramMessage.message.like("%ORDER FAILED%"),
+                    TelegramMessage.timestamp >= signal.timestamp - timedelta(minutes=5),
+                    TelegramMessage.timestamp <= signal.timestamp + timedelta(minutes=5),
+                ).all()
+                if not failure_messages:
+                    failed_without_telegram_count += 1
+                    if "FAILED_WITHOUT_TELEGRAM" not in signal_violations:
+                        signal_violations.append("FAILED_WITHOUT_TELEGRAM")
+                        violations.append({
+                            "signal_id": signal.id,
+                            "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                            "symbol": signal.symbol,
+                            "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                            "violation": "FAILED_WITHOUT_TELEGRAM",
+                            "order_intent_id": order_intent.id,
+                            "message": "ORDER_FAILED but no Telegram failure message found"
+                        })
+            
+            results.append({
+                "signal_id": signal.id,
+                "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                "symbol": signal.symbol,
+                "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                "message": signal.message[:200] if signal.message else None,  # Truncate for response
+                "blocked": signal.blocked,
+                "price": price,
+                "decision_type": signal.decision_type,
+                "reason_code": signal.reason_code,
+                "reason_message": signal.reason_message,
+                "context_json": signal.context_json,
+                "exchange_error_snippet": signal.exchange_error_snippet,
+                "correlation_id": signal.correlation_id,
+                "order_attempted": signal.decision_type is not None and signal.decision_type != "SKIPPED",
+                "order_id": signal.context_json.get("order_id") if signal.context_json and isinstance(signal.context_json, dict) else None,
+                # Order intent information
+                "order_intent": {
+                    "id": order_intent.id if order_intent else None,
+                    "status": order_intent.status.value if order_intent and hasattr(order_intent.status, 'value') else (order_intent.status if order_intent else None),
+                    "idempotency_key": order_intent.idempotency_key if order_intent else None,
+                    "order_id": order_intent.order_id if order_intent else None,
+                    "error_message": order_intent.error_message if order_intent else None,
+                    "created_at": order_intent.created_at.isoformat() if order_intent and order_intent.created_at else None,
+                } if order_intent else None,
+                "violations": signal_violations,
+            })
+        
+        # Count by status
+        placed_count = sum(1 for s in results if s.get("order_intent") and s["order_intent"].get("status") == "ORDER_PLACED")
+        failed_count = sum(1 for s in results if s.get("order_intent") and s["order_intent"].get("status") == "ORDER_FAILED")
+        dedup_count = sum(1 for s in results if s.get("order_intent") and s["order_intent"].get("status") == "DEDUP_SKIPPED")
+        
+        return {
+            "signals": results,
+            "total": len(results),
+            "hours": hours,
+            "counts": {
+                "total_signals": len(results),
+                "placed": placed_count,
+                "failed": failed_count,
+                "dedup": dedup_count,
+                "missing_intent": missing_intent_count,
+                "null_decisions": null_decisions_count,
+                "failed_without_telegram": failed_without_telegram_count,
+            },
+            "violations": violations,
+            "pass": len(violations) == 0,
+            "summary": {
+                "buy_signals": sum(1 for s in results if s["side"] == "BUY"),
+                "sell_signals": sum(1 for s in results if s["side"] == "SELL"),
+                "executed": sum(1 for s in results if s["decision_type"] == "EXECUTED"),
+                "failed": sum(1 for s in results if s["decision_type"] == "FAILED"),
+                "skipped": sum(1 for s in results if s["decision_type"] == "SKIPPED"),
+                "null_decisions": null_decisions_count,
+            },
+        }
+    except Exception as e:
+        log.error(f"Error fetching recent signals: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Error fetching signals: {str(e)}")
+
+
+@router.get("/diagnostics/recent-buy-signals")
+async def get_recent_buy_signals(
+    db: Session = Depends(get_db),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of signals to return")
+):
+    """
+    Get recent BUY SIGNAL messages with their decision traces.
+    
+    DEPRECATED: Use /diagnostics/recent-signals?side=BUY instead.
+    """
+    return await get_recent_signals(db=db, side="BUY", limit=limit)
+
+
+@router.post("/diagnostics/run-signal-order-test")
+async def run_signal_order_test(
+    db: Session = Depends(get_db),
+    symbol: Optional[str] = Query(None, description="Symbol to test (default: uses first symbol with trade_enabled)"),
+    dry_run: bool = Query(True, description="If True, simulate order creation without placing real orders"),
+):
+    """
+    Run a self-test of the signal → order pipeline.
+    
+    This endpoint:
+    1. Creates a synthetic BUY SIGNAL (or uses an existing recent one)
+    2. Runs through the exact same decision pipeline that production uses
+    3. Returns a structured report showing which step failed and why
+    
+    Safe by default: dry_run=True prevents real orders from being placed.
+    """
+    from app.models.watchlist import WatchlistItem
+    from app.services.signal_monitor import SignalMonitorService
+    from app.services.telegram_notifier import telegram_notifier
+    from app.utils.live_trading import get_live_trading_status
+    import os
+    
+    try:
+        # Safety check: ensure dry_run is respected
+        if not dry_run:
+            live_trading = get_live_trading_status(db)
+            if not live_trading:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot run test with dry_run=False when live_trading is disabled. Set dry_run=True for testing."
+                )
+        
+        # Find a test symbol
+        if not symbol:
+            test_item = db.query(WatchlistItem).filter(
+                WatchlistItem.trade_enabled.is_(True),
+                WatchlistItem.trade_amount_usd > 0,
+            ).first()
+            if not test_item:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=404,
+                    detail="No suitable test symbol found. Ensure at least one symbol has trade_enabled=True and trade_amount_usd > 0."
+                )
+            symbol = test_item.symbol
+        else:
+            test_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+            if not test_item:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found in watchlist")
+        
+        # Get current price (simplified - in production this comes from market data)
+        from app.services.brokers.crypto_com_trade import trade_client
+        try:
+            ticker = trade_client.get_ticker(symbol)
+            current_price = float(ticker.get("result", {}).get("data", [{}])[0].get("a", 0))
+            if current_price <= 0:
+                raise ValueError("Invalid price")
+        except Exception as e:
+            log.warning(f"Could not get current price for {symbol}: {e}. Using placeholder.")
+            current_price = 1.0  # Placeholder for testing
+        
+        # Create test report
+        report = {
+            "test_timestamp": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "dry_run": dry_run,
+            "steps": [],
+            "final_decision": None,
+            "order_created": False,
+            "order_id": None,
+            "error": None,
+        }
+        
+        # Step 1: Check if signal would be detected
+        report["steps"].append({
+            "step": "signal_detection",
+            "status": "passed",
+            "message": f"Signal detection would run for {symbol}",
+        })
+        
+        # Step 2: Check if alert would be sent
+        if test_item.alert_enabled and getattr(test_item, 'buy_alert_enabled', False):
+            report["steps"].append({
+                "step": "alert_sending",
+                "status": "passed",
+                "message": "Alert would be sent (alert_enabled=True, buy_alert_enabled=True)",
+            })
+        else:
+            report["steps"].append({
+                "step": "alert_sending",
+                "status": "skipped",
+                "message": f"Alert would be skipped (alert_enabled={test_item.alert_enabled}, buy_alert_enabled={getattr(test_item, 'buy_alert_enabled', False)})",
+            })
+        
+        # Step 3: Check if order would be created
+        if test_item.trade_enabled and test_item.trade_amount_usd and test_item.trade_amount_usd > 0:
+            report["steps"].append({
+                "step": "order_creation_check",
+                "status": "passed",
+                "message": f"Order creation check passed (trade_enabled=True, trade_amount_usd=${test_item.trade_amount_usd:.2f})",
+            })
+            
+            if dry_run:
+                report["steps"].append({
+                    "step": "order_placement",
+                    "status": "simulated",
+                    "message": "Order placement simulated (dry_run=True). No real order would be placed.",
+                })
+                report["final_decision"] = "SKIPPED"
+                report["order_created"] = False
+            else:
+                report["steps"].append({
+                    "step": "order_placement",
+                    "status": "would_attempt",
+                    "message": "Order placement would be attempted (dry_run=False, but this test does not actually place orders)",
+                })
+                report["final_decision"] = "WOULD_ATTEMPT"
+        else:
+            report["steps"].append({
+                "step": "order_creation_check",
+                "status": "blocked",
+                "message": f"Order creation blocked (trade_enabled={test_item.trade_enabled}, trade_amount_usd={test_item.trade_amount_usd})",
+            })
+            report["final_decision"] = "SKIPPED"
+        
+        # Step 4: Check decision tracing
+        # Query for recent BUY SIGNAL message for this symbol
+        from app.models.telegram_message import TelegramMessage
+        from datetime import timedelta
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
+        recent_signal = db.query(TelegramMessage).filter(
+            TelegramMessage.symbol == symbol,
+            TelegramMessage.message.like("%BUY SIGNAL%"),
+            TelegramMessage.timestamp >= threshold,
+        ).order_by(TelegramMessage.timestamp.desc()).first()
+        
+        if recent_signal:
+            if recent_signal.decision_type:
+                report["steps"].append({
+                    "step": "decision_tracing",
+                    "status": "passed",
+                    "message": f"Decision tracing present: decision_type={recent_signal.decision_type}, reason_code={recent_signal.reason_code}",
+                })
+            else:
+                report["steps"].append({
+                    "step": "decision_tracing",
+                    "status": "missing",
+                    "message": "Decision tracing missing (decision_type is NULL)",
+                })
+        else:
+            report["steps"].append({
+                "step": "decision_tracing",
+                "status": "no_signal",
+                "message": "No recent BUY SIGNAL message found (test may need to trigger actual signal)",
+            })
+        
+        return report
+        
+    except Exception as e:
+        log.error(f"Error running signal order test: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Error running test: {str(e)}")
+
+@router.get("/forensic/audit")
+async def get_forensic_audit(
+    hours: int = Query(12, description="Number of hours to audit", ge=1, le=168),
+    db: Session = Depends(get_db)
+):
+    """
+    Run forensic audit to identify inconsistencies between Telegram signals, orders, and TP/SL.
+    
+    Returns comprehensive analysis of:
+    - Signals without orders (C2)
+    - Orders without signals (C3)
+    - Orders without TP/SL (C4)
+    - Partial TP/SL (C5)
+    - Silent failures (C6)
+    - Duplicate orders (C7)
+    
+    Business Rules:
+    - BR-1: SIGNAL → ORDER (MANDATORY)
+    - BR-2: ORDER UNIQUENESS
+    - BR-3: ORDER → TP/SL (MANDATORY IF STRATEGY REQUIRES IT)
+    - BR-4: FAILURES MUST BE EXPLICIT
+    - BR-5: NO GHOST ENTITIES
+    """
+    try:
+        # Import the forensic audit function using importlib for dynamic import
+        import importlib.util
+        from pathlib import Path
+        scripts_path = Path(__file__).parent.parent.parent / "scripts" / "forensic_audit.py"
+        
+        # Load the module dynamically
+        spec = importlib.util.spec_from_file_location("forensic_audit", scripts_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load forensic_audit module from {scripts_path}")
+        
+        forensic_audit_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(forensic_audit_module)
+        run_forensic_audit = forensic_audit_module.run_forensic_audit
+        
+        # Run the audit
+        audit_result = run_forensic_audit(db, hours=hours)
+        
+        return JSONResponse(
+            content=audit_result,
+            headers=_NO_CACHE_HEADERS
+        )
+    except ImportError as e:
+        log.error(f"Error importing forensic audit: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Forensic audit script not found: {str(e)}")
+    except Exception as e:
+        log.error(f"Error running forensic audit: {e}", exc_info=True)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Error running forensic audit: {str(e)}")

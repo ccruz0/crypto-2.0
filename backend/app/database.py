@@ -128,6 +128,22 @@ def test_database_connection() -> tuple[bool, str]:
             return False, f"Database connection failed: {error_msg}"
 
 
+def table_exists(db_engine, table_name: str) -> bool:
+    """Return True if the given table exists."""
+    if db_engine is None or not table_name:
+        return False
+    try:
+        inspector = inspect(db_engine)
+        return table_name in inspector.get_table_names()
+    except Exception as inspect_err:
+        logger.warning(
+            "Unable to check if table %s exists: %s",
+            table_name,
+            inspect_err,
+        )
+        return False
+
+
 def table_has_column(db_engine, table_name: str, column_name: str) -> bool:
     """Return True if the given table contains the specified column."""
     if db_engine is None or not table_name or not column_name:
@@ -150,6 +166,8 @@ def ensure_optional_columns(db_engine=None):
     """
     Ensure optional columns exist in critical tables.
     This guards against environments that haven't run the latest migrations.
+    
+    Also ensures critical tables exist (e.g., order_intents).
     """
     engine_to_use = db_engine or engine
     if engine_to_use is None:
@@ -160,9 +178,24 @@ def ensure_optional_columns(db_engine=None):
         from app.models.watchlist import WatchlistItem
         from app.models.telegram_message import TelegramMessage
         from app.models.signal_throttle import SignalThrottleState
+        from app.models.order_intent import OrderIntent
     except Exception as import_err:
         logger.warning(f"Cannot load models to verify optional columns: {import_err}")
         return
+    
+    # Ensure order_intents table exists (created automatically by Base.metadata.create_all, but defensive check)
+    try:
+        order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
+            OrderIntent, "__tablename__", "order_intents"
+        )
+        if not table_exists(engine_to_use, order_intents_table):
+            logger.warning(f"Table {order_intents_table} does not exist - creating it")
+            Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
+            logger.info(f"[BOOT] Created table {order_intents_table}")
+        else:
+            logger.info(f"[BOOT] order_intents table OK")
+    except Exception as table_err:
+        logger.error(f"Error ensuring order_intents table exists: {table_err}", exc_info=True)
     
     table_configs = {}
     

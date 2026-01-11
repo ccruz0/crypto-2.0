@@ -9,6 +9,7 @@ from app.models.dashboard_cache import DashboardCache
 from app.models.telegram_message import TelegramMessage
 from app.models.signal_throttle import SignalThrottleState
 from app.models.telegram_state import TelegramState
+from app.models.order_intent import OrderIntent
 
 __all__ = [
     "WatchlistItem",
@@ -28,6 +29,7 @@ __all__ = [
     "TelegramMessage",
     "SignalThrottleState",
     "TelegramState",
+    "OrderIntent",
 ]
 
 

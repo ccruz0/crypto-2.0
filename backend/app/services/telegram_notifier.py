@@ -1146,13 +1146,16 @@ class TelegramNotifier:
                 # Include price change in stored message
                 price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
                 sent_message = f"✅ BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
-                add_telegram_message(
+                message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
                     blocked=False,
                     throttle_status=throttle_status or "SENT",
                     throttle_reason=throttle_reason or reason,
                 )
+                # Return message ID if available (for orchestrator)
+                if message_id:
+                    return {"sent": True, "message_id": message_id}
             except Exception:
                 pass  # Non-critical, continue
         
@@ -1292,13 +1295,16 @@ class TelegramNotifier:
                 # Include price change in stored message
                 price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
                 sent_message = f"🔴 SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
-                add_telegram_message(
+                message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
                     blocked=False,
                     throttle_status=throttle_status or "SENT",
                     throttle_reason=throttle_reason or reason,
                 )
+                # Return message ID if available (for orchestrator)
+                if message_id:
+                    return {"sent": True, "message_id": message_id}
             except Exception:
                 pass
         
