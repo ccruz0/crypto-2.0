@@ -1918,7 +1918,7 @@ class SignalMonitorService:
                             correlation_id=correlation_id,
                         )
                         logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
-                        
+
                         add_telegram_message(
                             blocked_msg,
                             symbol=symbol,
@@ -2434,6 +2434,27 @@ class SignalMonitorService:
                     # Remove locks and continue (don't return - continue with order logic)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+                elif watchlist_item.trade_enabled and (not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0):
+                    # CRITICAL: Validate trade_amount_usd BEFORE sending signal if trade_enabled=True
+                    # If trade is enabled, we must have a valid trade_amount_usd configured
+                    # Otherwise, the signal should NOT be sent (it would fail to create order)
+                    blocked_msg = (
+                        f"🚫 BLOQUEADO: {symbol} - El campo 'Amount USD' no está configurado para este símbolo "
+                        f"(trade_enabled=True pero trade_amount_usd no está configurado). "
+                        f"No se enviará alerta BUY porque la orden no puede ser creada sin 'Amount USD'. "
+                        f"Para habilitar alertas y órdenes automáticas, configure el campo 'Amount USD' "
+                        f"en la Watchlist del Dashboard."
+                    )
+                    logger.warning(blocked_msg)
+                    # Register blocked message
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                    except Exception:
+                        pass  # Non-critical, continue
+                    # Remove locks and continue (don't return - continue with order logic)
+                    if lock_key in self.alert_sending_locks:
+                        del self.alert_sending_locks[lock_key]
                 else:
                     # Check portfolio value limit: Skip orders if portfolio_value > 3x trade_amount_usd
                     # IMPORTANT: Alerts are ALWAYS sent, but orders are skipped when limit is exceeded
@@ -2833,6 +2854,22 @@ class SignalMonitorService:
                     event_reason="MAX_OPEN_ORDERS_REACHED",
                     decision_reason=decision_reason,
                 )
+                # CRITICAL: Update the original BUY SIGNAL message with decision tracing
+                if buy_alert_sent_successfully:
+                    try:
+                        from app.api.routes_monitoring import update_telegram_message_decision_trace
+                        update_telegram_message_decision_trace(
+                            db=db,
+                            symbol=symbol,
+                            message_pattern="BUY SIGNAL",
+                            decision_type="SKIPPED",
+                            reason_code=decision_reason.reason_code,
+                            reason_message=decision_reason.reason_message,
+                            context_json=decision_reason.context,
+                            correlation_id=decision_reason.correlation_id,
+                        )
+                    except Exception as update_err:
+                        logger.warning(f"Failed to update original BUY SIGNAL message for {symbol}: {update_err}")
                 blocked_by_limits = True
             # SECOND CHECK: Block if there are recent orders (within 5 minutes) - prevents consecutive orders
             elif recent_buy_orders:
@@ -2887,6 +2924,22 @@ class SignalMonitorService:
                         event_reason="RECENT_ORDERS_COOLDOWN",
                         decision_reason=decision_reason,
                     )
+                    # CRITICAL: Update the original BUY SIGNAL message with decision tracing
+                    if buy_alert_sent_successfully:
+                        try:
+                            from app.api.routes_monitoring import update_telegram_message_decision_trace
+                            update_telegram_message_decision_trace(
+                                db=db,
+                                symbol=symbol,
+                                message_pattern="BUY SIGNAL",
+                                decision_type="SKIPPED",
+                                reason_code=decision_reason.reason_code,
+                                reason_message=decision_reason.reason_message,
+                                context_json=decision_reason.context,
+                                correlation_id=decision_reason.correlation_id,
+                            )
+                        except Exception as update_err:
+                            logger.warning(f"Failed to update original BUY SIGNAL message for {symbol}: {update_err}")
                 else:
                     logger.warning(
                         f"🚫 BLOCKED: {symbol} has {len(recent_buy_orders)} recent BUY order(s) "
@@ -3105,7 +3158,7 @@ class SignalMonitorService:
                         event_type="TRADE_BLOCKED",
                         event_reason="RECENT_ORDERS_COOLDOWN_FINAL_CHECK",
                         decision_reason=decision_reason,
-                    )
+                        )
                     should_create_order = False
                     return  # Exit early
                 
@@ -5319,6 +5372,23 @@ class SignalMonitorService:
                         decision_reason=decision_reason,
                     )
                     
+                    # CRITICAL: Update the original BUY SIGNAL message with decision tracing (BR-4)
+                    try:
+                        from app.api.routes_monitoring import update_telegram_message_decision_trace
+                        update_telegram_message_decision_trace(
+                            db=db,
+                            symbol=symbol,
+                            message_pattern="BUY SIGNAL",
+                            decision_type="FAILED",
+                            reason_code=decision_reason.reason_code,
+                            reason_message=decision_reason.reason_message,
+                            context_json=decision_reason.context,
+                            exchange_error_snippet=decision_reason.exchange_error_snippet,
+                            correlation_id=decision_reason.correlation_id,
+                        )
+                    except Exception as update_err:
+                        logger.warning(f"Failed to update original BUY SIGNAL message for {symbol} on ORDER_FAILED: {update_err}")
+                    
                     # Send Telegram notification about the error
                     try:
                         error_details = error_msg
@@ -5364,6 +5434,7 @@ class SignalMonitorService:
                 filled_price = current_price
             
             # Send Telegram notification when order is created
+            buy_alert_sent_successfully = False
             if DEBUG_TRADING:
                 logger.info(f"[DEBUG_TRADING] {symbol} BUY: About to send Telegram notification for order {order_id}")
             try:
@@ -5383,10 +5454,12 @@ class SignalMonitorService:
                     order_type="MARKET",
                     origin=alert_origin  # CRITICAL: Explicitly pass origin to ensure notifications are sent
                 )
+                buy_alert_sent_successfully = True
                 logger.info(f"✅ Sent Telegram notification for automatic BUY order: {symbol} - {order_id} (origin={alert_origin})")
                 if DEBUG_TRADING:
                     logger.info(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification sent successfully")
             except Exception as telegram_err:
+                buy_alert_sent_successfully = False
                 logger.error(f"❌ Failed to send Telegram notification for BUY order creation: {telegram_err}", exc_info=True)
                 if DEBUG_TRADING:
                     logger.error(f"[DEBUG_TRADING] {symbol} BUY: Telegram notification FAILED - {telegram_err}", exc_info=True)
@@ -5427,6 +5500,34 @@ class SignalMonitorService:
                     db_status_str = "OPEN"
                 
                 estimated_qty = float(amount_usd / current_price)  # Ensure Python float, not numpy
+                
+                # CRITICAL: Update the original BUY SIGNAL message with decision tracing (BR-4)
+                try:
+                    from app.api.routes_monitoring import update_telegram_message_decision_trace
+                    from app.utils.decision_reason import make_execute, ReasonCode
+                    decision_reason = make_execute(
+                        reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
+                        message=f"Order successfully placed: order_id={order_id}",
+                        context={
+                            "symbol": symbol,
+                            "order_id": str(order_id),
+                            "price": filled_price or current_price,
+                            "quantity": estimated_qty,
+                        },
+                        source="exchange",
+                    )
+                    update_telegram_message_decision_trace(
+                        db=db,
+                        symbol=symbol,
+                        message_pattern="BUY SIGNAL",
+                        decision_type="EXECUTED",
+                        reason_code=decision_reason.reason_code,
+                        reason_message=decision_reason.reason_message,
+                        context_json=decision_reason.context,
+                        correlation_id=decision_reason.correlation_id if hasattr(decision_reason, 'correlation_id') else None,
+                    )
+                except Exception as update_err:
+                    logger.warning(f"Failed to update original BUY SIGNAL message for {symbol} on ORDER_CREATED: {update_err}")
                 now_utc = datetime.now(timezone.utc)
                 
                 # Helper function to convert numpy types to Python native types
@@ -6447,21 +6548,21 @@ class SignalMonitorService:
                     )
                     
                     # Send Telegram notification about the error
-                    try:
-                        telegram_notifier.send_message(
-                            f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"🔴 Side: SELL\n"
-                            f"💰 Amount: ${amount_usd:,.2f}\n"
-                            f"📦 Quantity: {qty:.8f}\n"
+                try:
+                    telegram_notifier.send_message(
+                        f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔴 Side: SELL\n"
+                        f"💰 Amount: ${amount_usd:,.2f}\n"
+                        f"📦 Quantity: {qty:.8f}\n"
                             f"❌ Error: {error_msg}\n\n"
                             f"🔍 Reason Code: {fail_reason.reason_code}\n"
                             f"📝 Reason: {fail_reason.reason_message}"
-                        )
-                    except Exception as notify_err:
-                        logger.warning(f"Failed to send Telegram error notification: {notify_err}")
-                    
-                    return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"Failed to send Telegram error notification: {notify_err}")
+                
+                return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
             
             # Get order_id from result
             order_id = result.get("order_id") or result.get("client_order_id")
