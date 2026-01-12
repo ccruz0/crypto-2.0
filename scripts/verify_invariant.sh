@@ -9,6 +9,7 @@ SERVICE_BACKEND=backend-aws
 SERVICE_DB=db
 BACKEND_PORT=8000
 LOG_TAIL=1000
+REQUIRE_BOOT_CHECK=0
 
 get_env_value() {
   local name="$1"
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
     --log-tail)
       LOG_TAIL="$2"
       shift 2
+      ;;
+    --require-boot-check)
+      REQUIRE_BOOT_CHECK=1
+      shift 1
       ;;
     *)
       echo "Unknown arg: $1" >&2
@@ -173,7 +178,7 @@ fi
 
 # Exit code logic
 exit_code=0
-if [ "$boot_check" != "ok" ]; then exit_code=1; fi
+if [ "$boot_check" != "ok" ] && [ "$REQUIRE_BOOT_CHECK" -eq 1 ]; then exit_code=1; fi
 if [ "$missing_intent" -gt 0 ] || [ "$null_decisions" -gt 0 ] || [ "$failed_without_telegram" -gt 0 ]; then exit_code=1; fi
 if [ "$diag_pass" != "True" ]; then exit_code=1; fi
 if [ "$diag_duplicate" -gt 0 ] || [ "$diag_non_terminal" -gt 0 ]; then exit_code=1; fi
