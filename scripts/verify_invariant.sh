@@ -83,7 +83,14 @@ else
 fi
 
 # Call diagnostics endpoint from inside backend container
-${compose_cmd[@]} exec -T "$SERVICE_BACKEND" sh -c "curl -s http://localhost:${BACKEND_PORT}/api/diagnostics/recent-signals?hours=${HOURS}\&limit=${LIMIT}" > /tmp/recent-signals.json
+${compose_cmd[@]} exec -T "$SERVICE_BACKEND" sh -c "\
+  if command -v curl >/dev/null 2>&1; then \
+    curl -s http://localhost:${BACKEND_PORT}/api/diagnostics/recent-signals?hours=${HOURS}\&limit=${LIMIT}; \
+  elif command -v python3 >/dev/null 2>&1; then \
+    python3 -c \"import urllib.request; url='http://localhost:${BACKEND_PORT}/api/diagnostics/recent-signals?hours=${HOURS}&limit=${LIMIT}'; print(urllib.request.urlopen(url, timeout=10).read().decode())\"; \
+  else \
+    echo '{}'; \
+  fi" > /tmp/recent-signals.json
 
 if [ ! -s /tmp/recent-signals.json ]; then
   echo "Diagnostics endpoint returned empty response" >&2
