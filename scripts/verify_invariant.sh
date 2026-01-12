@@ -140,18 +140,18 @@ while IFS= read -r line; do
 done <<< "$sql_output"
 
 # Print compact report
-printf "\nInvariant Verification Report (last %sh, limit=%s)\n" "$HOURS" "$LIMIT"
-printf "- boot_check: %s\n" "$boot_check"
-printf "- sent_signals: %s\n" "$sent_signals"
-printf "- with_intent: %s | missing_intent: %s\n" "$((sent_signals - missing_intent))" "$missing_intent"
-printf "- null_decisions: %s\n" "$null_decisions"
-printf "- order_intents statuses: %s\n" "${status_lines[*]:-none}"
-printf "- failed_without_telegram: %s\n" "$failed_without_telegram"
-printf "- diagnostics pass: %s | missing_intent: %s | null_decisions: %s | failed_without_telegram: %s | duplicate_intent: %s | non_terminal_intent: %s | violations: %s\n" \
+printf -- "\nInvariant Verification Report (last %sh, limit=%s)\n" "$HOURS" "$LIMIT"
+printf -- "- boot_check: %s\n" "$boot_check"
+printf -- "- sent_signals: %s\n" "$sent_signals"
+printf -- "- with_intent: %s | missing_intent: %s\n" "$((sent_signals - missing_intent))" "$missing_intent"
+printf -- "- null_decisions: %s\n" "$null_decisions"
+printf -- "- order_intents statuses: %s\n" "${status_lines[*]:-none}"
+printf -- "- failed_without_telegram: %s\n" "$failed_without_telegram"
+printf -- "- diagnostics pass: %s | missing_intent: %s | null_decisions: %s | failed_without_telegram: %s | duplicate_intent: %s | non_terminal_intent: %s | violations: %s\n" \
   "$diag_pass" "$diag_missing_intent" "$diag_null_decisions" "$diag_failed_without_telegram" "$diag_duplicate" "$diag_non_terminal" "$diag_violations"
 
 if [ "$diag_violations" -gt 0 ]; then
-  printf "\nTop 20 violations (from diagnostics):\n"
+  printf -- "\nTop 20 violations (from diagnostics):\n"
   python3 - <<'PY'
 import json
 path = "/tmp/recent-signals.json"
