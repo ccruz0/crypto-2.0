@@ -370,6 +370,62 @@ class SignalMonitorService:
         except Exception:
             logger.debug("Failed to persist signal monitor status", exc_info=True)
 
+    def _schedule_missing_intent_check(self, signal_id: Optional[int], symbol: str, side: str) -> None:
+        """Schedule a delayed check to ensure a sent signal has an order_intent."""
+        if not signal_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning(
+                f"[INVARIANT] No running loop for missing intent check (signal_id={signal_id}, symbol={symbol}, side={side})"
+            )
+            return
+        loop.create_task(self._check_missing_order_intent_after_delay(signal_id, symbol, side))
+
+    async def _check_missing_order_intent_after_delay(self, signal_id: int, symbol: str, side: str) -> None:
+        """Record a FAILED decision if no order_intent appears within the grace window."""
+        from app.database import SessionLocal
+        from app.models.order_intent import OrderIntent
+        from app.api.routes_monitoring import update_telegram_message_decision_trace
+        from app.utils.decision_reason import ReasonCode
+        import uuid as uuid_module
+
+        grace_seconds = int(os.getenv("MISSING_ORDER_INTENT_GRACE_SECONDS", "60"))
+        await asyncio.sleep(grace_seconds)
+
+        if SessionLocal is None:
+            return
+        db = SessionLocal()
+        try:
+            intent = db.query(OrderIntent).filter(OrderIntent.signal_id == signal_id).first()
+            if intent:
+                return
+            update_telegram_message_decision_trace(
+                db=db,
+                symbol=symbol,
+                message_pattern=f"{side} SIGNAL",
+                decision_type="FAILED",
+                reason_code=ReasonCode.MISSING_ORDER_INTENT.value,
+                reason_message=(
+                    f"Signal was sent but no order_intent was created within {grace_seconds}s."
+                ),
+                context_json={"signal_id": signal_id, "symbol": symbol, "side": side},
+                correlation_id=str(uuid_module.uuid4()),
+            )
+            logger.warning(
+                f"[INVARIANT] Missing order_intent recorded for signal_id={signal_id} symbol={symbol} side={side}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[INVARIANT] Failed missing order_intent check for signal_id={signal_id}: {e}"
+            )
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
     def clear_order_creation_limitations(self, symbol: str) -> None:
         """Clear order creation limitations for a symbol (e.g., when strategy changes).
         
@@ -2596,19 +2652,43 @@ class SignalMonitorService:
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
-                                
-                                logger.info(f"[ORCHESTRATOR] {symbol} BUY Signal sent - triggering orchestrator (signal_id={signal_id})")
-                                
-                                # Create order intent (atomic deduplication)
-                                # Use the sent message content for fallback idempotency key
-                                sent_message_content = f"BUY SIGNAL {symbol} {current_price} {reason_text}"
-                                order_intent, intent_status = create_order_intent(
-                                    db=db,
-                                    signal_id=signal_id,
-                                    symbol=symbol,
-                                    side="BUY",
-                                    message_content=sent_message_content,
-                                )
+                                order_intent = None
+                                intent_status = None
+
+                                if not signal_id:
+                                    decision_reason = make_fail(
+                                        reason_code=ReasonCode.SIGNAL_ID_MISSING.value,
+                                        message=f"Signal sent for {symbol} BUY but no signal_id was available.",
+                                        context={"symbol": symbol, "side": "BUY"},
+                                        source="orchestrator",
+                                    )
+                                    update_telegram_message_decision_trace(
+                                        db=db,
+                                        symbol=symbol,
+                                        message_pattern="BUY SIGNAL",
+                                        decision_type="FAILED",
+                                        reason_code=decision_reason.reason_code,
+                                        reason_message=decision_reason.reason_message,
+                                        context_json=decision_reason.context,
+                                        correlation_id=str(uuid_module.uuid4()),
+                                    )
+                                    logger.warning(
+                                        f"[ORCHESTRATOR] {symbol} BUY Signal missing signal_id; skipping order_intent"
+                                    )
+                                else:
+                                    logger.info(f"[ORCHESTRATOR] {symbol} BUY Signal sent - triggering orchestrator (signal_id={signal_id})")
+                                    self._schedule_missing_intent_check(signal_id, symbol, "BUY")
+
+                                    # Create order intent (atomic deduplication)
+                                    # Use the sent message content for fallback idempotency key
+                                    sent_message_content = f"BUY SIGNAL {symbol} {current_price} {reason_text}"
+                                    order_intent, intent_status = create_order_intent(
+                                        db=db,
+                                        signal_id=signal_id,
+                                        symbol=symbol,
+                                        side="BUY",
+                                        message_content=sent_message_content,
+                                    )
                                 
                                 if intent_status == "DEDUP_SKIPPED":
                                     # Duplicate signal - skip order
@@ -2653,15 +2733,23 @@ class SignalMonitorService:
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY Order intent created (id={order_intent.id}) - Attempting order placement")
                                 
                                     # Call minimal order placement function (NO eligibility checks)
+                                    # Note: Running async function from sync context using new event loop
                                     try:
-                                        order_result = await self._place_order_from_signal(
-                                            db=db,
-                                            symbol=symbol,
-                                            side="BUY",
-                                            watchlist_item=watchlist_item,
-                                            current_price=current_price,
-                                            source="orchestrator",
-                                        )
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        try:
+                                            order_result = loop.run_until_complete(
+                                                self._place_order_from_signal(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    side="BUY",
+                                                    watchlist_item=watchlist_item,
+                                                    current_price=current_price,
+                                                    source="orchestrator",
+                                                )
+                                            )
+                                        finally:
+                                            loop.close()
                                         
                                         if "error" in order_result:
                                             # Order creation failed - strict failure reporting (Step 4)
@@ -2714,6 +2802,18 @@ class SignalMonitorService:
                                                 )
                                             except Exception as telegram_err:
                                                 logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                            try:
+                                                from app.api.routes_monitoring import add_telegram_message
+                                                add_telegram_message(
+                                                    f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
+                                                    symbol=symbol,
+                                                    blocked=False,
+                                                    decision_type="FAILED",
+                                                    reason_code=reason_code,
+                                                    reason_message=error_msg,
+                                                )
+                                            except Exception as store_err:
+                                                logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                                         else:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
@@ -2796,6 +2896,18 @@ class SignalMonitorService:
                                             )
                                         except Exception as telegram_err:
                                             logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                        try:
+                                            from app.api.routes_monitoring import add_telegram_message
+                                            add_telegram_message(
+                                                f"❌ ORDER FAILED | {symbol} BUY | {error_msg} | reason_code={reason_code}",
+                                                symbol=symbol,
+                                                blocked=False,
+                                                decision_type="FAILED",
+                                                reason_code=reason_code,
+                                                reason_message=error_msg,
+                                            )
+                                        except Exception as store_err:
+                                            logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} BUY Orchestrator error: {orchestrator_err}", exc_info=True)
@@ -4266,18 +4378,42 @@ class SignalMonitorService:
                                             signal_id = recent_msg.id
                                     except Exception as query_err:
                                         logger.warning(f"Could not query for SELL signal_id: {query_err}")
-                                
-                                logger.info(f"[ORCHESTRATOR] {symbol} SELL Signal sent - triggering orchestrator (signal_id={signal_id})")
-                                
-                                # Create order intent (atomic deduplication)
-                                sent_message_content = f"SELL SIGNAL {symbol} {current_price} {reason_text}"
-                                order_intent, intent_status = create_order_intent(
-                                    db=db,
-                                    signal_id=signal_id,
-                                    symbol=symbol,
-                                    side="SELL",
-                                    message_content=sent_message_content,
-                                )
+                                order_intent = None
+                                intent_status = None
+
+                                if not signal_id:
+                                    decision_reason = make_fail(
+                                        reason_code=ReasonCode.SIGNAL_ID_MISSING.value,
+                                        message=f"Signal sent for {symbol} SELL but no signal_id was available.",
+                                        context={"symbol": symbol, "side": "SELL"},
+                                        source="orchestrator",
+                                    )
+                                    update_telegram_message_decision_trace(
+                                        db=db,
+                                        symbol=symbol,
+                                        message_pattern="SELL SIGNAL",
+                                        decision_type="FAILED",
+                                        reason_code=decision_reason.reason_code,
+                                        reason_message=decision_reason.reason_message,
+                                        context_json=decision_reason.context,
+                                        correlation_id=str(uuid_module.uuid4()),
+                                    )
+                                    logger.warning(
+                                        f"[ORCHESTRATOR] {symbol} SELL Signal missing signal_id; skipping order_intent"
+                                    )
+                                else:
+                                    logger.info(f"[ORCHESTRATOR] {symbol} SELL Signal sent - triggering orchestrator (signal_id={signal_id})")
+                                    self._schedule_missing_intent_check(signal_id, symbol, "SELL")
+
+                                    # Create order intent (atomic deduplication)
+                                    sent_message_content = f"SELL SIGNAL {symbol} {current_price} {reason_text}"
+                                    order_intent, intent_status = create_order_intent(
+                                        db=db,
+                                        signal_id=signal_id,
+                                        symbol=symbol,
+                                        side="SELL",
+                                        message_content=sent_message_content,
+                                    )
                                 
                                 if intent_status == "DEDUP_SKIPPED":
                                     # Duplicate signal - skip order
@@ -4322,15 +4458,23 @@ class SignalMonitorService:
                                     logger.info(f"[ORCHESTRATOR] {symbol} SELL Order intent created (id={order_intent.id}) - Attempting order placement")
                                 
                                     # Call minimal order placement function (NO eligibility checks)
+                                    # Note: Running async function from sync context using new event loop
                                     try:
-                                        order_result = await self._place_order_from_signal(
-                                            db=db,
-                                            symbol=symbol,
-                                            side="SELL",
-                                            watchlist_item=watchlist_item,
-                                            current_price=current_price,
-                                            source="orchestrator",
-                                        )
+                                        loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(loop)
+                                        try:
+                                            order_result = loop.run_until_complete(
+                                                self._place_order_from_signal(
+                                                    db=db,
+                                                    symbol=symbol,
+                                                    side="SELL",
+                                                    watchlist_item=watchlist_item,
+                                                    current_price=current_price,
+                                                    source="orchestrator",
+                                                )
+                                            )
+                                        finally:
+                                            loop.close()
                                         
                                         if "error" in order_result:
                                             # Order creation failed
@@ -4378,6 +4522,18 @@ class SignalMonitorService:
                                                 )
                                             except Exception as telegram_err:
                                                 logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                            try:
+                                                from app.api.routes_monitoring import add_telegram_message
+                                                add_telegram_message(
+                                                    f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
+                                                    symbol=symbol,
+                                                    blocked=False,
+                                                    decision_type="FAILED",
+                                                    reason_code=reason_code,
+                                                    reason_message=error_msg,
+                                                )
+                                            except Exception as store_err:
+                                                logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                                         else:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
@@ -4455,6 +4611,18 @@ class SignalMonitorService:
                                             )
                                         except Exception as telegram_err:
                                             logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
+                                        try:
+                                            from app.api.routes_monitoring import add_telegram_message
+                                            add_telegram_message(
+                                                f"❌ ORDER FAILED | {symbol} SELL | {error_msg}",
+                                                symbol=symbol,
+                                                blocked=False,
+                                                decision_type="FAILED",
+                                                reason_code=reason_code,
+                                                reason_message=error_msg,
+                                            )
+                                        except Exception as store_err:
+                                            logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} SELL Orchestrator error: {orchestrator_err}", exc_info=True)
