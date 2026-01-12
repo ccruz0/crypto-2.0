@@ -1,7 +1,17 @@
 """Database model for order intents (atomic deduplication)"""
+from enum import Enum
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Index, UniqueConstraint
 from sqlalchemy.sql import func
 from app.database import Base
+
+
+class OrderIntentStatusEnum(str, Enum):
+    """Canonical statuses for order intents."""
+    PENDING = "PENDING"
+    ORDER_PLACED = "ORDER_PLACED"
+    ORDER_FAILED = "ORDER_FAILED"
+    DEDUP_SKIPPED = "DEDUP_SKIPPED"
+    ORDER_BLOCKED_LIVE_TRADING = "ORDER_BLOCKED_LIVE_TRADING"
 
 
 class OrderIntent(Base):

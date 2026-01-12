@@ -1,5 +1,5 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -17,6 +17,23 @@ from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
 log = logging.getLogger("app.monitoring")
+
+
+def _verify_diagnostics_auth(request: Request) -> None:
+    """
+    Internal auth guard for diagnostics endpoints.
+    Requires ENABLE_DIAGNOSTICS_ENDPOINTS=1 and X-Diagnostics-Key header.
+    Returns 404 (not 401) to reduce endpoint discoverability.
+    Do not log the key.
+    """
+    if os.getenv("ENABLE_DIAGNOSTICS_ENDPOINTS", "0") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+    expected_key = os.getenv("DIAGNOSTICS_API_KEY")
+    if not expected_key:
+        raise HTTPException(status_code=404, detail="Not found")
+    provided_key = request.headers.get("X-Diagnostics-Key") or request.headers.get("x-diagnostics-key")
+    if not provided_key or provided_key != expected_key:
+        raise HTTPException(status_code=404, detail="Not found")
 
 @router.get("/health/system", name="get_system_health")
 async def get_system_health_endpoint(db: Session = Depends(get_db)):
@@ -2392,6 +2409,32 @@ async def get_recent_signals(
         missing_intent_count = 0
         null_decisions_count = 0
         failed_without_telegram_count = 0
+        duplicate_intent_count = 0
+        non_terminal_intent_count = 0
+
+        def _add_violation(
+            *,
+            signal: TelegramMessage,
+            side_value: str,
+            violation_type: str,
+            details: Dict[str, Any],
+        ) -> None:
+            entry = {
+                "id": signal.id,
+                "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+                "symbol": signal.symbol,
+                "side": side_value,
+                "violation_type": violation_type,
+                "details": details,
+                # Backward compatibility fields
+                "signal_id": signal.id,
+                "violation": violation_type,
+                "message": details.get("message"),
+            }
+            for key in ("order_intent_id", "decision_type", "reason_code", "reason_message"):
+                if key in details:
+                    entry[key] = details.get(key)
+            violations.append(entry)
         
         for signal in signals:
             # Extract price from message if available
@@ -2404,6 +2447,11 @@ async def get_recent_signals(
             
             # Get most recent order_intent
             order_intent = order_intents[0] if order_intents else None
+            status_value = (
+                order_intent.status.value
+                if order_intent and hasattr(order_intent.status, "value")
+                else (order_intent.status if order_intent else None)
+            )
             
             # Check for violations
             signal_violations = []
@@ -2412,33 +2460,49 @@ async def get_recent_signals(
             if order_intent is None:
                 missing_intent_count += 1
                 signal_violations.append("MISSING_INTENT")
-                violations.append({
-                    "signal_id": signal.id,
-                    "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
-                    "symbol": signal.symbol,
-                    "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
-                    "violation": "MISSING_INTENT",
-                    "message": "Signal was sent but no order_intent exists"
-                })
+                _add_violation(
+                    signal=signal,
+                    side_value="BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                    violation_type="MISSING_INTENT",
+                    details={
+                        "message": "Signal was sent but no order_intent exists",
+                    },
+                )
+
+            # Violation 1b: Duplicate order_intents for same signal
+            if order_intents and len(order_intents) > 1:
+                duplicate_intent_count += 1
+                if "DUPLICATE_INTENT" not in signal_violations:
+                    signal_violations.append("DUPLICATE_INTENT")
+                    _add_violation(
+                        signal=signal,
+                        side_value="BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                        violation_type="DUPLICATE_INTENT",
+                        details={
+                            "message": "Multiple order_intent rows found for the same signal",
+                            "order_intent_ids": [intent.id for intent in order_intents],
+                        },
+                    )
             
             # Violation 2: Null decision fields
-            if signal.decision_type is None or signal.reason_code is None:
+            if signal.decision_type is None or signal.reason_code is None or signal.reason_message is None:
                 null_decisions_count += 1
                 if "NULL_DECISION" not in signal_violations:
                     signal_violations.append("NULL_DECISION")
-                    violations.append({
-                        "signal_id": signal.id,
-                        "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
-                        "symbol": signal.symbol,
-                        "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
-                        "violation": "NULL_DECISION",
-                        "decision_type": signal.decision_type,
-                        "reason_code": signal.reason_code,
-                        "message": "Signal has null decision_type or reason_code"
-                    })
+                    _add_violation(
+                        signal=signal,
+                        side_value="BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                        violation_type="NULL_DECISION",
+                        details={
+                            "message": "Signal has null decision fields",
+                            "decision_type": signal.decision_type,
+                            "reason_code": signal.reason_code,
+                            "reason_message": signal.reason_message,
+                        },
+                    )
             
             # Violation 3: ORDER_FAILED without Telegram failure message
-            if order_intent and order_intent.status == OrderIntentStatusEnum.ORDER_FAILED:
+            if status_value == OrderIntentStatusEnum.ORDER_FAILED.value:
                 # Check if there's a Telegram failure message (ORDER FAILED in message)
                 failure_messages = db.query(TelegramMessage).filter(
                     TelegramMessage.symbol == signal.symbol,
@@ -2450,15 +2514,40 @@ async def get_recent_signals(
                     failed_without_telegram_count += 1
                     if "FAILED_WITHOUT_TELEGRAM" not in signal_violations:
                         signal_violations.append("FAILED_WITHOUT_TELEGRAM")
-                        violations.append({
-                            "signal_id": signal.id,
-                            "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
-                            "symbol": signal.symbol,
-                            "side": "BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
-                            "violation": "FAILED_WITHOUT_TELEGRAM",
-                            "order_intent_id": order_intent.id,
-                            "message": "ORDER_FAILED but no Telegram failure message found"
-                        })
+                        _add_violation(
+                            signal=signal,
+                            side_value="BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                            violation_type="FAILED_WITHOUT_TELEGRAM",
+                            details={
+                                "message": "ORDER_FAILED but no Telegram failure message found",
+                                "order_intent_id": order_intent.id,
+                            },
+                        )
+
+            # Violation 4: Non-terminal intent status
+            if status_value and status_value not in (
+                OrderIntentStatusEnum.ORDER_PLACED.value,
+                OrderIntentStatusEnum.ORDER_FAILED.value,
+                OrderIntentStatusEnum.DEDUP_SKIPPED.value,
+            ):
+                non_terminal_intent_count += 1
+                if "NON_TERMINAL_INTENT" not in signal_violations:
+                    signal_violations.append("NON_TERMINAL_INTENT")
+                    status_value = (
+                        order_intent.status.value
+                        if order_intent and hasattr(order_intent.status, "value")
+                        else (order_intent.status if order_intent else None)
+                    )
+                    _add_violation(
+                        signal=signal,
+                        side_value="BUY" if "BUY SIGNAL" in (signal.message or "").upper() else "SELL",
+                        violation_type="NON_TERMINAL_INTENT",
+                        details={
+                            "message": "Order intent status is not terminal",
+                            "order_intent_id": order_intent.id if order_intent else None,
+                            "status": status_value,
+                        },
+                    )
             
             results.append({
                 "signal_id": signal.id,
@@ -2499,12 +2588,15 @@ async def get_recent_signals(
             "hours": hours,
             "counts": {
                 "total_signals": len(results),
+                "sent_signals": len(results),
                 "placed": placed_count,
                 "failed": failed_count,
                 "dedup": dedup_count,
                 "missing_intent": missing_intent_count,
                 "null_decisions": null_decisions_count,
                 "failed_without_telegram": failed_without_telegram_count,
+                "duplicate_intent": duplicate_intent_count,
+                "non_terminal_intent": non_terminal_intent_count,
             },
             "violations": violations,
             "pass": len(violations) == 0,
@@ -2700,6 +2792,161 @@ async def run_signal_order_test(
         log.error(f"Error running signal order test: {e}", exc_info=True)
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Error running test: {str(e)}")
+
+
+@router.post("/diagnostics/run-e2e-test")
+async def run_e2e_test(
+    request: Request,
+    db: Session = Depends(get_db),
+    symbol: Optional[str] = Query(None, description="Symbol to test (default: uses first trade_enabled symbol)"),
+    dry_run: bool = Query(True, description="If True, simulate order creation without placing real orders"),
+):
+    """
+    Run an internal end-to-end signal → order_intent → decision tracing test.
+
+    Safe by default: dry_run=True only simulates outcomes and never places orders.
+    Protected by diagnostics auth guard (ENABLE_DIAGNOSTICS_ENDPOINTS + X-Diagnostics-Key).
+    """
+    from app.models.watchlist import WatchlistItem
+    from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
+    from app.utils.decision_reason import ReasonCode, make_execute, make_fail
+    import hashlib
+    import uuid as uuid_module
+
+    _verify_diagnostics_auth(request)
+
+    if not dry_run:
+        raise HTTPException(status_code=400, detail="dry_run=false is not allowed for this diagnostics endpoint.")
+
+    # Select a test symbol
+    test_item = None
+    if symbol:
+        test_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+    if not test_item:
+        test_item = db.query(WatchlistItem).filter(WatchlistItem.trade_enabled.is_(True)).first()
+    if not test_item:
+        test_item = db.query(WatchlistItem).first()
+    if not test_item:
+        raise HTTPException(status_code=404, detail="No watchlist items available for diagnostics test.")
+    symbol = test_item.symbol
+    current_price = test_item.price or 1.0
+
+    def _simulate_outcome(signal_side: str) -> bool:
+        seed = f"{symbol}:{signal_side}".encode("utf-8")
+        digest = hashlib.sha256(seed).hexdigest()
+        return int(digest[-2:], 16) % 2 == 1  # True => fail, False => success
+
+    report = {
+        "dry_run": dry_run,
+        "symbol": symbol,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "stages": [],
+        "results": {},
+    }
+
+    for side in ("BUY", "SELL"):
+        signal_text = f"[TEST] {side} SIGNAL: {symbol} @ ${current_price:.6f}"
+        signal_id = add_telegram_message(
+            signal_text,
+            symbol=symbol,
+            blocked=False,
+            throttle_status="SENT",
+            throttle_reason="TEST_SIGNAL",
+        )
+        report["stages"].append(
+            {"stage": "signal_created", "side": side, "signal_id": signal_id, "message": signal_text}
+        )
+
+        # Create order intent (same orchestrator component used in production)
+        order_intent, intent_status = create_order_intent(
+            db=db,
+            signal_id=signal_id,
+            symbol=symbol,
+            side=side,
+            message_content=signal_text,
+        )
+        report["stages"].append(
+            {
+                "stage": "order_intent_created",
+                "side": side,
+                "intent_status": intent_status,
+                "order_intent_id": order_intent.id if order_intent else None,
+            }
+        )
+
+        # Deterministic simulation outcome
+        simulate_fail = _simulate_outcome(side)
+        if order_intent:
+            if simulate_fail:
+                error_msg = f"Simulated {side} failure (dry_run)"
+                update_order_intent_status(
+                    db=db,
+                    order_intent_id=order_intent.id,
+                    status="ORDER_FAILED",
+                    error_message=error_msg,
+                )
+                decision_reason = make_fail(
+                    reason_code=ReasonCode.EXCHANGE_ERROR_UNKNOWN.value,
+                    message=error_msg,
+                    context={"symbol": symbol, "side": side, "dry_run": True},
+                    source="diagnostics",
+                )
+                update_telegram_message_decision_trace(
+                    db=db,
+                    symbol=symbol,
+                    message_pattern=f"{side} SIGNAL",
+                    decision_type="FAILED",
+                    reason_code=decision_reason.reason_code,
+                    reason_message=decision_reason.reason_message,
+                    context_json=decision_reason.context,
+                    correlation_id=str(uuid_module.uuid4()),
+                )
+                add_telegram_message(
+                    f"❌ ORDER FAILED | {symbol} {side} | {error_msg}",
+                    symbol=symbol,
+                    blocked=False,
+                    decision_type="FAILED",
+                    reason_code=decision_reason.reason_code,
+                    reason_message=decision_reason.reason_message,
+                )
+                outcome = "ORDER_FAILED"
+            else:
+                order_id = f"dry_test_{uuid_module.uuid4().hex[:12]}"
+                update_order_intent_status(
+                    db=db,
+                    order_intent_id=order_intent.id,
+                    status="ORDER_PLACED",
+                    order_id=order_id,
+                )
+                decision_reason = make_execute(
+                    reason_code=ReasonCode.EXEC_ORDER_PLACED.value,
+                    message=f"Simulated {side} success (dry_run)",
+                    context={"symbol": symbol, "side": side, "dry_run": True, "order_id": order_id},
+                    source="diagnostics",
+                )
+                update_telegram_message_decision_trace(
+                    db=db,
+                    symbol=symbol,
+                    message_pattern=f"{side} SIGNAL",
+                    decision_type="EXECUTED",
+                    reason_code=decision_reason.reason_code,
+                    reason_message=decision_reason.reason_message,
+                    context_json=decision_reason.context,
+                    correlation_id=str(uuid_module.uuid4()),
+                )
+                outcome = "ORDER_PLACED"
+        else:
+            outcome = intent_status or "NO_INTENT"
+
+        report["results"][side] = {
+            "signal_id": signal_id,
+            "order_intent_id": order_intent.id if order_intent else None,
+            "intent_status": intent_status,
+            "outcome": outcome,
+        }
+
+    report["pass"] = all(result["outcome"] in ("ORDER_PLACED", "ORDER_FAILED") for result in report["results"].values())
+    return report
 
 @router.get("/forensic/audit")
 async def get_forensic_audit(

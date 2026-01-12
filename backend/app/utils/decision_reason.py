@@ -5,9 +5,10 @@ from enum import Enum
 
 
 class DecisionType(str, Enum):
-    """Decision type: SKIPPED or FAILED"""
+    """Decision type: SKIPPED, FAILED, or EXECUTED"""
     SKIPPED = "SKIPPED"
     FAILED = "FAILED"
+    EXECUTED = "EXECUTED"
 
 
 class ReasonCode(str, Enum):
@@ -35,6 +36,9 @@ class ReasonCode(str, Enum):
     ORDER_CREATION_LOCK = "ORDER_CREATION_LOCK"
     IDEMPOTENCY_BLOCKED = "IDEMPOTENCY_BLOCKED"
     MARGIN_ERROR_609_LOCK = "MARGIN_ERROR_609_LOCK"
+    DECISION_PIPELINE_NOT_CALLED = "DECISION_PIPELINE_NOT_CALLED"
+    SIGNAL_ID_MISSING = "SIGNAL_ID_MISSING"
+    MISSING_ORDER_INTENT = "MISSING_ORDER_INTENT"
     
     # Fail reasons
     EXCHANGE_REJECTED = "EXCHANGE_REJECTED"
@@ -44,6 +48,9 @@ class ReasonCode(str, Enum):
     TIMEOUT = "TIMEOUT"
     AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
     EXCHANGE_ERROR_UNKNOWN = "EXCHANGE_ERROR_UNKNOWN"
+    
+    # Execute reasons
+    EXEC_ORDER_PLACED = "EXEC_ORDER_PLACED"
 
 
 @dataclass
@@ -114,6 +121,26 @@ def make_fail(
     )
 
 
+def make_execute(
+    reason_code: str,
+    message: str,
+    context: Optional[Dict[str, Any]] = None,
+    source: str = "order_creation",
+    correlation_id: Optional[str] = None,
+    alert_id: Optional[str] = None,
+) -> DecisionReason:
+    """Create an EXECUTED decision reason"""
+    return DecisionReason(
+        reason_code=reason_code,
+        reason_message=message,
+        decision_type=DecisionType.EXECUTED,
+        context=context or {},
+        source=source,
+        correlation_id=correlation_id,
+        alert_id=alert_id,
+    )
+
+
 def classify_exchange_error(error_msg: str) -> str:
     """Classify exchange error into canonical reason code"""
     if not error_msg:
@@ -153,4 +180,3 @@ def classify_exchange_error(error_msg: str) -> str:
     
     # Default to unknown
     return ReasonCode.EXCHANGE_ERROR_UNKNOWN.value
-
