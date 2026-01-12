@@ -8,6 +8,7 @@ LIMIT=500
 SERVICE_BACKEND=backend-aws
 SERVICE_DB=db
 BACKEND_PORT=8000
+LOG_TAIL=1000
 
 get_env_value() {
   local name="$1"
@@ -64,6 +65,10 @@ while [[ $# -gt 0 ]]; do
       BACKEND_PORT="$2"
       shift 2
       ;;
+    --log-tail)
+      LOG_TAIL="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown arg: $1" >&2
       exit 2
@@ -76,7 +81,7 @@ compose_cmd=(docker compose --profile aws)
 ${compose_cmd[@]} ps
 
 # Check backend logs for order_intents table readiness
-if ${compose_cmd[@]} logs --tail 300 "$SERVICE_BACKEND" | (command -v rg >/dev/null 2>&1 && rg -q "\[BOOT\] order_intents table OK" || grep -q "\[BOOT\] order_intents table OK"); then
+if ${compose_cmd[@]} logs --tail "$LOG_TAIL" "$SERVICE_BACKEND" | (command -v rg >/dev/null 2>&1 && rg -q "\[BOOT\] order_intents table OK" || grep -q "\[BOOT\] order_intents table OK"); then
   boot_check="ok"
 else
   boot_check="missing"
