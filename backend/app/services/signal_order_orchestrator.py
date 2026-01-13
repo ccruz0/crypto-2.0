@@ -33,11 +33,11 @@ def compute_idempotency_key(
     Compute deterministic idempotency key for order deduplication.
     
     Priority:
-    1. Use telegram_messages.id as signal_id if available (most reliable)
-    2. Otherwise, use content-hash + 60s bucket (fallback)
+    1. If signal_id is present: use signal_id-based key (idempotent forever)
+    2. Otherwise: use content-hash + 60s bucket (fallback for signals without signal_id)
     
     Args:
-        signal_id: Telegram message ID (preferred)
+        signal_id: Telegram message ID (preferred, makes key idempotent forever)
         symbol: Trading symbol
         side: Order side ("BUY" or "SELL")
         message_content: Message content (for fallback hash)
@@ -46,18 +46,20 @@ def compute_idempotency_key(
         Idempotency key string
     """
     env = "AWS"  # Could be made configurable
-    timestamp_bucket = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    timestamp_str = timestamp_bucket.isoformat()
     
     if signal_id:
-        # Preferred: use telegram_messages.id
-        key = f"{env}:{symbol}:{side}:{signal_id}:{timestamp_str}"
+        # Preferred: use signal_id (idempotent forever, no timestamp bucket)
+        key = f"signal:{signal_id}:side:{side}"
     elif message_content:
-        # Fallback: content-hash + 60s bucket
+        # Fallback: content-hash + 60s bucket (only when signal_id is missing)
+        timestamp_bucket = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        timestamp_str = timestamp_bucket.isoformat()
         content_hash = hashlib.sha256(message_content.encode()).hexdigest()[:16]
         key = f"{env}:{symbol}:{side}:{content_hash}:{timestamp_str}"
     else:
-        # Last resort: UUID (not ideal, but ensures uniqueness)
+        # Last resort: UUID + timestamp bucket (not ideal, but ensures uniqueness)
+        timestamp_bucket = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        timestamp_str = timestamp_bucket.isoformat()
         fallback_id = str(uuid.uuid4())[:16]
         key = f"{env}:{symbol}:{side}:{fallback_id}:{timestamp_str}"
     
