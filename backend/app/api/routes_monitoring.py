@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, cast, String
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 from app.utils.http_client import http_post
@@ -263,37 +263,11 @@ async def get_monitoring_summary(
             backend_health = "unhealthy"
         
         # ========================================================================
-        # REFACTORED: ActiveAlerts is now state-based, not event-based
+        # REFACTORED: Active Alerts now derived from telegram_messages + order_intents
         # ========================================================================
-        # 
-        # Previous behavior (REMOVED):
-        # - Accumulated historical alert messages from SignalThrottleState
-        # - Showed throttled/blocked signals that were already handled
-        # - Duplicated information from throttle system
-        # - Did NOT reflect real "active alert" state from Watchlist
-        #
-        # New behavior (CURRENT):
-        # - Derives active alerts from Watchlist state (buy_alert_enabled/sell_alert_enabled)
-        # - Shows only currently active alerts based on toggle states AND active signals
-        # - Real-time view: alert appears when toggle is ON AND signal is active, disappears when either is OFF
-        # - No historical accumulation: alerts are computed fresh on each request
-        #
-        # Rules:
-        # - An alert appears ONLY if:
-        #   1. Symbol is in Watchlist (is_deleted = False), AND
-        #   2. Master alert switch is enabled (alert_enabled = True), AND
-        #   3. At least one alert toggle is active (buy_alert_enabled OR sell_alert_enabled), AND
-        #   4. The corresponding signal is ACTIVE (BUY signal active for buy_alert_enabled, SELL signal active for sell_alert_enabled)
-        # - An alert disappears immediately when:
-        #   - The corresponding toggle is turned off, OR
-        #   - The corresponding signal is no longer active, OR
-        #   - The symbol is removed from the Watchlist
-        #
-        # This ensures consistency between:
-        # - Watchlist buttons (green/red toggles)
-        # - Monitoring tab (ActiveAlerts panel)
-        # - Backend alert state
-        # - Actual signal conditions (GRESS/RES buttons)
+        # Changed from Watchlist state to actual send pipeline state
+        # Shows alerts that were detected AND either SENT, BLOCKED, or FAILED
+        # This ensures consistency: if an alert is shown, it must have a send status
         # ========================================================================
         try:
             from app.models.watchlist import WatchlistItem
@@ -470,49 +444,103 @@ async def get_monitoring_summary(
                 except Exception as calc_err:
                     log.error(f"❌ Could not calculate signals directly: {calc_err}", exc_info=True)
             
-            # Count total active alerts (only those with both toggle enabled AND signal active)
-            # This matches what the user sees in the watchlist (GRESS/RES buttons)
+            # ========================================================================
+            # FIX: Active Alerts derived from telegram_messages + order_intents
+            # ========================================================================
+            # Query telegram_messages in last 30 minutes with LEFT JOIN to order_intents
+            # This ensures Active Alerts matches the actual send pipeline state
+            # ========================================================================
+            from app.models.telegram_message import TelegramMessage
+            from app.models.order_intent import OrderIntent
+            
             active_alerts_count = 0
+            sent_count = 0
+            blocked_count = 0
+            failed_count = 0
             _active_alerts.clear()
             
-            for item in active_watchlist_items:
-                symbol_upper = (item.symbol or "").upper()
-                coin_signals = signals_by_symbol.get(symbol_upper, {})
+            # Query telegram_messages for BUY/SELL SIGNAL messages from last 30 minutes
+            # Use ILIKE for case-insensitive matching
+            # Include both blocked=false and blocked=true
+            threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
+            
+            # LEFT JOIN with order_intents on signal_id
+            # Using cast to text as per requirement: signal_id::text = telegram_messages.id::text
+            signal_messages_with_intents = (
+                db.query(
+                    TelegramMessage,
+                    OrderIntent
+                )
+                .outerjoin(
+                    OrderIntent,
+                    cast(OrderIntent.signal_id, String) == cast(TelegramMessage.id, String)
+                )
+                .filter(
+                    TelegramMessage.timestamp >= threshold,
+                    or_(
+                        func.ilike(TelegramMessage.message, "%BUY SIGNAL%"),
+                        func.ilike(TelegramMessage.message, "%SELL SIGNAL%")
+                    )
+                )
+                .order_by(TelegramMessage.timestamp.desc())
+                .limit(200)
+                .all()
+            )
+            
+            log.info(f"📊 Found {len(signal_messages_with_intents)} signal messages in last 30 minutes")
+            
+            for msg, order_intent in signal_messages_with_intents:
+                # Infer side from message
+                side = _infer_side_from_message(msg.message or "")
+                if side not in {"BUY", "SELL"}:
+                    continue
                 
-                # Log for debugging
-                if item.buy_alert_enabled or item.sell_alert_enabled:
-                    log.info(f"🔍 Checking {symbol_upper}: buy_toggle={item.buy_alert_enabled}, sell_toggle={item.sell_alert_enabled}, "
-                             f"signals={coin_signals}")
+                # Get order_intent_status
+                order_intent_status = None
+                if order_intent:
+                    order_intent_status = (
+                        order_intent.status.value
+                        if hasattr(order_intent.status, "value")
+                        else str(order_intent.status)
+                    )
                 
-                # Create alert entry for BUY alerts ONLY if:
-                # 1. buy_alert_enabled is True (toggle is ON)
-                # 2. BUY signal is active (GRESS button is green)
-                if item.buy_alert_enabled:
-                    if coin_signals.get("buy") == True:
-                        active_alerts_count += 1
-                        _active_alerts.append({
-                            "type": "BUY",
-                            "symbol": item.symbol or "UNKNOWN",
-                            "message": f"Buy alert active for {item.symbol} (signal detected)",
-                            "severity": "INFO",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
-                        log.info(f"✅ Added BUY alert for {symbol_upper}")
+                # Determine status_label:
+                # SENT if blocked=false
+                # FAILED if order_intent_status='ORDER_FAILED' OR reason_code indicates failure
+                # BLOCKED otherwise (blocked=true)
+                if msg.blocked == False:
+                    status_label = "SENT"
+                    sent_count += 1
+                elif order_intent_status == "ORDER_FAILED" or msg.decision_type == "FAILED" or (msg.reason_code and "FAILED" in str(msg.reason_code).upper()):
+                    status_label = "FAILED"
+                    failed_count += 1
+                else:
+                    status_label = "BLOCKED"
+                    blocked_count += 1
                 
-                # Create alert entry for SELL alerts ONLY if:
-                # 1. sell_alert_enabled is True (toggle is ON)
-                # 2. SELL signal is active (RES button is red)
-                if item.sell_alert_enabled:
-                    if coin_signals.get("sell") == True:
-                        active_alerts_count += 1
-                        _active_alerts.append({
-                            "type": "SELL",
-                            "symbol": item.symbol or "UNKNOWN",
-                            "message": f"Sell alert active for {item.symbol} (signal detected)",
-                            "severity": "INFO",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
-                        log.info(f"✅ Added SELL alert for {symbol_upper}")
+                # Build alert entry
+                active_alerts_count += 1
+                _active_alerts.append({
+                    "type": side,
+                    "symbol": msg.symbol or "UNKNOWN",
+                    "status_label": status_label,
+                    "severity": "INFO" if status_label == "SENT" else "WARNING" if status_label == "BLOCKED" else "ERROR",
+                    "timestamp": msg.timestamp.isoformat() if msg.timestamp else datetime.now(timezone.utc).isoformat(),
+                    "alert_status": status_label,  # Keep for backward compatibility
+                    "decision_type": msg.decision_type,
+                    "reason_code": msg.reason_code,
+                    "reason_message": msg.reason_message or msg.throttle_reason,
+                    "message_id": msg.id,
+                    "order_intent_status": order_intent_status,
+                    # Build message text for backward compatibility
+                    "message": f"{side} signal {status_label.lower()} for {msg.symbol or 'UNKNOWN'}" + (
+                        f": {msg.reason_message or msg.reason_code or msg.throttle_reason}" 
+                        if status_label != "SENT" and (msg.reason_message or msg.reason_code or msg.throttle_reason)
+                        else ""
+                    ),
+                })
+            
+            log.info(f"✅ Active alerts: {active_alerts_count} total (SENT: {sent_count}, BLOCKED: {blocked_count}, FAILED: {failed_count})")
             
         except Exception as e:
             log.error(f"Could not populate active alerts from watchlist: {e}", exc_info=True)
@@ -526,6 +554,12 @@ async def get_monitoring_summary(
         return JSONResponse(
             content={
                 "active_alerts": active_alerts_count,
+                "active_total": active_alerts_count,  # Alias for consistency
+                "alert_counts": {
+                    "sent": sent_count,
+                    "blocked": blocked_count,
+                    "failed": failed_count,
+                },
                 "backend_health": backend_health,
                 "last_sync_seconds": last_sync_seconds,
                 "portfolio_state_duration": round(portfolio_state_duration, 2),
@@ -549,6 +583,11 @@ async def get_monitoring_summary(
             status_code=200,  # Return 200 with error status in body
             content={
                 "active_alerts": len(_active_alerts),
+                "alert_counts": {
+                    "sent": 0,
+                    "blocked": 0,
+                    "failed": 0,
+                },
                 "backend_health": "error",
                 "last_sync_seconds": None,
                 "portfolio_state_duration": round(time.time() - start_time, 2),
