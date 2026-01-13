@@ -127,3 +127,4 @@ Set `PORTFOLIO_RECONCILE_DEBUG=1` to enable:
 ✅ Clear source indication via badges
 ✅ Deterministic priority: exchange → margin → derived
 ✅ Debug support for troubleshooting mismatches
+

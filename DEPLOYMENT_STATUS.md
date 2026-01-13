@@ -1,136 +1,85 @@
-# Deployment Status
+# Deployment Status - Telegram Menu Update
 
-## Current Status
+**Date:** 2025-01-27  
+**Commit:** `8e9342d` - "feat: Update Telegram menu to match Reference Specification v1.0"  
+**Workflow:** Deploy to AWS EC2 (Session Manager)  
+**Run ID:** 20421221066
 
-Deployment command has been sent to AWS instance `i-08726dc37133b2454`.
+## Deployment Summary
 
-**Command ID**: `aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5`
+✅ **Status:** Deployment Completed Successfully
 
-## What's Happening
+### Workflow Steps Completed
 
-The deployment script is:
-1. ✅ Pulling latest code from git
-2. 🔄 Building Docker image (backend-aws)
-3. ⏳ Starting/restarting container
-4. ⏳ Waiting for service to start
-5. ⏳ Running audit script
+1. ✅ Set up job
+2. ✅ Checkout repository
+3. ✅ Fetch frontend source
+4. ✅ Show frontend version entry
+5. ✅ Configure AWS credentials
+6. ✅ Deploy to EC2 using Session Manager
+7. ✅ Post Configure AWS credentials
+8. ✅ Post Checkout repository
+9. ✅ Complete job
 
-This process typically takes **3-5 minutes**.
+### Deployment Duration
 
-## Check Status
+- **Total Time:** ~6 minutes 13 seconds
+- **Started:** 2025-12-22T03:55:00Z
+- **Completed:** 2025-12-22T04:01:13Z
 
-```bash
-# Check deployment status
-./check_deployment_status.sh
+### Changes Deployed
 
-# Or manually
-aws ssm get-command-invocation \
-  --command-id aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5 \
-  --instance-id i-08726dc37133b2454 \
-  --region ap-southeast-1 \
-  --query "Status" \
-  --output text
-```
+1. **Main Menu Restructure**
+   - Updated to 7 sections in exact order per specification
+   - Portfolio, Watchlist, Open Orders, Expected Take Profit, Executed Orders, Monitoring, Version History
 
-## What to Expect
+2. **New Functions Added**
+   - `send_expected_take_profit_message()` - Expected TP section
+   - `show_monitoring_menu()` - Monitoring sub-menu
+   - `send_system_monitoring_message()` - System health
+   - `send_throttle_message()` - Recent messages
+   - `send_workflows_monitoring_message()` - Workflow status
+   - `send_blocked_messages_message()` - Blocked messages
 
-### When Deployment Completes:
+3. **Portfolio Section Enhanced**
+   - Added PnL breakdown (Realized, Potential, Total)
+   - Updated to use Dashboard API endpoints
 
-1. **Container Status**
-   - Container should be running
-   - Check: `docker compose --profile aws ps`
+4. **Menu Override Fix**
+   - Fixed `TelegramNotifier` initialization to prevent menu override
 
-2. **Heartbeat Logs** (appear every ~5 minutes)
-   ```
-   [HEARTBEAT] SignalMonitorService alive - cycle=10 last_run=...
-   ```
+### Files Changed
 
-3. **Audit Report**
-   - Location: `docs/reports/no-alerts-no-trades-audit-*.md`
-   - Contains root causes and recommended fixes
+- `backend/app/services/telegram_commands.py` - Main implementation
+- `backend/app/services/telegram_notifier.py` - Menu override fix
+- `TELEGRAM_MENU_REFERENCE_SPECIFICATION.md` - New specification document
+- `TELEGRAM_MENU_FIX_APPLIED.md` - Fix documentation
+- `TELEGRAM_MENU_ANALYSIS_REPORT.md` - Analysis report
 
-4. **Global Blockers** (if any)
-   ```
-   [GLOBAL_BLOCKER] Telegram notifier is disabled
-   [GLOBAL_BLOCKER] No watchlist items with alert_enabled=True found
-   ```
+### Notes
 
-## Next Steps After Deployment
+- ⚠️ Minor warning: Git process exit code 128 (non-critical, deployment still succeeded)
+- All code changes have been deployed to AWS EC2 instance
+- Backend service should be running with new menu structure
 
-1. **Check Status**
-   ```bash
-   ./check_deployment_status.sh
-   ```
+### Next Steps
 
-2. **Verify Deployment**
-   ```bash
-   # SSH into AWS server
-   ssh your-aws-server
-   
-   # Check container
-   docker compose --profile aws ps
-   
-   # Check logs
-   docker logs automated-trading-platform-backend-aws-1 | grep HEARTBEAT
-   ```
+1. **Verify Deployment:**
+   - Test Telegram menu in production
+   - Verify all 7 sections are accessible
+   - Check that Expected Take Profit section works
+   - Test Monitoring sub-sections
 
-3. **View Audit Report**
-   ```bash
-   # On AWS server
-   cat docs/reports/no-alerts-no-trades-audit-*.md | tail -1
-   
-   # Or download locally
-   scp your-aws-server:/path/to/repo/docs/reports/no-alerts-no-trades-audit-*.md ./
-   ```
+2. **Monitor Backend:**
+   - Check backend logs for any errors
+   - Verify Telegram bot is responding correctly
+   - Test menu navigation flow
 
-4. **Fix Issues Based on Audit**
-   - Review the audit report
-   - Apply recommended fixes
-   - Re-run audit to verify
+3. **User Testing:**
+   - Send `/start` command in Telegram
+   - Navigate through all menu sections
+   - Verify data matches Dashboard
 
-## Troubleshooting
+---
 
-### If Deployment Fails
-
-1. Check command output:
-   ```bash
-   aws ssm get-command-invocation \
-     --command-id aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5 \
-     --instance-id i-08726dc37133b2454 \
-     --region ap-southeast-1
-   ```
-
-2. Common issues:
-   - Git pull failed (ownership issues) - Already handled in script
-   - Container name mismatch - Script now auto-detects container name
-   - Build timeout - May need to increase timeout
-
-### If Audit Fails
-
-1. Check container is running
-2. Check database connectivity
-3. Run audit manually:
-   ```bash
-   docker exec <container-name> python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24
-   ```
-
-## Manual Deployment (If SSM Fails)
-
-If SSM deployment fails, you can deploy manually:
-
-```bash
-# SSH into AWS server
-ssh your-aws-server
-
-# Navigate to project
-cd /home/ubuntu/automated-trading-platform
-
-# Pull latest code
-git pull origin main
-
-# Deploy
-./deploy_audit_fixes.sh
-
-# Run audit
-./run_audit_in_production.sh
-```
+**Deployment Status:** ✅ **COMPLETE**

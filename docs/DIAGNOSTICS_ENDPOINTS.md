@@ -110,3 +110,4 @@ curl -sS http://localhost:8002/api/diagnostics/portfolio/reconcile | python3 -m 
 - **Gated access:** Only enabled in local environment or when `PORTFOLIO_DEBUG=1`
 - **Safe fields only:** Reconcile endpoint returns only numeric equity/balance fields and computed values
 
+

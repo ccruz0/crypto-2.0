@@ -107,3 +107,4 @@ docker compose --profile aws logs --tail 100 market-updater-aws
 
 **For detailed information, see the full documentation files listed above.**
 
+

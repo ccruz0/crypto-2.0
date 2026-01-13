@@ -132,3 +132,4 @@ El Dockerfile tiene instalación duplicada (líneas 49-51 y 55). Esto puede caus
 
 
 
+

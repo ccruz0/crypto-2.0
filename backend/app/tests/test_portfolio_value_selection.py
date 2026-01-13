@@ -319,3 +319,4 @@ class TestPortfolioValueSelection:
                     assert result["total_usd"] != derived_value, \
                         f"total_usd should NOT equal derived value ({derived_value}) when exchange equity is present"
 
+

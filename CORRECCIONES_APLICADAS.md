@@ -260,6 +260,4 @@ docker-compose --profile local config
 3. **Validar antes de desplegar** - Usar el script de validación
 4. **Documentar cambios** - Si otros desarrolladores necesitan estas variables
 
----
-
-**Fin del Documento**
+---**Fin del Documento**

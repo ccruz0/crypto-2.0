@@ -208,3 +208,4 @@ docker logs --tail 200 market-updater-aws | grep SYSTEM_DOWN
 
 
 
+

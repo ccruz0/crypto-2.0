@@ -208,3 +208,4 @@ frontend/tmp/portfolio_watchlist_evidence/2026-01-04T16-04-46-808Z/screenshots/0
 - ✅ **Backward compatible** - Primary Crypto.com path unchanged
 
 
+

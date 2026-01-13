@@ -272,3 +272,4 @@ docker ps -a | grep gluetun || echo "✅ No gluetun container found (expected)"
 If you need a custom domain or more control, use Option B with strict IP restrictions.
 
 
+

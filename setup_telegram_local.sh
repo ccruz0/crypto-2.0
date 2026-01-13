@@ -125,3 +125,4 @@ echo "  Bot Token: ${BOT_TOKEN:0:20}..."
 echo "  Chat ID: $CHAT_ID"
 echo "  File: .env.local"
 
+

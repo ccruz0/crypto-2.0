@@ -256,3 +256,4 @@ class TestPortfolioValueReconciliation:
                     assert result["portfolio_value_source"].startswith("exchange_"), \
                         "When exchange equity is present, source should be 'exchange_*', not 'derived_*'"
 
+

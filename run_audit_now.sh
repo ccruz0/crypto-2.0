@@ -30,3 +30,4 @@ echo "ssh your-aws-server 'cd /home/ubuntu/automated-trading-platform && docker 
 
 
 
+

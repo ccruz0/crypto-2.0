@@ -33,3 +33,4 @@ docker logs backend-aws | grep "Signal monitor service"
 
 
 
+

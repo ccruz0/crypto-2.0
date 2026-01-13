@@ -204,3 +204,4 @@ docker compose --profile aws exec backend-aws python -c "from app.database impor
 
 
 
+

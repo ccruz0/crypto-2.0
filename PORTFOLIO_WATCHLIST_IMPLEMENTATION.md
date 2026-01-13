@@ -131,3 +131,4 @@ frontend/tmp/portfolio_watchlist_evidence/2026-01-04T03-20-45-580Z/
 - Price sourcing: Crypto.com (primary) → CoinGecko (fallback) → 0 with error
 
 
+

@@ -462,7 +462,8 @@ async def get_monitoring_summary(
             # Query telegram_messages for BUY/SELL SIGNAL messages from last 30 minutes
             # Use ILIKE for case-insensitive matching
             # Include both blocked=false and blocked=true
-            threshold = datetime.now(timezone.utc) - timedelta(minutes=30)
+            ACTIVE_ALERTS_WINDOW_MINUTES = 30
+            threshold = datetime.now(timezone.utc) - timedelta(minutes=ACTIVE_ALERTS_WINDOW_MINUTES)
             
             # LEFT JOIN with order_intents on signal_id
             # Using cast to text as per requirement: signal_id::text = telegram_messages.id::text
@@ -551,6 +552,12 @@ async def get_monitoring_summary(
         # Record when signals were last calculated
         signals_last_calculated = datetime.now(timezone.utc).isoformat() if should_calculate_signals else None
         
+        # Active alerts window (30 minutes)
+        ACTIVE_ALERTS_WINDOW_MINUTES = 30
+        
+        # Generate timestamp for this response
+        generated_at_utc = datetime.now(timezone.utc).isoformat() + "Z"
+        
         return JSONResponse(
             content={
                 "active_alerts": active_alerts_count,
@@ -560,6 +567,8 @@ async def get_monitoring_summary(
                     "blocked": blocked_count,
                     "failed": failed_count,
                 },
+                "window_minutes": ACTIVE_ALERTS_WINDOW_MINUTES,
+                "generated_at_utc": generated_at_utc,
                 "backend_health": backend_health,
                 "last_sync_seconds": last_sync_seconds,
                 "portfolio_state_duration": round(portfolio_state_duration, 2),
@@ -579,15 +588,21 @@ async def get_monitoring_summary(
     except Exception as e:
         log.error(f"Error in monitoring summary: {e}", exc_info=True)
         # Return error response instead of raising exception to avoid 500
+        ACTIVE_ALERTS_WINDOW_MINUTES = 30
+        generated_at_utc = datetime.now(timezone.utc).isoformat() + "Z"
+        
         return JSONResponse(
             status_code=200,  # Return 200 with error status in body
             content={
                 "active_alerts": len(_active_alerts),
+                "active_total": len(_active_alerts),
                 "alert_counts": {
                     "sent": 0,
                     "blocked": 0,
                     "failed": 0,
                 },
+                "window_minutes": ACTIVE_ALERTS_WINDOW_MINUTES,
+                "generated_at_utc": generated_at_utc,
                 "backend_health": "error",
                 "last_sync_seconds": None,
                 "portfolio_state_duration": round(time.time() - start_time, 2),

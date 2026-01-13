@@ -194,3 +194,4 @@ npm run qa:real-portfolio
 - ✅ QA evidence script captures reconcile data
 - ⏳ **Verification pending**: Test with real AWS backend and confirm value matches Crypto.com UI
 
+

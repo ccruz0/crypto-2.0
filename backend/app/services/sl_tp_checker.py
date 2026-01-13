@@ -903,6 +903,77 @@ class SLTPCheckerService:
                 tp_order_id = tp_result.get("order_id")
                 tp_error = tp_result.get("error")
             
+            # BR-3: ATOMIC ROLLBACK - If both SL and TP were requested, both must succeed
+            # If one failed, cancel the other (rollback)
+            if create_sl and create_tp:
+                if sl_order_id and not tp_order_id:
+                    # SL created but TP failed - ROLLBACK: cancel SL
+                    logger.error(f"🚨 ATOMIC TP/SL VIOLATION: SL created but TP failed for {symbol}. Rolling back SL order {sl_order_id}.")
+                    try:
+                        cancel_result = trade_client.cancel_order(sl_order_id)
+                        if "error" in cancel_result:
+                            logger.error(f"❌ Failed to cancel SL order {sl_order_id} during rollback: {cancel_result.get('error')}")
+                        else:
+                            logger.info(f"✅ Rolled back SL order {sl_order_id} after TP creation failed")
+                            sl_order_id = None  # Mark as rolled back
+                    except Exception as cancel_err:
+                        logger.error(f"❌ Exception during SL rollback for {symbol}: {cancel_err}", exc_info=True)
+                    
+                    # Emit SLTP_FAILED event with explicit reason (BR-4)
+                    try:
+                        from app.services.signal_monitor import _emit_lifecycle_event
+                        from app.services.strategy_profiles import build_strategy_key
+                        watchlist_for_event = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+                        strategy_key = build_strategy_key(watchlist_for_event) if watchlist_for_event else "unknown:unknown"
+                        
+                        error_msg = f"TP creation failed: {tp_error or 'unknown error'}"
+                        _emit_lifecycle_event(
+                            db=db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=entry_price,
+                            event_type="SLTP_FAILED",
+                            event_reason="ATOMIC_VIOLATION_TP_FAILED_SL_ROLLED_BACK",
+                            error_message=error_msg,
+                        )
+                    except Exception as emit_err:
+                        logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
+                        
+                elif tp_order_id and not sl_order_id:
+                    # TP created but SL failed - ROLLBACK: cancel TP
+                    logger.error(f"🚨 ATOMIC TP/SL VIOLATION: TP created but SL failed for {symbol}. Rolling back TP order {tp_order_id}.")
+                    try:
+                        cancel_result = trade_client.cancel_order(tp_order_id)
+                        if "error" in cancel_result:
+                            logger.error(f"❌ Failed to cancel TP order {tp_order_id} during rollback: {cancel_result.get('error')}")
+                        else:
+                            logger.info(f"✅ Rolled back TP order {tp_order_id} after SL creation failed")
+                            tp_order_id = None  # Mark as rolled back
+                    except Exception as cancel_err:
+                        logger.error(f"❌ Exception during TP rollback for {symbol}: {cancel_err}", exc_info=True)
+                    
+                    # Emit SLTP_FAILED event with explicit reason (BR-4)
+                    try:
+                        from app.services.signal_monitor import _emit_lifecycle_event
+                        from app.services.strategy_profiles import build_strategy_key
+                        watchlist_for_event = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+                        strategy_key = build_strategy_key(watchlist_for_event) if watchlist_for_event else "unknown:unknown"
+                        
+                        error_msg = f"SL creation failed: {sl_error or 'unknown error'}"
+                        _emit_lifecycle_event(
+                            db=db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=entry_price,
+                            event_type="SLTP_FAILED",
+                            event_reason="ATOMIC_VIOLATION_SL_FAILED_TP_ROLLED_BACK",
+                            error_message=error_msg,
+                        )
+                    except Exception as emit_err:
+                        logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
+            
             # Send notification
             if sl_order_id or tp_order_id:
                 try:
@@ -934,12 +1005,26 @@ class SLTPCheckerService:
                 except Exception as e:
                     logger.error(f"❌ Failed to send Telegram notification for SL/TP orders: {symbol} - {e}", exc_info=True)
             
-            success = (create_sl and sl_order_id) or (create_tp and tp_order_id) or (not create_sl and not create_tp)
+            # BR-3: ATOMIC SUCCESS CHECK - If both SL and TP were requested, both must succeed
+            if create_sl and create_tp:
+                # Both requested - both must succeed
+                success = bool(sl_order_id and tp_order_id)
+            else:
+                # Only one requested (or neither) - success if requested one succeeded
+                success = (create_sl and sl_order_id) or (create_tp and tp_order_id) or (not create_sl and not create_tp)
             
             # If there's an error and no success, include it in the main error field
             main_error = None
             if not success:
-                if create_sl and sl_error:
+                if create_sl and create_tp:
+                    # Both requested - failure means one or both failed
+                    if not sl_order_id and not tp_order_id:
+                        main_error = f"Both SL and TP orders failed. SL: {sl_error or 'unknown'}, TP: {tp_error or 'unknown'}"
+                    elif not sl_order_id:
+                        main_error = f"SL order failed: {sl_error or 'unknown'} (TP was rolled back)"
+                    elif not tp_order_id:
+                        main_error = f"TP order failed: {tp_error or 'unknown'} (SL was rolled back)"
+                elif create_sl and sl_error:
                     main_error = f"SL order failed: {sl_error}"
                 elif create_tp and tp_error:
                     main_error = f"TP order failed: {tp_error}"
@@ -1865,6 +1950,77 @@ class SLTPCheckerService:
                 tp_order_id = tp_result.get("order_id")
                 tp_error = tp_result.get("error")
             
+            # BR-3: ATOMIC ROLLBACK - If both SL and TP were requested, both must succeed
+            # If one failed, cancel the other (rollback)
+            if create_sl and create_tp:
+                if sl_order_id and not tp_order_id:
+                    # SL created but TP failed - ROLLBACK: cancel SL
+                    logger.error(f"🚨 ATOMIC TP/SL VIOLATION: SL created but TP failed for {symbol}. Rolling back SL order {sl_order_id}.")
+                    try:
+                        cancel_result = trade_client.cancel_order(sl_order_id)
+                        if "error" in cancel_result:
+                            logger.error(f"❌ Failed to cancel SL order {sl_order_id} during rollback: {cancel_result.get('error')}")
+                        else:
+                            logger.info(f"✅ Rolled back SL order {sl_order_id} after TP creation failed")
+                            sl_order_id = None  # Mark as rolled back
+                    except Exception as cancel_err:
+                        logger.error(f"❌ Exception during SL rollback for {symbol}: {cancel_err}", exc_info=True)
+                    
+                    # Emit SLTP_FAILED event with explicit reason (BR-4)
+                    try:
+                        from app.services.signal_monitor import _emit_lifecycle_event
+                        from app.services.strategy_profiles import build_strategy_key
+                        watchlist_for_event = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+                        strategy_key = build_strategy_key(watchlist_for_event) if watchlist_for_event else "unknown:unknown"
+                        
+                        error_msg = f"TP creation failed: {tp_error or 'unknown error'}"
+                        _emit_lifecycle_event(
+                            db=db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=entry_price,
+                            event_type="SLTP_FAILED",
+                            event_reason="ATOMIC_VIOLATION_TP_FAILED_SL_ROLLED_BACK",
+                            error_message=error_msg,
+                        )
+                    except Exception as emit_err:
+                        logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
+                        
+                elif tp_order_id and not sl_order_id:
+                    # TP created but SL failed - ROLLBACK: cancel TP
+                    logger.error(f"🚨 ATOMIC TP/SL VIOLATION: TP created but SL failed for {symbol}. Rolling back TP order {tp_order_id}.")
+                    try:
+                        cancel_result = trade_client.cancel_order(tp_order_id)
+                        if "error" in cancel_result:
+                            logger.error(f"❌ Failed to cancel TP order {tp_order_id} during rollback: {cancel_result.get('error')}")
+                        else:
+                            logger.info(f"✅ Rolled back TP order {tp_order_id} after SL creation failed")
+                            tp_order_id = None  # Mark as rolled back
+                    except Exception as cancel_err:
+                        logger.error(f"❌ Exception during TP rollback for {symbol}: {cancel_err}", exc_info=True)
+                    
+                    # Emit SLTP_FAILED event with explicit reason (BR-4)
+                    try:
+                        from app.services.signal_monitor import _emit_lifecycle_event
+                        from app.services.strategy_profiles import build_strategy_key
+                        watchlist_for_event = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+                        strategy_key = build_strategy_key(watchlist_for_event) if watchlist_for_event else "unknown:unknown"
+                        
+                        error_msg = f"SL creation failed: {sl_error or 'unknown error'}"
+                        _emit_lifecycle_event(
+                            db=db,
+                            symbol=symbol,
+                            strategy_key=strategy_key,
+                            side="BUY",
+                            price=entry_price,
+                            event_type="SLTP_FAILED",
+                            event_reason="ATOMIC_VIOLATION_SL_FAILED_TP_ROLLED_BACK",
+                            error_message=error_msg,
+                        )
+                    except Exception as emit_err:
+                        logger.warning(f"Failed to emit SLTP_FAILED event for {symbol}: {emit_err}")
+            
             # Send notification
             if sl_order_id or tp_order_id:
                 try:
@@ -1896,12 +2052,26 @@ class SLTPCheckerService:
                 except Exception as e:
                     logger.error(f"❌ Failed to send Telegram notification for SL/TP orders: {symbol} - {e}", exc_info=True)
             
-            success = (create_sl and sl_order_id) or (create_tp and tp_order_id) or (not create_sl and not create_tp)
+            # BR-3: ATOMIC SUCCESS CHECK - If both SL and TP were requested, both must succeed
+            if create_sl and create_tp:
+                # Both requested - both must succeed
+                success = bool(sl_order_id and tp_order_id)
+            else:
+                # Only one requested (or neither) - success if requested one succeeded
+                success = (create_sl and sl_order_id) or (create_tp and tp_order_id) or (not create_sl and not create_tp)
             
             # If there's an error and no success, include it in the main error field
             main_error = None
             if not success:
-                if create_sl and sl_error:
+                if create_sl and create_tp:
+                    # Both requested - failure means one or both failed
+                    if not sl_order_id and not tp_order_id:
+                        main_error = f"Both SL and TP orders failed. SL: {sl_error or 'unknown'}, TP: {tp_error or 'unknown'}"
+                    elif not sl_order_id:
+                        main_error = f"SL order failed: {sl_error or 'unknown'} (TP was rolled back)"
+                    elif not tp_order_id:
+                        main_error = f"TP order failed: {tp_error or 'unknown'} (SL was rolled back)"
+                elif create_sl and sl_error:
                     main_error = f"SL order failed: {sl_error}"
                 elif create_tp and tp_error:
                     main_error = f"TP order failed: {tp_error}"

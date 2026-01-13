@@ -1,239 +1,139 @@
-# Next Steps - Action Plan
+# Next Steps - BUY SIGNAL Decision Tracing Fix
 
-## 🚀 Immediate Priority: Deploy to AWS
+## Current Status ✅
 
-### Step 1: Deploy Watchlist Enrichment Fix
+- ✅ Code changes complete (3 files modified)
+- ✅ Deployment script ready (`deploy_decision_tracing_fix.sh`)
+- ✅ Test script ready (`test_aws_ssh.sh`)
+- ❌ SSH access not configured (connection timeout)
 
-**On AWS Server:**
+## Immediate Next Steps
+
+### Step 1: Configure AWS Security Group (Required)
+
+**Action**: Allow SSH access to your EC2 instance
+
+1. Go to **AWS Console** → **EC2** → **Security Groups**
+2. Find the security group attached to instance `i-08726dc37133b2454`
+3. Click **Edit Inbound Rules**
+4. Add/Edit SSH rule:
+   - **Type**: SSH
+   - **Protocol**: TCP
+   - **Port**: 22
+   - **Source**: 
+     - Option A: `0.0.0.0/0` (allows from anywhere - use for testing)
+     - Option B: Your current IP address (more secure)
+   - **Description**: "SSH access for deployment"
+5. Click **Save Rules**
+
+**How to find your IP**: 
 ```bash
-# SSH to AWS server
-ssh ubuntu@your-aws-server
-
-# Navigate to project
-cd /home/ubuntu/automated-trading-platform
-
-# Pull latest code
-git pull origin main
-
-# Rebuild backend
-docker compose build backend-aws
-
-# Restart backend
-docker compose restart backend-aws
-
-# Verify deployment
-python3 test_watchlist_enrichment.py
+curl ifconfig.me
+# Or visit: https://whatismyipaddress.com/
 ```
 
-**Expected Results:**
-- ✅ All tests passing
-- ✅ `/api/dashboard` returns enriched values
-- ✅ `/api/monitoring/summary` shows "healthy"
-- ✅ No transaction errors in logs
+### Step 2: Verify Instance is Running
 
-**Time Estimate:** 10-15 minutes
+**Action**: Check AWS Console
 
----
+1. Go to **AWS Console** → **EC2** → **Instances**
+2. Find instance `i-08726dc37133b2454`
+3. Verify status is **"Running"**
+4. Note the **Public IPv4 address** (should be `47.130.143.159` or similar)
 
-## 📊 Post-Deployment Verification
+### Step 3: Test SSH Connection
 
-### Step 2: Verify Frontend Display
+**Action**: Run the test script
 
-1. **Open Dashboard**: Navigate to `https://dashboard.hilovivo.com`
-2. **Check Watchlist Tab**: Verify all indicators show values (not "-")
-3. **Check Monitoring Tab**: Verify backend health shows "healthy"
-4. **Run Consistency Report**: Verify no mismatches
-
-**Commands:**
 ```bash
-# Check API directly
-curl -s http://localhost:8002/api/dashboard | jq '.[0] | {symbol, price, rsi, ma50, ma200, ema10}'
-
-# Check monitoring
-curl -s http://localhost:8002/api/monitoring/summary | jq '{backend_health, errors}'
-
-# Run consistency report
-docker compose exec backend-aws python scripts/watchlist_consistency_check.py
+./test_aws_ssh.sh
 ```
 
-**Time Estimate:** 5-10 minutes
+**Expected**: Should show "✅ SSH connection is working!"
 
----
+**If it fails**: 
+- Double-check Security Group rules
+- Verify instance is running
+- Check if IP address has changed (update in script if needed)
 
-## 🔧 Recommended Improvements (From Code Reviews)
+### Step 4: Deploy the Fix
 
-### Step 3: Implement Code Review Suggestions
+**Action**: Run deployment script
 
-#### 3.1 Improve Error Handling (Medium Priority)
-
-**File:** `backend/app/api/routes_dashboard.py`
-
-**Current Issue:** `_get_market_data_for_symbol()` silently swallows errors
-
-**Fix:**
-```python
-def _get_market_data_for_symbol(db: Session, symbol: str) -> Optional[MarketData]:
-    """Get MarketData for a single symbol."""
-    try:
-        from app.models.market_price import MarketData
-        symbol_upper = symbol.upper()
-        return db.query(MarketData).filter(MarketData.symbol == symbol_upper).first()
-    except sqlalchemy.exc.SQLAlchemyError as e:
-        log.warning(f"Database error fetching MarketData for {symbol}: {e}")
-        return None
-    except Exception as e:
-        log.error(f"Unexpected error fetching MarketData for {symbol}: {e}", exc_info=True)
-        return None
-```
-
-**Time Estimate:** 15 minutes
-
-#### 3.2 Add Nginx Security Headers (High Priority)
-
-**File:** `nginx/dashboard.conf`
-
-**Add HSTS Header:**
-```nginx
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-```
-
-**Add Rate Limiting:**
-```nginx
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
-
-location /api {
-    limit_req zone=api_limit burst=20 nodelay;
-    # ... rest of config
-}
-```
-
-**Time Estimate:** 20 minutes
-
-#### 3.3 Add MarketData Caching (Low Priority)
-
-**File:** `backend/app/api/routes_dashboard.py`
-
-**Add short-lived cache (5-10 seconds) for MarketData queries**
-
-**Time Estimate:** 30 minutes
-
----
-
-## 🐛 Monitor for Issues
-
-### Step 4: Monitor System (24-48 hours)
-
-**Check Logs:**
 ```bash
-# Watch for errors
-docker compose logs -f backend-aws | grep -i "error\|exception\|rollback"
-
-# Watch for enrichment
-docker compose logs -f backend-aws | grep -i "enrich\|marketdata"
+./deploy_decision_tracing_fix.sh
 ```
 
-**Monitor:**
-- [ ] No transaction errors
-- [ ] All watchlist items show values
-- [ ] Monitoring endpoint stays healthy
-- [ ] No performance degradation
+**What it does**:
+1. Syncs 3 Python files to AWS
+2. Restarts market-updater process
+3. Restarts backend API (if running directly)
 
-**Time Estimate:** Ongoing monitoring
+**Expected output**: Success messages confirming files synced and services restarted
 
----
+### Step 5: Verify Deployment
 
-## 📝 Optional Enhancements
+**Action**: Test the new diagnostics endpoint
 
-### Step 5: Additional Improvements
-
-1. **Add Retry Logic for Telegram** (Medium Priority)
-   - Implement retry with exponential backoff
-   - Handle transient network errors
-
-2. **Add Message Queue** (Low Priority)
-   - Redis/RabbitMQ for Telegram messages
-   - Better reliability if API is down
-
-3. **Split SignalMonitorService** (Low Priority)
-   - File is 3,643 lines - consider refactoring
-   - Separate monitoring, alerting, order creation
-
-4. **Add Performance Metrics** (Low Priority)
-   - Track API response times
-   - Monitor database query performance
-   - Add Prometheus/Grafana dashboards
-
----
-
-## 🎯 Priority Summary
-
-| Task | Priority | Time | Status |
-|------|----------|------|--------|
-| Deploy to AWS | 🔴 **Critical** | 15 min | ⏳ Pending |
-| Verify Deployment | 🔴 **Critical** | 10 min | ⏳ Pending |
-| Add HSTS Header | 🟡 **High** | 5 min | ⏳ Pending |
-| Add Rate Limiting | 🟡 **High** | 15 min | ⏳ Pending |
-| Improve Error Handling | 🟢 **Medium** | 15 min | ⏳ Pending |
-| Add Caching | 🟢 **Low** | 30 min | ⏳ Pending |
-| Monitor System | 🔴 **Critical** | Ongoing | ⏳ Pending |
-
----
-
-## 📋 Quick Reference
-
-### Deployment Commands
 ```bash
-# On AWS server
-cd /home/ubuntu/automated-trading-platform
-git pull origin main
-docker compose build backend-aws
-docker compose restart backend-aws
-python3 test_watchlist_enrichment.py
+# Replace with your AWS server IP/domain
+curl http://47.130.143.159:8000/api/diagnostics/recent-buy-signals?limit=10
 ```
 
-### Verification Commands
+**Expected**: JSON response with BUY SIGNAL messages and their decision traces
+
+## Alternative: Manual Deployment
+
+If SSH can't be configured right now, you can:
+
+1. **Use AWS Session Manager** (browser-based):
+   - AWS Console → EC2 → Instances
+   - Select instance → Connect → Session Manager
+   - Manually copy files via command line
+
+2. **Use GitHub Actions** (if configured):
+   - Push code to repository
+   - Let automated workflow deploy
+
+3. **Use AWS Console EC2 Instance Connect**:
+   - Connect via browser
+   - Upload files manually
+
+## Quick Command Reference
+
 ```bash
-# Test API
-curl -s http://localhost:8002/api/dashboard | jq '.[0] | {symbol, price, rsi}'
+# Test SSH
+./test_aws_ssh.sh
 
-# Check health
-curl -s http://localhost:8002/api/monitoring/summary | jq '{backend_health}'
+# Deploy
+./deploy_decision_tracing_fix.sh
 
-# Check logs
-docker compose logs backend-aws --tail 50
+# Verify (after deployment)
+curl http://YOUR_AWS_IP:8000/api/diagnostics/recent-buy-signals?limit=10
+
+# Check logs (SSH to server first)
+ssh ubuntu@YOUR_AWS_IP
+tail -50 ~/automated-trading-platform/backend/market_updater.log
 ```
 
-### Rollback (if needed)
-```bash
-git revert HEAD
-docker compose build backend-aws
-docker compose restart backend-aws
-```
+## Files Ready to Deploy
 
----
+These 3 files are ready and tested:
+- `backend/app/api/routes_monitoring.py`
+- `backend/app/services/signal_monitor.py`
+- `backend/app/utils/decision_reason.py`
 
-## ✅ Success Criteria
+## Success Criteria
 
-- [ ] Code deployed to AWS
-- [ ] All tests passing
-- [ ] Frontend shows enriched values
-- [ ] Monitoring endpoint healthy
-- [ ] No errors in logs
-- [ ] Consistency report shows no mismatches
+✅ Deployment is successful when:
+1. SSH connection works
+2. Files are synced to AWS
+3. Services restart without errors
+4. Diagnostics endpoint returns data
+5. New BUY SIGNAL messages have decision traces (not NULL)
 
----
+## Need Help?
 
-## 🆘 If Issues Occur
-
-1. **Check Logs**: `docker compose logs backend-aws`
-2. **Run Tests**: `python3 test_watchlist_enrichment.py`
-3. **Check Monitoring**: `curl http://localhost:8002/api/monitoring/summary`
-4. **Review Documentation**: `DEPLOY_WATCHLIST_ENRICHMENT.md`
-
----
-
-**Next Action:** Deploy to AWS server and verify deployment ✅
-
-
-
-
+- **SSH issues**: See `SSH_SETUP_GUIDE.md`
+- **Deployment details**: See `DEPLOYMENT_SUMMARY.md`
+- **Technical details**: See `BUY_SIGNAL_DECISION_TRACING_FIX.md`

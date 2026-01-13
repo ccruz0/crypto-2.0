@@ -205,3 +205,4 @@ npm run dev
 3. Verify portfolio snapshot returns `ok: true` with real data
 4. Confirm both dashboard/state and portfolio/snapshot use same credentials
 
+

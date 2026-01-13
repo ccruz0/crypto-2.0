@@ -361,3 +361,4 @@ WHERE symbol IN ('BTC_USDT', 'ETH_USDT', 'DOT_USDT')
 
 **Estado Actual**: ✅ Sistema funcionando según diseño. Las alertas se envían correctamente. Las órdenes NO se crean porque `trade_enabled=False` (diseño intencional para separar alertas de trading).
 
+

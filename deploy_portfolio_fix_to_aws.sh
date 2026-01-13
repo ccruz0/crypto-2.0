@@ -156,3 +156,4 @@ echo "🧪 Verification commands:"
 echo "  curl -sS http://localhost:8002/api/diagnostics/whoami | python3 -m json.tool"
 echo "  curl -sS 'http://localhost:8002/api/portfolio/snapshot?exchange=CRYPTO_COM' | python3 -m json.tool | head -80"
 
+

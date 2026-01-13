@@ -198,4 +198,3 @@ def _send_system_alert(alert_type: str, message: str):
     else:
         reason = "missing_chat_id" if not telegram_notifier.chat_id else "missing_bot_token" if not telegram_notifier.bot_token else "environment_not_aws"
         logger.warning(f"[SYSTEM_ALERT_SKIPPED_TELEGRAM_DISABLED] reason={reason} alert_type={alert_type}")
-

@@ -275,14 +275,29 @@ def _check_trade_system_health(db: Session) -> Dict:
         except Exception:
             pass
         
+        # Check if order_intents table exists (critical for orchestrator)
+        order_intents_table_exists = False
+        try:
+            from app.database import engine, table_exists
+            from app.models.order_intent import OrderIntent
+            order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
+                OrderIntent, "__tablename__", "order_intents"
+            )
+            order_intents_table_exists = table_exists(engine, order_intents_table)
+        except Exception as table_check_err:
+            logger.warning(f"Error checking order_intents table: {table_check_err}")
+        
         status = "PASS"
-        if max_open_orders is not None and open_orders > max_open_orders:
+        if not order_intents_table_exists:
+            status = "FAIL"  # Critical table missing
+        elif max_open_orders is not None and open_orders > max_open_orders:
             status = "WARN"
         
         return {
             "status": status,
             "open_orders": open_orders,
             "max_open_orders": max_open_orders,
+            "order_intents_table_exists": order_intents_table_exists,
             "last_check_ok": True,
         }
     except Exception as e:
@@ -291,6 +306,7 @@ def _check_trade_system_health(db: Session) -> Dict:
             "status": "FAIL",
             "open_orders": 0,
             "max_open_orders": None,
+            "order_intents_table_exists": False,
             "last_check_ok": False,
         }
 

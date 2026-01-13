@@ -1,78 +1,185 @@
-# Frontend Type Consolidation - Deployment Summary
+# BUY SIGNAL Decision Tracing Fix - Deployment Summary
 
-## ✅ Commit Completed
+## ✅ Implementation Complete
 
-**Commit Hash:** `0733589`  
-**Branch:** `main` (frontend submodule)  
-**Message:** `fix: Align type definitions and consolidate duplicates`
+All code changes have been implemented and are ready for deployment.
 
-## Changes Committed
+## Files Changed
 
-### Files Modified
-- `frontend/src/lib/api.ts` (+11, -4)
+1. **backend/app/api/routes_monitoring.py**
+   - Added `update_telegram_message_decision_trace()` function
+   - Added `GET /api/diagnostics/recent-buy-signals` endpoint
+   - Added `POST /api/diagnostics/run-signal-order-test` endpoint
 
-### Type Alignments
-1. **TelegramMessage.order_skipped**: Changed from optional (`?`) to required (`boolean`)
-2. **ExpectedTPMatchedLot.match_origin**: Changed from union type to `string` for flexibility
-3. **Type consistency**: Aligned definitions between `@/app/api.ts` and `@/lib/api.ts`
+2. **backend/app/services/signal_monitor.py**
+   - Updated guard clauses to update original BUY SIGNAL messages
+   - Updated ORDER_CREATED handler to update original message
+   - Updated ORDER_FAILED handler to update original message
+   - Enhanced fallback safety net
 
-## Remaining Uncommitted Changes
+3. **backend/app/utils/decision_reason.py**
+   - Added `DecisionType.EXECUTED`
+   - Added `ReasonCode.EXEC_ORDER_PLACED`
+   - Added `ReasonCode.DECISION_PIPELINE_NOT_CALLED`
+   - Added `make_execute()` function
 
-The following files have uncommitted changes in the frontend submodule:
-- `src/lib/api.ts` (additional modifications)
-- `src/app/components/MonitoringPanel.tsx`
-- `src/app/context/MonitoringNotificationsContext.tsx`
-- `src/app/page.tsx`
-- Various test files
+## Deployment Options
 
-## Next Steps for Deployment
-
-### 1. Review Remaining Changes
+### Option 1: Automated Script (Recommended)
 ```bash
-cd frontend
-git status
-git diff src/lib/api.ts
+./deploy_decision_tracing_fix.sh
 ```
 
-### 2. Commit Additional Changes (if needed)
-If the remaining changes in `src/lib/api.ts` are related to this consolidation:
+### Option 2: Manual Deployment
 ```bash
-cd frontend
-git add src/lib/api.ts
-git commit -m "fix: Additional type alignment updates"
+# 1. Sync files to AWS
+rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
+  backend/app/api/routes_monitoring.py \
+  backend/app/services/signal_monitor.py \
+  backend/app/utils/decision_reason.py \
+  ubuntu@your-aws-server:~/automated-trading-platform/backend/app/
+
+# 2. SSH to server
+ssh ubuntu@your-aws-server
+
+# 3. Restart market-updater
+cd ~/automated-trading-platform/backend
+pkill -f "run_updater.py" || true
+nohup python3 run_updater.py > market_updater.log 2>&1 &
+
+# 4. Restart backend API (if running directly)
+pkill -f "uvicorn app.main:app" || true
+nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
 ```
 
-### 3. Update Main Repository
-After all frontend changes are committed:
+### Option 3: Git-Based Deployment
+If you use git on AWS:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
-git add frontend
-git commit -m "chore: Update frontend submodule with type consolidation"
-git push
+# On AWS server
+cd ~/automated-trading-platform
+git pull origin main
+# Then restart processes as above
 ```
 
-### 4. Deploy Frontend
+## Post-Deployment Verification
+
+### 1. Check Diagnostics Endpoint
 ```bash
-cd frontend
-npm run build
-# Deploy built files to your hosting service
+curl http://your-aws-server:8000/api/diagnostics/recent-buy-signals?limit=10
 ```
 
-## Verification Checklist
+Expected: All BUY SIGNAL messages should have non-null `decision_type`
 
-- [x] Type definitions aligned
-- [x] No TypeScript compilation errors
-- [ ] Frontend builds successfully
-- [ ] All tests pass
-- [ ] Main repository updated with new frontend commit
-- [ ] Deployment completed
+### 2. Run Self-Test
+```bash
+curl -X POST "http://your-aws-server:8000/api/diagnostics/run-signal-order-test?dry_run=true"
+```
 
-## Notes
+Expected: Returns structured report showing pipeline steps
 
-- The commit includes type-level changes only (no runtime behavior changes)
-- All changes are backward compatible
-- Type safety improved by eliminating duplicate definitions
-- `order_skipped` is now required in `TelegramMessage` (matches backend contract)
+### 3. Check Process Logs
+```bash
+# On AWS server
+tail -50 ~/automated-trading-platform/backend/market_updater.log | grep -i "decision\|buy signal"
+```
 
+Look for:
+- `[DECISION]` log entries
+- `update_telegram_message_decision_trace` messages
+- No errors related to decision tracing
 
+### 4. Database Verification (Optional)
+```sql
+-- Check for BUY SIGNAL messages with NULL decision_type (should be 0 after deployment)
+SELECT COUNT(*) 
+FROM telegram_messages 
+WHERE message LIKE '%BUY SIGNAL%' 
+  AND decision_type IS NULL
+  AND timestamp >= NOW() - INTERVAL '24 hours';
 
+-- View recent BUY SIGNAL messages with decision traces
+SELECT 
+    id,
+    symbol,
+    LEFT(message, 100) as message_preview,
+    timestamp,
+    decision_type,
+    reason_code,
+    LEFT(reason_message, 100) as reason_preview
+FROM telegram_messages
+WHERE message LIKE '%BUY SIGNAL%'
+  AND timestamp >= NOW() - INTERVAL '24 hours'
+ORDER BY timestamp DESC
+LIMIT 20;
+```
+
+## Expected Behavior After Deployment
+
+### For New BUY SIGNAL Messages:
+
+1. **SKIPPED** - Order was blocked before attempt
+   - `decision_type`: "SKIPPED"
+   - `reason_code`: One of: MAX_OPEN_TRADES_REACHED, RECENT_ORDERS_COOLDOWN, TRADE_DISABLED, etc.
+   - `reason_message`: Human-readable explanation
+   - `context_json`: Structured data (counts, timestamps, etc.)
+
+2. **FAILED** - Order was attempted but failed
+   - `decision_type`: "FAILED"
+   - `reason_code`: One of: EXCHANGE_REJECTED, INSUFFICIENT_FUNDS, AUTHENTICATION_ERROR, etc.
+   - `reason_message`: Human-readable explanation
+   - `exchange_error_snippet`: Raw exchange error message
+   - `context_json`: Structured data
+
+3. **EXECUTED** - Order was successfully created
+   - `decision_type`: "EXECUTED"
+   - `reason_code`: "EXEC_ORDER_PLACED"
+   - `reason_message`: Success message with order_id
+   - `context_json`: Contains order_id, exchange_order_id, price, quantity
+
+## Troubleshooting
+
+### Issue: Diagnostics endpoint returns 404
+**Solution**: Restart backend API process to load new routes
+
+### Issue: Decision tracing still NULL
+**Check**:
+1. Market-updater process is running: `pgrep -f run_updater.py`
+2. Check logs for errors: `tail -100 market_updater.log`
+3. Verify files were synced correctly
+4. Ensure process was restarted after deployment
+
+### Issue: Process won't start
+**Check**:
+1. Python dependencies: `pip list | grep fastapi`
+2. Database connection: Check DATABASE_URL in .env
+3. Port availability: `netstat -tuln | grep 8000`
+
+## Monitoring
+
+After deployment, monitor:
+1. New BUY SIGNAL messages appear with decision traces
+2. No new NULL decision_type messages
+3. Orders are created when conditions are met
+4. Logs show `[DECISION]` entries
+
+## Rollback Plan
+
+If issues occur, you can:
+1. Restore previous version of the 3 files from git
+2. Restart processes
+3. Old behavior will resume (NULL decision_type, but system continues to work)
+
+## Success Criteria
+
+✅ Deployment is successful when:
+- No BUY SIGNAL messages have NULL decision_type (after new signals)
+- Diagnostics endpoint returns data
+- Self-test endpoint works
+- Market-updater process runs without errors
+- Orders are created when `should_create_order=True`
+
+## Next Steps After Deployment1. Monitor first few BUY SIGNAL messages to verify decision traces
+2. Test diagnostics endpoint in browser/Postman
+3. Run self-test to verify pipeline
+4. Check logs for any errors
+5. Verify orders are being created correctly

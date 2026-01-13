@@ -88,3 +88,4 @@ docker logs --tail 20 automated-trading-platform-backend-aws-1 2>&1 | grep -E "H
 
 
 
+

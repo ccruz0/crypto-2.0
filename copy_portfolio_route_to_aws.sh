@@ -53,3 +53,4 @@ echo "🧪 Testing endpoint..."
 sleep 5
 curl -sS --max-time 10 "http://localhost:8002/api/portfolio/snapshot?exchange=CRYPTO_COM" | python3 -m json.tool 2>/dev/null | head -50 || echo "Still failing"
 
+

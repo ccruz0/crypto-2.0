@@ -151,3 +151,4 @@ def test_market_updater_health_no_data():
 
 
 
+

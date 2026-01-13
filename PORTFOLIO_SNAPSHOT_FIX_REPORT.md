@@ -240,3 +240,4 @@ docker compose --profile local logs backend-dev | grep "CREDENTIAL DIAGNOSTICS"
 - ✅ **Backward compatible** - Still supports canonical env var names
 
 
+

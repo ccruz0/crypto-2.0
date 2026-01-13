@@ -131,3 +131,4 @@ curl -m 5 -v http://<EC2_PUBLIC_IP>:8002/api/health
 ```
 
 
+

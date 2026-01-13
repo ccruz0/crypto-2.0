@@ -70,3 +70,4 @@ echo "  - If they differ, backend may be routing through VPN/proxy"
 echo "  - Expected: Both should show AWS Elastic IP (47.130.143.159 or current EIP)"
 
 
+

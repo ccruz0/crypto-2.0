@@ -170,3 +170,4 @@ curl http://localhost:3000
 curl "http://localhost:8000/api/monitoring/summary?force_refresh=true"
 ```
 
+
