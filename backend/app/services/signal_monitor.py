@@ -2139,7 +2139,19 @@ class SignalMonitorService:
             logger.info(f"===== TRACE END {symbol} =====")
             logger.info("=" * 80)
         
+        # FIX: Initialize sell_allowed and sell_reason before throttle check to ensure they're always defined
+        sell_allowed = True  # Default to True if no throttle check is performed
+        sell_reason = "No throttle check performed"
+        
         if sell_signal:
+            # PHASE 0: Structured logging for SELL condition detection
+            import uuid as uuid_module
+            evaluation_trace_id = str(uuid_module.uuid4())
+            logger.info(
+                f"[SELL_CONDITION_TRUE] symbol={symbol} side=SELL strategy={strategy_key} "
+                f"trace_id={evaluation_trace_id} price=${current_price:.4f} rsi={rsi:.1f if rsi else 'N/A'}"
+            )
+            
             self._log_signal_candidate(
                 symbol,
                 "SELL",
@@ -2198,8 +2210,8 @@ class SignalMonitorService:
             )
             
             # Store throttle reason for use in alert message
-            if sell_allowed:
-                throttle_sell_reason = sell_reason
+            # FIX: Always store throttle_reason, even when throttled, so alert section can use it
+            throttle_sell_reason = sell_reason if sell_allowed else sell_reason
             # DEBUG: Log throttle check result for DOT_USD
             if symbol == "DOT_USD":
                 logger.info(
@@ -2311,9 +2323,10 @@ class SignalMonitorService:
                     # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
                     # The price reference should only be updated when a message is actually sent successfully
                 # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
-                # CRITICAL: Set sell_signal = False to prevent alert from being sent
-                # This ensures throttling rules (cooldown and price change %) are respected
-                sell_signal = False
+                # FIX: Do NOT set sell_signal = False when throttled - allow alert to be created with blocked status
+                # This ensures SELL alerts are always created/persisted (same as BUY), only duplicates are prevented
+                # The alert section will check sell_allowed and pass throttle_status to send_sell_signal()
+                # send_sell_signal() will handle duplicate detection and mark as blocked if needed
                 if current_state == "SELL":
                     current_state = "WAIT"
         
@@ -4160,11 +4173,29 @@ class SignalMonitorService:
                 # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
                 prev_sell_price: Optional[float] = prev_sell_price_from_snapshot if prev_sell_price_from_snapshot is not None else self._get_last_alert_price(symbol, "SELL", db)
                 
-                # NOTE: Throttling already checked by should_emit_signal (passed if we reached here)
-                # Since sell_allowed was True, we proceed directly to send the alert
+                # FIX: Check sell_allowed status - if throttled, still create alert but mark as blocked
+                # This ensures SELL alerts are always created/persisted (same as BUY), only duplicates are prevented
+                import uuid as uuid_module
+                trace_id = str(uuid_module.uuid4())
+                dedup_key = f"{symbol}:SELL:{strategy_key}"
+                
+                # PHASE 0: Structured logging for SELL alert attempt
                 logger.info(
-                    f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"
+                    f"[SELL_ALERT_ATTEMPT] symbol={symbol} side=SELL dedup_key={dedup_key} "
+                    f"trace_id={trace_id} sell_allowed={sell_allowed} throttle_reason={sell_reason if not sell_allowed else 'N/A'}"
                 )
+                
+                # NOTE: Even if throttled (sell_allowed=False), we still proceed to send the alert
+                # send_sell_signal() will handle duplicate detection and mark as blocked if needed
+                # This ensures alerts are always created/persisted for monitoring, only duplicates are prevented
+                if sell_allowed:
+                    logger.info(
+                        f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"
+                    )
+                else:
+                    logger.info(
+                        f"🔍 {symbol} SELL alert will be sent with BLOCKED status (throttled: {sell_reason})"
+                    )
                 self._log_signal_accept(
                     symbol,
                     "SELL",
@@ -4298,6 +4329,12 @@ class SignalMonitorService:
                         # Explicitly pass origin to ensure alerts are sent
                         # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
                         alert_origin = get_runtime_origin()
+                        # FIX: Pass throttle_status based on sell_allowed - if throttled, mark as BLOCKED
+                        # This ensures alerts are created/persisted even when throttled (for monitoring)
+                        throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
+                        # Use throttle_sell_reason if available, otherwise use sell_reason from throttle check
+                        throttle_reason_to_send = throttle_sell_reason if throttle_sell_reason else sell_reason
+                        
                         result = telegram_notifier.send_sell_signal(
                             symbol=symbol,
                             price=current_price,
@@ -4307,8 +4344,8 @@ class SignalMonitorService:
                             price_variation=price_variation,
                             previous_price=prev_sell_price,
                             source="LIVE ALERT",
-                            throttle_status="SENT",
-                            throttle_reason=throttle_sell_reason or throttle_reason or sell_reason,
+                            throttle_status=throttle_status_to_send,
+                            throttle_reason=throttle_reason_to_send,
                             origin=alert_origin,
                             balance_warning=balance_check_warning,
                         )
@@ -4319,24 +4356,43 @@ class SignalMonitorService:
                         elif hasattr(result, 'message_id'):
                             message_id_sell = result.message_id
                         
+                        # PHASE 0: Structured logging for alert decision and enqueue
+                        logger.info(
+                            f"[ALERT_DECISION] symbol={symbol} side=SELL reason={reason_text} "
+                            f"trace_id={trace_id} dedup_key={dedup_key} sell_allowed={sell_allowed} "
+                            f"throttle_status={throttle_status_to_send}"
+                        )
+                        
                         # Alerts must never be blocked after conditions are met (guardrail compliance)
                         # If send_sell_signal returns False, log as error but do not treat as block
                         if result is False:
                             logger.error(
                                 f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send FAILED | "
-                                f"result=False | "
-                                f"reason={reason_text}"
+                                f"result=False | trace_id={trace_id} | reason={reason_text}"
+                            )
+                            logger.error(
+                                f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=False trace_id={trace_id} "
+                                f"error=send_sell_signal_returned_False"
                             )
                             logger.error(
                                 f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
                                 f"This should not happen when conditions are met. Check telegram_notifier."
                             )
                         else:
+                            # PHASE 0: Structured logging for successful alert enqueue
+                            logger.info(
+                                f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=True trace_id={trace_id} "
+                                f"message_id={message_id_sell or 'N/A'} dedup_key={dedup_key} "
+                                f"throttle_status={throttle_status_to_send}"
+                            )
                             logger.info(
                                 f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send SUCCESS | "
-                                f"message_id={message_id_sell or 'N/A'} | "
-                                f"price=${current_price:.4f} | "
-                                f"reason={reason_text}"
+                                f"message_id={message_id_sell or 'N/A'} | trace_id={trace_id} | "
+                                f"price=${current_price:.4f} | reason={reason_text}"
+                            )
+                            logger.info(
+                                f"[TELEGRAM_SEND] {symbol} SELL status=SUCCESS message_id={message_id_sell or 'N/A'} "
+                                f"trace_id={trace_id} channel={telegram_notifier.chat_id} origin={alert_origin}"
                             )
                             logger.info(
                                 f"✅ SELL alert SENT for {symbol}: "
