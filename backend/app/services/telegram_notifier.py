@@ -1295,10 +1295,12 @@ class TelegramNotifier:
                 # Include price change in stored message
                 price_change_display = price_change_text.replace("\n📊 Cambio desde última alerta: ", "") if price_change_text else "N/A"
                 sent_message = f"🔴 SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                # FIX: Set blocked=True when throttle_status="BLOCKED" so message is marked correctly
+                is_blocked = (throttle_status or "SENT").upper() == "BLOCKED"
                 message_id = add_telegram_message(
                     sent_message,
                     symbol=symbol,
-                    blocked=False,
+                    blocked=is_blocked,  # Mark as blocked if throttle_status is BLOCKED
                     throttle_status=throttle_status or "SENT",
                     throttle_reason=throttle_reason or reason,
                 )

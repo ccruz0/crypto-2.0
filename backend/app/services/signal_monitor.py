@@ -2268,7 +2268,8 @@ class SignalMonitorService:
                         logger.warning(f"Failed to record SELL signal event for {symbol} (non-blocking): {record_err}")
                 else:
                     # Build blocked message with reference price and timestamp (only if we have a valid reference)
-                    blocked_msg_parts = [f"🚫 BLOQUEADO: {symbol} SELL - {sell_reason}"]
+                    # FIX: Include "SELL SIGNAL" text so blocked messages match monitoring filter
+                    blocked_msg_parts = [f"🚫 BLOQUEADO: SELL SIGNAL {symbol} - {sell_reason}"]
                     
                     # Add reference price and timestamp (we know they exist from the check above)
                     ref_price = last_sell_snapshot.price
