@@ -431,11 +431,16 @@ async def get_monitoring_summary(
                                 )
                                 
                                 # Store signals in map (override any snapshot signals for consistency)
+                                # Include decision field for active_signals calculation
+                                strategy_state = signal_result.get("strategy", {})
+                                decision = strategy_state.get("decision", "WAIT")
                                 signals_by_symbol[symbol_upper] = {
                                     "buy": bool(signal_result.get("buy_signal", False)),
-                                    "sell": bool(signal_result.get("sell_signal", False))
+                                    "sell": bool(signal_result.get("sell_signal", False)),
+                                    "decision": decision,  # Store decision for active_signals
+                                    "signal_result": signal_result  # Store full result for active_signals
                                 }
-                                log.debug(f"✅ Calculated signals for {symbol_upper}: buy={signals_by_symbol[symbol_upper]['buy']}, sell={signals_by_symbol[symbol_upper]['sell']}")
+                                log.debug(f"✅ Calculated signals for {symbol_upper}: buy={signals_by_symbol[symbol_upper]['buy']}, sell={signals_by_symbol[symbol_upper]['sell']}, decision={decision}")
                                 
                             except Exception as sig_err:
                                 log.error(f"❌ Could not calculate signals for {item.symbol}: {sig_err}", exc_info=True)
@@ -443,6 +448,119 @@ async def get_monitoring_summary(
                                 
                 except Exception as calc_err:
                     log.error(f"❌ Could not calculate signals directly: {calc_err}", exc_info=True)
+            
+            # ========================================================================
+            # NEW: Active Signals - Current signal state from watchlist (not events)
+            # ========================================================================
+            # This shows current BUY/SELL signals that are active right now,
+            # regardless of whether alerts were sent/blocked.
+            # 
+            # IMPORTANT: This uses the SAME data source as /api/dashboard/state:
+            # - Same watchlist items (active_watchlist_items)
+            # - Same signal calculation (signals_by_symbol from calculate_trading_signals)
+            # - Same market data (MarketData table)
+            # This ensures consistency between monitoring and dashboard views.
+            # ========================================================================
+            active_signals = []
+            active_signals_count = 0
+            try:
+                from app.models.market_price import MarketData
+                from app.services.strategy_profiles import resolve_strategy_profile
+                
+                # Get market data for symbols with active signals
+                symbols_with_signals = [s.upper() for s in signals_by_symbol.keys()]
+                if symbols_with_signals:
+                    market_data_list = db.query(MarketData).filter(
+                        func.upper(MarketData.symbol).in_(symbols_with_signals)
+                    ).all()
+                    market_data_by_symbol = {md.symbol.upper(): md for md in market_data_list}
+                    
+                    # Build active signals list from watchlist items with signals
+                    for item in active_watchlist_items:
+                        if not item.symbol:
+                            continue
+                        symbol_upper = item.symbol.upper()
+                        
+                        # Get signal state for this symbol
+                        signal_state = signals_by_symbol.get(symbol_upper)
+                        if not signal_state:
+                            continue
+                        
+                        # Get decision from stored signal state (or infer from buy/sell flags)
+                        decision = signal_state.get("decision", "WAIT")
+                        if decision == "WAIT":
+                            # Fallback: infer from buy/sell flags if decision not stored
+                            if signal_state.get("buy"):
+                                decision = "BUY"
+                            elif signal_state.get("sell"):
+                                decision = "SELL"
+                        
+                        # Only include BUY or SELL (not WAIT)
+                        if decision == "WAIT":
+                            continue
+                        
+                        # Check if alerts are enabled for this side
+                        alerts_enabled = False
+                        if decision == "BUY":
+                            alerts_enabled = (
+                                (item.alert_enabled is not False) and
+                                (item.buy_alert_enabled is True)
+                            )
+                        elif decision == "SELL":
+                            alerts_enabled = (
+                                (item.alert_enabled is not False) and
+                                (item.sell_alert_enabled is True)
+                            )
+                        
+                        # Only include if alerts are enabled
+                        if not alerts_enabled:
+                            continue
+                        
+                        # Get market data for price and timestamp
+                        market_data = market_data_by_symbol.get(symbol_upper)
+                        last_price = None
+                        timestamp = None
+                        if market_data:
+                            last_price = market_data.price
+                            # Use market data updated_at if available, otherwise current time
+                            if market_data.updated_at:
+                                timestamp = market_data.updated_at.isoformat()
+                        
+                        # Get strategy key
+                        strategy_key = None
+                        try:
+                            strategy_type, risk_approach = resolve_strategy_profile(
+                                item.symbol, db=db, watchlist_item=item
+                            )
+                            if strategy_type and risk_approach:
+                                strategy_key = f"{strategy_type.value}-{risk_approach.value}"
+                        except Exception:
+                            pass
+                        
+                        # Add to active signals - ensure ALL fields are always present (never omitted)
+                        # Use explicit None for missing values to maintain consistent structure
+                        active_signals.append({
+                            "symbol": item.symbol or "",  # Always string, never None
+                            "decision": decision,  # Always "BUY" or "SELL" (WAIT filtered out above)
+                            "strategy_key": strategy_key if strategy_key else None,  # Explicit None
+                            "last_price": float(last_price) if last_price is not None and last_price > 0 else None,  # Explicit None
+                            "timestamp": timestamp if timestamp else datetime.now(timezone.utc).isoformat(),  # Always ISO string
+                        })
+                
+                # Sort by symbol and limit to 20
+                active_signals.sort(key=lambda x: x["symbol"])
+                active_signals = active_signals[:20]
+                
+                # CRITICAL: active_signals_count must match len(active_signals) after limiting
+                # This ensures consistency: count reflects what's actually returned
+                active_signals_count = len(active_signals)
+                
+                log.info(f"📊 Active signals: {active_signals_count} total (showing {len(active_signals)})")
+                
+            except Exception as sig_err:
+                log.error(f"❌ Could not calculate active signals: {sig_err}", exc_info=True)
+                active_signals = []
+                active_signals_count = 0
             
             # ========================================================================
             # FIX: Active Alerts derived from telegram_messages + order_intents
@@ -567,6 +685,8 @@ async def get_monitoring_summary(
                     "blocked": blocked_count,
                     "failed": failed_count,
                 },
+                "active_signals_count": active_signals_count,  # NEW: Current signal state count
+                "active_signals": active_signals,  # NEW: Current signal state list
                 "window_minutes": ACTIVE_ALERTS_WINDOW_MINUTES,
                 "generated_at_utc": generated_at_utc,
                 "backend_health": backend_health,
@@ -601,6 +721,8 @@ async def get_monitoring_summary(
                     "blocked": 0,
                     "failed": 0,
                 },
+                "active_signals_count": 0,  # NEW: Default to 0 on error
+                "active_signals": [],  # NEW: Default to empty on error
                 "window_minutes": ACTIVE_ALERTS_WINDOW_MINUTES,
                 "generated_at_utc": generated_at_utc,
                 "backend_health": "error",
