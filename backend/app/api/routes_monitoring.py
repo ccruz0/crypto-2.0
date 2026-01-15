@@ -78,6 +78,21 @@ _STRATEGY_LINE_RE = re.compile(r"STRATEGY\s*:\s*([^\n]+)", re.IGNORECASE)
 _APPROACH_LINE_RE = re.compile(r"APPROACH\s*:\s*([^\n]+)", re.IGNORECASE)
 
 
+def _format_utc_iso(dt: Optional[datetime]) -> Optional[str]:
+    """Return ISO-8601 UTC timestamp with a single timezone designator."""
+    if not dt:
+        return None
+    # Ensure UTC and normalize to a single 'Z' suffix (no '+00:00Z').
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ts = dt.isoformat()
+    if ts.endswith("+00:00Z"):
+        return ts.replace("+00:00Z", "Z")
+    if ts.endswith("+00:00"):
+        return ts.replace("+00:00", "Z")
+    return ts
+
+
 def _strip_html(text: str) -> str:
     if not text:
         return ""
@@ -524,7 +539,7 @@ async def get_monitoring_summary(
                             last_price = market_data.price
                             # Use market data updated_at if available, otherwise current time
                             if market_data.updated_at:
-                                timestamp = market_data.updated_at.isoformat()
+                                timestamp = _format_utc_iso(market_data.updated_at)
                         
                         # Get strategy key
                         strategy_key = None
@@ -544,7 +559,7 @@ async def get_monitoring_summary(
                             "decision": decision,  # Always "BUY" or "SELL" (WAIT filtered out above)
                             "strategy_key": strategy_key if strategy_key else None,  # Explicit None
                             "last_price": float(last_price) if last_price is not None and last_price > 0 else None,  # Explicit None
-                            "timestamp": timestamp if timestamp else datetime.now(timezone.utc).isoformat(),  # Always ISO string
+                            "timestamp": timestamp or _format_utc_iso(datetime.now(timezone.utc)),  # Always ISO string
                         })
                 
                 # Sort by symbol and limit to 20
@@ -669,7 +684,7 @@ async def get_monitoring_summary(
         
         # Record when signals were last calculated
         signals_last_calculated = (
-            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            _format_utc_iso(datetime.now(timezone.utc))
             if should_calculate_signals
             else None
         )
@@ -679,7 +694,7 @@ async def get_monitoring_summary(
         
         # Generate timestamp for this response
         # Normalize to valid ISO-8601 UTC (no "+00:00Z")
-        generated_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        generated_at_utc = _format_utc_iso(datetime.now(timezone.utc))
         
         return JSONResponse(
             content={
@@ -715,7 +730,7 @@ async def get_monitoring_summary(
         # Return error response instead of raising exception to avoid 500
         ACTIVE_ALERTS_WINDOW_MINUTES = 30
         # Normalize to valid ISO-8601 UTC (no "+00:00Z")
-        generated_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        generated_at_utc = _format_utc_iso(datetime.now(timezone.utc))
         
         return JSONResponse(
             status_code=200,  # Return 200 with error status in body
