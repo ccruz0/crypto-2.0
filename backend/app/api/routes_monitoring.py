@@ -674,7 +674,8 @@ async def get_monitoring_summary(
         ACTIVE_ALERTS_WINDOW_MINUTES = 30
         
         # Generate timestamp for this response
-        generated_at_utc = datetime.now(timezone.utc).isoformat() + "Z"
+        # Avoid invalid ISO format like "+00:00Z" by using isoformat() directly.
+        generated_at_utc = datetime.now(timezone.utc).isoformat()
         
         return JSONResponse(
             content={
@@ -709,7 +710,8 @@ async def get_monitoring_summary(
         log.error(f"Error in monitoring summary: {e}", exc_info=True)
         # Return error response instead of raising exception to avoid 500
         ACTIVE_ALERTS_WINDOW_MINUTES = 30
-        generated_at_utc = datetime.now(timezone.utc).isoformat() + "Z"
+        # Avoid invalid ISO format like "+00:00Z" by using isoformat() directly.
+        generated_at_utc = datetime.now(timezone.utc).isoformat()
         
         return JSONResponse(
             status_code=200,  # Return 200 with error status in body
