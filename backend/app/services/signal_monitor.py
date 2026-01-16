@@ -17,6 +17,7 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import get_runtime_origin
+from app.utils.symbols import normalize_symbol_for_exchange
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import (
@@ -494,6 +495,32 @@ class SignalMonitorService:
             side,
             symbol,
             details or {},
+        )
+
+    def _log_pipeline_stage(
+        self,
+        stage: str,
+        symbol: str,
+        strategy_key: str,
+        decision: str,
+        last_price: Optional[float],
+        timestamp: str,
+        correlation_id: str,
+        signal_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Structured stage log for signal→alert→order pipeline."""
+        logger.info(
+            "[%s] symbol=%s strategy_key=%s decision=%s last_price=%s timestamp=%s signal_id=%s correlation_id=%s reason=%s",
+            stage,
+            normalize_symbol_for_exchange(symbol),
+            strategy_key,
+            decision,
+            f"{last_price:.4f}" if last_price is not None else "N/A",
+            timestamp,
+            signal_id or "N/A",
+            correlation_id,
+            reason or "N/A",
         )
 
     def _print_trade_decision_trace(
@@ -1235,6 +1262,7 @@ class SignalMonitorService:
         """Check signal for a specific coin and take action if needed"""
         import uuid
         symbol = watchlist_item.symbol
+        normalized_symbol = normalize_symbol_for_exchange(symbol)
         exchange = watchlist_item.exchange or "CRYPTO_COM"
         
         # Generate unique evaluation_id for this symbol evaluation run
@@ -1649,6 +1677,16 @@ class SignalMonitorService:
                 logger.info(f"🔴 SELL signal detected for {symbol}")
             else:
                 logger.debug(f"⚪ WAIT signal for {symbol} (no buy/sell conditions met)")
+
+            self._log_pipeline_stage(
+                stage="SIGNAL_EVALUATED",
+                symbol=normalized_symbol,
+                strategy_key=strategy_key,
+                decision=current_state,
+                last_price=current_price,
+                timestamp=now_utc.isoformat(),
+                correlation_id=evaluation_id,
+            )
         except Exception as e:
             logger.error(f"Error calculating trading signals for {symbol}: {e}", exc_info=True)
             return
@@ -2651,6 +2689,16 @@ class SignalMonitorService:
                                 f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
                             )
                             buy_alert_sent_successfully = True  # Mark alert as sent successfully
+                            self._log_pipeline_stage(
+                                stage="ALERT_CREATED",
+                                symbol=normalized_symbol,
+                                strategy_key=strategy_key,
+                                decision="BUY",
+                                last_price=current_price,
+                                timestamp=now_utc.isoformat(),
+                                correlation_id=evaluation_id,
+                                signal_id=str(signal_id) if signal_id is not None else None,
+                            )
                             self._log_signal_accept(
                                 symbol,
                                 "BUY",
@@ -2669,44 +2717,41 @@ class SignalMonitorService:
                                 order_intent = None
                                 intent_status = None
 
+                                # Create order intent (atomic deduplication)
+                                # Use the sent message content for fallback idempotency key
+                                sent_message_content = f"BUY SIGNAL {symbol} {current_price} {reason_text}"
+
                                 if not signal_id:
-                                    decision_reason = make_fail(
-                                        reason_code=ReasonCode.SIGNAL_ID_MISSING.value,
-                                        message=f"Signal sent for {symbol} BUY but no signal_id was available.",
-                                        context={"symbol": symbol, "side": "BUY"},
-                                        source="orchestrator",
-                                    )
-                                    update_telegram_message_decision_trace(
-                                        db=db,
-                                        symbol=symbol,
-                                        message_pattern="BUY SIGNAL",
-                                        decision_type="FAILED",
-                                        reason_code=decision_reason.reason_code,
-                                        reason_message=decision_reason.reason_message,
-                                        context_json=decision_reason.context,
-                                        correlation_id=str(uuid_module.uuid4()),
-                                    )
                                     logger.warning(
-                                        f"[ORCHESTRATOR] {symbol} BUY Signal missing signal_id; skipping order_intent"
+                                        f"[ORCHESTRATOR] {symbol} BUY Signal missing signal_id; proceeding with content-based idempotency"
                                     )
                                 else:
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY Signal sent - triggering orchestrator (signal_id={signal_id})")
                                     self._schedule_missing_intent_check(signal_id, symbol, "BUY")
 
-                                    # Create order intent (atomic deduplication)
-                                    # Use the sent message content for fallback idempotency key
-                                    sent_message_content = f"BUY SIGNAL {symbol} {current_price} {reason_text}"
-                                    order_intent, intent_status = create_order_intent(
-                                        db=db,
-                                        signal_id=signal_id,
-                                        symbol=symbol,
-                                        side="BUY",
-                                        message_content=sent_message_content,
-                                    )
+                                order_intent, intent_status = create_order_intent(
+                                    db=db,
+                                    signal_id=signal_id,
+                                    symbol=normalized_symbol,
+                                    side="BUY",
+                                    message_content=sent_message_content,
+                                    strategy_key=strategy_key,
+                                )
                                 
                                 if intent_status == "DEDUP_SKIPPED":
                                     # Duplicate signal - skip order
                                     logger.warning(f"[ORCHESTRATOR] {symbol} BUY DEDUP_SKIPPED - Duplicate signal detected")
+                                    self._log_pipeline_stage(
+                                        stage="BUY_BLOCKED",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        signal_id=str(signal_id) if signal_id is not None else None,
+                                        reason="IDEMPOTENCY_BLOCKED",
+                                    )
                                     decision_reason = make_skip(
                                         reason_code=ReasonCode.IDEMPOTENCY_BLOCKED.value,
                                         message=f"Duplicate signal detected for {symbol} BUY. Order was already attempted (idempotency_key already exists).",
@@ -2726,6 +2771,17 @@ class SignalMonitorService:
                                 elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
                                     # LIVE_TRADING=false - order blocked
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
+                                    self._log_pipeline_stage(
+                                        stage="BUY_BLOCKED",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        signal_id=str(signal_id) if signal_id is not None else None,
+                                        reason="ORDER_BLOCKED_LIVE_TRADING",
+                                    )
                                     decision_reason = make_skip(
                                         reason_code="ORDER_BLOCKED_LIVE_TRADING",
                                         message=f"Order blocked: LIVE_TRADING is disabled. Signal was sent but no order will be placed.",
@@ -2745,6 +2801,27 @@ class SignalMonitorService:
                                 elif intent_status == "PENDING" and order_intent:
                                     # Order intent created - attempt order placement (bypassing eligibility checks)
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY Order intent created (id={order_intent.id}) - Attempting order placement")
+                                    self._log_pipeline_stage(
+                                        stage="BUY_ELIGIBLE_CHECK",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        signal_id=str(signal_id) if signal_id is not None else None,
+                                        reason="OK",
+                                    )
+                                    self._log_pipeline_stage(
+                                        stage="BUY_ORDER_SUBMITTED",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        signal_id=str(signal_id) if signal_id is not None else None,
+                                    )
                                 
                                     # Call minimal order placement function (NO eligibility checks)
                                     # Note: Running async function from sync context using new event loop
@@ -2755,7 +2832,7 @@ class SignalMonitorService:
                                             order_result = loop.run_until_complete(
                                                 self._place_order_from_signal(
                                                     db=db,
-                                                    symbol=symbol,
+                                                    symbol=normalized_symbol,
                                                     side="BUY",
                                                     watchlist_item=watchlist_item,
                                                     current_price=current_price,
@@ -2769,6 +2846,17 @@ class SignalMonitorService:
                                             # Order creation failed - strict failure reporting (Step 4)
                                             error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
                                             logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation failed: {error_msg}")
+                                            self._log_pipeline_stage(
+                                                stage="BUY_ORDER_RESPONSE",
+                                                symbol=normalized_symbol,
+                                                strategy_key=strategy_key,
+                                                decision="BUY",
+                                                last_price=current_price,
+                                                timestamp=now_utc.isoformat(),
+                                                correlation_id=evaluation_id,
+                                                signal_id=str(signal_id) if signal_id is not None else None,
+                                                reason=f"FAILED:{error_msg}",
+                                            )
                                             update_order_intent_status(
                                                 db=db,
                                                 order_intent_id=order_intent.id,
@@ -2833,6 +2921,17 @@ class SignalMonitorService:
                                             order_id = order_result.get("order_id")
                                             exchange_order_id = order_result.get("exchange_order_id")
                                             logger.info(f"[ORCHESTRATOR] {symbol} BUY Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
+                                            self._log_pipeline_stage(
+                                                stage="BUY_ORDER_RESPONSE",
+                                                symbol=normalized_symbol,
+                                                strategy_key=strategy_key,
+                                                decision="BUY",
+                                                last_price=current_price,
+                                                timestamp=now_utc.isoformat(),
+                                                correlation_id=evaluation_id,
+                                                signal_id=str(signal_id) if signal_id is not None else None,
+                                                reason="SUCCESS",
+                                            )
                                             update_order_intent_status(
                                                 db=db,
                                                 order_intent_id=order_intent.id,
@@ -3340,10 +3439,30 @@ class SignalMonitorService:
             if blocked_by_limits:
                 should_create_order = False
                 guard_reason = "MAX_OPEN_ORDERS" if unified_open_positions >= self.MAX_OPEN_ORDERS_PER_SYMBOL else "RECENT_ORDERS_COOLDOWN"
+                self._log_pipeline_stage(
+                    stage="BUY_BLOCKED",
+                    symbol=normalized_symbol,
+                    strategy_key=strategy_key,
+                    decision="BUY",
+                    last_price=current_price,
+                    timestamp=now_utc.isoformat(),
+                    correlation_id=evaluation_id,
+                    reason=guard_reason,
+                )
             else:
                 # Trade execution is independent - proceed if signal exists and trade_enabled
                 # Alert sending is informational only, not a gate for trade execution
                 should_create_order = True
+                self._log_pipeline_stage(
+                    stage="BUY_ELIGIBLE_CHECK",
+                    symbol=normalized_symbol,
+                    strategy_key=strategy_key,
+                    decision="BUY",
+                    last_price=current_price,
+                    timestamp=now_utc.isoformat(),
+                    correlation_id=evaluation_id,
+                    reason="OK",
+                )
                 if buy_alert_sent_successfully:
                     logger.info(
                         f"🟢 BUY alert was sent successfully for {symbol}. "
@@ -3828,6 +3947,15 @@ class SignalMonitorService:
                             f"trade_amount_usd=${watchlist_item.trade_amount_usd:.2f} | "
                             f"price=${current_price:.4f}"
                         )
+                        self._log_pipeline_stage(
+                            stage="BUY_ORDER_SUBMITTED",
+                            symbol=normalized_symbol,
+                            strategy_key=strategy_key,
+                            decision="BUY",
+                            last_price=current_price,
+                            timestamp=now_utc.isoformat(),
+                            correlation_id=evaluation_id,
+                        )
                         try:
                             # E) Deep decision-grade logging for order attempt
                             logger.info(
@@ -3867,12 +3995,33 @@ class SignalMonitorService:
                                         f"error_msg={error_msg} | "
                                         f"price=${current_price:.4f}"
                                     )
+                                    self._log_pipeline_stage(
+                                        stage="BUY_ORDER_RESPONSE",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        reason=f"FAILED:{error_msg or error_type or 'unknown'}",
+                                    )
                                     # E) Deep decision-grade logging for order result
                                     logger.error(
                                         f"[CRYPTO_ORDER_RESULT] {symbol} BUY success=False order_id=None "
                                         f"price=${current_price:.4f} qty=0 error={error_type or 'unknown'}"
                                     )
                                     logger.warning(f"⚠️ BUY order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
+                                if error_type and error_type != "unknown":
+                                    self._log_pipeline_stage(
+                                        stage="BUY_ORDER_RESPONSE",
+                                        symbol=normalized_symbol,
+                                        strategy_key=strategy_key,
+                                        decision="BUY",
+                                        last_price=current_price,
+                                        timestamp=now_utc.isoformat(),
+                                        correlation_id=evaluation_id,
+                                        reason=f"FAILED:{error_msg or error_type}",
+                                    )
                             elif order_result:
                                 # Success case - order was created
                                 # PHASE 0: Structured logging for order creation success
@@ -3892,6 +4041,16 @@ class SignalMonitorService:
                                     f"exchange_order_id={exchange_order_id} | "
                                     f"price=${filled_price:.4f} | "
                                     f"quantity={quantity:.4f}"
+                                )
+                                self._log_pipeline_stage(
+                                    stage="BUY_ORDER_RESPONSE",
+                                    symbol=normalized_symbol,
+                                    strategy_key=strategy_key,
+                                    decision="BUY",
+                                    last_price=current_price,
+                                    timestamp=now_utc.isoformat(),
+                                    correlation_id=evaluation_id,
+                                    reason="SUCCESS",
                                 )
                                 
                                 # DIAG_MODE: Update TRADE decision trace to show EXEC_ORDER_PLACED
@@ -4467,9 +4626,10 @@ class SignalMonitorService:
                                     order_intent, intent_status = create_order_intent(
                                         db=db,
                                         signal_id=signal_id,
-                                        symbol=symbol,
+                                        symbol=normalize_symbol_for_exchange(symbol),
                                         side="SELL",
                                         message_content=sent_message_content,
+                                        strategy_key=strategy_key,
                                     )
                                 
                                 if intent_status == "DEDUP_SKIPPED":
@@ -5135,7 +5295,7 @@ class SignalMonitorService:
     async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem, 
                             current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
-        symbol = watchlist_item.symbol
+        symbol = normalize_symbol_for_exchange(watchlist_item.symbol)
         
         # Resolve strategy for event emission
         strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
@@ -5163,6 +5323,16 @@ class SignalMonitorService:
                 },
                 source="precheck",
                 correlation_id=correlation_id,
+            )
+            self._log_pipeline_stage(
+                stage="BUY_BLOCKED",
+                symbol=normalize_symbol_for_exchange(symbol),
+                strategy_key=strategy_key,
+                decision="BUY",
+                last_price=current_price,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                correlation_id=correlation_id,
+                reason="TRADE_DISABLED",
             )
             logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
             # Emit TRADE_BLOCKED event
@@ -6648,6 +6818,9 @@ class SignalMonitorService:
         from app.utils.live_trading import get_live_trading_status
         from app.services.margin_decision_helper import decide_trading_mode, DEFAULT_CONFIGURED_LEVERAGE
         
+        # Normalize symbol once for exchange compatibility
+        symbol = normalize_symbol_for_exchange(symbol)
+
         # Get trade amount and margin settings (NO validation - signal was already sent)
         amount_usd = getattr(watchlist_item, 'trade_amount_usd', None) or 100.0  # Default fallback
         user_wants_margin = getattr(watchlist_item, 'trade_on_margin', False) or False
