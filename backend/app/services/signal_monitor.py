@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
+from app.models.watchlist_signal_state import WatchlistSignalState
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.telegram_notifier import telegram_notifier
+from app.services.alert_emitter import emit_alert
 from app.core.runtime import get_runtime_origin
 from app.utils.symbols import normalize_symbol_for_exchange
 from app.api.routes_signals import get_signals
@@ -26,7 +28,7 @@ from app.services.strategy_profiles import (
     RiskApproach,
 )
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
-from app.services.config_loader import get_alert_thresholds
+from app.services.config_loader import get_alert_thresholds, load_config
 from app.services.order_position_service import calculate_portfolio_value_for_symbol
 from app.services.signal_throttle import (
     LastSignalSnapshot,
@@ -523,6 +525,108 @@ class SignalMonitorService:
             reason or "N/A",
         )
 
+    _UNSET = object()
+
+    def _map_alert_block_reason(self, reason: Optional[str]) -> str:
+        if not reason:
+            return "UNKNOWN"
+        reason_upper = reason.upper()
+        if "THROTTLED_TIME_GATE" in reason_upper or "THROTTLE_TIME_GATE" in reason_upper:
+            return "THROTTLED_TIME_GATE"
+        if "THROTTLED_PRICE_GATE" in reason_upper or "THROTTLE_PRICE_GATE" in reason_upper:
+            return "THROTTLED_PRICE_GATE"
+        if "ALERT_ENABLED" in reason_upper or "ALERT_DISABLED" in reason_upper:
+            return "ALERT_DISABLED"
+        if "BUY_ALERT_ENABLED" in reason_upper or "SELL_ALERT_ENABLED" in reason_upper or "SIDE_DISABLED" in reason_upper:
+            return "SIDE_DISABLED"
+        if "TELEGRAM_DISABLED" in reason_upper:
+            return "TELEGRAM_DISABLED"
+        if "TELEGRAM" in reason_upper and "ERROR" in reason_upper:
+            return "TELEGRAM_ERROR"
+        return "UNKNOWN"
+
+    def _map_trade_block_reason(self, reason: Optional[str]) -> str:
+        if not reason:
+            return "UNKNOWN"
+        reason_upper = reason.upper()
+        if "KILL_SWITCH" in reason_upper:
+            return "KILL_SWITCH"
+        if "PORTFOLIO" in reason_upper:
+            return "PORTFOLIO_LIMIT"
+        if "OPEN_ORDER" in reason_upper or "OPEN_ORDERS" in reason_upper:
+            return "OPEN_ORDERS_LIMIT"
+        if "COOLDOWN" in reason_upper or "THROTTLED" in reason_upper:
+            return "COOLDOWN"
+        if "EXCHANGE" in reason_upper:
+            return "EXCHANGE_ERROR"
+        if "LIVE_TRADING" in reason_upper or "TRADE_DISABLED" in reason_upper or "TRADE_ENABLED" in reason_upper:
+            return "TRADE_DISABLED"
+        return "UNKNOWN"
+
+    def _upsert_watchlist_signal_state(
+        self,
+        db: Session,
+        *,
+        symbol: str,
+        strategy_key: Optional[str] = _UNSET,
+        signal_side: Optional[str] = _UNSET,
+        last_price: Optional[float] = _UNSET,
+        evaluated_at_utc: Optional[datetime] = _UNSET,
+        alert_status: Optional[str] = _UNSET,
+        alert_block_reason: Optional[str] = _UNSET,
+        trade_status: Optional[str] = _UNSET,
+        trade_block_reason: Optional[str] = _UNSET,
+        last_alert_at_utc: Optional[datetime] = _UNSET,
+        last_trade_at_utc: Optional[datetime] = _UNSET,
+        correlation_id: Optional[str] = _UNSET,
+    ) -> None:
+        try:
+            symbol_norm = normalize_symbol_for_exchange(symbol)
+            state = (
+                db.query(WatchlistSignalState)
+                .filter(WatchlistSignalState.symbol == symbol_norm)
+                .one_or_none()
+            )
+            if state is None:
+                state = WatchlistSignalState(symbol=symbol_norm)
+                db.add(state)
+            if strategy_key is not self._UNSET:
+                state.strategy_key = strategy_key
+            if signal_side is not self._UNSET:
+                normalized_side = (signal_side or "NONE").upper()
+                if normalized_side == "WAIT":
+                    normalized_side = "NONE"
+                state.signal_side = normalized_side
+            if last_price is not self._UNSET:
+                state.last_price = last_price
+            if evaluated_at_utc is not self._UNSET:
+                state.evaluated_at_utc = evaluated_at_utc
+            if alert_status is not self._UNSET:
+                state.alert_status = (alert_status or "NONE").upper()
+            if alert_block_reason is not self._UNSET:
+                state.alert_block_reason = alert_block_reason
+            if trade_status is not self._UNSET:
+                state.trade_status = (trade_status or "NONE").upper()
+            if trade_block_reason is not self._UNSET:
+                state.trade_block_reason = trade_block_reason
+            if last_alert_at_utc is not self._UNSET:
+                state.last_alert_at_utc = last_alert_at_utc
+            if last_trade_at_utc is not self._UNSET:
+                state.last_trade_at_utc = last_trade_at_utc
+            if correlation_id is not self._UNSET:
+                state.correlation_id = correlation_id
+            db.flush()
+            logger.info(
+                "[SIGNAL_STATE] symbol=%s side=%s alert_status=%s trade_status=%s correlation_id=%s",
+                symbol_norm,
+                state.signal_side,
+                state.alert_status,
+                state.trade_status,
+                state.correlation_id,
+            )
+        except Exception as err:
+            logger.warning(f"Failed to upsert watchlist_signal_state for {symbol}: {err}")
+
     def _print_trade_decision_trace(
         self,
         symbol: str,
@@ -729,6 +833,19 @@ class SignalMonitorService:
         if "immediate_alert_after_config_change" in normalized or "forced" in normalized:
             return "IMMEDIATE_ALERT_AFTER_CONFIG_CHANGE"
         return "THROTTLED"
+
+    @staticmethod
+    def _map_throttle_reason_code(reason: Optional[str]) -> str:
+        """Map throttle reason into DecisionReason codes for blocked alerts."""
+        from app.utils.decision_reason import ReasonCode
+        if not reason:
+            return ReasonCode.THROTTLED_DUPLICATE_ALERT.value
+        normalized = reason.lower()
+        if "cooldown" in normalized or "time" in normalized or "throttled_time_gate" in normalized:
+            return ReasonCode.COOLDOWN_ACTIVE.value
+        if "price" in normalized or "throttled_price_gate" in normalized:
+            return ReasonCode.THROTTLED_DUPLICATE_ALERT.value
+        return ReasonCode.THROTTLED_DUPLICATE_ALERT.value
     
     @staticmethod
     def _should_block_open_orders(per_symbol_open: int, max_per_symbol: int, global_open: Optional[int] = None) -> bool:
@@ -767,7 +884,9 @@ class SignalMonitorService:
             return True
         return False
 
-    def _resolve_alert_thresholds(self, watchlist_item: WatchlistItem) -> Tuple[Optional[float], Optional[float]]:
+    def _resolve_alert_thresholds(
+        self, watchlist_item: WatchlistItem
+    ) -> Tuple[Optional[float], Optional[float], Dict[str, Optional[float]]]:
         """
         Determine which alert thresholds apply to this coin.
         Priority order:
@@ -780,15 +899,28 @@ class SignalMonitorService:
         This function still returns cooldown for backward compatibility but it's not used.
         """
         # Get values from database first (highest priority)
-        min_pct = getattr(watchlist_item, "min_price_change_pct", None)
+        item_min_pct = getattr(watchlist_item, "min_price_change_pct", None)
         # DEPRECATED: alert_cooldown_minutes is no longer used (throttling is fixed at 60s)
         cooldown = None  # Not used anymore - kept for backward compatibility
+        preset_min = None
+        default_min = None
+        min_pct = item_min_pct
+        risk_mode = getattr(watchlist_item, "sl_tp_mode", None)
         
-        # If not set in database, try to get from config
         try:
-            strategy_key = watchlist_item.sl_tp_mode or None
+            cfg = load_config()
+            default_min = cfg.get("defaults", {}).get("alert_min_price_change_pct")
+        except Exception as e:
+            logger.warning(
+                f"Failed to load global defaults for {getattr(watchlist_item, 'symbol', '?')}: {e}"
+            )
+        
+        # Always load preset thresholds for logging, but do not override DB value
+        try:
             symbol = (watchlist_item.symbol or "").upper()
-            preset_min, _ = get_alert_thresholds(symbol, strategy_key)  # Ignore cooldown from config
+            preset_min, preset_cooldown = get_alert_thresholds(symbol, risk_mode)
+            if cooldown is None:
+                cooldown = preset_cooldown
             if min_pct is None:
                 min_pct = preset_min
         except Exception as e:
@@ -796,11 +928,14 @@ class SignalMonitorService:
         
         # Fallback to service-wide defaults
         if min_pct is None:
-            min_pct = self.ALERT_MIN_PRICE_CHANGE_PCT
-        # Cooldown is always None now (not used) - kept for backward compatibility
-        cooldown = None
+            min_pct = default_min if default_min is not None else self.ALERT_MIN_PRICE_CHANGE_PCT
+        # Cooldown is deprecated (fixed throttling) but returned for backward compatibility
         
-        return min_pct, cooldown
+        return min_pct, cooldown, {
+            "item_min_pct": item_min_pct,
+            "preset_min_pct": preset_min,
+            "default_min_pct": default_min,
+        }
     
     def should_send_alert(
         self,
@@ -1222,6 +1357,7 @@ class SignalMonitorService:
         """
         try:
             # Check Telegram health before processing
+            telegram_notifier.resolve_send_config()
             if not telegram_notifier.enabled:
                 logger.warning(
                     "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. "
@@ -1230,6 +1366,12 @@ class SignalMonitorService:
             
             # Fetch watchlist items in a thread pool to avoid blocking the event loop
             watchlist_items = await asyncio.to_thread(self._fetch_watchlist_items_sync, db)
+
+            logger.info(
+                "[SIGNAL_MONITOR_TICK] tick_ts=%s items=%d",
+                datetime.now(timezone.utc).isoformat(),
+                len(watchlist_items) if watchlist_items else 0,
+            )
             
             if not watchlist_items:
                 logger.warning(
@@ -1298,6 +1440,10 @@ class SignalMonitorService:
                 old_amount = watchlist_item.trade_amount_usd
                 old_alert = watchlist_item.alert_enabled
                 old_margin = watchlist_item.trade_on_margin if hasattr(watchlist_item, 'trade_on_margin') else None
+                old_min_pct = getattr(watchlist_item, "min_price_change_pct", None)
+                old_cooldown = getattr(watchlist_item, "alert_cooldown_minutes", None)
+                old_buy_alert = getattr(watchlist_item, "buy_alert_enabled", None)
+                old_sell_alert = getattr(watchlist_item, "sell_alert_enabled", None)
                 # Update the watchlist_item object with fresh values
                 # CRITICAL: Preserve user-set trade_amount_usd - only update if it was None/0 in DB
                 # This prevents overwriting user's manual settings during refresh
@@ -1311,6 +1457,16 @@ class SignalMonitorService:
                 # CRITICAL: Also refresh trade_on_margin from database
                 if hasattr(fresh_item, 'trade_on_margin'):
                     watchlist_item.trade_on_margin = fresh_item.trade_on_margin
+                # CRITICAL: Refresh alert toggle flags (controls per-side alert emission)
+                if hasattr(fresh_item, 'buy_alert_enabled'):
+                    watchlist_item.buy_alert_enabled = fresh_item.buy_alert_enabled
+                if hasattr(fresh_item, 'sell_alert_enabled'):
+                    watchlist_item.sell_alert_enabled = fresh_item.sell_alert_enabled
+                # CRITICAL: Refresh throttle thresholds from database
+                if hasattr(fresh_item, "min_price_change_pct"):
+                    watchlist_item.min_price_change_pct = fresh_item.min_price_change_pct
+                if hasattr(fresh_item, "alert_cooldown_minutes"):
+                    watchlist_item.alert_cooldown_minutes = fresh_item.alert_cooldown_minutes
                 
                 # Log alert_enabled change if it changed
                 if old_alert != fresh_item.alert_enabled:
@@ -1324,7 +1480,11 @@ class SignalMonitorService:
                     f"trade_amount_usd={old_amount} -> {watchlist_item.trade_amount_usd}, "
                     f"trade_enabled={watchlist_item.trade_enabled}, "
                     f"alert_enabled={old_alert} -> {watchlist_item.alert_enabled}, "
-                    f"trade_on_margin={old_margin} -> {getattr(watchlist_item, 'trade_on_margin', None)}"
+                    f"buy_alert_enabled={old_buy_alert} -> {getattr(watchlist_item, 'buy_alert_enabled', None)}, "
+                    f"sell_alert_enabled={old_sell_alert} -> {getattr(watchlist_item, 'sell_alert_enabled', None)}, "
+                    f"trade_on_margin={old_margin} -> {getattr(watchlist_item, 'trade_on_margin', None)}, "
+                    f"min_price_change_pct={old_min_pct} -> {getattr(watchlist_item, 'min_price_change_pct', None)}, "
+                    f"alert_cooldown_minutes={old_cooldown} -> {getattr(watchlist_item, 'alert_cooldown_minutes', None)}"
                 )
             else:
                 logger.warning(f"Could not find {symbol} in database for refresh")
@@ -1346,6 +1506,14 @@ class SignalMonitorService:
                             latest = max(non_deleted, key=lambda x: getattr(x, 'updated_at', x.id) if hasattr(x, 'updated_at') else x.id)
                             watchlist_item.alert_enabled = latest.alert_enabled
                             watchlist_item.trade_enabled = latest.trade_enabled
+                            if hasattr(latest, "buy_alert_enabled"):
+                                watchlist_item.buy_alert_enabled = latest.buy_alert_enabled
+                            if hasattr(latest, "sell_alert_enabled"):
+                                watchlist_item.sell_alert_enabled = latest.sell_alert_enabled
+                            if hasattr(latest, "min_price_change_pct"):
+                                watchlist_item.min_price_change_pct = latest.min_price_change_pct
+                            if hasattr(latest, "alert_cooldown_minutes"):
+                                watchlist_item.alert_cooldown_minutes = latest.alert_cooldown_minutes
                             logger.warning(
                                 f"⚠️ Usando entrada más reciente para {symbol}: ID={latest.id}, "
                                 f"alert_enabled={latest.alert_enabled}"
@@ -1362,7 +1530,15 @@ class SignalMonitorService:
         config_hash_current = self._compute_config_hash(watchlist_item)
 
         # PHASE 0: Structured logging with evaluation_id
-        min_price_change_pct, alert_cooldown_minutes = self._resolve_alert_thresholds(watchlist_item)
+        min_price_change_pct, alert_cooldown_minutes, threshold_sources = self._resolve_alert_thresholds(watchlist_item)
+        threshold_context = {
+            "min_price_change_pct": min_price_change_pct,
+            "alert_cooldown_minutes": alert_cooldown_minutes,
+            "item_min_pct": threshold_sources.get("item_min_pct"),
+            "preset_min_pct": threshold_sources.get("preset_min_pct"),
+            "default_min_pct": threshold_sources.get("default_min_pct"),
+        }
+        telegram_config = telegram_notifier.resolve_send_config()
         logger.info(
             f"[EVAL_{evaluation_id}] {symbol} evaluation started | "
             f"strategy={strategy_display}/{risk_display} | "
@@ -1378,14 +1554,21 @@ class SignalMonitorService:
         self._log_symbol_context(symbol, "SELL", watchlist_item, strategy_display, risk_display)
 
         # ========================================================================
-        # CRITICAL: Verify alert_enabled is True after refresh - exit early if False
+        # CRITICAL: alert_enabled controls alerts/trades, but must NOT hide signals
         # ========================================================================
-        # This prevents processing and sending alerts for coins with alert_enabled=False
-        if not watchlist_item.alert_enabled:
+        # We still evaluate signals to avoid "ghost" states, but we will block
+        # alert/trade actions if alert_enabled is False.
+        alerts_globally_disabled = not watchlist_item.alert_enabled
+        if alerts_globally_disabled:
             blocked_msg = (
                 f"🚫 BLOQUEADO: {symbol} - Las alertas están deshabilitadas para este símbolo "
                 f"(alert_enabled=False). No se procesará señal ni se enviarán alertas. "
                 f"Para habilitar alertas, active 'alert_enabled' en la configuración del símbolo."
+            )
+            logger.info(
+                "[GATE] symbol=%s gate=alert_enabled decision=BLOCK reason=alert_disabled evaluation_id=%s",
+                symbol,
+                evaluation_id,
             )
             self._log_signal_rejection(
                 symbol,
@@ -1406,7 +1589,6 @@ class SignalMonitorService:
                 add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
             except Exception:
                 pass  # Non-critical, continue
-            return  # Exit early - do not process signals or send alerts
         else:
             logger.debug(
                 f"✅ {symbol} - alert_enabled=True verificado después del refresh. "
@@ -1678,6 +1860,18 @@ class SignalMonitorService:
             else:
                 logger.debug(f"⚪ WAIT signal for {symbol} (no buy/sell conditions met)")
 
+            logger.info(
+                "[SIGNAL_EVAL] symbol=%s decision=%s strategy=%s evaluation_id=%s thresholds=%s "
+                "telegram_enabled=%s chat_id=%s",
+                symbol,
+                current_state,
+                f"{strategy_display}/{risk_display}",
+                evaluation_id,
+                threshold_context,
+                telegram_config.get("enabled"),
+                telegram_config.get("chat_id"),
+            )
+
             self._log_pipeline_stage(
                 stage="SIGNAL_EVALUATED",
                 symbol=normalized_symbol,
@@ -1687,6 +1881,65 @@ class SignalMonitorService:
                 timestamp=now_utc.isoformat(),
                 correlation_id=evaluation_id,
             )
+            # Persist per-symbol signal state (always, even if alerts/trades blocked)
+            strategy_summary = None
+            if signals and isinstance(signals.get("strategy"), dict):
+                strategy_summary = signals.get("strategy", {}).get("summary")
+            if not strategy_summary and signals and isinstance(signals.get("rationale"), list):
+                strategy_summary = " | ".join(signals.get("rationale", [])[:2]) or None
+            evaluated_at = now_utc if "now_utc" in locals() else datetime.now(timezone.utc)
+            self._upsert_watchlist_signal_state(
+                db,
+                symbol=normalized_symbol,
+                strategy_key=strategy_key,
+                signal_side="NONE" if current_state == "WAIT" else current_state,
+                last_price=current_price,
+                evaluated_at_utc=evaluated_at,
+                alert_status="NONE" if current_state == "WAIT" else self._UNSET,
+                alert_block_reason=None if current_state == "WAIT" else self._UNSET,
+                last_alert_at_utc=None if current_state == "WAIT" else self._UNSET,
+                trade_status="NONE" if current_state == "WAIT" else self._UNSET,
+                trade_block_reason=None if current_state == "WAIT" else self._UNSET,
+                last_trade_at_utc=None if current_state == "WAIT" else self._UNSET,
+                correlation_id=evaluation_id,
+            )
+            if current_state != "WAIT":
+                if not watchlist_item.alert_enabled:
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="ALERT_DISABLED",
+                        last_alert_at_utc=evaluated_at,
+                        correlation_id=evaluation_id,
+                    )
+                elif current_state == "BUY" and not getattr(watchlist_item, "buy_alert_enabled", False):
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="SIDE_DISABLED",
+                        last_alert_at_utc=evaluated_at,
+                        correlation_id=evaluation_id,
+                    )
+                elif current_state == "SELL" and not getattr(watchlist_item, "sell_alert_enabled", False):
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="SIDE_DISABLED",
+                        last_alert_at_utc=evaluated_at,
+                        correlation_id=evaluation_id,
+                    )
+                if not watchlist_item.trade_enabled:
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        trade_status="BLOCKED",
+                        trade_block_reason="TRADE_DISABLED",
+                        last_trade_at_utc=evaluated_at,
+                        correlation_id=evaluation_id,
+                    )
         except Exception as e:
             logger.error(f"Error calculating trading signals for {symbol}: {e}", exc_info=True)
             return
@@ -1695,9 +1948,21 @@ class SignalMonitorService:
         # Per canonical documentation: ALERTAS_Y_ORDENES_NORMAS.md
         FIXED_THROTTLE_MINUTES = 1.0  # 60 seconds - fixed by canonical logic
         
+        resolved_min_pct = (
+            min_price_change_pct
+            if min_price_change_pct is not None
+            else self.ALERT_MIN_PRICE_CHANGE_PCT
+        )
         throttle_config = SignalThrottleConfig(
-            min_price_change_pct=min_price_change_pct or self.ALERT_MIN_PRICE_CHANGE_PCT,
+            min_price_change_pct=resolved_min_pct,
             min_interval_minutes=FIXED_THROTTLE_MINUTES,  # Fixed 60 seconds - not configurable
+        )
+        logger.debug(
+            f"[THROTTLE_CONFIG] symbol={symbol} resolved_min_pct={resolved_min_pct}% "
+            f"item_min_pct={threshold_sources.get('item_min_pct')} "
+            f"preset_min_pct={threshold_sources.get('preset_min_pct')} "
+            f"default_min_pct={threshold_sources.get('default_min_pct')} "
+            f"eval_id={evaluation_id}"
         )
         
         # CRITICAL: Always load snapshots to check for config changes, even if no signals are active
@@ -1870,6 +2135,22 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            logger.info(
+                "[GATE] symbol=%s gate=throttle decision=%s reason=%s evaluation_id=%s thresholds=%s",
+                symbol,
+                "PASS" if buy_allowed else "BLOCK",
+                buy_reason,
+                evaluation_id,
+                threshold_context,
+            )
+            logger.info(
+                f"[THROTTLE_EVAL] symbol={symbol} side=BUY decision={'ACCEPT' if buy_allowed else 'BLOCK'} "
+                f"resolved_min_pct={throttle_config.min_price_change_pct} "
+                f"item_min_pct={threshold_sources.get('item_min_pct')} "
+                f"preset_min_pct={threshold_sources.get('preset_min_pct')} "
+                f"default_min_pct={threshold_sources.get('default_min_pct')} "
+                f"eval_id={evaluation_id}"
+            )
             # CRITICAL: Save previous price from snapshot BEFORE recording the signal event
             # This ensures we use the same price that was used in the throttle check for consistency
             last_buy_snapshot = signal_snapshots.get("BUY")
@@ -1940,6 +2221,14 @@ class SignalMonitorService:
                         logger.warning(f"Failed to record BUY signal event for {symbol} (non-blocking): {record_err}")
                 else:
                     # Build blocked message with reference price and timestamp (only if we have a valid reference)
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason=self._map_alert_block_reason(buy_reason),
+                        last_alert_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
+                    )
                     blocked_msg_parts = [f"🚫 BLOQUEADO: {symbol} BUY - {buy_reason}"]
                     
                     # Add reference price and timestamp (we know they exist from the check above)
@@ -1987,15 +2276,7 @@ class SignalMonitorService:
                         
                         # Create DecisionReason for SKIP (alert was blocked)
                         correlation_id = str(uuid.uuid4())
-                        # Classify the throttle reason into a canonical code
-                        reason_code = self._classify_throttle_reason(buy_reason)
-                        # Map common throttle reasons to canonical codes
-                        if "cooldown" in buy_reason.lower() or "time" in buy_reason.lower():
-                            reason_code = ReasonCode.COOLDOWN_ACTIVE.value
-                        elif "price change" in buy_reason.lower() or "price" in buy_reason.lower():
-                            reason_code = ReasonCode.THROTTLED_DUPLICATE_ALERT.value
-                        else:
-                            reason_code = ReasonCode.THROTTLED_DUPLICATE_ALERT.value
+                        reason_code = self._map_throttle_reason_code(buy_reason)
                         
                         decision_reason = make_skip(
                             reason_code=reason_code,
@@ -2216,6 +2497,22 @@ class SignalMonitorService:
                 db=db,
                 strategy_key=strategy_key,
             )
+            logger.info(
+                "[GATE] symbol=%s gate=throttle decision=%s reason=%s evaluation_id=%s thresholds=%s",
+                symbol,
+                "PASS" if sell_allowed else "BLOCK",
+                sell_reason,
+                evaluation_id,
+                threshold_context,
+            )
+            logger.info(
+                f"[THROTTLE_EVAL] symbol={symbol} side=SELL decision={'ACCEPT' if sell_allowed else 'BLOCK'} "
+                f"resolved_min_pct={throttle_config.min_price_change_pct} "
+                f"item_min_pct={threshold_sources.get('item_min_pct')} "
+                f"preset_min_pct={threshold_sources.get('preset_min_pct')} "
+                f"default_min_pct={threshold_sources.get('default_min_pct')} "
+                f"eval_id={evaluation_id}"
+            )
             # CRITICAL: Save previous price from snapshot BEFORE recording the signal event
             # This ensures we use the same price that was used in the throttle check for consistency
             last_sell_snapshot = signal_snapshots.get("SELL")
@@ -2349,6 +2646,25 @@ class SignalMonitorService:
                     )
                     try:
                         from app.api.routes_monitoring import add_telegram_message
+                        from app.utils.decision_reason import make_skip
+                        import uuid
+
+                        correlation_id = str(uuid.uuid4())
+                        reason_code = self._map_throttle_reason_code(sell_reason)
+                        decision_reason = make_skip(
+                            reason_code=reason_code,
+                            message=f"Alert blocked for {symbol} SELL: {sell_reason}",
+                            context={
+                                "symbol": symbol,
+                                "price": current_price,
+                                "reference_price": ref_price if ref_price else None,
+                                "reference_timestamp": ref_timestamp.isoformat() if ref_timestamp else None,
+                                "throttle_reason": sell_reason,
+                                "strategy_key": strategy_key,
+                            },
+                            source="throttle",
+                            correlation_id=correlation_id,
+                        )
 
                         add_telegram_message(
                             blocked_msg,
@@ -2356,6 +2672,11 @@ class SignalMonitorService:
                             blocked=True,
                             throttle_status="BLOCKED",
                             throttle_reason=sell_reason,
+                            decision_type=decision_reason.decision_type.value,
+                            reason_code=decision_reason.reason_code,
+                            reason_message=decision_reason.reason_message,
+                            context_json=decision_reason.context,
+                            correlation_id=decision_reason.correlation_id,
                         )
                     except Exception:
                         pass
@@ -2393,6 +2714,21 @@ class SignalMonitorService:
                     skip_reason.append("alert_enabled=False")
                 if not buy_alert_enabled:
                     skip_reason.append("buy_alert_enabled=False")
+                logger.info(
+                    "[GATE] symbol=%s gate=buy_alert_enabled decision=BLOCK reason=%s evaluation_id=%s",
+                    symbol,
+                    ",".join(skip_reason),
+                    evaluation_id,
+                )
+                block_reason = "ALERT_DISABLED" if not alert_enabled else "SIDE_DISABLED"
+                self._upsert_watchlist_signal_state(
+                    db,
+                    symbol=normalized_symbol,
+                    alert_status="BLOCKED",
+                    alert_block_reason=block_reason,
+                    last_alert_at_utc=datetime.now(timezone.utc),
+                    correlation_id=evaluation_id,
+                )
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
                     f"alert_enabled={alert_enabled}, buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} → "
@@ -2475,6 +2811,14 @@ class SignalMonitorService:
                         f"ℹ️  LÍMITE ALCANZADO para {symbol}: {base_symbol}={base_open}/{MAX_OPEN_ORDERS_PER_SYMBOL}. "
                         f"La alerta se enviará, pero la creación de órdenes estará bloqueada."
                     )
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        trade_status="BLOCKED",
+                        trade_block_reason="OPEN_ORDERS_LIMIT",
+                        last_trade_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
+                    )
                 else:
                     logger.info(
                         f"✅ VERIFICACIÓN FINAL PASADA para {symbol}: "
@@ -2516,6 +2860,14 @@ class SignalMonitorService:
                         f"Para habilitar alertas, active 'alert_enabled' en la configuración del símbolo."
                     )
                     logger.error(blocked_msg)
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="ALERT_DISABLED",
+                        last_alert_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
+                    )
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
@@ -2533,6 +2885,14 @@ class SignalMonitorService:
                         f"active 'buy_alert_enabled' en la configuración del símbolo."
                     )
                     logger.warning(blocked_msg)
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="SIDE_DISABLED",
+                        last_alert_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
+                    )
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
@@ -2580,6 +2940,14 @@ class SignalMonitorService:
                                 f"Alert will be sent, but order will be skipped. "
                                 f"Monitoring entry will be created in order creation path."
                             )
+                            self._upsert_watchlist_signal_state(
+                                db,
+                                symbol=normalized_symbol,
+                                trade_status="BLOCKED",
+                                trade_block_reason="PORTFOLIO_LIMIT",
+                                last_trade_at_utc=datetime.now(timezone.utc),
+                                correlation_id=evaluation_id,
+                            )
                             # Continue to send alert - don't set should_send = False
                             # The order creation logic will check this flag and skip order creation
                             # Monitoring entry will be created there to avoid duplicates
@@ -2619,21 +2987,30 @@ class SignalMonitorService:
                             f"EMA10={ema10_text}, "
                             f"MA200={ma200_text}"
                         )
+                        alert_origin = get_runtime_origin()
                         # Explicitly pass origin to ensure alerts are sent
                         # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
                         alert_origin = get_runtime_origin()
-                        result = telegram_notifier.send_buy_signal(
+                        result = emit_alert(
+                            db=db,
                             symbol=symbol,
-                            price=current_price,
+                            side="BUY",
                             reason=reason_text,
+                            price=current_price,
+                            context={
+                                "price": current_price,
+                                "previous_price": prev_buy_price,
+                                "strategy": strategy_display,
+                                "risk": risk_display,
+                            },
                             strategy_type=strategy_display,
                             risk_approach=risk_display,
                             price_variation=price_variation,
-                            previous_price=prev_buy_price,
-                            source="LIVE ALERT",
                             throttle_status="SENT",
                             throttle_reason=throttle_buy_reason or buy_reason,
-                            origin=alert_origin,
+                            evaluation_id=evaluation_id,
+                            strategy_key=strategy_key,
+                            thresholds=threshold_context,
                         )
                         # PHASE 0: Structured logging for Telegram send attempt
                         message_id = None
@@ -2670,6 +3047,14 @@ class SignalMonitorService:
                                 f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
                                 f"This should not happen when conditions are met. Check telegram_notifier."
                             )
+                            self._upsert_watchlist_signal_state(
+                                db,
+                                symbol=normalized_symbol,
+                                alert_status="BLOCKED",
+                                alert_block_reason="TELEGRAM_ERROR",
+                                last_alert_at_utc=now_utc,
+                                correlation_id=evaluation_id,
+                            )
                         else:
                             # Message already registered in send_buy_signal as sent
                             logger.info(
@@ -2689,6 +3074,14 @@ class SignalMonitorService:
                                 f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
                             )
                             buy_alert_sent_successfully = True  # Mark alert as sent successfully
+                            self._upsert_watchlist_signal_state(
+                                db,
+                                symbol=normalized_symbol,
+                                alert_status="SENT",
+                                alert_block_reason=None,
+                                last_alert_at_utc=now_utc,
+                                correlation_id=evaluation_id,
+                            )
                             self._log_pipeline_stage(
                                 stage="ALERT_CREATED",
                                 symbol=normalized_symbol,
@@ -2741,6 +3134,14 @@ class SignalMonitorService:
                                 if intent_status == "DEDUP_SKIPPED":
                                     # Duplicate signal - skip order
                                     logger.warning(f"[ORCHESTRATOR] {symbol} BUY DEDUP_SKIPPED - Duplicate signal detected")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="BLOCKED",
+                                        trade_block_reason="DUPLICATE",
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                     self._log_pipeline_stage(
                                         stage="BUY_BLOCKED",
                                         symbol=normalized_symbol,
@@ -2771,6 +3172,14 @@ class SignalMonitorService:
                                 elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
                                     # LIVE_TRADING=false - order blocked
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="BLOCKED",
+                                        trade_block_reason="TRADE_DISABLED",
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                     self._log_pipeline_stage(
                                         stage="BUY_BLOCKED",
                                         symbol=normalized_symbol,
@@ -2801,6 +3210,14 @@ class SignalMonitorService:
                                 elif intent_status == "PENDING" and order_intent:
                                     # Order intent created - attempt order placement (bypassing eligibility checks)
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY Order intent created (id={order_intent.id}) - Attempting order placement")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="SUBMITTED",
+                                        trade_block_reason=None,
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                     self._log_pipeline_stage(
                                         stage="BUY_ELIGIBLE_CHECK",
                                         symbol=normalized_symbol,
@@ -2846,6 +3263,14 @@ class SignalMonitorService:
                                             # Order creation failed - strict failure reporting (Step 4)
                                             error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
                                             logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation failed: {error_msg}")
+                                            self._upsert_watchlist_signal_state(
+                                                db,
+                                                symbol=normalized_symbol,
+                                                trade_status="BLOCKED",
+                                                trade_block_reason="EXCHANGE_ERROR",
+                                                last_trade_at_utc=now_utc,
+                                                correlation_id=evaluation_id,
+                                            )
                                             self._log_pipeline_stage(
                                                 stage="BUY_ORDER_RESPONSE",
                                                 symbol=normalized_symbol,
@@ -2920,6 +3345,14 @@ class SignalMonitorService:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
                                             exchange_order_id = order_result.get("exchange_order_id")
+                                            self._upsert_watchlist_signal_state(
+                                                db,
+                                                symbol=normalized_symbol,
+                                                trade_status="SUBMITTED",
+                                                trade_block_reason=None,
+                                                last_trade_at_utc=now_utc,
+                                                correlation_id=evaluation_id,
+                                            )
                                             logger.info(f"[ORCHESTRATOR] {symbol} BUY Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
                                             self._log_pipeline_stage(
                                                 stage="BUY_ORDER_RESPONSE",
@@ -2962,6 +3395,25 @@ class SignalMonitorService:
                                         # Order creation exception - strict failure reporting (Step 4)
                                         error_msg = str(order_err)[:500]
                                         logger.error(f"[ORCHESTRATOR] {symbol} BUY Order creation exception: {order_err}", exc_info=True)
+                                        self._upsert_watchlist_signal_state(
+                                            db,
+                                            symbol=normalized_symbol,
+                                            trade_status="BLOCKED",
+                                            trade_block_reason="EXCHANGE_ERROR",
+                                            last_trade_at_utc=now_utc,
+                                            correlation_id=evaluation_id,
+                                        )
+                                        self._log_pipeline_stage(
+                                            stage="BUY_ORDER_RESPONSE",
+                                            symbol=normalized_symbol,
+                                            strategy_key=strategy_key,
+                                            decision="BUY",
+                                            last_price=current_price,
+                                            timestamp=now_utc.isoformat(),
+                                            correlation_id=evaluation_id,
+                                            signal_id=str(signal_id) if signal_id is not None else None,
+                                            reason=f"FAILED:{error_msg}",
+                                        )
                                         update_order_intent_status(
                                             db=db,
                                             order_intent_id=order_intent.id,
@@ -4273,6 +4725,21 @@ class SignalMonitorService:
                 if not sell_alert_enabled:
                     skip_reason.append("sell_alert_enabled=False")
                 logger.info(
+                    "[GATE] symbol=%s gate=sell_alert_enabled decision=BLOCK reason=%s evaluation_id=%s",
+                    symbol,
+                    ",".join(skip_reason),
+                    evaluation_id,
+                )
+                block_reason = "ALERT_DISABLED" if not alert_enabled else "SIDE_DISABLED"
+                self._upsert_watchlist_signal_state(
+                    db,
+                    symbol=normalized_symbol,
+                    alert_status="BLOCKED",
+                    alert_block_reason=block_reason,
+                    last_alert_at_utc=datetime.now(timezone.utc),
+                    correlation_id=evaluation_id,
+                )
+                logger.info(
                     f"🔍 {symbol} SELL alert decision: sell_signal=True, "
                     f"alert_enabled={alert_enabled}, buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} → "
                     f"DECISION: SKIPPED ({', '.join(skip_reason)})"
@@ -4356,6 +4823,14 @@ class SignalMonitorService:
                     logger.info(
                         f"🔍 {symbol} SELL alert will be sent with BLOCKED status (throttled: {sell_reason})"
                     )
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason=self._map_alert_block_reason(sell_reason),
+                        last_alert_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
+                    )
                 self._log_signal_accept(
                     symbol,
                     "SELL",
@@ -4384,6 +4859,14 @@ class SignalMonitorService:
                         f"para este símbolo (sell_alert_enabled=False). No se enviará alerta SELL aunque "
                         f"se detectó señal SELL. Para habilitar alertas de venta, active 'sell_alert_enabled' "
                         f"en la configuración del símbolo."
+                    )
+                    self._upsert_watchlist_signal_state(
+                        db,
+                        symbol=normalized_symbol,
+                        alert_status="BLOCKED",
+                        alert_block_reason="SIDE_DISABLED",
+                        last_alert_at_utc=datetime.now(timezone.utc),
+                        correlation_id=evaluation_id,
                     )
                     self._log_signal_rejection(
                         symbol,
@@ -4486,28 +4969,33 @@ class SignalMonitorService:
                             f"EMA10={ema10_text}, "
                             f"MA200={ma200_text}"
                         )
-                        # Explicitly pass origin to ensure alerts are sent
-                        # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
-                        alert_origin = get_runtime_origin()
                         # FIX: Pass throttle_status based on sell_allowed - if throttled, mark as BLOCKED
                         # This ensures alerts are created/persisted even when throttled (for monitoring)
                         throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
                         # Use throttle_sell_reason if available, otherwise use sell_reason from throttle check
                         throttle_reason_to_send = throttle_sell_reason if throttle_sell_reason else sell_reason
                         
-                        result = telegram_notifier.send_sell_signal(
+                        result = emit_alert(
+                            db=db,
                             symbol=symbol,
-                            price=current_price,
+                            side="SELL",
                             reason=reason_text,
+                            price=current_price,
+                            context={
+                                "price": current_price,
+                                "previous_price": prev_sell_price,
+                                "strategy": strategy_display,
+                                "risk": risk_display,
+                                "balance_warning": balance_check_warning,
+                            },
                             strategy_type=strategy_display,
                             risk_approach=risk_display,
                             price_variation=price_variation,
-                            previous_price=prev_sell_price,
-                            source="LIVE ALERT",
                             throttle_status=throttle_status_to_send,
                             throttle_reason=throttle_reason_to_send,
-                            origin=alert_origin,
-                            balance_warning=balance_check_warning,
+                            evaluation_id=evaluation_id,
+                            strategy_key=strategy_key,
+                            thresholds=threshold_context,
                         )
                         # PHASE 0: Structured logging for SELL Telegram send attempt
                         message_id_sell = None
@@ -4538,6 +5026,14 @@ class SignalMonitorService:
                                 f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
                                 f"This should not happen when conditions are met. Check telegram_notifier."
                             )
+                            self._upsert_watchlist_signal_state(
+                                db,
+                                symbol=normalized_symbol,
+                                alert_status="BLOCKED",
+                                alert_block_reason="TELEGRAM_ERROR",
+                                last_alert_at_utc=now_utc,
+                                correlation_id=evaluation_id,
+                            )
                         else:
                             # PHASE 0: Structured logging for successful alert enqueue
                             logger.info(
@@ -4559,6 +5055,14 @@ class SignalMonitorService:
                                 f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
                             )
                             sell_alert_sent_successfully = True  # Mark alert as sent successfully
+                            self._upsert_watchlist_signal_state(
+                                db,
+                                symbol=normalized_symbol,
+                                alert_status="SENT" if throttle_status_to_send == "SENT" else "BLOCKED",
+                                alert_block_reason=None if throttle_status_to_send == "SENT" else self._map_alert_block_reason(throttle_reason_to_send),
+                                last_alert_at_utc=now_utc,
+                                correlation_id=evaluation_id,
+                            )
                             self._log_signal_accept(
                                 symbol,
                                 "SELL",
@@ -4635,6 +5139,14 @@ class SignalMonitorService:
                                 if intent_status == "DEDUP_SKIPPED":
                                     # Duplicate signal - skip order
                                     logger.warning(f"[ORCHESTRATOR] {symbol} SELL DEDUP_SKIPPED - Duplicate signal detected")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="BLOCKED",
+                                        trade_block_reason="DUPLICATE",
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                     decision_reason = make_skip(
                                         reason_code=ReasonCode.IDEMPOTENCY_BLOCKED.value,
                                         message=f"Duplicate signal detected for {symbol} SELL. Order was already attempted (idempotency_key already exists).",
@@ -4654,6 +5166,14 @@ class SignalMonitorService:
                                 elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
                                     # LIVE_TRADING=false - order blocked
                                     logger.info(f"[ORCHESTRATOR] {symbol} SELL ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="BLOCKED",
+                                        trade_block_reason="TRADE_DISABLED",
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                     decision_reason = make_skip(
                                         reason_code="ORDER_BLOCKED_LIVE_TRADING",
                                         message=f"Order blocked: LIVE_TRADING is disabled. Signal was sent but no order will be placed.",
@@ -4673,6 +5193,14 @@ class SignalMonitorService:
                                 elif intent_status == "PENDING" and order_intent:
                                     # Order intent created - attempt order placement (bypassing eligibility checks)
                                     logger.info(f"[ORCHESTRATOR] {symbol} SELL Order intent created (id={order_intent.id}) - Attempting order placement")
+                                    self._upsert_watchlist_signal_state(
+                                        db,
+                                        symbol=normalized_symbol,
+                                        trade_status="SUBMITTED",
+                                        trade_block_reason=None,
+                                        last_trade_at_utc=now_utc,
+                                        correlation_id=evaluation_id,
+                                    )
                                 
                                     # Call minimal order placement function (NO eligibility checks)
                                     # Note: Running async function from sync context using new event loop
@@ -4697,6 +5225,14 @@ class SignalMonitorService:
                                             # Order creation failed
                                             error_msg = order_result.get("message") or order_result.get("error", "Unknown error")
                                             logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation failed: {error_msg}")
+                                            self._upsert_watchlist_signal_state(
+                                                db,
+                                                symbol=normalized_symbol,
+                                                trade_status="BLOCKED",
+                                                trade_block_reason="EXCHANGE_ERROR",
+                                                last_trade_at_utc=now_utc,
+                                                correlation_id=evaluation_id,
+                                            )
                                             update_order_intent_status(
                                                 db=db,
                                                 order_intent_id=order_intent.id,
@@ -4755,6 +5291,14 @@ class SignalMonitorService:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
                                             exchange_order_id = order_result.get("exchange_order_id")
+                                            self._upsert_watchlist_signal_state(
+                                                db,
+                                                symbol=normalized_symbol,
+                                                trade_status="SUBMITTED",
+                                                trade_block_reason=None,
+                                                last_trade_at_utc=now_utc,
+                                                correlation_id=evaluation_id,
+                                            )
                                             logger.info(f"[ORCHESTRATOR] {symbol} SELL Order created successfully: order_id={order_id}, exchange_order_id={exchange_order_id}")
                                             update_order_intent_status(
                                                 db=db,
@@ -4786,6 +5330,14 @@ class SignalMonitorService:
                                         # Order creation exception
                                         error_msg = str(order_err)[:500]
                                         logger.error(f"[ORCHESTRATOR] {symbol} SELL Order creation exception: {order_err}", exc_info=True)
+                                        self._upsert_watchlist_signal_state(
+                                            db,
+                                            symbol=normalized_symbol,
+                                            trade_status="BLOCKED",
+                                            trade_block_reason="EXCHANGE_ERROR",
+                                            last_trade_at_utc=now_utc,
+                                            correlation_id=evaluation_id,
+                                        )
                                         update_order_intent_status(
                                             db=db,
                                             order_intent_id=order_intent.id,

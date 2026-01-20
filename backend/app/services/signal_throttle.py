@@ -160,7 +160,8 @@ def should_emit_signal(
         price_change_pct = abs((current_price - last_price) / last_price * 100)
     else:
         price_change_pct = None
-    min_pct = max(config.min_price_change_pct or 0.0, 0.0)
+    # CRITICAL: Use explicit None check, not 'or' with floats (0.0 is valid threshold)
+    min_pct = max(config.min_price_change_pct if config.min_price_change_pct is not None else 0.0, 0.0)
     price_required = min_pct > 0
     price_met = not price_required or (
         price_change_pct is not None and price_change_pct >= min_pct
