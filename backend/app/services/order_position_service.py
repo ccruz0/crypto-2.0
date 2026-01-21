@@ -233,42 +233,29 @@ def count_open_positions_for_symbol(db: Session, symbol: str) -> int:
 
 def count_total_open_positions(db: Session) -> int:
     """
-    Helper to count total open BUY commitments across ALL symbols using the same
-    unified logic as `count_open_positions_for_symbol`.
+    Count total open positions by counting only pending TAKE_PROFIT orders.
+    
+    This represents positions waiting to be sold. Each pending TP order = 1 open position.
     """
-    # Collect all symbols that have BUY activity (pending or filled)
-    symbols_rows = (
-        db.query(ExchangeOrder.symbol)
-        .filter(
-            ExchangeOrder.side == OrderSideEnum.BUY,
-            ExchangeOrder.status.in_(
-                [
-                    OrderStatusEnum.NEW,
-                    OrderStatusEnum.ACTIVE,
-                    OrderStatusEnum.PARTIALLY_FILLED,
-                    OrderStatusEnum.FILLED,
-                ]
-            ),
-        )
-        .distinct()
-        .all()
+    # Count only TAKE_PROFIT orders that are pending (not FILLED)
+    # These represent positions waiting to be sold
+    pending_tp_orders = db.query(ExchangeOrder).filter(
+        ExchangeOrder.order_role == "TAKE_PROFIT",
+        ExchangeOrder.status.in_(
+            [
+                OrderStatusEnum.NEW,
+                OrderStatusEnum.ACTIVE,
+                OrderStatusEnum.PARTIALLY_FILLED,
+            ]
+        ),
+    ).all()
+    
+    total = len(pending_tp_orders)
+    
+    logger.info(
+        f"[OPEN_POSITION_COUNT] Counting TP orders only: {total} pending TAKE_PROFIT orders"
     )
-
-    # Normalize to BASE currency to avoid double-counting across pairs (e.g., BTC_USD and BTC_USDT)
-    bases: set[str] = set()
-    for row in symbols_rows:
-        sym = row[0] if isinstance(row, tuple) else row.symbol if hasattr(row, "symbol") else row
-        if not sym:
-            continue
-        sym_upper = str(sym).upper()
-        base = sym_upper.split("_")[0] if "_" in sym_upper else sym_upper
-        if base:
-            bases.add(base)
-
-    total = 0
-    for base in bases:
-        total += count_open_positions_for_symbol(db, base)
-
+    
     return total
 
 
