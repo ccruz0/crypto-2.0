@@ -251,6 +251,8 @@ services:
       # Can be overridden via .env.aws (loaded via env_file above). Defaults to 1 if not set.
       # Single source of truth: docker-compose.yml environment section (can be overridden by .env.aws)
       - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
+      # Trading limits: MAX_OPEN_ORDERS_TOTAL controls max pending TP orders (new TP-only counting logic)
+      - MAX_OPEN_ORDERS_TOTAL=${MAX_OPEN_ORDERS_TOTAL:-10}
       # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
       # Do not override here to allow env_file values to be used
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
