@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any, Tuple
 import json
 from app.models.watchlist import WatchlistItem
+from app.models.watchlist_signal_state import WatchlistSignalState
 from app.models.watchlist_master import WatchlistMaster
 from app.services.watchlist_selector import (
     deduplicate_watchlist_items,
@@ -1328,6 +1329,42 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
         log.exception("Error fetching dashboard items from watchlist_items table")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/watchlist/state")
+def list_watchlist_state(db: Session = Depends(get_db)):
+    """Return watchlist items enriched with per-symbol signal/alert/trade state."""
+    base_items = list_watchlist_items(db)
+    try:
+        states = db.query(WatchlistSignalState).all()
+        state_map = {s.symbol.upper(): s for s in states}
+    except Exception as e:
+        log.warning(f"Failed to load watchlist_signal_state: {e}")
+        state_map = {}
+
+    enriched = []
+    for item in base_items:
+        symbol = (item.get("symbol") or "").upper()
+        state = state_map.get(symbol)
+        signal_side = state.signal_side if state and state.signal_side else "NONE"
+        if signal_side.upper() == "WAIT":
+            signal_side = "NONE"
+        item["signal_state"] = {
+            "strategy_key": state.strategy_key if state else None,
+            "signal_side": signal_side,
+            "last_price": state.last_price if state else None,
+            "evaluated_at_utc": state.evaluated_at_utc.isoformat() if state and state.evaluated_at_utc else None,
+            "alert_status": state.alert_status if state else "NONE",
+            "alert_block_reason": state.alert_block_reason if state else None,
+            "last_alert_at_utc": state.last_alert_at_utc.isoformat() if state and state.last_alert_at_utc else None,
+            "trade_status": state.trade_status if state else "NONE",
+            "trade_block_reason": state.trade_block_reason if state else None,
+            "last_trade_at_utc": state.last_trade_at_utc.isoformat() if state and state.last_trade_at_utc else None,
+            "correlation_id": state.correlation_id if state else None,
+        }
+        enriched.append(item)
+
+    return enriched
 
 
 @router.head("/dashboard")
@@ -2701,10 +2738,14 @@ def get_alert_stats(db: Session = Depends(get_db)):
     Returns:
     {
         "total_items": int,
+        "alert_enabled": int,  # Master switch enabled count
+        "alert_disabled": int,  # Master switch disabled count
         "buy_alerts_enabled": int,
         "sell_alerts_enabled": int,
         "both_alerts_enabled": int,
         "trade_enabled": int,
+        "alert_enabled_coins": [str],  # Coins with alert_enabled=True
+        "alert_disabled_coins": [str],  # Coins with alert_enabled=False
         "buy_alert_coins": [str],
         "sell_alert_coins": [str],
         "both_alert_coins": [str],
@@ -2721,10 +2762,14 @@ def get_alert_stats(db: Session = Depends(get_db)):
         if not items:
             return {
                 "total_items": 0,
+                "alert_enabled": 0,
+                "alert_disabled": 0,
                 "buy_alerts_enabled": 0,
                 "sell_alerts_enabled": 0,
                 "both_alerts_enabled": 0,
                 "trade_enabled": 0,
+                "alert_enabled_coins": [],
+                "alert_disabled_coins": [],
                 "buy_alert_coins": [],
                 "sell_alert_coins": [],
                 "both_alert_coins": [],
@@ -2732,11 +2777,15 @@ def get_alert_stats(db: Session = Depends(get_db)):
             }
         
         total = len(items)
+        alert_enabled_count = 0
+        alert_disabled_count = 0
         buy_alerts_yes = 0
         sell_alerts_yes = 0
         both_alerts_yes = 0
         trade_yes = 0
         
+        alert_enabled_coins = []
+        alert_disabled_coins = []
         buy_alert_coins = []
         sell_alert_coins = []
         both_alert_coins = []
@@ -2744,9 +2793,18 @@ def get_alert_stats(db: Session = Depends(get_db)):
         
         for item in items:
             symbol = (item.symbol or "").upper()
+            has_alert_enabled = getattr(item, "alert_enabled", False)
             has_buy = getattr(item, "buy_alert_enabled", False)
             has_sell = getattr(item, "sell_alert_enabled", False)
             has_trade = item.trade_enabled
+            
+            # Track master switch (alert_enabled)
+            if has_alert_enabled:
+                alert_enabled_count += 1
+                alert_enabled_coins.append(symbol)
+            else:
+                alert_disabled_count += 1
+                alert_disabled_coins.append(symbol)
             
             if has_buy:
                 buy_alerts_yes += 1
@@ -2766,10 +2824,14 @@ def get_alert_stats(db: Session = Depends(get_db)):
         
         return {
             "total_items": total,
+            "alert_enabled": alert_enabled_count,
+            "alert_disabled": alert_disabled_count,
             "buy_alerts_enabled": buy_alerts_yes,
             "sell_alerts_enabled": sell_alerts_yes,
             "both_alerts_enabled": both_alerts_yes,
             "trade_enabled": trade_yes,
+            "alert_enabled_coins": sorted(alert_enabled_coins),
+            "alert_disabled_coins": sorted(alert_disabled_coins),
             "buy_alert_coins": sorted(buy_alert_coins),
             "sell_alert_coins": sorted(sell_alert_coins),
             "both_alert_coins": sorted(both_alert_coins),
