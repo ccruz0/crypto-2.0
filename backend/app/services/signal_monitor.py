@@ -7196,7 +7196,7 @@ class SignalMonitorService:
                     )
                     
                     # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order
-                    from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                    # ExchangeOrder is already imported at module level (line 16) - no local import needed
                     existing_sl_tp = db.query(ExchangeOrder).filter(
                         ExchangeOrder.parent_order_id == str(order_id),
                         ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
@@ -8428,7 +8428,7 @@ class SignalMonitorService:
                         
                         # IDEMPOTENCY GUARD: Check if SL/TP already exist for this order before creating
                         # This prevents duplicate creation if this function is called multiple times
-                        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+                        # ExchangeOrder is already imported at module level (line 16) - no local import needed
                         existing_sl_tp = db.query(ExchangeOrder).filter(
                             ExchangeOrder.parent_order_id == str(order_id),
                             ExchangeOrder.order_role.in_(["STOP_LOSS", "TAKE_PROFIT"]),
