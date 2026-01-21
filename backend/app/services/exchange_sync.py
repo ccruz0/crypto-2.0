@@ -1346,22 +1346,15 @@ class ExchangeSyncService:
         # Note: The actual formatting with tick size will be done in place_stop_loss_order/place_take_profit_order,
         # but we round here to avoid passing excessive precision
         import decimal
-        if filled_price >= 100:
-            sl_price = round(sl_price, 2)
-            tp_price = round(tp_price, 2)
-        elif filled_price >= 1:
-            sl_price = round(sl_price, 6)
-            tp_price = round(tp_price, 6)
-        else:
-            # For small prices (< $1), use 4 decimals with 0.0001 tick size for proper rounding
-            # This matches the fix in crypto_com_trade.py for ALGO_USDT and similar coins
-            tick_decimal = decimal.Decimal('0.0001')
-            sl_price_decimal = decimal.Decimal(str(sl_price))
-            sl_price_decimal = (sl_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-            sl_price = float(sl_price_decimal)
-            tp_price_decimal = decimal.Decimal(str(tp_price))
-            tp_price_decimal = (tp_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-            tp_price = float(tp_price_decimal)
+        # Price formatting is handled by create_stop_loss_order() and create_take_profit_order()
+        # which call place_stop_loss_order() and place_take_profit_order() respectively.
+        # These functions use normalize_price() which follows docs/trading/crypto_com_order_formatting.md:
+        # - STOP_LOSS uses ROUND_DOWN (per Rule 3)
+        # - TAKE_PROFIT uses ROUND_UP (per Rule 3)
+        # - Uses Decimal for calculations (per Rule 1)
+        # - Fetches instrument metadata (per Rule 5)
+        # - Preserves trailing zeros (per Rule 4)
+        # No pre-formatting needed here - pass raw prices to order creation functions
         
         from app.utils.live_trading import get_live_trading_status
         live_trading = get_live_trading_status(db)

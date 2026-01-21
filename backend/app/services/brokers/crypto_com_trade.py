@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from typing import Dict, List, Optional
 from contextvars import ContextVar
 
@@ -1400,8 +1400,8 @@ class CryptoComTradeClient:
                 logger.error(f"❌ {error_msg}")
                 # Send Telegram alert if possible (non-blocking)
                 try:
-                    from app.services.telegram_service import send_telegram_message
-                    send_telegram_message(f"⚠️ Order failed: {error_msg}")
+                    from app.services.telegram_notifier import telegram_notifier
+                    telegram_notifier.send_message(f"⚠️ Order failed: {error_msg}")
                 except Exception:
                     pass  # Non-blocking
                 return {
@@ -1867,13 +1867,22 @@ class CryptoComTradeClient:
         # Optional but recommended: time_in_force (defaults to GOOD_TILL_CANCEL for LIMIT)
         # Format price and quantity according to documented logic (docs/trading/crypto_com_order_formatting.md)
         
-        # Format price - keep existing logic for now (price formatting is separate from quantity)
-        if price >= 100:
-            price_str = f"{price:.2f}" if price % 1 == 0 else f"{price:.4f}".rstrip('0').rstrip('.')
-        elif price >= 1:
-            price_str = f"{price:.4f}".rstrip('0').rstrip('.')
-        else:
-            price_str = f"{price:.8f}".rstrip('0').rstrip('.')
+        # Normalize price using helper function (per Rule 3: directional rounding, Rule 4: preserve trailing zeros)
+        normalized_price_str = self.normalize_price(symbol, price, side, order_type="LIMIT")
+        if normalized_price_str is None:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format price"
+            logger.error(f"❌ [LIMIT_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ LIMIT order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "instrument_metadata_unavailable"
+            }
+        price_str = normalized_price_str
         
         # Normalize quantity using shared helper (per documented logic)
         raw_quantity = float(qty)
@@ -1886,8 +1895,8 @@ class CryptoComTradeClient:
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [LIMIT_ORDER] {error_msg}")
             try:
-                from app.services.telegram_service import send_telegram_message
-                send_telegram_message(f"⚠️ LIMIT order failed: {error_msg}")
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ LIMIT order failed: {error_msg}")
             except Exception:
                 pass
             return {
@@ -1981,10 +1990,10 @@ class CryptoComTradeClient:
         logger.info(f"[MARGIN_REQUEST] endpoint={method}")
         logger.info(f"[MARGIN_REQUEST] symbol={symbol} side={side.upper()} type=LIMIT is_margin={is_margin}")
         logger.info(f"[MARGIN_REQUEST] payload={json.dumps(log_payload, indent=2)}")
-        logger.info(f"[MARGIN_REQUEST] params_detail: instrument_name={symbol}, side={side.upper()}, type=LIMIT, price={price_str}, quantity={qty_str}")
+        logger.info(f"[MARGIN_REQUEST] params_detail: instrument_name={symbol}, side={side.upper()}, type=LIMIT, price={price_str}, quantity={normalized_qty_str}")
         if is_margin:
             logger.info(f"[MARGIN_REQUEST] margin_params: leverage={params.get('leverage')}")
-        logger.info(f"Price string: '{price_str}', Quantity string: '{qty_str}'")
+        logger.info(f"Price string: '{price_str}', Quantity string: '{normalized_qty_str}'")
         logger.debug(f"[MARGIN_REQUEST] full_payload_with_secrets: {json.dumps(payload, indent=2)}")
         
         # Use proxy if enabled
@@ -2269,73 +2278,23 @@ class CryptoComTradeClient:
         
         method = "private/create-order"
         
-        # Get instrument info to determine exact price and quantity precision required
-        price_decimals = None
-        price_tick_size = None
-        quantity_decimals = 2
-        qty_tick_size = 0.01
-        got_instrument_info = False
-        
-        try:
-            import requests as req
-            import decimal as dec
-            inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-            inst_response = req.get(inst_url, timeout=10)
-            if inst_response.status_code == 200:
-                inst_data = inst_response.json()
-                if "result" in inst_data and "instruments" in inst_data["result"]:
-                    for inst in inst_data["result"]["instruments"]:
-                        inst_name = inst.get("instrument_name", "") or inst.get("symbol", "")
-                        if inst_name.upper() == symbol.upper():
-                            price_decimals = inst.get("price_decimals")
-                            price_tick_size_str = inst.get("price_tick_size", "0.01")
-                            quantity_decimals = inst.get("quantity_decimals", 2)
-                            qty_tick_size_str = inst.get("qty_tick_size", "0.01")
-                            try:
-                                price_tick_size = float(price_tick_size_str) if price_tick_size_str else None
-                                qty_tick_size = float(qty_tick_size_str)
-                            except:
-                                price_tick_size = None
-                                qty_tick_size = 10 ** -quantity_decimals if quantity_decimals else 0.01
-                            got_instrument_info = True
-                            logger.info(f"✅ Got instrument info for {symbol}: price_decimals={price_decimals}, price_tick_size={price_tick_size}, quantity_decimals={quantity_decimals}, qty_tick_size={qty_tick_size}")
-                            break
-        except Exception as e:
-            logger.debug(f"Could not fetch instrument info for {symbol}: {e}. Using default precision.")
-        
-        # Format price with instrument-specific precision
-        import decimal
-        price_decimal = decimal.Decimal(str(price))
-        
-        if price_decimals is not None:
-            # Use instrument-specific precision
-            if price_tick_size and price_tick_size > 0:
-                # Round to nearest tick size
-                tick_decimal = decimal.Decimal(str(price_tick_size))
-                price_decimal = (price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                # Format with exact precision required
-                price_str = f"{price_decimal:.{price_decimals}f}"
-            else:
-                # Round to price_decimals decimal places
-                precision = decimal.Decimal('0.1') ** price_decimals
-                price_decimal = price_decimal.quantize(precision, rounding=decimal.ROUND_HALF_UP)
-                price_str = f"{price_decimal:.{price_decimals}f}"
-            logger.info(f"✅ Formatted price for STOP_LIMIT {symbol} with precision {price_decimals}: {price} -> {price_str}")
-        else:
-            # Fallback: Use default precision based on price range
-            # For low-price coins like ALGO_USDT, 4 decimals (0.0001 tick) is most common
-            if price >= 100:
-                price_str = f"{price:.2f}" if price % 1 == 0 else f"{price:.4f}".rstrip('0').rstrip('.')
-            elif price >= 1:
-                price_str = f"{price:.4f}".rstrip('0').rstrip('.')
-            else:
-                # For prices < 1, try 4 decimals first (most common for coins like ALGO_USDT)
-                # Use tick size 0.0001 for proper rounding
-                tick_decimal = decimal.Decimal('0.0001')
-                price_decimal = decimal.Decimal(str(price))
-                price_decimal = (price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                price_str = f"{price_decimal:.4f}"
-                logger.debug(f"Formatted price for STOP_LIMIT {symbol} with default precision (4 decimals, 0.0001 tick): {price} -> {price_str}")
+        # Normalize price using helper function (per Rule 3: STOP_LOSS uses ROUND_DOWN)
+        # For STOP_LIMIT orders, execution price should also use ROUND_DOWN (conservative)
+        normalized_price_str = self.normalize_price(symbol, price, side, order_type="STOP_LOSS")
+        if normalized_price_str is None:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format price"
+            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "instrument_metadata_unavailable"
+            }
+        price_str = normalized_price_str
         
         # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
         raw_quantity = float(qty)
@@ -2348,8 +2307,8 @@ class CryptoComTradeClient:
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
             try:
-                from app.services.telegram_service import send_telegram_message
-                send_telegram_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
             except Exception:
                 pass
             return {
@@ -2376,7 +2335,7 @@ class CryptoComTradeClient:
         logger.info(f"  Side: {side}")
         logger.info(f"  Order Type: STOP_LIMIT")
         logger.info(f"  Price: {price} -> {price_str}")
-        logger.info(f"  Trigger Price: {trigger_price}")
+        logger.info(f"  Trigger Price: {trigger_price} -> {trigger_str}")
         logger.info(f"  Raw Quantity: {raw_quantity}")
         logger.info(f"  Final Quantity: {normalized_qty_str}")
         logger.info(f"  Instrument Rules:")
@@ -2387,34 +2346,22 @@ class CryptoComTradeClient:
         
         qty_str = normalized_qty_str
         
-        # Format trigger_price with same precision as price
-        trigger_decimal = decimal.Decimal(str(trigger_price))
-        
-        if price_decimals is not None:
-            # Use same precision as price
-            if price_tick_size and price_tick_size > 0:
-                tick_decimal = decimal.Decimal(str(price_tick_size))
-                trigger_decimal = (trigger_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                trigger_str = f"{trigger_decimal:.{price_decimals}f}"
-            else:
-                precision = decimal.Decimal('0.1') ** price_decimals
-                trigger_decimal = trigger_decimal.quantize(precision, rounding=decimal.ROUND_HALF_UP)
-                trigger_str = f"{trigger_decimal:.{price_decimals}f}"
-            logger.info(f"✅ Formatted trigger_price for STOP_LIMIT {symbol} with precision {price_decimals}: {trigger_price} -> {trigger_str}")
-        else:
-            # Fallback: Use default precision
-            # For low-price coins like ALGO_USDT, 4 decimals (0.0001 tick) is most common
-            if trigger_price >= 100:
-                trigger_str = f"{trigger_price:.2f}" if trigger_price % 1 == 0 else f"{trigger_price:.4f}".rstrip('0').rstrip('.')
-            elif trigger_price >= 1:
-                trigger_str = f"{trigger_price:.4f}".rstrip('0').rstrip('.')
-            else:
-                # For prices < 1, use 4 decimals with 0.0001 tick size (most common)
-                tick_decimal = decimal.Decimal('0.0001')
-                trigger_decimal = decimal.Decimal(str(trigger_price))
-                trigger_decimal = (trigger_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                trigger_str = f"{trigger_decimal:.4f}"
-                logger.debug(f"Formatted trigger_price for STOP_LIMIT {symbol} with default precision (4 decimals, 0.0001 tick): {trigger_price} -> {trigger_str}")
+        # Normalize trigger_price using helper function (per Rule 3: STOP_LOSS triggers use ROUND_DOWN)
+        normalized_trigger_str = self.normalize_price(symbol, trigger_price, side, order_type="STOP_LOSS")
+        if normalized_trigger_str is None:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format trigger_price"
+            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "instrument_metadata_unavailable"
+            }
+        trigger_str = normalized_trigger_str
         
         # For STOP_LIMIT orders, ref_price should be the LAST BUY PRICE (entry price) from order history
         # However, Crypto.com uses ref_price for the Trigger Condition display
@@ -2453,33 +2400,15 @@ class CryptoComTradeClient:
         
         # Format ref_price with SAME precision as trigger_price to ensure they match exactly
         # This is critical: Crypto.com uses ref_price for Trigger Condition display
-        # We want Trigger Condition to show SL price (trigger_price), so ref_price must equal trigger_price
-        if price_decimals is not None:
-            # Use same precision as price and trigger_price
-            if price_tick_size and price_tick_size > 0:
-                ref_decimal = decimal.Decimal(str(ref_price))
-                tick_decimal = decimal.Decimal(str(price_tick_size))
-                ref_decimal = (ref_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                ref_price_str = f"{ref_decimal:.{price_decimals}f}"
-            else:
-                precision = decimal.Decimal('0.1') ** price_decimals
-                ref_decimal = decimal.Decimal(str(ref_price))
-                ref_decimal = ref_decimal.quantize(precision, rounding=decimal.ROUND_HALF_UP)
-                ref_price_str = f"{ref_decimal:.{price_decimals}f}"
-            logger.info(f"✅ Formatted ref_price for STOP_LIMIT {symbol} with precision {price_decimals}: {ref_price} -> {ref_price_str} (should match trigger_str: {trigger_str})")
+        # We want Trigger Condition to show SL price (trigger_price), so ref_price should equal trigger_price
+        # Normalize ref_price using same method as trigger_price (per Rule 3: STOP_LOSS uses ROUND_DOWN)
+        # Since ref_price should match trigger_price, we'll normalize it and then force exact match
+        normalized_ref_str = self.normalize_price(symbol, ref_price, side, order_type="STOP_LOSS")
+        if normalized_ref_str is None:
+            # If normalization fails, just use trigger_str (they should be equal anyway)
+            ref_price_str = trigger_str
         else:
-            # Fallback: Use same format as trigger_price (4 decimals with 0.0001 tick for prices < $1)
-            if ref_price >= 100:
-                ref_price_str = f"{ref_price:.2f}" if ref_price % 1 == 0 else f"{ref_price:.4f}".rstrip('0').rstrip('.')
-            elif ref_price >= 1:
-                ref_price_str = f"{ref_price:.4f}".rstrip('0').rstrip('.')
-            else:
-                # For prices < $1, use 4 decimals with 0.0001 tick size to match trigger_price
-                tick_decimal = decimal.Decimal('0.0001')
-                ref_decimal = decimal.Decimal(str(ref_price))
-                ref_decimal = (ref_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                ref_price_str = f"{ref_decimal:.4f}"
-            logger.info(f"✅ Formatted ref_price for STOP_LIMIT {symbol} with default precision: {ref_price} -> {ref_price_str} (should match trigger_str: {trigger_str})")
+            ref_price_str = normalized_ref_str
         
         # CRITICAL: Ensure ref_price_str equals trigger_str exactly (both represent SL price)
         # This ensures Trigger Condition shows SL price, not entry_price
@@ -2770,21 +2699,39 @@ class CryptoComTradeClient:
                             logger.warning(f"⚠️ Variation {variation_idx} failed with error 213 (Invalid quantity format). Trying different precision levels...")
                             last_error = f"Error {error_code}: {error_msg}"
                             
+                            # Define precision levels to try (same as MARKET SELL orders)
+                            import decimal
+                            precision_levels = [
+                                (2, decimal.Decimal('0.01')),      # Most common: 2 decimals
+                                (8, decimal.Decimal('0.00000001')), # Low-value coins like DOGE
+                                (6, decimal.Decimal('0.000001')),   # High-value coins like BTC
+                                (4, decimal.Decimal('0.0001')),     # Medium precision
+                                (3, decimal.Decimal('0.001')),      # Lower precision
+                                (1, decimal.Decimal('0.1')),         # Very low precision
+                                (0, decimal.Decimal('1')),          # Whole numbers only
+                            ]
+                            
+                            # Get instrument metadata for comparison
+                            inst_meta_retry = self._get_instrument_metadata(symbol)
+                            got_instrument_info_retry = inst_meta_retry is not None
+                            quantity_decimals_retry = inst_meta_retry.get("quantity_decimals") if inst_meta_retry else None
+                            
                             # Try ALL different precision levels automatically
                             # This works even if we got instrument info (it might be wrong or insufficient)
                             precision_tried_this_variation = False
                             for prec_decimals, prec_tick in precision_levels:
                                 # Skip the precision we already tried for this variation
-                                if got_instrument_info and prec_decimals == quantity_decimals and not precision_tried_this_variation:
+                                if got_instrument_info_retry and prec_decimals == quantity_decimals_retry and not precision_tried_this_variation:
                                     precision_tried_this_variation = True
                                     continue  # Already tried this precision
                                 
                                 logger.info(f"🔄 Trying variation {variation_idx} with precision {prec_decimals} decimals (tick_size={prec_tick})...")
                                 
                                 # Re-format quantity with new precision using Decimal for exact rounding
+                                # Per Rule 3: All quantities use ROUND_DOWN (never exceed available balance)
                                 qty_decimal = decimal.Decimal(str(qty))
                                 tick_decimal = prec_tick  # Already a Decimal
-                                qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
+                                qty_decimal = (qty_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal
                                 
                                 # Format with exact precision - always use fixed point notation (no scientific notation)
                                 # Crypto.com API expects a string with exact number of decimals
@@ -2872,9 +2819,24 @@ class CryptoComTradeClient:
                             
                             # Try to fetch instrument info again if we didn't get it initially
                             # This helps us use the correct tick size for the symbol
+                            # Define variables for price precision retry
+                            import decimal
                             retry_price_decimals = None
                             retry_price_tick_size = None
-                            if not got_instrument_info:
+                            got_instrument_info_retry = False
+                            
+                            # Get instrument metadata if not already fetched
+                            inst_meta_retry = self._get_instrument_metadata(symbol)
+                            if inst_meta_retry:
+                                got_instrument_info_retry = True
+                                retry_price_decimals = inst_meta_retry.get("price_decimals")
+                                price_tick_size_str_retry = inst_meta_retry.get("price_tick_size", "0.01")
+                                try:
+                                    retry_price_tick_size = float(price_tick_size_str_retry) if price_tick_size_str_retry else None
+                                except:
+                                    retry_price_tick_size = None
+                            
+                            if not got_instrument_info_retry:
                                 try:
                                     import requests as req
                                     inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
@@ -2926,14 +2888,16 @@ class CryptoComTradeClient:
                                 logger.info(f"🔄 Trying variation {variation_idx} with price precision {prec_decimals} decimals (tick_size={prec_tick})...")
                                 
                                 # Re-format price with new precision using proper tick size rounding
+                                # Per Rule 3: STOP_LOSS uses ROUND_DOWN (conservative trigger)
                                 price_decimal_new = decimal.Decimal(str(price))
                                 tick_decimal_new = decimal.Decimal(str(prec_tick))
-                                price_decimal_new = (price_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal_new
+                                price_decimal_new = (price_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal_new
                                 price_str_new = f"{price_decimal_new:.{prec_decimals}f}"
                                 
                                 # Re-format trigger_price with same precision
+                                # Per Rule 3: STOP_LOSS triggers use ROUND_DOWN
                                 trigger_decimal_new = decimal.Decimal(str(trigger_price))
-                                trigger_decimal_new = (trigger_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal_new
+                                trigger_decimal_new = (trigger_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal_new
                                 trigger_str_new = f"{trigger_decimal_new:.{prec_decimals}f}"
                                 
                                 logger.info(f"Price formatted: {price} -> '{price_str_new}', Trigger: {trigger_price} -> '{trigger_str_new}'")
@@ -2948,8 +2912,9 @@ class CryptoComTradeClient:
                                     ref_price_val = params_updated.get("ref_price")
                                     if ref_price_val:
                                         try:
+                                            # Per Rule 3: STOP_LOSS uses ROUND_DOWN (ref_price should match trigger_price)
                                             ref_decimal_new = decimal.Decimal(str(ref_price_val))
-                                            ref_decimal_new = (ref_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal_new
+                                            ref_decimal_new = (ref_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal_new
                                             ref_str_new = f"{ref_decimal_new:.{prec_decimals}f}"
                                             params_updated["ref_price"] = ref_str_new
                                             logger.debug(f"Ref_price also formatted: {ref_price_val} -> '{ref_str_new}'")
@@ -3092,63 +3057,22 @@ class CryptoComTradeClient:
         
         method = "private/create-order"
         
-        # Get instrument info to determine exact price and quantity precision required
-        price_decimals = None
-        price_tick_size = None
-        quantity_decimals = 4  # Default to 4 decimals instead of 3
-        qty_tick_size = 0.0001
-        got_instrument_info = False
-        
-        try:
-            import requests as req
-            inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-            inst_response = req.get(inst_url, timeout=10)
-            if inst_response.status_code == 200:
-                inst_data = inst_response.json()
-                # API returns instruments in result.data, not result.instruments
-                instruments_list = None
-                if "result" in inst_data:
-                    if "data" in inst_data["result"]:
-                        instruments_list = inst_data["result"]["data"]
-                    elif "instruments" in inst_data["result"]:
-                        instruments_list = inst_data["result"]["instruments"]
-                
-                if instruments_list:
-                    for inst in instruments_list:
-                        inst_name = inst.get("instrument_name", "") or inst.get("symbol", "")
-                        if inst_name.upper() == symbol.upper():
-                            # Try price_decimals first, fallback to quote_decimals
-                            price_decimals = inst.get("price_decimals") or inst.get("quote_decimals")
-                            price_tick_size_str = inst.get("price_tick_size", "0.01")
-                            quantity_decimals = inst.get("quantity_decimals", 4)  # Default to 4 decimals
-                            qty_tick_size_str = inst.get("qty_tick_size", "0.0001")
-                            try:
-                                price_tick_size = float(price_tick_size_str) if price_tick_size_str else None
-                                qty_tick_size = float(qty_tick_size_str)
-                            except:
-                                price_tick_size = None
-                                qty_tick_size = 10 ** -quantity_decimals if quantity_decimals else 0.0001
-                            got_instrument_info = True
-                            logger.info(f"✅ Got instrument info for TAKE_PROFIT_LIMIT {symbol}: price_decimals={price_decimals}, quantity_decimals={quantity_decimals}, price_tick_size={price_tick_size}, qty_tick_size={qty_tick_size}")
-                            break
-        except Exception as e:
-            logger.debug(f"Could not fetch instrument info for {symbol}: {e}. Using default precision.")
-        
-        # Format price with instrument-specific precision
-        import decimal
-        price_decimal = decimal.Decimal(str(price))
-        
-        if price_decimals is not None and price_tick_size:
-            # Use instrument-specific precision
-            tick_decimal = decimal.Decimal(str(price_tick_size))
-            price_decimal = (price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-            price_str = f"{price_decimal:.{price_decimals}f}"
-        elif price >= 100:
-            price_str = f"{price:.2f}" if price % 1 == 0 else f"{price:.4f}".rstrip('0').rstrip('.')
-        elif price >= 1:
-            price_str = f"{price:.4f}".rstrip('0').rstrip('.')
-        else:
-            price_str = f"{price:.8f}".rstrip('0').rstrip('.')
+        # Normalize price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
+        normalized_price_str = self.normalize_price(symbol, price, side, order_type="TAKE_PROFIT")
+        if normalized_price_str is None:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format price"
+            logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
+            try:
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
+            except Exception:
+                pass
+            return {
+                "error": error_msg,
+                "status": "FAILED",
+                "reason": "instrument_metadata_unavailable"
+            }
+        price_str = normalized_price_str
         
         # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
         raw_quantity = float(qty)
@@ -3161,8 +3085,8 @@ class CryptoComTradeClient:
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
             try:
-                from app.services.telegram_service import send_telegram_message
-                send_telegram_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
             except Exception:
                 pass
             return {
@@ -3209,17 +3133,18 @@ class CryptoComTradeClient:
                 logger.warning(f"⚠️ TAKE_PROFIT_LIMIT: trigger_price ({trigger_price}) != price ({price}). Setting trigger_price = price.")
                 trigger_price = price  # Force equality
             
-            if trigger_price >= 100:
-                trigger_str = f"{trigger_price:.2f}" if trigger_price % 1 == 0 else f"{trigger_price:.4f}".rstrip('0').rstrip('.')
-            elif trigger_price >= 1:
-                trigger_str = f"{trigger_price:.4f}".rstrip('0').rstrip('.')
+            # Normalize trigger_price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
+            normalized_trigger_str = self.normalize_price(symbol, trigger_price, side, order_type="TAKE_PROFIT")
+            if normalized_trigger_str is None:
+                # If normalization fails, use price_str (they should be equal anyway)
+                trigger_str = price_str
             else:
-                trigger_str = f"{trigger_price:.8f}".rstrip('0').rstrip('.')
+                trigger_str = normalized_trigger_str
         else:
             # If no trigger_price provided, use price as trigger (both are TP Value)
             logger.info(f"TAKE_PROFIT_LIMIT: No trigger_price provided, using price ({price}) as trigger_price (TP Value)")
             trigger_price = price  # Set trigger_price to price
-            trigger_str = price_str  # Use same formatted string
+            trigger_str = price_str  # Use same formatted string (already normalized)
         
         # Generate client_oid for tracking
         client_oid = str(uuid.uuid4())
@@ -3276,8 +3201,11 @@ class CryptoComTradeClient:
         price_format_variations.append(f"{price:.6f}")
         
         # Variation 9: If got instrument info, use exact price_decimals format - LOWEST PRIORITY
-        if price_decimals is not None:
-            price_format_variations.append(f"{price:.{price_decimals}f}")
+        # Get instrument metadata for price_decimals if needed
+        inst_meta_format = self._get_instrument_metadata(symbol)
+        price_decimals_format = inst_meta_format.get("price_decimals") if inst_meta_format else None
+        if price_decimals_format is not None:
+            price_format_variations.append(f"{price:.{price_decimals_format}f}")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -3329,8 +3257,9 @@ class CryptoComTradeClient:
             trigger_format_variations.append(f"{trigger_price:.3f}")
             
             # Variation 7: Instrument-specific precision - LOWEST PRIORITY
-            if price_decimals is not None:
-                trigger_format_variations.append(f"{trigger_price:.{price_decimals}f}")
+            # Use same price_decimals_format from above (already fetched)
+            if price_decimals_format is not None:
+                trigger_format_variations.append(f"{trigger_price:.{price_decimals_format}f}")
         
         seen_triggers = set()
         unique_trigger_formats = []
@@ -3476,22 +3405,18 @@ class CryptoComTradeClient:
                     f"ref_price={ref_price_val}, price={price}, instrument={symbol}"
                 )
                 
-                # Format ref_price with appropriate precision (round to 6 decimals as requested)
+                # Format ref_price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
+                # For TAKE_PROFIT_LIMIT, ref_price should equal trigger_price (TP price)
                 if ref_price_val:
-                    # Round to 6 decimal places first
-                    ref_price_val = round(ref_price_val, 6)
-                    
-                    if got_instrument_info and price_tick_size:
-                        ref_decimal = decimal.Decimal(str(ref_price_val))
-                        tick_decimal = decimal.Decimal(str(price_tick_size))
-                        ref_decimal = (ref_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-                        ref_price_str = f"{ref_decimal:.{price_decimals or 6}f}".rstrip('0').rstrip('.')
-                    elif ref_price_val >= 100:
-                        ref_price_str = f"{ref_price_val:.2f}" if ref_price_val % 1 == 0 else f"{ref_price_val:.6f}".rstrip('0').rstrip('.')
-                    elif ref_price_val >= 1:
-                        ref_price_str = f"{ref_price_val:.6f}".rstrip('0').rstrip('.')
+                    # Normalize ref_price using helper function
+                    normalized_ref_str = self.normalize_price(symbol, ref_price_val, side, order_type="TAKE_PROFIT")
+                    if normalized_ref_str is None:
+                        # If normalization fails, use price_str (they should be equal anyway)
+                        ref_price_str = price_str
                     else:
-                        ref_price_str = f"{ref_price_val:.6f}".rstrip('0').rstrip('.')
+                        ref_price_str = normalized_ref_str
+                else:
+                    ref_price_str = price_str  # Use price_str as fallback
                 
                 # Build params_base - ref_price is REQUIRED for TAKE_PROFIT_LIMIT
                 params_base = {
@@ -3932,8 +3857,8 @@ class CryptoComTradeClient:
             # FAIL-SAFE: Instrument rules unavailable - block order to prevent code 213
             logger.error(f"❌ Instrument rules unavailable for {symbol} - blocking order to prevent 'Invalid quantity format (code: 213)'")
             try:
-                from app.services.telegram_service import send_telegram_message
-                send_telegram_message(f"⚠️ Order blocked for {symbol}: Instrument rules unavailable; order blocked to prevent code 213.")
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ Order blocked for {symbol}: Instrument rules unavailable; order blocked to prevent code 213.")
             except Exception:
                 pass  # Non-blocking
             return None
@@ -3946,8 +3871,8 @@ class CryptoComTradeClient:
         if not qty_tick_size_str or qty_tick_size_str == "0" or qty_tick_size_str == "":
             logger.error(f"❌ Invalid qty_tick_size for {symbol}: '{qty_tick_size_str}' - blocking order")
             try:
-                from app.services.telegram_service import send_telegram_message
-                send_telegram_message(f"⚠️ Order blocked for {symbol}: Invalid qty_tick_size ({qty_tick_size_str}); order blocked to prevent code 213.")
+                from app.services.telegram_notifier import telegram_notifier
+                telegram_notifier.send_message(f"⚠️ Order blocked for {symbol}: Invalid qty_tick_size ({qty_tick_size_str}); order blocked to prevent code 213.")
             except Exception:
                 pass
             return None
@@ -3987,6 +3912,207 @@ class CryptoComTradeClient:
         qty_str = format(qty_normalized, f'.{quantity_decimals}f')
         
         return qty_str
+    
+    def normalize_price(
+        self,
+        symbol: str,
+        price: float,
+        side: str,
+        order_type: str = "LIMIT"
+    ) -> Optional[str]:
+        """
+        Normalize price according to docs/trading/crypto_com_order_formatting.md
+        
+        Rules:
+        - BUY LIMIT: ROUND_DOWN (never exceed intended buy price)
+        - SELL LIMIT: ROUND_UP (never undershoot intended sell price)
+        - TAKE PROFIT: ROUND_UP (ensure profit target is met)
+        - STOP LOSS trigger: ROUND_DOWN (conservative trigger)
+        - Always preserve trailing zeros
+        - Fetch instrument metadata
+        
+        Args:
+            symbol: Trading pair symbol (e.g., "BTC_USDT")
+            price: Raw price value (float)
+            side: Order side ("BUY" or "SELL")
+            order_type: Order type ("LIMIT", "TAKE_PROFIT", "STOP_LOSS")
+        
+        Returns:
+            Normalized price as string, or None if instrument metadata unavailable
+        """
+        import decimal
+        
+        # Get instrument metadata
+        inst_meta = self._get_instrument_metadata(symbol)
+        if not inst_meta:
+            logger.error(f"❌ Instrument metadata unavailable for {symbol} - cannot normalize price")
+            return None
+        
+        price_decimals = inst_meta.get("price_decimals", 2)
+        price_tick_size_str = inst_meta.get("price_tick_size", "0.01")
+        
+        # Convert to Decimal for precise arithmetic
+        price_decimal = decimal.Decimal(str(price))
+        tick_decimal = decimal.Decimal(str(price_tick_size_str))
+        
+        # Determine rounding direction based on order type and side (per Rule 3)
+        if order_type == "STOP_LOSS":
+            # STOP LOSS triggers: ROUND_DOWN (conservative)
+            rounding = decimal.ROUND_DOWN
+        elif order_type == "TAKE_PROFIT":
+            # TAKE PROFIT: ROUND_UP (ensure profit target is met)
+            rounding = decimal.ROUND_UP
+        elif side.upper() == "BUY":
+            # BUY LIMIT: ROUND_DOWN (never exceed intended buy price)
+            rounding = decimal.ROUND_DOWN
+        else:  # SELL
+            # SELL LIMIT: ROUND_UP (never undershoot intended sell price)
+            rounding = decimal.ROUND_UP
+        
+        # Quantize to tick size (per Rule 2)
+        division_result = price_decimal / tick_decimal
+        quantized_result = division_result.quantize(decimal.Decimal('1'), rounding=rounding)
+        price_normalized = quantized_result * tick_decimal
+        
+        # Format to exact decimal places (per Rule 4: preserve trailing zeros)
+        price_str = format(price_normalized, f'.{price_decimals}f')
+        
+        logger.debug(
+            f"[NORMALIZE_PRICE] {symbol} {side} {order_type}: "
+            f"raw={price} -> {price_str} (decimals={price_decimals}, tick={price_tick_size_str}, rounding={rounding})"
+        )
+        
+        return price_str
+    
+    def normalize_quantity_safe_with_fallback(
+        self, 
+        symbol: str, 
+        raw_quantity: float,
+        for_sl_tp: bool = True
+    ) -> tuple[Optional[str], dict]:
+        """
+        Safe quantity normalization with multiple fallback strategies.
+        
+        CRITICAL: For SL/TP creation, positions must NEVER be left unprotected.
+        This function tries multiple strategies before giving up.
+        
+        Strategies (in order):
+        1. Standard normalization (respects minQty)
+        2. Aggressive rounding (rounds down even if below minQty - may fail at exchange but worth trying)
+        3. Use min_quantity as last resort (only for SL/TP protection)
+        
+        Args:
+            symbol: Trading pair symbol
+            raw_quantity: Raw quantity value
+            for_sl_tp: If True, enables aggressive fallbacks for protection orders
+            
+        Returns:
+            Tuple of (normalized_quantity_str, diagnostics_dict)
+            - normalized_quantity_str: Normalized quantity string, or None if all strategies failed
+            - diagnostics_dict: Contains all instrument rules, normalization attempts, and reasons
+        """
+        import decimal
+        
+        diagnostics = {
+            "symbol": symbol,
+            "raw_quantity": raw_quantity,
+            "strategies_tried": [],
+            "instrument_metadata": None,
+            "final_result": None,
+            "final_reason": None,
+        }
+        
+        # Get instrument metadata
+        inst_meta = self._get_instrument_metadata(symbol)
+        diagnostics["instrument_metadata"] = inst_meta
+        
+        if not inst_meta:
+            diagnostics["final_reason"] = "instrument_rules_unavailable"
+            logger.error(
+                f"❌ [NORMALIZE_SAFE] {symbol}: Instrument rules unavailable. "
+                f"raw_qty={raw_quantity}, for_sl_tp={for_sl_tp}"
+            )
+            return None, diagnostics
+        
+        quantity_decimals = inst_meta["quantity_decimals"]
+        qty_tick_size_str = inst_meta["qty_tick_size"]
+        min_quantity_str = inst_meta.get("min_quantity", "0.001")
+        
+        diagnostics["min_quantity"] = min_quantity_str
+        diagnostics["step_size"] = qty_tick_size_str
+        diagnostics["quantity_decimals"] = quantity_decimals
+        
+        # Validate step_size
+        if not qty_tick_size_str or qty_tick_size_str == "0" or qty_tick_size_str == "":
+            diagnostics["final_reason"] = "invalid_step_size"
+            logger.error(
+                f"❌ [NORMALIZE_SAFE] {symbol}: Invalid step_size '{qty_tick_size_str}'. "
+                f"raw_qty={raw_quantity}"
+            )
+            return None, diagnostics
+        
+        qty_decimal = decimal.Decimal(str(raw_quantity))
+        tick_decimal = decimal.Decimal(str(qty_tick_size_str))
+        min_qty_decimal = decimal.Decimal(str(min_quantity_str))
+        
+        # Strategy 1: Standard normalization (respects minQty)
+        diagnostics["strategies_tried"].append("standard")
+        division_result = qty_decimal / tick_decimal
+        floored_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR)
+        qty_normalized = floored_result * tick_decimal
+        
+        if qty_normalized >= min_qty_decimal:
+            # Success with standard normalization
+            qty_str = format(qty_normalized, f'.{quantity_decimals}f')
+            diagnostics["final_result"] = qty_str
+            diagnostics["final_reason"] = "standard_success"
+            logger.info(
+                f"✅ [NORMALIZE_SAFE] {symbol}: Standard normalization succeeded. "
+                f"raw={raw_quantity} -> normalized={qty_str}"
+            )
+            return qty_str, diagnostics
+        
+        # Strategy 1 failed (below minQty)
+        diagnostics["strategies_tried"].append("standard_failed_below_minqty")
+        logger.warning(
+            f"⚠️ [NORMALIZE_SAFE] {symbol}: Standard normalization failed (below minQty). "
+            f"raw={raw_quantity}, normalized={qty_normalized}, minQty={min_qty_decimal}"
+        )
+        
+        # Strategy 2: Aggressive rounding (use rounded value even if below minQty)
+        # This may fail at exchange, but worth trying for protection orders
+        if for_sl_tp and qty_normalized > 0:
+            diagnostics["strategies_tried"].append("aggressive_rounding")
+            qty_str_aggressive = format(qty_normalized, f'.{quantity_decimals}f')
+            diagnostics["final_result"] = qty_str_aggressive
+            diagnostics["final_reason"] = "aggressive_rounding_warning_below_minqty"
+            logger.warning(
+                f"⚠️ [NORMALIZE_SAFE] {symbol}: Using aggressive rounding (below minQty). "
+                f"raw={raw_quantity} -> normalized={qty_str_aggressive} (minQty={min_qty_decimal}). "
+                f"Exchange may reject, but attempting for protection."
+            )
+            return qty_str_aggressive, diagnostics
+        
+        # Strategy 3: Use min_quantity as absolute last resort (only for SL/TP)
+        if for_sl_tp:
+            diagnostics["strategies_tried"].append("min_quantity_fallback")
+            min_qty_str = format(min_qty_decimal, f'.{quantity_decimals}f')
+            diagnostics["final_result"] = min_qty_str
+            diagnostics["final_reason"] = "min_quantity_fallback_warning_larger_than_executed"
+            logger.warning(
+                f"⚠️ [NORMALIZE_SAFE] {symbol}: Using min_quantity as fallback. "
+                f"raw={raw_quantity} -> minQty={min_qty_str}. "
+                f"WARNING: This is LARGER than executed quantity - protection may over-close position."
+            )
+            return min_qty_str, diagnostics
+        
+        # All strategies failed
+        diagnostics["final_reason"] = "all_strategies_failed"
+        logger.error(
+            f"❌ [NORMALIZE_SAFE] {symbol}: All normalization strategies failed. "
+            f"raw={raw_quantity}, minQty={min_qty_decimal}, for_sl_tp={for_sl_tp}"
+        )
+        return None, diagnostics
     
     def get_instruments(self) -> list:
         """Get list of available trading instruments (public endpoint)"""

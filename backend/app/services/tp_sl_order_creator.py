@@ -12,6 +12,7 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.utils.trading_guardrails import can_place_real_order
 from app.services.telegram_notifier import telegram_notifier
+from app.utils.http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -113,25 +114,13 @@ def create_take_profit_order(
         except Exception as price_check_err:
             logger.warning(f"Could not verify TP price against current market: {price_check_err}. Proceeding with calculated TP price.")
     
-    # Round TP price if necessary (same logic as automatic creation)
-    # Use precision matching crypto_com_trade.py place_limit_order logic:
-    # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
-    # - Prices >= 1: 6 decimal places  
-    # - Prices < 1: 4 decimal places with 0.0001 tick size (for coins like ALGO_USDT)
-    # Note: The actual formatting with tick size will be done in place_take_profit_order,
-    # but we round here to avoid passing excessive precision
-    import decimal
-    if entry_price >= 100:
-        tp_price = round(tp_price, 2)
-    elif entry_price >= 1:
-        tp_price = round(tp_price, 6)
-    else:
-        # For small prices (< $1), use 4 decimals with 0.0001 tick size for proper rounding
-        # This matches the fix in crypto_com_trade.py for ALGO_USDT and similar coins
-        tick_decimal = decimal.Decimal('0.0001')
-        tp_price_decimal = decimal.Decimal(str(tp_price))
-        tp_price_decimal = (tp_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-        tp_price = float(tp_price_decimal)
+    # Price formatting is handled by place_take_profit_order using normalize_price()
+    # which follows docs/trading/crypto_com_order_formatting.md rules:
+    # - TAKE_PROFIT uses ROUND_UP (per Rule 3)
+    # - Uses Decimal for calculations (per Rule 1)
+    # - Fetches instrument metadata (per Rule 5)
+    # - Preserves trailing zeros (per Rule 4)
+    # No pre-formatting needed here - pass raw price to place_take_profit_order
     
     # For TAKE_PROFIT_LIMIT: both trigger_price and price must equal tp_price
     tp_trigger = tp_price
@@ -175,6 +164,8 @@ def create_take_profit_order(
                 order_usd_value=order_usd_value,
                 side=tp_side,
                 ignore_trade_yes=True,  # SL/TP is for existing positions
+                ignore_daily_limit=True,  # Do not block protective orders by daily limit
+                ignore_usd_limit=True,  # Do not block protective orders by USD limit
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
@@ -296,26 +287,14 @@ def create_stop_loss_order(
     Returns:
         Dict with 'order_id' (if successful) or 'error' (if failed)
     """
-    # Round SL price if necessary (same logic as automatic creation)
-    # Use precision matching crypto_com_trade.py place_limit_order logic:
-    # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
-    # - Prices >= 1: 6 decimal places  
-    # - Prices < 1: 4 decimal places with 0.0001 tick size (for coins like ALGO_USDT)
-    # Note: The actual formatting with tick size will be done in place_stop_loss_order,
-    # but we round here to avoid passing excessive precision
-    import decimal
+    # Price formatting is handled by place_stop_loss_order using normalize_price()
+    # which follows docs/trading/crypto_com_order_formatting.md rules:
+    # - STOP_LOSS uses ROUND_DOWN (per Rule 3)
+    # - Uses Decimal for calculations (per Rule 1)
+    # - Fetches instrument metadata (per Rule 5)
+    # - Preserves trailing zeros (per Rule 4)
+    # No pre-formatting needed here - pass raw price to place_stop_loss_order
     from app.utils.http_client import http_get, http_post
-    if entry_price >= 100:
-        sl_price = round(sl_price, 2)
-    elif entry_price >= 1:
-        sl_price = round(sl_price, 6)
-    else:
-        # For small prices (< $1), use 4 decimals with 0.0001 tick size for proper rounding
-        # This matches the fix in crypto_com_trade.py for ALGO_USDT and similar coins
-        tick_decimal = decimal.Decimal('0.0001')
-        sl_price_decimal = decimal.Decimal(str(sl_price))
-        sl_price_decimal = (sl_price_decimal / tick_decimal).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_HALF_UP) * tick_decimal
-        sl_price = float(sl_price_decimal)
     
     # IMPORTANT: trigger_price must be equal to sl_price for STOP_LIMIT orders
     sl_trigger = sl_price  # trigger_price equals sl_price
@@ -353,6 +332,8 @@ def create_stop_loss_order(
                 order_usd_value=order_usd_value,
                 side=sl_side,
                 ignore_trade_yes=True,  # SL/TP is for existing positions
+                ignore_daily_limit=True,  # Do not block protective orders by daily limit
+                ignore_usd_limit=True,  # Do not block protective orders by USD limit
             )
             if not allowed:
                 # Emit lifecycle event and send Telegram notification
