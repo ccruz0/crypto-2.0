@@ -1357,7 +1357,12 @@ class SignalMonitorService:
         """
         try:
             # Check Telegram health before processing
-            telegram_notifier.resolve_send_config()
+            # Note: resolve_send_config() updates telegram_notifier.enabled, but may not exist in older deployments
+            try:
+                telegram_notifier.resolve_send_config()
+            except AttributeError:
+                # Fallback if resolve_send_config doesn't exist (old code version)
+                pass
             if not telegram_notifier.enabled:
                 logger.warning(
                     "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. "
