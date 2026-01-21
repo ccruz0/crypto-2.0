@@ -40,7 +40,15 @@ def _resolve_max_orders_per_symbol_per_day(db: Session, symbol: str) -> int:
     """
     limit = MAX_ORDERS_PER_SYMBOL_PER_DAY
     try:
-        strategy, approach = resolve_strategy_profile(symbol, db=db)
+        watchlist_item = (
+            db.query(WatchlistItem)
+            .filter(
+                WatchlistItem.symbol == symbol.upper(),
+                WatchlistItem.is_deleted == False,
+            )
+            .first()
+        )
+        strategy, approach = resolve_strategy_profile(symbol, db=db, watchlist_item=watchlist_item)
         rules = get_strategy_rules(strategy.value, approach.value)
         rule_limit = rules.get("maxOrdersPerSymbolPerDay")
         if isinstance(rule_limit, (int, float)) and rule_limit >= 0:
