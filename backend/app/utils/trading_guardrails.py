@@ -18,7 +18,9 @@ from sqlalchemy import and_, func, or_
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.watchlist import WatchlistItem
 from app.models.trading_settings import TradingSettings
+from app.services.config_loader import get_strategy_rules
 from app.services.order_position_service import count_total_open_positions
+from app.services.strategy_profiles import resolve_strategy_profile
 from app.utils.live_trading import get_live_trading_status
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,23 @@ MAX_OPEN_ORDERS_TOTAL = int(os.getenv("MAX_OPEN_ORDERS_TOTAL", "3"))
 MAX_ORDERS_PER_SYMBOL_PER_DAY = int(os.getenv("MAX_ORDERS_PER_SYMBOL_PER_DAY", "2"))
 MAX_USD_PER_ORDER = float(os.getenv("MAX_USD_PER_ORDER", "100"))
 MIN_SECONDS_BETWEEN_ORDERS = int(os.getenv("MIN_SECONDS_BETWEEN_ORDERS", "600"))
+
+
+def _resolve_max_orders_per_symbol_per_day(db: Session, symbol: str) -> int:
+    """
+    Resolve per-symbol daily order limit from strategy rules.
+    Falls back to MAX_ORDERS_PER_SYMBOL_PER_DAY env default when not configured.
+    """
+    limit = MAX_ORDERS_PER_SYMBOL_PER_DAY
+    try:
+        strategy, approach = resolve_strategy_profile(symbol, db=db)
+        rules = get_strategy_rules(strategy.value, approach.value)
+        rule_limit = rules.get("maxOrdersPerSymbolPerDay")
+        if isinstance(rule_limit, (int, float)) and rule_limit >= 0:
+            limit = int(rule_limit)
+    except Exception as e:
+        logger.debug(f"Could not resolve per-symbol daily limit from strategy rules: {e}")
+    return limit
 
 
 def _get_telegram_kill_switch_status(db: Session) -> bool:
@@ -217,6 +236,7 @@ def _check_risk_limits(
     try:
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         symbol_base = symbol_upper.split("_")[0] if "_" in symbol_upper else symbol_upper
+        max_orders_per_symbol_per_day = _resolve_max_orders_per_symbol_per_day(db, symbol_upper)
         
         orders_today = db.query(func.count(ExchangeOrder.id)).filter(
             and_(
@@ -231,8 +251,11 @@ def _check_risk_limits(
             )
         ).scalar() or 0
         
-        if orders_today >= MAX_ORDERS_PER_SYMBOL_PER_DAY:
-            reason = f"blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached ({orders_today}/{MAX_ORDERS_PER_SYMBOL_PER_DAY})"
+        if orders_today >= max_orders_per_symbol_per_day:
+            reason = (
+                "blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached "
+                f"({orders_today}/{max_orders_per_symbol_per_day})"
+            )
             logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
             return False, reason
     except Exception as e:

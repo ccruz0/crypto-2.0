@@ -619,6 +619,7 @@ def get_strategy_rules(preset_name: str, risk_mode: str = "Conservative") -> Dic
                 "volumeMinRatio": rules.get("volumeMinRatio"),
                 "minPriceChangePct": rules.get("minPriceChangePct"),
                 "alertCooldownMinutes": rules.get("alertCooldownMinutes"),
+                "maxOrdersPerSymbolPerDay": rules.get("maxOrdersPerSymbolPerDay"),
                 "sl": rules.get("sl", {}),
                 "tp": rules.get("tp", {}),
                 "trendFilters": rules.get("trendFilters", {}),

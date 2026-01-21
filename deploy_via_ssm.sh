@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/ensure_repo_root.sh"
+ensure_repo_root
+
 INSTANCE_ID="i-08726dc37133b2454"
 REGION="ap-southeast-1"
 
@@ -19,7 +23,7 @@ echo "📤 Sending deployment command..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main || true","CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || echo \"\")","if [ -n \"$CONTAINER\" ]; then docker restart $CONTAINER; else docker compose --profile aws up -d --build; fi","sleep 10","docker compose --profile aws ps"]' \
+    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git -c safe.directory=/home/ubuntu/automated-trading-platform pull origin main || true","CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || echo \"\")","if [ -n \"$CONTAINER\" ]; then docker restart $CONTAINER; else docker compose --profile aws up -d --build; fi","sleep 10","docker compose --profile aws ps"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)
