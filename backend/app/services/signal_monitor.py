@@ -1543,7 +1543,12 @@ class SignalMonitorService:
             "preset_min_pct": threshold_sources.get("preset_min_pct"),
             "default_min_pct": threshold_sources.get("default_min_pct"),
         }
-        telegram_config = telegram_notifier.resolve_send_config()
+        # Get Telegram config (with fallback for old code versions)
+        try:
+            telegram_config = telegram_notifier.resolve_send_config()
+        except AttributeError:
+            # Fallback if resolve_send_config doesn't exist (old code version)
+            telegram_config = {"enabled": getattr(telegram_notifier, "enabled", False)}
         logger.info(
             f"[EVAL_{evaluation_id}] {symbol} evaluation started | "
             f"strategy={strategy_display}/{risk_display} | "
