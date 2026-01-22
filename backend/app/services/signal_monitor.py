@@ -7669,34 +7669,45 @@ class SignalMonitorService:
                                             qty=close_qty_float,
                                             dry_run=False  # CRITICAL: This is a real close order
                                         )
-                                    
-                                    if close_result and close_result.get("order_id"):
-                                        close_order_id = close_result.get("order_id")
+                                        
+                                        if close_result and close_result.get("order_id"):
+                                            close_order_id = close_result.get("order_id")
+                                            logger.critical(
+                                                f"✅ [AUTO_CLOSE] {symbol}: Market-close order created: {close_order_id} "
+                                                f"qty={close_qty_str} to prevent unprotected position"
+                                            )
+                                            telegram_notifier.send_message(
+                                                f"✅ <b>Position Auto-Closed</b>\n\n"
+                                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                                f"📋 Original BUY Order: {order_id}\n"
+                                                f"🔄 Close Order ID: {close_order_id}\n"
+                                                f"📦 Quantity: {close_qty_str}\n\n"
+                                                f"Position was auto-closed because SL/TP could not be created."
+                                            )
+                                        else:
+                                            logger.critical(
+                                                f"❌ [AUTO_CLOSE_FAILED] {symbol}: Market-close order creation failed. "
+                                                f"Manual intervention required immediately!"
+                                            )
+                                            telegram_notifier.send_message(
+                                                f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
+                                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                                f"📋 BUY Order ID: {order_id}\n"
+                                                f"📦 Executed Quantity: {normalized_qty}\n\n"
+                                                f"❌ <b>MANUAL INTERVENTION REQUIRED</b>\n"
+                                                f"Position is UNPROTECTED and auto-close failed. "
+                                                f"Please close position manually immediately!"
+                                            )
+                                    except Exception as market_order_err:
                                         logger.critical(
-                                            f"✅ [AUTO_CLOSE] {symbol}: Market-close order created: {close_order_id} "
-                                            f"qty={close_qty_str} to prevent unprotected position"
+                                            f"❌ [AUTO_CLOSE_EXCEPTION] {symbol}: Exception during market-close order: {market_order_err}",
+                                            exc_info=True
                                         )
                                         telegram_notifier.send_message(
-                                            f"✅ <b>Position Auto-Closed</b>\n\n"
+                                            f"🚨 <b>CRITICAL: AUTO-CLOSE EXCEPTION</b>\n\n"
                                             f"📊 Symbol: <b>{symbol}</b>\n"
-                                            f"📋 Original BUY Order: {order_id}\n"
-                                            f"🔄 Close Order ID: {close_order_id}\n"
-                                            f"📦 Quantity: {close_qty_str}\n\n"
-                                            f"Position was auto-closed because SL/TP could not be created."
-                                        )
-                                    else:
-                                        logger.critical(
-                                            f"❌ [AUTO_CLOSE_FAILED] {symbol}: Market-close order creation failed. "
-                                            f"Manual intervention required immediately!"
-                                        )
-                                        telegram_notifier.send_message(
-                                            f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
-                                            f"📊 Symbol: <b>{symbol}</b>\n"
-                                            f"📋 BUY Order ID: {order_id}\n"
-                                            f"📦 Executed Quantity: {normalized_qty}\n\n"
-                                            f"❌ <b>MANUAL INTERVENTION REQUIRED</b>\n"
-                                            f"Position is UNPROTECTED and auto-close failed. "
-                                            f"Please close position manually immediately!"
+                                            f"❌ Error: {market_order_err}\n\n"
+                                            f"Manual intervention required!"
                                         )
                                 else:
                                     logger.critical(
