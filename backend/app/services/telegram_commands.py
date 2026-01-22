@@ -2754,11 +2754,15 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
             message += "❌ <b>Database:</b> " + ("connected" if db else "unknown") + "\n"
             message += "❌ <b>Exchange API:</b> unknown\n"
             message += "🔴 <b>Trading Bot:</b> unknown\n"
-            # Still show mode from env
-            from app.core.runtime import is_aws_runtime
-            import os
-            live_trading_env = os.getenv("LIVE_TRADING_ENABLED", "").strip().lower()
-            live_trading = live_trading_env in ("true", "1", "yes")
+            # Still show mode using proper utility function
+            from app.utils.live_trading import get_live_trading_status
+            try:
+                live_trading = get_live_trading_status(db)
+            except Exception as e:
+                logger.warning(f"[TG][MONITORING] Error getting live trading status: {e}")
+                # Fallback to environment variable
+                import os
+                live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
             mode_emoji = "🟢" if live_trading else "🔴"
             mode_text = "LIVE" if live_trading else "DRY RUN"
             message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
@@ -2794,13 +2798,15 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
             bot_emoji = "🟢" if bot_status == "running" else "🔴"
             message += f"{bot_emoji} <b>Trading Bot:</b> {bot_status}\n"
             
-            # Live trading mode (check from environment or trade_system)
-            # Note: The health endpoint doesn't expose live_trading_enabled directly
-            # We'll check from environment or infer from trade_system status
-            from app.core.runtime import is_aws_runtime
-            import os
-            live_trading_env = os.getenv("LIVE_TRADING_ENABLED", "").strip().lower()
-            live_trading = live_trading_env in ("true", "1", "yes")
+            # Live trading mode - use proper utility function that checks DB first, then env
+            from app.utils.live_trading import get_live_trading_status
+            try:
+                live_trading = get_live_trading_status(db)
+            except Exception as e:
+                logger.warning(f"[TG][MONITORING] Error getting live trading status: {e}")
+                # Fallback to environment variable
+                import os
+                live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
             mode_emoji = "🟢" if live_trading else "🔴"
             mode_text = "LIVE" if live_trading else "DRY RUN"
             message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
