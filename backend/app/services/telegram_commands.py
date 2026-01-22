@@ -2399,24 +2399,27 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
             ~ExchangeOrder.exchange_order_id.like("dry_%")  # Exclude dry_run orders (use ~ for NOT)
         )
         
-        # First try to get orders from last 24 hours
-        # Use COALESCE to handle NULL exchange_create_time (fallback to created_at or updated_at)
-        yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
-        executed_orders_24h = db.query(ExchangeOrder).filter(
-            base_filter,
-            func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at) >= yesterday
-        ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(20).all()
+        # Always get the last 5 orders regardless of time
+        # This ensures we show at least 5 orders even if some are older than 24h
+        executed_orders = db.query(ExchangeOrder).filter(
+            base_filter
+        ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(5).all()
         
-        # If we have 5+ orders in last 24h, use those. Otherwise, get last 5 orders regardless of time
-        if len(executed_orders_24h) >= 5:
-            executed_orders = executed_orders_24h
+        # Check how many of these are from last 24h to set the filter label
+        yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
+        orders_in_24h = []
+        for o in executed_orders:
+            # Get the earliest available timestamp
+            order_time = o.exchange_create_time or o.created_at or o.updated_at
+            if order_time and order_time >= yesterday:
+                orders_in_24h.append(o)
+        
+        if len(orders_in_24h) >= 5:
             time_filter = "Last 24h"
+        elif len(executed_orders) > 0:
+            time_filter = "Last 5 orders"
         else:
-            # Get last 5 orders regardless of time (use COALESCE for ordering)
-            executed_orders = db.query(ExchangeOrder).filter(
-                base_filter
-            ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(5).all()
-            time_filter = "Last 5 orders" if executed_orders else "Last 24h"
+            time_filter = "Last 24h"
         
         if not executed_orders:
             message = f"""✅ <b>Executed Orders ({time_filter})</b>
