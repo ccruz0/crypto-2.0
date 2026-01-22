@@ -126,6 +126,12 @@ def _is_authorized(chat_id: str, user_id: str) -> bool:
     if chat_id_str and chat_id_str in AUTHORIZED_USER_IDS:
         return True
     
+    logger.info(
+        "[TG][AUTH] Unauthorized command blocked: chat_id=%s user_id=%s authorized_ids=%s",
+        chat_id_str or "N/A",
+        user_id_str or "N/A",
+        ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+    )
     return False
 
 
@@ -2706,52 +2712,125 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
         if not db:
             return send_command_response(chat_id, "❌ Database not available")
         
-        # Get system health from API
+        # Get system health - try direct call first (more reliable), fallback to HTTP
+        health_data = {}
         try:
-            response = http_get(
-                f"{API_BASE_URL.rstrip('/')}/api/monitoring/health",
-                timeout=10,
-                calling_module="telegram_commands"
-            )
-            if response.status_code == 200:
-                health_data = response.json()
-            else:
+            # Try direct call to health service (we're in the same process)
+            from app.services.system_health import get_system_health
+            if not db:
+                logger.warning(f"[TG][MONITORING] No DB session available for health check")
+            health_data = get_system_health(db)
+            logger.info(f"[TG][MONITORING] Health data retrieved directly: global_status={health_data.get('global_status')}, components={list(health_data.keys())}")
+            logger.debug(f"[TG][MONITORING] Full health data: {json.dumps(health_data, indent=2, default=str)}")
+        except Exception as direct_err:
+            logger.warning(f"[TG][MONITORING] Direct health call failed: {direct_err}, trying HTTP fallback", exc_info=True)
+            try:
+                # Fallback to HTTP call
+                health_url = f"{API_BASE_URL.rstrip('/')}/api/health/system"
+                logger.info(f"[TG][MONITORING] Attempting HTTP health check: {health_url}")
+                response = http_get(
+                    health_url,
+                    timeout=10,
+                    calling_module="telegram_commands"
+                )
+                if response.status_code == 200:
+                    health_data = response.json()
+                    logger.info(f"[TG][MONITORING] Health API HTTP response: global_status={health_data.get('global_status')}, components={list(health_data.keys())}")
+                    logger.debug(f"[TG][MONITORING] Full HTTP health data: {json.dumps(health_data, indent=2, default=str)}")
+                else:
+                    logger.warning(f"[TG][MONITORING] Health API returned status {response.status_code}, response: {response.text[:200]}")
+                    health_data = {}
+            except Exception as http_err:
+                logger.error(f"[TG][MONITORING] Both direct and HTTP health calls failed. Direct: {direct_err}, HTTP: {http_err}", exc_info=True)
                 health_data = {}
-        except:
-            health_data = {}
         
         # Build message from health data
         message = "🖥️ <b>System Monitoring</b>\n\n"
         
-        # Backend status
-        backend_status = health_data.get("backend", {}).get("status", "unknown")
-        backend_emoji = "✅" if backend_status == "healthy" else "⚠️" if backend_status == "unhealthy" else "❌"
-        message += f"{backend_emoji} <b>Backend:</b> {backend_status}\n"
+        # If health data is empty, show error and basic info
+        if not health_data:
+            message += "⚠️ <b>Health check unavailable</b>\n\n"
+            message += "❌ <b>Backend:</b> unknown\n"
+            message += "❌ <b>Database:</b> " + ("connected" if db else "unknown") + "\n"
+            message += "❌ <b>Exchange API:</b> unknown\n"
+            message += "🔴 <b>Trading Bot:</b> unknown\n"
+            # Still show mode from env
+            from app.core.runtime import is_aws_runtime
+            import os
+            live_trading_env = os.getenv("LIVE_TRADING_ENABLED", "").strip().lower()
+            live_trading = live_trading_env in ("true", "1", "yes")
+            mode_emoji = "🟢" if live_trading else "🔴"
+            mode_text = "LIVE" if live_trading else "DRY RUN"
+            message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
+            message += "\n⚠️ Could not retrieve health data. Check logs for details.\n"
+        else:
+            # Map health data structure to display format
+            # Health endpoint returns: market_data, market_updater, signal_monitor, telegram, trade_system
+            
+            # Backend status (use global_status as overall backend health)
+            global_status = health_data.get("global_status", "unknown")
+            backend_emoji = "✅" if global_status == "PASS" else "⚠️" if global_status == "WARN" else "❌"
+            backend_status_text = "healthy" if global_status == "PASS" else "unhealthy" if global_status == "FAIL" else "warning"
+            message += f"{backend_emoji} <b>Backend:</b> {backend_status_text}\n"
+            
+            # Database status (check if we can query - if db session exists, assume connected)
+            # Note: We don't have explicit DB health in the endpoint, so infer from context
+            db_status = "connected" if db else "unknown"
+            db_emoji = "✅" if db_status == "connected" else "❌"
+            message += f"{db_emoji} <b>Database:</b> {db_status}\n"
+            
+            # Exchange API status (map from market_data status)
+            market_data = health_data.get("market_data", {})
+            exchange_status_raw = market_data.get("status", "unknown")
+            exchange_status = "connected" if exchange_status_raw == "PASS" else "disconnected" if exchange_status_raw == "FAIL" else "unknown"
+            exchange_emoji = "✅" if exchange_status == "connected" else "❌"
+            message += f"{exchange_emoji} <b>Exchange API:</b> {exchange_status}\n"
+            
+            # Trading bot status (map from signal_monitor status)
+            signal_monitor = health_data.get("signal_monitor", {})
+            bot_status_raw = signal_monitor.get("status", "unknown")
+            is_running = signal_monitor.get("is_running", False)
+            bot_status = "running" if bot_status_raw == "PASS" and is_running else "stopped" if bot_status_raw == "FAIL" else "unknown"
+            bot_emoji = "🟢" if bot_status == "running" else "🔴"
+            message += f"{bot_emoji} <b>Trading Bot:</b> {bot_status}\n"
+            
+            # Live trading mode (check from environment or trade_system)
+            # Note: The health endpoint doesn't expose live_trading_enabled directly
+            # We'll check from environment or infer from trade_system status
+            from app.core.runtime import is_aws_runtime
+            import os
+            live_trading_env = os.getenv("LIVE_TRADING_ENABLED", "").strip().lower()
+            live_trading = live_trading_env in ("true", "1", "yes")
+            mode_emoji = "🟢" if live_trading else "🔴"
+            mode_text = "LIVE" if live_trading else "DRY RUN"
+            message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
         
-        # Database status
-        db_status = health_data.get("database", {}).get("status", "unknown")
-        db_emoji = "✅" if db_status == "connected" else "❌"
-        message += f"{db_emoji} <b>Database:</b> {db_status}\n"
-        
-        # Exchange API status
-        exchange_status = health_data.get("exchange", {}).get("status", "unknown")
-        exchange_emoji = "✅" if exchange_status == "connected" else "❌"
-        message += f"{exchange_emoji} <b>Exchange API:</b> {exchange_status}\n"
-        
-        # Trading bot status
-        bot_status = health_data.get("bot", {}).get("status", "unknown")
-        bot_emoji = "🟢" if bot_status == "running" else "🔴"
-        message += f"{bot_emoji} <b>Trading Bot:</b> {bot_status}\n"
-        
-        # Live trading mode
-        live_trading = health_data.get("bot", {}).get("live_trading_enabled", False)
-        mode_emoji = "🟢" if live_trading else "🔴"
-        mode_text = "LIVE" if live_trading else "DRY RUN"
-        message += f"{mode_emoji} <b>Mode:</b> {mode_text}\n"
-        
-        # Last sync times
-        if "last_sync" in health_data:
-            message += f"\n🕐 <b>Last Sync:</b> {health_data.get('last_sync', 'N/A')}\n"
+        # Additional health details
+        if health_data:
+            timestamp = health_data.get("timestamp", "")
+            if timestamp:
+                # Parse and format timestamp
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    message += f"\n🕐 <b>Last Check:</b> {formatted_time}\n"
+                except:
+                    message += f"\n🕐 <b>Last Check:</b> {timestamp}\n"
+            
+            # Show component statuses if available
+            components = []
+            if market_data.get("status") != "PASS":
+                components.append(f"Market Data: {market_data.get('status', 'unknown')}")
+            signal_status = signal_monitor.get("status", "unknown")
+            if signal_status != "PASS":
+                components.append(f"Signal Monitor: {signal_status}")
+            telegram_status = health_data.get("telegram", {}).get("status", "unknown")
+            if telegram_status != "PASS":
+                components.append(f"Telegram: {telegram_status}")
+            
+            if components:
+                message += f"\n⚠️ <b>Issues:</b> {', '.join(components)}\n"
         
         keyboard = _build_keyboard([
             [{"text": "🔄 Refresh", "callback_data": "monitoring:system"}],
@@ -3657,7 +3736,32 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
-    logger.info(f"[TG][HANDLER] handle_telegram_update called for update_id={update_id}")
+    
+    # Determine update type and extract key info for logging
+    update_type = "unknown"
+    callback_query = update.get("callback_query")
+    message = update.get("message") or update.get("edited_message")
+    
+    if callback_query:
+        update_type = "callback_query"
+        callback_data = callback_query.get("data", "")
+        from_user = callback_query.get("from", {})
+        username = from_user.get("username", "N/A")
+        user_id = str(from_user.get("id", ""))
+        msg = callback_query.get("message", {})
+        chat = msg.get("chat", {}) if msg else {}
+        chat_id = str(chat.get("id", ""))
+        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, callback_data='{callback_data}', username={username}, user_id={user_id}, chat_id={chat_id}")
+    elif message:
+        update_type = "message"
+        text = message.get("text", "")
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        from_user = message.get("from", {})
+        username = from_user.get("username", "N/A") if from_user else "N/A"
+        user_id = str(from_user.get("id", "")) if from_user else ""
+        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, text='{text[:50]}', username={username}, user_id={user_id}, chat_id={chat_id}")
+    else:
+        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type} (no message or callback_query)")
     
     # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
     # Use database for cross-instance deduplication (works between local and AWS)
@@ -3790,10 +3894,9 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         # Get chat ID from the message (group/channel), not from the user who clicked
         chat_id = str(chat.get("id", ""))
         user_id = str(from_user.get("id", ""))
+        username = from_user.get("username", "N/A")
         message_id = message.get("message_id")
-        logger.info(f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, message_id={message_id}")
-        # callback_data was already extracted above for deduplication
-        message_id = message.get("message_id")
+        logger.info(f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, username={username}, message_id={message_id}")
         
         # Only authorized chat (group/channel) or user - use helper function
         if not _is_authorized(chat_id, user_id):
@@ -3814,19 +3917,64 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 old_ids = list(PROCESSED_CALLBACK_IDS)[:500]
                 PROCESSED_CALLBACK_IDS.difference_update(old_ids)
             
-            # Answer callback query to remove loading state
+            # Answer callback query to remove loading state (CRITICAL: Must happen immediately)
             try:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-                http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
-            except:
-                pass
+                ack_response = http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
+                if ack_response.status_code == 200:
+                    ack_result = ack_response.json()
+                    if ack_result.get("ok"):
+                        logger.info(f"[TG][CALLBACK] ✅ ACK sent successfully for callback_query_id={callback_query_id}, callback_data='{callback_data}'")
+                    else:
+                        logger.warning(f"[TG][CALLBACK] ⚠️ ACK response not OK: {ack_result}")
+                else:
+                    logger.warning(f"[TG][CALLBACK] ⚠️ ACK HTTP error: status={ack_response.status_code}")
+            except Exception as ack_err:
+                logger.error(f"[TG][CALLBACK] ❌ Failed to ACK callback_query_id={callback_query_id}: {ack_err}", exc_info=True)
         
         # Process callback data
-        logger.info(f"[TG] Processing callback_query: {callback_data} from chat_id={chat_id}")
+        logger.info(f"[TG][CALLBACK] Processing callback_query: callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, username={username}")
+        
+        # Send loading feedback for menu and cmd actions (except noop)
+        if callback_data != "noop":
+            loading_text = None
+            if callback_data.startswith("menu:"):
+                menu_action = callback_data.replace("menu:", "")
+                loading_messages = {
+                    "portfolio": "💼 Loading Portfolio...",
+                    "watchlist": "📊 Loading Watchlist...",
+                    "open_orders": "📋 Loading Open Orders...",
+                    "expected_tp": "🎯 Loading Expected Take Profit...",
+                    "executed_orders": "✅ Loading Executed Orders...",
+                    "monitoring": "🔍 Loading Monitoring...",
+                    "kill_switch": "🛑 Loading Kill Switch...",
+                    "main": "📋 Loading Main Menu...",
+                }
+                loading_text = loading_messages.get(menu_action, "⏳ Loading...")
+            elif callback_data.startswith("cmd:"):
+                cmd_action = callback_data.replace("cmd:", "")
+                loading_messages = {
+                    "check_sl_tp": "🛡️ Checking SL/TP...",
+                    "version": "📝 Loading Version History...",
+                    "portfolio": "💼 Loading Portfolio...",
+                    "open_orders": "📋 Loading Open Orders...",
+                    "expected_tp": "🎯 Loading Expected Take Profit...",
+                    "executed_orders": "✅ Loading Executed Orders...",
+                }
+                loading_text = loading_messages.get(cmd_action, "⏳ Processing...")
+            
+            if loading_text:
+                try:
+                    # Send a quick loading message (will be followed by actual response)
+                    send_command_response(chat_id, loading_text)
+                    logger.info(f"[TG][CALLBACK] Sent loading feedback: '{loading_text}' for callback_data='{callback_data}'")
+                except Exception as e:
+                    logger.debug(f"[TG][CALLBACK] Could not send loading message: {e}")
         
         if callback_data == "noop":
             return
         elif callback_data == "menu:watchlist":
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:watchlist' to show_watchlist_menu, chat_id={chat_id}, message_id={message_id}")
             show_watchlist_menu(chat_id, db, page=1, message_id=message_id)
         elif callback_data == "menu:signal_config":
             show_signal_config_menu(chat_id, message_id=message_id)
@@ -3976,10 +4124,12 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             handle_skip_sl_tp_reminder_command(chat_id, f"/skip_sl_tp_reminder {symbol}", db)
         elif callback_data == "menu:main":
             # Show main menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:main' to show_main_menu, chat_id={chat_id}")
             show_main_menu(chat_id, db)
         elif callback_data.startswith("cmd:"):
             # Handle command shortcuts from menu
             cmd = callback_data.replace("cmd:", "")
+            logger.info(f"[TG][CMD] ✅ Routing callback_data='{callback_data}' (cmd='{cmd}') to handler, chat_id={chat_id}")
             if cmd == "status":
                 send_status_message(chat_id, db)
             elif cmd == "portfolio":
@@ -4004,22 +4154,28 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_help_message(chat_id)
             elif cmd == "check_sl_tp":
                 send_check_sl_tp_message(chat_id, db)
+            else:
+                logger.warning(f"[TG][CMD] ⚠️ Unknown cmd='{cmd}' in callback_data='{callback_data}'")
         elif callback_data == "menu:portfolio":
             # Show portfolio sub-menu
-            logger.info(f"[TG][MENU] Portfolio menu requested from chat_id={chat_id}, message_id={message_id}")
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:portfolio' to show_portfolio_menu, chat_id={chat_id}, message_id={message_id}")
             result = show_portfolio_menu(chat_id, db, message_id)
             logger.info(f"[TG][MENU] Portfolio menu result: {result}")
         elif callback_data == "menu:open_orders":
             # Show open orders sub-menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:open_orders' to show_open_orders_menu, chat_id={chat_id}, message_id={message_id}")
             show_open_orders_menu(chat_id, db, message_id)
         elif callback_data == "menu:expected_tp":
             # Show expected take profit sub-menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:expected_tp' to show_expected_tp_menu, chat_id={chat_id}, message_id={message_id}")
             show_expected_tp_menu(chat_id, db, message_id)
         elif callback_data == "menu:executed_orders":
             # Show executed orders sub-menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:executed_orders' to show_executed_orders_menu, chat_id={chat_id}, message_id={message_id}")
             show_executed_orders_menu(chat_id, db, message_id)
         elif callback_data == "menu:monitoring":
             # Show monitoring sub-menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:monitoring' to show_monitoring_menu, chat_id={chat_id}, message_id={message_id}")
             show_monitoring_menu(chat_id, db, message_id)
         elif callback_data.startswith("monitoring:"):
             # Handle monitoring sub-sections
@@ -4034,6 +4190,7 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 send_blocked_messages_message(chat_id, db, message_id)
         elif callback_data == "menu:kill_switch":
             # Show kill switch sub-menu
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:kill_switch' to show_kill_switch_menu, chat_id={chat_id}, message_id={message_id}")
             show_kill_switch_menu(chat_id, db, message_id)
         elif callback_data.startswith("kill:"):
             # Handle kill switch actions
@@ -4291,8 +4448,13 @@ def process_telegram_commands(db: Session = None) -> None:
                 if callback_query:
                     callback_data = callback_query.get("data", "")
                     from_user = callback_query.get("from", {})
-                    chat_id = from_user.get("id", "")
-                    logger.info(f"[TG] ⚡ Processing callback_query: '{callback_data}' from chat_id={chat_id}, update_id={update_id}")
+                    username = from_user.get("username", "N/A")
+                    user_id = str(from_user.get("id", ""))
+                    # Get chat_id from message, not from user
+                    msg = callback_query.get("message", {})
+                    chat = msg.get("chat", {}) if msg else {}
+                    chat_id = str(chat.get("id", ""))
+                    logger.info(f"[TG] ⚡ Processing callback_query: callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, username={username}, update_id={update_id}")
                 elif message:
                     text = message.get("text", "")
                     chat_id = message.get("chat", {}).get("id", "")
