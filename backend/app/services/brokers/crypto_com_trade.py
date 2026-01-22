@@ -88,6 +88,8 @@ class CryptoComTradeClient:
         # Feature flags for account capabilities
         self._trigger_orders_available = True  # Assume available until proven otherwise
         self._last_trigger_alert_time = 0  # Track when we last sent unavailable alert
+        self._last_trigger_health_check = 0  # Track when we last checked trigger orders health
+        self._trigger_health_check_interval = 86400  # 24 hours in seconds
 
         # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
         if self.crypto_auth_diag:
@@ -909,6 +911,11 @@ class CryptoComTradeClient:
         # NOTE: Reading trigger orders must NOT depend on LIVE_TRADING.
         self._refresh_runtime_flags()
 
+        # Check if trigger orders are available for this account
+        if not self._check_trigger_orders_health():
+            logger.debug("Trigger orders not available for this account, returning empty list")
+            return {"data": []}
+
         method = "private/get-trigger-orders"
         params = {
             "page": page,
@@ -977,6 +984,62 @@ class CryptoComTradeClient:
         except Exception as exc:
                 logger.error(f"Error getting trigger orders: {exc}")
                 return {"data": []}
+
+    def _check_trigger_orders_health(self) -> bool:
+        """Check if trigger orders are available for this account (once per 24h cache)."""
+        import time
+        current_time = time.time()
+
+        # Check cache first
+        if current_time - self._last_trigger_health_check < self._trigger_health_check_interval:
+            return self._trigger_orders_available
+
+        self._last_trigger_health_check = current_time
+
+        # Perform minimal health check - try to get trigger orders with minimal params
+        try:
+            method = "private/get-trigger-orders"
+            params = {"page": 0, "page_size": 1}  # Minimal request
+
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("code") == 0:
+                    self._trigger_orders_available = True
+                    return True
+                elif isinstance(result, dict) and result.get("code") == 40101:
+                    self._trigger_orders_available = False
+                    return False
+            else:
+                if not self.api_key or not self.api_secret:
+                    self._trigger_orders_available = False
+                    return False
+
+                payload = self.sign_request(method, params)
+                url = f"{self.base_url}/{method}"
+                response = http_post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=5,  # Short timeout for health check
+                    calling_module="crypto_com_trade.health_check"
+                )
+
+                if response.status_code == 200:
+                    self._trigger_orders_available = True
+                    return True
+                elif response.status_code == 401:
+                    error_data = response.json()
+                    if error_data.get("code") == 40101:
+                        self._trigger_orders_available = False
+                        return False
+
+            # If we get here, assume available (don't change cached state)
+            return self._trigger_orders_available
+
+        except Exception as e:
+            logger.debug(f"Trigger orders health check failed: {e}")
+            # On error, assume available to avoid blocking functionality
+            return True
 
     def _send_trigger_orders_unavailable_alert(self):
         """Send system alert about trigger orders being unavailable (once per 24h)."""
@@ -2484,8 +2547,9 @@ class CryptoComTradeClient:
                 "trigger_price": trigger_str,
                 "ref_price": ref_price_str
             }
+            # Crypto.com expects "GTC" not "GOOD_TILL_CANCEL"
             if include_time_in_force:
-                params["time_in_force"] = "GOOD_TILL_CANCEL"
+                params["time_in_force"] = "GTC"
             if include_client_oid:
                 params["client_oid"] = client_oid
             # Add leverage if margin trading
@@ -3515,9 +3579,9 @@ class CryptoComTradeClient:
                     # Variation 1: Minimal params with side AND client_oid (required to avoid DUPLICATE_CLORDID)
                     {**params_with_side, "client_oid": str(uuid.uuid4())},
                     # Variation 2: With client_oid and time_in_force
-                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
+                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GTC"},
                     # Variation 3: With time_in_force only (fallback, but should include client_oid)
-                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
+                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GTC"},
                 ])
             
                 # Try each params variation - ref_price is already set in params_base (TP price)

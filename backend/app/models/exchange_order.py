@@ -21,6 +21,7 @@ class OrderStatusEnum(str, enum.Enum):
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    UNKNOWN = "UNKNOWN"
 
 
 class ExchangeOrder(Base):

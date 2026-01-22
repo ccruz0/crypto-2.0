@@ -253,23 +253,24 @@ class ExchangeSyncService:
 
                 try:
                     # Use Decimal consistently for all numeric operations to match database model
-                    from decimal import Decimal, getcontext
-                    getcontext().prec = 8  # Set precision for crypto amounts
+                    from decimal import Decimal
 
                     free_str = account.get('available', account.get('balance', '0'))
                     balance_total_str = account.get('balance', '0')
 
-                    # Convert to Decimal, handling potential string inputs
+                    # Convert to Decimal at boundaries, handling potential string inputs
                     try:
                         free = Decimal(str(free_str)) if free_str else Decimal('0')
-                    except:
-                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=free before_type={type(free_str).__name__} after_type=Decimal - invalid value: {free_str}")
+                        logger.debug(f"[EXCHANGE_SYNC_NUMERIC] field=free before_type={type(free_str).__name__} after_type=Decimal value={free}")
+                    except Exception as e:
+                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=free before_type={type(free_str).__name__} after_type=Decimal - invalid value: {free_str}, error: {e}")
                         free = Decimal('0')
 
                     try:
                         balance_total = Decimal(str(balance_total_str)) if balance_total_str else Decimal('0')
-                    except:
-                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=balance_total before_type={type(balance_total_str).__name__} after_type=Decimal - invalid value: {balance_total_str}")
+                        logger.debug(f"[EXCHANGE_SYNC_NUMERIC] field=balance_total before_type={type(balance_total_str).__name__} after_type=Decimal value={balance_total}")
+                    except Exception as e:
+                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=balance_total before_type={type(balance_total_str).__name__} after_type=Decimal - invalid value: {balance_total_str}, error: {e}")
                         balance_total = Decimal('0')
 
                     locked = max(Decimal('0'), balance_total - free)
@@ -569,7 +570,7 @@ class ExchangeSyncService:
                     except:
                         pass
                 
-                # Map status
+                # Map status with proper handling for unknown statuses
                 status_map = {
                     'NEW': OrderStatusEnum.NEW,
                     'ACTIVE': OrderStatusEnum.ACTIVE,
@@ -578,8 +579,26 @@ class ExchangeSyncService:
                     'CANCELLED': OrderStatusEnum.CANCELLED,
                     'REJECTED': OrderStatusEnum.REJECTED,
                     'EXPIRED': OrderStatusEnum.EXPIRED,
+                    # Add common variations
+                    'EXECUTED': OrderStatusEnum.FILLED,
+                    'COMPLETE': OrderStatusEnum.FILLED,
+                    'CLOSED': OrderStatusEnum.FILLED,
                 }
-                status = status_map.get(status_str, OrderStatusEnum.NEW)
+
+                # Get mapped status, default to UNKNOWN for unrecognized
+                mapped_status = status_map.get(status_str.upper() if status_str else '', OrderStatusEnum.UNKNOWN)
+
+                # Special case: if status is CANCELLED/CANCELED and we have cumulative_quantity > 0,
+                # it means partial fill occurred before cancellation
+                if mapped_status == OrderStatusEnum.CANCELLED and order_data.get('cumulative_quantity', 0) > 0:
+                    total_qty = order_data.get('quantity', 0)
+                    filled_qty = order_data.get('cumulative_quantity', 0)
+                    if filled_qty >= total_qty:
+                        mapped_status = OrderStatusEnum.FILLED
+                    else:
+                        mapped_status = OrderStatusEnum.PARTIALLY_FILLED
+
+                status = mapped_status
                 
                 # Get price from limit_price (primary) or price (fallback)
                 # Crypto.com API uses 'limit_price' for limit orders

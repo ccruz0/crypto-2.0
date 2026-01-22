@@ -368,6 +368,10 @@ def create_stop_loss_order(
                 logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} SL {sl_side} - {block_reason}")
                 return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
         
+        # Log quantity normalization details before attempting order
+        logger.info(f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} minQty=? step=? normalized=?")
+        # Note: Actual normalization logging happens inside place_stop_loss_order
+
         sl_order = trade_client.place_stop_loss_order(
             symbol=symbol,
             side=sl_side,
@@ -384,7 +388,7 @@ def create_stop_loss_order(
         if "error" not in sl_order:
             sl_order_id = sl_order.get("order_id") or sl_order.get("client_order_id")
             logger.info(f"✅ Created SL order for {symbol} @ {sl_price}")
-            
+
             # Save SL order to database with OCO fields (same as automatic creation)
             if sl_order_id and parent_order_id:
                 try:
@@ -412,6 +416,33 @@ def create_stop_loss_order(
         else:
             sl_order_error = sl_order.get("error", "Unknown error")
             logger.error(f"❌ Failed to create SL order for {symbol} @ {sl_price}: {sl_order_error}")
+
+            # Check if this is a small position that cannot be protected
+            if "quantity_below_min" in sl_order_error or "below min_quantity" in sl_order_error:
+                logger.warning(f"⚠️ Small position detected for {symbol}: quantity {quantity} cannot be protected")
+
+                # Send Telegram alert with top-up suggestion
+                try:
+                    # Calculate suggested top-up amount (to reach min quantity)
+                    inst_meta = trade_client._get_instrument_metadata(symbol)
+                    min_qty = float(inst_meta.get("min_quantity", "0.001")) if inst_meta else 0.001
+                    suggested_topup = max(0, min_qty - quantity)
+
+                    telegram_notifier.send_message(
+                        f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Executed Qty: {quantity}\n"
+                        f"Min Qty Required: {min_qty}\n"
+                        f"Suggested Top-up: {suggested_topup:.6f}\n\n"
+                        f"Position cannot be protected with SL/TP.\n"
+                        f"Consider manual top-up or accept risk."
+                    )
+                    logger.info(f"✅ Sent alert for unprotected small position: {symbol}")
+                except Exception as telegram_err:
+                    logger.warning(f"Failed to send small position alert: {telegram_err}")
+                except Exception as telegram_err:
+                    logger.warning(f"Failed to send small position alert: {telegram_err}")
+
             return {"order_id": None, "error": sl_order_error}
             
     except Exception as e:
