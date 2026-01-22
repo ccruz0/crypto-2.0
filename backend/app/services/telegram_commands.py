@@ -2390,18 +2390,13 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         from sqlalchemy import func
         
         # Filter out test/simulated orders:
-        # 1. Orders with exchange_order_id starting with "dry_" (dry_run orders)
-        # 2. Orders with all timestamps NULL (likely not real orders)
+        # Only exclude orders with exchange_order_id starting with "dry_" (dry_run orders)
+        # Note: Some real orders may have NULL timestamps, so we don't filter on that
         
-        # Base filter: FILLED status, exclude dry_run orders, exclude orders with all NULL timestamps
+        # Base filter: FILLED status, exclude dry_run orders only
         base_filter = and_(
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            ~ExchangeOrder.exchange_order_id.like("dry_%"),  # Exclude dry_run orders (use ~ for NOT)
-            or_(
-                ExchangeOrder.exchange_create_time.isnot(None),
-                ExchangeOrder.created_at.isnot(None),
-                ExchangeOrder.updated_at.isnot(None)
-            )  # Include only orders with at least one timestamp
+            ~ExchangeOrder.exchange_order_id.like("dry_%")  # Exclude dry_run orders (use ~ for NOT)
         )
         
         # First try to get orders from last 24 hours
