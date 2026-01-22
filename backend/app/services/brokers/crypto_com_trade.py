@@ -84,7 +84,11 @@ class CryptoComTradeClient:
         
         # In-memory cache for instrument metadata (per run)
         self._instrument_cache: Dict[str, dict] = {}
-        
+
+        # Feature flags for account capabilities
+        self._trigger_orders_available = True  # Assume available until proven otherwise
+        self._last_trigger_alert_time = 0  # Track when we last sent unavailable alert
+
         # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
         if self.crypto_auth_diag:
             logger.info("[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED (SAFE) ===")
@@ -301,6 +305,14 @@ class CryptoComTradeClient:
         # String to sign format per Crypto.com Exchange API v1:
         # Format: method + id + api_key + params_str + nonce
         string_to_sign = method + str(request_id) + self.api_key + params_str + str(nonce_ms)
+
+        # Diagnostic logging for authentication debugging
+        key_suffix = self.api_key[-4:] if self.api_key else "NONE"
+        logger.info(
+            f"[CRYPTOCOM_AUTH] endpoint=/{method} method=POST has_signature=true "
+            f"nonce={nonce_ms} ts={nonce_ms} key_suffix={key_suffix} "
+            f"params_count={len(params) if params else 0}"
+        )
         
         # Security: signing diagnostics are OFF by default.
         if getattr(self, "crypto_auth_diag", False):
@@ -938,7 +950,20 @@ class CryptoComTradeClient:
             )
             if response.status_code == 401:
                 error_data = response.json()
+                error_code = error_data.get("code", 0)
                 logger.error(f"Authentication failed for trigger orders: {error_data}")
+
+                # Check if this is a permanent feature limitation (not just temporary auth issue)
+                if error_code == 40101:
+                    # Set feature flag that trigger orders are not available
+                    self._trigger_orders_available = False
+                    logger.warning(
+                        "⚠️ Trigger orders not available for this account (40101 auth failure). "
+                        "SL/TP will use STOP_LIMIT/TAKE_PROFIT_LIMIT orders instead. "
+                        "Setting TRIGGER_ORDERS_ENABLED=false"
+                    )
+                    # Send system alert once per 24h
+                    self._send_trigger_orders_unavailable_alert()
                 return {"data": []}
 
             response.raise_for_status()
@@ -950,8 +975,32 @@ class CryptoComTradeClient:
             logger.error(f"Network error getting trigger orders: {exc}")
             return {"data": []}
         except Exception as exc:
-            logger.error(f"Error getting trigger orders: {exc}")
-            return {"data": []}
+                logger.error(f"Error getting trigger orders: {exc}")
+                return {"data": []}
+
+    def _send_trigger_orders_unavailable_alert(self):
+        """Send system alert about trigger orders being unavailable (once per 24h)."""
+        import time
+        current_time = time.time()
+
+        # Only send alert once per 24 hours
+        if current_time - self._last_trigger_alert_time < 86400:  # 24 hours
+            return
+
+        self._last_trigger_alert_time = current_time
+
+        try:
+            from app.services.telegram_notifier import telegram_notifier
+            alert_msg = (
+                "🚫 <b>TRIGGER ORDERS NOT AVAILABLE</b>\n\n"
+                "This account does not support trigger orders (40101 auth failure).\n"
+                "SL/TP orders will use STOP_LIMIT/TAKE_PROFIT_LIMIT as fallback.\n\n"
+                "<i>This alert is sent once per 24h.</i>"
+            )
+            telegram_notifier.send_message(alert_msg)
+            logger.info("✅ Sent system alert: Trigger orders not available")
+        except Exception as e:
+            logger.warning(f"Failed to send trigger orders unavailable alert: {e}")
 
     def _map_incoming_order(self, raw: dict, is_trigger: bool) -> UnifiedOpenOrder:
         """

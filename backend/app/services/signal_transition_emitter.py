@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 from app.services.signal_monitor import signal_monitor_service
-from app.services.telegram_notifier import telegram_notifier
 from app.services.strategy_profiles import resolve_strategy_profile
 from app.services.signal_throttle import (
     fetch_signal_states,

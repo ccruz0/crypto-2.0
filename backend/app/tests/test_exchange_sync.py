@@ -104,3 +104,54 @@ def test_purge_stale_processed_orders():
 
     assert "fresh" in service.processed_order_ids
     assert "stale" not in service.processed_order_ids
+
+
+def test_sync_balances_numeric_type_conversion(db_session, monkeypatch, caplog):
+    """sync_balances should handle float/Decimal conversion without TypeError and log numeric conversions."""
+    # Stub portfolio cache to return balances with various numeric formats
+    from app.services import portfolio_cache
+
+    def fake_get_portfolio_summary(_db):
+        return {
+            "balances": [
+                # String format (common from API)
+                {"currency": "BTC", "balance": "1.5", "available": "1.2"},
+                # Float format (less common but possible)
+                {"currency": "ETH", "balance": 2.0, "available": 1.8},
+                # Invalid format that should be handled gracefully
+                {"currency": "ADA", "balance": "invalid", "available": "1.0"},
+            ]
+        }
+
+    def fake_update_portfolio_cache(_db):
+        return {"success": True}
+
+    monkeypatch.setattr(portfolio_cache, "get_portfolio_summary", fake_get_portfolio_summary)
+    monkeypatch.setattr(portfolio_cache, "update_portfolio_cache", fake_update_portfolio_cache)
+
+    # Prevent direct API usage during this test
+    monkeypatch.setattr("app.services.exchange_sync.trade_client", _StubTradeClient())
+
+    service = ExchangeSyncService()
+    # This should not raise TypeError: unsupported operand type(s) for -: 'float' and 'decimal.Decimal'
+    service.sync_balances(db_session)
+
+    # Verify balances were created with correct values
+    btc_balance = db_session.query(ExchangeBalance).filter_by(asset="BTC").one()
+    assert btc_balance.total == Decimal("1.5")
+    assert btc_balance.free == Decimal("1.5")
+    assert btc_balance.locked == Decimal("0")
+
+    eth_balance = db_session.query(ExchangeBalance).filter_by(asset="ETH").one()
+    assert eth_balance.total == Decimal("2.0")
+    assert eth_balance.free == Decimal("2.0")
+    assert eth_balance.locked == Decimal("0.2")
+
+    # ADA should be skipped due to invalid balance
+    ada_balance = db_session.query(ExchangeBalance).filter_by(asset="ADA").first()
+    assert ada_balance is None  # Should not exist
+
+    # Check that numeric conversion logs were emitted for string->Decimal conversions
+    log_messages = [record.message for record in caplog.records]
+    numeric_logs = [msg for msg in log_messages if "[EXCHANGE_SYNC_NUMERIC]" in msg]
+    assert len(numeric_logs) >= 2  # At least BTC free and total conversions

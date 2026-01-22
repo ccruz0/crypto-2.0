@@ -250,11 +250,29 @@ class ExchangeSyncService:
                 asset = account.get('currency', '').upper()
                 if not asset:
                     continue
-                
+
                 try:
-                    free = float(account.get('available', account.get('balance', '0')))
-                    balance_total = float(account.get('balance', '0'))
-                    locked = max(0, balance_total - free)
+                    # Use Decimal consistently for all numeric operations to match database model
+                    from decimal import Decimal, getcontext
+                    getcontext().prec = 8  # Set precision for crypto amounts
+
+                    free_str = account.get('available', account.get('balance', '0'))
+                    balance_total_str = account.get('balance', '0')
+
+                    # Convert to Decimal, handling potential string inputs
+                    try:
+                        free = Decimal(str(free_str)) if free_str else Decimal('0')
+                    except:
+                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=free before_type={type(free_str).__name__} after_type=Decimal - invalid value: {free_str}")
+                        free = Decimal('0')
+
+                    try:
+                        balance_total = Decimal(str(balance_total_str)) if balance_total_str else Decimal('0')
+                    except:
+                        logger.warning(f"[EXCHANGE_SYNC_NUMERIC] field=balance_total before_type={type(balance_total_str).__name__} after_type=Decimal - invalid value: {balance_total_str}")
+                        balance_total = Decimal('0')
+
+                    locked = max(Decimal('0'), balance_total - free)
                     total = free + locked
                     
                     # Only sync non-zero balances
