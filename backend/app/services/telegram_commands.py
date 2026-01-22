@@ -18,7 +18,7 @@ import pytz
 from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import is_aws_runtime
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, and_, not_, or_
 from sqlalchemy.sql import func
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
@@ -2389,11 +2389,26 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         # Use COALESCE to handle NULL exchange_create_time (fallback to created_at or updated_at)
         from sqlalchemy import func
         
+        # Filter out test/simulated orders:
+        # 1. Orders with exchange_order_id starting with "dry_" (dry_run orders)
+        # 2. Orders with all timestamps NULL (likely not real orders)
+        
+        # Base filter: FILLED status, exclude dry_run orders, exclude orders with all NULL timestamps
+        base_filter = and_(
+            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            ~ExchangeOrder.exchange_order_id.like("dry_%"),  # Exclude dry_run orders (use ~ for NOT)
+            or_(
+                ExchangeOrder.exchange_create_time.isnot(None),
+                ExchangeOrder.created_at.isnot(None),
+                ExchangeOrder.updated_at.isnot(None)
+            )  # Include only orders with at least one timestamp
+        )
+        
         # First try to get orders from last 24 hours
         # Use COALESCE to handle NULL exchange_create_time (fallback to created_at or updated_at)
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
         executed_orders_24h = db.query(ExchangeOrder).filter(
-            ExchangeOrder.status == OrderStatusEnum.FILLED,
+            base_filter,
             func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at) >= yesterday
         ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(20).all()
         
@@ -2404,7 +2419,7 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         else:
             # Get last 5 orders regardless of time (use COALESCE for ordering)
             executed_orders = db.query(ExchangeOrder).filter(
-                ExchangeOrder.status == OrderStatusEnum.FILLED
+                base_filter
             ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(5).all()
             time_filter = "Last 5 orders" if executed_orders else "Last 24h"
         
