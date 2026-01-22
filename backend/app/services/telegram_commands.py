@@ -2385,22 +2385,34 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
         from datetime import timezone
         
-        # Get executed orders (FILLED status) from last 24 hours
+        # Get executed orders (FILLED status) - show at least last 5 orders
+        # First try to get orders from last 24 hours
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
-        executed_orders = db.query(ExchangeOrder).filter(
+        executed_orders_24h = db.query(ExchangeOrder).filter(
             ExchangeOrder.status == OrderStatusEnum.FILLED,
             ExchangeOrder.exchange_create_time >= yesterday
         ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(20).all()
         
+        # If we have 5+ orders in last 24h, use those. Otherwise, get last 5 orders regardless of time
+        if len(executed_orders_24h) >= 5:
+            executed_orders = executed_orders_24h
+            time_filter = "Last 24h"
+        else:
+            # Get last 5 orders regardless of time
+            executed_orders = db.query(ExchangeOrder).filter(
+                ExchangeOrder.status == OrderStatusEnum.FILLED
+            ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(5).all()
+            time_filter = "Last 5 orders" if executed_orders else "Last 24h"
+        
         if not executed_orders:
-            message = """✅ <b>Executed Orders (Last 24h)</b>
+            message = f"""✅ <b>Executed Orders ({time_filter})</b>
 
-No executed orders found in the last 24 hours."""
+No executed orders found."""
         else:
             # Calculate total P&L
             total_pnl = 0
             
-            message = f"""✅ <b>Executed Orders (Last 24h)</b>
+            message = f"""✅ <b>Executed Orders ({time_filter})</b>
 
 📊 <b>Total: {len(executed_orders)} order(s)</b>"""
             
