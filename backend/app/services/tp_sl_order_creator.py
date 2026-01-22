@@ -4,8 +4,10 @@ This centralizes the logic used by both automatic and manual TP/SL creation.
 """
 import os
 import logging
+import time
+import decimal
 from typing import Optional, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.services.brokers.crypto_com_trade import trade_client
@@ -15,6 +17,10 @@ from app.services.telegram_notifier import telegram_notifier
 from app.utils.http_client import http_get
 
 logger = logging.getLogger(__name__)
+
+# Rate limiting for missing rules alerts: {symbol: last_alert_timestamp}
+_rules_missing_alert_times: Dict[str, float] = {}
+_RULES_MISSING_ALERT_COOLDOWN_SECONDS = 6 * 3600  # 6 hours
 
 
 def get_closing_side_from_entry(entry_side: str) -> str:
@@ -200,6 +206,67 @@ def create_take_profit_order(
                 logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} TP {tp_side} - {block_reason}")
                 return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
         
+        # PART B: Fetch instrument rules ONCE and log structured [SLTP_NORMALIZE] for TP
+        inst_meta_tp = trade_client._get_instrument_metadata(symbol)
+        if not inst_meta_tp:
+            # Rules missing - log and handle rate-limited alert
+            logger.error(
+                f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} min_qty=? step=? min_notional=? "
+                f"normalized_qty=? rounded_qty=? ok=false reason=rules_missing"
+            )
+            
+            # Rate-limited telegram alert (once per symbol per 6h)
+            current_time = time.time()
+            last_alert_time = _rules_missing_alert_times.get(symbol, 0)
+            if current_time - last_alert_time >= _RULES_MISSING_ALERT_COOLDOWN_SECONDS:
+                try:
+                    telegram_notifier.send_message(
+                        f"⚠️ <b>INSTRUMENT RULES MISSING</b>\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Position status: <b>UNPROTECTED_RULES_MISSING</b>\n\n"
+                        f"Cannot create SL/TP order - instrument metadata unavailable.\n"
+                        f"Please check exchange connectivity."
+                    )
+                    _rules_missing_alert_times[symbol] = current_time
+                    logger.info(f"✅ Sent rate-limited alert for missing rules: {symbol}")
+                except Exception as telegram_err:
+                    logger.warning(f"Failed to send missing rules alert: {telegram_err}")
+        else:
+            # Fetch all instrument rules
+            min_qty_str = inst_meta_tp.get("min_quantity", "0.001")
+            step_size_str = inst_meta_tp.get("qty_tick_size", "0.001")
+            min_notional_str = inst_meta_tp.get("min_notional", "0")
+            quantity_decimals = inst_meta_tp.get("quantity_decimals", 8)
+            
+            # Normalize quantity to get actual normalized value
+            normalized_qty_str = trade_client.normalize_quantity(symbol, quantity)
+            
+            # Calculate rounded_qty (what we'd use if normalization succeeded)
+            rounded_qty = "?"
+            if normalized_qty_str:
+                rounded_qty = normalized_qty_str
+            else:
+                # Calculate what the rounded value would be (even if below min)
+                try:
+                    qty_decimal = decimal.Decimal(str(quantity))
+                    step_decimal = decimal.Decimal(str(step_size_str))
+                    if step_decimal > 0:
+                        division_result = qty_decimal / step_decimal
+                        floored_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR)
+                        rounded_qty_decimal = floored_result * step_decimal
+                        rounded_qty = format(rounded_qty_decimal, f'.{quantity_decimals}f')
+                except Exception as e:
+                    logger.debug(f"Could not calculate rounded_qty: {e}")
+            
+            # Log structured [SLTP_NORMALIZE] with all numeric values
+            ok_status = "true" if normalized_qty_str else "false"
+            reason = "success" if normalized_qty_str else "below_min_qty"
+            logger.info(
+                f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} min_qty={min_qty_str} "
+                f"step={step_size_str} min_notional={min_notional_str} normalized_qty={normalized_qty_str or 'None'} "
+                f"rounded_qty={rounded_qty} ok={ok_status} reason={reason}"
+            )
+        
         # Create TAKE_PROFIT_LIMIT order with trigger_price and price both equal to tp_price
         tp_order = trade_client.place_take_profit_order(
             symbol=symbol,
@@ -368,9 +435,70 @@ def create_stop_loss_order(
                 logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} SL {sl_side} - {block_reason}")
                 return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
         
-        # Log quantity normalization details before attempting order
-        logger.info(f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} minQty=? step=? normalized=?")
-        # Note: Actual normalization logging happens inside place_stop_loss_order
+        # PART B: Fetch instrument rules ONCE and log structured [SLTP_NORMALIZE]
+        inst_meta = trade_client._get_instrument_metadata(symbol)
+        if not inst_meta:
+            # Rules missing - log and handle rate-limited alert
+            logger.error(
+                f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} min_qty=? step=? min_notional=? "
+                f"normalized_qty=? rounded_qty=? ok=false reason=rules_missing"
+            )
+            
+            # Rate-limited telegram alert (once per symbol per 6h)
+            current_time = time.time()
+            last_alert_time = _rules_missing_alert_times.get(symbol, 0)
+            if current_time - last_alert_time >= _RULES_MISSING_ALERT_COOLDOWN_SECONDS:
+                try:
+                    telegram_notifier.send_message(
+                        f"⚠️ <b>INSTRUMENT RULES MISSING</b>\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Position status: <b>UNPROTECTED_RULES_MISSING</b>\n\n"
+                        f"Cannot create SL/TP order - instrument metadata unavailable.\n"
+                        f"Please check exchange connectivity."
+                    )
+                    _rules_missing_alert_times[symbol] = current_time
+                    logger.info(f"✅ Sent rate-limited alert for missing rules: {symbol}")
+                except Exception as telegram_err:
+                    logger.warning(f"Failed to send missing rules alert: {telegram_err}")
+            
+            # Mark position as UNPROTECTED_RULES_MISSING (persist to DB if needed)
+            # Note: This status would need to be added to the position model if persistence is required
+            logger.warning(f"⚠️ Position {symbol} marked as UNPROTECTED_RULES_MISSING")
+        else:
+            # Fetch all instrument rules
+            min_qty_str = inst_meta.get("min_quantity", "0.001")
+            step_size_str = inst_meta.get("qty_tick_size", "0.001")
+            min_notional_str = inst_meta.get("min_notional", "0")
+            quantity_decimals = inst_meta.get("quantity_decimals", 8)
+            
+            # Normalize quantity to get actual normalized value
+            normalized_qty_str = trade_client.normalize_quantity(symbol, quantity)
+            
+            # Calculate rounded_qty (what we'd use if normalization succeeded)
+            rounded_qty = "?"
+            if normalized_qty_str:
+                rounded_qty = normalized_qty_str
+            else:
+                # Calculate what the rounded value would be (even if below min)
+                try:
+                    qty_decimal = decimal.Decimal(str(quantity))
+                    step_decimal = decimal.Decimal(str(step_size_str))
+                    if step_decimal > 0:
+                        division_result = qty_decimal / step_decimal
+                        floored_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_FLOOR)
+                        rounded_qty_decimal = floored_result * step_decimal
+                        rounded_qty = format(rounded_qty_decimal, f'.{quantity_decimals}f')
+                except Exception as e:
+                    logger.debug(f"Could not calculate rounded_qty: {e}")
+            
+            # Log structured [SLTP_NORMALIZE] with all numeric values
+            ok_status = "true" if normalized_qty_str else "false"
+            reason = "success" if normalized_qty_str else "below_min_qty"
+            logger.info(
+                f"[SLTP_NORMALIZE] symbol={symbol} raw_qty={quantity} min_qty={min_qty_str} "
+                f"step={step_size_str} min_notional={min_notional_str} normalized_qty={normalized_qty_str or 'None'} "
+                f"rounded_qty={rounded_qty} ok={ok_status} reason={reason}"
+            )
 
         sl_order = trade_client.place_stop_loss_order(
             symbol=symbol,
@@ -421,27 +549,99 @@ def create_stop_loss_order(
             if "quantity_below_min" in sl_order_error or "below min_quantity" in sl_order_error:
                 logger.warning(f"⚠️ Small position detected for {symbol}: quantity {quantity} cannot be protected")
 
-                # Send Telegram alert with top-up suggestion
+                # PART C: Send Telegram alert with corrected top-up suggestion math
                 try:
-                    # Calculate suggested top-up amount (to reach min quantity)
+                    # Fetch instrument rules (should already be fetched above, but fetch again for safety)
                     inst_meta = trade_client._get_instrument_metadata(symbol)
-                    min_qty = float(inst_meta.get("min_quantity", "0.001")) if inst_meta else 0.001
-                    suggested_topup = max(0, min_qty - quantity)
-
-                    telegram_notifier.send_message(
-                        f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
-                        f"Symbol: {symbol}\n"
-                        f"Executed Qty: {quantity}\n"
-                        f"Min Qty Required: {min_qty}\n"
-                        f"Suggested Top-up: {suggested_topup:.6f}\n\n"
-                        f"Position cannot be protected with SL/TP.\n"
-                        f"Consider manual top-up or accept risk."
-                    )
-                    logger.info(f"✅ Sent alert for unprotected small position: {symbol}")
+                    if not inst_meta:
+                        logger.warning(f"⚠️ Cannot calculate top-up for {symbol}: instrument rules unavailable")
+                        telegram_notifier.send_message(
+                            f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Executed Qty: {quantity}\n\n"
+                            f"Position cannot be protected with SL/TP.\n"
+                            f"Instrument rules unavailable."
+                        )
+                    else:
+                        min_qty_str = inst_meta.get("min_quantity", "0.001")
+                        step_size_str = inst_meta.get("qty_tick_size", "0.001")
+                        min_qty = float(min_qty_str)
+                        step_size = float(step_size_str)
+                        
+                        # PART C: Fix top-up suggestion math
+                        # target_qty = min_qty
+                        # topup_qty = target_qty - normalized_qty
+                        # Round topup_qty UP to step size
+                        normalized_qty = float(trade_client.normalize_quantity(symbol, quantity) or 0)
+                        if normalized_qty == 0:
+                            # If normalization failed, use raw quantity
+                            normalized_qty = quantity
+                        
+                        target_qty = min_qty
+                        topup_qty_raw = target_qty - normalized_qty
+                        
+                        # Round topup_qty UP to step size
+                        if step_size > 0:
+                            topup_qty_decimal = decimal.Decimal(str(topup_qty_raw))
+                            step_decimal = decimal.Decimal(str(step_size))
+                            division_result = topup_qty_decimal / step_decimal
+                            # Round UP (ceiling)
+                            ceiled_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_CEILING)
+                            topup_qty_rounded = float(ceiled_result * step_decimal)
+                        else:
+                            topup_qty_rounded = topup_qty_raw
+                        
+                        # Ensure topup_qty_rounded is positive and results in >= min_qty after adding
+                        if topup_qty_rounded < 0:
+                            topup_qty_rounded = step_size  # At least one step
+                        
+                        # Verify: normalized_qty + topup_qty_rounded >= min_qty
+                        final_qty = normalized_qty + topup_qty_rounded
+                        if final_qty < min_qty:
+                            # Adjust to ensure we meet min_qty
+                            topup_qty_rounded = min_qty - normalized_qty
+                            if step_size > 0:
+                                # Round up again
+                                topup_qty_decimal = decimal.Decimal(str(topup_qty_rounded))
+                                step_decimal = decimal.Decimal(str(step_size))
+                                division_result = topup_qty_decimal / step_decimal
+                                ceiled_result = division_result.quantize(decimal.Decimal('1'), rounding=decimal.ROUND_CEILING)
+                                topup_qty_rounded = float(ceiled_result * step_decimal)
+                        
+                        # Get last price for USD notional calculation
+                        last_price = sl_price  # Use SL price as approximation, or fetch ticker
+                        try:
+                            ticker_url = "https://api.crypto.com/v2/public/get-ticker"
+                            ticker_params = {"instrument_name": symbol}
+                            ticker_response = http_get(ticker_url, params=ticker_params, timeout=5, calling_module="tp_sl_order_creator")
+                            if ticker_response.status_code == 200:
+                                ticker_data = ticker_response.json()
+                                result_data = ticker_data.get("result", {})
+                                if "data" in result_data and len(result_data["data"]) > 0:
+                                    ticker_data_item = result_data["data"][0]
+                                    last_price = float(ticker_data_item.get("a", sl_price))  # Use ask price
+                        except Exception as price_err:
+                            logger.debug(f"Could not fetch ticker price for {symbol}, using SL price: {price_err}")
+                        
+                        # Calculate estimated USD notional
+                        estimated_usd_notional = topup_qty_rounded * last_price
+                        
+                        telegram_notifier.send_message(
+                            f"⚠️ <b>SMALL POSITION UNPROTECTED</b>\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Executed Qty: {quantity:.8f}\n"
+                            f"Normalized Qty: {normalized_qty:.8f}\n"
+                            f"Min Qty Required: {min_qty:.8f}\n"
+                            f"Step Size: {step_size:.8f}\n\n"
+                            f"💡 <b>Suggested Top-up:</b>\n"
+                            f"Quantity: {topup_qty_rounded:.8f}\n"
+                            f"Estimated USD: ${estimated_usd_notional:.2f} (@ ${last_price:.4f})\n\n"
+                            f"Position cannot be protected with SL/TP.\n"
+                            f"Consider manual top-up or accept risk."
+                        )
+                        logger.info(f"✅ Sent alert for unprotected small position: {symbol} (topup_qty={topup_qty_rounded:.8f}, usd=${estimated_usd_notional:.2f})")
                 except Exception as telegram_err:
-                    logger.warning(f"Failed to send small position alert: {telegram_err}")
-                except Exception as telegram_err:
-                    logger.warning(f"Failed to send small position alert: {telegram_err}")
+                    logger.warning(f"Failed to send small position alert: {telegram_err}", exc_info=True)
 
             return {"order_id": None, "error": sl_order_error}
             

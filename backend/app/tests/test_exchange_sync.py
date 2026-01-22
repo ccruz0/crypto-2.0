@@ -243,6 +243,135 @@ def test_order_status_mapping_cancelled_with_partial_fill(db_session, monkeypatc
     assert updated_order.status == OrderStatusEnum.PARTIALLY_FILLED
 
 
+def test_order_status_mapping_canceled_with_partial_fill(db_session, monkeypatch):
+    """Test that CANCELED (one L) orders with cumulative_quantity > 0 are treated as PARTIALLY_FILLED."""
+    from app.models.exchange_order import OrderStatusEnum
+
+    # Mock order data with canceled status (one L) but partial fill
+    mock_order_data = {
+        'order_id': 'test-789',
+        'status': 'CANCELED',  # One L spelling
+        'quantity': 1.0,
+        'cumulative_quantity': 0.3  # Partial fill before cancellation
+    }
+
+    # Stub trade client
+    from app.services import exchange_sync
+
+    def mock_get_open_orders():
+        return {'data': [mock_order_data]}
+
+    monkeypatch.setattr(exchange_sync.trade_client, 'get_open_orders', mock_get_open_orders)
+
+    # Create existing order in DB
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum
+    existing_order = ExchangeOrder(
+        exchange_order_id='test-789',
+        symbol='ETH_USDT',
+        side=OrderSideEnum.BUY,
+        order_type='LIMIT',
+        status=OrderStatusEnum.NEW,
+        price=3000.0,
+        quantity=1.0
+    )
+    db_session.add(existing_order)
+    db_session.commit()
+
+    # Run sync
+    service = exchange_sync.ExchangeSyncService()
+    service.sync_open_orders(db_session)
+
+    # Verify status was set to PARTIALLY_FILLED (not CANCELLED)
+    updated_order = db_session.query(ExchangeOrder).filter_by(exchange_order_id='test-789').first()
+    assert updated_order.status == OrderStatusEnum.PARTIALLY_FILLED
+
+
+def test_order_status_mapping_canceled_with_full_fill(db_session, monkeypatch):
+    """Test that CANCELED orders with cumulative_quantity >= quantity are treated as FILLED."""
+    from app.models.exchange_order import OrderStatusEnum
+
+    # Mock order data with canceled status but full fill
+    mock_order_data = {
+        'order_id': 'test-999',
+        'status': 'CANCELED',
+        'quantity': 1.0,
+        'cumulative_quantity': 1.0  # Full fill before cancellation
+    }
+
+    # Stub trade client
+    from app.services import exchange_sync
+
+    def mock_get_open_orders():
+        return {'data': [mock_order_data]}
+
+    monkeypatch.setattr(exchange_sync.trade_client, 'get_open_orders', mock_get_open_orders)
+
+    # Create existing order in DB
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum
+    existing_order = ExchangeOrder(
+        exchange_order_id='test-999',
+        symbol='SOL_USDT',
+        side=OrderSideEnum.BUY,
+        order_type='LIMIT',
+        status=OrderStatusEnum.NEW,
+        price=100.0,
+        quantity=1.0
+    )
+    db_session.add(existing_order)
+    db_session.commit()
+
+    # Run sync
+    service = exchange_sync.ExchangeSyncService()
+    service.sync_open_orders(db_session)
+
+    # Verify status was set to FILLED (not CANCELLED)
+    updated_order = db_session.query(ExchangeOrder).filter_by(exchange_order_id='test-999').first()
+    assert updated_order.status == OrderStatusEnum.FILLED
+
+
+def test_order_status_mapping_unknown_with_zero_quantity(db_session, monkeypatch):
+    """Test that unknown status with cumulative_quantity=0 maps to UNKNOWN."""
+    from app.models.exchange_order import OrderStatusEnum
+
+    # Mock order data with unknown status and no fills
+    mock_order_data = {
+        'order_id': 'test-unknown',
+        'status': 'UNKNOWN_STATUS_XYZ',  # Unknown status
+        'quantity': 1.0,
+        'cumulative_quantity': 0.0  # No fills
+    }
+
+    # Stub trade client
+    from app.services import exchange_sync
+
+    def mock_get_open_orders():
+        return {'data': [mock_order_data]}
+
+    monkeypatch.setattr(exchange_sync.trade_client, 'get_open_orders', mock_get_open_orders)
+
+    # Create existing order in DB
+    from app.models.exchange_order import ExchangeOrder, OrderSideEnum
+    existing_order = ExchangeOrder(
+        exchange_order_id='test-unknown',
+        symbol='ADA_USDT',
+        side=OrderSideEnum.BUY,
+        order_type='LIMIT',
+        status=OrderStatusEnum.NEW,
+        price=0.5,
+        quantity=1.0
+    )
+    db_session.add(existing_order)
+    db_session.commit()
+
+    # Run sync
+    service = exchange_sync.ExchangeSyncService()
+    service.sync_open_orders(db_session)
+
+    # Verify status was set to UNKNOWN
+    updated_order = db_session.query(ExchangeOrder).filter_by(exchange_order_id='test-unknown').first()
+    assert updated_order.status == OrderStatusEnum.UNKNOWN
+
+
 def test_stop_limit_payload_construction():
     """Test that STOP_LIMIT order payloads are constructed correctly with proper fields."""
     from backend.app.services.brokers.crypto_com_trade import CryptoComTradeClient

@@ -577,6 +577,7 @@ class ExchangeSyncService:
                     'PARTIALLY_FILLED': OrderStatusEnum.PARTIALLY_FILLED,
                     'FILLED': OrderStatusEnum.FILLED,
                     'CANCELLED': OrderStatusEnum.CANCELLED,
+                    'CANCELED': OrderStatusEnum.CANCELLED,  # Handle both spellings
                     'REJECTED': OrderStatusEnum.REJECTED,
                     'EXPIRED': OrderStatusEnum.EXPIRED,
                     # Add common variations
@@ -586,29 +587,17 @@ class ExchangeSyncService:
                 }
 
                 # Get mapped status, default to UNKNOWN for unrecognized
-                mapped_status = status_map.get(status_str.upper() if status_str else '', OrderStatusEnum.UNKNOWN)
-                
-                # CRITICAL: If executed_qty > 0, order has filled (even if status unclear)
-                # NEVER leave executed orders as UNKNOWN
-                cumulative_qty = order_data.get('cumulative_quantity', 0) or 0
-                if cumulative_qty > 0:
-                    if mapped_status == OrderStatusEnum.UNKNOWN:
-                        # Determine FILLED vs PARTIALLY_FILLED based on quantity
-                        total_qty = order_data.get('quantity', 0) or 0
-                        if total_qty > 0 and cumulative_qty >= total_qty * 0.999:  # 99.9% threshold
-                            mapped_status = OrderStatusEnum.FILLED
-                        else:
-                            mapped_status = OrderStatusEnum.PARTIALLY_FILLED
-                        logger.info(
-                            f"[STATUS_RESOLUTION] Order {order_id} status={status_str} but cumulative_qty={cumulative_qty} > 0. "
-                            f"Setting status to {mapped_status.value}"
-                        )
+                status_str_upper = status_str.upper() if status_str else ''
+                mapped_status = status_map.get(status_str_upper, OrderStatusEnum.UNKNOWN)
 
-                # Special case: if status is CANCELLED/CANCELED and we have cumulative_quantity > 0,
-                # it means partial fill occurred before cancellation
-                if mapped_status == OrderStatusEnum.CANCELLED and cumulative_qty > 0:
-                    total_qty = order_data.get('quantity', 0) or 0
-                    if total_qty > 0 and cumulative_qty >= total_qty * 0.999:
+                # Special case: if status is CANCELLED/CANCELED (check raw status_str, not mapped_status)
+                # and we have cumulative_quantity > 0, it means partial fill occurred before cancellation
+                # CRITICAL: Use raw status_str_upper to detect cancel states, not mapped_status
+                # This ensures we catch both "CANCELLED" and "CANCELED" even if mapping fails
+                if status_str_upper in {"CANCELLED", "CANCELED"} and order_data.get('cumulative_quantity', 0) > 0:
+                    total_qty = order_data.get('quantity', 0)
+                    filled_qty = order_data.get('cumulative_quantity', 0)
+                    if filled_qty >= total_qty:
                         mapped_status = OrderStatusEnum.FILLED
                     else:
                         mapped_status = OrderStatusEnum.PARTIALLY_FILLED
