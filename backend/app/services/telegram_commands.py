@@ -2382,7 +2382,7 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         if not db:
             return send_command_response(chat_id, "❌ Database not available")
         
-        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
+        from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
         from datetime import timezone
         
         # Get executed orders (FILLED status) - show at least last 5 orders
@@ -2390,6 +2390,7 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         from sqlalchemy import func
         
         # First try to get orders from last 24 hours
+        # Use COALESCE to handle NULL exchange_create_time (fallback to created_at or updated_at)
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
         executed_orders_24h = db.query(ExchangeOrder).filter(
             ExchangeOrder.status == OrderStatusEnum.FILLED,
@@ -2449,29 +2450,140 @@ No executed orders found."""
                 else:
                     value_str = "N/A"
                 
-                # Format timestamp
-                if order.exchange_create_time:
-                    try:
-                        if isinstance(order.exchange_create_time, datetime):
-                            ts = order.exchange_create_time
+                # Format timestamp - use COALESCE logic (exchange_create_time, created_at, updated_at)
+                time_str = "N/A"
+                try:
+                    # Try exchange_create_time first
+                    ts = order.exchange_create_time
+                    if not ts:
+                        # Fallback to created_at
+                        ts = order.created_at
+                    if not ts:
+                        # Fallback to updated_at
+                        ts = order.updated_at
+                    
+                    if ts:
+                        if isinstance(ts, datetime):
+                            ts_utc = ts
+                        elif isinstance(ts, (int, float)):
+                            ts_utc = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts, tz=timezone.utc)
                         else:
-                            ts = datetime.fromtimestamp(order.exchange_create_time / 1000, tz=timezone.utc)
+                            ts_utc = ts
+                        
+                        # Ensure timezone aware
+                        if ts_utc.tzinfo is None:
+                            ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+                        
                         tz = pytz.timezone("Asia/Makassar")  # Bali time
-                        ts_local = ts.astimezone(tz)
+                        ts_local = ts_utc.astimezone(tz)
                         time_str = ts_local.strftime("%Y-%m-%d %H:%M")
-                    except:
-                        time_str = "N/A"
-                else:
+                except Exception as e:
+                    logger.debug(f"[TG] Error formatting timestamp for order {order.exchange_order_id}: {e}")
                     time_str = "N/A"
                 
+                # Determine order type
+                order_type_str = "MARKET"
+                if order.order_type:
+                    order_type_upper = order.order_type.upper()
+                    if "MARKET" in order_type_upper:
+                        order_type_str = "MARKET"
+                    elif "LIMIT" in order_type_upper:
+                        order_type_str = "LIMIT"
+                    elif "STOP" in order_type_upper:
+                        order_type_str = "STOP"
+                
+                # Check if it's TP/SL order
+                is_tp_sl = False
+                tp_sl_type = ""
+                if order.order_role:
+                    role_upper = str(order.order_role).upper()
+                    if "TAKE_PROFIT" in role_upper:
+                        is_tp_sl = True
+                        tp_sl_type = "TP"
+                        order_type_str = "TP"
+                    elif "STOP_LOSS" in role_upper:
+                        is_tp_sl = True
+                        tp_sl_type = "SL"
+                        order_type_str = "SL"
+                
+                # Calculate profit/loss for TP/SL orders
+                pnl_str = ""
+                if is_tp_sl:
+                    try:
+                        # Find entry order (parent order) - try parent_order_id first, then oco_group_id
+                        entry_order = None
+                        if order.parent_order_id:
+                            entry_order = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.exchange_order_id == order.parent_order_id
+                            ).first()
+                        
+                        # If no parent_order_id, try to find entry order via oco_group_id
+                        # Entry order should be PARENT role, same symbol, opposite side
+                        if not entry_order and order.oco_group_id:
+                            # Find the PARENT order in the same OCO group
+                            entry_order = db.query(ExchangeOrder).filter(
+                                ExchangeOrder.oco_group_id == order.oco_group_id,
+                                ExchangeOrder.order_role == "PARENT",
+                                ExchangeOrder.symbol == symbol
+                            ).first()
+                        
+                        # If still not found, try to find the most recent BUY order for this symbol (for SELL TP/SL)
+                        # or most recent SELL order (for BUY TP/SL in short positions)
+                        if not entry_order:
+                            if side == "SELL":
+                                # TP/SL SELL - find most recent BUY order for this symbol
+                                entry_order = db.query(ExchangeOrder).filter(
+                                    ExchangeOrder.symbol == symbol,
+                                    ExchangeOrder.side == OrderSideEnum.BUY,
+                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                    ExchangeOrder.order_role != "STOP_LOSS",
+                                    ExchangeOrder.order_role != "TAKE_PROFIT"
+                                ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).first()
+                            elif side == "BUY":
+                                # TP/SL BUY (for short positions) - find most recent SELL order
+                                entry_order = db.query(ExchangeOrder).filter(
+                                    ExchangeOrder.symbol == symbol,
+                                    ExchangeOrder.side == OrderSideEnum.SELL,
+                                    ExchangeOrder.status == OrderStatusEnum.FILLED,
+                                    ExchangeOrder.order_role != "STOP_LOSS",
+                                    ExchangeOrder.order_role != "TAKE_PROFIT"
+                                ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).first()
+                        
+                        if entry_order:
+                            # Use avg_price (execution price) if available, otherwise use price
+                            entry_price = float(entry_order.avg_price or entry_order.price or 0)
+                            exit_price = float(order.avg_price or order.price or 0)
+                            
+                            if entry_price > 0 and exit_price > 0 and quantity > 0:
+                                # Calculate P&L based on order side
+                                if side == "SELL" and entry_order.side == OrderSideEnum.BUY:
+                                    # TP/SL SELL order closing a BUY position (long)
+                                    pnl = (exit_price - entry_price) * quantity
+                                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+                                elif side == "BUY" and entry_order.side == OrderSideEnum.SELL:
+                                    # TP/SL BUY order closing a SELL position (short)
+                                    pnl = (entry_price - exit_price) * quantity
+                                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+                                else:
+                                    # Same side - might be error, skip P&L
+                                    pnl = 0
+                                    pnl_pct = 0
+                                
+                                if pnl != 0:
+                                    pnl_emoji = "📈" if pnl > 0 else "📉"
+                                    pnl_str = f"\n  {pnl_emoji} P&L: ${pnl:,.2f} ({pnl_pct:+.2f}%)"
+                    except Exception as e:
+                        logger.debug(f"[TG] Error calculating P&L for order {order.exchange_order_id}: {e}")
+                
                 side_emoji = "🟢" if side == "BUY" else "🔴"
+                order_type_emoji = "🎯" if is_tp_sl else "📊"
                 
                 message += f"""
 
-{side_emoji} <b>{symbol}</b> {side}
+{side_emoji} <b>{symbol}</b> {side} | {order_type_emoji} {order_type_str}
   Qty: {quantity_str} | Price: {price_str}
   Value: {value_str}
-  Time: {time_str}"""
+  Date: {time_str}{pnl_str}"""
             
             # Add total P&L if calculated
             if total_pnl != 0:
