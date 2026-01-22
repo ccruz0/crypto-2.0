@@ -498,6 +498,106 @@ class SignalMonitorService:
             symbol,
             details or {},
         )
+    
+    def _resolve_alert_config(self, db: Session, symbol: str) -> Dict[str, Any]:
+        """
+        CENTRALIZED ALERT CONFIG RESOLVER - Single source of truth for alert_enabled.
+        
+        This function ALWAYS reads from database with symbol normalization to ensure
+        UI and backend use the same values.
+        
+        Args:
+            db: Database session
+            symbol: Trading symbol (will be normalized)
+            
+        Returns:
+            Dict with:
+            - alert_enabled: bool (master switch)
+            - buy_alert_enabled: bool
+            - sell_alert_enabled: bool
+            - trade_enabled: bool
+            - source: str ("db" | "not_found" | "error")
+            - symbol_normalized: str (normalized symbol used for lookup)
+        """
+        from app.utils.symbols import normalize_symbol_for_exchange
+        
+        normalized_symbol = normalize_symbol_for_exchange(symbol)
+        
+        try:
+            # Try exact match first
+            item = db.query(WatchlistItem).filter(
+                WatchlistItem.symbol == normalized_symbol,
+                WatchlistItem.is_deleted == False
+            ).first()
+            
+            # If not found, try USD/USDT variants (BTC_USD vs BTC_USDT)
+            if not item and '_' in normalized_symbol:
+                base = normalized_symbol.split('_')[0]
+                quote = normalized_symbol.split('_')[1] if len(normalized_symbol.split('_')) > 1 else None
+                
+                if quote in ['USD', 'USDT']:
+                    # Try opposite variant
+                    alt_quote = 'USDT' if quote == 'USD' else 'USD'
+                    alt_symbol = f"{base}_{alt_quote}"
+                    item = db.query(WatchlistItem).filter(
+                        WatchlistItem.symbol == alt_symbol,
+                        WatchlistItem.is_deleted == False
+                    ).first()
+                    if item:
+                        normalized_symbol = alt_symbol  # Update to actual symbol found
+            
+            if not item:
+                logger.debug(
+                    f"[ALERT_CONFIG] symbol={symbol} normalized={normalized_symbol} source=not_found"
+                )
+                return {
+                    "alert_enabled": False,
+                    "buy_alert_enabled": False,
+                    "sell_alert_enabled": False,
+                    "trade_enabled": False,
+                    "source": "not_found",
+                    "symbol_normalized": normalized_symbol
+                }
+            
+            # Read values directly from DB (ensure fresh read)
+            db.refresh(item)
+            
+            alert_enabled = bool(getattr(item, 'alert_enabled', False))
+            buy_alert_enabled = bool(getattr(item, 'buy_alert_enabled', False))
+            sell_alert_enabled = bool(getattr(item, 'sell_alert_enabled', False))
+            trade_enabled = bool(getattr(item, 'trade_enabled', False))
+            
+            logger.info(
+                f"[ALERT_CONFIG] symbol={symbol} normalized={normalized_symbol} "
+                f"alert_enabled={alert_enabled} buy_alert_enabled={buy_alert_enabled} "
+                f"sell_alert_enabled={sell_alert_enabled} trade_enabled={trade_enabled} source=db"
+            )
+            
+            return {
+                "alert_enabled": alert_enabled,
+                "buy_alert_enabled": buy_alert_enabled,
+                "sell_alert_enabled": sell_alert_enabled,
+                "trade_enabled": trade_enabled,
+                "source": "db",
+                "symbol_normalized": normalized_symbol,
+                "watchlist_item": item  # Include for backward compatibility
+            }
+            
+        except Exception as e:
+            logger.error(
+                f"[ALERT_CONFIG] symbol={symbol} normalized={normalized_symbol} "
+                f"source=error error={e}",
+                exc_info=True
+            )
+            return {
+                "alert_enabled": False,
+                "buy_alert_enabled": False,
+                "sell_alert_enabled": False,
+                "trade_enabled": False,
+                "source": "error",
+                "symbol_normalized": normalized_symbol,
+                "error": str(e)
+            }
 
     def _log_pipeline_stage(
         self,
@@ -2771,12 +2871,16 @@ class SignalMonitorService:
         # se envíen incluso si hay algún return temprano en la lógica de órdenes
         # CRITICAL: Check both alert_enabled (master switch) AND buy_alert_enabled (BUY-specific flag)
         # ========================================================================
-        # CRITICAL: Always read flags from DB (watchlist_item is already refreshed from DB)
-        buy_alert_enabled = getattr(watchlist_item, 'buy_alert_enabled', False)
+        # CRITICAL: Use centralized resolver to ensure we read fresh from DB with symbol normalization
+        # This fixes the mismatch where UI shows enabled but backend blocks
+        alert_config = self._resolve_alert_config(db, symbol)
+        watchlist_item.alert_enabled = alert_config["alert_enabled"]
+        buy_alert_enabled = alert_config["buy_alert_enabled"]
+        sell_alert_enabled = alert_config["sell_alert_enabled"]
         
         # Log alert decision with all flags for clarity
         if buy_signal:
-            alert_enabled = watchlist_item.alert_enabled
+            alert_enabled = alert_config["alert_enabled"]
             if alert_enabled and buy_alert_enabled:
                 logger.info(
                     f"🔍 {symbol} BUY alert decision: buy_signal=True, "
@@ -2817,7 +2921,8 @@ class SignalMonitorService:
                 )
         
         # CRITICAL: Verify BOTH alert_enabled (master switch) AND buy_alert_enabled (BUY-specific) before processing
-        if buy_signal and watchlist_item.alert_enabled and buy_alert_enabled:
+        # Use values from centralized resolver (already updated above)
+        if buy_signal and alert_config["alert_enabled"] and alert_config["buy_alert_enabled"]:
             # Log alert allowed decision with all flags for verification
             logger.info(
                 "[ALERT_ALLOWED] symbol=%s gate=alert_enabled+buy_alert_enabled decision=ALLOW "
@@ -2927,16 +3032,18 @@ class SignalMonitorService:
                 
                 # CRITICAL: Re-check both alert_enabled AND buy_alert_enabled before sending
                 # Refresh both flags from database to ensure we have latest values
-                try:
-                    fresh_check = db.query(WatchlistItem).filter(
-                        WatchlistItem.symbol == symbol
-                    ).first()
-                    if fresh_check:
-                        watchlist_item.alert_enabled = fresh_check.alert_enabled
-                        buy_alert_enabled = getattr(fresh_check, 'buy_alert_enabled', False)
-                        logger.debug(f"🔄 Última verificación para {symbol}: alert_enabled={fresh_check.alert_enabled}, buy_alert_enabled={buy_alert_enabled}")
-                except Exception as e:
-                    logger.warning(f"Error en última verificación de flags para {symbol}: {e}")
+                # CRITICAL: Use centralized resolver to ensure we read fresh from DB
+                # This fixes the mismatch where UI shows enabled but backend blocks
+                alert_config = self._resolve_alert_config(db, symbol)
+                watchlist_item.alert_enabled = alert_config["alert_enabled"]
+                buy_alert_enabled = alert_config["buy_alert_enabled"]
+                sell_alert_enabled = alert_config["sell_alert_enabled"]
+                
+                logger.debug(
+                    f"🔄 [ALERT_CONFIG] {symbol} resolved: alert_enabled={alert_config['alert_enabled']} "
+                    f"buy_alert_enabled={buy_alert_enabled} sell_alert_enabled={sell_alert_enabled} "
+                    f"source={alert_config['source']} normalized={alert_config['symbol_normalized']}"
+                )
                 
                 if not watchlist_item.alert_enabled:
                     # Enhanced blocking log with source information
@@ -6974,18 +7081,35 @@ class SignalMonitorService:
                 result_status = result.get("status", "").upper()
                 cumulative_qty = float(result.get("cumulative_quantity", 0) or 0)
                 
-                # Determine actual status
+                # CRITICAL FIX: Proper status resolution - never leave executed orders as UNKNOWN
+                # If cumulative_qty > 0, the order has executed (even if status says otherwise)
                 if result_status in ["FILLED", "filled"]:
                     db_status = OrderStatusEnum.FILLED
                     db_status_str = "FILLED"
+                elif result_status in ["PARTIALLY_FILLED", "PARTIALLY FILLED"]:
+                    # Exchange reports PARTIALLY_FILLED - use it directly
+                    db_status = OrderStatusEnum.PARTIALLY_FILLED
+                    db_status_str = "PARTIALLY_FILLED"
                 elif result_status in ["CANCELLED", "CANCELED"]:
+                    # CANCELLED with cumulative_qty > 0 means it was filled before cancellation
                     if cumulative_qty > 0:
                         db_status = OrderStatusEnum.FILLED
                         db_status_str = "FILLED"
                     else:
                         db_status = OrderStatusEnum.CANCELLED
                         db_status_str = "CANCELLED"
+                elif cumulative_qty > 0:
+                    # CRITICAL: Any executed quantity means order has filled (even if status unclear)
+                    # Treat as FILLED if quantity matches requested, PARTIALLY_FILLED otherwise
+                    # For MARKET orders, assume FILLED if we have any quantity
+                    db_status = OrderStatusEnum.FILLED
+                    db_status_str = "FILLED"
+                    logger.info(
+                        f"⚠️ [STATUS_RESOLUTION] Order {order_id} status={result_status} but cumulative_qty={cumulative_qty} > 0. "
+                        f"Setting status to FILLED (order executed)."
+                    )
                 else:
+                    # No execution - order is still new/pending
                     db_status = OrderStatusEnum.NEW
                     db_status_str = "OPEN"
                 
@@ -7137,7 +7261,8 @@ class SignalMonitorService:
         if DEBUG_TRADING:
             logger.info(f"[DEBUG_TRADING] {symbol} BUY: Starting SL/TP creation flow for order {order_id}")
         result_status = result.get("status", "").upper()
-        is_filled_immediately = result_status in ["FILLED", "CANCELED", "CANCELLED"]
+        # CRITICAL FIX: Include PARTIALLY_FILLED in immediate fill check
+        is_filled_immediately = result_status in ["FILLED", "PARTIALLY_FILLED", "PARTIALLY FILLED", "CANCELED", "CANCELLED"]
         has_cumulative_qty = result.get("cumulative_quantity") and float(result.get("cumulative_quantity", 0) or 0) > 0
         
         filled_confirmation = None
@@ -7218,28 +7343,106 @@ class SignalMonitorService:
                     f"🔄 [SL/TP] Normalizing executed quantity for BUY order: raw={executed_qty_raw_decimal} (Decimal) -> {executed_qty_raw_float} (float), symbol={symbol}"
                 )
                 
-                normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw_float)
+                # CRITICAL FIX: Use safe normalization with fallback strategies
+                normalized_qty_str, normalization_diagnostics = trade_client.normalize_quantity_safe_with_fallback(
+                    symbol=symbol,
+                    raw_quantity=executed_qty_raw_float,
+                    for_sl_tp=True
+                )
+                
+                # Log comprehensive diagnostics
+                logger.info(
+                    f"📊 [NORMALIZE_DIAGNOSTICS] {symbol}: "
+                    f"raw_qty={normalization_diagnostics.get('raw_quantity')}, "
+                    f"step_size={normalization_diagnostics.get('step_size')}, "
+                    f"min_quantity={normalization_diagnostics.get('min_quantity')}, "
+                    f"quantity_decimals={normalization_diagnostics.get('quantity_decimals')}, "
+                    f"strategies_tried={normalization_diagnostics.get('strategies_tried')}, "
+                    f"final_reason={normalization_diagnostics.get('final_reason')}"
+                )
                 
                 if not normalized_qty_str:
+                    # CRITICAL: All normalization strategies failed - force close position to protect capital
                     error_msg = (
-                        f"BUY order {order_id} executed quantity {executed_qty_raw_decimal} failed normalization for {symbol}. "
-                        f"Cannot create SL/TP - quantity may be below minQty/stepSize or instrument rules unavailable."
+                        f"BUY order {order_id} executed quantity {executed_qty_raw_decimal} failed ALL normalization strategies for {symbol}. "
+                        f"Step_size={normalization_diagnostics.get('step_size')}, minQty={normalization_diagnostics.get('min_quantity')}, "
+                        f"strategies_tried={normalization_diagnostics.get('strategies_tried')}. "
+                        f"Forcing market close to protect position."
                     )
                     logger.error(f"❌ [SL/TP] {error_msg}")
                     
+                    # FORCED CLOSE: Place immediate SELL MARKET order to close position
                     try:
-                        telegram_notifier.send_message(
-                            f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"📋 BUY Order ID: {order_id}\n"
-                            f"🟢 Side: BUY\n"
-                            f"📦 Executed Quantity (raw): {executed_qty_raw_decimal}\n"
-                            f"❌ Error: {error_msg}\n\n"
-                            f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
-                            f"Please manually create protection orders or close the position."
+                        from app.utils.live_trading import get_live_trading_status
+                        live_trading = get_live_trading_status(db)
+                        dry_run_mode = not live_trading
+                        
+                        logger.error(
+                            f"🚨 [FORCED_CLOSE] Executing emergency market SELL to close unprotected position: "
+                            f"{symbol}, executed_qty={executed_qty_raw_decimal}, order_id={order_id}"
                         )
-                    except Exception as alert_err:
-                        logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                        
+                        # Get current price for market order
+                        from price_fetcher import get_price_with_fallback
+                        price_result = get_price_with_fallback(symbol, "15m")
+                        current_price = price_result.get('price', executed_avg_price)
+                        
+                        if current_price and current_price > 0:
+                            # Place market SELL order to close position
+                            # Use raw quantity - exchange will handle formatting
+                            close_result = trade_client.place_market_order(
+                                symbol=symbol,
+                                side="SELL",
+                                qty=executed_qty_raw_float,
+                                is_margin=use_margin,
+                                leverage=10 if use_margin else None,
+                                dry_run=dry_run_mode
+                            )
+                            
+                            close_order_id = close_result.get("order_id") if "error" not in close_result else None
+                            
+                            if close_order_id:
+                                logger.info(f"✅ [FORCED_CLOSE] Emergency market SELL executed: order_id={close_order_id}")
+                                telegram_notifier.send_message(
+                                    f"🔴 <b>EMERGENCY POSITION CLOSE EXECUTED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 Original BUY Order ID: {order_id}\n"
+                                    f"📦 Quantity: {executed_qty_raw_decimal}\n"
+                                    f"🛡️ Close Order ID: {close_order_id}\n\n"
+                                    f"Reason: Quantity too small for SL/TP normalization. Position closed to protect capital."
+                                )
+                            else:
+                                close_error = close_result.get("error", "Unknown error")
+                                logger.error(f"❌ [FORCED_CLOSE] Failed to execute emergency close: {close_error}")
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: FORCED CLOSE FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"📦 Executed Quantity: {executed_qty_raw_decimal}\n"
+                                    f"❌ Close Error: {close_error}\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                )
+                        else:
+                            logger.error(f"❌ [FORCED_CLOSE] Cannot get current price for {symbol}")
+                            telegram_notifier.send_message(
+                                f"🚨 <b>CRITICAL: FORCED CLOSE BLOCKED</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"📋 BUY Order ID: {order_id}\n"
+                                f"❌ Error: Cannot get current price for market close\n\n"
+                                f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                            )
+                    except Exception as close_err:
+                        logger.error(f"❌ [FORCED_CLOSE] Exception during forced close: {close_err}", exc_info=True)
+                        try:
+                            telegram_notifier.send_message(
+                                f"🚨 <b>CRITICAL: FORCED CLOSE EXCEPTION</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"📋 BUY Order ID: {order_id}\n"
+                                f"❌ Error: {str(close_err)}\n\n"
+                                f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                            )
+                        except Exception:
+                            pass
                     
                     filled_quantity = executed_qty_raw_float
                 else:
@@ -7440,10 +7643,79 @@ class SignalMonitorService:
                                     f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw_decimal})\n"
                                     f"❌ Error: {error_details}\n\n"
                                     f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
-                                    f"Please manually create protection orders or close the position immediately."
+                                    f"Attempting to auto-close position to prevent unprotected exposure..."
                                 )
                             except Exception as alert_err:
                                 logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
+                            
+                            # CRITICAL: Never leave positions unprotected - attempt market-close
+                            try:
+                                logger.critical(
+                                    f"🚨 [UNPROTECTED_POSITION] {symbol}: SL/TP creation failed. "
+                                    f"Attempting market-close to prevent unprotected exposure. "
+                                    f"executed_qty={normalized_qty} price={executed_avg_price}"
+                                )
+                                
+                                # Create market SELL order to close position
+                                close_qty_str = normalized_qty
+                                if close_qty_str:
+                                    try:
+                                        # Use market order for immediate execution
+                                        # place_market_order requires qty as float for SELL orders
+                                        close_qty_float = float(close_qty_str)
+                                        close_result = trade_client.place_market_order(
+                                            symbol=symbol,
+                                            side="SELL",
+                                            qty=close_qty_float,
+                                            dry_run=False  # CRITICAL: This is a real close order
+                                        )
+                                    
+                                    if close_result and close_result.get("order_id"):
+                                        close_order_id = close_result.get("order_id")
+                                        logger.critical(
+                                            f"✅ [AUTO_CLOSE] {symbol}: Market-close order created: {close_order_id} "
+                                            f"qty={close_qty_str} to prevent unprotected position"
+                                        )
+                                        telegram_notifier.send_message(
+                                            f"✅ <b>Position Auto-Closed</b>\n\n"
+                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                            f"📋 Original BUY Order: {order_id}\n"
+                                            f"🔄 Close Order ID: {close_order_id}\n"
+                                            f"📦 Quantity: {close_qty_str}\n\n"
+                                            f"Position was auto-closed because SL/TP could not be created."
+                                        )
+                                    else:
+                                        logger.critical(
+                                            f"❌ [AUTO_CLOSE_FAILED] {symbol}: Market-close order creation failed. "
+                                            f"Manual intervention required immediately!"
+                                        )
+                                        telegram_notifier.send_message(
+                                            f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
+                                            f"📊 Symbol: <b>{symbol}</b>\n"
+                                            f"📋 BUY Order ID: {order_id}\n"
+                                            f"📦 Executed Quantity: {normalized_qty}\n\n"
+                                            f"❌ <b>MANUAL INTERVENTION REQUIRED</b>\n"
+                                            f"Position is UNPROTECTED and auto-close failed. "
+                                            f"Please close position manually immediately!"
+                                        )
+                                else:
+                                    logger.critical(
+                                        f"❌ [AUTO_CLOSE_FAILED] {symbol}: Cannot normalize quantity for market-close. "
+                                        f"Manual intervention required!"
+                                    )
+                                    
+                            except Exception as close_err:
+                                logger.critical(
+                                    f"❌ [AUTO_CLOSE_EXCEPTION] {symbol}: Exception during market-close: {close_err}",
+                                    exc_info=True
+                                )
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: AUTO-CLOSE EXCEPTION</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"❌ Exception: {str(close_err)}\n\n"
+                                    f"<b>MANUAL INTERVENTION REQUIRED IMMEDIATELY</b>"
+                                )
                             
                             filled_quantity = normalized_qty
         else:
@@ -8366,17 +8638,35 @@ class SignalMonitorService:
                 result_status = result.get("status", "").upper()
                 cumulative_qty = float(result.get("cumulative_quantity", 0) or 0)
                 
+                # CRITICAL FIX: Proper status resolution - never leave executed orders as UNKNOWN
+                # If cumulative_qty > 0, the order has executed (even if status says otherwise)
                 if result_status in ["FILLED", "filled"]:
                     db_status = OrderStatusEnum.FILLED
                     db_status_str = "FILLED"
+                elif result_status in ["PARTIALLY_FILLED", "PARTIALLY FILLED"]:
+                    # Exchange reports PARTIALLY_FILLED - use it directly
+                    db_status = OrderStatusEnum.PARTIALLY_FILLED
+                    db_status_str = "PARTIALLY_FILLED"
                 elif result_status in ["CANCELLED", "CANCELED"]:
+                    # CANCELLED with cumulative_qty > 0 means it was filled before cancellation
                     if cumulative_qty > 0:
                         db_status = OrderStatusEnum.FILLED
                         db_status_str = "FILLED"
                     else:
                         db_status = OrderStatusEnum.CANCELLED
                         db_status_str = "CANCELLED"
+                elif cumulative_qty > 0:
+                    # CRITICAL: Any executed quantity means order has filled (even if status unclear)
+                    # Treat as FILLED if quantity matches requested, PARTIALLY_FILLED otherwise
+                    # For MARKET orders, assume FILLED if we have any quantity
+                    db_status = OrderStatusEnum.FILLED
+                    db_status_str = "FILLED"
+                    logger.info(
+                        f"⚠️ [STATUS_RESOLUTION] Order {order_id} status={result_status} but cumulative_qty={cumulative_qty} > 0. "
+                        f"Setting status to FILLED (order executed)."
+                    )
                 else:
+                    # No execution - order is still new/pending
                     db_status = OrderStatusEnum.NEW
                     db_status_str = "OPEN"
                 
@@ -8524,7 +8814,8 @@ class SignalMonitorService:
             # ========================================================================
             
             # Check if order is already filled in initial response
-            is_filled_immediately = result_status in ["FILLED", "filled"]
+            # CRITICAL FIX: Include PARTIALLY_FILLED in immediate fill check
+            is_filled_immediately = result_status in ["FILLED", "filled", "PARTIALLY_FILLED", "PARTIALLY FILLED"]
             has_cumulative_qty = result.get("cumulative_quantity") and float(result.get("cumulative_quantity", 0) or 0) > 0
             
             filled_confirmation = None
@@ -8612,14 +8903,105 @@ class SignalMonitorService:
                         f"🔄 [SL/TP] Normalizing executed quantity: raw={executed_qty_raw_decimal} (Decimal) -> {executed_qty_raw_float} (float), symbol={symbol}"
                     )
                     
-                    normalized_qty_str = trade_client.normalize_quantity(symbol, executed_qty_raw_float)
+                    # CRITICAL FIX: Use safe normalization with fallback strategies
+                    normalized_qty_str, normalization_diagnostics = trade_client.normalize_quantity_safe_with_fallback(
+                        symbol=symbol,
+                        raw_quantity=executed_qty_raw_float,
+                        for_sl_tp=True
+                    )
+                    
+                    # Log comprehensive diagnostics
+                    logger.info(
+                        f"📊 [NORMALIZE_DIAGNOSTICS] {symbol}: "
+                        f"raw_qty={normalization_diagnostics.get('raw_quantity')}, "
+                        f"step_size={normalization_diagnostics.get('step_size')}, "
+                        f"min_quantity={normalization_diagnostics.get('min_quantity')}, "
+                        f"quantity_decimals={normalization_diagnostics.get('quantity_decimals')}, "
+                        f"strategies_tried={normalization_diagnostics.get('strategies_tried')}, "
+                        f"final_reason={normalization_diagnostics.get('final_reason')}"
+                    )
                     
                     if not normalized_qty_str:
+                        # CRITICAL: All normalization strategies failed - force close position to protect capital
                         error_msg = (
-                            f"Order {order_id} executed quantity {executed_qty_raw_decimal} failed normalization for {symbol}. "
-                            f"Cannot create SL/TP - quantity may be below minQty/stepSize or instrument rules unavailable."
+                            f"SELL order {order_id} executed quantity {executed_qty_raw_decimal} failed ALL normalization strategies for {symbol}. "
+                            f"Step_size={normalization_diagnostics.get('step_size')}, minQty={normalization_diagnostics.get('min_quantity')}, "
+                            f"strategies_tried={normalization_diagnostics.get('strategies_tried')}. "
+                            f"Forcing market close to protect position."
                         )
                         logger.error(f"❌ [SL/TP] {error_msg}")
+                        
+                        # FORCED CLOSE: Place immediate BUY MARKET order to close SELL position
+                        try:
+                            from app.utils.live_trading import get_live_trading_status
+                            live_trading = get_live_trading_status(db)
+                            dry_run_mode = not live_trading
+                            
+                            logger.error(
+                                f"🚨 [FORCED_CLOSE] Executing emergency market BUY to close unprotected SELL position: "
+                                f"{symbol}, executed_qty={executed_qty_raw_decimal}, order_id={order_id}"
+                            )
+                            
+                            # Get current price for market order
+                            from price_fetcher import get_price_with_fallback
+                            price_result = get_price_with_fallback(symbol, "15m")
+                            current_price = price_result.get('price', executed_avg_price)
+                            
+                            if current_price and current_price > 0:
+                                # Place market BUY order to close SELL position
+                                close_result = trade_client.place_market_order(
+                                    symbol=symbol,
+                                    side="BUY",
+                                    qty=executed_qty_raw_float,
+                                    is_margin=use_margin,
+                                    leverage=10 if use_margin else None,
+                                    dry_run=dry_run_mode
+                                )
+                                
+                                close_order_id = close_result.get("order_id") if "error" not in close_result else None
+                                
+                                if close_order_id:
+                                    logger.info(f"✅ [FORCED_CLOSE] Emergency market BUY executed: order_id={close_order_id}")
+                                    telegram_notifier.send_message(
+                                        f"🔵 <b>EMERGENCY POSITION CLOSE EXECUTED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 Original SELL Order ID: {order_id}\n"
+                                        f"📦 Quantity: {executed_qty_raw_decimal}\n"
+                                        f"🛡️ Close Order ID: {close_order_id}\n\n"
+                                        f"Reason: Quantity too small for SL/TP normalization. Position closed to protect capital."
+                                    )
+                                else:
+                                    close_error = close_result.get("error", "Unknown error")
+                                    logger.error(f"❌ [FORCED_CLOSE] Failed to execute emergency close: {close_error}")
+                                    telegram_notifier.send_message(
+                                        f"🚨 <b>CRITICAL: FORCED CLOSE FAILED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 SELL Order ID: {order_id}\n"
+                                        f"📦 Executed Quantity: {executed_qty_raw_decimal}\n"
+                                        f"❌ Close Error: {close_error}\n\n"
+                                        f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                    )
+                            else:
+                                logger.error(f"❌ [FORCED_CLOSE] Cannot get current price for {symbol}")
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: FORCED CLOSE BLOCKED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 SELL Order ID: {order_id}\n"
+                                    f"❌ Error: Cannot get current price for market close\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                )
+                        except Exception as close_err:
+                            logger.error(f"❌ [FORCED_CLOSE] Exception during forced close: {close_err}", exc_info=True)
+                            try:
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: FORCED CLOSE EXCEPTION</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 SELL Order ID: {order_id}\n"
+                                    f"❌ Error: {str(close_err)}\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                )
+                            except Exception:
+                                pass
                         
                         # Send CRITICAL alert
                         try:

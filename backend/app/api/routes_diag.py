@@ -1,11 +1,13 @@
 """Diagnostic endpoints for Crypto.com authentication troubleshooting"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 import logging
 from datetime import datetime, timezone
 import time
 import os
+from typing import Optional, Dict, Any, List
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,119 +99,267 @@ def whoami_diagnostic():
     # Gate by environment or debug flag
     if not _diagnostics_enabled():
         raise HTTPException(
-            status_code=403,
-            detail="Diagnostic endpoint disabled. Set ENVIRONMENT=local or PORTFOLIO_DEBUG=1 to enable."
+            status_code=404,
+            detail="Not found"
         )
     
-    import sys
     import platform
-    
-    # Get environment for response
-    environment = os.getenv("ENVIRONMENT", "UNKNOWN")
-    
-    # Get process info
-    process_id = os.getpid()
-    
-    # Get container/service name
-    container_name = os.getenv("HOSTNAME", os.getenv("CONTAINER_NAME", "UNKNOWN"))
-    
-    # Get runtime origin
-    runtime_origin = os.getenv("RUNTIME_ORIGIN", "UNKNOWN")
-    
-    # Get app version/commit if available
-    app_version = os.getenv("ATP_GIT_SHA", os.getenv("GIT_SHA", "UNKNOWN"))
-    build_time = os.getenv("ATP_BUILD_TIME", os.getenv("BUILD_TIME", "UNKNOWN"))
-    
-    # Get env file names that are loaded (names only, not paths or contents)
-    env_files_loaded = []
-    if os.path.exists(".env"):
-        env_files_loaded.append(".env")
-    if os.path.exists(".env.local"):
-        env_files_loaded.append(".env.local")
-    if os.path.exists(".env.aws"):
-        env_files_loaded.append(".env.aws")
-    # Check if env_file directive loaded any (docker-compose sets these)
-    env_file_var = os.getenv("ENV_FILE", "")
-    if env_file_var:
-        env_files_loaded.extend([f for f in env_file_var.split(",") if f.strip()])
-    
-    # Check which credential pairs are present (names only, not values)
-    from app.utils.credential_resolver import resolve_crypto_credentials
-    _, _, used_pair_name, credential_diagnostics = resolve_crypto_credentials()
-    
-    # Build safe credential info (only env var names)
-    credential_info = {
-        "selected_pair": used_pair_name if used_pair_name else "NONE",
-        "checked_pairs": [k.replace("_PRESENT", "") for k in credential_diagnostics.keys() if k.endswith("_PRESENT")]
-    }
-    
-    # Get client path info (safe)
-    use_proxy = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
-    client_path = "crypto_com_proxy" if use_proxy else "crypto_com_direct"
+    import sys
     
     return {
+        "service": "automated-trading-platform-backend",
+        "environment": os.getenv("ENVIRONMENT", "unknown"),
+        "python_version": sys.version,
+        "platform": platform.platform(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "service_info": {
-            "process_id": process_id,
-            "container_name": container_name,
-            "runtime_origin": runtime_origin,
-            "environment": environment,
-            "app_version": app_version,
-            "build_time": build_time,
-            "python_version": sys.version.split()[0],
-            "platform": platform.platform()
-        },
-        "env_files_loaded": env_files_loaded,
-        "credential_info": credential_info,
-        "client_path": client_path,
-        "use_crypto_proxy": use_proxy
+        "server_time_epoch": time.time()
     }
 
 
-@router.get("/diagnostics/portfolio/reconcile")
-def get_portfolio_reconcile_diagnostics(db: Session = Depends(get_db)):
+@router.get("/diagnostics/watchlist-drift")
+def watchlist_drift_diagnostic(db: Session = Depends(get_db)):
     """
-    Diagnostics endpoint for portfolio reconcile evidence.
-    Returns ONLY safe portfolio reconcile data (no secrets, API keys, account IDs, or full raw exchange payload).
+    Diagnostic endpoint to detect drift between:
+    - Watchlist state used by signal monitor (alert_enabled filtering)
+    - Watchlist state returned by dashboard API
+    - UI display assumptions
     
-    Gated by: ENVIRONMENT=local OR PORTFOLIO_DEBUG=1
+    This endpoint helps identify discrepancies that cause alerts to be blocked
+    even though the UI shows alerts as enabled.
+    
+    Returns:
+    {
+        "timestamp": str,
+        "summary": {
+            "total_active_rows": int,
+            "alert_enabled_true_count": int,
+            "alert_enabled_false_count": int,
+            "alert_enabled_null_count": int,
+            "buy_alert_enabled_true_count": int,
+            "sell_alert_enabled_true_count": int
+        },
+        "drift_issues": [
+            {
+                "symbol": str,
+                "issue_type": str,
+                "description": str,
+                "details": dict
+            }
+        ],
+        "sample_rows": [
+            {
+                "symbol": str,
+                "alert_enabled": bool,
+                "buy_alert_enabled": bool,
+                "sell_alert_enabled": bool,
+                "trade_enabled": bool,
+                "is_deleted": bool
+            }
+        ]
+    }
     """
-    # Gate by environment or debug flag (consistent with whoami)
-    if not _diagnostics_enabled():
+    try:
+        from app.models.watchlist import WatchlistItem
+        
+        # Get all active watchlist items
+        items = db.query(WatchlistItem).filter(
+            WatchlistItem.is_deleted == False
+        ).all()
+        
+        # Calculate summary statistics
+        total_active = len(items)
+        alert_enabled_true = sum(1 for item in items if item.alert_enabled is True)
+        alert_enabled_false = sum(1 for item in items if item.alert_enabled is False)
+        alert_enabled_null = sum(1 for item in items if item.alert_enabled is None)
+        
+        buy_alert_enabled_true = sum(1 for item in items if getattr(item, 'buy_alert_enabled', None) is True)
+        sell_alert_enabled_true = sum(1 for item in items if getattr(item, 'sell_alert_enabled', None) is True)
+        
+        # Detect drift issues
+        drift_issues = []
+        
+        # Issue 1: alert_enabled=False but buy_alert_enabled or sell_alert_enabled is True
+        for item in items:
+            if item.alert_enabled is False:
+                buy_enabled = getattr(item, 'buy_alert_enabled', False)
+                sell_enabled = getattr(item, 'sell_alert_enabled', False)
+                if buy_enabled or sell_enabled:
+                    drift_issues.append({
+                        "symbol": item.symbol,
+                        "issue_type": "MASTER_DISABLED_BUT_SIDE_ENABLED",
+                        "description": f"{item.symbol}: Master alert_enabled=False but side-specific alerts are enabled",
+                        "details": {
+                            "alert_enabled": False,
+                            "buy_alert_enabled": buy_enabled,
+                            "sell_alert_enabled": sell_enabled
+                        }
+                    })
+        
+        # Issue 2: alert_enabled is NULL (should be boolean)
+        for item in items:
+            if item.alert_enabled is None:
+                drift_issues.append({
+                    "symbol": item.symbol,
+                    "issue_type": "ALERT_ENABLED_NULL",
+                    "description": f"{item.symbol}: alert_enabled is NULL (should be True or False)",
+                    "details": {
+                        "alert_enabled": None
+                    }
+                })
+        
+        # Issue 3: Multiple active rows for same symbol (should be deduplicated)
+        symbol_counts = defaultdict(list)
+        for item in items:
+            symbol_counts[item.symbol].append(item.id)
+        
+        for symbol, ids in symbol_counts.items():
+            if len(ids) > 1:
+                drift_issues.append({
+                    "symbol": symbol,
+                    "issue_type": "MULTIPLE_ACTIVE_ROWS",
+                    "description": f"{symbol}: Multiple active rows found (IDs: {ids})",
+                    "details": {
+                        "row_ids": ids,
+                        "row_count": len(ids)
+                    }
+                })
+        
+        # Sample rows (first 20)
+        sample_rows = []
+        for item in items[:20]:
+            sample_rows.append({
+                "symbol": item.symbol,
+                "alert_enabled": item.alert_enabled,
+                "buy_alert_enabled": getattr(item, 'buy_alert_enabled', None),
+                "sell_alert_enabled": getattr(item, 'sell_alert_enabled', None),
+                "trade_enabled": item.trade_enabled,
+                "is_deleted": item.is_deleted
+            })
+        
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "total_active_rows": total_active,
+                "alert_enabled_true_count": alert_enabled_true,
+                "alert_enabled_false_count": alert_enabled_false,
+                "alert_enabled_null_count": alert_enabled_null,
+                "buy_alert_enabled_true_count": buy_alert_enabled_true,
+                "sell_alert_enabled_true_count": sell_alert_enabled_true
+            },
+            "drift_issues": drift_issues,
+            "drift_issues_count": len(drift_issues),
+            "sample_rows": sample_rows
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in watchlist drift diagnostic: {e}", exc_info=True)
         raise HTTPException(
-            status_code=403,
-            detail="Diagnostic endpoint disabled. Set ENVIRONMENT=local or PORTFOLIO_DEBUG=1 to enable."
+            status_code=500,
+            detail=f"Diagnostic error: {str(e)}"
+        )
+
+
+@router.get("/api/diagnostics/alerts_audit")
+def alerts_audit_endpoint(
+    db: Session = Depends(get_db),
+    api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """
+    Audit endpoint for alert configuration per symbol.
+    
+    Returns per-symbol alert configuration with source information.
+    Protected by API key (DIAGNOSTICS_API_KEY env var).
+    
+    Returns:
+    {
+        "timestamp": str,
+        "symbols": [
+            {
+                "symbol": str,
+                "alert_enabled": bool,
+                "alert_enabled_source": str,  # "db" | "not_found" | "error"
+                "buy_alert_enabled": bool,
+                "sell_alert_enabled": bool,
+                "trade_enabled": bool,
+                "min_trade_usd": float,
+                "min_qty": Optional[float],
+                "step_size": Optional[float],
+                "cooldown_seconds": Optional[float],
+                "last_alert_at": Optional[str],
+                "symbol_normalized": str
+            }
+        ]
+    }
+    """
+    # Check API key
+    required_key = os.getenv("DIAGNOSTICS_API_KEY", "")
+    if required_key and api_key != required_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
         )
     
     try:
-        from app.services.portfolio_cache import get_portfolio_summary
+        from app.models.watchlist import WatchlistItem
+        from app.services.signal_monitor import SignalMonitorService
+        from app.services.brokers.crypto_com_trade import trade_client
+        from app.models.watchlist_signal_state import WatchlistSignalState
         
-        # Get portfolio summary with reconcile data (request_context enables debug for this call)
-        portfolio_summary = get_portfolio_summary(db, request_context={"reconcile_debug": True})
+        # Get all active watchlist items
+        items = db.query(WatchlistItem).filter(
+            WatchlistItem.is_deleted == False
+        ).all()
         
-        # Get exchange name
-        exchange_name = "crypto_com"
+        signal_monitor = SignalMonitorService()
+        results = []
         
-        # Extract reconcile data (safe fields only)
-        reconcile = portfolio_summary.get("reconcile", {})
+        for item in items:
+            symbol = item.symbol
+            
+            # Use centralized resolver
+            alert_config = signal_monitor._resolve_alert_config(db, symbol)
+            
+            # Get instrument metadata for min_qty and step_size
+            inst_meta = trade_client._get_instrument_metadata(symbol)
+            min_qty = inst_meta.get("min_quantity") if inst_meta else None
+            step_size = inst_meta.get("qty_tick_size") if inst_meta else None
+            
+            # Get last alert time from signal state
+            signal_state = db.query(WatchlistSignalState).filter(
+                WatchlistSignalState.symbol == symbol
+            ).order_by(WatchlistSignalState.last_alert_at_utc.desc()).first()
+            
+            last_alert_at = None
+            if signal_state and signal_state.last_alert_at_utc:
+                last_alert_at = signal_state.last_alert_at_utc.isoformat()
+            
+            # Get cooldown from watchlist item
+            cooldown_minutes = getattr(item, 'alert_cooldown_minutes', None)
+            cooldown_seconds = cooldown_minutes * 60 if cooldown_minutes else None
+            
+            results.append({
+                "symbol": symbol,
+                "alert_enabled": alert_config["alert_enabled"],
+                "alert_enabled_source": alert_config["source"],
+                "buy_alert_enabled": alert_config["buy_alert_enabled"],
+                "sell_alert_enabled": alert_config["sell_alert_enabled"],
+                "trade_enabled": alert_config["trade_enabled"],
+                "min_trade_usd": getattr(item, 'trade_amount_usd', None),
+                "min_qty": min_qty,
+                "step_size": step_size,
+                "cooldown_seconds": cooldown_seconds,
+                "last_alert_at": last_alert_at,
+                "symbol_normalized": alert_config["symbol_normalized"]
+            })
         
-        # Build safe response (no secrets, no API keys, no account IDs, no full raw payload)
-        result = {
-            "exchange": exchange_name,
-            "total_value_usd": portfolio_summary.get("total_value_usd"),
-            "portfolio_value_source": portfolio_summary.get("portfolio_value_source"),
-            "raw_fields": reconcile.get("raw_fields", {}),
-            "candidates": reconcile.get("candidates", {}),
-            "chosen": reconcile.get("chosen", {})
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "symbols": results
         }
         
-        return result
-            
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in portfolio reconcile diagnostics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Diagnostics failed: {str(e)}")
-
-
-
+        logger.error(f"Error in alerts audit: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Audit error: {str(e)}"
+        )
