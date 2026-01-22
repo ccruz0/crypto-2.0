@@ -2386,22 +2386,25 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         from datetime import timezone
         
         # Get executed orders (FILLED status) - show at least last 5 orders
+        # Use COALESCE to handle NULL exchange_create_time (fallback to created_at or updated_at)
+        from sqlalchemy import func
+        
         # First try to get orders from last 24 hours
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
         executed_orders_24h = db.query(ExchangeOrder).filter(
             ExchangeOrder.status == OrderStatusEnum.FILLED,
-            ExchangeOrder.exchange_create_time >= yesterday
-        ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(20).all()
+            func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at) >= yesterday
+        ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(20).all()
         
         # If we have 5+ orders in last 24h, use those. Otherwise, get last 5 orders regardless of time
         if len(executed_orders_24h) >= 5:
             executed_orders = executed_orders_24h
             time_filter = "Last 24h"
         else:
-            # Get last 5 orders regardless of time
+            # Get last 5 orders regardless of time (use COALESCE for ordering)
             executed_orders = db.query(ExchangeOrder).filter(
                 ExchangeOrder.status == OrderStatusEnum.FILLED
-            ).order_by(ExchangeOrder.exchange_create_time.desc()).limit(5).all()
+            ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(5).all()
             time_filter = "Last 5 orders" if executed_orders else "Last 24h"
         
         if not executed_orders:
