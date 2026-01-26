@@ -471,6 +471,25 @@ class TelegramNotifier:
                         status_code,
                         response_text,
                     )
+                    # Persist non-200 response to DB
+                    try:
+                        from app.api.routes_monitoring import add_telegram_message
+                        error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
+                        blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nHTTP {status_code}: {response_text[:100]}"
+                        add_telegram_message(
+                            blocked_message,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="FAILED",
+                            throttle_reason=f"Telegram HTTP {status_code}: {response_text[:100]}",
+                        )
+                        logger.info(
+                            "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_http_%d",
+                            symbol or "N/A",
+                            status_code
+                        )
+                    except Exception as db_err:
+                        logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
                 
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
@@ -492,6 +511,26 @@ class TelegramNotifier:
                     error_body,
                     origin_upper,
                 )
+                
+                # Persist failed send to DB for debugging
+                try:
+                    from app.api.routes_monitoring import add_telegram_message
+                    error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
+                    blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nError: {error_body}"
+                    add_telegram_message(
+                        blocked_message,
+                        symbol=symbol,
+                        blocked=True,
+                        throttle_status="FAILED",
+                        throttle_reason=f"Telegram API error: {status_code} - {error_body[:100]}",
+                    )
+                    logger.info(
+                        "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_api_failure",
+                        symbol or "N/A"
+                    )
+                except Exception as db_err:
+                    logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
+                
                 raise
             except Exception as e:
                 # Log other Telegram errors
@@ -507,6 +546,26 @@ class TelegramNotifier:
                     error_str,
                     origin_upper,
                 )
+                
+                # Persist failed send to DB for debugging
+                try:
+                    from app.api.routes_monitoring import add_telegram_message
+                    error_preview = full_message[:150] + "..." if len(full_message) > 150 else full_message
+                    blocked_message = f"[TELEGRAM_FAILED] {error_preview}\n\nError: {error_str}"
+                    add_telegram_message(
+                        blocked_message,
+                        symbol=symbol,
+                        blocked=True,
+                        throttle_status="FAILED",
+                        throttle_reason=f"Telegram exception: {error_str[:100]}",
+                    )
+                    logger.info(
+                        "[ALERT_DB_CREATED] alert_id=<from_add_telegram_message> symbol=%s type=BLOCKED blocked=True reason=telegram_exception",
+                        symbol or "N/A"
+                    )
+                except Exception as db_err:
+                    logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
+                
                 raise
             
             # Extract message_id from response for logging (already logged in [TELEGRAM_RESPONSE])
