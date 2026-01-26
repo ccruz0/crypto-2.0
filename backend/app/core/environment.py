@@ -53,12 +53,12 @@ def getRuntimeEnv() -> Literal["local", "aws"]:
 
 def is_local() -> bool:
     """Check if running in local environment"""
-    return get_environment() == "local"
+    return getRuntimeEnv() == "local"
 
 
 def is_aws() -> bool:
     """Check if running in AWS environment"""
-    return get_environment() == "aws"
+    return getRuntimeEnv() == "aws"
 
 
 def _normalize_cors_origin(origin: str) -> str:
@@ -110,9 +110,6 @@ def get_cors_origins() -> list[str]:
             normalized = _normalize_cors_origin(frontend_url)
             if normalized:
                 origins.append(normalized)
-                # Also add HTTP version if HTTPS was provided
-                if normalized.startswith("https://"):
-                    origins.append(normalized.replace("https://", "http://"))
         
         # Add PUBLIC_BASE_URL if set (normalize to remove paths)
         public_base = os.getenv("PUBLIC_BASE_URL", "")
@@ -120,9 +117,6 @@ def get_cors_origins() -> list[str]:
             normalized = _normalize_cors_origin(public_base)
             if normalized:
                 origins.append(normalized)
-                # Also add HTTP version if HTTPS was provided
-                if normalized.startswith("https://"):
-                    origins.append(normalized.replace("https://", "http://"))
         
         # Add custom CORS origins from environment if set
         custom_origins = os.getenv("CORS_ORIGINS", "")
@@ -173,9 +167,16 @@ def get_api_base_url() -> str:
     if is_local():
         return "http://localhost:8002"
     
-    # AWS without env vars: use domain (preferred) or fail
-    # This ensures deployments must set env vars explicitly
-    return os.getenv("API_BASE_URL", "https://dashboard.hilovivo.com/api")
+    # AWS without env vars: raise error (no silent fallbacks in production)
+    if is_aws():
+        raise ValueError(
+            "API_BASE_URL or PUBLIC_BASE_URL must be set in AWS environment. "
+            "Set PUBLIC_BASE_URL (e.g., https://dashboard.hilovivo.com) or "
+            "API_BASE_URL (e.g., https://dashboard.hilovivo.com/api) in .env.aws"
+        )
+    
+    # Fallback for unknown environments
+    return "http://localhost:8002"
 
 
 def get_frontend_url() -> str:
@@ -202,9 +203,16 @@ def get_frontend_url() -> str:
     if is_local():
         return "http://localhost:3000"
     
-    # AWS without env vars: use domain (preferred) or fail
-    # This ensures deployments must set env vars explicitly
-    return os.getenv("FRONTEND_URL", "https://dashboard.hilovivo.com")
+    # AWS without env vars: raise error (no silent fallbacks in production)
+    if is_aws():
+        raise ValueError(
+            "FRONTEND_URL or PUBLIC_BASE_URL must be set in AWS environment. "
+            "Set PUBLIC_BASE_URL (e.g., https://dashboard.hilovivo.com) or "
+            "FRONTEND_URL (e.g., https://dashboard.hilovivo.com) in .env.aws"
+        )
+    
+    # Fallback for unknown environments
+    return "http://localhost:3000"
 
 
 # Global settings instance

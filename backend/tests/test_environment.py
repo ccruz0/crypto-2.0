@@ -16,6 +16,9 @@ from app.core.environment import (
     get_frontend_url,
     get_cors_origins,
     _normalize_cors_origin,
+    getRuntimeEnv,
+    is_local,
+    is_aws,
 )
 
 
@@ -123,3 +126,75 @@ class TestCORSNormalization:
                     assert '/' not in origin.split('://')[1].split(':')[0] or origin.count('/') == 2  # Only scheme://host:port
                     assert '?' not in origin
                     assert '#' not in origin
+
+
+class TestEnvironmentDetection:
+    """Test environment detection normalization"""
+    
+    def test_get_runtime_env_normalizes_case(self):
+        """Test that ENVIRONMENT='AWS' (uppercase) yields 'aws' behavior"""
+        with patch.dict(os.environ, {'ENVIRONMENT': 'AWS'}, clear=False):
+            assert getRuntimeEnv() == 'aws'
+            assert is_aws() is True
+            assert is_local() is False
+    
+    def test_is_local_is_aws_use_get_runtime_env(self):
+        """Test that is_local() and is_aws() use normalized getRuntimeEnv()"""
+        with patch.dict(os.environ, {'ENVIRONMENT': 'LOCAL'}, clear=False):
+            assert getRuntimeEnv() == 'local'
+            assert is_local() is True
+            assert is_aws() is False
+
+
+class TestAWSProductionGuardrails:
+    """Test that AWS environment raises errors when env vars are missing"""
+    
+    def test_get_api_base_url_raises_in_aws_without_env_vars(self):
+        """Test that get_api_base_url() raises ValueError in AWS without env vars"""
+        with patch.dict(os.environ, {
+            'ENVIRONMENT': 'aws',
+            'API_BASE_URL': '',
+            'PUBLIC_BASE_URL': '',
+        }, clear=False):
+            with pytest.raises(ValueError, match="API_BASE_URL or PUBLIC_BASE_URL must be set"):
+                get_api_base_url()
+    
+    def test_get_frontend_url_raises_in_aws_without_env_vars(self):
+        """Test that get_frontend_url() raises ValueError in AWS without env vars"""
+        with patch.dict(os.environ, {
+            'ENVIRONMENT': 'aws',
+            'FRONTEND_URL': '',
+            'PUBLIC_BASE_URL': '',
+        }, clear=False):
+            with pytest.raises(ValueError, match="FRONTEND_URL or PUBLIC_BASE_URL must be set"):
+                get_frontend_url()
+    
+    def test_get_api_base_url_works_in_aws_with_env_vars(self):
+        """Test that get_api_base_url() works in AWS when env vars are set"""
+        with patch.dict(os.environ, {
+            'ENVIRONMENT': 'aws',
+            'PUBLIC_BASE_URL': 'https://dashboard.hilovivo.com',
+        }, clear=False):
+            result = get_api_base_url()
+            assert result == 'https://dashboard.hilovivo.com/api'
+    
+    def test_get_frontend_url_works_in_aws_with_env_vars(self):
+        """Test that get_frontend_url() works in AWS when env vars are set"""
+        with patch.dict(os.environ, {
+            'ENVIRONMENT': 'aws',
+            'PUBLIC_BASE_URL': 'https://dashboard.hilovivo.com',
+        }, clear=False):
+            result = get_frontend_url()
+            assert result == 'https://dashboard.hilovivo.com'
+    
+    def test_get_cors_origins_no_http_auto_add(self):
+        """Test that CORS does not auto-add http:// version when https:// is provided"""
+        with patch.dict(os.environ, {
+            'ENVIRONMENT': 'aws',
+            'FRONTEND_URL': 'https://example.com',
+            'PUBLIC_BASE_URL': '',
+        }, clear=False):
+            origins = get_cors_origins()
+            # Should have https://example.com but NOT http://example.com
+            assert 'https://example.com' in origins
+            assert 'http://example.com' not in origins
