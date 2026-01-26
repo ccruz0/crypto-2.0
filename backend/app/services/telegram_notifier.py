@@ -427,6 +427,14 @@ class TelegramNotifier:
             if reply_markup:
                 payload["reply_markup"] = reply_markup
             
+            # Log immediately before Telegram API call
+            logger.info(
+                "[TELEGRAM_API_CALL] symbol=%s side=%s chat_id=%s url=%s",
+                log_symbol,
+                log_side,
+                self.chat_id,
+                url_safe
+            )
             try:
                 response = http_post(url, json=payload, timeout=10, calling_module="telegram_notifier.send_telegram_message")
                 # Record send result for health monitoring

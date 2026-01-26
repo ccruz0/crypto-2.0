@@ -28,7 +28,8 @@ def _verify_diagnostics_auth(request: Request) -> None:
     """
     if os.getenv("ENABLE_DIAGNOSTICS_ENDPOINTS", "0") != "1":
         raise HTTPException(status_code=404, detail="Not found")
-    expected_key = os.getenv("DIAGNOSTICS_API_KEY")
+    # Allow single-key setup: DIAGNOSTICS_API_KEY falls back to ADMIN_ACTIONS_KEY
+    expected_key = os.getenv("DIAGNOSTICS_API_KEY") or os.getenv("ADMIN_ACTIONS_KEY")
     if not expected_key:
         raise HTTPException(status_code=404, detail="Not found")
     provided_key = request.headers.get("X-Diagnostics-Key") or request.headers.get("x-diagnostics-key")
@@ -645,7 +646,12 @@ async def get_monitoring_summary(
                 if msg.blocked == False:
                     status_label = "SENT"
                     sent_count += 1
-                elif order_intent_status == "ORDER_FAILED" or msg.decision_type == "FAILED" or (msg.reason_code and "FAILED" in str(msg.reason_code).upper()):
+                elif (
+                    order_intent_status == "ORDER_FAILED"
+                    or (msg.throttle_status and str(msg.throttle_status).upper() == "FAILED")
+                    or msg.decision_type == "FAILED"
+                    or (msg.reason_code and "FAILED" in str(msg.reason_code).upper())
+                ):
                     status_label = "FAILED"
                     failed_count += 1
                 else:
@@ -654,6 +660,7 @@ async def get_monitoring_summary(
                 
                 # Build alert entry
                 active_alerts_count += 1
+                last_error = msg.exchange_error_snippet or msg.reason_message or msg.throttle_reason
                 _active_alerts.append({
                     "type": side,
                     "symbol": msg.symbol or "UNKNOWN",
@@ -664,6 +671,7 @@ async def get_monitoring_summary(
                     "decision_type": msg.decision_type,
                     "reason_code": msg.reason_code,
                     "reason_message": msg.reason_message or msg.throttle_reason,
+                    "last_error": last_error if status_label == "FAILED" else None,
                     "message_id": msg.id,
                     "order_intent_status": order_intent_status,
                     # Build message text for backward compatibility
@@ -795,6 +803,13 @@ def add_telegram_message(
     from app.models.telegram_message import TelegramMessage
     from app.database import SessionLocal
     
+    # Blocked events must always have non-null reason_code and throttle_status
+    if blocked:
+        if not reason_code:
+            reason_code = "BLOCKED_UNKNOWN"
+        if not throttle_status:
+            throttle_status = "BLOCKED"
+    
     # E2E TEST LOGGING: Log monitoring save attempt
     log.info(f"[E2E_TEST_MONITORING_SAVE] message_preview={message[:80]}, symbol={symbol}, blocked={blocked}")
     
@@ -881,7 +896,16 @@ def add_telegram_message(
             db_session.commit()
             db_session.refresh(telegram_msg)  # Refresh to get the ID
             message_id = telegram_msg.id
-            log.debug(f"Telegram message saved to database: {'BLOQUEADO' if blocked else 'ENVIADO'} - {symbol or 'N/A'} (id={message_id})")
+            # Log alert creation at INFO level for verification
+            alert_type = "BLOCKED" if blocked else "SENT"
+            log.info(
+                "[ALERT_DB_CREATED] alert_id=%d symbol=%s type=%s blocked=%s message_preview=%s",
+                message_id,
+                symbol or "N/A",
+                alert_type,
+                blocked,
+                message[:100] if message else "N/A"
+            )
         except Exception as db_err:
             log.warning(f"Could not save Telegram message to database: {db_err}")
             message_id = None
