@@ -268,10 +268,17 @@ curl -s https://dashboard.hilovivo.com/api/health/system | jq .
 - `POSTGRES_PASSWORD` (default: `traderpass`)
 - `DATABASE_URL` (format: `postgresql://user:pass@db:5432/dbname`)
 
-**API Configuration**:
-- `API_BASE_URL` (e.g., `http://47.130.143.159:8002` or use domain `https://dashboard.hilovivo.com`)
-- `FRONTEND_URL` (e.g., `http://47.130.143.159:3000` or use domain `https://dashboard.hilovivo.com`)
-- `NEXT_PUBLIC_API_URL` (e.g., `/api` for relative path or `http://47.130.143.159:8002/api` for absolute)
+**API Configuration** (Single Source of Truth):
+- **Preferred**: Set `PUBLIC_BASE_URL` once (e.g., `https://dashboard.hilovivo.com` or `http://<Elastic-IP>`)
+  - Backend will derive `API_BASE_URL` and `FRONTEND_URL` from this
+- **Alternative**: Set explicitly:
+  - `API_BASE_URL` (e.g., `https://dashboard.hilovivo.com/api` or `http://<Elastic-IP>:8002`)
+  - `FRONTEND_URL` (e.g., `https://dashboard.hilovivo.com` or `http://<Elastic-IP>:3000`)
+- `NEXT_PUBLIC_API_URL` (e.g., `/api` for relative path - preferred for production)
+
+**⚠️ Important**: Never hardcode IP addresses in code. Use environment variables or DNS names.
+- Elastic IPs can change; DNS names are stable
+- Set `PUBLIC_BASE_URL` or `API_BASE_URL` in `.env.aws` on the EC2 instance
 
 **Exchange API** (Crypto.com):
 - `EXCHANGE_CUSTOM_API_KEY` (required)

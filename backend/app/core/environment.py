@@ -17,7 +17,7 @@ class EnvironmentSettings(BaseSettings):
     
     # AWS-specific settings
     aws_region: str = "ap-southeast-1"
-    aws_instance_ip: str = "47.130.143.159"  # Current Elastic IP
+    # aws_instance_ip: Removed hardcoded IP - use PUBLIC_BASE_URL or API_BASE_URL env vars instead
     
     # Failover settings
     failover_enabled: bool = True
@@ -80,17 +80,19 @@ def get_cors_origins() -> list[str]:
         ]
     elif is_aws():
         origins = [
-            "http://47.130.143.159:3000",
-            "http://47.130.143.159:3001",
-            "https://47.130.143.159:3000",
-            "http://175.41.189.249:3000",
-            "https://175.41.189.249:3000",
-            # Hilo Vivo domain
+            # Primary domain (preferred)
             "https://dashboard.hilovivo.com",
             "https://www.dashboard.hilovivo.com",
             "https://hilovivo.com",
             "https://www.hilovivo.com",
         ]
+        # Add FRONTEND_URL if set (supports IP or domain)
+        frontend_url = os.getenv("FRONTEND_URL", "")
+        if frontend_url:
+            origins.append(frontend_url)
+            # Also add HTTP version if HTTPS was provided
+            if frontend_url.startswith("https://"):
+                origins.append(frontend_url.replace("https://", "http://"))
         # Add custom CORS origins from environment if set
         custom_origins = os.getenv("CORS_ORIGINS", "")
         if custom_origins:
@@ -101,23 +103,60 @@ def get_cors_origins() -> list[str]:
 
 
 def get_api_base_url() -> str:
-    """Get the API base URL based on environment"""
+    """Get the API base URL based on environment
+    
+    Priority:
+    1. API_BASE_URL env var (explicit override)
+    2. PUBLIC_BASE_URL env var (base URL, appends /api if needed)
+    3. Local dev fallback: http://localhost:8002
+    """
+    # Explicit API_BASE_URL takes precedence
+    api_url = os.getenv("API_BASE_URL")
+    if api_url:
+        return api_url
+    
+    # Try PUBLIC_BASE_URL (preferred for AWS deployments)
+    public_base = os.getenv("PUBLIC_BASE_URL")
+    if public_base:
+        # If it already includes /api, use as-is; otherwise append /api
+        if "/api" in public_base:
+            return public_base
+        return f"{public_base.rstrip('/')}/api"
+    
+    # Local dev fallback only
     if is_local():
         return "http://localhost:8002"
-    elif is_aws():
-        return "http://47.130.143.159:8002"
-    else:
-        return os.getenv("API_BASE_URL", "http://localhost:8002")
+    
+    # AWS without env vars: use domain (preferred) or fail
+    # This ensures deployments must set env vars explicitly
+    return os.getenv("API_BASE_URL", "https://dashboard.hilovivo.com/api")
 
 
 def get_frontend_url() -> str:
-    """Get the frontend URL based on environment"""
+    """Get the frontend URL based on environment
+    
+    Priority:
+    1. FRONTEND_URL env var (explicit override)
+    2. PUBLIC_BASE_URL env var (base URL, use as-is for frontend)
+    3. Local dev fallback: http://localhost:3000
+    """
+    # Explicit FRONTEND_URL takes precedence
+    frontend_url = os.getenv("FRONTEND_URL")
+    if frontend_url:
+        return frontend_url
+    
+    # Try PUBLIC_BASE_URL (preferred for AWS deployments)
+    public_base = os.getenv("PUBLIC_BASE_URL")
+    if public_base:
+        return public_base.rstrip('/')
+    
+    # Local dev fallback only
     if is_local():
         return "http://localhost:3000"
-    elif is_aws():
-        return "http://47.130.143.159:3000"
-    else:
-        return os.getenv("FRONTEND_URL", "http://localhost:3000")
+    
+    # AWS without env vars: use domain (preferred) or fail
+    # This ensures deployments must set env vars explicitly
+    return os.getenv("FRONTEND_URL", "https://dashboard.hilovivo.com")
 
 
 # Global settings instance

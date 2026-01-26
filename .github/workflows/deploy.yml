@@ -75,6 +75,7 @@ jobs:
         # Validate required connection configuration
         if [ -z "$EC2_HOST" ]; then
           echo "❌ Error: EC2_HOST is not set. Add it as a repository secret or variable."
+          echo "💡 Set EC2_HOST to the current Elastic IP or DNS name (e.g., dashboard.hilovivo.com)"
           exit 1
         fi
         if [ -z "$EC2_KEY" ]; then
@@ -83,37 +84,21 @@ jobs:
         fi
 
         # --------------------------------------------------------------------
-        # Resilient host selection (fixes SSH timeouts when the old EC2 IP changes)
+        # Validate EC2_HOST is reachable (no hardcoded IP fallbacks)
         # --------------------------------------------------------------------
-        # Try the configured EC2_HOST first, then fall back to known AWS hosts.
-        # We test TCP port 22 directly because ping may be blocked by security groups.
-        CANDIDATES=(
-          "$EC2_HOST"
-          "47.130.143.159"
-          "175.41.189.249"
-          # Legacy IPs (kept as fallback only)
-          "54.254.150.31"
-        )
-
-        EC2_TARGET_HOST=""
-        for H in "${CANDIDATES[@]}"; do
-          if [ -z "$H" ]; then
-            continue
-          fi
-          echo "🔍 Checking SSH port 22 on: $H"
-          if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$H/22" 2>/dev/null; then
-            EC2_TARGET_HOST="$H"
-            break
-          fi
-        done
-
-        if [ -z "$EC2_TARGET_HOST" ]; then
-          echo "❌ No reachable EC2 host found on port 22."
-          echo "💡 Check Security Group inbound rules for SSH (22) and the current Elastic IP."
+        # EC2_HOST must be set explicitly - this ensures deployments use env vars/DNS, not embedded IPs
+        echo "🔍 Validating EC2_HOST connectivity: $EC2_HOST"
+        if ! timeout 5 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22" 2>/dev/null; then
+          echo "❌ Error: EC2_HOST ($EC2_HOST) is not reachable on port 22."
+          echo "💡 Verify:"
+          echo "   1. EC2_HOST is set to the correct Elastic IP or DNS name"
+          echo "   2. Security Group allows SSH (port 22) from GitHub Actions IPs"
+          echo "   3. EC2 instance is running"
           exit 1
         fi
 
-        echo "✅ Using EC2 host: $EC2_TARGET_HOST"
+        echo "✅ EC2_HOST is reachable: $EC2_HOST"
+        EC2_TARGET_HOST="$EC2_HOST"
         
         echo "🔑 Setting up SSH key..."
         echo "$EC2_KEY" > deploy_key.pem
