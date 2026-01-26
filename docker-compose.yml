@@ -193,6 +193,7 @@ services:
     env_file:
       - .env
       - .env.aws
+      - ./secrets/runtime.env
       # CRITICAL: Do NOT load .env.local - AWS must never have LOCAL Telegram credentials
       # This ensures AWS backend cannot access TELEGRAM_BOT_TOKEN_LOCAL or TELEGRAM_CHAT_ID_LOCAL
     environment:
@@ -203,8 +204,6 @@ services:
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=AWS
       - TRADING_ENABLED=${TRADING_ENABLED:-true}
-      - TELEGRAM_CHAT_ID_AWS=839853931
-      - ADMIN_ACTIONS_KEY=${ADMIN_ACTIONS_KEY}
       # Health monitoring thresholds
       - HEALTH_STALE_MARKET_MINUTES=${HEALTH_STALE_MARKET_MINUTES:-30}
       - HEALTH_MONITOR_STALE_MINUTES=${HEALTH_MONITOR_STALE_MINUTES:-30}
@@ -239,7 +238,6 @@ services:
       - ENABLE_TEST_PRICE_INJECTION=${ENABLE_TEST_PRICE_INJECTION:-0}
       # Diagnostics endpoints (for portfolio verification)
       - ENABLE_DIAGNOSTICS_ENDPOINTS=${ENABLE_DIAGNOSTICS_ENDPOINTS:-0}
-      - DIAGNOSTICS_API_KEY=${DIAGNOSTICS_API_KEY}
       # Price move alert configuration
       - PRICE_MOVE_ALERT_PCT=${PRICE_MOVE_ALERT_PCT:-0.50}
       - PRICE_MOVE_ALERT_COOLDOWN_SECONDS=${PRICE_MOVE_ALERT_COOLDOWN_SECONDS:-300}
@@ -253,8 +251,7 @@ services:
       - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
       # Trading limits: MAX_OPEN_ORDERS_TOTAL controls max pending TP orders (new TP-only counting logic)
       - MAX_OPEN_ORDERS_TOTAL=${MAX_OPEN_ORDERS_TOTAL:-10}
-      # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are loaded from .env.aws via env_file
-      # Do not override here to allow env_file values to be used
+      # Telegram/admin keys are injected via secrets/runtime.env (rendered by scripts/aws/render_runtime_env.sh)
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
     # Ports are exposed for external API access (health checks, frontend calls)
     ports:

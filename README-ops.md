@@ -2,6 +2,66 @@
 
 This document provides operational instructions for running the automated trading platform locally and in production.
 
+## Always run from repo root (AWS)
+
+If you run `docker compose` or `git` from `/home/ubuntu`, you will get:
+`no configuration file provided: not found` or `fatal: not a git repository`.
+
+Use these commands (copy/paste):
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+docker compose ps
+docker compose logs --tail=120 backend-aws
+git status -sb
+```
+
+Optional safe wrapper (works from any directory):
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+./dc.sh ps
+./dc.sh logs --tail=120 backend-aws
+```
+
+## AWS backend deploy (one-command)
+
+### GUARDRAIL — do not run Compose directly
+
+- **Do not** run `docker compose --profile aws up` (or `docker compose --profile aws up -d backend-aws`) directly.
+- Compose expects `secrets/runtime.env`, which exists only after the deploy script runs. Running Compose without it will fail.
+- **Always** run `bash scripts/aws/aws_up_backend.sh` (or `make aws-backend-up`) instead.
+
+### Exact commands on AWS host (Ubuntu)
+
+**Always `cd` to repo root first:**
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+bash scripts/aws/aws_up_backend.sh
+```
+
+Or via Make:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+make aws-backend-up
+```
+
+This will:
+
+1. Render `secrets/runtime.env` from SSM or `.env.aws`
+2. Run a smoke test (keys only, no secrets)
+3. Run `docker compose --profile aws up -d --build backend-aws`
+4. Wait for health, run verify, and print evidence (runtime.env presence, health)
+
+**Lower-level deploy only (no evidence summary):**
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+bash scripts/aws/deploy_backend_with_secrets.sh
+```
+
 ## Arranque local con secrets
 
 ### 1. Configurar secrets de Postgres
@@ -135,4 +195,21 @@ Para producción:
    - Cambia la contraseña regularmente
    - Actualiza `secrets/pg_password`
    - Reinicia los servicios: `docker compose restart db`
+
+## Fix Telegram/Alerts not sending in AWS
+
+Use the one-command AWS path (**always `cd` first**):
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+bash scripts/aws/aws_up_backend.sh
+```
+
+What it does:
+
+- Renders `secrets/runtime.env` from SSM (preferred) or `.env.aws` fallback
+- Ensures `secrets/runtime.env` exists before compose (compose never fails for missing file when using the script)
+- Builds and starts `backend-aws`, waits for `http://localhost:8002/health`
+- Verifies admin endpoint, Telegram logs, and DB rows for SENT/BLOCKED with `reason_code`
+- Prints evidence (runtime.env presence, health) without exposing secrets
 

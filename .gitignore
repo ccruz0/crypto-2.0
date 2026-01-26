@@ -73,7 +73,10 @@ npm-debug.log*
 out/
 parts/
 sdist/
-secrets/
+secrets/*
+!secrets/.gitkeep
+!secrets/runtime.env.example
+secrets/runtime.env
 var/
 venv.bak/
 venv/
