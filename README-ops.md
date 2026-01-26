@@ -131,7 +131,7 @@ Las contraseñas se gestionan mediante secrets en lugar de variables de entorno 
 Todos los servicios incluyen healthchecks configurados:
 
 - **Frontend**: Verifica que el servidor responda en `http://localhost:3000/`
-- **Backend**: Verifica que el servidor escuche en el puerto 8000
+- **Backend**: Verifica que el servidor escuche en el puerto 8002
 - **Database**: Verifica que PostgreSQL esté listo con `pg_isready`
 
 ### Configuración de Seguridad
@@ -212,4 +212,140 @@ What it does:
 - Builds and starts `backend-aws`, waits for `http://localhost:8002/health`
 - Verifies admin endpoint, Telegram logs, and DB rows for SENT/BLOCKED with `reason_code`
 - Prints evidence (runtime.env presence, health) without exposing secrets
+
+## Production E2E Verification
+
+Verify the complete pipeline: Signal → Alert → Telegram → Trade Decision → Order → TP/SL
+
+### Quick Start (DRY_RUN mode - safe, no real orders)
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+make prod-e2e
+```
+
+Or directly:
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/verify_alerts_and_trading_e2e.sh --dry-run --symbol BTC_USDT
+```
+
+### What PASS Looks Like
+
+A successful verification report shows:
+
+- ✅ Backend health endpoint accessible
+- ✅ Evaluation triggered successfully
+- ✅ Telegram message found in database (not blocked)
+- ✅ Telegram send confirmed in logs (HTTP 200)
+- ✅ Order creation verified (or skip reason documented)
+- ✅ TP/SL orders found with values matching strategy configuration
+
+### Report Location
+
+The verification report is saved to:
+
+```
+docs/PRODUCTION_E2E_VERIFICATION_REPORT.md
+```
+
+The report includes:
+- Timestamps for each stage
+- Correlation ID for tracing
+- Database query results
+- Log evidence
+- TP/SL values and strategy comparison
+- Commands executed
+
+### REAL Mode (Actual Orders)
+
+⚠️ **WARNING**: REAL mode places actual orders on Crypto.com exchange.
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+make prod-e2e-real SYMBOL=BTC_USDT
+```
+
+Or directly:
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+bash scripts/verify_alerts_and_trading_e2e.sh --real --symbol BTC_USDT
+```
+
+### What Gets Verified
+
+1. **Backend Health**: Confirms backend is reachable and responding
+2. **Signal Evaluation**: Triggers a real evaluation for the test symbol
+3. **Telegram Delivery**: 
+   - Verifies message was sent (HTTP 200 from Telegram API)
+   - Confirms message appears in database
+   - Checks logs for send confirmation
+4. **Trade Decision**:
+   - Verifies order creation when Trade=YES
+   - Documents skip reasons when orders are blocked
+   - Confirms trade_enabled gating works
+5. **Order Placement** (REAL mode only):
+   - Confirms order exists on Crypto.com exchange
+   - Verifies order details match database
+6. **TP/SL Placement**:
+   - Verifies TP/SL orders are created
+   - Confirms values come from strategy configuration (not fixed percentages)
+   - Shows calculated TP/SL values for the test symbol
+
+### Troubleshooting
+
+#### Health Check Returns HTTP 000000
+
+If the health check shows "HTTP 000000", this means:
+
+1. **All external URL probes failed** - The backend may not be accessible from your Mac
+2. **SSM fallback will be used** - The script automatically falls back to checking health via SSM
+3. **This is acceptable** - As long as SSM health check succeeds (HTTP 200), verification can continue
+
+**What to check:**
+- Security group rules (port 8002 may not be open to your IP)
+- Backend container status: `docker compose --profile aws ps backend-aws`
+- Backend logs: `docker compose --profile aws logs backend-aws --tail=50`
+
+**Expected behavior:**
+- External probes fail → SSM fallback succeeds → Verification continues ✅
+- All probes fail (including SSM) → Verification stops ❌
+
+#### Other Common Issues
+
+1. **Telegram message not found:**
+   - Check correlation_id matches in logs: `grep "e2e-YYYYMMDD" backend logs`
+   - Verify symbol has `alert_enabled=true` in database
+   - Check if message was blocked (see `blocked=true` in query results)
+
+2. **Order not created (REAL mode):**
+   - Check `trade_enabled=true` for the symbol
+   - Review skip reasons in report (order_skipped, decision_type, reason_code)
+   - Verify position limits and cooldowns
+
+3. **TP/SL values don't match:**
+   - Check strategy configuration for the symbol
+   - Verify ATR data is available (required for ATR-based calculations)
+   - Review calculation output in report
+
+4. **Backend not reachable:**
+   - Verify backend container is running: `docker compose --profile aws ps`
+   - Check health via SSM: The script will automatically use SSM if external probes fail
+   - Review container logs for errors
+
+**Quick Diagnostics:**
+
+```bash
+cd /Users/carloscruz/automated-trading-platform
+
+# Check backend status via SSM
+aws ssm send-command \
+  --instance-ids i-08726dc37133b2454 \
+  --region ap-southeast-1 \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=20 backend-aws"]' \
+  --query 'Command.CommandId' --output text
+```
 

@@ -36,9 +36,9 @@ POSTGRES_PASSWORD=traderpass
 ENVIRONMENT=local
 
 # API URLs
-API_BASE_URL=http://localhost:8000
+API_BASE_URL=http://localhost:8002
 FRONTEND_URL=http://localhost:3000
-NEXT_PUBLIC_API_URL=http://localhost:8000/api
+NEXT_PUBLIC_API_URL=http://localhost:8002/api
 NEXT_PUBLIC_ENVIRONMENT=local
 
 # Database (usando Docker Compose service name)
@@ -50,10 +50,10 @@ DATABASE_URL=postgresql://trader:traderpass@db:5432/atp
 # Environment
 ENVIRONMENT=aws
 
-# API URLs (usar IP pública de EC2)
-API_BASE_URL=http://54.254.150.31:8000
-FRONTEND_URL=http://54.254.150.31:3000
-NEXT_PUBLIC_API_URL=http://54.254.150.31:8000/api
+# API URLs (usar IP pública de EC2 o dominio)
+API_BASE_URL=http://47.130.143.159:8002
+FRONTEND_URL=http://47.130.143.159:3000
+NEXT_PUBLIC_API_URL=http://47.130.143.159:8002/api
 NEXT_PUBLIC_ENVIRONMENT=aws
 
 # Database (usar IP o service name según configuración)
@@ -117,5 +117,5 @@ Para desarrollo local:
 Para desplegar en AWS:
 1. Asegúrate de tener `.env` y `.env.aws` configurados en la instancia EC2
 2. Ejecuta: `docker compose --profile aws up -d`
-3. Accede a: `http://54.254.150.31:3000`
+3. Accede a: `https://dashboard.hilovivo.com` (o `http://47.130.143.159:3000`)
 

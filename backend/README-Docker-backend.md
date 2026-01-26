@@ -74,7 +74,7 @@ The following environment variables can be set to customize the backend:
 - `LIVE_TRADING`: Enable live trading (default: `false`)
 - `USE_CRYPTO_PROXY`: Use crypto proxy service (default: `false`)
 - `ENVIRONMENT`: Environment name (default: `local`)
-- `API_BASE_URL`: API base URL (default: `http://localhost:8000`)
+- `API_BASE_URL`: API base URL (default: `http://localhost:8002`)
 - `FRONTEND_URL`: Frontend URL (default: `http://localhost:3000`)
 
 These can be set via:

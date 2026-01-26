@@ -268,9 +268,9 @@ curl -s https://dashboard.hilovivo.com/api/health/system | jq .
 - `DATABASE_URL` (format: `postgresql://user:pass@db:5432/dbname`)
 
 **API Configuration**:
-- `API_BASE_URL` (e.g., `http://54.254.150.31:8000`)
-- `FRONTEND_URL` (e.g., `http://54.254.150.31:3000`)
-- `NEXT_PUBLIC_API_URL` (e.g., `http://54.254.150.31:8000/api`)
+- `API_BASE_URL` (e.g., `http://47.130.143.159:8002` or use domain `https://dashboard.hilovivo.com`)
+- `FRONTEND_URL` (e.g., `http://47.130.143.159:3000` or use domain `https://dashboard.hilovivo.com`)
+- `NEXT_PUBLIC_API_URL` (e.g., `/api` for relative path or `http://47.130.143.159:8002/api` for absolute)
 
 **Exchange API** (Crypto.com):
 - `EXCHANGE_CUSTOM_API_KEY` (required)
