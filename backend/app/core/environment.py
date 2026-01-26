@@ -11,13 +11,13 @@ class EnvironmentSettings(BaseSettings):
     """Environment-specific settings"""
     
     ENVIRONMENT: Literal["local", "aws"] = "local"
-    api_base_url: str = "http://localhost:8000"
+    api_base_url: str = "http://localhost:8002"
     frontend_url: str = "http://localhost:3000"
     database_url: str = "postgresql://trader:traderpass@db:5432/atp"
     
     # AWS-specific settings
     aws_region: str = "ap-southeast-1"
-    aws_instance_ip: str = "54.254.150.31"
+    aws_instance_ip: str = "47.130.143.159"  # Current Elastic IP
     
     # Failover settings
     failover_enabled: bool = True
@@ -80,9 +80,9 @@ def get_cors_origins() -> list[str]:
         ]
     elif is_aws():
         origins = [
-            "http://54.254.150.31:3000",
-            "http://54.254.150.31:3001",
-            "https://54.254.150.31:3000",
+            "http://47.130.143.159:3000",
+            "http://47.130.143.159:3001",
+            "https://47.130.143.159:3000",
             "http://175.41.189.249:3000",
             "https://175.41.189.249:3000",
             # Hilo Vivo domain
@@ -103,11 +103,11 @@ def get_cors_origins() -> list[str]:
 def get_api_base_url() -> str:
     """Get the API base URL based on environment"""
     if is_local():
-        return "http://localhost:8000"
+        return "http://localhost:8002"
     elif is_aws():
-        return "http://54.254.150.31:8000"
+        return "http://47.130.143.159:8002"
     else:
-        return os.getenv("API_BASE_URL", "http://localhost:8000")
+        return os.getenv("API_BASE_URL", "http://localhost:8002")
 
 
 def get_frontend_url() -> str:
@@ -115,7 +115,7 @@ def get_frontend_url() -> str:
     if is_local():
         return "http://localhost:3000"
     elif is_aws():
-        return "http://54.254.150.31:3000"
+        return "http://47.130.143.159:3000"
     else:
         return os.getenv("FRONTEND_URL", "http://localhost:3000")
 

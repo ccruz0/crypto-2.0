@@ -91,6 +91,7 @@ jobs:
           "$EC2_HOST"
           "47.130.143.159"
           "175.41.189.249"
+          # Legacy IPs (kept as fallback only)
           "54.254.150.31"
         )
 
