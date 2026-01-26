@@ -39,11 +39,14 @@ except ImportError:
 # Use environment variables only (no repo defaults)
 _env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 _env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+# TELEGRAM_BOT_TOKEN_DEV: Separate bot token for local development (avoids 409 conflicts with AWS)
+_env_bot_token_dev = (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip()
 # TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs
 # If not set, falls back to TELEGRAM_CHAT_ID (for backward compatibility)
 _env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
 AUTH_CHAT_ID = _env_chat_id or None
 BOT_TOKEN = _env_bot_token or None
+BOT_TOKEN_DEV = _env_bot_token_dev or None
 
 # Parse authorized user IDs (support comma or space separated)
 AUTHORIZED_USER_IDS = set()
@@ -917,22 +920,39 @@ def setup_bot_commands():
 def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optional[int] = None, db: Optional[Session] = None) -> List[Dict]:
     """Get updates from Telegram API using long polling.
     
-    RUNTIME GUARD: Only AWS should poll Telegram to avoid 409 conflicts.
-    LOCAL runtime should not poll, as AWS is already polling.
+    RUNTIME GUARD: 
+    - AWS: Uses TELEGRAM_BOT_TOKEN (production token)
+    - LOCAL: Only allows polling if TELEGRAM_BOT_TOKEN_DEV is set (uses dev token)
+    - LOCAL without DEV token: Returns empty to avoid 409 conflicts with AWS
     
     NOTE: Lock acquisition is handled by the caller (process_telegram_commands).
     This function assumes the lock is already held.
     """
-    # RUNTIME GUARD: Only AWS should poll Telegram
+    # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
     if not is_aws_runtime():
-        logger.debug("[TG_LOCAL_DEBUG] Skipping getUpdates in LOCAL runtime to avoid 409 conflicts")
-        return []
+        # LOCAL runtime: Only allow polling with DEV token
+        if not BOT_TOKEN_DEV:
+            logger.warning(
+                "[TG] LOCAL runtime detected but TELEGRAM_BOT_TOKEN_DEV not set. "
+                "Skipping getUpdates to avoid 409 conflicts with AWS production. "
+                "Set TELEGRAM_BOT_TOKEN_DEV to enable local polling with a separate dev bot."
+            )
+            return []
+        # Use DEV token for local polling
+        token_to_use = BOT_TOKEN_DEV
+        logger.debug(f"[TG_LOCAL_DEBUG] Using DEV token for getUpdates in LOCAL runtime")
+    else:
+        # AWS runtime: Use production token
+        if not BOT_TOKEN:
+            logger.warning("[TG] AWS runtime but TELEGRAM_BOT_TOKEN not set")
+            return []
+        token_to_use = BOT_TOKEN
     
-    if not TELEGRAM_ENABLED:
+    if not token_to_use:
         return []
     
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        url = f"https://api.telegram.org/bot{token_to_use}/getUpdates"
         params = {}
         if offset is not None:
             params["offset"] = offset
@@ -2401,9 +2421,14 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         
         # Always get the last 5 orders regardless of time
         # This ensures we show at least 5 orders even if some are older than 24h
+        # Use updated_at as final fallback since it has server_default and always has a value
+        # NULLS LAST ensures orders with NULL timestamps appear after those with valid timestamps
+        from sqlalchemy import nullslast
         executed_orders = db.query(ExchangeOrder).filter(
             base_filter
-        ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).limit(5).all()
+        ).order_by(
+            nullslast(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc())
+        ).limit(5).all()
         
         # Check how many of these are from last 24h to set the filter label
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -4506,13 +4531,22 @@ def process_telegram_commands(db: Session = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
     
-    # CRITICAL: Only process Telegram commands on AWS, not on local
-    # This prevents duplicate processing when both local and AWS instances are running
-    app_env = (os.getenv("APP_ENV") or "").strip().lower()
-    if app_env != "aws":
-        # Skip processing on local to avoid duplicate messages
-        logger.debug(f"[TG] Skipping Telegram command processing on local (APP_ENV={app_env})")
-        return
+    # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
+    if not is_aws_runtime():
+        # LOCAL runtime: Only allow processing if DEV token is set
+        if not BOT_TOKEN_DEV:
+            logger.debug(
+                "[TG] Skipping Telegram command processing on LOCAL runtime "
+                "(TELEGRAM_BOT_TOKEN_DEV not set to avoid 409 conflicts with AWS)"
+            )
+            return
+        # LOCAL with DEV token: Allow processing (uses separate dev bot)
+        logger.debug("[TG] LOCAL runtime with DEV token - processing commands with dev bot")
+    else:
+        # AWS runtime: Use production token (existing behavior)
+        if not BOT_TOKEN:
+            logger.warning("[TG] AWS runtime but TELEGRAM_BOT_TOKEN not set")
+            return
     
     # Ensure we have a DB session
     if not db:
