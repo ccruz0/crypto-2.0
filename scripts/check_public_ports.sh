@@ -81,6 +81,11 @@ echo "      ✅ Port 80/443 (HTTP/HTTPS) - Can be open to 0.0.0.0/0"
 echo "      ❌ Port 5432 (PostgreSQL) - Must NOT be open to 0.0.0.0/0"
 echo "      ❌ Port 8002 (Backend API) - Should NOT be open (use Nginx/443 instead)"
 echo "   4. If port 5432 is open, remove the inbound rule immediately"
+echo ""
+echo "🔍 External connectivity check (from your local machine):"
+echo "   Run: nc -vz \$EC2_HOST 5432"
+echo "   Expected: Connection refused or timeout (port should be closed)"
+echo "   If connection succeeds, port 5432 is publicly accessible - FIX IMMEDIATELY"
 
 echo ""
 

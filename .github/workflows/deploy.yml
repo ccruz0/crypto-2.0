@@ -33,6 +33,9 @@ jobs:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ubuntu
       EC2_KEY: ${{ secrets.EC2_KEY }}
+      # Backend configuration (required - set in repository secrets)
+      PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+      API_BASE_URL: ${{ secrets.API_BASE_URL }}
     
     steps:
     - name: Checkout API
@@ -80,6 +83,17 @@ jobs:
         fi
         if [ -z "$EC2_KEY" ]; then
           echo "❌ Error: EC2_KEY secret is not set."
+          exit 1
+        fi
+        
+        # Validate required environment variables for backend configuration
+        # Backend requires PUBLIC_BASE_URL (preferred) or API_BASE_URL to avoid hardcoded IPs
+        if [ -z "${PUBLIC_BASE_URL:-}" ] && [ -z "${API_BASE_URL:-}" ]; then
+          echo "❌ Error: Neither PUBLIC_BASE_URL nor API_BASE_URL is set."
+          echo "💡 Set one of these environment variables:"
+          echo "   - PUBLIC_BASE_URL (preferred): Base URL like https://dashboard.hilovivo.com"
+          echo "   - API_BASE_URL (alternative): Full API URL like https://dashboard.hilovivo.com/api"
+          echo "💡 Add as repository secret or workflow environment variable"
           exit 1
         fi
 

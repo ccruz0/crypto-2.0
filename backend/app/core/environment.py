@@ -61,8 +61,26 @@ def is_aws() -> bool:
     return get_environment() == "aws"
 
 
+def _normalize_cors_origin(origin: str) -> str:
+    """Normalize CORS origin to scheme://host:port format (no path, query, or fragment)"""
+    origin = origin.strip()
+    if not origin:
+        return ""
+    # Remove path, query, and fragment
+    if "://" in origin:
+        scheme, rest = origin.split("://", 1)
+        # Extract host:port (everything before first /, ?, or #)
+        host_port = rest.split("/")[0].split("?")[0].split("#")[0]
+        return f"{scheme}://{host_port}"
+    return origin
+
+
 def get_cors_origins() -> list[str]:
-    """Get CORS origins based on environment"""
+    """Get CORS origins based on environment
+    
+    Returns list of normalized origins (scheme://host:port, no paths/query/fragment).
+    Duplicates are removed.
+    """
     # Allow external access when ENABLE_EXTERNAL_ACCESS is set
     enable_external = os.getenv("ENABLE_EXTERNAL_ACCESS", "false").lower() == "true"
     
@@ -86,18 +104,43 @@ def get_cors_origins() -> list[str]:
             "https://hilovivo.com",
             "https://www.hilovivo.com",
         ]
-        # Add FRONTEND_URL if set (supports IP or domain)
+        # Add FRONTEND_URL if set (normalize to remove paths)
         frontend_url = os.getenv("FRONTEND_URL", "")
         if frontend_url:
-            origins.append(frontend_url)
-            # Also add HTTP version if HTTPS was provided
-            if frontend_url.startswith("https://"):
-                origins.append(frontend_url.replace("https://", "http://"))
+            normalized = _normalize_cors_origin(frontend_url)
+            if normalized:
+                origins.append(normalized)
+                # Also add HTTP version if HTTPS was provided
+                if normalized.startswith("https://"):
+                    origins.append(normalized.replace("https://", "http://"))
+        
+        # Add PUBLIC_BASE_URL if set (normalize to remove paths)
+        public_base = os.getenv("PUBLIC_BASE_URL", "")
+        if public_base:
+            normalized = _normalize_cors_origin(public_base)
+            if normalized:
+                origins.append(normalized)
+                # Also add HTTP version if HTTPS was provided
+                if normalized.startswith("https://"):
+                    origins.append(normalized.replace("https://", "http://"))
+        
         # Add custom CORS origins from environment if set
         custom_origins = os.getenv("CORS_ORIGINS", "")
         if custom_origins:
-            origins.extend([origin.strip() for origin in custom_origins.split(",")])
-        return origins
+            for origin in custom_origins.split(","):
+                normalized = _normalize_cors_origin(origin)
+                if normalized:
+                    origins.append(normalized)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_origins = []
+        for origin in origins:
+            if origin not in seen:
+                seen.add(origin)
+                unique_origins.append(origin)
+        
+        return unique_origins
     else:
         return ["*"]
 
@@ -113,15 +156,18 @@ def get_api_base_url() -> str:
     # Explicit API_BASE_URL takes precedence
     api_url = os.getenv("API_BASE_URL")
     if api_url:
-        return api_url
+        # Normalize: remove trailing slash to avoid double slashes
+        return api_url.rstrip('/')
     
     # Try PUBLIC_BASE_URL (preferred for AWS deployments)
     public_base = os.getenv("PUBLIC_BASE_URL")
     if public_base:
-        # If it already includes /api, use as-is; otherwise append /api
-        if "/api" in public_base:
+        # Normalize: remove trailing slash
+        public_base = public_base.rstrip('/')
+        # If it already ends with /api, use as-is; otherwise append /api
+        if public_base.endswith('/api'):
             return public_base
-        return f"{public_base.rstrip('/')}/api"
+        return f"{public_base}/api"
     
     # Local dev fallback only
     if is_local():
@@ -143,11 +189,13 @@ def get_frontend_url() -> str:
     # Explicit FRONTEND_URL takes precedence
     frontend_url = os.getenv("FRONTEND_URL")
     if frontend_url:
-        return frontend_url
+        # Normalize: remove trailing slash to avoid double slashes
+        return frontend_url.rstrip('/')
     
     # Try PUBLIC_BASE_URL (preferred for AWS deployments)
     public_base = os.getenv("PUBLIC_BASE_URL")
     if public_base:
+        # Normalize: remove trailing slash
         return public_base.rstrip('/')
     
     # Local dev fallback only
