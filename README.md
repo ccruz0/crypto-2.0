@@ -111,8 +111,6 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 
 **⚠️ WARNING: Local setup is for development only. Do NOT use for production trading.**
 
-Service names are auto-detected from `docker compose config --services` (with a fallback parse of `docker-compose.yml`).
-
 1. Copy the environment variables:
    ```bash
    cp .env.example .env
