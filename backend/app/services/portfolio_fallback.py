@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from app.core.environment import is_local
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def load_local_portfolio_file() -> Optional[Dict[str, float]]:
         Dict mapping asset to quantity, or None if file doesn't exist
     """
     # Only in local environment
-    if os.getenv("ENVIRONMENT") != "local" and os.getenv("RUNTIME_ORIGIN") != "LOCAL":
+    if not is_local() and os.getenv("RUNTIME_ORIGIN") != "LOCAL":
         return None
     
     file_path = Path(__file__).parent.parent / "data" / "local_portfolio.json"

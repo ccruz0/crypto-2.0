@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
+from app.core.environment import is_local
 import os
 import logging
 import socket
@@ -51,7 +52,7 @@ else:
     use_sqlite_fallback = False
 
 # Only fallback to SQLite if explicitly needed (no DB configured and local env)
-if use_sqlite_fallback and os.getenv("ENVIRONMENT", "local") == "local":
+if use_sqlite_fallback and is_local():
     database_url = "sqlite:///./backend.db"
     logger.info("Using SQLite fallback database: backend.db")
 

@@ -191,9 +191,8 @@ async def startup_event():
         pass  # Ignore if monitoring module not available
     
     # Fail fast: AWS + RUN_TELEGRAM=true requires canonical Telegram secrets
-    env = (os.getenv("ENVIRONMENT") or "").strip().lower()
     run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower() in ("1", "true", "yes", "on")
-    if env == "aws" and run_telegram:
+    if is_aws() and run_telegram:
         missing = []
         if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
             missing.append("TELEGRAM_BOT_TOKEN")

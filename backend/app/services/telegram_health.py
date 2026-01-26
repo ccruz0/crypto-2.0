@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Dict, Any
 from app.core.config import Settings
+from app.core.environment import is_aws
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,8 @@ def check_telegram_health(origin: str = "startup") -> Dict[str, Any]:
     # Determine source: if running in AWS and .env.aws is used, call it ".env.aws"
     # Otherwise "env" (could be .env, .env.local, or direct env vars)
     app_env = (os.getenv("APP_ENV") or settings.APP_ENV or "").strip().lower()
-    environment = (os.getenv("ENVIRONMENT") or settings.ENVIRONMENT or "").strip().lower()
     
-    if app_env == "aws" or environment == "aws":
+    if app_env == "aws" or is_aws():
         source = ".env.aws"
     else:
         source = "env"

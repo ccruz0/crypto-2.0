@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.services.brokers.crypto_com_trade import trade_client
 from app.utils.http_client import http_get
+from app.core.environment import is_aws
 import time
 from typing import List, Dict, Optional
 import threading
@@ -44,9 +45,8 @@ def _should_enable_reconcile_debug(request_context: Optional[Dict] = None) -> bo
         # Check query parameter first (easier for testing)
         if request_context.get("reconcile_debug") is True:
             runtime_origin = os.getenv("RUNTIME_ORIGIN", "").upper()
-            environment = os.getenv("ENVIRONMENT", "").lower()
-            if environment != "aws":  # Allow for non-AWS or unset
-                logger.info("[RECONCILE_DEBUG] Enabled via query param (env=%s, origin=%s)", environment, runtime_origin)
+            if not is_aws():  # Allow for non-AWS or unset
+                logger.info("[RECONCILE_DEBUG] Enabled via query param (env=non-aws, origin=%s)", runtime_origin)
                 return True
         
         # Check request header (only for local debugging via SSM)
@@ -66,11 +66,11 @@ def _should_enable_reconcile_debug(request_context: Optional[Dict] = None) -> bo
                 # For SSM port-forward debugging, be more permissive
                 # Check if we're in a safe environment (local dev or SSM port-forward)
                 runtime_origin = os.getenv("RUNTIME_ORIGIN", "").upper()
-                environment = os.getenv("ENVIRONMENT", "").lower()
+                from app.core.environment import is_local
                 
                 # Allow if explicitly local, or if runtime origin indicates local/SSM access
-                if environment == "local" or runtime_origin in ("LOCAL", "SSM"):
-                    logger.info("[RECONCILE_DEBUG] Enabled via header (safe environment: env=%s, origin=%s)", environment, runtime_origin)
+                if is_local() or runtime_origin in ("LOCAL", "SSM"):
+                    logger.info("[RECONCILE_DEBUG] Enabled via header (safe environment: local, origin=%s)", runtime_origin)
                     return True
                 
                 # For SSM port-forward, allow if environment is not explicitly "aws" (safer default)

@@ -15,6 +15,7 @@ from app.services.portfolio_snapshot import (
     store_portfolio_snapshot,
     get_latest_portfolio_snapshot
 )
+from app.core.environment import is_local
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -365,10 +366,10 @@ async def get_portfolio_snapshot(
         # Check if this is an auth error (40101/40103) - try fallback only if explicitly enabled
         is_auth_error = "40101" in error_msg or "40103" in error_msg
         allow_fallback = os.getenv("ALLOW_PORTFOLIO_FALLBACK", "false").lower() == "true"
-        is_local = os.getenv("ENVIRONMENT") == "local" or os.getenv("ENVIRONMENT") is None
+        is_local_env = is_local()
         
         # Try fallback ONLY if auth failed AND fallback is explicitly enabled AND we're in local environment
-        if is_auth_error and allow_fallback and is_local:
+        if is_auth_error and allow_fallback and is_local_env:
             from app.services.portfolio_fallback import get_fallback_holdings, build_fallback_positions
             
             fallback_holdings, fallback_source = get_fallback_holdings(db)
@@ -422,7 +423,7 @@ async def get_portfolio_snapshot(
         # No fallback available or not local - return error
         if "40101" in error_msg:
             message = "Crypto.com auth failed (40101). Check API key/secret and IP allowlist in AWS Secrets/ENV."
-            if is_local and not allow_fallback:
+            if is_local_env and not allow_fallback:
                 message += " If you intended local fallback, set ALLOW_PORTFOLIO_FALLBACK=true locally."
         elif "40103" in error_msg:
             message = "Crypto.com IP not whitelisted (40103). Add server IP to API key allowlist in AWS."
