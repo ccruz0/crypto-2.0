@@ -83,3 +83,6 @@ venv/
 wheels/
 yarn-debug.log*
 yarn-error.log*
+
+# local scratch
+/docs/_scratch/
