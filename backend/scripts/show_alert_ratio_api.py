@@ -105,20 +105,26 @@ def get_ratio_label(ratio: float) -> str:
     else:
         return "🔴 MUY CERCA SELL"
 
-def get_watchlist_from_api(base_url: str = "http://localhost:8000") -> list:
+def get_watchlist_from_api(base_url: str = None) -> list:
     """Get watchlist items from API"""
-    try:
-        # Try local first
-        response = requests.get(f"{base_url}/api/dashboard", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except:
-        pass
+    # Import here to avoid circular dependencies
+    from app.core.environment import get_api_base_url
     
-    # Try AWS
+    # Use provided base_url or get from environment
+    if base_url is None:
+        try:
+            base_url = get_api_base_url()
+        except ValueError:
+            # If AWS env vars are missing, fallback to localhost for local dev
+            base_url = "http://localhost:8002"
+    
     try:
-        aws_url = "http://54.254.150.31:8000"
-        response = requests.get(f"{aws_url}/api/dashboard", timeout=5)
+        # Handle URLs that already include /api
+        if base_url.endswith("/api"):
+            api_url = f"{base_url}/dashboard"
+        else:
+            api_url = f"{base_url}/api/dashboard"
+        response = requests.get(api_url, timeout=5)
         if response.status_code == 200:
             return response.json()
     except:
@@ -139,14 +145,13 @@ def main():
     watchlist_data = get_watchlist_from_api()
     
     if watchlist_data is None:
-        print("❌ No se pudo conectar al backend (ni local ni AWS)")
+        print("❌ No se pudo conectar al backend")
         print("\n💡 SOLUCIONES:")
         print("   1. Inicia el backend localmente:")
         print("      cd /Users/carloscruz/automated-trading-platform")
         print("      docker-compose up -d backend")
-        print("\n   2. O verifica que el backend esté corriendo en:")
-        print("      - Local: http://localhost:8000")
-        print("      - AWS: http://54.254.150.31:8000")
+        print("\n   2. O verifica que el backend esté corriendo y que las variables")
+        print("      de entorno API_BASE_URL o PUBLIC_BASE_URL estén configuradas")
         return
     
     # Filter items with alert_enabled=True

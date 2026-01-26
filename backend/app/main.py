@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.environment import get_environment, is_local, is_aws
+from app.core.environment import is_local, is_aws
 from app.api.routes_account import router as account_router
 from app.api.routes_internal import router as internal_router
 from app.api.routes_orders import router as orders_router
@@ -173,12 +173,36 @@ logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 @app.on_event("startup")
 async def startup_event():
     """Startup event - must complete immediately to allow requests"""
+    # Normalize legacy AWS env vars into canonical names
+    if not os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_BOT_TOKEN_AWS"):
+        os.environ["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN_AWS", "")
+    if not os.getenv("TELEGRAM_CHAT_ID") and os.getenv("TELEGRAM_CHAT_ID_AWS"):
+        os.environ["TELEGRAM_CHAT_ID"] = os.getenv("TELEGRAM_CHAT_ID_AWS", "")
+    if not os.getenv("ADMIN_ACTIONS_KEY") and os.getenv("DIAGNOSTICS_API_KEY"):
+        os.environ["ADMIN_ACTIONS_KEY"] = os.getenv("DIAGNOSTICS_API_KEY", "")
+    if not os.getenv("DIAGNOSTICS_API_KEY") and os.getenv("ADMIN_ACTIONS_KEY"):
+        os.environ["DIAGNOSTICS_API_KEY"] = os.getenv("ADMIN_ACTIONS_KEY", "")
+
     # Set backend restart time for monitoring
     try:
         from app.api.routes_monitoring import set_backend_restart_time
         set_backend_restart_time()
     except Exception:
         pass  # Ignore if monitoring module not available
+    
+    # Fail fast: AWS + RUN_TELEGRAM=true requires canonical Telegram secrets
+    env = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower() in ("1", "true", "yes", "on")
+    if env == "aws" and run_telegram:
+        missing = []
+        if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not (os.getenv("TELEGRAM_CHAT_ID") or "").strip():
+            missing.append("TELEGRAM_CHAT_ID")
+        if missing:
+            raise RuntimeError(
+                "Missing required AWS env vars: " + ", ".join(missing)
+            )
     
     # Verify critical scripts exist (if PRINT_FINGERPRINTS_ON_START is set)
     if os.getenv("PRINT_FINGERPRINTS_ON_START") == "1":

@@ -17,7 +17,6 @@ class EnvironmentSettings(BaseSettings):
     
     # AWS-specific settings
     aws_region: str = "ap-southeast-1"
-    # aws_instance_ip: Removed hardcoded IP - use PUBLIC_BASE_URL or API_BASE_URL env vars instead
     
     # Failover settings
     failover_enabled: bool = True
@@ -27,11 +26,6 @@ class EnvironmentSettings(BaseSettings):
         env_file = [".env", ".env.local", ".env.aws"]
         case_sensitive = False
         extra = "ignore"  # Ignore extra environment variables
-
-
-def get_environment() -> str:
-    """Detect the current environment"""
-    return os.getenv("ENVIRONMENT", "local")
 
 
 def getRuntimeEnv() -> Literal["local", "aws"]:

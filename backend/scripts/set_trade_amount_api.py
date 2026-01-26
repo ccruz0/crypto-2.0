@@ -25,19 +25,19 @@ def set_trade_amount_via_api(symbol: str, amount_usd: float):
     """Set trade_amount_usd for a specific symbol using the API."""
     symbol = symbol.upper()
     
-    # Determine API base URL - try domain first, then AWS IP, then localhost
-    api_base_url = os.getenv("API_BASE_URL")
-    domain_api_url = "https://dashboard.hilovivo.com/api"
-    aws_api_url = "http://47.130.143.159:8000"
-    local_api_url = "http://localhost:8000"
+    # Get API base URL from environment (uses get_api_base_url() which handles local/AWS)
+    try:
+        api_base_url = get_api_base_url()
+    except ValueError:
+        # If AWS env vars are missing, fallback to localhost for local dev
+        api_base_url = "http://localhost:8002"
     
-    # Try domain first (through nginx), then AWS IP, then localhost
-    api_base_urls_to_try = []
-    if api_base_url:
-        api_base_urls_to_try.append(api_base_url)
-    api_base_urls_to_try.append(domain_api_url)
-    api_base_urls_to_try.append(aws_api_url)
-    api_base_urls_to_try.append(local_api_url)
+    # Try the resolved URL first, then fallback to domain if needed
+    api_base_urls_to_try = [api_base_url]
+    # Add domain as fallback if not already included
+    domain_api_url = "https://dashboard.hilovivo.com/api"
+    if api_base_url != domain_api_url:
+        api_base_urls_to_try.append(domain_api_url)
     
     response = None
     api_base_url = None
