@@ -30,6 +30,9 @@ services:
       POSTGRES_INITDB_ARGS: --auth=scram-sha-256
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # SECURITY: No ports mapping - database is only accessible via Docker network
+    # Backend connects using service name: postgresql://trader:pass@db:5432/atp
+    # Verify: ss -lntp | grep 5432 should return empty (no public listener)
     security_opt:
       - no-new-privileges:true
     cap_drop:

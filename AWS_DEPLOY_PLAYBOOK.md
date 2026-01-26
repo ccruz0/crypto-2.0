@@ -27,6 +27,7 @@ The AWS deployment uses a **deploy-by-commit** workflow where:
 - `.env.aws` file configured (not in git)
 - SSH access configured
 - Required ports open (22 for SSH, 80/443 for Nginx, 3000/8002 for services)
+- **Security**: Database port 5432 must NOT be exposed in AWS Security Group (database is internal-only via Docker network)
 
 ### In GitHub
 
@@ -375,6 +376,12 @@ curl -s http://localhost:8002/api/health/system | jq '{
 # Verify public endpoints
 curl -sI https://dashboard.hilovivo.com | head -1
 curl -s https://dashboard.hilovivo.com/api/health/system | jq .status
+
+# Verify database port is NOT publicly exposed (security check)
+ss -lntp | grep 5432 || echo "✅ OK: Port 5432 not listening on host (database is internal-only)"
+
+# Verify backend can connect to database via Docker network
+docker compose --profile aws exec backend-aws python -c "import psycopg2; conn = psycopg2.connect('postgresql://trader:traderpass@db:5432/atp'); print('✅ Backend can connect to DB'); conn.close()"
 ```
 
 ---
@@ -405,7 +412,18 @@ curl -s https://dashboard.hilovivo.com/api/health/system | jq .status
 
 1. **Check database status**: `docker compose --profile aws ps db`
 2. **Check database logs**: `docker compose --profile aws logs db --tail 100`
-3. **Verify connection**: `docker exec automated-trading-platform-backend-aws-1 python -c "import psycopg2; conn = psycopg2.connect('postgresql://trader:traderpass@db:5432/atp'); print('OK'); conn.close()"`
+3. **Verify connection**: `docker compose --profile aws exec backend-aws python -c "import psycopg2; conn = psycopg2.connect('postgresql://trader:traderpass@db:5432/atp'); print('OK'); conn.close()"`
+
+### Database Port Security
+
+**CRITICAL**: Database port 5432 must NOT be publicly accessible.
+
+1. **Verify Docker Compose**: Database service in `docker-compose.yml` should have NO `ports:` mapping
+2. **Verify host listener**: `ss -lntp | grep 5432` should return empty (no public listener)
+3. **Verify AWS Security Group**: In AWS Console → EC2 → Security Groups, ensure port 5432 is NOT open to `0.0.0.0/0`
+   - If port 5432 is open, remove the inbound rule immediately
+   - Database should only be accessible via Docker network (`db:5432` from other containers)
+4. **Verify backend connectivity**: Backend should connect using service name: `postgresql://trader:pass@db:5432/atp`
 
 ---
 
