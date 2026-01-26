@@ -111,6 +111,8 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 
 **⚠️ WARNING: Local setup is for development only. Do NOT use for production trading.**
 
+Service names are auto-detected from `docker compose config --services` (with a fallback parse of `docker-compose.yml`).
+
 1. Copy the environment variables:
    ```bash
    cp .env.example .env
@@ -133,6 +135,8 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 ## Development
 
 **⚠️ NOTE: These commands are for LOCAL DEVELOPMENT ONLY. They will start SignalMonitorService and scheduler locally, which should NOT be run in parallel with AWS production.**
+
+- Small-change guardrails: [docs/CONTRIBUTING_SMALL_CHANGES.md](docs/CONTRIBUTING_SMALL_CHANGES.md)
 
 ### Backend Development (Local Dev Only)
 ```bash
