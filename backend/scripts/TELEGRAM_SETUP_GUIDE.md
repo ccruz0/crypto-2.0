@@ -2,8 +2,10 @@
 
 ## ⚠️ Important: Use DEV Bot for Local Testing
 
-**AWS production uses the production bot token and actively polls `getUpdates` with long polling.**
-**Using the same token locally will cause 409 conflicts.**
+**AWS production bot MUST NOT be used locally** because:
+- AWS production continuously polls `getUpdates` with long polling (10-second timeout)
+- Local attempts to poll the same bot token will result in **409 Conflict** errors
+- This is by design: only one consumer can poll `getUpdates` at a time
 
 **Solution**: Use a **separate DEV bot** for local testing.
 
@@ -23,10 +25,16 @@ The fastest way to set up local Telegram testing:
 
 ### Step 2: Bootstrap Setup
 
+Run the bootstrap script to extract chat_id and test sendMessage:
+
 ```bash
 cd /Users/carloscruz/automated-trading-platform/backend
+
+# Set your DEV bot token
 export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token_here"
-python3 scripts/local_dev_telegram_bootstrap.sh
+
+# Run bootstrap (will prompt you to send a message to bot if needed)
+./scripts/local_dev_telegram_bootstrap.sh
 ```
 
 **What it does:**
@@ -38,30 +46,33 @@ python3 scripts/local_dev_telegram_bootstrap.sh
 **Expected output:**
 ```
 🔍 Using DEV bot token: 123456...wxyz
-
-📱 Step 1: Extracting chat_id from dev bot...
-   💡 Make sure you've sent a message to your dev bot in Telegram first!
-
+📡 Polling getUpdates to extract chat_id...
 ✅ Found chat_id: 123456789
-
-📤 Step 2: Testing sendMessage with dev bot...
+🧪 Testing sendMessage with extracted chat_id...
 ✅ SUCCESS: Message sent (message_id: 123)
+✅ Bootstrap complete!
 
-✅ SUCCESS: Local dev bot is configured and working!
+📋 Add these to your shell environment:
 
-📋 Copy these lines into your shell:
-
-export TELEGRAM_BOT_TOKEN_DEV="your_token"
+export TELEGRAM_BOT_TOKEN_DEV="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
 export TELEGRAM_CHAT_ID_DEV="123456789"
 ```
 
+**If you see 409 Conflict:**
+- Make sure AWS backend is stopped: `./stop_backend_aws.sh`
+- Wait 30 seconds, then rerun bootstrap
+
 ### Step 3: Run End-to-End Test
 
+After bootstrap completes, run the end-to-end test:
+
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
-export TELEGRAM_BOT_TOKEN_DEV="your_token"
+# Make sure env vars are set (from bootstrap output)
+export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token"
 export TELEGRAM_CHAT_ID_DEV="your_chat_id"
-python3 scripts/local_e2e_alert_test.sh
+
+# Run end-to-end test
+./scripts/local_e2e_alert_test.sh
 ```
 
 **What it does:**
@@ -73,13 +84,28 @@ python3 scripts/local_e2e_alert_test.sh
 
 **Expected output:**
 ```
-🧪 End-to-End Alert Test
-========================
+🧪 End-to-End Telegram Alert Test
+==================================
 
-✅ Alert triggered successfully
+🚀 Starting backend...
+   ✅ Backend is healthy
+
+📤 Triggering simulated alert (BTC_USDT BUY)...
+   ✅ Alert triggered successfully
+
+📋 Checking logs for Telegram delivery...
+✅ [TELEGRAM_API_CALL] found
 ✅ [TELEGRAM_RESPONSE] status=200 found
 ✅ [TELEGRAM_SUCCESS] found
-✅ SUCCESS: Latest alert shows blocked=False
+
+📊 Checking database for telegram_messages row...
+ID: 5
+Symbol: BTC_USDT
+Blocked: False
+Status: SUCCESS
+✅ SUCCESS: Alert delivered and persisted (blocked=false)
+
+✅ End-to-end test PASSED
 ```
 
 ### Troubleshooting
@@ -89,9 +115,10 @@ python3 scripts/local_e2e_alert_test.sh
 - Check that `TELEGRAM_BOT_TOKEN_DEV` is set correctly
 - Verify bot token is valid (try sending a message manually)
 
-**If e2e test shows 409 conflict:**
-- AWS backend might still be running. Stop it: `./stop_backend_aws.sh`
-- Or use a completely different bot token (not the production one)
+**End-to-end test shows blocked=true:**
+- Check that `TELEGRAM_CHAT_ID_DEV` matches the chat_id from bootstrap
+- Verify bot token is correct
+- Check backend logs for Telegram API errors
 
 **If logs show status != 200:**
 - Check `TELEGRAM_CHAT_ID_DEV` is correct
