@@ -94,7 +94,11 @@ class CryptoComTradeClient:
         # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
         if self.crypto_auth_diag:
             logger.info("[CRYPTO_AUTH_DIAG] === CREDENTIALS LOADED (SAFE) ===")
-            logger.info("[CRYPTO_AUTH_DIAG] api_key=%s len=%s", _preview_secret(self.api_key), len(self.api_key or ""))
+            # Never log any portion of API keys (even partial prefixes/suffixes).
+            logger.info(
+                "[CRYPTO_AUTH_DIAG] api_key=<SET> len=%s",
+                len(self.api_key or ""),
+            )
             logger.info("[CRYPTO_AUTH_DIAG] api_secret=<SET> len=%s whitespace=%s", len(self.api_secret or ""), any(c.isspace() for c in (self.api_secret or "")))
             logger.info("[CRYPTO_AUTH_DIAG] use_proxy=%s proxy_url=%s", self.use_proxy, self.proxy_url)
             logger.info("[CRYPTO_AUTH_DIAG] =================================")
@@ -337,10 +341,11 @@ class CryptoComTradeClient:
             digestmod=hashlib.sha256
         ).hexdigest()
         if getattr(self, "crypto_auth_diag", False):
-            logger.info("[CRYPTO_AUTH_DIAG] signature_preview=%s...%s", signature[:10], signature[-10:])
+            # Never log any portion of signatures or API keys.
+            logger.info("[CRYPTO_AUTH_DIAG] signature_len=%s", len(signature or ""))
             safe_payload = dict(payload)
-            safe_payload["api_key"] = _preview_secret(self.api_key)
-            safe_payload["sig"] = f"{signature[:10]}...{signature[-10:]}"
+            safe_payload["api_key"] = "<SET>"
+            safe_payload["sig"] = "<SET>"
             logger.info("[CRYPTO_AUTH_DIAG] payload=%s", json.dumps(safe_payload, indent=2))
             logger.info("[CRYPTO_AUTH_DIAG] ============================")
         
