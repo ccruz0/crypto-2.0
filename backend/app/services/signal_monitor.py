@@ -1581,6 +1581,11 @@ class SignalMonitorService:
         """Check signal for a specific coin and take action if needed"""
         import uuid
         import os
+        from datetime import datetime, timezone
+        
+        # Initialize now_utc early - used throughout the function
+        now_utc = datetime.now(timezone.utc)
+        
         symbol = watchlist_item.symbol
         normalized_symbol = normalize_symbol_for_exchange(symbol)
         exchange = watchlist_item.exchange or "CRYPTO_COM"
