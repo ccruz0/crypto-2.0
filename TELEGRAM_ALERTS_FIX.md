@@ -44,8 +44,8 @@ environment:
 ### 2. Check Environment Variables
 On the AWS server, verify `.env.aws` contains:
 ```bash
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ### 3. Run Diagnostic Script

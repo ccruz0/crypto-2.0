@@ -52,12 +52,12 @@ nano .env.aws
 
 Cambia:
 ```bash
-TELEGRAM_CHAT_ID=839853931
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 Por:
 ```bash
-TELEGRAM_CHAT_ID=-1001234567890  # (el número negativo que obtuviste)
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 Luego reinicia:

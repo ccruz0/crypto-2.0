@@ -37,6 +37,9 @@
 .env.aws
 .env.aws.backup*
 .env.aws.bak*
+.env.aws.tmp*
+.env.bak*
+.env.local.bak*
 .env.development.local
 .env.local
 .env.production.local

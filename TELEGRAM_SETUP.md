@@ -7,7 +7,7 @@ This guide explains how to set up Telegram notifications for your automated trad
 1. Open Telegram and search for `@BotFather`
 2. Start a conversation with BotFather and send the command `/newbot`
 3. Follow the instructions to name your bot (e.g., "My Trading Bot")
-4. BotFather will give you a **Bot Token** (looks like: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+4. BotFather will give you a **Bot Token** (looks like: `<REDACTED_TELEGRAM_TOKEN>`)
 
 ## Step 2: Get Your Chat ID
 
@@ -27,10 +27,10 @@ Add these variables to your `.env.aws` file on AWS:
 
 ```bash
 # Bot token from BotFather
-TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
 
 # Channel ID for sending alerts (get from channel, usually negative number)
-TELEGRAM_CHAT_ID=-1001234567890
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Authorized user IDs for bot commands (comma or space-separated)
 # Get your user ID using @userinfobot or from bot logs

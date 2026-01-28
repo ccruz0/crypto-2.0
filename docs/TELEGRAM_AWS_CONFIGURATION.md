@@ -17,8 +17,8 @@ Telegram alerts are **only enabled on AWS** and must be configured with specific
 1. **`.env.aws` file** (recommended for AWS deployment):
    ```
    ENVIRONMENT=aws
-   TELEGRAM_BOT_TOKEN=your_bot_token_here
-   TELEGRAM_CHAT_ID_AWS=your_chat_id_here
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 2. **docker-compose.yml** (for the `backend-aws` service):
@@ -48,8 +48,8 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 **Expected output:**
 ```
 ENVIRONMENT=aws
-TELEGRAM_BOT_TOKEN=<present>
-TELEGRAM_CHAT_ID_AWS=<your_chat_id>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ### 2. Verify Container Status
@@ -218,7 +218,7 @@ docker compose --profile aws up -d backend-aws
 1. Verify chat ID using methods above
 2. Update `.env.aws`:
    ```
-   TELEGRAM_CHAT_ID_AWS=<correct_chat_id>
+   TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 3. Restart container:
    ```bash

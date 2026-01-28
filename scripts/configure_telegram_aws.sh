@@ -31,7 +31,7 @@ echo "-----------------------------------"
 echo "1. Open Telegram and search for @BotFather"
 echo "2. Send /newbot command"
 echo "3. Follow instructions to create a bot"
-echo "4. Copy the bot token (format: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz)"
+echo "4. Copy the bot token (format: <REDACTED_TELEGRAM_TOKEN>)"
 echo ""
 read -p "Enter your Telegram Bot Token: " BOT_TOKEN
 

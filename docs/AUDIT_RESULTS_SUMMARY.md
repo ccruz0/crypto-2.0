@@ -157,7 +157,7 @@ docker compose --profile aws restart backend-aws
    ```bash
    # Set environment variables in .env.aws
    ENVIRONMENT=aws
-   TELEGRAM_CHAT_ID_AWS=your_chat_id
+   TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
    
    # Restart
    docker compose --profile aws restart backend-aws

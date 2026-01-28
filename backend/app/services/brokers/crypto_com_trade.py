@@ -1719,7 +1719,7 @@ class CryptoComTradeClient:
                         f"🔐 AUTHENTICATION FAILED for MARKET order ({symbol} {side_upper}):\n"
                         f"   Error Code: {error_code}\n"
                         f"   Error Message: {error_msg}\n"
-                        f"   API Key: {_preview_secret(self.api_key)}\n"
+                        f"   API Key: <SET> len={len(self.api_key or '')}\n"
                         f"   Base URL: {self.base_url}\n"
                         f"   Method: {method}\n"
                         f"   Using Proxy: {self.use_proxy}\n"

@@ -137,8 +137,8 @@ def send_message(
 
 ```bash
 # Telegram Configuration (CANONICAL)
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-TELEGRAM_CHAT_ID=your_chat_or_channel_id
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Runtime Configuration
 RUNTIME_ORIGIN=AWS  # Must be "AWS" for production alerts

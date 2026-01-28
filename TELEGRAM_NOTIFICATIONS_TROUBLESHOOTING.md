@@ -21,8 +21,8 @@ docker-compose --profile aws exec backend-aws python backend/scripts/diagnose_te
 **Fix:**
 1. Ensure `.env.aws` file exists and contains:
    ```bash
-   TELEGRAM_BOT_TOKEN=your_bot_token_here
-   TELEGRAM_CHAT_ID=your_chat_id_here
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 2. Verify credentials are loaded:

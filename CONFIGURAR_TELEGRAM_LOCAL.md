@@ -6,8 +6,8 @@ Para que las alertas funcionen en el entorno local, necesitas configurar estas v
 
 ```bash
 APP_ENV=local
-TELEGRAM_BOT_TOKEN=<tu_bot_token>
-TELEGRAM_CHAT_ID=<chat_id_de_hilovivo-alerts-local>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ## Pasos para Configurar
@@ -38,8 +38,8 @@ Abre el archivo `.env.local` y descomenta/actualiza estas líneas:
 
 ```bash
 APP_ENV=local
-TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
-TELEGRAM_CHAT_ID=-1001234567890
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 **⚠️ IMPORTANTE:** 

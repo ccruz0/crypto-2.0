@@ -25,7 +25,7 @@ Se han aplicado las correcciones críticas de seguridad identificadas en la revi
 ```yaml
 - OPENVPN_USER=Jy4gvM3reuQn4FywkvSdfDBq
 - OPENVPN_PASSWORD=VJy8dMvnvjdNERQQar8v5ESm
-- TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew}
+- TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-<REDACTED_TELEGRAM_TOKEN>}
 - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:--5033055655}
 ```
 
@@ -120,8 +120,8 @@ OPENVPN_USER=<tu_usuario_openvpn>
 OPENVPN_PASSWORD=<tu_contraseña_openvpn>
 
 # Telegram
-TELEGRAM_BOT_TOKEN=<tu_token_de_bot>
-TELEGRAM_CHAT_ID=<tu_chat_id>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Seguridad
 SECRET_KEY=<generar_con: python -c "import secrets; print(secrets.token_urlsafe(32))">

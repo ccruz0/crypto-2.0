@@ -424,7 +424,7 @@ server_name dashboard.hilovivo.com;
      .env.bak:30:EXCHANGE_CUSTOM_API_SECRET=cxakp_oGDfb6D6JW396cYGz8FHmg
      .env.bak.20251222_191246:29:EXCHANGE_CUSTOM_API_KEY=z3HWF8m292zJKABkzfXWvQ
      .env.bak.20251222_191246:30:EXCHANGE_CUSTOM_API_SECRET=cxakp_oGDfb6D6JW396cYGz8FHmg
-     .env.local.bak:35:TELEGRAM_BOT_TOKEN=8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew
+     .env.local.bak:35:TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
      ```
    - **Impact**: Secrets in backup files may be committed or exposed, security risk
    - **Fix**: Remove backup files or add to `.gitignore`, verify no secrets in git-tracked files

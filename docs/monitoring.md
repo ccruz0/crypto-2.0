@@ -37,8 +37,8 @@ A helper script to install the health monitor as a cron job that runs every 5 mi
 
    Or add them to your `.env` file:
    ```
-   TELEGRAM_BOT_TOKEN=your_bot_token
-   TELEGRAM_CHAT_ID=your_chat_id
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 2. Ensure you have Docker Compose installed and the project is set up at `/home/ubuntu/automated-trading-platform`

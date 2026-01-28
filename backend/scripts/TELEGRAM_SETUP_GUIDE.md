@@ -21,7 +21,7 @@ The fastest way to set up local Telegram testing:
 2. Send `/newbot` and follow instructions
 3. Choose a name (e.g., "ATP Local Dev Bot")
 4. Choose a username (e.g., `@atp_local_dev_bot`)
-5. **Copy the token** (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+5. **Copy the token** (format: `<REDACTED_TELEGRAM_TOKEN>`)
 
 ### Step 2: Bootstrap Setup
 
@@ -54,7 +54,7 @@ export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token_here"
 
 📋 Add these to your shell environment:
 
-export TELEGRAM_BOT_TOKEN_DEV="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+export TELEGRAM_BOT_TOKEN_DEV="<REDACTED_TELEGRAM_TOKEN>"
 export TELEGRAM_CHAT_ID_DEV="123456789"
 ```
 
@@ -137,7 +137,7 @@ To avoid 409 conflicts with AWS production, use a **separate dev bot** for local
 2. Send `/newbot` and follow instructions
 3. Choose a name (e.g., "ATP Local Dev Bot")
 4. Choose a username (e.g., `@atp_local_dev_bot`)
-5. **Copy the token** (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+5. **Copy the token** (format: `<REDACTED_TELEGRAM_TOKEN>`)
 
 ### Step 2: Set Environment Variables
 

@@ -18,7 +18,7 @@ Esta revisión cubre todos los aspectos del proyecto: seguridad, configuración,
 **Problemas encontrados:**
 - **Línea 16:** `OPENVPN_USER=Jy4gvM3reuQn4FywkvSdfDBq` (hardcodeado)
 - **Línea 17:** `OPENVPN_PASSWORD=VJy8dMvnvjdNERQQar8v5ESm` (hardcodeado)
-- **Línea 114:** `TELEGRAM_BOT_TOKEN=8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew` (hardcodeado)
+- **Línea 114:** `TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>` (hardcodeado)
 - **Línea 115:** `TELEGRAM_CHAT_ID=-5033055655` (hardcodeado)
 
 **Riesgo:** CRÍTICO - Estas credenciales están expuestas en el repositorio y pueden ser comprometidas.

@@ -53,7 +53,7 @@ The script will:
 1. Open Telegram and search for `@BotFather`
 2. Send `/newbot` command
 3. Follow instructions to create a bot
-4. Copy the bot token (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+4. Copy the bot token (format: `<REDACTED_TELEGRAM_TOKEN>`)
 
 ### Step 2: Get Telegram Chat ID
 
@@ -85,8 +85,8 @@ nano .env.aws
 **Add these lines**:
 ```bash
 # Telegram Configuration (AWS)
-TELEGRAM_BOT_TOKEN_AWS=your_bot_token_here
-TELEGRAM_CHAT_ID_AWS=your_chat_id_here
+TELEGRAM_BOT_TOKEN_AWS=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
 RUN_TELEGRAM=true
 ```
 

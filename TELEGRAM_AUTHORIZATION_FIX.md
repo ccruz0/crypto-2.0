@@ -78,7 +78,7 @@ nano .env.aws
 Add or update:
 ```bash
 # Channel ID for sending alerts (keep existing)
-TELEGRAM_CHAT_ID=839853931
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Authorized user IDs for bot commands (comma or space-separated)
 TELEGRAM_AUTH_USER_ID=123456789
@@ -91,7 +91,7 @@ TELEGRAM_AUTH_USER_ID=123456789
 Edit `.env.local`:
 ```bash
 # Channel ID for sending alerts (local test channel)
-TELEGRAM_CHAT_ID=your_local_channel_id
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Authorized user IDs for bot commands
 TELEGRAM_AUTH_USER_ID=your_user_id

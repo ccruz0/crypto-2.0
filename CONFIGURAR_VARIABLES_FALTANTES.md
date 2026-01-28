@@ -36,7 +36,7 @@ OPENVPN_USER=tu_usuario_openvpn_aqui
 OPENVPN_PASSWORD=tu_contraseña_openvpn_aqui
 
 # Telegram Bot
-TELEGRAM_BOT_TOKEN=tu_token_de_bot_aqui
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
 
 # Crypto.com API
 CRYPTO_API_KEY=tu_api_key_aqui
@@ -79,7 +79,7 @@ El script ya generó el `SECRET_KEY`. Ahora solo necesitas agregar las variables
 5. Ve a "API Token" o "Edit Bot" > "Token"
 
 **Valor anterior (para referencia, pero considerar rotar):**
-- `TELEGRAM_BOT_TOKEN=8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew`
+- `TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>`
 
 ⚠️ **IMPORTANTE:** Este token estaba expuesto. Considera regenerarlo.
 

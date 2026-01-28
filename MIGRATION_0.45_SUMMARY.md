@@ -87,8 +87,8 @@ environment:
 ENVIRONMENT=aws
 APP_ENV=aws
 RUN_TELEGRAM=true
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHAT_ID=your_chat_id
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 **Local (.env.local or default):**

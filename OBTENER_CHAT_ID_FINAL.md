@@ -87,11 +87,11 @@ Esto te dará el chat_id del canal.
 
 2. **Cambia:**
    ```bash
-   TELEGRAM_CHAT_ID=839853931
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
    **Por:**
    ```bash
-   TELEGRAM_CHAT_ID=-1001234567890  # (el número negativo que obtuviste)
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 3. **Guarda y reinicia:**

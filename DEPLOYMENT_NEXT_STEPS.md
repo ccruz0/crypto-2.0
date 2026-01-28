@@ -117,8 +117,8 @@ cd ~/automated-trading-platform
 **Option B: Manual**
 1. Edit `.env.aws` on EC2:
    ```bash
-   TELEGRAM_BOT_TOKEN_AWS=your_token_here
-   TELEGRAM_CHAT_ID_AWS=your_chat_id_here
+   TELEGRAM_BOT_TOKEN_AWS=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
    RUN_TELEGRAM=true
    ```
 2. Restart backend:

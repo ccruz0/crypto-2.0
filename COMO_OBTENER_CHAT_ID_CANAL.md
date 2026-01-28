@@ -98,12 +98,12 @@ nano .env.aws
 
 ### Paso 2: Busca esta línea
 ```bash
-TELEGRAM_CHAT_ID=839853931
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ### Paso 3: Cámbiala por el chat_id del canal
 ```bash
-TELEGRAM_CHAT_ID=-1001234567890
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 (Reemplaza `-1001234567890` con el chat_id real que obtuviste)
 
@@ -124,7 +124,7 @@ docker compose --profile aws exec backend-aws env | grep TELEGRAM_CHAT_ID
 
 Deberías ver:
 ```
-TELEGRAM_CHAT_ID=-1001234567890
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ---

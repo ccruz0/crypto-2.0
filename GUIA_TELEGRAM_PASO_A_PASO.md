@@ -12,7 +12,7 @@ Configurar Telegram para recibir alertas de trading en el entorno local con pref
 2. Envía el comando: `/mybots`
 3. Selecciona tu bot
 4. Elige **"API Token"**
-5. Copia el token (formato: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`)
+5. Copia el token (formato: `<REDACTED_TELEGRAM_TOKEN>`)
 
 ### Si necesitas crear un bot nuevo:
 1. Abre Telegram y busca **@BotFather**
@@ -100,15 +100,15 @@ Busca el `"id"` dentro de `"chat"`.
    ```bash
    # Telegram Configuration for Local Environment
    APP_ENV=local
-   TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
-   TELEGRAM_CHAT_ID=-1001234567890
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
    **Ejemplo real:**
    ```bash
    APP_ENV=local
-   TELEGRAM_BOT_TOKEN=6123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
-   TELEGRAM_CHAT_ID=-1001234567890
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 4. Guarda el archivo

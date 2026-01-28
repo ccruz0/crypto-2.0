@@ -14,7 +14,7 @@ Use the new `TELEGRAM_AUTH_USER_ID` environment variable to specify authorized u
 2. Edit `.env.aws`:
    ```bash
    # Channel ID for sending alerts (keep existing)
-   TELEGRAM_CHAT_ID=839853931
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    
    # Authorized user IDs for bot commands (NEW)
    TELEGRAM_AUTH_USER_ID=your_user_id_here

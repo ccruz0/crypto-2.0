@@ -15,8 +15,8 @@ def test_telegram_health_missing_vars(caplog):
         with patch("app.services.telegram_health.Settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 RUN_TELEGRAM="true",
-                TELEGRAM_BOT_TOKEN="",
-                TELEGRAM_CHAT_ID="",
+                TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+                TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
                 APP_ENV="",
                 ENVIRONMENT="",
             )
@@ -45,8 +45,8 @@ def test_telegram_health_all_present(caplog):
         with patch("app.services.telegram_health.Settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 RUN_TELEGRAM="true",
-                TELEGRAM_BOT_TOKEN="test_token_123",
-                TELEGRAM_CHAT_ID="test_chat_456",
+                TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+                TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
                 APP_ENV="aws",
                 ENVIRONMENT="",
             )
@@ -75,8 +75,8 @@ def test_telegram_health_disabled(caplog):
         with patch("app.services.telegram_health.Settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 RUN_TELEGRAM="false",
-                TELEGRAM_BOT_TOKEN="test_token_123",
-                TELEGRAM_CHAT_ID="test_chat_456",
+                TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+                TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
                 APP_ENV="",
                 ENVIRONMENT="",
             )
@@ -101,8 +101,8 @@ def test_telegram_health_source_detection():
         with patch("app.services.telegram_health.Settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 RUN_TELEGRAM="true",
-                TELEGRAM_BOT_TOKEN="",
-                TELEGRAM_CHAT_ID="",
+                TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+                TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
                 APP_ENV="aws",
                 ENVIRONMENT="",
             )
@@ -116,8 +116,8 @@ def test_telegram_health_source_detection():
         with patch("app.services.telegram_health.Settings") as mock_settings:
             mock_settings.return_value = MagicMock(
                 RUN_TELEGRAM="true",
-                TELEGRAM_BOT_TOKEN="",
-                TELEGRAM_CHAT_ID="",
+                TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+                TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
                 APP_ENV="local",
                 ENVIRONMENT="",
             )

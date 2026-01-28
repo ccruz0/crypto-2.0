@@ -287,10 +287,10 @@ market-updater-aws-1  | 2026-01-08 02:14:34,417 - market_updater - INFO - Schedu
 **Environment Variables** (presence only, values masked):
 ```bash
 $ docker exec automated-trading-platform-backend-aws-1 sh -c 'env | grep -E "RUN_TELEGRAM|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|ADMIN_ACTIONS_KEY|DIAGNOSTICS_API_KEY" | sed "s/=.*/=***MASKED***/"'
-TELEGRAM_CHAT_ID_AWS=***MASKED***
+TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
 ADMIN_ACTIONS_KEY=***MASKED***
 DIAGNOSTICS_API_KEY=***MASKED***
-TELEGRAM_CHAT_ID=***MASKED***
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 RUN_TELEGRAM=***MASKED***
 ```
 

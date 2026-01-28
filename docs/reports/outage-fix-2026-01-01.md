@@ -14,7 +14,7 @@ postgres_hardened                           automated-trading-platform-db       
 ### Environment Variables (BEFORE)
 ```
 ENVIRONMENT=aws
-TELEGRAM_CHAT_ID=839853931
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 **Missing:** TELEGRAM_CHAT_ID_AWS
 
@@ -82,8 +82,8 @@ postgres_hardened                                 automated-trading-platform-db 
 ### Environment Variables (AFTER)
 ```
 ENVIRONMENT=aws
-TELEGRAM_CHAT_ID_AWS=839853931
-TELEGRAM_BOT_TOKEN=8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew
+TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
 ```
 
 ### Audit Results (AFTER)

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script para obtener el Chat ID del canal de Telegram
 
-BOT_TOKEN="8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew"
+BOT_TOKEN="<REDACTED_TELEGRAM_TOKEN>"
 
 echo "🔍 Obteniendo Chat ID del canal..."
 echo ""

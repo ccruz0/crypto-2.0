@@ -50,7 +50,7 @@ env_file:
 - **`EXCHANGE_CUSTOM_API_KEY=GWzqpdqv7QBW4hvRb8zGw6`** ⚠️ **PRODUCTION CREDENTIALS**
 - **`EXCHANGE_CUSTOM_API_SECRET=cxakp_r9KY9Y3P4Cxhno3bf1cPix`** ⚠️ **PRODUCTION CREDENTIALS**
 - `EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1` (production API endpoint)
-- **`TELEGRAM_BOT_TOKEN=8408220395:AAEJAZcUEy4-9rfEsqKtfR0tHskL4vM4pew`** ⚠️
+- **`TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>`** ⚠️
 - `TELEGRAM_CHAT_ID=-5033055655` (different from AWS: 839853931)
 
 #### Database Configuration

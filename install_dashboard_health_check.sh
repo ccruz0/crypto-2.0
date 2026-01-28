@@ -28,11 +28,11 @@ ssh_cmd "$HOST" "mkdir -p $REMOTE_DIR/logs"
 
 # Load environment variables from .env file
 echo "[INFO] Loading environment variables from .env..."
-TELEGRAM_BOT_TOKEN=$(ssh -i "$KEY_PATH" \
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     "$HOST" "grep '^TELEGRAM_BOT_TOKEN=' $REMOTE_DIR/.env | cut -d '=' -f2- | tr -d '\"' | tr -d \"'\"" || echo "")
-TELEGRAM_CHAT_ID=$(ssh -i "$KEY_PATH" \
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     "$HOST" "grep '^TELEGRAM_CHAT_ID=' $REMOTE_DIR/.env | cut -d '=' -f2- | tr -d '\"' | tr -d \"'\"" || echo "")

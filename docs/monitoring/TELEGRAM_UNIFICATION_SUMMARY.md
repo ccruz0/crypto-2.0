@@ -31,8 +31,8 @@ Success: Message sent to Telegram chat
 
 ```bash
 # Required for all Telegram alerts
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-TELEGRAM_CHAT_ID=your_chat_or_channel_id
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Required for production alerts
 RUNTIME_ORIGIN=AWS

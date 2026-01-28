@@ -29,7 +29,7 @@
 
 3. **Configuración actual**:
    ```bash
-   TELEGRAM_CHAT_ID=839853931  # ❌ Chat privado, no canal
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 ## Solución
@@ -61,12 +61,12 @@ nano .env.aws
 
 Cambia:
 ```bash
-TELEGRAM_CHAT_ID=839853931  # ❌ Chat privado
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 A:
 ```bash
-TELEGRAM_CHAT_ID=-1001234567890  # ✅ ID del canal (reemplaza con el ID real)
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ### Paso 3: Reiniciar Servicios

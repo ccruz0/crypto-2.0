@@ -85,8 +85,8 @@ cd ~/automated-trading-platform
 2. Get chat ID from Telegram API
 3. Edit `.env.aws` file:
    ```bash
-   TELEGRAM_BOT_TOKEN_AWS=your_token_here
-   TELEGRAM_CHAT_ID_AWS=your_chat_id_here
+   TELEGRAM_BOT_TOKEN_AWS=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
    RUN_TELEGRAM=true
    ```
 4. Restart backend: `docker compose --profile aws restart backend-aws`

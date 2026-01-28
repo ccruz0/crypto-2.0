@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Telegram Local Setup Script
-BOT_TOKEN="8511567279:AAG7svLucbeqfB0cPYodcFch4uHr7pZZ7-4"
+BOT_TOKEN="<REDACTED_TELEGRAM_TOKEN>"
 BOT_USERNAME="@Hilovivolocalbot"
 
 echo "🔧 Telegram Local Setup"

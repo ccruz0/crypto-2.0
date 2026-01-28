@@ -38,8 +38,8 @@ Has decidido usar **solo el servicio `backend-aws`** para evitar notificaciones 
    ```
    RUNTIME_ORIGIN=AWS
    RUN_TELEGRAM=true
-   TELEGRAM_BOT_TOKEN=...
-   TELEGRAM_CHAT_ID=...
+   TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+   TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
 ## ✅ Verificación del Fix

@@ -16,8 +16,8 @@ The trading platform supports **environment-aware Telegram alerts** that automat
 All environments need these variables:
 
 ```bash
-TELEGRAM_BOT_TOKEN=<your_bot_token>
-TELEGRAM_CHAT_ID=<your_chat_id>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 ### Environment Identifier
@@ -40,8 +40,8 @@ APP_ENV=local
 
 ```bash
 APP_ENV=aws
-TELEGRAM_BOT_TOKEN=<your_bot_token>
-TELEGRAM_CHAT_ID=<chat_id_for_Hilovivo-alerts>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 **Result:**
@@ -55,8 +55,8 @@ TELEGRAM_CHAT_ID=<chat_id_for_Hilovivo-alerts>
 
 ```bash
 APP_ENV=local
-TELEGRAM_BOT_TOKEN=<your_bot_token>
-TELEGRAM_CHAT_ID=<chat_id_for_Hilovivo-alerts-local>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ```
 
 **Result:**

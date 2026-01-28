@@ -339,9 +339,9 @@ docker compose --profile aws exec backend-aws env | grep -E "TELEGRAM_BOT_TOKEN"
 nano .env.aws
 
 # Add:
-TELEGRAM_BOT_TOKEN=<your_production_bot_token>
+TELEGRAM_BOT_TOKEN=<REDACTED_TELEGRAM_TOKEN>
 # OR
-TELEGRAM_BOT_TOKEN_AWS=<your_production_bot_token>
+TELEGRAM_BOT_TOKEN_AWS=<REDACTED_TELEGRAM_TOKEN>
 
 # Restart
 docker compose --profile aws restart backend-aws
@@ -370,9 +370,9 @@ docker compose --profile aws exec backend-aws env | grep -E "TELEGRAM_CHAT_ID"
 nano .env.aws
 
 # Add:
-TELEGRAM_CHAT_ID=<your_production_chat_id>
+TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 # OR
-TELEGRAM_CHAT_ID_AWS=<your_production_chat_id>
+TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
 
 # Restart
 docker compose --profile aws restart backend-aws
