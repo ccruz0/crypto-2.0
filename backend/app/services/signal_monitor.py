@@ -2238,7 +2238,6 @@ class SignalMonitorService:
                 f"Next signal will bypass throttle (force_next_signal=True)."
             )
 
-        now_utc = datetime.now(timezone.utc)
         buy_state_recorded = False
         buy_alert_sent_successfully = False  # Track if BUY alert was sent successfully
         sell_state_recorded = False
@@ -4184,8 +4183,8 @@ class SignalMonitorService:
                     elif most_recent_time.tzinfo != timezone.utc:
                         most_recent_time = most_recent_time.astimezone(timezone.utc)
                     
-                    now_utc = datetime.now(timezone.utc)
-                    time_since_last = (now_utc - most_recent_time).total_seconds() / 60
+                    now_utc_current = datetime.now(timezone.utc)
+                    time_since_last = (now_utc_current - most_recent_time).total_seconds() / 60
                     
                     logger.warning(
                         f"🚫 BLOCKED: {symbol} has {len(recent_buy_orders)} recent BUY order(s) "
@@ -4403,10 +4402,10 @@ class SignalMonitorService:
                     if most_recent:
                         recent_time = most_recent.exchange_create_time or most_recent.created_at
                         if recent_time:
-                            now_utc = datetime.now(timezone.utc)
+                            now_utc_current = datetime.now(timezone.utc)
                             if recent_time.tzinfo is None:
                                 recent_time = recent_time.replace(tzinfo=timezone.utc)
-                            seconds_remaining = COOLDOWN_SECONDS - (now_utc - recent_time).total_seconds()
+                            seconds_remaining = COOLDOWN_SECONDS - (now_utc_current - recent_time).total_seconds()
                             if DEBUG_TRADING:
                                 logger.info(f"[DEBUG_TRADING] GUARD cooldown_blocked symbol={symbol} seconds_remaining={seconds_remaining:.1f}")
                             logger.warning(
@@ -7322,8 +7321,6 @@ class SignalMonitorService:
                 
                 estimated_qty = float(amount_usd / current_price)  # Ensure Python float, not numpy
                 
-                now_utc = datetime.now(timezone.utc)
-                
                 # Helper function to convert numpy types to Python native types
                 def to_python_float(val):
                     """Convert numpy float to Python float"""
@@ -8913,8 +8910,6 @@ class SignalMonitorService:
                     # No execution - order is still new/pending
                     db_status = OrderStatusEnum.NEW
                     db_status_str = "OPEN"
-                
-                now_utc = datetime.now(timezone.utc)
                 
                 # Save to order_history_db
                 order_data = {
