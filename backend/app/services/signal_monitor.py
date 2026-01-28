@@ -122,9 +122,9 @@ def _emit_lifecycle_event(
                 blocked=True,
                 throttle_status="TRADE_BLOCKED",
                 throttle_reason=event_reason,
-                decision_type=decision_type,
-                reason_code=reason_code,
-                reason_message=reason_message,
+                decision_type=decision_type or "SKIPPED",
+                reason_code=reason_code or "GUARDRAIL_BLOCKED",
+                reason_message=reason_message or event_reason,
                 context_json=context_json,
                 exchange_error_snippet=exchange_error_snippet,
                 correlation_id=correlation_id,
@@ -168,8 +168,8 @@ def _emit_lifecycle_event(
                 throttle_status="ORDER_FAILED",
                 throttle_reason=event_reason,
                 decision_type=decision_type,
-                reason_code=reason_code,
-                reason_message=reason_message,
+                reason_code=reason_code or "EXCHANGE_ERROR_UNKNOWN",
+                reason_message=reason_message or event_reason,
                 context_json=context_json,
                 exchange_error_snippet=exchange_error_snippet,
                 correlation_id=correlation_id,
@@ -213,6 +213,11 @@ def _emit_lifecycle_event(
                 blocked=True,
                 throttle_status="SLTP_BLOCKED",
                 throttle_reason=event_reason,
+                decision_type=decision_type or "SKIPPED",
+                reason_code=reason_code or "GUARDRAIL_BLOCKED",
+                reason_message=reason_message or event_reason,
+                context_json=context_json,
+                correlation_id=correlation_id,
                 db=db,
             )
         elif event_type == "ORDER_EXECUTED":
@@ -1517,16 +1522,18 @@ class SignalMonitorService:
         """
         try:
             # Check Telegram health before processing
-            # Note: resolve_send_config() updates telegram_notifier.enabled, but may not exist in older deployments
-            try:
-                telegram_notifier.resolve_send_config()
-            except AttributeError:
-                # Fallback if resolve_send_config doesn't exist (old code version)
-                pass
-            if not telegram_notifier.enabled:
+            # Guard: Check if telegram_notifier exists and is enabled before calling methods
+            telegram_enabled = False
+            if telegram_notifier and getattr(telegram_notifier, "enabled", False) and hasattr(telegram_notifier, 'resolve_send_config'):
+                telegram_config = telegram_notifier.resolve_send_config()
+                telegram_enabled = telegram_config.get("enabled", False) if isinstance(telegram_config, dict) else getattr(telegram_notifier, "enabled", False)
+            elif telegram_notifier:
+                telegram_enabled = getattr(telegram_notifier, "enabled", False)
+            
+            if not telegram_enabled:
                 logger.warning(
                     "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. "
-                    "Check ENVIRONMENT=aws and TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID_AWS"
+                    "Check ENVIRONMENT=aws and TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
                 )
             
             # Fetch watchlist items in a thread pool to avoid blocking the event loop
@@ -1573,12 +1580,19 @@ class SignalMonitorService:
     def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):
         """Check signal for a specific coin and take action if needed"""
         import uuid
+        import os
         symbol = watchlist_item.symbol
         normalized_symbol = normalize_symbol_for_exchange(symbol)
         exchange = watchlist_item.exchange or "CRYPTO_COM"
         
-        # Generate unique evaluation_id for this symbol evaluation run
-        evaluation_id = str(uuid.uuid4())[:8]
+        # Use E2E_CORRELATION_ID if provided (for E2E testing), otherwise generate evaluation_id
+        e2e_correlation_id = os.getenv("E2E_CORRELATION_ID")
+        if e2e_correlation_id:
+            evaluation_id = e2e_correlation_id
+            logger.info(f"[E2E_TEST] Using provided correlation_id: {evaluation_id} for {symbol}")
+        else:
+            # Generate unique evaluation_id for this symbol evaluation run
+            evaluation_id = str(uuid.uuid4())[:8]
         
         # EARLY CHECK: Kill switch - if ON, skip all signal processing
         try:
@@ -1709,11 +1723,14 @@ class SignalMonitorService:
             "default_min_pct": threshold_sources.get("default_min_pct"),
         }
         # Get Telegram config (with fallback for old code versions)
-        try:
+        # Guard: Check if telegram_notifier exists and is enabled before calling methods
+        telegram_config = {"enabled": False}
+        if telegram_notifier and getattr(telegram_notifier, "enabled", False) and hasattr(telegram_notifier, 'resolve_send_config'):
             telegram_config = telegram_notifier.resolve_send_config()
-        except AttributeError:
-            # Fallback if resolve_send_config doesn't exist (old code version)
+        elif telegram_notifier:
             telegram_config = {"enabled": getattr(telegram_notifier, "enabled", False)}
+        else:
+            logger.debug("Telegram notifier is not available - skipping config check")
         logger.info(
             f"[EVAL_{evaluation_id}] {symbol} evaluation started | "
             f"strategy={strategy_display}/{risk_display} | "
@@ -1761,7 +1778,17 @@ class SignalMonitorService:
             # Register blocked message
             try:
                 from app.api.routes_monitoring import add_telegram_message
-                add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                from app.utils.decision_reason import ReasonCode
+                add_telegram_message(
+                    blocked_msg,
+                    symbol=symbol,
+                    blocked=True,
+                    throttle_status="BLOCKED",
+                    throttle_reason="alert_enabled=False",
+                    decision_type="SKIPPED",
+                    reason_code=ReasonCode.ALERT_DISABLED.value,
+                    reason_message="alert_enabled=False",
+                )
             except Exception:
                 pass  # Non-critical, continue
         else:
@@ -2284,6 +2311,20 @@ class SignalMonitorService:
             )
 
         if buy_signal:
+            # CRITICAL: Store pre-throttle signal state for instrumentation
+            decision_buy = buy_signal  # Pure strategy decision (never mutated)
+            decision_sell = sell_signal  # Pure strategy decision (never mutated)
+            
+            # Calculate throttle metrics before check
+            last_alert_at_utc = None
+            seconds_since_last = None
+            price_change_pct = None
+            if last_buy_snapshot and last_buy_snapshot.timestamp:
+                last_alert_at_utc = last_buy_snapshot.timestamp
+                seconds_since_last = (now_utc - last_buy_snapshot.timestamp).total_seconds()
+                if last_buy_snapshot.price and last_buy_snapshot.price > 0:
+                    price_change_pct = abs((current_price - last_buy_snapshot.price) / last_buy_snapshot.price * 100)
+            
             self._log_signal_candidate(
                 symbol,
                 "BUY",
@@ -2317,6 +2358,31 @@ class SignalMonitorService:
                 buy_reason,
                 evaluation_id,
                 threshold_context,
+            )
+            
+            # CRITICAL: Instrumentation trace - log pipeline state BEFORE any mutations
+            # This allows us to see exactly why alerts don't fire
+            alert_config_pre = self._resolve_alert_config(db, symbol)
+            logger.info(
+                "[ALERT_PIPELINE_TRACE] symbol=%s decision=%s pre_throttle_buy=%s pre_throttle_sell=%s "
+                "emit_allowed=%s reason_code=%s alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s "
+                "trade_enabled=%s last_alert_at=%s seconds_since_last=%s price_change_pct=%s "
+                "min_price_change_pct=%s evaluation_id=%s",
+                symbol,
+                current_state,
+                decision_buy,
+                decision_sell,
+                buy_allowed,
+                buy_reason,
+                alert_config_pre["alert_enabled"],
+                alert_config_pre["buy_alert_enabled"],
+                alert_config_pre["sell_alert_enabled"],
+                watchlist_item.trade_enabled,
+                last_alert_at_utc.isoformat() if last_alert_at_utc else None,
+                seconds_since_last,
+                price_change_pct,
+                throttle_config.min_price_change_pct,
+                evaluation_id,
             )
             logger.info(
                 f"[THROTTLE_EVAL] symbol={symbol} side=BUY decision={'ACCEPT' if buy_allowed else 'BLOCK'} "
@@ -2360,7 +2426,8 @@ class SignalMonitorService:
             # Store throttle reason for use in alert message
             if buy_allowed:
                 throttle_buy_reason = buy_reason
-            if not buy_allowed:
+                emit_buy = True  # Throttling passed - allow emission
+            else:
                 # CRITICAL: Only block if there's a valid price reference
                 # If no price reference exists, the signal should be allowed (should_emit_signal already handles this,
                 # but we add an extra safety check here)
@@ -2483,11 +2550,17 @@ class SignalMonitorService:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to add blocked alert message with DecisionReason: {e}", exc_info=True)
-                    # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
-                    # The price reference should only be updated when a message is actually sent successfully
-                    buy_signal = False
-                    if current_state == "BUY":
-                        current_state = "WAIT"
+                # CRITICAL FIX: Do NOT mutate buy_signal - it represents strategy decision
+                # Instead, use emit_buy flag to control alert emission
+                # This ensures state (strategy decision) is separate from event (alert emission)
+                emit_buy = False  # Throttling blocked emission, but decision remains
+                # Do NOT change current_state - it should reflect strategy decision, not throttle state
+                # The alert section will check emit_buy and record BLOCKED event
+        else:
+            # No buy signal from strategy - no emission
+            emit_buy = False
+            buy_allowed = False  # Initialize for later use
+            buy_reason = "NO_SIGNAL"
         
         # DIAG_MODE: Print decision trace for diagnostic symbol (SELL)
         if DIAG_SYMBOL and symbol.upper() == DIAG_SYMBOL:
@@ -2604,11 +2677,12 @@ class SignalMonitorService:
                             f"<i>Price move alert (independent of buy/sell signals)</i>"
                         )
                         try:
-                            telegram_notifier.send_message(message)
-                            # Production log line (single line, easy to grep)
-                            logger.info(
-                                f"PRICE_MOVE_ALERT_SENT symbol={symbol} change_pct={price_move_pct:.2f} "
-                                f"price=${current_price:.4f} threshold={PRICE_MOVE_ALERT_PCT:.2f} "
+                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                telegram_notifier.send_message(message)
+                                # Production log line (single line, easy to grep)
+                                logger.info(
+                                    f"PRICE_MOVE_ALERT_SENT symbol={symbol} change_pct={price_move_pct:.2f} "
+                                    f"price=${current_price:.4f} threshold={PRICE_MOVE_ALERT_PCT:.2f} "
                                 f"cooldown_s={int(PRICE_MOVE_ALERT_COOLDOWN_SECONDS)}"
                             )
                             
@@ -2688,6 +2762,30 @@ class SignalMonitorService:
                 f"default_min_pct={threshold_sources.get('default_min_pct')} "
                 f"eval_id={evaluation_id}"
             )
+            
+            # CRITICAL: Instrumentation trace - log pipeline state BEFORE any mutations
+            alert_config_pre_sell = self._resolve_alert_config(db, symbol)
+            logger.info(
+                "[ALERT_PIPELINE_TRACE] symbol=%s decision=%s pre_throttle_buy=%s pre_throttle_sell=%s "
+                "emit_allowed=%s reason_code=%s alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s "
+                "trade_enabled=%s last_alert_at=%s seconds_since_last=%s price_change_pct=%s "
+                "min_price_change_pct=%s evaluation_id=%s",
+                symbol,
+                current_state,
+                decision_buy if 'decision_buy' in locals() else False,
+                decision_sell,
+                sell_allowed,
+                sell_reason,
+                alert_config_pre_sell["alert_enabled"],
+                alert_config_pre_sell["buy_alert_enabled"],
+                alert_config_pre_sell["sell_alert_enabled"],
+                watchlist_item.trade_enabled,
+                last_alert_at_utc_sell.isoformat() if last_alert_at_utc_sell else None,
+                seconds_since_last_sell,
+                price_change_pct_sell,
+                throttle_config.min_price_change_pct,
+                evaluation_id,
+            )
             # CRITICAL: Save previous price from snapshot BEFORE recording the signal event
             # This ensures we use the same price that was used in the throttle check for consistency
             last_sell_snapshot = signal_snapshots.get("SELL")
@@ -2720,17 +2818,10 @@ class SignalMonitorService:
             )
             
             # Store throttle reason for use in alert message
-            # FIX: Always store throttle_reason, even when throttled, so alert section can use it
-            throttle_sell_reason = sell_reason if sell_allowed else sell_reason
-            # DEBUG: Log throttle check result for DOT_USD
-            if symbol == "DOT_USD":
-                logger.info(
-                    f"🔍 [DEBUG] {symbol} SELL throttle check: sell_allowed={sell_allowed}, "
-                    f"sell_reason={sell_reason}, sell_signal={sell_signal}"
-                )
-            # CRITICAL: If throttle check blocks the signal, set sell_signal = False to prevent alert sending
-            # This ensures SELL alerts respect the same throttling rules as BUY (cooldown and price change %)
-            if not sell_allowed:
+            if sell_allowed:
+                throttle_sell_reason = sell_reason
+                emit_sell = True  # Throttling passed - allow emission
+            else:
                 # CRITICAL: Only block if there's a valid price reference
                 # If no price reference exists, the signal should be allowed (should_emit_signal already handles this,
                 # but we add an extra safety check here)
@@ -2857,13 +2948,17 @@ class SignalMonitorService:
                         pass
                     # CRITICAL: Do NOT update reference price when blocked - it must remain the last successful (non-blocked) message price
                     # The price reference should only be updated when a message is actually sent successfully
-                # NOTE: Do NOT record signal event when blocked - last_price should only update when alert is actually sent
-                # FIX: Do NOT set sell_signal = False when throttled - allow alert to be created with blocked status
-                # This ensures SELL alerts are always created/persisted (same as BUY), only duplicates are prevented
-                # The alert section will check sell_allowed and pass throttle_status to send_sell_signal()
-                # send_sell_signal() will handle duplicate detection and mark as blocked if needed
-                if current_state == "SELL":
-                    current_state = "WAIT"
+                # CRITICAL FIX: Do NOT mutate sell_signal - it represents strategy decision
+                # Instead, use emit_sell flag to control alert emission
+                # This ensures state (strategy decision) is separate from event (alert emission)
+                emit_sell = False  # Throttling blocked emission, but decision remains
+                # Do NOT change current_state - it should reflect strategy decision, not throttle state
+                # The alert section will check emit_sell and record BLOCKED event
+        else:
+            # No sell signal from strategy - no emission
+            emit_sell = False
+            sell_allowed = False  # Initialize for later use
+            sell_reason = "NO_SIGNAL"
         
         # ========================================================================
         # ENVÍO DE ALERTAS: Enviar alerta SIEMPRE que buy_signal=True, alert_enabled=True, y buy_alert_enabled=True
@@ -2920,20 +3015,43 @@ class SignalMonitorService:
                     {"alert_enabled": alert_enabled, "buy_alert_enabled": buy_alert_enabled},
                 )
         
-        # CRITICAL: Verify BOTH alert_enabled (master switch) AND buy_alert_enabled (BUY-specific) before processing
-        # Use values from centralized resolver (already updated above)
+        # CRITICAL FIX: Process ALL buy signals (strategy decisions), not just those that pass throttling
+        # This ensures we always record an event (BLOCKED or SENT) so dashboard explains why alerts don't fire
+        # State (strategy decision) is separate from event (alert emission)
         if buy_signal and alert_config["alert_enabled"] and alert_config["buy_alert_enabled"]:
-            # Log alert allowed decision with all flags for verification
-            logger.info(
-                "[ALERT_ALLOWED] symbol=%s gate=alert_enabled+buy_alert_enabled decision=ALLOW "
-                "alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s source=db evaluation_id=%s",
-                symbol,
-                watchlist_item.alert_enabled,
-                buy_alert_enabled,
-                getattr(watchlist_item, 'sell_alert_enabled', False),
-                evaluation_id
-            )
-            logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert (alert_enabled=True, buy_alert_enabled=True)")
+            # Determine if we should emit (send telegram) or just record (blocked)
+            # emit_buy is set above: True if throttling passed, False if blocked
+            should_emit_telegram = emit_buy if 'emit_buy' in locals() else buy_allowed if 'buy_allowed' in locals() else True
+            
+            if should_emit_telegram:
+                # Log alert allowed decision with all flags for verification
+                logger.info(
+                    "[ALERT_ALLOWED] symbol=%s gate=alert_enabled+buy_alert_enabled decision=ALLOW "
+                    "alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s source=db evaluation_id=%s",
+                    symbol,
+                    watchlist_item.alert_enabled,
+                    buy_alert_enabled,
+                    getattr(watchlist_item, 'sell_alert_enabled', False),
+                    evaluation_id
+                )
+                logger.info(f"🟢 NEW BUY signal detected for {symbol} - processing alert (alert_enabled=True, buy_alert_enabled=True)")
+            else:
+                # Strategy decision is BUY but throttling blocked - record BLOCKED event
+                logger.info(
+                    "[ALERT_BLOCKED] symbol=%s gate=throttle decision=BLOCK reason=%s "
+                    "alert_enabled=%s buy_alert_enabled=%s evaluation_id=%s",
+                    symbol,
+                    buy_reason if 'buy_reason' in locals() else "UNKNOWN",
+                    watchlist_item.alert_enabled,
+                    buy_alert_enabled,
+                    evaluation_id
+                )
+                # Event already recorded above in throttle block section - just skip telegram send
+                # Continue to order logic (don't return)
+                if lock_key in self.alert_sending_locks:
+                    del self.alert_sending_locks[lock_key]
+                # Skip telegram send but continue processing
+                should_emit_telegram = False
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             # This ensures only one thread can check and send an alert at a time
@@ -2957,7 +3075,7 @@ class SignalMonitorService:
                     logger.debug(f"🔓 Expired lock removed for {symbol} BUY (age: {lock_age:.2f}s)")
                     del self.alert_sending_locks[lock_key]
             
-            if not should_skip_alert:
+            if not should_skip_alert and should_emit_telegram:
                 # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} BUY alert")
@@ -3074,12 +3192,24 @@ class SignalMonitorService:
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        from app.utils.decision_reason import ReasonCode
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason="alert_enabled=False",
+                            decision_type="SKIPPED",
+                            reason_code=ReasonCode.ALERT_DISABLED.value,
+                            reason_message="alert_enabled=False",
+                        )
                     except Exception:
                         pass  # Non-critical, continue
                     # Remove locks and continue (don't return - continue with order logic)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+                    # Skip telegram send - event already recorded as BLOCKED
+                    should_emit_telegram = False
                 elif not buy_alert_enabled:
                     # Enhanced blocking log with source information
                     logger.info(
@@ -3110,7 +3240,17 @@ class SignalMonitorService:
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        from app.utils.decision_reason import ReasonCode
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason="buy_alert_enabled=False",
+                            decision_type="SKIPPED",
+                            reason_code=ReasonCode.ALERT_DISABLED.value,
+                            reason_message="buy_alert_enabled=False",
+                        )
                     except Exception:
                         pass  # Non-critical, continue
                     # Remove locks and continue (don't return - continue with order logic)
@@ -3131,13 +3271,27 @@ class SignalMonitorService:
                     # Register blocked message
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        from app.utils.decision_reason import ReasonCode
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason="trade_amount_usd missing",
+                            decision_type="SKIPPED",
+                            reason_code=ReasonCode.INVALID_TRADE_AMOUNT.value,
+                            reason_message="trade_amount_usd missing or <= 0",
+                        )
                     except Exception:
                         pass  # Non-critical, continue
                     # Remove locks and continue (don't return - continue with order logic)
                     if lock_key in self.alert_sending_locks:
                         del self.alert_sending_locks[lock_key]
+                    # Skip telegram send - event already recorded as BLOCKED
+                    should_emit_telegram = False
                 else:
+                    # All checks passed - proceed with telegram send
+                    should_emit_telegram = True
                     # Check portfolio value limit: Skip orders if portfolio_value > 3x trade_amount_usd
                     # IMPORTANT: Alerts are ALWAYS sent, but orders are skipped when limit is exceeded
                     # NOTE: We only log here - monitoring entry is created in order creation path to avoid duplicates
@@ -3174,139 +3328,140 @@ class SignalMonitorService:
                         logger.warning(f"⚠️ Error checking portfolio value for {symbol}: {portfolio_check_err}. Continuing with alert...")
                         # On error, continue (don't block alerts if we can't calculate portfolio value)
                     
-                    # NOTE: Throttling already checked by should_emit_signal (passed if we reached here)
-                    # Since buy_allowed was True, we proceed directly to send the alert
-                    logger.info(
-                        f"🔍 {symbol} BUY alert ready to send (throttling already verified by should_emit_signal)"
-                    )
-                    self._log_signal_accept(
-                        symbol,
-                        "BUY",
-                        {
-                            "price": current_price,
-                            "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
-                        },
-                    )
-                    
-                    # Send Telegram alert (throttling already verified by should_emit_signal)
-                    try:
-                        price_variation = self._format_price_variation(prev_buy_price, current_price)
-                        ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
-                        ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
-                        ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
-                        reason_text = (
-                            f"{strategy_display}/{risk_display} | "
-                            f"RSI={rsi:.1f}, Price={current_price:.4f}, "
-                            f"MA50={ma50_text}, "
-                            f"EMA10={ema10_text}, "
-                            f"MA200={ma200_text}"
+                    # NOTE: Only send telegram if should_emit_telegram is True
+                    # If throttled, event was already recorded as BLOCKED above
+                    if should_emit_telegram:
+                        logger.info(
+                            f"🔍 {symbol} BUY alert ready to send (throttling already verified by should_emit_signal)"
                         )
-                        alert_origin = get_runtime_origin()
-                        # Explicitly pass origin to ensure alerts are sent
-                        # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
-                        alert_origin = get_runtime_origin()
-                        result = emit_alert(
-                            db=db,
-                            symbol=symbol,
-                            side="BUY",
-                            reason=reason_text,
-                            price=current_price,
-                            context={
+                        self._log_signal_accept(
+                            symbol,
+                            "BUY",
+                            {
                                 "price": current_price,
-                                "previous_price": prev_buy_price,
-                                "strategy": strategy_display,
-                                "risk": risk_display,
+                                "trade_enabled": getattr(watchlist_item, "trade_enabled", None),
                             },
-                            strategy_type=strategy_display,
-                            risk_approach=risk_display,
-                            price_variation=price_variation,
-                            throttle_status="SENT",
-                            throttle_reason=throttle_buy_reason or buy_reason,
-                            evaluation_id=evaluation_id,
-                            strategy_key=strategy_key,
-                            thresholds=threshold_context,
                         )
-                        # PHASE 0: Structured logging for Telegram send attempt
-                        message_id = None
-                        signal_id = None  # Telegram message ID for orchestrator
-                        if isinstance(result, dict):
-                            message_id = result.get("message_id")
-                            signal_id = result.get("message_id")  # Use message_id as signal_id
-                        elif hasattr(result, 'message_id'):
-                            message_id = result.message_id
-                            signal_id = result.message_id
-                        elif result is True:
-                            # Fallback: query for most recent TelegramMessage
-                            try:
-                                from app.models.telegram_message import TelegramMessage
-                                recent_msg = db.query(TelegramMessage).filter(
-                                    TelegramMessage.symbol == symbol,
-                                    TelegramMessage.message.like("%BUY SIGNAL%"),
-                                    TelegramMessage.blocked == False,
-                                ).order_by(TelegramMessage.timestamp.desc()).first()
-                                if recent_msg:
-                                    signal_id = recent_msg.id
-                            except Exception as query_err:
-                                logger.warning(f"Could not query for signal_id: {query_err}")
                         
-                        # Alerts must never be blocked after conditions are met (guardrail compliance)
-                        # If send_buy_signal returns False, log as error but do not treat as block
-                        if result is False:
-                            logger.error(
-                                f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send FAILED | "
-                                f"result=False | "
-                                f"reason={reason_text}"
+                        # Send Telegram alert (throttling already verified by should_emit_signal)
+                        try:
+                            price_variation = self._format_price_variation(prev_buy_price, current_price)
+                            ma50_text = f"{ma50:.2f}" if ma50 is not None else "N/A"
+                            ema10_text = f"{ema10:.2f}" if ema10 is not None else "N/A"
+                            ma200_text = f"{ma200:.2f}" if ma200 is not None else "N/A"
+                            reason_text = (
+                                f"{strategy_display}/{risk_display} | "
+                                f"RSI={rsi:.1f}, Price={current_price:.4f}, "
+                                f"MA50={ma50_text}, "
+                                f"EMA10={ema10_text}, "
+                                f"MA200={ma200_text}"
                             )
-                            logger.error(
-                                f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
-                                f"This should not happen when conditions are met. Check telegram_notifier."
-                            )
-                            self._upsert_watchlist_signal_state(
-                                db,
-                                symbol=normalized_symbol,
-                                alert_status="BLOCKED",
-                                alert_block_reason="TELEGRAM_ERROR",
-                                last_alert_at_utc=now_utc,
-                                correlation_id=evaluation_id,
-                            )
-                        else:
-                            # Message already registered in send_buy_signal as sent
-                            logger.info(
-                                f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send SUCCESS | "
-                                f"message_id={message_id or 'N/A'} | "
-                                f"signal_id={signal_id or 'N/A'} | "
-                                f"price=${current_price:.4f} | "
-                                f"reason={reason_text}"
-                            )
-                            # E) Deep decision-grade logging
-                            logger.info(
-                                f"[TELEGRAM_SEND] {symbol} BUY status=SUCCESS message_id={message_id or 'N/A'} "
-                                f"channel={telegram_notifier.chat_id} origin={alert_origin}"
-                            )
-                            logger.info(
-                                f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
-                                f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
-                            )
-                            buy_alert_sent_successfully = True  # Mark alert as sent successfully
-                            self._upsert_watchlist_signal_state(
-                                db,
-                                symbol=normalized_symbol,
-                                alert_status="SENT",
-                                alert_block_reason=None,
-                                last_alert_at_utc=now_utc,
-                                correlation_id=evaluation_id,
-                            )
-                            self._log_pipeline_stage(
-                                stage="ALERT_CREATED",
-                                symbol=normalized_symbol,
+                            alert_origin = get_runtime_origin()
+                            # Explicitly pass origin to ensure alerts are sent
+                            # Use get_runtime_origin() to get current runtime (should be "AWS" in production)
+                            alert_origin = get_runtime_origin()
+                            result = emit_alert(
+                                db=db,
+                                symbol=symbol,
+                                side="BUY",
+                                reason=reason_text,
+                                price=current_price,
+                                context={
+                                    "price": current_price,
+                                    "previous_price": prev_buy_price,
+                                    "strategy": strategy_display,
+                                    "risk": risk_display,
+                                },
+                                strategy_type=strategy_display,
+                                risk_approach=risk_display,
+                                price_variation=price_variation,
+                                throttle_status="SENT",
+                                throttle_reason=throttle_buy_reason or buy_reason,
+                                evaluation_id=evaluation_id,
                                 strategy_key=strategy_key,
-                                decision="BUY",
-                                last_price=current_price,
-                                timestamp=now_utc.isoformat(),
-                                correlation_id=evaluation_id,
-                                signal_id=str(signal_id) if signal_id is not None else None,
+                                thresholds=threshold_context,
                             )
-                            self._log_signal_accept(
+                            # PHASE 0: Structured logging for Telegram send attempt
+                            message_id = None
+                            signal_id = None  # Telegram message ID for orchestrator
+                            if isinstance(result, dict):
+                                message_id = result.get("message_id")
+                                signal_id = result.get("message_id")  # Use message_id as signal_id
+                            elif hasattr(result, 'message_id'):
+                                message_id = result.message_id
+                                signal_id = result.message_id
+                            elif result is True:
+                                # Fallback: query for most recent TelegramMessage
+                                try:
+                                    from app.models.telegram_message import TelegramMessage
+                                    recent_msg = db.query(TelegramMessage).filter(
+                                        TelegramMessage.symbol == symbol,
+                                        TelegramMessage.message.like("%BUY SIGNAL%"),
+                                        TelegramMessage.blocked == False,
+                                    ).order_by(TelegramMessage.timestamp.desc()).first()
+                                    if recent_msg:
+                                        signal_id = recent_msg.id
+                                except Exception as query_err:
+                                    logger.warning(f"Could not query for signal_id: {query_err}")
+                            
+                            # Alerts must never be blocked after conditions are met (guardrail compliance)
+                            # If send_buy_signal returns False, log as error but do not treat as block
+                            if result is False:
+                                logger.error(
+                                    f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send FAILED | "
+                                    f"result=False | "
+                                    f"reason={reason_text}"
+                                )
+                                logger.error(
+                                    f"❌ Failed to send BUY alert for {symbol} (send_buy_signal returned False). "
+                                    f"This should not happen when conditions are met. Check telegram_notifier."
+                                )
+                                self._upsert_watchlist_signal_state(
+                                    db,
+                                    symbol=normalized_symbol,
+                                    alert_status="BLOCKED",
+                                    alert_block_reason="TELEGRAM_ERROR",
+                                    last_alert_at_utc=now_utc,
+                                    correlation_id=evaluation_id,
+                                )
+                            else:
+                                # Message already registered in send_buy_signal as sent
+                                logger.info(
+                                    f"[EVAL_{evaluation_id}] {symbol} BUY Telegram send SUCCESS | "
+                                    f"message_id={message_id or 'N/A'} | "
+                                    f"signal_id={signal_id or 'N/A'} | "
+                                    f"price=${current_price:.4f} | "
+                                    f"reason={reason_text}"
+                                )
+                                # E) Deep decision-grade logging
+                                logger.info(
+                                    f"[TELEGRAM_SEND] {symbol} BUY status=SUCCESS message_id={message_id or 'N/A'} "
+                                    f"channel={telegram_notifier.chat_id} origin={alert_origin}"
+                                )
+                                logger.info(
+                                    f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
+                                    f"buy_alert_enabled={buy_alert_enabled}, sell_alert_enabled={getattr(watchlist_item, 'sell_alert_enabled', False)} - {reason_text}"
+                                )
+                                buy_alert_sent_successfully = True  # Mark alert as sent successfully
+                                self._upsert_watchlist_signal_state(
+                                    db,
+                                    symbol=normalized_symbol,
+                                    alert_status="SENT",
+                                    alert_block_reason=None,
+                                    last_alert_at_utc=now_utc,
+                                    correlation_id=evaluation_id,
+                                )
+                                self._log_pipeline_stage(
+                                    stage="ALERT_CREATED",
+                                    symbol=normalized_symbol,
+                                    strategy_key=strategy_key,
+                                    decision="BUY",
+                                    last_price=current_price,
+                                    timestamp=now_utc.isoformat(),
+                                    correlation_id=evaluation_id,
+                                    signal_id=str(signal_id) if signal_id is not None else None,
+                                )
+                                self._log_signal_accept(
                                 symbol,
                                 "BUY",
                                 {"telegram": "sent", "reason": reason_text},
@@ -3316,6 +3471,9 @@ class SignalMonitorService:
                             # INVARIANT ENFORCEMENT: Call orchestrator immediately after signal sent
                             # ========================================================================
                             # If signal is sent, order MUST be attempted immediately (only dedup can block)
+                            logger.info(
+                                f"[ORCH_GATE] symbol={symbol} decision=BUY emit={should_emit_telegram} action=RUN reason=TELEGRAM_SENT"
+                            )
                             try:
                                 from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
@@ -3346,43 +3504,43 @@ class SignalMonitorService:
                                 )
                                 
                                 if intent_status == "DEDUP_SKIPPED":
-                                    # Duplicate signal - skip order
-                                    logger.warning(f"[ORCHESTRATOR] {symbol} BUY DEDUP_SKIPPED - Duplicate signal detected")
-                                    self._upsert_watchlist_signal_state(
-                                        db,
-                                        symbol=normalized_symbol,
-                                        trade_status="BLOCKED",
-                                        trade_block_reason="DUPLICATE",
-                                        last_trade_at_utc=now_utc,
-                                        correlation_id=evaluation_id,
-                                    )
-                                    self._log_pipeline_stage(
-                                        stage="BUY_BLOCKED",
-                                        symbol=normalized_symbol,
-                                        strategy_key=strategy_key,
-                                        decision="BUY",
-                                        last_price=current_price,
-                                        timestamp=now_utc.isoformat(),
-                                        correlation_id=evaluation_id,
-                                        signal_id=str(signal_id) if signal_id is not None else None,
-                                        reason="IDEMPOTENCY_BLOCKED",
-                                    )
-                                    decision_reason = make_skip(
-                                        reason_code=ReasonCode.IDEMPOTENCY_BLOCKED.value,
-                                        message=f"Duplicate signal detected for {symbol} BUY. Order was already attempted (idempotency_key already exists).",
-                                        context={"symbol": symbol, "signal_id": signal_id},
-                                        source="orchestrator",
-                                    )
-                                    update_telegram_message_decision_trace(
-                                        db=db,
-                                        symbol=symbol,
-                                        message_pattern="BUY SIGNAL",
-                                        decision_type="SKIPPED",
-                                        reason_code=decision_reason.reason_code,
-                                        reason_message=decision_reason.reason_message,
-                                        context_json=decision_reason.context,
-                                        correlation_id=str(uuid_module.uuid4()),
-                                    )
+                                        # Duplicate signal - skip order
+                                        logger.warning(f"[ORCHESTRATOR] {symbol} BUY DEDUP_SKIPPED - Duplicate signal detected")
+                                        self._upsert_watchlist_signal_state(
+                                            db,
+                                            symbol=normalized_symbol,
+                                            trade_status="BLOCKED",
+                                            trade_block_reason="DUPLICATE",
+                                            last_trade_at_utc=now_utc,
+                                            correlation_id=evaluation_id,
+                                        )
+                                        self._log_pipeline_stage(
+                                            stage="BUY_BLOCKED",
+                                            symbol=normalized_symbol,
+                                            strategy_key=strategy_key,
+                                            decision="BUY",
+                                            last_price=current_price,
+                                            timestamp=now_utc.isoformat(),
+                                            correlation_id=evaluation_id,
+                                            signal_id=str(signal_id) if signal_id is not None else None,
+                                            reason="IDEMPOTENCY_BLOCKED",
+                                        )
+                                        decision_reason = make_skip(
+                                            reason_code=ReasonCode.IDEMPOTENCY_BLOCKED.value,
+                                            message=f"Duplicate signal detected for {symbol} BUY. Order was already attempted (idempotency_key already exists).",
+                                            context={"symbol": symbol, "signal_id": signal_id},
+                                            source="orchestrator",
+                                        )
+                                        update_telegram_message_decision_trace(
+                                            db=db,
+                                            symbol=symbol,
+                                            message_pattern="BUY SIGNAL",
+                                            decision_type="SKIPPED",
+                                            reason_code=decision_reason.reason_code,
+                                            reason_message=decision_reason.reason_message,
+                                            context_json=decision_reason.context,
+                                            correlation_id=str(uuid_module.uuid4()),
+                                        )
                                 elif intent_status == "ORDER_BLOCKED_LIVE_TRADING":
                                     # LIVE_TRADING=false - order blocked
                                     logger.info(f"[ORCHESTRATOR] {symbol} BUY ORDER_BLOCKED_LIVE_TRADING - Signal sent but order blocked")
@@ -3453,7 +3611,7 @@ class SignalMonitorService:
                                         correlation_id=evaluation_id,
                                         signal_id=str(signal_id) if signal_id is not None else None,
                                     )
-                                
+                                    
                                     # Call minimal order placement function (NO eligibility checks)
                                     # Note: Running async function from sync context using new event loop
                                     try:
@@ -3532,15 +3690,17 @@ class SignalMonitorService:
                                             
                                             # Send Telegram failure message (required - Step 4)
                                             try:
-                                                from app.services.telegram_notifier import telegram_notifier
-                                                telegram_notifier.send_message(
-                                                    f"❌ <b>ORDER FAILED</b>\n\n"
-                                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                                    f"🔄 Side: BUY\n"
-                                                    f"❌ Error: {error_msg}\n"
-                                                    f"📋 Reason Code: {reason_code}\n\n"
-                                                    f"<i>Signal was sent but order creation failed.</i>"
-                                                )
+                                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                    telegram_notifier.send_message(
+                                                        f"❌ <b>ORDER FAILED</b>\n\n"
+                                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                                        f"🔄 Side: BUY\n"
+                                                        f"❌ Error: {error_msg}\n"
+                                                        f"📋 Reason Code: {reason_code}\n\n"
+                                                        f"<i>Signal was sent but order creation failed.</i>"
+                                                    )
+                                                else:
+                                                    logger.debug("Telegram notifier is disabled - skipping failure message")
                                             except Exception as telegram_err:
                                                 logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
                                             try:
@@ -3664,15 +3824,17 @@ class SignalMonitorService:
                                         
                                         # Send Telegram failure message (required - Step 4)
                                         try:
-                                            from app.services.telegram_notifier import telegram_notifier
-                                            telegram_notifier.send_message(
-                                                f"❌ <b>ORDER FAILED</b>\n\n"
-                                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                                f"🔄 Side: BUY\n"
-                                                f"❌ Error: {error_msg}\n"
-                                                f"📋 Reason Code: {reason_code}\n\n"
-                                                f"<i>Signal was sent but order creation failed.</i>"
-                                            )
+                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                telegram_notifier.send_message(
+                                                    f"❌ <b>ORDER FAILED</b>\n\n"
+                                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                                    f"🔄 Side: BUY\n"
+                                                    f"❌ Error: {error_msg}\n"
+                                                    f"📋 Reason Code: {reason_code}\n\n"
+                                                    f"<i>Signal was sent but order creation failed.</i>"
+                                                )
+                                            else:
+                                                logger.debug("Telegram notifier is disabled - skipping failure message")
                                         except Exception as telegram_err:
                                             logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
                                         try:
@@ -3718,12 +3880,24 @@ class SignalMonitorService:
                                 buy_state_recorded = True
                             except Exception as state_err:
                                 logger.error(f"❌ Failed to persist BUY throttle state for {symbol}: {state_err}", exc_info=True)
-                    except Exception as e:
-                        logger.error(f"❌ Failed to send Telegram BUY alert for {symbol}: {e}", exc_info=True)
-                        # If sending failed, do NOT update the state - allow retry on next cycle
-                        # Remove lock to allow retry
+                        except Exception as e:
+                            logger.error(f"❌ Failed to send Telegram BUY alert for {symbol}: {e}", exc_info=True)
+                            # If sending failed, do NOT update the state - allow retry on next cycle
+                            # Remove lock to allow retry
+                            if lock_key in self.alert_sending_locks:
+                                del self.alert_sending_locks[lock_key]
+                    else:
+                        # Throttled - event already recorded as BLOCKED above, skip telegram send
+                        logger.info(
+                            f"⏭️ {symbol} BUY alert throttled - event recorded as BLOCKED, skipping telegram send"
+                        )
+                        logger.info(
+                            f"[ORCH_GATE] symbol={symbol} decision=BUY emit=False action=SKIP reason=THROTTLED"
+                        )
+                        # Remove lock since we're not sending
                         if lock_key in self.alert_sending_locks:
                             del self.alert_sending_locks[lock_key]
+                        # Continue to order logic (don't return) - throttled alerts don't create orders
                     
                     # Always remove lock when done (if not already removed)
                     if lock_key in self.alert_sending_locks:
@@ -4814,11 +4988,12 @@ class SignalMonitorService:
                         
                         # Send error notification to Telegram
                         try:
-                            telegram_notifier.send_message(
-                                f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
-                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                f"🟢 Side: BUY\n"
-                                f"📊 Signal: BUY signal detected\n"
+                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                telegram_notifier.send_message(
+                                    f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"🟢 Side: BUY\n"
+                                    f"📊 Signal: BUY signal detected\n"
                                 f"⚠️ Trade enabled: {watchlist_item.trade_enabled}\n"
                                 f"❌ Error: {error_message}"
                             )
@@ -4981,18 +5156,45 @@ class SignalMonitorService:
                 f"will_send={'YES' if (sell_signal and watchlist_item.alert_enabled and sell_alert_enabled) else 'NO'}"
             )
         
+        # CRITICAL FIX: Process ALL sell signals (strategy decisions), not just those that pass throttling
+        # This ensures we always record an event (BLOCKED or SENT) so dashboard explains why alerts don't fire
         if sell_signal and watchlist_item.alert_enabled and sell_alert_enabled:
-            # Log alert allowed decision with all flags for verification
-            logger.info(
-                "[ALERT_ALLOWED] symbol=%s gate=alert_enabled+sell_alert_enabled decision=ALLOW "
-                "alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s source=db evaluation_id=%s",
-                symbol,
-                watchlist_item.alert_enabled,
-                getattr(watchlist_item, 'buy_alert_enabled', False),
-                sell_alert_enabled,
-                evaluation_id
-            )
-            logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert (alert_enabled=True, sell_alert_enabled=True)")
+            # Determine if we should emit (send telegram) or just record (blocked)
+            # emit_sell is set above: True if throttling passed, False if blocked
+            should_emit_telegram_sell = emit_sell if 'emit_sell' in locals() else sell_allowed if 'sell_allowed' in locals() else True
+            
+            if should_emit_telegram_sell:
+                # Log alert allowed decision with all flags for verification
+                logger.info(
+                    "[ALERT_ALLOWED] symbol=%s gate=alert_enabled+sell_alert_enabled decision=ALLOW "
+                    "alert_enabled=%s buy_alert_enabled=%s sell_alert_enabled=%s source=db evaluation_id=%s",
+                    symbol,
+                    watchlist_item.alert_enabled,
+                    getattr(watchlist_item, 'buy_alert_enabled', False),
+                    sell_alert_enabled,
+                    evaluation_id
+                )
+                logger.info(f"🔴 NEW SELL signal detected for {symbol} - processing alert (alert_enabled=True, sell_alert_enabled=True)")
+            else:
+                # Strategy decision is SELL but throttling blocked - record BLOCKED event
+                logger.info(
+                    "[ALERT_BLOCKED] symbol=%s gate=throttle decision=BLOCK reason=%s "
+                    "alert_enabled=%s sell_alert_enabled=%s evaluation_id=%s",
+                    symbol,
+                    sell_reason if 'sell_reason' in locals() else "UNKNOWN",
+                    watchlist_item.alert_enabled,
+                    sell_alert_enabled,
+                    evaluation_id
+                )
+                logger.info(
+                    f"[ORCH_GATE] symbol={symbol} decision=SELL emit=False action=SKIP reason=THROTTLED"
+                )
+                # Event already recorded above in throttle block section - just skip telegram send
+                # Continue to order logic (don't return)
+                if lock_key in self.alert_sending_locks:
+                    del self.alert_sending_locks[lock_key]
+                # Skip telegram send but continue processing
+                should_emit_telegram_sell = False
             
             # CRITICAL: Use a lock to prevent race conditions when multiple cycles run simultaneously
             lock_key = f"{symbol}_SELL"
@@ -5014,7 +5216,7 @@ class SignalMonitorService:
                     logger.debug(f"🔓 Expired lock removed for {symbol} SELL (age: {lock_age:.2f}s)")
                     del self.alert_sending_locks[lock_key]
             
-            if not should_skip_alert:
+            if not should_skip_alert and should_emit_telegram_sell:
                 # Set lock IMMEDIATELY to prevent other cycles from processing the same alert
                 self.alert_sending_locks[lock_key] = current_time
                 logger.debug(f"🔒 Lock acquired for {symbol} SELL alert")
@@ -5024,37 +5226,9 @@ class SignalMonitorService:
                 # Fallback to database query if snapshot price not available (shouldn't happen, but safe fallback)
                 prev_sell_price: Optional[float] = prev_sell_price_from_snapshot if prev_sell_price_from_snapshot is not None else self._get_last_alert_price(symbol, "SELL", db)
                 
-                # FIX: Check sell_allowed status - if throttled, still create alert but mark as blocked
-                # This ensures SELL alerts are always created/persisted (same as BUY), only duplicates are prevented
-                import uuid as uuid_module
-                trace_id = str(uuid_module.uuid4())
-                dedup_key = f"{symbol}:SELL:{strategy_key}"
-                
-                # PHASE 0: Structured logging for SELL alert attempt
                 logger.info(
-                    f"[SELL_ALERT_ATTEMPT] symbol={symbol} side=SELL dedup_key={dedup_key} "
-                    f"trace_id={trace_id} sell_allowed={sell_allowed} throttle_reason={sell_reason if not sell_allowed else 'N/A'}"
+                    f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"
                 )
-                
-                # NOTE: Even if throttled (sell_allowed=False), we still proceed to send the alert
-                # send_sell_signal() will handle duplicate detection and mark as blocked if needed
-                # This ensures alerts are always created/persisted for monitoring, only duplicates are prevented
-                if sell_allowed:
-                    logger.info(
-                        f"🔍 {symbol} SELL alert ready to send (throttling already verified by should_emit_signal)"
-                    )
-                else:
-                    logger.info(
-                        f"🔍 {symbol} SELL alert will be sent with BLOCKED status (throttled: {sell_reason})"
-                    )
-                    self._upsert_watchlist_signal_state(
-                        db,
-                        symbol=normalized_symbol,
-                        alert_status="BLOCKED",
-                        alert_block_reason=self._map_alert_block_reason(sell_reason),
-                        last_alert_at_utc=datetime.now(timezone.utc),
-                        correlation_id=evaluation_id,
-                    )
                 self._log_signal_accept(
                     symbol,
                     "SELL",
@@ -5101,7 +5275,17 @@ class SignalMonitorService:
                     logger.warning(blocked_msg)
                     try:
                         from app.api.routes_monitoring import add_telegram_message
-                        add_telegram_message(blocked_msg, symbol=symbol, blocked=True)
+                        from app.utils.decision_reason import ReasonCode
+                        add_telegram_message(
+                            blocked_msg,
+                            symbol=symbol,
+                            blocked=True,
+                            throttle_status="BLOCKED",
+                            throttle_reason="sell_alert_enabled=False",
+                            decision_type="SKIPPED",
+                            reason_code=ReasonCode.ALERT_DISABLED.value,
+                            reason_message="sell_alert_enabled=False",
+                        )
                     except Exception:
                         pass  # Non-critical, continue
                     # CRITICAL: Do NOT record signal event when blocked - price reference must remain the last successful (non-blocked) message price
@@ -5193,101 +5377,104 @@ class SignalMonitorService:
                             f"EMA10={ema10_text}, "
                             f"MA200={ma200_text}"
                         )
-                        # FIX: Pass throttle_status based on sell_allowed - if throttled, mark as BLOCKED
-                        # This ensures alerts are created/persisted even when throttled (for monitoring)
-                        throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
-                        # Use throttle_sell_reason if available, otherwise use sell_reason from throttle check
-                        throttle_reason_to_send = throttle_sell_reason if throttle_sell_reason else sell_reason
-                        
-                        result = emit_alert(
-                            db=db,
-                            symbol=symbol,
-                            side="SELL",
-                            reason=reason_text,
-                            price=current_price,
-                            context={
-                                "price": current_price,
-                                "previous_price": prev_sell_price,
-                                "strategy": strategy_display,
-                                "risk": risk_display,
-                                "balance_warning": balance_check_warning,
-                            },
-                            strategy_type=strategy_display,
-                            risk_approach=risk_display,
-                            price_variation=price_variation,
-                            throttle_status=throttle_status_to_send,
-                            throttle_reason=throttle_reason_to_send,
-                            evaluation_id=evaluation_id,
-                            strategy_key=strategy_key,
-                            thresholds=threshold_context,
-                        )
-                        # PHASE 0: Structured logging for SELL Telegram send attempt
-                        message_id_sell = None
-                        if isinstance(result, dict):
-                            message_id_sell = result.get("message_id")
-                        elif hasattr(result, 'message_id'):
-                            message_id_sell = result.message_id
-                        
-                        # PHASE 0: Structured logging for alert decision and enqueue
-                        logger.info(
-                            f"[ALERT_DECISION] symbol={symbol} side=SELL reason={reason_text} "
-                            f"trace_id={trace_id} dedup_key={dedup_key} sell_allowed={sell_allowed} "
-                            f"throttle_status={throttle_status_to_send}"
-                        )
-                        
-                        # Alerts must never be blocked after conditions are met (guardrail compliance)
-                        # If send_sell_signal returns False, log as error but do not treat as block
-                        if result is False:
-                            logger.error(
-                                f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send FAILED | "
-                                f"result=False | trace_id={trace_id} | reason={reason_text}"
+                        # NOTE: Only send telegram if should_emit_telegram_sell is True
+                        # If throttled, event was already recorded as BLOCKED above
+                        if should_emit_telegram_sell:
+                            # FIX: Pass throttle_status based on sell_allowed - if throttled, mark as BLOCKED
+                            # This ensures alerts are created/persisted even when throttled (for monitoring)
+                            throttle_status_to_send = "SENT" if sell_allowed else "BLOCKED"
+                            # Use throttle_sell_reason if available, otherwise use sell_reason from throttle check
+                            throttle_reason_to_send = throttle_sell_reason if throttle_sell_reason else sell_reason
+                            
+                            result = emit_alert(
+                                db=db,
+                                symbol=symbol,
+                                side="SELL",
+                                reason=reason_text,
+                                price=current_price,
+                                context={
+                                    "price": current_price,
+                                    "previous_price": prev_sell_price,
+                                    "strategy": strategy_display,
+                                    "risk": risk_display,
+                                    "balance_warning": balance_check_warning,
+                                },
+                                strategy_type=strategy_display,
+                                risk_approach=risk_display,
+                                price_variation=price_variation,
+                                throttle_status=throttle_status_to_send,
+                                throttle_reason=throttle_reason_to_send,
+                                evaluation_id=evaluation_id,
+                                strategy_key=strategy_key,
+                                thresholds=threshold_context,
                             )
-                            logger.error(
-                                f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=False trace_id={trace_id} "
-                                f"error=send_sell_signal_returned_False"
-                            )
-                            logger.error(
-                                f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
-                                f"This should not happen when conditions are met. Check telegram_notifier."
-                            )
-                            self._upsert_watchlist_signal_state(
-                                db,
-                                symbol=normalized_symbol,
-                                alert_status="BLOCKED",
-                                alert_block_reason="TELEGRAM_ERROR",
-                                last_alert_at_utc=now_utc,
-                                correlation_id=evaluation_id,
-                            )
-                        else:
-                            # PHASE 0: Structured logging for successful alert enqueue
+                            # PHASE 0: Structured logging for SELL Telegram send attempt
+                            message_id_sell = None
+                            if isinstance(result, dict):
+                                message_id_sell = result.get("message_id")
+                            elif hasattr(result, 'message_id'):
+                                message_id_sell = result.message_id
+                            
+                            # PHASE 0: Structured logging for alert decision and enqueue
                             logger.info(
-                                f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=True trace_id={trace_id} "
-                                f"message_id={message_id_sell or 'N/A'} dedup_key={dedup_key} "
+                                f"[ALERT_DECISION] symbol={symbol} side=SELL reason={reason_text} "
+                                f"trace_id={trace_id} dedup_key={dedup_key} sell_allowed={sell_allowed} "
                                 f"throttle_status={throttle_status_to_send}"
                             )
-                            logger.info(
-                                f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send SUCCESS | "
-                                f"message_id={message_id_sell or 'N/A'} | trace_id={trace_id} | "
-                                f"price=${current_price:.4f} | reason={reason_text}"
-                            )
-                            logger.info(
-                                f"[TELEGRAM_SEND] {symbol} SELL status=SUCCESS message_id={message_id_sell or 'N/A'} "
-                                f"trace_id={trace_id} channel={telegram_notifier.chat_id} origin={alert_origin}"
-                            )
-                            logger.info(
-                                f"✅ SELL alert SENT for {symbol}: "
-                                f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
-                            )
-                            sell_alert_sent_successfully = True  # Mark alert as sent successfully
-                            self._upsert_watchlist_signal_state(
-                                db,
-                                symbol=normalized_symbol,
-                                alert_status="SENT" if throttle_status_to_send == "SENT" else "BLOCKED",
-                                alert_block_reason=None if throttle_status_to_send == "SENT" else self._map_alert_block_reason(throttle_reason_to_send),
-                                last_alert_at_utc=now_utc,
-                                correlation_id=evaluation_id,
-                            )
-                            self._log_signal_accept(
+                            
+                            # Alerts must never be blocked after conditions are met (guardrail compliance)
+                            # If send_sell_signal returns False, log as error but do not treat as block
+                            if result is False:
+                                logger.error(
+                                    f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send FAILED | "
+                                    f"result=False | trace_id={trace_id} | reason={reason_text}"
+                                )
+                                logger.error(
+                                    f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=False trace_id={trace_id} "
+                                    f"error=send_sell_signal_returned_False"
+                                )
+                                logger.error(
+                                    f"❌ Failed to send SELL alert for {symbol} (send_sell_signal returned False). "
+                                    f"This should not happen when conditions are met. Check telegram_notifier."
+                                )
+                                self._upsert_watchlist_signal_state(
+                                    db,
+                                    symbol=normalized_symbol,
+                                    alert_status="BLOCKED",
+                                    alert_block_reason="TELEGRAM_ERROR",
+                                    last_alert_at_utc=now_utc,
+                                    correlation_id=evaluation_id,
+                                )
+                            else:
+                                # PHASE 0: Structured logging for successful alert enqueue
+                                logger.info(
+                                    f"[ALERT_ENQUEUED] symbol={symbol} side=SELL sent=True trace_id={trace_id} "
+                                    f"message_id={message_id_sell or 'N/A'} dedup_key={dedup_key} "
+                                    f"throttle_status={throttle_status_to_send}"
+                                )
+                                logger.info(
+                                    f"[EVAL_{evaluation_id}] {symbol} SELL Telegram send SUCCESS | "
+                                    f"message_id={message_id_sell or 'N/A'} | trace_id={trace_id} | "
+                                    f"price=${current_price:.4f} | reason={reason_text}"
+                                )
+                                logger.info(
+                                    f"[TELEGRAM_SEND] {symbol} SELL status=SUCCESS message_id={message_id_sell or 'N/A'} "
+                                    f"trace_id={trace_id} channel={telegram_notifier.chat_id} origin={alert_origin}"
+                                )
+                                logger.info(
+                                    f"✅ SELL alert SENT for {symbol}: "
+                                    f"buy_alert_enabled={getattr(watchlist_item, 'buy_alert_enabled', False)}, sell_alert_enabled={sell_alert_enabled} - {reason_text}"
+                                )
+                                sell_alert_sent_successfully = True  # Mark alert as sent successfully
+                                self._upsert_watchlist_signal_state(
+                                    db,
+                                    symbol=normalized_symbol,
+                                    alert_status="SENT" if throttle_status_to_send == "SENT" else "BLOCKED",
+                                    alert_block_reason=None if throttle_status_to_send == "SENT" else self._map_alert_block_reason(throttle_reason_to_send),
+                                    last_alert_at_utc=now_utc,
+                                    correlation_id=evaluation_id,
+                                )
+                                self._log_signal_accept(
                                 symbol,
                                 "SELL",
                                 {"telegram": "sent", "reason": reason_text},
@@ -5297,6 +5484,9 @@ class SignalMonitorService:
                             # INVARIANT ENFORCEMENT: Call orchestrator immediately after signal sent
                             # ========================================================================
                             # If signal is sent, order MUST be attempted immediately (only dedup can block)
+                            logger.info(
+                                f"[ORCH_GATE] symbol={symbol} decision=SELL emit={should_emit_telegram_sell} action=RUN reason=TELEGRAM_SENT"
+                            )
                             try:
                                 from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
@@ -5489,14 +5679,16 @@ class SignalMonitorService:
                                             
                                             # Send Telegram failure message (required)
                                             try:
-                                                from app.services.telegram_notifier import telegram_notifier
-                                                telegram_notifier.send_message(
-                                                    f"❌ <b>ORDER FAILED</b>\n\n"
-                                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                                    f"🔄 Side: SELL\n"
-                                                    f"❌ Error: {error_msg}\n\n"
-                                                    f"<i>Signal was sent but order creation failed.</i>"
-                                                )
+                                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                    telegram_notifier.send_message(
+                                                        f"❌ <b>ORDER FAILED</b>\n\n"
+                                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                                        f"🔄 Side: SELL\n"
+                                                        f"❌ Error: {error_msg}\n\n"
+                                                        f"<i>Signal was sent but order creation failed.</i>"
+                                                    )
+                                                else:
+                                                    logger.debug("Telegram notifier is disabled - skipping failure message")
                                             except Exception as telegram_err:
                                                 logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
                                             try:
@@ -5594,14 +5786,16 @@ class SignalMonitorService:
                                         
                                         # Send Telegram failure message (required)
                                         try:
-                                            from app.services.telegram_notifier import telegram_notifier
-                                            telegram_notifier.send_message(
-                                                f"❌ <b>ORDER FAILED</b>\n\n"
-                                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                                f"🔄 Side: SELL\n"
-                                                f"❌ Error: {error_msg}\n\n"
-                                                f"<i>Signal was sent but order creation failed.</i>"
-                                            )
+                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                telegram_notifier.send_message(
+                                                    f"❌ <b>ORDER FAILED</b>\n\n"
+                                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                                    f"🔄 Side: SELL\n"
+                                                    f"❌ Error: {error_msg}\n\n"
+                                                    f"<i>Signal was sent but order creation failed.</i>"
+                                                )
+                                            else:
+                                                logger.debug("Telegram notifier is disabled - skipping failure message")
                                         except Exception as telegram_err:
                                             logger.warning(f"Failed to send Telegram failure message: {telegram_err}")
                                         try:
@@ -6161,12 +6355,15 @@ class SignalMonitorService:
             
             # Send error notification to Telegram
             try:
-                telegram_notifier.send_message(
-                    f"❌ <b>ORDER CREATION FAILED</b>\n\n"
-                    f"📊 Symbol: <b>{symbol}</b>\n"
-                    f"🟢 Side: BUY\n"
-                    f"❌ Error: {error_message}"
-                )
+                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    telegram_notifier.send_message(
+                        f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🟢 Side: BUY\n"
+                        f"❌ Error: {error_message}"
+                    )
+                else:
+                    logger.debug("Telegram notifier is disabled - skipping error notification")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram error notification: {e}")
             
@@ -6242,9 +6439,10 @@ class SignalMonitorService:
                     )
                     # Enviar notificación informativa (no como error crítico)
                     try:
-                        telegram_notifier.send_message(
-                            f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
-                            f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
+                                f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
                             f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
                             f"💰 Balance disponible: <b>${available_balance:,.2f}</b>\n\n"
                             f"⚠️ <b>No se creará orden</b> - Balance insuficiente\n"
@@ -6495,9 +6693,10 @@ class SignalMonitorService:
                 )
                 # Send Telegram alert
                 try:
-                    telegram_notifier.send_message(
-                        f"🚫 <b>TRADE BLOCKED</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
+                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        telegram_notifier.send_message(
+                            f"🚫 <b>TRADE BLOCKED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
                         f"🔄 Side: BUY\n"
                         f"💵 Value: ${amount_usd:.2f}\n\n"
                         f"🚫 <b>Reason:</b> {block_reason}",
@@ -6603,9 +6802,10 @@ class SignalMonitorService:
                     )
                     # Send specific authentication error notification
                     try:
-                        telegram_notifier.send_message(
-                            f"🔐 <b>AUTOMATIC ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"🔐 <b>AUTOMATIC ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
                             f"🟢 Side: BUY\n"
                             f"💰 Amount: ${amount_usd:,.2f}\n"
                             f"📊 Type: {'MARGIN' if use_margin else 'SPOT'}\n"
@@ -6676,9 +6876,10 @@ class SignalMonitorService:
                             )
                             # Enviar notificación crítica a Telegram
                             try:
-                                telegram_notifier.send_message(
-                                    f"🚨 <b>ERROR CRÍTICO: INSUFFICIENTE BALANCE</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                    telegram_notifier.send_message(
+                                        f"🚨 <b>ERROR CRÍTICO: INSUFFICIENTE BALANCE</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
                                     f"🟢 Side: BUY\n"
                                     f"💰 Amount: ${amount_usd:,.2f}\n\n"
                                     f"❌ <b>Error 609: INSUFFICIENT_MARGIN</b>\n"
@@ -7025,9 +7226,10 @@ class SignalMonitorService:
                         if current_trade_enabled is not None:
                             trade_status_note = f"\n📊 Trade enabled status: {current_trade_enabled} (order was attempted because trade_enabled=True at that time)"
                         
-                        telegram_notifier.send_message(
-                            f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
                             f"🟢 Side: BUY\n"
                             f"💰 Amount: ${amount_usd:,.2f}\n"
                             f"📊 Type: {'MARGIN' if use_margin else 'SPOT'}\n"
@@ -7323,9 +7525,10 @@ class SignalMonitorService:
                 logger.error(f"❌ [SL/TP] {error_msg}")
                 
                 try:
-                    telegram_notifier.send_message(
-                        f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
+                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        telegram_notifier.send_message(
+                            f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
                         f"📋 BUY Order ID: {order_id}\n"
                         f"🟢 Side: BUY\n"
                         f"❌ Error: {error_msg}\n\n"
@@ -7390,7 +7593,7 @@ class SignalMonitorService:
                         if current_price and current_price > 0:
                             # Place market SELL order to close position
                             # Use raw quantity - exchange will handle formatting
-                            close_result = trade_client.place_market_order(
+                            close_result: Dict[str, Any] = trade_client.place_market_order(
                                 symbol=symbol,
                                 side="SELL",
                                 qty=executed_qty_raw_float,
@@ -7399,48 +7602,60 @@ class SignalMonitorService:
                                 dry_run=dry_run_mode
                             )
                             
-                            close_order_id = close_result.get("order_id") if "error" not in close_result else None
+                            # Extract order ID safely, handling both dict and error responses
+                            close_order_id: Optional[str] = None
+                            if isinstance(close_result, dict) and "error" not in close_result:
+                                close_order_id = close_result.get("order_id")
                             
                             if close_order_id:
                                 logger.info(f"✅ [FORCED_CLOSE] Emergency market SELL executed: order_id={close_order_id}")
-                                telegram_notifier.send_message(
-                                    f"🔴 <b>EMERGENCY POSITION CLOSE EXECUTED</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                    f"📋 Original BUY Order ID: {order_id}\n"
-                                    f"📦 Quantity: {executed_qty_raw_decimal}\n"
-                                    f"🛡️ Close Order ID: {close_order_id}\n\n"
-                                    f"Reason: Quantity too small for SL/TP normalization. Position closed to protect capital."
-                                )
+                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                    telegram_notifier.send_message(
+                                        f"🔴 <b>EMERGENCY POSITION CLOSE EXECUTED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 Original BUY Order ID: {order_id}\n"
+                                        f"📦 Quantity: {executed_qty_raw_decimal}\n"
+                                        f"🛡️ Close Order ID: {close_order_id}\n\n"
+                                        f"Reason: Quantity too small for SL/TP normalization. Position closed to protect capital."
+                                    )
                             else:
-                                close_error = close_result.get("error", "Unknown error")
+                                # Extract error message safely
+                                close_error: str = "Unknown error"
+                                if isinstance(close_result, dict):
+                                    close_error = close_result.get("error", "Unknown error")
+                                elif isinstance(close_result, str):
+                                    close_error = close_result
                                 logger.error(f"❌ [FORCED_CLOSE] Failed to execute emergency close: {close_error}")
-                                telegram_notifier.send_message(
-                                    f"🚨 <b>CRITICAL: FORCED CLOSE FAILED</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                    f"📋 BUY Order ID: {order_id}\n"
-                                    f"📦 Executed Quantity: {executed_qty_raw_decimal}\n"
-                                    f"❌ Close Error: {close_error}\n\n"
-                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
-                                )
+                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                    telegram_notifier.send_message(
+                                        f"🚨 <b>CRITICAL: FORCED CLOSE FAILED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 BUY Order ID: {order_id}\n"
+                                        f"📦 Executed Quantity: {executed_qty_raw_decimal}\n"
+                                        f"❌ Close Error: {close_error}\n\n"
+                                        f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                    )
                         else:
                             logger.error(f"❌ [FORCED_CLOSE] Cannot get current price for {symbol}")
-                            telegram_notifier.send_message(
-                                f"🚨 <b>CRITICAL: FORCED CLOSE BLOCKED</b>\n\n"
-                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                f"📋 BUY Order ID: {order_id}\n"
-                                f"❌ Error: Cannot get current price for market close\n\n"
-                                f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
-                            )
+                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: FORCED CLOSE BLOCKED</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"❌ Error: Cannot get current price for market close\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                )
                     except Exception as close_err:
                         logger.error(f"❌ [FORCED_CLOSE] Exception during forced close: {close_err}", exc_info=True)
                         try:
-                            telegram_notifier.send_message(
-                                f"🚨 <b>CRITICAL: FORCED CLOSE EXCEPTION</b>\n\n"
-                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                f"📋 BUY Order ID: {order_id}\n"
-                                f"❌ Error: {str(close_err)}\n\n"
-                                f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
-                            )
+                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                telegram_notifier.send_message(
+                                    f"🚨 <b>CRITICAL: FORCED CLOSE EXCEPTION</b>\n\n"
+                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                    f"📋 BUY Order ID: {order_id}\n"
+                                    f"❌ Error: {str(close_err)}\n\n"
+                                    f"⚠️ <b>Position is UNPROTECTED - Manual intervention required</b>"
+                                )
                         except Exception:
                             pass
                     
@@ -7459,9 +7674,10 @@ class SignalMonitorService:
                         alert_origin = get_runtime_origin()
                         if DEBUG_TRADING:
                             logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling send_order_created with origin={alert_origin}")
-                        telegram_notifier.send_order_created(
-                            symbol=symbol,
-                            side="BUY",
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_order_created(
+                                symbol=symbol,
+                                side="BUY",
                             price=float(executed_avg_price),
                             quantity=normalized_qty,
                             order_id=str(order_id),
@@ -7596,16 +7812,17 @@ class SignalMonitorService:
                             
                             # Send Telegram notification with order IDs
                             try:
-                                telegram_notifier.send_message(
-                                    f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                    f"📋 BUY Order ID: {order_id}\n"
-                                    f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
-                                    f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
-                                    f"📦 Quantity: {normalized_qty} (normalized)\n"
-                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
-                                    f"Protection orders created successfully."
-                                )
+                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                    telegram_notifier.send_message(
+                                        f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 BUY Order ID: {order_id}\n"
+                                        f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
+                                        f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
+                                        f"📦 Quantity: {normalized_qty} (normalized)\n"
+                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
+                                        f"Protection orders created successfully."
+                                    )
                             except Exception as notify_err:
                                 logger.warning(f"Failed to send SL/TP success notification: {notify_err}")
                             
@@ -7634,12 +7851,13 @@ class SignalMonitorService:
                             )
                             
                             try:
-                                telegram_notifier.send_message(
-                                    f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
-                                    f"📊 Symbol: <b>{symbol}</b>\n"
-                                    f"📋 BUY Order ID: {order_id}\n"
-                                    f"🟢 Side: BUY\n"
-                                    f"💵 Filled Price: ${executed_avg_price:.8f}\n"
+                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                    telegram_notifier.send_message(
+                                        f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
+                                        f"📊 Symbol: <b>{symbol}</b>\n"
+                                        f"📋 BUY Order ID: {order_id}\n"
+                                        f"🟢 Side: BUY\n"
+                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n"
                                     f"📦 Executed Quantity: {normalized_qty} (normalized from {executed_qty_raw_decimal})\n"
                                     f"❌ Error: {error_details}\n\n"
                                     f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
@@ -7676,39 +7894,42 @@ class SignalMonitorService:
                                                 f"✅ [AUTO_CLOSE] {symbol}: Market-close order created: {close_order_id} "
                                                 f"qty={close_qty_str} to prevent unprotected position"
                                             )
-                                            telegram_notifier.send_message(
-                                                f"✅ <b>Position Auto-Closed</b>\n\n"
-                                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                                f"📋 Original BUY Order: {order_id}\n"
-                                                f"🔄 Close Order ID: {close_order_id}\n"
-                                                f"📦 Quantity: {close_qty_str}\n\n"
-                                                f"Position was auto-closed because SL/TP could not be created."
-                                            )
+                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                telegram_notifier.send_message(
+                                                    f"✅ <b>Position Auto-Closed</b>\n\n"
+                                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                                    f"📋 Original BUY Order: {order_id}\n"
+                                                    f"🔄 Close Order ID: {close_order_id}\n"
+                                                    f"📦 Quantity: {close_qty_str}\n\n"
+                                                    f"Position was auto-closed because SL/TP could not be created."
+                                                )
                                         else:
                                             logger.critical(
                                                 f"❌ [AUTO_CLOSE_FAILED] {symbol}: Market-close order creation failed. "
                                                 f"Manual intervention required immediately!"
                                             )
-                                            telegram_notifier.send_message(
-                                                f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
-                                                f"📊 Symbol: <b>{symbol}</b>\n"
-                                                f"📋 BUY Order ID: {order_id}\n"
-                                                f"📦 Executed Quantity: {normalized_qty}\n\n"
-                                                f"❌ <b>MANUAL INTERVENTION REQUIRED</b>\n"
-                                                f"Position is UNPROTECTED and auto-close failed. "
-                                                f"Please close position manually immediately!"
-                                            )
+                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                telegram_notifier.send_message(
+                                                    f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
+                                                    f"📊 Symbol: <b>{symbol}</b>\n"
+                                                    f"📋 BUY Order ID: {order_id}\n"
+                                                    f"📦 Executed Quantity: {normalized_qty}\n\n"
+                                                    f"❌ <b>MANUAL INTERVENTION REQUIRED</b>\n"
+                                                    f"Position is UNPROTECTED and auto-close failed. "
+                                                    f"Please close position manually immediately!"
+                                                )
                                     except Exception as market_order_err:
                                         logger.critical(
                                             f"❌ [AUTO_CLOSE_EXCEPTION] {symbol}: Exception during market-close order: {market_order_err}",
                                             exc_info=True
                                         )
-                                        telegram_notifier.send_message(
-                                            f"🚨 <b>CRITICAL: AUTO-CLOSE EXCEPTION</b>\n\n"
-                                            f"📊 Symbol: <b>{symbol}</b>\n"
-                                            f"❌ Error: {market_order_err}\n\n"
-                                            f"Manual intervention required!"
-                                        )
+                                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                            telegram_notifier.send_message(
+                                                f"🚨 <b>CRITICAL: AUTO-CLOSE EXCEPTION</b>\n\n"
+                                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                                f"❌ Error: {market_order_err}\n\n"
+                                                f"Manual intervention required!"
+                                            )
                                 else:
                                     logger.critical(
                                         f"❌ [AUTO_CLOSE_FAILED] {symbol}: Cannot normalize quantity for market-close. "
@@ -8197,12 +8418,15 @@ class SignalMonitorService:
             
             # Send error notification to Telegram
             try:
-                telegram_notifier.send_message(
-                    f"❌ <b>ORDER CREATION FAILED</b>\n\n"
-                    f"📊 Symbol: <b>{symbol}</b>\n"
-                    f"🔴 Side: SELL\n"
-                    f"❌ Error: {error_message}"
-                )
+                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    telegram_notifier.send_message(
+                        f"❌ <b>ORDER CREATION FAILED</b>\n\n"
+                        f"📊 Symbol: <b>{symbol}</b>\n"
+                        f"🔴 Side: SELL\n"
+                        f"❌ Error: {error_message}"
+                    )
+                else:
+                    logger.debug("Telegram notifier is disabled - skipping error notification")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram error notification: {e}")
             
@@ -8251,9 +8475,10 @@ class SignalMonitorService:
                         f"No se intentará crear la orden para evitar error 306."
                     )
                     try:
-                        telegram_notifier.send_message(
-                            f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
-                            f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
+                                f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
                             f"💵 Amount requerido: <b>${amount_usd:,.2f}</b>\n"
                             f"📦 Quantity requerida: <b>{required_qty:.8f} {base_currency}</b>\n"
                             f"💰 Balance disponible: <b>{available_balance:.8f} {base_currency}</b>\n\n"
@@ -8377,10 +8602,11 @@ class SignalMonitorService:
                     )
                     # Send specific authentication error notification
                     try:
-                        telegram_notifier.send_message(
-                            f"🔐 <b>AUTOMATIC SELL ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"🔴 Side: SELL\n"
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"🔐 <b>AUTOMATIC SELL ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"🔴 Side: SELL\n"
                             f"💰 Amount: ${amount_usd:,.2f}\n"
                             f"📦 Quantity: {qty:.8f}\n"
                             f"📊 Type: {'MARGIN' if use_margin else 'SPOT'}\n"
@@ -8578,16 +8804,17 @@ class SignalMonitorService:
                     
                     # Send Telegram notification about the error
                 try:
-                    telegram_notifier.send_message(
-                        f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
-                        f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"🔴 Side: SELL\n"
-                        f"💰 Amount: ${amount_usd:,.2f}\n"
-                        f"📦 Quantity: {qty:.8f}\n"
+                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        telegram_notifier.send_message(
+                            f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
+                            f"📊 Symbol: <b>{symbol}</b>\n"
+                            f"🔴 Side: SELL\n"
+                            f"💰 Amount: ${amount_usd:,.2f}\n"
+                            f"📦 Quantity: {qty:.8f}\n"
                             f"❌ Error: {error_msg}\n\n"
                             f"🔍 Reason Code: {fail_reason.reason_code}\n"
                             f"📝 Reason: {fail_reason.reason_message}"
-                    )
+                        )
                 except Exception as notify_err:
                     logger.warning(f"Failed to send Telegram error notification: {notify_err}")
                 
@@ -8613,9 +8840,10 @@ class SignalMonitorService:
             try:
                 # CRITICAL: Explicitly pass origin to ensure notifications are sent
                 alert_origin = get_runtime_origin()
-                telegram_notifier.send_order_created(
-                    symbol=symbol,
-                    side="SELL",
+                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    telegram_notifier.send_order_created(
+                        symbol=symbol,
+                        side="SELL",
                     price=filled_price,
                     quantity=qty,
                     order_id=str(order_id),
@@ -8889,15 +9117,16 @@ class SignalMonitorService:
                     
                     # Send CRITICAL alert
                     try:
-                        telegram_notifier.send_message(
-                            f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"📋 SELL Order ID: {order_id}\n"
-                            f"🔴 Side: SELL\n"
-                            f"❌ Error: {error_msg}\n\n"
-                            f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
-                            f"Please manually create protection orders or close the position."
-                        )
+                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"📋 SELL Order ID: {order_id}\n"
+                                f"🔴 Side: SELL\n"
+                                f"❌ Error: {error_msg}\n\n"
+                                f"⚠️ <b>Position is UNPROTECTED</b> - No SL/TP orders created.\n"
+                                f"Please manually create protection orders or close the position."
+                            )
                     except Exception as alert_err:
                         logger.error(f"Failed to send CRITICAL Telegram alert: {alert_err}", exc_info=True)
                     
