@@ -76,6 +76,9 @@ sdist/
 secrets/*
 !secrets/.gitkeep
 !secrets/runtime.env.example
+# Explicit (redundant with secrets/*, but clearer)
+secrets/*.env
+secrets/pg_password
 secrets/runtime.env
 var/
 venv.bak/
