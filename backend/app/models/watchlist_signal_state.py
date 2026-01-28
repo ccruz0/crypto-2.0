@@ -31,7 +31,7 @@ class WatchlistSignalState(Base):
     correlation_id = Column(String(100), nullable=True)
 
     __table_args__ = (
-        Index("ix_watchlist_signal_state_symbol", "symbol"),
+        Index("ix_watchlist_signal_states_symbol", "symbol"),
     )
 
     def __repr__(self) -> str:
