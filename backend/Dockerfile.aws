@@ -78,39 +78,13 @@ COPY backend/ /app/
 # Default: 0 (disabled) - set to 1 to enable verification
 ARG DEBUG_VERIFY_SIGNAL_MONITOR=${DEBUG_VERIFY_SIGNAL_MONITOR:-0}
 RUN if [ "$DEBUG_VERIFY_SIGNAL_MONITOR" = "1" ]; then \
-    python - <<'PYEOF'
-import re
-import pathlib
-
-p = pathlib.Path("/app/app/services/signal_monitor.py")
-if not p.exists():
-    print("ERROR: signal_monitor.py not found in image")
-    exit(1)
-
-s = p.read_text()
-lines = s.splitlines()
-
-# Check for function-scope imports (indented)
-bad_imports = [(i+1, line.strip()) for i, line in enumerate(lines) 
-                if re.match(r'^\s+from\s+app\.services\.telegram_notifier\s+import\s+telegram_notifier', line)]
-
-if bad_imports:
-    print(f"ERROR: Found {len(bad_imports)} function-scope imports of telegram_notifier:")
-    for line_num, line in bad_imports:
-        print(f"  Line {line_num}: {line}")
-    exit(1)
-
-# Verify module-level import exists
-has_module_import = any(re.match(r'^from\s+app\.services\.telegram_notifier\s+import\s+telegram_notifier$', line) 
-                        for line in lines)
-if not has_module_import:
-    print("ERROR: Module-level import of telegram_notifier not found")
-    exit(1)
-
-print("OK: signal_monitor.py verification passed")
-print(f"  - Module-level import: present")
-print(f"  - Function-scope imports: {len(bad_imports)}")
-PYEOF; fi
+    python -c "import re,pathlib; p=pathlib.Path('/app/app/services/signal_monitor.py'); \
+    assert p.exists(), 'signal_monitor.py not found'; s=p.read_text(); lines=s.splitlines(); \
+    bad=[i for i,l in enumerate(lines,1) if re.match(r'^\s+from\s+app\.services\.telegram_notifier\s+import',l)]; \
+    assert not bad, f'Function-scope imports at lines: {bad}'; \
+    assert any(re.match(r'^from\s+app\.services\.telegram_notifier\s+import\s+telegram_notifier$',l) for l in lines), \
+    'Module-level import not found'; print('OK: signal_monitor.py verification passed')"; \
+    fi
 
 # Explicitly copy scripts directory to ensure it's included in the image
 # This prevents regression if .dockerignore or COPY . . behavior changes
