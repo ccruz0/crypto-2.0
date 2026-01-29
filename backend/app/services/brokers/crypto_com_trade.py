@@ -7,7 +7,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from contextvars import ContextVar
 
 # Import requests for exception types (used in exception handlers)
@@ -24,6 +25,7 @@ from app.core.failover_config import (
 from app.services.open_orders import UnifiedOpenOrder, _format_timestamp
 
 logger = logging.getLogger(__name__)
+trigger_probe_logger = logging.getLogger("app.crypto.trigger_probe")
 
 _USE_CRYPTO_PROXY_OVERRIDE: ContextVar[Optional[bool]] = ContextVar(
     "USE_CRYPTO_PROXY_OVERRIDE",
@@ -90,6 +92,10 @@ class CryptoComTradeClient:
         self._last_trigger_alert_time = 0  # Track when we last sent unavailable alert
         self._last_trigger_health_check = 0  # Track when we last checked trigger orders health
         self._trigger_health_check_interval = 86400  # 24 hours in seconds
+
+        # Remember discovered working SL/TP variant formats (in-memory, per process).
+        # Keyed by "<instrument_name>|<order_type>|proxy=<0|1>".
+        self._sltp_preferred_variants: Dict[str, dict] = {}
 
         # Security: never log full keys/secrets. Enable limited diagnostics via CRYPTO_AUTH_DIAG=true.
         if self.crypto_auth_diag:
@@ -261,21 +267,64 @@ class CryptoComTradeClient:
             else:
                 return_str += str(obj[key])
         return return_str
+
+    def _params_to_str_insertion(self, obj, level: int = 0) -> str:
+        """
+        Convert params to string while preserving insertion order.
+
+        This is ONLY used by the experimental trigger probe (see run_trigger_order_probe)
+        to stress-test signing/order acceptance behavior. Production signing uses _params_to_str.
+        """
+        MAX_LEVEL = 3
+        if level >= MAX_LEVEL:
+            return str(obj)
+        if not isinstance(obj, dict):
+            return str(obj)
+
+        return_str = ""
+        for key in obj.keys():
+            return_str += str(key)
+            value = obj.get(key)
+            if value is None:
+                return_str += "null"
+            elif isinstance(value, list):
+                for sub_obj in value:
+                    if isinstance(sub_obj, dict):
+                        return_str += self._params_to_str_insertion(sub_obj, level + 1)
+                    else:
+                        return_str += str(sub_obj)
+            elif isinstance(value, dict):
+                return_str += self._params_to_str_insertion(value, level + 1)
+            else:
+                return_str += str(value)
+        return return_str
     
-    def sign_request(self, method: str, params: dict) -> dict:
+    def sign_request(
+        self,
+        method: str,
+        params: dict,
+        *,
+        _suppress_log: bool = False,
+        _ordered_params_override: Optional[dict] = None,
+        _params_str_override: Optional[str] = None,
+        _request_id_override: Optional[int] = None,
+        _nonce_override_ms: Optional[int] = None,
+    ) -> dict:
         """
         Generate signed JSON-RPC 2.0 request for Crypto.com Exchange v1
         Following official docs: method + id + api_key + params_string + nonce
         For empty params: use empty string (verified to work)
         For non-empty params: use _params_to_str method (custom format as per Crypto.com docs)
         """
-        nonce_ms = int(time.time() * 1000)
+        nonce_ms = int(_nonce_override_ms if _nonce_override_ms is not None else time.time() * 1000)
         
         # Build params string for signature
         # IMPORTANT: If params is empty {}, use empty string in signature (not '{}')
         # For non-empty params, use _params_to_str (verified: 401 with json.dumps, 400 with _params_to_str)
         # This means authentication works with _params_to_str, but request body may need adjustment
-        if params:
+        if _params_str_override is not None:
+            params_str = str(_params_str_override)
+        elif params:
             # Use _params_to_str for non-empty params (required for Crypto.com Exchange API v1)
             # This sorts alphabetically and concatenates key+value without separators
             params_str = self._params_to_str(params, 0)
@@ -290,12 +339,14 @@ class CryptoComTradeClient:
         # - params: Parameters dict (always included, even if empty {})
         # - sig: HMAC signature
         # Note: Documentation shows id: 1, and get_account_summary (which works) uses id: 1
-        request_id = 1  # Use 1 as per documentation and working methods
+        request_id = int(_request_id_override if _request_id_override is not None else 1)  # default per docs
         
         # IMPORTANT: Ensure params dict is ordered alphabetically to match string_to_sign
         # Some endpoints (like get-order-history) may require params to be in the same order as in string_to_sign
         # In Python 3.7+, dicts maintain insertion order, but we explicitly sort to match string_to_sign
-        if params:
+        if _ordered_params_override is not None:
+            ordered_params = dict(_ordered_params_override)
+        elif params:
             ordered_params = dict(sorted(params.items()))
         else:
             ordered_params = {}
@@ -313,12 +364,14 @@ class CryptoComTradeClient:
         string_to_sign = method + str(request_id) + self.api_key + params_str + str(nonce_ms)
 
         # Diagnostic logging for authentication debugging
-        key_suffix = self.api_key[-4:] if self.api_key else "NONE"
-        logger.info(
-            f"[CRYPTOCOM_AUTH] endpoint=/{method} method=POST has_signature=true "
-            f"nonce={nonce_ms} ts={nonce_ms} key_suffix={key_suffix} "
-            f"params_count={len(params) if params else 0}"
-        )
+        if not _suppress_log:
+            # NOTE: Experimental probes suppress this log to avoid printing any part of credentials.
+            key_suffix = self.api_key[-4:] if self.api_key else "NONE"
+            logger.info(
+                f"[CRYPTOCOM_AUTH] endpoint=/{method} method=POST has_signature=true "
+                f"nonce={nonce_ms} ts={nonce_ms} key_suffix={key_suffix} "
+                f"params_count={len(params) if params else 0}"
+            )
         
         # Security: signing diagnostics are OFF by default.
         if getattr(self, "crypto_auth_diag", False):
@@ -352,6 +405,415 @@ class CryptoComTradeClient:
         payload["sig"] = signature
         
         return payload
+
+    def run_trigger_order_probe(
+        self,
+        instrument_name: str,
+        side: str,
+        qty: str,
+        ref_price: float,
+        dry_run: bool = True,
+        max_variants: int = 200,
+    ) -> dict:
+        """
+        Experimental: Probe conditional order creation formats for Crypto.com Exchange.
+
+        This runner is intended to gather evidence when STOP_LIMIT / TAKE_PROFIT_LIMIT orders
+        are rejected (e.g. code=140001 API_DISABLED) while MARKET/LIMIT work.
+
+        Safety constraints:
+        - Enforces a strict max notional (default $1) using qty*ref_price.
+        - Triggers are placed away from ref_price (should not execute immediately).
+        - If an order is created successfully and dry_run=True, we attempt to cancel it immediately.
+
+        Notes:
+        - Always uses direct API calls (no proxy) for reproducible evidence.
+        - Writes one JSON record per attempt to /tmp/trigger_probe_<correlation_id>.jsonl
+        - Must be invoked behind explicit flags (see routes_control endpoint).
+        """
+        correlation_id = str(uuid.uuid4())
+
+        side_upper = (side or "").strip().upper()
+        if side_upper not in ("BUY", "SELL"):
+            raise ValueError("side must be BUY or SELL")
+
+        instrument_input = (instrument_name or "").strip()
+        if not instrument_input:
+            raise ValueError("instrument_name is required")
+
+        try:
+            qty_float = float(str(qty).strip())
+        except Exception:
+            raise ValueError("qty must be numeric (string or number)")
+        if qty_float <= 0:
+            raise ValueError("qty must be > 0")
+        if not ref_price or float(ref_price) <= 0:
+            raise ValueError("ref_price must be > 0")
+
+        # Hard cap: never place meaningful size
+        max_notional_usd = float(os.getenv("CRYPTO_PROBE_MAX_NOTIONAL_USD", "1.0") or "1.0")
+        notional = qty_float * float(ref_price)
+        if notional > max_notional_usd:
+            raise ValueError(
+                f"Probe notional too large: qty*ref_price={notional:.6f} > cap={max_notional_usd:.6f} USD"
+            )
+
+        # Resolve instrument variants but only include those that exist (via metadata lookup).
+        base = instrument_input.upper()
+        candidates = [
+            base,
+            base.replace("-", "_"),
+            base.replace("_", "-"),
+        ]
+        if base.endswith("_USD"):
+            candidates.append(base[:-4] + "_USDT")
+        if base.endswith("_USDT"):
+            candidates.append(base[:-5] + "_USD")
+
+        seen = set()
+        uniq_candidates: List[str] = []
+        for c in candidates:
+            c2 = (c or "").strip().upper()
+            if not c2 or c2 in seen:
+                continue
+            seen.add(c2)
+            uniq_candidates.append(c2)
+
+        instrument_variants: List[str] = []
+        for cand in uniq_candidates:
+            try:
+                if self._get_instrument_metadata(cand):
+                    instrument_variants.append(cand)
+            except Exception:
+                continue
+        if not instrument_variants:
+            instrument_variants = [base]
+
+        max_variants = int(max_variants or 0)
+        if max_variants <= 0:
+            max_variants = 1
+        if max_variants > 200:
+            max_variants = 200
+
+        out_path = f"/tmp/trigger_probe_{correlation_id}.jsonl"
+        out_file = Path(out_path)
+        try:
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        def _safe_payload(payload: dict) -> dict:
+            safe = dict(payload or {})
+            if "api_key" in safe:
+                safe["api_key"] = "<REDACTED>"
+            if "sig" in safe:
+                safe["sig"] = "<REDACTED>"
+            return safe
+
+        def _safe_response(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                red = dict(obj)
+                if "api_key" in red:
+                    red["api_key"] = "<REDACTED>"
+                if "sig" in red:
+                    red["sig"] = "<REDACTED>"
+                return red
+            return obj
+
+        def _type_of(v: Any) -> str:
+            if v is None:
+                return "null"
+            if isinstance(v, bool):
+                return "bool"
+            if isinstance(v, int):
+                return "int"
+            if isinstance(v, float):
+                return "float"
+            if isinstance(v, str):
+                return "str"
+            return type(v).__name__
+
+        def _plain_decimal_str(x: float, decimals: int = 12) -> str:
+            # ensure plain decimal strings, no scientific notation
+            q = Decimal(str(x)).quantize(Decimal("1." + ("0" * decimals)))
+            s = format(q, "f")
+            if "." in s:
+                s = s.rstrip("0").rstrip(".")
+            return s
+
+        def _build_signed_payload(
+            method: str,
+            params: dict,
+            signing_mode: str,
+        ) -> Tuple[dict, dict]:
+            nonce_ms = int(time.time() * 1000)
+            request_id = 1
+            signing_mode_norm = (signing_mode or "default").strip().lower()
+
+            if not params:
+                params_str = ""
+                ordered_params = {}
+            elif signing_mode_norm == "insertion":
+                params_str = self._params_to_str_insertion(params, 0)
+                ordered_params = params  # preserve insertion order
+            elif signing_mode_norm == "json_compact":
+                params_str = json.dumps(params, separators=(",", ":"), sort_keys=True)
+                ordered_params = params  # preserve insertion order (stress)
+            else:
+                params_str = self._params_to_str(params, 0)
+                ordered_params = dict(sorted(params.items()))
+
+            payload = self.sign_request(
+                method,
+                params,
+                _suppress_log=True,
+                _ordered_params_override=ordered_params,
+                _params_str_override=params_str,
+                _request_id_override=request_id,
+                _nonce_override_ms=nonce_ms,
+            )
+
+            string_to_sign_len = len(method + str(request_id) + (self.api_key or "") + params_str + str(nonce_ms))
+            meta = {
+                "sign_mode": signing_mode_norm,
+                "params_str_len": len(params_str),
+                "string_to_sign_len": string_to_sign_len,
+                "signature_len": len(str(payload.get("sig") or "")),
+            }
+            return payload, meta
+
+        # Always probe direct (no proxy) for evidence.
+        prev_override = _USE_CRYPTO_PROXY_OVERRIDE.get()
+        self.use_proxy = False
+        self._refresh_runtime_flags()
+
+        method = "private/create-order"
+        url = f"{self.base_url}/{method}"
+
+        # Variant matrix (bounded)
+        order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT"]
+        trigger_keys = ["trigger_price", "stop_price", "triggerPrice"]
+        tif_values = [None, "GOOD_TILL_CANCEL", "GTC", "IOC", "FOK"]
+        flag_values = [None, True, False]
+        client_id_keys = [None, "client_oid", "client_order_id"]
+        signing_modes = ["default", "insertion", "json_compact"]
+        value_type_modes = ["str", "num"]
+        offsets = [0.001, 0.0025, 0.005, 0.01]
+        limit_rel_modes = ["eq", "better", "worse"]
+
+        def _trigger_condition(op_type: str) -> str:
+            if op_type == "STOP_LIMIT":
+                return "<=" if side_upper == "SELL" else ">="
+            return ">=" if side_upper == "SELL" else "<="
+
+        def _trigger_price(op_type: str, off: float) -> float:
+            if op_type == "STOP_LIMIT":
+                return float(ref_price) * (1 - off) if side_upper == "SELL" else float(ref_price) * (1 + off)
+            return float(ref_price) * (1 + off) if side_upper == "SELL" else float(ref_price) * (1 - off)
+
+        def _limit_price(trigger: float, mode: str) -> float:
+            delta = 0.0005  # 0.05%
+            if mode == "eq":
+                return trigger
+            if mode == "better":
+                return trigger * (1 + delta) if side_upper == "SELL" else trigger * (1 - delta)
+            return trigger * (1 - delta) if side_upper == "SELL" else trigger * (1 + delta)
+
+        attempts = 0
+        summary: Dict[Tuple[Optional[int], Optional[int], Optional[str]], int] = {}
+
+        try:
+            for instr in instrument_variants:
+                for op_type in order_types:
+                    for off in offsets:
+                        trig = _trigger_price(op_type, off)
+                        for limit_rel in limit_rel_modes:
+                            limit = _limit_price(trig, limit_rel)
+                            for trig_key in trigger_keys:
+                                for tif in tif_values:
+                                    for reduce_only in flag_values:
+                                        for post_only in flag_values:
+                                            for client_key in client_id_keys:
+                                                for vtype in value_type_modes:
+                                                    for sign_mode in signing_modes:
+                                                        if attempts >= max_variants:
+                                                            break
+
+                                                        omit_price = bool(op_type == "STOP_LIMIT" and trig_key != "trigger_price")
+                                                        off_bps = int(off * 10000)
+                                                        variant_id = (
+                                                            f"{op_type}|instr={instr}|side={side_upper}|off={off_bps}bps|"
+                                                            f"limit={limit_rel}|trigkey={trig_key}|tif={tif or 'none'}|"
+                                                            f"ro={reduce_only if reduce_only is not None else 'na'}|"
+                                                            f"po={post_only if post_only is not None else 'na'}|"
+                                                            f"clid={client_key or 'none'}|vtype={vtype}|sign={sign_mode}|"
+                                                            f"omit_price={int(omit_price)}"
+                                                        )
+
+                                                        params: Dict[str, Any] = {
+                                                            "instrument_name": instr,
+                                                            "side": side_upper,
+                                                            "type": op_type,
+                                                        }
+
+                                                        qty_val: Any = str(qty).strip() if vtype == "str" else qty_float
+                                                        trig_val: Any = _plain_decimal_str(trig) if vtype == "str" else float(trig)
+                                                        limit_val: Any = _plain_decimal_str(limit) if vtype == "str" else float(limit)
+                                                        ref_val: Any = _plain_decimal_str(float(ref_price)) if vtype == "str" else float(ref_price)
+
+                                                        params["quantity"] = qty_val
+                                                        params["ref_price"] = ref_val
+                                                        params[trig_key] = trig_val
+                                                        params["trigger_condition"] = f"{_trigger_condition(op_type)} {trig_val}"
+
+                                                        if not omit_price:
+                                                            params["price"] = limit_val
+                                                        if tif is not None:
+                                                            params["time_in_force"] = tif
+                                                        if reduce_only is not None:
+                                                            params["reduce_only"] = bool(reduce_only)
+                                                        if post_only is not None:
+                                                            params["post_only"] = bool(post_only)
+                                                        if client_key:
+                                                            params[client_key] = str(uuid.uuid4())
+
+                                                        payload, signing_meta = _build_signed_payload(method, params, sign_mode)
+
+                                                        safe_payload = _safe_payload(payload)
+                                                        params_dict = payload.get("params") or {}
+                                                        params_keys = sorted(list(params_dict.keys())) if isinstance(params_dict, dict) else []
+
+                                                        t0 = time.perf_counter()
+                                                        http_status: Optional[int] = None
+                                                        resp_obj: Any = None
+                                                        resp_code: Optional[int] = None
+                                                        resp_message: Optional[str] = None
+                                                        error: Optional[str] = None
+                                                        created_order_id: Optional[str] = None
+                                                        cancel_result: Optional[dict] = None
+
+                                                        try:
+                                                            resp = http_post(
+                                                                url,
+                                                                json=payload,
+                                                                headers={"Content-Type": "application/json"},
+                                                                timeout=10,
+                                                                calling_module="crypto_com_trade.trigger_probe",
+                                                            )
+                                                            http_status = getattr(resp, "status_code", None)
+                                                            try:
+                                                                resp_obj = resp.json()
+                                                            except Exception:
+                                                                resp_obj = (getattr(resp, "text", "") or "")[:5000]
+
+                                                            if isinstance(resp_obj, dict):
+                                                                resp_code = resp_obj.get("code")
+                                                                resp_message = resp_obj.get("message")
+                                                                if isinstance(resp_obj.get("result"), dict):
+                                                                    created_order_id = (
+                                                                        resp_obj["result"].get("order_id")
+                                                                        or resp_obj["result"].get("client_order_id")
+                                                                    )
+                                                        except Exception as e:
+                                                            error = str(e)
+
+                                                        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+                                                        # Optional cleanup: cancel created probe orders
+                                                        if created_order_id and dry_run:
+                                                            try:
+                                                                cancel_result = self.cancel_order(
+                                                                    order_id=str(created_order_id),
+                                                                    symbol=str(instr),
+                                                                )
+                                                            except Exception as cancel_err:
+                                                                cancel_result = {"error": str(cancel_err)}
+
+                                                        record = {
+                                                            "correlation_id": correlation_id,
+                                                            "variant_id": variant_id,
+                                                            "order_type": op_type,
+                                                            "instrument_name": instr,
+                                                            "side": side_upper,
+                                                            "payload": safe_payload,
+                                                            "params_keys": params_keys,
+                                                            "numeric_fields_present": {
+                                                                "trigger": trig_key in params,
+                                                                "price": "price" in params,
+                                                                "quantity": "quantity" in params,
+                                                            },
+                                                            "value_types": {
+                                                                k: _type_of(v)
+                                                                for k, v in (
+                                                                    params_dict.items()
+                                                                    if isinstance(params_dict, dict)
+                                                                    else []
+                                                                )
+                                                            },
+                                                            "signing": signing_meta,
+                                                            "http_status": http_status,
+                                                            "response_json": _safe_response(resp_obj)
+                                                            if isinstance(resp_obj, dict)
+                                                            else None,
+                                                            "response_text": _safe_response(resp_obj)
+                                                            if not isinstance(resp_obj, dict)
+                                                            else None,
+                                                            "elapsed_ms": elapsed_ms,
+                                                            "created_order_id": created_order_id,
+                                                            "cancel_result": cancel_result,
+                                                            "error": error,
+                                                        }
+
+                                                        trigger_probe_logger.info(
+                                                            "[TRIGGER_PROBE] %s",
+                                                            json.dumps(record, ensure_ascii=False),
+                                                        )
+                                                        try:
+                                                            with out_file.open("a", encoding="utf-8") as fp:
+                                                                fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+                                                        except Exception:
+                                                            pass
+
+                                                        key = (
+                                                            int(http_status) if isinstance(http_status, int) else None,
+                                                            int(resp_code) if isinstance(resp_code, int) else None,
+                                                            str(resp_message) if resp_message else None,
+                                                        )
+                                                        summary[key] = summary.get(key, 0) + 1
+                                                        attempts += 1
+                                            if attempts >= max_variants:
+                                                break
+                                        if attempts >= max_variants:
+                                            break
+                                    if attempts >= max_variants:
+                                        break
+                                if attempts >= max_variants:
+                                    break
+                            if attempts >= max_variants:
+                                break
+                        if attempts >= max_variants:
+                            break
+                    if attempts >= max_variants:
+                        break
+                if attempts >= max_variants:
+                    break
+        finally:
+            # Restore previous proxy override state
+            if prev_override is None:
+                self.clear_use_proxy_override()
+            else:
+                _USE_CRYPTO_PROXY_OVERRIDE.set(prev_override)
+
+        summary_counts: Dict[str, int] = {}
+        for (hs, code, msg), count in summary.items():
+            summary_counts[f"http={hs}|code={code}|msg={msg}"] = count
+
+        return {
+            "correlation_id": correlation_id,
+            "jsonl_path": str(out_file),
+            "attempts": attempts,
+            "summary": summary_counts,
+        }
     
     def get_account_summary(self) -> dict:
         """Get account summary (balances)"""
@@ -1070,6 +1532,514 @@ class CryptoComTradeClient:
         except Exception as e:
             logger.warning(f"Failed to send trigger orders unavailable alert: {e}")
 
+    def _send_conditional_orders_api_disabled_alert(self, *, code: int, message: str) -> None:
+        """
+        Alert when conditional order placement is disabled at the account level (code=140001 API_DISABLED).
+        Rate-limited (once per 24h) using the same throttle as other trigger-order capability alerts.
+        """
+        import time
+
+        current_time = time.time()
+        if current_time - self._last_trigger_alert_time < 86400:
+            return
+
+        self._last_trigger_alert_time = current_time
+
+        try:
+            from app.services.telegram_notifier import telegram_notifier
+
+            safe_msg = (message or "").strip()
+            if len(safe_msg) > 240:
+                safe_msg = safe_msg[:240] + "…"
+            alert_msg = (
+                "🚫 <b>CONDITIONAL ORDERS API DISABLED</b>\n\n"
+                "Crypto.com rejected STOP_LIMIT / TAKE_PROFIT_LIMIT with API_DISABLED.\n"
+                f"code={code} message={safe_msg}\n\n"
+                "Impact:\n"
+                "- SL/TP trigger orders cannot be created via API for this account.\n"
+                "- The backend will stop retrying variants until the next periodic health check.\n\n"
+                "<i>This alert is sent once per 24h.</i>"
+            )
+            telegram_notifier.send_message(alert_msg)
+            logger.info("✅ Sent system alert: Conditional orders API_DISABLED")
+        except Exception as e:
+            logger.warning(f"Failed to send conditional orders API_DISABLED alert: {e}")
+
+    @staticmethod
+    def _normalize_price_str(x: Any) -> str:
+        """
+        Normalize a numeric-like value into a plain decimal string:
+        - No scientific notation
+        - Trim trailing zeros
+        """
+        try:
+            d = x if isinstance(x, Decimal) else Decimal(str(x))
+        except Exception:
+            # Last resort: string fallback (still strip whitespace)
+            s = str(x).strip()
+            return s
+
+        s = format(d, "f")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        if s in ("-0", "-0.0", ""):
+            s = "0"
+        return s
+
+    @staticmethod
+    def _extract_exchange_error(resp_obj: Any) -> Tuple[Optional[int], Optional[str]]:
+        """
+        Extract (code, message) from a Crypto.com style response body.
+        Returns (None, None) if it doesn't look like an exchange error payload.
+        """
+        if not isinstance(resp_obj, dict):
+            return None, None
+        code = resp_obj.get("code")
+        msg = resp_obj.get("message")
+        try:
+            code_int = int(code) if code is not None else None
+        except Exception:
+            code_int = None
+        msg_str = str(msg) if msg is not None else None
+        return code_int, msg_str
+
+    def _mark_trigger_orders_unavailable(self, *, code: int, message: str) -> None:
+        """
+        Mark trigger/conditional order capability unavailable for 24h and emit a rate-limited alert.
+        """
+        import time
+
+        self._trigger_orders_available = False
+        self._last_trigger_health_check = time.time()
+        self._send_conditional_orders_api_disabled_alert(code=code, message=message or "")
+
+    def _build_sltp_variant_grid(self, *, max_variants: int = 220) -> List[dict]:
+        """
+        Build a bounded-but-broad grid of SL/TP order creation format variations.
+        This is intentionally focused (format + key variations), and is only used on failure.
+        """
+        order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT"]
+        trigger_keys = ["trigger_price", "stop_price", "triggerPrice"]
+        value_type_modes = ["str", "num"]  # string vs numeric
+        tif_values = [None, "GOOD_TILL_CANCEL", "GTC", "IOC", "FOK"]
+        flag_values = [None, True, False]
+        client_id_keys = [None, "client_oid", "client_order_id"]
+        trigger_condition_modes = ["space", "nospace", "omit"]
+        ref_price_modes = ["match_trigger", "use_ref_price"]
+        include_price_modes = [True, False]  # mainly relevant for STOP_LIMIT
+
+        buckets: Dict[str, List[dict]] = {t: [] for t in order_types}
+        for op_type in order_types:
+            for trig_key in trigger_keys:
+                for vtype in value_type_modes:
+                    for tif in tif_values:
+                        for reduce_only in flag_values:
+                            for post_only in flag_values:
+                                for client_key in client_id_keys:
+                                    for tc_mode in trigger_condition_modes:
+                                        for ref_mode in ref_price_modes:
+                                            for include_price in include_price_modes:
+                                                # Avoid explosion for TP: include_price=False isn't meaningful (TP needs price).
+                                                if op_type == "TAKE_PROFIT_LIMIT" and not include_price:
+                                                    continue
+                                                # Keep STOP_LIMIT "omit price" only for non-standard trigger keys (borrowed from probe).
+                                                if op_type == "STOP_LIMIT" and not include_price and trig_key == "trigger_price":
+                                                    continue
+
+                                                variant_id = (
+                                                    f"{op_type}|trigkey={trig_key}|vtype={vtype}|"
+                                                    f"tif={tif or 'none'}|ro={reduce_only if reduce_only is not None else 'na'}|"
+                                                    f"po={post_only if post_only is not None else 'na'}|"
+                                                    f"clid={client_key or 'none'}|tc={tc_mode}|ref={ref_mode}|"
+                                                    f"price={int(bool(include_price))}"
+                                                )
+                                                buckets[op_type].append(
+                                                    {
+                                                        "variant_id": variant_id,
+                                                        "order_type": op_type,
+                                                        "trigger_key": trig_key,
+                                                        "value_type": vtype,
+                                                        "time_in_force": tif,
+                                                        "reduce_only": reduce_only,
+                                                        "post_only": post_only,
+                                                        "client_id_key": client_key,
+                                                        "trigger_condition_mode": tc_mode,
+                                                        "ref_price_mode": ref_mode,
+                                                        "include_price": bool(include_price),
+                                                    }
+                                                )
+        # Cap per order type, then interleave so STOP_LIMIT and TAKE_PROFIT_LIMIT both get coverage.
+        max_n = int(max_variants)
+        for t in order_types:
+            if buckets.get(t) and len(buckets[t]) > max_n:
+                buckets[t] = buckets[t][:max_n]
+
+        out: List[dict] = []
+        max_total = max_n * max(1, len(order_types))
+        while len(out) < max_total:
+            progressed = False
+            for t in order_types:
+                if buckets.get(t):
+                    out.append(buckets[t].pop(0))
+                    progressed = True
+                    if len(out) >= max_total:
+                        break
+            if not progressed:
+                break
+        return out
+
+    def _create_order_try_variants(
+        self,
+        *,
+        instrument_name: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        ref_price: float,
+        trigger_price: float,
+        limit_price: float,
+        correlation_id: str,
+        variants: List[dict],
+        jsonl_path: str,
+    ) -> dict:
+        """
+        Try many parameter-format variations for `private/create-order`.
+        Collect every error and stop on first success.
+
+        Returns:
+          - {ok: True, order_id: str, variant_id: str, attempts: int, errors: [...]}
+          - {ok: False, errors: [...], last_response: Any}
+        """
+        self._refresh_runtime_flags()
+
+        # If we've already detected conditional orders are unavailable, skip retries.
+        if not self._check_trigger_orders_health():
+            return {
+                "ok": False,
+                "errors": [
+                    {
+                        "variant_id": "SKIPPED",
+                        "http_status": None,
+                        "code": 140001,
+                        "message": "Trigger/conditional orders marked unavailable (cached).",
+                        "exception": None,
+                        "params_keys": [],
+                    }
+                ],
+                "last_response": None,
+            }
+
+        method = "private/create-order"
+        url = f"{self.base_url}/{method}"
+
+        preferred_key = f"{instrument_name.upper()}|{order_type}|proxy={1 if self.use_proxy else 0}"
+        preferred_variant_id = None
+        try:
+            preferred_variant_id = (self._sltp_preferred_variants.get(preferred_key) or {}).get("variant_id")
+        except Exception:
+            preferred_variant_id = None
+
+        if preferred_variant_id:
+            variants = sorted(
+                list(variants),
+                key=lambda v: 0 if v.get("variant_id") == preferred_variant_id else 1,
+            )
+
+        errors: List[dict] = []
+        last_response: Any = None
+        attempts = 0
+
+        # Pre-format values as strings (trimmed) for vtype=str variations
+        qty_str = self._normalize_price_str(quantity)
+        trig_str = self._normalize_price_str(trigger_price)
+        limit_str = self._normalize_price_str(limit_price)
+        ref_str = self._normalize_price_str(ref_price)
+
+        def _trigger_condition_operator() -> str:
+            side_upper = (side or "").strip().upper()
+            if order_type == "STOP_LIMIT":
+                return "<=" if side_upper == "SELL" else ">="
+            return ">=" if side_upper == "SELL" else "<="
+
+        op = _trigger_condition_operator()
+
+        out_file = Path(jsonl_path)
+        try:
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        for v in variants:
+            if v.get("order_type") != order_type:
+                continue
+
+            attempts += 1
+            t0 = time.perf_counter()
+
+            vtype = v.get("value_type")
+            trig_key = v.get("trigger_key")
+            if not isinstance(trig_key, str) or not trig_key:
+                continue
+            include_price = bool(v.get("include_price", True))
+
+            params: Dict[str, Any] = {
+                "instrument_name": instrument_name,
+                "side": (side or "").strip().upper(),
+                "type": order_type,
+            }
+
+            # Base numeric/string fields
+            if vtype == "num":
+                params["quantity"] = float(quantity)
+                params[trig_key] = float(trigger_price)
+                if include_price:
+                    params["price"] = float(limit_price)
+                # ref_price is numeric in num mode
+                if v.get("ref_price_mode") == "match_trigger":
+                    params["ref_price"] = float(trigger_price)
+                else:
+                    params["ref_price"] = float(ref_price)
+                trig_val_for_tc = self._normalize_price_str(trigger_price)
+            else:
+                params["quantity"] = qty_str
+                params[trig_key] = trig_str
+                if include_price:
+                    params["price"] = limit_str
+                if v.get("ref_price_mode") == "match_trigger":
+                    params["ref_price"] = trig_str
+                else:
+                    params["ref_price"] = ref_str
+                trig_val_for_tc = trig_str
+
+            # Optional fields
+            tif = v.get("time_in_force")
+            if tif is not None:
+                params["time_in_force"] = tif
+            if v.get("reduce_only") is not None:
+                params["reduce_only"] = bool(v.get("reduce_only"))
+            if v.get("post_only") is not None:
+                params["post_only"] = bool(v.get("post_only"))
+            client_key = v.get("client_id_key")
+            if client_key:
+                params[client_key] = str(uuid.uuid4())
+
+            # trigger_condition formatting
+            tc_mode = v.get("trigger_condition_mode")
+            if tc_mode == "space":
+                params["trigger_condition"] = f"{op} {trig_val_for_tc}"
+            elif tc_mode == "nospace":
+                params["trigger_condition"] = f"{op}{trig_val_for_tc}"
+            else:
+                # omit
+                pass
+
+            params_keys = sorted(list(params.keys()))
+
+            http_status: Optional[int] = None
+            resp_obj: Any = None
+            resp_code: Optional[int] = None
+            resp_message: Optional[str] = None
+            exc_str: Optional[str] = None
+            created_order_id: Optional[str] = None
+
+            try:
+                if self.use_proxy:
+                    # Proxy expects raw params (no signature).
+                    resp_obj = self._call_proxy(method, params)
+                    http_status = 200 if isinstance(resp_obj, dict) else None
+                else:
+                    payload = self.sign_request(method, params, _suppress_log=True)
+                    resp = http_post(
+                        url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=10,
+                        calling_module="crypto_com_trade.sltp_variants",
+                    )
+                    http_status = getattr(resp, "status_code", None)
+                    try:
+                        resp_obj = resp.json()
+                    except Exception:
+                        resp_obj = (getattr(resp, "text", "") or "")[:2000]
+
+                resp_code, resp_message = self._extract_exchange_error(resp_obj)
+                last_response = resp_obj
+
+                if isinstance(resp_obj, dict) and isinstance(resp_obj.get("result"), dict):
+                    created_order_id = (
+                        resp_obj["result"].get("order_id")
+                        or resp_obj["result"].get("client_order_id")
+                        or resp_obj["result"].get("id")
+                    )
+
+                # Success criteria:
+                # - Proxy: code==0 and order_id present
+                # - Direct: HTTP 200 and body code==0 (or missing) and order_id present
+                is_ok = bool(created_order_id) and (
+                    (self.use_proxy and (resp_code == 0 or resp_code is None))
+                    or ((not self.use_proxy) and (http_status == 200) and (resp_code == 0 or resp_code is None))
+                )
+
+                if is_ok:
+                    # Persist preferred variant for future reuse
+                    self._sltp_preferred_variants[preferred_key] = {"variant_id": v.get("variant_id")}
+                    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                    record = {
+                        "correlation_id": correlation_id,
+                        "variant_id": v.get("variant_id"),
+                        "order_type": order_type,
+                        "params_keys": params_keys,
+                        "http_status": http_status,
+                        "code": resp_code,
+                        "message": resp_message,
+                        "elapsed_ms": elapsed_ms,
+                        "created_order_id": str(created_order_id),
+                    }
+                    try:
+                        with out_file.open("a", encoding="utf-8") as fp:
+                            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
+
+                    return {
+                        "ok": True,
+                        "order_id": str(created_order_id),
+                        "variant_id": v.get("variant_id"),
+                        "attempts": attempts,
+                        "errors": errors,
+                    }
+
+                # Stop early on API_DISABLED: retrying formatting won't help.
+                if resp_code == 140001:
+                    self._mark_trigger_orders_unavailable(code=resp_code, message=resp_message or "API_DISABLED")
+
+            except Exception as e:
+                exc_str = str(e)
+                last_response = resp_obj
+
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            record = {
+                "correlation_id": correlation_id,
+                "variant_id": v.get("variant_id"),
+                "order_type": order_type,
+                "params_keys": params_keys,
+                "http_status": http_status,
+                "code": resp_code,
+                "message": resp_message,
+                "elapsed_ms": elapsed_ms,
+                "created_order_id": str(created_order_id) if created_order_id else None,
+            }
+            try:
+                with out_file.open("a", encoding="utf-8") as fp:
+                    fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+
+            err_rec = {
+                "variant_id": v.get("variant_id"),
+                "http_status": http_status,
+                "code": resp_code,
+                "message": resp_message,
+                "exception": exc_str,
+                "params_keys": params_keys,
+            }
+            errors.append(err_rec)
+
+            if resp_code == 140001:
+                # Stop retry loop once we see API_DISABLED.
+                break
+
+        return {"ok": False, "errors": errors, "last_response": last_response}
+
+    def create_stop_loss_take_profit_with_variations(
+        self,
+        *,
+        instrument_name: str,
+        side: str,
+        quantity: float,
+        ref_price: float,
+        stop_loss_price: Optional[float],
+        take_profit_price: Optional[float],
+        correlation_id: str,
+        existing_sl_order_id: Optional[str] = None,
+        existing_tp_order_id: Optional[str] = None,
+        max_variants_per_order: int = 220,
+    ) -> dict:
+        """
+        Failure-only fallback: attempt SL and/or TP creation with many format variations.
+        Keeps the success-path unchanged by being invoked only after a normal attempt fails.
+        """
+        entry_side = (side or "").strip().upper()
+        if entry_side not in ("BUY", "SELL"):
+            raise ValueError("side must be BUY or SELL (entry side)")
+
+        closing_side = "SELL" if entry_side == "BUY" else "BUY"
+        variants = self._build_sltp_variant_grid(max_variants=int(max_variants_per_order))
+
+        jsonl_path = f"/tmp/sltp_variants_{correlation_id}.jsonl"
+
+        # SL (STOP_LIMIT)
+        sl_result = {
+            "ok": bool(existing_sl_order_id),
+            "order_id": existing_sl_order_id,
+            "variant_id": None,
+            "attempts": 0,
+            "errors": [],
+        }
+        if stop_loss_price is not None and not existing_sl_order_id:
+            # STOP_LIMIT: trigger and ref are typically the SL price; price can equal trigger as baseline.
+            sl_result = self._create_order_try_variants(
+                instrument_name=instrument_name,
+                side=closing_side,
+                order_type="STOP_LIMIT",
+                quantity=float(quantity),
+                ref_price=float(ref_price),
+                trigger_price=float(stop_loss_price),
+                limit_price=float(stop_loss_price),
+                correlation_id=correlation_id,
+                variants=variants,
+                jsonl_path=jsonl_path,
+            )
+
+        # TP (TAKE_PROFIT_LIMIT)
+        tp_result = {
+            "ok": bool(existing_tp_order_id),
+            "order_id": existing_tp_order_id,
+            "variant_id": None,
+            "attempts": 0,
+            "errors": [],
+        }
+        if take_profit_price is not None and not existing_tp_order_id:
+            # TAKE_PROFIT_LIMIT: trigger_price and price should match TP value.
+            tp_result = self._create_order_try_variants(
+                instrument_name=instrument_name,
+                side=closing_side,
+                order_type="TAKE_PROFIT_LIMIT",
+                quantity=float(quantity),
+                ref_price=float(ref_price),
+                trigger_price=float(take_profit_price),
+                limit_price=float(take_profit_price),
+                correlation_id=correlation_id,
+                variants=variants,
+                jsonl_path=jsonl_path,
+            )
+
+        # Flatten for structured logging at call site
+        return {
+            "correlation_id": correlation_id,
+            "jsonl_path": jsonl_path,
+            "ok_sl": bool(sl_result.get("ok")),
+            "ok_tp": bool(tp_result.get("ok")),
+            "sl_order_id": sl_result.get("order_id"),
+            "tp_order_id": tp_result.get("order_id"),
+            "sl_variant_id": sl_result.get("variant_id"),
+            "tp_variant_id": tp_result.get("variant_id"),
+            "sl_attempts": int(sl_result.get("attempts") or 0),
+            "tp_attempts": int(tp_result.get("attempts") or 0),
+            "sl_errors": sl_result.get("errors") or [],
+            "tp_errors": tp_result.get("errors") or [],
+        }
+
     def _map_incoming_order(self, raw: dict, is_trigger: bool) -> UnifiedOpenOrder:
         """
         Normalize a raw order payload (standard or trigger) into UnifiedOpenOrder.
@@ -1423,11 +2393,11 @@ class CryptoComTradeClient:
             if inst_meta:
                 quantity_decimals = inst_meta["quantity_decimals"]
                 qty_tick_size = inst_meta["qty_tick_size"]
-                min_quantity = inst_meta.get("min_quantity", "0.001")
+                min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
             else:
                 quantity_decimals = 2
                 qty_tick_size = "0.01"
-                min_quantity = "0.001"
+                min_quantity = "?"
             
             raw_quantity = float(qty)
             normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
@@ -1501,11 +2471,11 @@ class CryptoComTradeClient:
             if inst_meta:
                 quantity_decimals = inst_meta["quantity_decimals"]
                 qty_tick_size = inst_meta["qty_tick_size"]
-                min_quantity = inst_meta.get("min_quantity", "0.001")
+                min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
             else:
                 quantity_decimals = 2
                 qty_tick_size = "0.01"
-                min_quantity = "0.001"
+                min_quantity = "?"
             
             # Normalize quantity using shared helper
             raw_quantity = float(qty)
@@ -1597,7 +2567,14 @@ class CryptoComTradeClient:
         logger.info(f"[MARGIN_REQUEST] params_detail: instrument_name={symbol}, side={side_upper}, type=MARKET, {order_type}={order_amount}")
         if is_margin:
             logger.info(f"[MARGIN_REQUEST] margin_params: leverage={params.get('leverage')}")
-        logger.debug(f"[MARGIN_REQUEST] full_payload_with_secrets: {json.dumps(payload, indent=2)}")
+        # SECURITY: never log signed payloads (api_key/sig), even at DEBUG.
+        try:
+            payload_keys = sorted(list((payload or {}).keys()))
+            params_keys = sorted(list(((payload or {}).get("params") or {}).keys()))
+        except Exception:
+            payload_keys = []
+            params_keys = []
+        logger.debug("[MARGIN_REQUEST] payload_keys=%s params_keys=%s", payload_keys, params_keys)
         
         # Use proxy if enabled
         if self.use_proxy:
@@ -1688,11 +2665,19 @@ class CryptoComTradeClient:
                 logger.debug(f"Request URL: {url}")
                 
                 # Log HTTP request details with source and request_id (ENTRY orders)
+                # SECURITY: never log signed payloads (api_key/sig). Log keys only.
+                try:
+                    payload_keys = sorted(list((payload or {}).keys()))
+                    payload_params_keys = sorted(list(((payload or {}).get("params") or {}).keys()))
+                except Exception:
+                    payload_keys = []
+                    payload_params_keys = []
                 logger.info(
                     f"[ENTRY_ORDER][{source}][{request_id}] Sending HTTP request to exchange:\n"
                     f"  URL: {url}\n"
                     f"  Method: POST\n"
-                    f"  Payload JSON: {json.dumps(payload, ensure_ascii=False, indent=2)}"
+                    f"  Payload keys: {payload_keys}\n"
+                    f"  Params keys: {payload_params_keys}"
                 )
                 
                 response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_market_order")
@@ -1777,7 +2762,11 @@ class CryptoComTradeClient:
                     if error_code in [40101, 40103]:
                         if _should_failover(401):
                             try:
-                                order_data = {
+                                # NOTE: this payload is sent as JSON to TRADE_BOT and legitimately
+                                # contains mixed types (str/bool/int). Without an explicit type,
+                                # Pyright infers `dict[str, str]` from the initial literals and
+                                # then errors when we assign `bool`/`int` values (e.g. leverage).
+                                order_data: Dict[str, Any] = {
                                     "symbol": symbol,
                                     "side": side_upper,
                                     "type": "MARKET",
@@ -2008,7 +2997,11 @@ class CryptoComTradeClient:
         # Fail-safe: block order if normalization failed
         if normalized_qty_str is None:
             inst_meta = self._get_instrument_metadata(symbol)
-            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            min_quantity = (
+                (inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?")
+                if inst_meta
+                else "?"
+            )
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [LIMIT_ORDER] {error_msg}")
             try:
@@ -2027,11 +3020,11 @@ class CryptoComTradeClient:
         if inst_meta:
             quantity_decimals = inst_meta["quantity_decimals"]
             qty_tick_size = inst_meta["qty_tick_size"]
-            min_quantity = inst_meta.get("min_quantity", "0.001")
+            min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
         else:
             quantity_decimals = 2
             qty_tick_size = "0.01"
-            min_quantity = "0.001"
+            min_quantity = "?"
         
         # Deterministic debug logs (before sending order)
         logger.info("=" * 80)
@@ -2111,7 +3104,14 @@ class CryptoComTradeClient:
         if is_margin:
             logger.info(f"[MARGIN_REQUEST] margin_params: leverage={params.get('leverage')}")
         logger.info(f"Price string: '{price_str}', Quantity string: '{normalized_qty_str}'")
-        logger.debug(f"[MARGIN_REQUEST] full_payload_with_secrets: {json.dumps(payload, indent=2)}")
+        # SECURITY: never log signed payloads (api_key/sig), even at DEBUG.
+        try:
+            payload_keys = sorted(list((payload or {}).keys()))
+            params_keys = sorted(list(((payload or {}).get("params") or {}).keys()))
+        except Exception:
+            payload_keys = []
+            params_keys = []
+        logger.debug("[MARGIN_REQUEST] payload_keys=%s params_keys=%s", payload_keys, params_keys)
         
         # Use proxy if enabled
         if self.use_proxy:
@@ -2420,7 +3420,11 @@ class CryptoComTradeClient:
         # Fail-safe: block order if normalization failed
         if normalized_qty_str is None:
             inst_meta = self._get_instrument_metadata(symbol)
-            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            min_quantity = (
+                (inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?")
+                if inst_meta
+                else "?"
+            )
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
             try:
@@ -2439,11 +3443,11 @@ class CryptoComTradeClient:
         if inst_meta:
             quantity_decimals = inst_meta["quantity_decimals"]
             qty_tick_size = inst_meta["qty_tick_size"]
-            min_quantity = inst_meta.get("min_quantity", "0.001")
+            min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
         else:
             quantity_decimals = 2
             qty_tick_size = "0.01"
-            min_quantity = "0.001"
+            min_quantity = "?"
         
         # Deterministic debug logs (before sending order)
         logger.info("=" * 80)
@@ -2452,7 +3456,6 @@ class CryptoComTradeClient:
         logger.info(f"  Side: {side}")
         logger.info(f"  Order Type: STOP_LIMIT")
         logger.info(f"  Price: {price} -> {price_str}")
-        logger.info(f"  Trigger Price: {trigger_price} -> {trigger_str}")
         logger.info(f"  Raw Quantity: {raw_quantity}")
         logger.info(f"  Final Quantity: {normalized_qty_str}")
         logger.info(f"  Instrument Rules:")
@@ -2479,6 +3482,9 @@ class CryptoComTradeClient:
                 "reason": "instrument_metadata_unavailable"
             }
         trigger_str = normalized_trigger_str
+        
+        # Now that trigger_str is defined, log trigger mapping deterministically.
+        logger.info(f"  Trigger Price: {trigger_price} -> {trigger_str}")
         
         # For STOP_LIMIT orders, ref_price should be the LAST BUY PRICE (entry price) from order history
         # However, Crypto.com uses ref_price for the Trigger Condition display
@@ -2552,9 +3558,9 @@ class CryptoComTradeClient:
                 "trigger_price": trigger_str,
                 "ref_price": ref_price_str
             }
-            # Crypto.com expects "GTC" not "GOOD_TILL_CANCEL"
+            # Crypto.com expects "GOOD_TILL_CANCEL" (and rejects "GTC" with Error 40003).
             if include_time_in_force:
-                params["time_in_force"] = "GTC"
+                params["time_in_force"] = "GOOD_TILL_CANCEL"
             if include_client_oid:
                 params["client_oid"] = client_oid
             # Add leverage if margin trading
@@ -2622,7 +3628,7 @@ class CryptoComTradeClient:
                 "quantity": qty_str,
                 "ref_price": ref_price_str
             },
-            # Variation 12: Try with GTC instead of GOOD_TILL_CANCEL
+            # Variation 12: Explicit time_in_force (GOOD_TILL_CANCEL)
             {
                 "instrument_name": symbol,
                 "side": side_upper,
@@ -2631,7 +3637,7 @@ class CryptoComTradeClient:
                 "quantity": qty_str,
                 "trigger_price": trigger_str,
                 "ref_price": ref_price_str,
-                "time_in_force": "GTC"
+                "time_in_force": "GOOD_TILL_CANCEL"
             }
         ])
         
@@ -2728,18 +3734,24 @@ class CryptoComTradeClient:
                 
                 # Direct API call (when proxy is disabled or proxy failed)
                 payload = self.sign_request(method, params)
-                logger.debug(f"Payload: {payload}")
+                # SECURITY: never log signed payloads (api_key/sig).
+                try:
+                    payload_keys = sorted(list(payload.keys()))
+                    params_keys = sorted(list((payload.get("params") or {}).keys()))
+                except Exception:
+                    payload_keys = []
+                    params_keys = []
                 
                 url = f"{self.base_url}/{method}"
                 
                 # Log HTTP request details with source and request_id
-                import json as json_module
                 logger.info(
                     f"[SL_ORDER][{source.upper()}][{request_id}] Sending HTTP request to exchange:\n"
                     f"  URL: {url}\n"
                     f"  Method: POST\n"
                     f"  Source: {source}\n"
-                    f"  Payload JSON: {json_module.dumps(payload, ensure_ascii=False, indent=2)}"
+                    f"  Payload keys: {payload_keys}\n"
+                    f"  Params keys: {params_keys}"
                 )
                 
                 logger.debug(f"Request URL: {url}")
@@ -2754,7 +3766,7 @@ class CryptoComTradeClient:
                 logger.info(
                     f"[SL_ORDER][{source.upper()}][{request_id}] Received HTTP response from exchange:\n"
                     f"  Status Code: {response.status_code}\n"
-                    f"  Response Body: {json_module.dumps(response_body, ensure_ascii=False, indent=2) if isinstance(response_body, dict) else response_body}"
+                    f"  Response Body: {json.dumps(response_body, ensure_ascii=False, indent=2) if isinstance(response_body, dict) else response_body}"
                 )
                 
                 if response.status_code == 401:
@@ -2877,14 +3889,21 @@ class CryptoComTradeClient:
                                     
                                     # Log HTTP request for precision variation
                                     import uuid as uuid_module
-                                    import json as json_module
                                     request_id_prec = str(uuid_module.uuid4())
+                                    # SECURITY: never log signed payloads (api_key/sig). Log keys only.
+                                    try:
+                                        payload_keys = sorted(list(payload.keys()))
+                                        payload_params_keys = sorted(list((payload.get("params") or {}).keys()))
+                                    except Exception:
+                                        payload_keys = []
+                                        payload_params_keys = []
                                     logger.info(
                                         f"[SL_ORDER][{source.upper()}][{request_id_prec}] Sending HTTP request (precision variation {prec_decimals}):\n"
                                         f"  URL: {url}\n"
                                         f"  Method: POST\n"
                                         f"  Source: {source}\n"
-                                        f"  Payload JSON: {json_module.dumps(payload, ensure_ascii=False, indent=2)}"
+                                        f"  Payload keys: {payload_keys}\n"
+                                        f"  Params keys: {payload_params_keys}"
                                     )
                                     
                                     response_prec = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.create_params_dict")
@@ -2898,7 +3917,7 @@ class CryptoComTradeClient:
                                     logger.info(
                                         f"[SL_ORDER][{source.upper()}][{request_id_prec}] Received HTTP response (precision variation {prec_decimals}):\n"
                                         f"  Status Code: {response_prec.status_code}\n"
-                                        f"  Response Body: {json_module.dumps(response_body_prec, ensure_ascii=False, indent=2) if isinstance(response_body_prec, dict) else response_body_prec}"
+                                        f"  Response Body: {json.dumps(response_body_prec, ensure_ascii=False, indent=2) if isinstance(response_body_prec, dict) else response_body_prec}"
                                     )
                                     
                                     if response_prec.status_code == 200:
@@ -3078,6 +4097,18 @@ class CryptoComTradeClient:
                             logger.warning(f"⚠️ Variation {variation_idx} failed with error 40004 (Missing or invalid argument). Trying next variation...")
                             last_error = f"Error {error_code}: {error_msg}"
                             continue  # Try next variation
+                        elif error_code == 140001:
+                            # Conditional orders (STOP_LIMIT/TAKE_PROFIT_LIMIT) can be disabled at the account level.
+                            # If this happens, retrying formatting variations won't help.
+                            logger.error(
+                                f"❌ STOP_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
+                                f"This account likely cannot place conditional orders (TP/SL) via API."
+                            )
+                            try:
+                                self._mark_trigger_orders_unavailable(code=140001, message=str(error_msg or "API_DISABLED"))
+                            except Exception:
+                                pass
+                            return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
                         
                         # For other errors, return immediately
                         logger.error(f"Error creating stop loss order: HTTP {response.status_code}, code={error_code}, message={error_msg}, symbol={symbol}, price={price}, qty={qty}")
@@ -3199,7 +4230,11 @@ class CryptoComTradeClient:
         # Fail-safe: block order if normalization failed
         if normalized_qty_str is None:
             inst_meta = self._get_instrument_metadata(symbol)
-            min_quantity = inst_meta.get("min_quantity", "0.001") if inst_meta else "0.001"
+            min_quantity = (
+                (inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?")
+                if inst_meta
+                else "?"
+            )
             error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
             logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
             try:
@@ -3218,11 +4253,11 @@ class CryptoComTradeClient:
         if inst_meta:
             quantity_decimals = inst_meta["quantity_decimals"]
             qty_tick_size = inst_meta["qty_tick_size"]
-            min_quantity = inst_meta.get("min_quantity", "0.001")
+            min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
         else:
             quantity_decimals = 4
             qty_tick_size = "0.0001"
-            min_quantity = "0.001"
+            min_quantity = "?"
         
         # Deterministic debug logs (before sending order)
         logger.info("=" * 80)
@@ -3267,126 +4302,62 @@ class CryptoComTradeClient:
         # Generate client_oid for tracking
         client_oid = str(uuid.uuid4())
         
-        # Try different price format variations (similar to STOP_LIMIT)
-        # Crypto.com may require specific price formatting for TAKE_PROFIT_LIMIT
-        # Based on user's successful TP order: 3,899 (no decimals) for ETH
-        # Priority: Try rounded values without decimals FIRST, then with 1-2 decimals
-        # This is critical - simple formats work better than complex ones
-        price_format_variations = []
-        
-        # For high-value coins (ETH, BTC, etc.), try rounded values first (HIGHEST PRIORITY)
-        if price >= 100:
-            # Variation 1: Round to nearest integer (no decimals) - HIGHEST PRIORITY
-            # This matches the user's successful format: 3,899
-            price_rounded_int = round(price)
-            price_format_variations.append(f"{price_rounded_int}")
-            price_format_variations.append(f"{int(price_rounded_int)}")
-            
-            # Variation 2: Round to 1 decimal (only if different from integer)
-            price_rounded_1 = round(price, 1)
-            if price_rounded_1 != price_rounded_int:
-                if price_rounded_1 % 1 == 0:
-                    price_format_variations.append(f"{int(price_rounded_1)}")
-                else:
-                    price_format_variations.append(f"{price_rounded_1:.1f}")
-            
-            # Variation 3: Round to 2 decimals (only if different from previous)
-            price_rounded_2 = round(price, 2)
-            if price_rounded_2 != price_rounded_1:
-                if price_rounded_2 % 1 == 0:
-                    price_format_variations.append(f"{int(price_rounded_2)}")
-                else:
-                    price_format_variations.append(f"{price_rounded_2:.2f}")
-            
-            # Variation 4: Round to 0 decimals but up/down (if different)
-            price_rounded_up = int(price) + 1
-            price_rounded_down = int(price)
-            if price_rounded_up != price_rounded_int:
-                price_format_variations.append(f"{price_rounded_up}")
-            if price_rounded_down != price_rounded_int:
-                price_format_variations.append(f"{price_rounded_down}")
-        
-        # Variation 5: Try without trailing zeros (simpler format)
-        price_format_variations.append(price_str.rstrip('0').rstrip('.'))
-        
-        # Variation 6: Original format (4 decimals for prices > 1) - LOWER PRIORITY
-        price_format_variations.append(price_str)
-        
-        # Variation 7: Try 3 decimals - LOWER PRIORITY
-        price_format_variations.append(f"{price:.3f}")
-        
-        # Variation 8: Try 6 decimals (more precision) - LOWEST PRIORITY
-        price_format_variations.append(f"{price:.6f}")
-        
-        # Variation 9: If got instrument info, use exact price_decimals format - LOWEST PRIORITY
-        # Get instrument metadata for price_decimals if needed
-        inst_meta_format = self._get_instrument_metadata(symbol)
-        price_decimals_format = inst_meta_format.get("price_decimals") if inst_meta_format else None
-        if price_decimals_format is not None:
-            price_format_variations.append(f"{price:.{price_decimals_format}f}")
-        
-        # Remove duplicates while preserving order
+        # Build SAFE price format variations derived from the normalized (tick-quantized) price.
+        #
+        # IMPORTANT:
+        # - We should NOT change the TP value (e.g. rounding to int) just to satisfy formatting.
+        # - We only vary *string representation* (decimal padding / optional trimming) of the SAME normalized value.
+        import decimal
+        inst_meta_format = self._get_instrument_metadata(symbol) or {}
+        price_tick_size_str = str(inst_meta_format.get("price_tick_size") or "0.01")
+        price_decimals_format = inst_meta_format.get("price_decimals")
+
+        # Ensure trigger_price is set (must equal price for TAKE_PROFIT_LIMIT)
+        if trigger_price is None:
+            trigger_price = price
+            trigger_str = price_str
+            logger.info(f"TAKE_PROFIT_LIMIT: trigger_price was None, using price ({price}) as trigger_price")
+
+        # Derive decimal candidates from metadata + current normalized string
+        base_decimals = len(price_str.split(".", 1)[1]) if "." in price_str else 0
+        tick_decimals = 0
+        if "." in price_tick_size_str:
+            frac = price_tick_size_str.split(".", 1)[1]
+            tick_decimals = len(frac.rstrip("0"))
+
+        decimals_candidates = [base_decimals, tick_decimals]
+        try:
+            if price_decimals_format is not None:
+                decimals_candidates.append(int(price_decimals_format))
+        except Exception:
+            pass
+
+        # Keep unique, non-negative
+        unique_decimals = sorted({int(d) for d in decimals_candidates if d is not None and int(d) >= 0})
+
+        price_decimal_norm = decimal.Decimal(str(price_str))
+        price_format_variations = [format(price_decimal_norm, f".{d}f") for d in unique_decimals]
+
+        # Optional: also try trimmed representation (some endpoints accept variable decimals)
+        trimmed = price_str.rstrip("0").rstrip(".")
+        if trimmed and trimmed not in price_format_variations:
+            price_format_variations.append(trimmed)
+
+        # De-dupe while preserving order
         seen = set()
         unique_price_formats = []
         for fmt in price_format_variations:
             if fmt not in seen:
                 seen.add(fmt)
                 unique_price_formats.append(fmt)
-        
-        # Also try variations for trigger_price
-        # IMPORTANT: Ensure trigger_price is set (should equal price for TAKE_PROFIT_LIMIT)
-        if trigger_price is None:
-            trigger_price = price  # Set trigger_price to price if not provided
-            trigger_str = price_str  # Use same formatted string
-            logger.info(f"TAKE_PROFIT_LIMIT: trigger_price was None, using price ({price}) as trigger_price")
-        
-        trigger_format_variations = []
-        if trigger_str and trigger_price is not None:
-            # For high-value coins, try rounded values first (same as price) - HIGHEST PRIORITY
-            if trigger_price >= 100:
-                # Variation 1: Round to nearest integer (no decimals) - HIGHEST PRIORITY
-                trigger_rounded_int = round(trigger_price)
-                trigger_format_variations.append(f"{trigger_rounded_int}")
-                trigger_format_variations.append(f"{int(trigger_rounded_int)}")
-                
-                # Variation 2: Round to 1 decimal (only if different from integer)
-                trigger_rounded_1 = round(trigger_price, 1)
-                if trigger_rounded_1 != trigger_rounded_int:
-                    if trigger_rounded_1 % 1 == 0:
-                        trigger_format_variations.append(f"{int(trigger_rounded_1)}")
-                    else:
-                        trigger_format_variations.append(f"{trigger_rounded_1:.1f}")
-                
-                # Variation 3: Round to 2 decimals (only if different from previous)
-                trigger_rounded_2 = round(trigger_price, 2)
-                if trigger_rounded_2 != trigger_rounded_1:
-                    if trigger_rounded_2 % 1 == 0:
-                        trigger_format_variations.append(f"{int(trigger_rounded_2)}")
-                    else:
-                        trigger_format_variations.append(f"{trigger_rounded_2:.2f}")
-            
-            # Variation 4: Without trailing zeros (simpler format)
-            trigger_format_variations.append(trigger_str.rstrip('0').rstrip('.'))
-            
-            # Variation 5: Original format - LOWER PRIORITY
-            trigger_format_variations.append(trigger_str)
-            
-            # Variation 6: 3 decimals - LOWER PRIORITY
-            trigger_format_variations.append(f"{trigger_price:.3f}")
-            
-            # Variation 7: Instrument-specific precision - LOWEST PRIORITY
-            # Use same price_decimals_format from above (already fetched)
-            if price_decimals_format is not None:
-                trigger_format_variations.append(f"{trigger_price:.{price_decimals_format}f}")
-        
-        seen_triggers = set()
-        unique_trigger_formats = []
-        for fmt in trigger_format_variations:
-            if fmt not in seen_triggers:
-                seen_triggers.add(fmt)
-                unique_trigger_formats.append(fmt)
-        
-        logger.info(f"🔄 Trying TAKE_PROFIT_LIMIT with {len(unique_price_formats)} price format variations and {len(unique_trigger_formats)} trigger format variations")
+
+        # For TAKE_PROFIT_LIMIT, trigger_price MUST equal price (same value, same format).
+        unique_trigger_formats = unique_price_formats
+
+        logger.info(
+            f"🔄 Trying TAKE_PROFIT_LIMIT with {len(unique_price_formats)} safe price/trigger format variations "
+            f"(tick_size={price_tick_size_str}, price_decimals={price_decimals_format})"
+        )
         
         last_error = "Unknown error"
         
@@ -3438,105 +4409,9 @@ class CryptoComTradeClient:
             for side_fmt in unique_sides:
                 # Both price and trigger_price must be the TP price (same value, same format)
                 tp_price_formatted = price_fmt  # This is the TP price formatted
-                
-                # Format ref_price - Try multiple approaches based on error 229 analysis
-                # Error 229 (INVALID_REF_PRICE) suggests ref_price format/value is wrong
-                # Try: 1) Current market price, 2) Entry price, 3) TP price (as fallback)
-                ref_price_str = None
-                ref_price_val = None
-                
-                # Get current market price (ticker_price) - REQUIRED for ref_price validation
-                # Crypto.com validates ref_price must be on the correct side of market:
-                # - If side=SELL, ref_price must be < current market price
-                # - If side=BUY, ref_price must be > current market price
-                ticker_price = None
-                try:
-                    # Try to get ticker from Crypto.com public API
-                    # Use v2 endpoint which supports single instrument lookup
-                    import requests as requests_module
-                    ticker_url = "https://api.crypto.com/v2/public/get-ticker"
-                    ticker_params = {"instrument_name": symbol}
-                    ticker_response = requests_module.get(ticker_url, params=ticker_params, timeout=5)
-                    if ticker_response.status_code == 200:
-                        ticker_data = ticker_response.json()
-                        result_data = ticker_data.get("result", {})
-                        if "data" in result_data and len(result_data["data"]) > 0:
-                            # Get latest price from ticker (use ask price for SELL, bid for BUY)
-                            ticker_data_item = result_data["data"][0]
-                            # For SELL orders, use ask price; for BUY orders, use bid price
-                            if side_fmt == "SELL":
-                                ticker_price = ticker_data_item.get("a")  # Ask price
-                            else:
-                                ticker_price = ticker_data_item.get("b")  # Bid price
-                            
-                            if ticker_price:
-                                ticker_price = float(ticker_price)
-                                logger.info(f"✅ Got current market price from Crypto.com API for {symbol}: {ticker_price} (side={side_fmt})")
-                    else:
-                        # Fallback to v1 get-tickers endpoint
-                        ticker_url_v1 = f"{REST_BASE}/public/get-tickers"
-                        ticker_response_v1 = requests_module.get(ticker_url_v1, timeout=5)
-                        if ticker_response_v1.status_code == 200:
-                            ticker_data_v1 = ticker_response_v1.json()
-                            result_data_v1 = ticker_data_v1.get("result", {})
-                            if "data" in result_data_v1:
-                                # Find our symbol in the tickers list
-                                for ticker_item in result_data_v1["data"]:
-                                    if ticker_item.get("i") == symbol:
-                                        if side_fmt == "SELL":
-                                            ticker_price = ticker_item.get("a")  # Ask price
-                                        else:
-                                            ticker_price = ticker_item.get("b")  # Bid price
-                                        if ticker_price:
-                                            ticker_price = float(ticker_price)
-                                            logger.info(f"✅ Got current market price from Crypto.com v1 API for {symbol}: {ticker_price} (side={side_fmt})")
-                                        break
-                except Exception as e:
-                    logger.debug(f"Could not get market price from Crypto.com API for ref_price: {e}")
-                    # Fallback to cached price
-                    try:
-                        from app.services.data_sources import get_crypto_prices
-                        market_prices = get_crypto_prices()
-                        if symbol in market_prices:
-                            ticker_price = market_prices[symbol]
-                            logger.debug(f"Got cached market price for {symbol}: {ticker_price}")
-                    except Exception as e2:
-                        logger.debug(f"Could not get cached market price: {e2}")
-                
-                # IMPORTANT: Based on user feedback and successful orders from yesterday,
-                # ref_price should equal trigger_price (TP price) for TAKE_PROFIT_LIMIT orders
-                # Crypto.com uses ref_price for Trigger Condition display
-                # Therefore, ref_price should equal trigger_price (TP price) to ensure correct Trigger Condition
-                # For TAKE_PROFIT_LIMIT orders, use TP price directly as ref_price
-                # Note: Crypto.com API may validate ref_price, but user requirement is Trigger Condition = TP price
-                ref_price_val = price  # Use TP price directly for ref_price so Trigger Condition shows TP price
-                
-                logger.info(
-                    f"[TP_ORDER][{source.upper()}] Final ref_price={ref_price_val}, ticker={ticker_price}, "
-                    f"tp_price={price}, closing_side={side_fmt}, instrument_name={symbol}"
-                )
-                # Note: 'side' parameter is already the CLOSING side (inverted from entry)
-                # entry_side would be the inverse: BUY if side=SELL, SELL if side=BUY
-                entry_side_inferred = "BUY" if side_fmt == "SELL" else "SELL"
-                logger.info(
-                    f"[TP_ORDER][{source.upper()}] Closing TP side={side_fmt}, entry_side={entry_side_inferred}, "
-                    f"ref_price={ref_price_val}, price={price}, instrument={symbol}"
-                )
-                
-                # Format ref_price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
-                # For TAKE_PROFIT_LIMIT, ref_price should equal trigger_price (TP price)
-                if ref_price_val:
-                    # Normalize ref_price using helper function
-                    normalized_ref_str = self.normalize_price(symbol, ref_price_val, side, order_type="TAKE_PROFIT")
-                    if normalized_ref_str is None:
-                        # If normalization fails, use price_str (they should be equal anyway)
-                        ref_price_str = price_str
-                    else:
-                        ref_price_str = normalized_ref_str
-                else:
-                    ref_price_str = price_str  # Use price_str as fallback
-                
-                # Build params_base - ref_price is REQUIRED for TAKE_PROFIT_LIMIT
+
+                # For TAKE_PROFIT_LIMIT, keep price/trigger_price/ref_price EXACTLY the same string.
+                # This avoids mismatches that can lead to API rejections and ensures Trigger Condition displays the TP price.
                 params_base = {
                     "instrument_name": symbol,
                     "type": "TAKE_PROFIT_LIMIT",
@@ -3548,15 +4423,14 @@ class CryptoComTradeClient:
                 # Ensure trigger_price and price are EXACTLY the same string
                 params_base["trigger_price"] = params_base["price"]  # Force exact equality
                 
-                # Add ref_price (REQUIRED by Crypto.com API) - must be TP price (same as trigger_price)
-                # Based on error 229 analysis: ref_price must equal trigger_price (both are TP price)
-                if ref_price_str:
-                    params_base["ref_price"] = ref_price_str
-                
-                # Add trigger_condition (format: ">= {TP_price}") where TP_price is the TP price
-                # Based on user feedback: trigger_condition = ">= {TP}" = ">= 1.5630"
-                # The order activates when price reaches >= TP price, then executes at TP price
-                params_base["trigger_condition"] = f">= {tp_price_formatted}"
+                # Add ref_price (REQUIRED) - must match TP price exactly
+                params_base["ref_price"] = params_base["price"]
+
+                # Build trigger_condition variations (some endpoints are strict about spacing)
+                trigger_condition_variations = [
+                    f">= {tp_price_formatted}",
+                    f">={tp_price_formatted}",
+                ]
                 
                 # Add leverage if margin trading
                 if is_margin and leverage:
@@ -3584,132 +4458,157 @@ class CryptoComTradeClient:
                     # Variation 1: Minimal params with side AND client_oid (required to avoid DUPLICATE_CLORDID)
                     {**params_with_side, "client_oid": str(uuid.uuid4())},
                     # Variation 2: With client_oid and time_in_force
-                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GTC"},
+                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
                     # Variation 3: With time_in_force only (fallback, but should include client_oid)
-                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GTC"},
+                    {**params_with_side, "client_oid": str(uuid.uuid4()), "time_in_force": "GOOD_TILL_CANCEL"},
                 ])
             
-                # Try each params variation - ref_price is already set in params_base (TP price)
-                for params_idx, params in enumerate(params_variations_list, 1):
-                    # Determine if this variation includes side field
-                    has_side_field = "side" in params
-                    side_in_params = params.get("side", "NONE")
-                    side_label = f"side{side_in_params}" if has_side_field else "no-side"
-                    variation_name_full = f"{variation_name}-{side_label}-params{params_idx}"
+                # Try each params variation x trigger_condition variation
+                for params_idx, params_base_variant in enumerate(params_variations_list, 1):
+                    for tc_idx, trigger_condition in enumerate(trigger_condition_variations, 1):
+                        params = params_base_variant.copy()
+                        params["trigger_condition"] = trigger_condition
+
+                        # Determine if this variation includes side field
+                        has_side_field = "side" in params
+                        side_in_params = params.get("side", "NONE")
+                        side_label = f"side{side_in_params}" if has_side_field else "no-side"
+                        variation_name_full = f"{variation_name}-{side_label}-params{params_idx}-tc{tc_idx}"
+                        
+                        trigger_price_val = params.get("trigger_price", "N/A")
+                        ref_price_val_str = params.get("ref_price", "N/A")
+                        trigger_condition_val = params.get("trigger_condition", "N/A")
+                        
+                        # Generate unique request ID for tracking
+                        import uuid as uuid_module
+                        request_id = str(uuid_module.uuid4())
+                        
+                        logger.info(f"🔄 Trying TAKE_PROFIT_LIMIT variation {variation_name_full}: price='{price_fmt}', trigger_price='{trigger_price_val}', ref_price='{ref_price_val_str}', trigger_condition='{trigger_condition_val}', quantity='{qty_str}', side='{side_fmt}'")
+                        logger.info(f"   📦 FULL PAYLOAD: {params}")
+                        logger.debug(f"   Full params: {params}")
                     
-                    # ref_price and trigger_condition are already set in params_base above
-                    # They use the TP price, so trigger_condition = ">= {TP_price}"
-                    trigger_price_val = params_base.get("trigger_price", "N/A")
-                    ref_price_val_str = params.get("ref_price", "N/A")
-                    trigger_condition_val = params.get("trigger_condition", "N/A")
-                    
-                    # Generate unique request ID for tracking
-                    import uuid as uuid_module
-                    request_id = str(uuid_module.uuid4())
-                    
-                    logger.info(f"🔄 Trying TAKE_PROFIT_LIMIT variation {variation_name_full}: price='{price_fmt}', trigger_price='{trigger_price_val}', ref_price='{ref_price_val_str}', trigger_condition='{trigger_condition_val}', quantity='{qty_str}', side='{side_fmt}'")
-                    logger.info(f"   📦 FULL PAYLOAD: {params}")
-                    logger.debug(f"   Full params: {params}")
-                    
-                    # Use proxy if enabled (same as successful orders)
-                    if self.use_proxy:
-                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Using PROXY to place take profit order")
+                        # Use proxy if enabled (same as successful orders)
+                        if self.use_proxy:
+                            logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Using PROXY to place take profit order")
+                            try:
+                                result = self._call_proxy(method, params)
+                                if not isinstance(result, dict):
+                                    logger.warning(f"Unexpected proxy response type: {type(result)}")
+                                    last_error = "Unexpected proxy response type"
+                                    continue
+
+                                code = result.get("code", 0)
+                                if code != 0:
+                                    msg = result.get("message", "Unknown error")
+                                    last_error = f"Error {code}: {msg}"
+                                    # If proxy returns an auth/IP error, try the existing TRADE_BOT failover path.
+                                    if code in [40101, 40103]:
+                                        logger.warning(
+                                            f"⚠️ Proxy TP order auth failure (code={code}). Attempting failover to TRADE_BOT."
+                                        )
+                                        if _should_failover(401):
+                                            order_data = {
+                                                "symbol": symbol,
+                                                "side": side_fmt.upper(),
+                                                "type": "TAKE_PROFIT_LIMIT",
+                                                "qty": qty,
+                                                "price": price,
+                                                "trigger_price": trigger_price if trigger_price else price,
+                                            }
+                                            if entry_price:
+                                                order_data["entry_price"] = entry_price
+                                            if is_margin and leverage:
+                                                order_data["is_margin"] = True
+                                                order_data["leverage"] = int(leverage)
+                                            try:
+                                                fr = self._fallback_place_order(order_data)
+                                                if fr.status_code == 200:
+                                                    data = fr.json()
+                                                    result_data = data.get("result", data)
+                                                    order_id = result_data.get("order_id") or result_data.get("client_order_id")
+                                                    if order_id:
+                                                        logger.info(
+                                                            f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}"
+                                                        )
+                                                        return {"order_id": str(order_id), "error": None}
+                                            except Exception as fallback_err:
+                                                logger.error(
+                                                    f"TRADE_BOT fallback failed for TP order: {fallback_err}",
+                                                    exc_info=True,
+                                                )
+                                    logger.warning(f"⚠️ Proxy TP order failed: {last_error}")
+                                    continue
+
+                                order_result = result.get("result") or {}
+                                order_id = order_result.get("order_id") or order_result.get("client_order_id")
+                                if order_id:
+                                    logger.info(f"✅ Successfully created TP order via PROXY: order_id={order_id}")
+                                    return {"order_id": str(order_id), "error": None}
+
+                                logger.warning(f"Proxy TP order success but missing order_id: {result}")
+                                last_error = "Proxy success missing order_id"
+                                continue
+                            except requests.exceptions.RequestException as proxy_err:
+                                logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                                # Fall through to direct API call below
+                            except Exception as proxy_err:
+                                logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
+                                # Fall through to direct API call below
+                        
+                        # Direct API call (when proxy is disabled or proxy failed)
+                        # DEBUG: Log before sign_request
+                        logger.info(f"[DEBUG][{source.upper()}][{request_id}] About to call sign_request for variation {variation_name_full}")
+                        
+                        payload = self.sign_request(method, params)
+                        
+                        # DEBUG: Log after sign_request
+                        logger.info(f"[DEBUG][{source.upper()}][{request_id}] sign_request completed, payload keys: {list(payload.keys())}")
+                        
+                        # Log HTTP request details with source and request_id
+                        url = f"{self.base_url}/{method}"
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Sending HTTP request to exchange:")
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   URL: {url}")
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Method: POST")
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Source: {source}")
+                        # SECURITY: never log signed payloads (api_key/sig). Log keys only.
                         try:
-                            result = self._call_proxy(method, params)
-                            if not isinstance(result, dict):
-                                logger.warning(f"Unexpected proxy response type: {type(result)}")
-                                last_error = "Unexpected proxy response type"
-                                continue
-
-                            code = result.get("code", 0)
-                            if code != 0:
-                                msg = result.get("message", "Unknown error")
-                                last_error = f"Error {code}: {msg}"
-                                # If proxy returns an auth/IP error, try the existing TRADE_BOT failover path.
-                                if code in [40101, 40103]:
-                                    logger.warning(
-                                        f"⚠️ Proxy TP order auth failure (code={code}). Attempting failover to TRADE_BOT."
-                                    )
-                                    if _should_failover(401):
-                                        order_data = {
-                                            "symbol": symbol,
-                                            "side": side_fmt.upper(),
-                                            "type": "TAKE_PROFIT_LIMIT",
-                                            "qty": qty,
-                                            "price": price,
-                                            "trigger_price": trigger_price if trigger_price else price,
-                                        }
-                                        if entry_price:
-                                            order_data["entry_price"] = entry_price
-                                        if is_margin and leverage:
-                                            order_data["is_margin"] = True
-                                            order_data["leverage"] = int(leverage)
-                                        try:
-                                            fr = self._fallback_place_order(order_data)
-                                            if fr.status_code == 200:
-                                                data = fr.json()
-                                                result_data = data.get("result", data)
-                                                order_id = result_data.get("order_id") or result_data.get("client_order_id")
-                                                if order_id:
-                                                    logger.info(
-                                                        f"✅ Successfully created TP order via TRADE_BOT fallback: order_id={order_id}"
-                                                    )
-                                                    return {"order_id": str(order_id), "error": None}
-                                        except Exception as fallback_err:
-                                            logger.error(
-                                                f"TRADE_BOT fallback failed for TP order: {fallback_err}",
-                                                exc_info=True,
-                                            )
-                                logger.warning(f"⚠️ Proxy TP order failed: {last_error}")
-                                continue
-
-                            order_result = result.get("result") or {}
-                            order_id = order_result.get("order_id") or order_result.get("client_order_id")
-                            if order_id:
-                                logger.info(f"✅ Successfully created TP order via PROXY: order_id={order_id}")
-                                return {"order_id": str(order_id), "error": None}
-
-                            logger.warning(f"Proxy TP order success but missing order_id: {result}")
-                            last_error = "Proxy success missing order_id"
-                            continue
-                        except requests.exceptions.RequestException as proxy_err:
-                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
-                            # Fall through to direct API call below
-                        except Exception as proxy_err:
-                            logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
-                            # Fall through to direct API call below
-                    
-                    # Direct API call (when proxy is disabled or proxy failed)
-                    # DEBUG: Log before sign_request
-                    logger.info(f"[DEBUG][{source.upper()}][{request_id}] About to call sign_request for variation {variation_name_full}")
-                    
-                    payload = self.sign_request(method, params)
-                    
-                    # DEBUG: Log after sign_request
-                    logger.info(f"[DEBUG][{source.upper()}][{request_id}] sign_request completed, payload keys: {list(payload.keys())}")
-                    
-                    # Log HTTP request details with source and request_id
-                    import json as json_module
-                    url = f"{self.base_url}/{method}"
-                    logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Sending HTTP request to exchange:")
-                    logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   URL: {url}")
-                    logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Method: POST")
-                    logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Source: {source}")
-                    logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Payload JSON: {json_module.dumps(payload, ensure_ascii=False, indent=2)}")
-                    
-                    try:
-                        logger.debug(f"Request URL: {url}")
-                        response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_take_profit_order")
+                            params_keys = sorted(list((payload.get("params") or {}).keys()))
+                        except Exception:
+                            params_keys = []
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Payload keys: {sorted(list(payload.keys()))}")
+                        logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Params keys: {params_keys}")
+                        
+                        try:
+                            logger.debug(f"Request URL: {url}")
+                            response = http_post(
+                                url,
+                                json=payload,
+                                headers={"Content-Type": "application/json"},
+                                timeout=10,
+                                calling_module="crypto_com_trade.place_take_profit_order",
+                            )
+                        except requests.exceptions.RequestException as e:
+                            logger.warning(
+                                f"⚠️ Variation {variation_name_full} failed with network error: {e}. Trying next variation..."
+                            )
+                            last_error = str(e)
+                            continue  # Try next params variation
+                        except Exception as e:
+                            logger.warning(
+                                f"⚠️ Variation {variation_name_full} failed with error: {e}. Trying next variation..."
+                            )
+                            last_error = str(e)
+                            continue  # Try next params variation
                         
                         # Log HTTP response details
                         try:
                             response_body = response.json()
-                        except:
+                        except Exception:
                             response_body = response.text
                         
                         logger.info(f"[TP_ORDER][{source.upper()}][{request_id}] Received HTTP response from exchange:")
                         logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Status Code: {response.status_code}")
-                        response_body_str = json_module.dumps(response_body, ensure_ascii=False, indent=2) if isinstance(response_body, dict) else str(response_body)
+                        response_body_str = json.dumps(response_body, ensure_ascii=False, indent=2) if isinstance(response_body, dict) else str(response_body)
                         logger.info(f"[TP_ORDER][{source.upper()}][{request_id}]   Response Body: {response_body_str}")
                         
                         if response.status_code == 401:
@@ -3767,6 +4666,18 @@ class CryptoComTradeClient:
                                 error_code = error_data.get('code', 0)
                                 error_msg = error_data.get('message', 'Unknown error')
                                 last_error = f"Error {error_code}: {error_msg}"
+                                
+                                # If conditional orders are disabled for this account/symbol, no point trying other variations.
+                                if error_code == 140001:
+                                    logger.error(
+                                        f"❌ TAKE_PROFIT_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
+                                        f"This account likely cannot place conditional orders (TP/SL) via API."
+                                    )
+                                    try:
+                                        self._mark_trigger_orders_unavailable(code=140001, message=str(error_msg or "API_DISABLED"))
+                                    except Exception:
+                                        pass
+                                    return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
                                 
                                 # If error 308 (Invalid price format), try next variation
                                 if error_code == 308:
@@ -3862,14 +4773,6 @@ class CryptoComTradeClient:
                             last_error = "Response missing order_id"
                             continue
                     
-                    except requests.exceptions.RequestException as e:
-                        logger.warning(f"⚠️ Variation {variation_name_full} failed with network error: {e}. Trying next variation...")
-                        last_error = str(e)
-                        continue  # Try next params variation
-                    except Exception as e:
-                        logger.warning(f"⚠️ Variation {variation_name_full} failed with error: {e}. Trying next variation...")
-                        last_error = str(e)
-                        continue  # Try next params variation
         
         # All variations failed
         logger.error(f"❌ All TAKE_PROFIT_LIMIT price/trigger format variations failed. Last error: {last_error}")
@@ -3918,10 +4821,20 @@ class CryptoComTradeClient:
                             self._instrument_cache[symbol_upper] = None
                             return None
                         
+                        # If min_quantity is missing from the exchange instrument metadata,
+                        # do NOT default to "0.001" (too large for BTC-like instruments).
+                        # Instead, use qty_tick_size as a conservative minimum.
+                        min_qty_fallback = min_quantity_raw
+                        try:
+                            if min_qty_fallback is None or str(min_qty_fallback).strip() == "":
+                                min_qty_fallback = qty_tick_size_raw or "0"
+                        except Exception:
+                            min_qty_fallback = qty_tick_size_raw or "0"
+
                         metadata = {
                             "quantity_decimals": inst.get("quantity_decimals", 2),
                             "qty_tick_size": str(qty_tick_size_raw),  # Keep as string (no float conversion)
-                            "min_quantity": str(min_quantity_raw) if min_quantity_raw is not None else "0.001",  # Keep as string
+                            "min_quantity": str(min_qty_fallback),  # Keep as string
                             "price_decimals": inst.get("price_decimals", 2),
                             "price_tick_size": str(price_tick_size_raw) if price_tick_size_raw is not None else "0.0001",  # Keep as string
                         }
@@ -3983,7 +4896,8 @@ class CryptoComTradeClient:
         
         quantity_decimals = inst_meta["quantity_decimals"]
         qty_tick_size_str = inst_meta["qty_tick_size"]
-        min_quantity_str = inst_meta.get("min_quantity", "0.001")
+        # If min_quantity is missing, fall back to step_size (or "0") rather than a hard-coded "0.001".
+        min_quantity_str = inst_meta.get("min_quantity") or qty_tick_size_str or "0"
         
         # VALIDATION: Ensure step_size is valid (not missing or zero)
         if not qty_tick_size_str or qty_tick_size_str == "0" or qty_tick_size_str == "":
@@ -4069,6 +4983,15 @@ class CryptoComTradeClient:
         price_decimals = inst_meta.get("price_decimals", 2)
         price_tick_size_str = inst_meta.get("price_tick_size", "0.01")
         
+        # Guardrail: ensure we format with enough decimals for the tick size.
+        # Some instruments have inconsistent metadata (e.g. tick_size=0.0001 but price_decimals=2).
+        tick_decimals = 0
+        if isinstance(price_tick_size_str, str) and "." in price_tick_size_str:
+            frac = price_tick_size_str.split(".", 1)[1]
+            # Keep significant decimal places implied by tick size (strip trailing zeros).
+            tick_decimals = len(frac.rstrip("0"))
+        effective_decimals = max(int(price_decimals or 0), int(tick_decimals or 0))
+        
         # Convert to Decimal for precise arithmetic
         price_decimal = decimal.Decimal(str(price))
         tick_decimal = decimal.Decimal(str(price_tick_size_str))
@@ -4092,12 +5015,13 @@ class CryptoComTradeClient:
         quantized_result = division_result.quantize(decimal.Decimal('1'), rounding=rounding)
         price_normalized = quantized_result * tick_decimal
         
-        # Format to exact decimal places (per Rule 4: preserve trailing zeros)
-        price_str = format(price_normalized, f'.{price_decimals}f')
+        # Format to exact decimal places (per Rule 4: preserve trailing zeros).
+        # Use effective_decimals to satisfy tick size formatting requirements.
+        price_str = format(price_normalized, f'.{effective_decimals}f')
         
         logger.debug(
             f"[NORMALIZE_PRICE] {symbol} {side} {order_type}: "
-            f"raw={price} -> {price_str} (decimals={price_decimals}, tick={price_tick_size_str}, rounding={rounding})"
+            f"raw={price} -> {price_str} (decimals={price_decimals}, tick={price_tick_size_str}, effective_decimals={effective_decimals}, rounding={rounding})"
         )
         
         return price_str
@@ -4154,7 +5078,8 @@ class CryptoComTradeClient:
         
         quantity_decimals = inst_meta["quantity_decimals"]
         qty_tick_size_str = inst_meta["qty_tick_size"]
-        min_quantity_str = inst_meta.get("min_quantity", "0.001")
+        # If min_quantity is missing, fall back to step_size (or "0") rather than a hard-coded "0.001".
+        min_quantity_str = inst_meta.get("min_quantity") or qty_tick_size_str or "0"
         
         diagnostics["min_quantity"] = min_quantity_str
         diagnostics["step_size"] = qty_tick_size_str

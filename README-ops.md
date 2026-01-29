@@ -62,6 +62,124 @@ cd /home/ubuntu/automated-trading-platform
 bash scripts/aws/deploy_backend_with_secrets.sh
 ```
 
+## Crypto.com SL/TP (STOP_LIMIT / TAKE_PROFIT_LIMIT) order creation
+
+When a filled order needs protective orders, the backend creates SL/TP directly on Crypto.com Exchange v1 using `private/create-order` with:
+
+- **Stop loss**: `type=STOP_LIMIT`
+- **Take profit**: `type=TAKE_PROFIT_LIMIT`
+
+### What happens on failure (automatic variants fallback + evidence)
+
+If either SL or TP creation fails, the backend automatically retries using a bounded grid of **format/key variations** (trigger key naming, numeric vs string types, `time_in_force`, optional flags, and `trigger_condition` spacing).
+
+- **Single summary log line**: look for tag `"[SLTP_VARIANTS]"` in backend logs.
+- **Evidence file (JSONL)**: written on the backend host to:
+  - `/tmp/sltp_variants_<correlation_id>.jsonl`
+  - Each line includes: `variant_id`, `params_keys`, `http_status`, `code`, `message`, `elapsed_ms`, `created_order_id` (if any)
+
+### How to find `correlation_id` in logs
+
+Search for the tag and symbol:
+
+```bash
+grep "\[SLTP_VARIANTS\]" -n backend.log | grep "symbol=ETH_USD"
+```
+
+The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<correlation_id>.jsonl`.
+
+### Meaning of common errors
+
+- **140001 `API_DISABLED`**:
+  - This is an **account capability** problem (conditional orders disabled), not formatting.
+  - The backend will mark conditional orders as unavailable in-memory and **stop retrying variants** until the next periodic health check (24h cache).
+- **308 `Invalid price format`**:
+  - Usually fixed by sending prices as **plain decimal strings** (no scientific notation) and/or using the correct trigger key (`trigger_price` vs `stop_price` vs `triggerPrice`) and correct `trigger_condition` formatting (`">= <val>"` vs `">=<val>"`).
+
+### How we discovered the working format
+
+- The production fallback records every rejected variant (exchange `code`/`message`) into the JSONL evidence file above.
+- For deeper engineering investigations, use the **experimental trigger probe** below, which brute-forces a wider matrix and writes a separate JSONL evidence file.
+
+### Baseline “direct on Crypto.com” payload shape (what we aim to send)
+
+These are the baseline `params` keys we aim to use when creating SL/TP directly via `private/create-order`. The exchange can be strict about **key names** and **decimal formatting**, so the production fallback may vary these on failure.
+
+**STOP_LIMIT (Stop Loss)**
+
+- **Intent**: when market moves against the position, trigger and place a limit order to close.
+- **Typical params**:
+
+```json
+{
+  "instrument_name": "ETH_USD",
+  "side": "SELL",
+  "type": "STOP_LIMIT",
+  "price": "2659.374",
+  "trigger_price": "2659.374",
+  "ref_price": "2659.374",
+  "quantity": "0.0033",
+  "trigger_condition": "<= 2659.374",
+  "time_in_force": "GOOD_TILL_CANCEL",
+  "client_oid": "<uuid>"
+}
+```
+
+**TAKE_PROFIT_LIMIT (Take Profit)**
+
+- **Intent**: when market reaches profit target, trigger and place a limit order to close.
+- **Typical params**:
+
+```json
+{
+  "instrument_name": "ETH_USD",
+  "side": "SELL",
+  "type": "TAKE_PROFIT_LIMIT",
+  "price": "2984.4086",
+  "trigger_price": "2984.4086",
+  "ref_price": "2984.4086",
+  "quantity": "0.0033",
+  "trigger_condition": ">= 2984.4086",
+  "time_in_force": "GOOD_TILL_CANCEL",
+  "client_oid": "<uuid>"
+}
+```
+
+**Notes**
+
+- Prices/quantities should be **plain decimal strings** (avoid scientific notation).
+- `trigger_condition` spacing can matter (some endpoints accept `">= 123.45"` but reject `">=123.45"` and vice versa), which is why the fallback tries both.
+
+## Crypto.com SL/TP trigger probe (experimental)
+
+Use this when conditional orders (`STOP_LIMIT` / `TAKE_PROFIT_LIMIT`) fail but MARKET/LIMIT works, and you need **evidence**.
+
+**Safety defaults:**
+
+- Hard cap enforced: `CRYPTO_PROBE_MAX_NOTIONAL_USD` (default: `1.0`)
+- Attempts to cancel any created probe orders when `dry_run=true` (endpoint forces this)
+
+**Enable (guarded):**
+
+```bash
+export ENABLE_CRYPTO_PROBE=true
+export CRYPTO_PROBE_MAX_NOTIONAL_USD=1.0
+```
+
+**Run (local):**
+
+```bash
+curl -X POST http://127.0.0.1:8002/api/control/crypto/trigger-probe \
+  -H 'Content-Type: application/json' \
+  -d '{"instrument_name":"ETH_USD","side":"SELL","qty":"0.0001","ref_price":2500,"max_variants":120}'
+```
+
+**Output:**
+
+- The response returns `correlation_id` and `jsonl_path`
+- The JSONL file is written on the backend host at `/tmp/trigger_probe_<correlation_id>.jsonl`
+- Each line is one variant attempt with redacted payload + full response JSON
+
 ## Arranque local con secrets
 
 ### 1. Configurar secrets de Postgres

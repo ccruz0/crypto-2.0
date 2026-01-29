@@ -1475,6 +1475,77 @@ class ExchangeSyncService:
             )
         tp_order_id = tp_result.get("order_id")
         tp_order_error = tp_result.get("error")
+
+        # Failure-only fallback: if either SL or TP creation failed, try bounded SL/TP variants.
+        # This keeps the success path unchanged (no extra calls when SL/TP succeeds).
+        try:
+            need_sl_variants = not sl_order_id
+            need_tp_variants = (not tp_order_id) and (not skip_tp_creation)
+
+            if live_trading and (need_sl_variants or need_tp_variants):
+                correlation_id = str(uuid.uuid4())
+                fallback = trade_client.create_stop_loss_take_profit_with_variations(
+                    instrument_name=symbol,
+                    side=side,  # entry side
+                    quantity=float(filled_qty),
+                    ref_price=float(filled_price),
+                    stop_loss_price=float(sl_price) if need_sl_variants else None,
+                    take_profit_price=float(tp_price) if need_tp_variants else None,
+                    correlation_id=correlation_id,
+                    existing_sl_order_id=str(sl_order_id) if sl_order_id else None,
+                    existing_tp_order_id=str(tp_order_id) if tp_order_id else None,
+                )
+
+                # Apply fallback results only for missing orders.
+                if not sl_order_id and fallback.get("ok_sl") and fallback.get("sl_order_id"):
+                    sl_order_id = str(fallback.get("sl_order_id"))
+                    sl_result = {
+                        "order_id": sl_order_id,
+                        "error": None,
+                        "variant_id": fallback.get("sl_variant_id"),
+                        "correlation_id": correlation_id,
+                    }
+                    sl_order_error = None
+
+                if not tp_order_id and fallback.get("ok_tp") and fallback.get("tp_order_id"):
+                    tp_order_id = str(fallback.get("tp_order_id"))
+                    tp_result = {
+                        "order_id": tp_order_id,
+                        "error": None,
+                        "variant_id": fallback.get("tp_variant_id"),
+                        "correlation_id": correlation_id,
+                    }
+                    tp_order_error = None
+
+                def _err_tail(errs):
+                    try:
+                        tail = (errs or [])[-3:]
+                        return [
+                            f"{e.get('code')}:{(e.get('message') or '')[:120]}"
+                            for e in tail
+                            if isinstance(e, dict)
+                        ]
+                    except Exception:
+                        return []
+
+                logger.info(
+                    "[SLTP_VARIANTS] symbol=%s correlation_id=%s ok_sl=%s ok_tp=%s "
+                    "sl_attempts=%s tp_attempts=%s sl_variant=%s tp_variant=%s "
+                    "sl_err_tail=%s tp_err_tail=%s jsonl_path=%s",
+                    symbol,
+                    correlation_id,
+                    bool(fallback.get("ok_sl")),
+                    bool(fallback.get("ok_tp")),
+                    int(fallback.get("sl_attempts") or 0),
+                    int(fallback.get("tp_attempts") or 0),
+                    fallback.get("sl_variant_id"),
+                    fallback.get("tp_variant_id"),
+                    _err_tail(fallback.get("sl_errors")),
+                    _err_tail(fallback.get("tp_errors")),
+                    fallback.get("jsonl_path"),
+                )
+        except Exception as _sltp_var_err:
+            logger.warning("SLTP variants fallback failed unexpectedly: %s", _sltp_var_err)
         
         # Log TP order result
         if tp_order_id:
