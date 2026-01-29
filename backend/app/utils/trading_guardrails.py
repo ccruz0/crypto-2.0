@@ -125,6 +125,10 @@ def can_place_real_order(
     order_usd_value: float,
     side: str = "BUY",
     ignore_trade_yes: bool = False,
+    ignore_daily_limit: bool = False,
+    ignore_usd_limit: bool = False,
+    ignore_cooldown: bool = False,
+    parent_order_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Check if a real order can be placed based on true sources of truth.
@@ -143,6 +147,10 @@ def can_place_real_order(
         order_usd_value: USD value of the order
         side: Order side ("BUY" or "SELL")
         ignore_trade_yes: If True, skip Trade Yes check (for SL/TP orders on existing positions)
+        ignore_daily_limit: If True, skip MAX_ORDERS_PER_SYMBOL_PER_DAY check (protective SL/TP orders)
+        ignore_usd_limit: If True, skip MAX_USD_PER_ORDER check (protective SL/TP orders)
+        ignore_cooldown: If True, skip MIN_SECONDS_BETWEEN_ORDERS check (protective SL/TP orders)
+        parent_order_id: Optional parent order id for logs (SL/TP tracing)
         
     Returns:
         Tuple[allowed, block_reason]
@@ -210,7 +218,16 @@ def can_place_real_order(
         return False, reason
     
     # 6. Risk limits (existing checks)
-    return _check_risk_limits(db, symbol, order_usd_value, side)
+    return _check_risk_limits(
+        db,
+        symbol,
+        order_usd_value,
+        side,
+        ignore_daily_limit=ignore_daily_limit,
+        ignore_usd_limit=ignore_usd_limit,
+        ignore_cooldown=ignore_cooldown,
+        parent_order_id=parent_order_id,
+    )
 
 
 def _check_risk_limits(
@@ -218,6 +235,10 @@ def _check_risk_limits(
     symbol: str,
     order_usd_value: float,
     side: str,
+    ignore_daily_limit: bool = False,
+    ignore_usd_limit: bool = False,
+    ignore_cooldown: bool = False,
+    parent_order_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Check risk limits (MAX_OPEN_ORDERS_TOTAL, MAX_ORDERS_PER_SYMBOL_PER_DAY, MAX_USD_PER_ORDER, MIN_SECONDS_BETWEEN_ORDERS).
@@ -240,45 +261,56 @@ def _check_risk_limits(
         reason = "blocked: error checking open orders limit"
         return False, reason
     
-    # MAX_ORDERS_PER_SYMBOL_PER_DAY check
-    try:
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        symbol_base = symbol_upper.split("_")[0] if "_" in symbol_upper else symbol_upper
-        max_orders_per_symbol_per_day = _resolve_max_orders_per_symbol_per_day(db, symbol_upper)
-        
-        orders_today = db.query(func.count(ExchangeOrder.id)).filter(
-            and_(
-                or_(
-                    ExchangeOrder.symbol == symbol_upper,
-                    ExchangeOrder.symbol.like(f"{symbol_base}_%"),
-                ),
-                or_(
-                    ExchangeOrder.exchange_create_time >= today_start,
-                    ExchangeOrder.created_at >= today_start,
-                ),
-            )
-        ).scalar() or 0
-        
-        if orders_today >= max_orders_per_symbol_per_day:
-            reason = (
-                "blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached "
-                f"({orders_today}/{max_orders_per_symbol_per_day})"
-            )
+    # MAX_ORDERS_PER_SYMBOL_PER_DAY check (optional skip for protective orders)
+    if not ignore_daily_limit:
+        try:
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            symbol_base = symbol_upper.split("_")[0] if "_" in symbol_upper else symbol_upper
+            max_orders_per_symbol_per_day = _resolve_max_orders_per_symbol_per_day(db, symbol_upper)
+
+            orders_today = db.query(func.count(ExchangeOrder.id)).filter(
+                and_(
+                    or_(
+                        ExchangeOrder.symbol == symbol_upper,
+                        ExchangeOrder.symbol.like(f"{symbol_base}_%"),
+                    ),
+                    or_(
+                        ExchangeOrder.exchange_create_time >= today_start,
+                        ExchangeOrder.created_at >= today_start,
+                    ),
+                )
+            ).scalar() or 0
+
+            if orders_today >= max_orders_per_symbol_per_day:
+                reason = (
+                    "blocked: MAX_ORDERS_PER_SYMBOL_PER_DAY limit reached "
+                    f"({orders_today}/{max_orders_per_symbol_per_day})"
+                )
+                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
+                return False, reason
+        except Exception as e:
+            logger.error(f"Error checking MAX_ORDERS_PER_SYMBOL_PER_DAY: {e}")
+            # Conservative: allow but log error (this is less critical than total limit)
+            logger.warning("⚠️ Could not check per-symbol daily limit, allowing order")
+    
+    # MAX_USD_PER_ORDER check (optional skip for protective orders)
+    if not ignore_usd_limit:
+        if order_usd_value > MAX_USD_PER_ORDER:
+            reason = f"blocked: MAX_USD_PER_ORDER limit exceeded (${order_usd_value:.2f} > ${MAX_USD_PER_ORDER:.2f})"
             logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
             return False, reason
-    except Exception as e:
-        logger.error(f"Error checking MAX_ORDERS_PER_SYMBOL_PER_DAY: {e}")
-        # Conservative: allow but log error (this is less critical than total limit)
-        logger.warning(f"⚠️ Could not check per-symbol daily limit, allowing order")
-    
-    # MAX_USD_PER_ORDER check
-    if order_usd_value > MAX_USD_PER_ORDER:
-        reason = f"blocked: MAX_USD_PER_ORDER limit exceeded (${order_usd_value:.2f} > ${MAX_USD_PER_ORDER:.2f})"
-        logger.warning(f"🚫 TRADE_BLOCKED: {symbol} {side} - {reason}")
-        return False, reason
     
     # MIN_SECONDS_BETWEEN_ORDERS check
     try:
+        if ignore_cooldown:
+            logger.info(
+                "[GUARDRAIL] cooldown bypassed for protective SL/TP order symbol=%s side=%s parent_order_id=%s",
+                symbol,
+                side,
+                parent_order_id or "N/A",
+            )
+            return True, None
+
         symbol_base = symbol_upper.split("_")[0] if "_" in symbol_upper else symbol_upper
         
         most_recent = (
