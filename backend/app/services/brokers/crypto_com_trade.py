@@ -1613,6 +1613,43 @@ class CryptoComTradeClient:
         self._last_trigger_health_check = time.time()
         self._send_conditional_orders_api_disabled_alert(code=code, message=message or "")
 
+    def _check_conditional_orders_circuit_breaker(self) -> bool:
+        """
+        Conditional order placement circuit breaker (used for SL/TP creation).
+
+        This must NOT depend on `private/get-trigger-orders` health, because that endpoint availability
+        is independent from the ability to place `STOP_LIMIT` / `TAKE_PROFIT_LIMIT`.
+
+        We only block when we have recently observed `API_DISABLED` (140001) and have explicitly
+        marked conditional orders unavailable.
+        """
+        import time
+
+        interval = float(getattr(self, "_trigger_health_check_interval", 86400) or 86400)
+        last = float(getattr(self, "_last_conditional_orders_check", 0.0) or 0.0)
+        available = bool(getattr(self, "_conditional_orders_available", True))
+
+        if available:
+            return True
+
+        # If we've marked unavailable, allow retries once the interval expires.
+        if (time.time() - last) >= interval:
+            try:
+                self._conditional_orders_available = True
+            except Exception:
+                pass
+            return True
+
+        return False
+
+    def _mark_conditional_orders_unavailable(self, *, code: int, message: str) -> None:
+        """Mark conditional order placement unavailable for 24h and emit a rate-limited alert."""
+        import time
+
+        self._conditional_orders_available = False
+        self._last_conditional_orders_check = time.time()
+        self._send_conditional_orders_api_disabled_alert(code=code, message=message or "")
+
     def _build_sltp_variant_grid(self, *, max_variants: int = 220) -> List[dict]:
         """
         Build a bounded-but-broad grid of SL/TP order creation format variations.
@@ -1715,7 +1752,7 @@ class CryptoComTradeClient:
         self._refresh_runtime_flags()
 
         # If we've already detected conditional orders are unavailable, skip retries.
-        if not self._check_trigger_orders_health():
+        if not self._check_conditional_orders_circuit_breaker():
             return {
                 "ok": False,
                 "errors": [
@@ -1723,7 +1760,7 @@ class CryptoComTradeClient:
                         "variant_id": "SKIPPED",
                         "http_status": None,
                         "code": 140001,
-                        "message": "Trigger/conditional orders marked unavailable (cached).",
+                        "message": "Conditional orders marked unavailable (cached).",
                         "exception": None,
                         "params_keys": [],
                     }
@@ -2106,7 +2143,7 @@ class CryptoComTradeClient:
                         }
 
                     # Stop early on API_DISABLED after both paths fail.
-                    self._mark_trigger_orders_unavailable(code=140001, message=str(msg_list or resp_message or "API_DISABLED"))
+                    self._mark_conditional_orders_unavailable(code=140001, message=str(msg_list or resp_message or "API_DISABLED"))
 
             except Exception as e:
                 exc_str = str(e)
