@@ -1732,12 +1732,111 @@ class CryptoComTradeClient:
         method = "private/create-order"
         url = f"{self.base_url}/{method}"
 
+        def _tif_normalize_for_exchange(x: Any) -> Optional[str]:
+            """
+            Normalize time_in_force values for Crypto.com.
+            We sometimes generate shorthands (GTC/IOC/FOK) in the variant grid; map them to docs.
+            """
+            if x is None:
+                return None
+            s = str(x).strip().upper()
+            if not s:
+                return None
+            if s == "GTC":
+                return "GOOD_TILL_CANCEL"
+            if s == "IOC":
+                return "IMMEDIATE_OR_CANCEL"
+            if s == "FOK":
+                return "FILL_OR_KILL"
+            return s
+
+        def _try_create_order_list_single(*, base_variant: dict) -> Tuple[bool, Optional[str], Optional[int], Optional[str], Any]:
+            """
+            Try `private/create-order-list` with a single order in the list.
+            This is a post-2025 migration-safe alternative path for trigger orders.
+            Returns: (ok, order_id, code, message, raw_response)
+            """
+            # Build a minimal, docs-aligned order payload.
+            # NOTE: Docs state "all numbers must be strings", so we always use the string forms here.
+            tif_norm = _tif_normalize_for_exchange(base_variant.get("time_in_force"))
+            order_payload: Dict[str, Any] = {
+                "instrument_name": instrument_name,
+                "side": (side or "").strip().upper(),
+                "type": order_type,
+                "quantity": qty_str,
+                "price": limit_str,
+                "trigger_price": trig_str,
+            }
+            # Optional client id: create-order-list uses client_oid (not client_order_id).
+            if base_variant.get("client_id_key"):
+                order_payload["client_oid"] = str(uuid.uuid4())
+            if tif_norm:
+                order_payload["time_in_force"] = tif_norm
+
+            list_method = "private/create-order-list"
+            list_params = {"contingency_type": "LIST", "order_list": [order_payload]}
+
+            http_status_local: Optional[int] = None
+            resp_obj_local: Any = None
+            try:
+                if self.use_proxy:
+                    resp_obj_local = self._call_proxy(list_method, list_params)
+                    http_status_local = 200 if isinstance(resp_obj_local, dict) else None
+                else:
+                    list_url = f"{self.base_url}/{list_method}"
+                    payload = self.sign_request(list_method, list_params, _suppress_log=True)
+                    resp = http_post(
+                        list_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=10,
+                        calling_module="crypto_com_trade.sltp_variants",
+                    )
+                    http_status_local = getattr(resp, "status_code", None)
+                    try:
+                        resp_obj_local = resp.json()
+                    except Exception:
+                        resp_obj_local = (getattr(resp, "text", "") or "")[:2000]
+
+                code_local, msg_local = self._extract_exchange_error(resp_obj_local)
+
+                # For create-order-list, per-order status is inside result[0].
+                created_order_id_local: Optional[str] = None
+                if isinstance(resp_obj_local, dict) and isinstance(resp_obj_local.get("result"), list) and resp_obj_local["result"]:
+                    first = resp_obj_local["result"][0]
+                    if isinstance(first, dict):
+                        # Override code/message with per-order result if present.
+                        try:
+                            entry_code = first.get("code")
+                            entry_msg = first.get("message")
+                            if entry_code is not None:
+                                code_local = int(entry_code)
+                            if entry_msg is not None:
+                                msg_local = str(entry_msg)
+                        except Exception:
+                            pass
+                        created_order_id_local = first.get("order_id") or first.get("client_order_id")
+
+                is_ok_local = bool(created_order_id_local) and (
+                    (self.use_proxy and (code_local == 0 or code_local is None))
+                    or ((not self.use_proxy) and (http_status_local == 200) and (code_local == 0 or code_local is None))
+                )
+                if is_ok_local:
+                    return True, str(created_order_id_local), code_local, msg_local, resp_obj_local
+                return False, None, code_local, msg_local, resp_obj_local
+            except Exception as exc:
+                return False, None, None, str(exc), resp_obj_local
+
         preferred_key = f"{instrument_name.upper()}|{order_type}|proxy={1 if self.use_proxy else 0}"
         preferred_variant_id = None
+        preferred_method = None
         try:
-            preferred_variant_id = (self._sltp_preferred_variants.get(preferred_key) or {}).get("variant_id")
+            pref = self._sltp_preferred_variants.get(preferred_key) or {}
+            preferred_variant_id = pref.get("variant_id")
+            preferred_method = pref.get("api_method")
         except Exception:
             preferred_variant_id = None
+            preferred_method = None
 
         if preferred_variant_id:
             variants = sorted(
@@ -1843,6 +1942,42 @@ class CryptoComTradeClient:
             created_order_id: Optional[str] = None
 
             try:
+                # If we previously discovered that create-order-list is the working path, try it first.
+                if preferred_method == "private/create-order-list" and v.get("variant_id") == preferred_variant_id:
+                    ok_list, order_id_list, code_list, msg_list, resp_obj_list = _try_create_order_list_single(
+                        base_variant=v
+                    )
+                    if ok_list and order_id_list:
+                        self._sltp_preferred_variants[preferred_key] = {
+                            "variant_id": v.get("variant_id"),
+                            "api_method": "private/create-order-list",
+                        }
+                        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                        record = {
+                            "correlation_id": correlation_id,
+                            "variant_id": v.get("variant_id"),
+                            "order_type": order_type,
+                            "api_method": "private/create-order-list",
+                            "params_keys": params_keys,
+                            "http_status": 200,
+                            "code": code_list,
+                            "message": msg_list,
+                            "elapsed_ms": elapsed_ms,
+                            "created_order_id": str(order_id_list),
+                        }
+                        try:
+                            with out_file.open("a", encoding="utf-8") as fp:
+                                fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        except Exception:
+                            pass
+                        return {
+                            "ok": True,
+                            "order_id": str(order_id_list),
+                            "variant_id": v.get("variant_id"),
+                            "attempts": attempts,
+                            "errors": errors,
+                        }
+
                 if self.use_proxy:
                     # Proxy expects raw params (no signature).
                     resp_obj = self._call_proxy(method, params)
@@ -1882,12 +2017,16 @@ class CryptoComTradeClient:
 
                 if is_ok:
                     # Persist preferred variant for future reuse
-                    self._sltp_preferred_variants[preferred_key] = {"variant_id": v.get("variant_id")}
+                    self._sltp_preferred_variants[preferred_key] = {
+                        "variant_id": v.get("variant_id"),
+                        "api_method": "private/create-order",
+                    }
                     elapsed_ms = int((time.perf_counter() - t0) * 1000)
                     record = {
                         "correlation_id": correlation_id,
                         "variant_id": v.get("variant_id"),
                         "order_type": order_type,
+                        "api_method": "private/create-order",
                         "params_keys": params_keys,
                         "http_status": http_status,
                         "code": resp_code,
@@ -1909,9 +2048,56 @@ class CryptoComTradeClient:
                         "errors": errors,
                     }
 
-                # Stop early on API_DISABLED: retrying formatting won't help.
+                # If create-order returns API_DISABLED, try the post-migration batch endpoint once
+                # before concluding the account is unable to place trigger orders.
                 if resp_code == 140001:
-                    self._mark_trigger_orders_unavailable(code=resp_code, message=resp_message or "API_DISABLED")
+                    ok_list, order_id_list, code_list, msg_list, resp_obj_list = _try_create_order_list_single(
+                        base_variant=v
+                    )
+                    # Write a record for the order-list attempt too (even on failure).
+                    elapsed_ms_list = int((time.perf_counter() - t0) * 1000)
+                    try:
+                        record_list = {
+                            "correlation_id": correlation_id,
+                            "variant_id": v.get("variant_id"),
+                            "order_type": order_type,
+                            "api_method": "private/create-order-list",
+                            "params_keys": sorted(
+                                [
+                                    "instrument_name",
+                                    "side",
+                                    "type",
+                                    "quantity",
+                                    "price",
+                                    "trigger_price",
+                                ]
+                            ),
+                            "http_status": 200,
+                            "code": code_list,
+                            "message": msg_list,
+                            "elapsed_ms": elapsed_ms_list,
+                            "created_order_id": str(order_id_list) if order_id_list else None,
+                        }
+                        with out_file.open("a", encoding="utf-8") as fp:
+                            fp.write(json.dumps(record_list, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
+
+                    if ok_list and order_id_list:
+                        self._sltp_preferred_variants[preferred_key] = {
+                            "variant_id": v.get("variant_id"),
+                            "api_method": "private/create-order-list",
+                        }
+                        return {
+                            "ok": True,
+                            "order_id": str(order_id_list),
+                            "variant_id": v.get("variant_id"),
+                            "attempts": attempts,
+                            "errors": errors,
+                        }
+
+                    # Stop early on API_DISABLED after both paths fail.
+                    self._mark_trigger_orders_unavailable(code=140001, message=str(msg_list or resp_message or "API_DISABLED"))
 
             except Exception as e:
                 exc_str = str(e)
@@ -1922,6 +2108,7 @@ class CryptoComTradeClient:
                 "correlation_id": correlation_id,
                 "variant_id": v.get("variant_id"),
                 "order_type": order_type,
+                "api_method": "private/create-order",
                 "params_keys": params_keys,
                 "http_status": http_status,
                 "code": resp_code,

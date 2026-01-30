@@ -64,10 +64,17 @@ bash scripts/aws/deploy_backend_with_secrets.sh
 
 ## Crypto.com SL/TP (STOP_LIMIT / TAKE_PROFIT_LIMIT) order creation
 
-When a filled order needs protective orders, the backend creates SL/TP directly on Crypto.com Exchange v1 using `private/create-order` with:
+When a filled order needs protective orders, the backend creates SL/TP on Crypto.com Exchange v1.
+
+Primary path: `private/create-order` with:
 
 - **Stop loss**: `type=STOP_LIMIT`
 - **Take profit**: `type=TAKE_PROFIT_LIMIT`
+
+**Important (Exchange v1 change):**
+
+- Crypto.com’s Exchange v1 docs note a migration of trigger order creation/cancellation to the **Advanced Order Management API** (effective 2025-12-17).
+- To remain compatible, on failures that look like capability/API-path issues (e.g. `API_DISABLED`), the backend will also attempt the batch endpoint `private/create-order-list` (LIST) with a single order.
 
 ### What happens on failure (automatic variants fallback + evidence)
 
@@ -91,8 +98,9 @@ The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<c
 ### Meaning of common errors
 
 - **140001 `API_DISABLED`**:
-  - This is an **account capability** problem (conditional orders disabled), not formatting.
-  - The backend will mark conditional orders as unavailable in-memory and **stop retrying variants** until the next periodic health check (24h cache).
+  - Often means **trigger/conditional order placement is disabled for that API path** (account capability or post-migration endpoint requirement), not formatting.
+  - The backend will try a second path (`private/create-order-list`) once.
+  - If both fail with `API_DISABLED`, it will mark conditional orders as unavailable in-memory and **stop retrying variants** until the next periodic health check (24h cache).
 - **308 `Invalid price format`**:
   - Usually fixed by sending prices as **plain decimal strings** (no scientific notation) and/or using the correct trigger key (`trigger_price` vs `stop_price` vs `triggerPrice`) and correct `trigger_condition` formatting (`">= <val>"` vs `">=<val>"`).
 
@@ -103,9 +111,9 @@ The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<c
 
 ### Baseline “direct on Crypto.com” payload shape (what we aim to send)
 
-These are the baseline `params` keys we aim to use when creating SL/TP directly via `private/create-order`. The exchange can be strict about **key names** and **decimal formatting**, so the production fallback may vary these on failure.
+These are the baseline `params` keys we aim to use. The exchange can be strict about **key names** and **decimal formatting**, so the production fallback may vary these on failure.
 
-**STOP_LIMIT (Stop Loss)**
+**STOP_LIMIT (Stop Loss) via `private/create-order`**
 
 - **Intent**: when market moves against the position, trigger and place a limit order to close.
 - **Typical params**:
@@ -116,7 +124,6 @@ These are the baseline `params` keys we aim to use when creating SL/TP directly 
   "side": "SELL",
   "type": "STOP_LIMIT",
   "price": "2659.374",
-  "trigger_price": "2659.374",
   "ref_price": "2659.374",
   "quantity": "0.0033",
   "trigger_condition": "<= 2659.374",
@@ -125,7 +132,7 @@ These are the baseline `params` keys we aim to use when creating SL/TP directly 
 }
 ```
 
-**TAKE_PROFIT_LIMIT (Take Profit)**
+**TAKE_PROFIT_LIMIT (Take Profit) via `private/create-order`**
 
 - **Intent**: when market reaches profit target, trigger and place a limit order to close.
 - **Typical params**:
@@ -136,12 +143,33 @@ These are the baseline `params` keys we aim to use when creating SL/TP directly 
   "side": "SELL",
   "type": "TAKE_PROFIT_LIMIT",
   "price": "2984.4086",
-  "trigger_price": "2984.4086",
   "ref_price": "2984.4086",
   "quantity": "0.0033",
   "trigger_condition": ">= 2984.4086",
   "time_in_force": "GOOD_TILL_CANCEL",
   "client_oid": "<uuid>"
+}
+```
+
+**Batch fallback via `private/create-order-list` (LIST)**
+
+When the API indicates the trigger-order path is disabled, the backend can fall back to `private/create-order-list` with `contingency_type=LIST` and an `order_list` containing one order. In this path, the trigger price field is `trigger_price`:
+
+```json
+{
+  "contingency_type": "LIST",
+  "order_list": [
+    {
+      "instrument_name": "ETH_USD",
+      "side": "SELL",
+      "type": "STOP_LIMIT",
+      "price": "2659.374",
+      "quantity": "0.0033",
+      "trigger_price": "2659.374",
+      "time_in_force": "GOOD_TILL_CANCEL",
+      "client_oid": "<uuid>"
+    }
+  ]
 }
 ```
 
