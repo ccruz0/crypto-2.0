@@ -2109,9 +2109,13 @@ class CryptoComTradeClient:
                         "errors": errors,
                     }
 
-                # If create-order returns API_DISABLED, try the post-migration batch endpoint once
-                # before concluding the account is unable to place trigger orders.
-                if resp_code == 140001:
+                # If create-order returns a capability/compatibility error, try the post-migration
+                # batch endpoint once before concluding trigger orders are unavailable.
+                #
+                # 140001 API_DISABLED: known trigger-order capability / migration issue.
+                # 220 INVALID_SIDE: often observed when the create-order trigger path rejects an otherwise
+                # valid SELL/BUY for STOP_LIMIT; create-order-list may still accept it.
+                if resp_code in (140001, 220):
                     ok_list, order_id_list, code_list, msg_list, resp_obj_list = _try_create_order_list_single(
                         base_variant=v
                     )
@@ -2158,7 +2162,11 @@ class CryptoComTradeClient:
                         }
 
                     # Stop early on API_DISABLED after both paths fail.
-                    self._mark_conditional_orders_unavailable(code=140001, message=str(msg_list or resp_message or "API_DISABLED"))
+                    if resp_code == 140001 or code_list == 140001:
+                        self._mark_conditional_orders_unavailable(
+                            code=140001,
+                            message=str(msg_list or resp_message or "API_DISABLED"),
+                        )
 
             except Exception as e:
                 exc_str = str(e)
