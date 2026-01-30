@@ -1806,6 +1806,9 @@ class CryptoComTradeClient:
                 "quantity": qty_str,
                 "price": limit_str,
                 "trigger_price": trig_str,
+                # Some accounts/endpoints require ref_price even in create-order-list.
+                # Use trigger price as the reference trigger.
+                "ref_price": trig_str,
             }
             # Optional client id: create-order-list uses client_oid (not client_order_id).
             if base_variant.get("client_id_key"):
