@@ -1663,7 +1663,8 @@ class CryptoComTradeClient:
         tif_values = [None, "GOOD_TILL_CANCEL", "GTC", "IOC", "FOK"]
         flag_values = [None, True, False]
         client_id_keys = [None, "client_oid", "client_order_id"]
-        trigger_condition_modes = ["space", "nospace", "omit"]
+        # Prefer minimal payload first; some endpoints reject trigger_condition entirely.
+        trigger_condition_modes = ["omit", "space", "nospace"]
         ref_price_modes = ["match_trigger", "use_ref_price"]
         include_price_modes = [True, False]  # mainly relevant for STOP_LIMIT
 
@@ -1887,11 +1888,25 @@ class CryptoComTradeClient:
         last_response: Any = None
         attempts = 0
 
-        # Pre-format values as strings (trimmed) for vtype=str variations
-        qty_str = self._normalize_price_str(quantity)
-        trig_str = self._normalize_price_str(trigger_price)
-        limit_str = self._normalize_price_str(limit_price)
-        ref_str = self._normalize_price_str(ref_price)
+        # Pre-format values as strings for vtype=str variations.
+        # IMPORTANT: Crypto.com can be strict about tick sizes/decimals (308 INVALID_PRICE).
+        # Use existing normalizers (tick-aware) when possible, and fall back to plain decimals.
+        side_upper_for_norm = (side or "").strip().upper()
+        norm_kind = "STOP_LOSS" if order_type == "STOP_LIMIT" else "TAKE_PROFIT"
+
+        qty_str = self.normalize_quantity(instrument_name, quantity) or self._normalize_price_str(quantity)
+        trig_str = (
+            self.normalize_price(instrument_name, trigger_price, side_upper_for_norm, order_type=norm_kind)
+            or self._normalize_price_str(trigger_price)
+        )
+        limit_str = (
+            self.normalize_price(instrument_name, limit_price, side_upper_for_norm, order_type=norm_kind)
+            or self._normalize_price_str(limit_price)
+        )
+        ref_str = (
+            self.normalize_price(instrument_name, ref_price, side_upper_for_norm, order_type=norm_kind)
+            or self._normalize_price_str(ref_price)
+        )
 
         def _trigger_condition_operator() -> str:
             side_upper = (side or "").strip().upper()
