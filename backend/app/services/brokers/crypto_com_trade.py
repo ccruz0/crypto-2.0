@@ -591,7 +591,9 @@ class CryptoComTradeClient:
         url = f"{self.base_url}/{method}"
 
         # Variant matrix (bounded)
-        order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT"]
+        # Include both limit-trigger and market-trigger variants.
+        # Some accounts/endpoints reject *_LIMIT trigger types but still accept STOP_LOSS / TAKE_PROFIT.
+        order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT", "STOP_LOSS", "TAKE_PROFIT"]
         trigger_keys = ["trigger_price", "stop_price", "triggerPrice"]
         tif_values = [None, "GOOD_TILL_CANCEL", "GTC", "IOC", "FOK"]
         flag_values = [None, True, False]
@@ -1666,7 +1668,7 @@ class CryptoComTradeClient:
         # Prefer minimal payload first; some endpoints reject trigger_condition entirely.
         trigger_condition_modes = ["omit", "space", "nospace"]
         ref_price_modes = ["match_trigger", "use_ref_price"]
-        include_price_modes = [True, False]  # mainly relevant for STOP_LIMIT
+        include_price_modes = [True, False]  # mainly relevant for *_LIMIT
 
         buckets: Dict[str, List[dict]] = {t: [] for t in order_types}
         for op_type in order_types:
@@ -1679,8 +1681,14 @@ class CryptoComTradeClient:
                                     for tc_mode in trigger_condition_modes:
                                         for ref_mode in ref_price_modes:
                                             for include_price in include_price_modes:
+                                                # Market-trigger types do not take a limit price.
+                                                if op_type in ("STOP_LOSS", "TAKE_PROFIT") and include_price:
+                                                    continue
                                                 # Avoid explosion for TP: include_price=False isn't meaningful (TP needs price).
                                                 if op_type == "TAKE_PROFIT_LIMIT" and not include_price:
+                                                    continue
+                                                # TAKE_PROFIT (market trigger) never includes price.
+                                                if op_type == "TAKE_PROFIT" and include_price:
                                                     continue
                                                 # Keep STOP_LIMIT "omit price" only for non-standard trigger keys (borrowed from probe).
                                                 if op_type == "STOP_LIMIT" and not include_price and trig_key == "trigger_price":
@@ -1799,17 +1807,19 @@ class CryptoComTradeClient:
             # Build a minimal, docs-aligned order payload.
             # NOTE: Docs state "all numbers must be strings", so we always use the string forms here.
             tif_norm = _tif_normalize_for_exchange(base_variant.get("time_in_force"))
+            include_price_local = bool(base_variant.get("include_price", True))
             order_payload: Dict[str, Any] = {
                 "instrument_name": instrument_name,
                 "side": (side or "").strip().upper(),
                 "type": order_type,
                 "quantity": qty_str,
-                "price": limit_str,
                 "trigger_price": trig_str,
                 # Some accounts/endpoints require ref_price even in create-order-list.
                 # Use trigger price as the reference trigger.
                 "ref_price": trig_str,
             }
+            if include_price_local:
+                order_payload["price"] = limit_str
             # Optional client id: create-order-list uses client_oid (not client_order_id).
             if base_variant.get("client_id_key"):
                 order_payload["client_oid"] = str(uuid.uuid4())
@@ -1895,7 +1905,7 @@ class CryptoComTradeClient:
         # IMPORTANT: Crypto.com can be strict about tick sizes/decimals (308 INVALID_PRICE).
         # Use existing normalizers (tick-aware) when possible, and fall back to plain decimals.
         side_upper_for_norm = (side or "").strip().upper()
-        norm_kind = "STOP_LOSS" if order_type == "STOP_LIMIT" else "TAKE_PROFIT"
+        norm_kind = "STOP_LOSS" if order_type in ("STOP_LIMIT", "STOP_LOSS") else "TAKE_PROFIT"
 
         qty_str = self.normalize_quantity(instrument_name, quantity) or self._normalize_price_str(quantity)
         trig_str = (
@@ -1913,7 +1923,7 @@ class CryptoComTradeClient:
 
         def _trigger_condition_operator() -> str:
             side_upper = (side or "").strip().upper()
-            if order_type == "STOP_LIMIT":
+            if order_type in ("STOP_LIMIT", "STOP_LOSS"):
                 return "<=" if side_upper == "SELL" else ">="
             return ">=" if side_upper == "SELL" else "<="
 
@@ -2259,6 +2269,20 @@ class CryptoComTradeClient:
                 variants=variants,
                 jsonl_path=jsonl_path,
             )
+            # Second-stage fallback: try STOP_LOSS (market trigger) if STOP_LIMIT is rejected.
+            if not sl_result.get("ok"):
+                sl_result = self._create_order_try_variants(
+                    instrument_name=instrument_name,
+                    side=closing_side,
+                    order_type="STOP_LOSS",
+                    quantity=float(quantity),
+                    ref_price=float(ref_price),
+                    trigger_price=float(stop_loss_price),
+                    limit_price=float(stop_loss_price),
+                    correlation_id=correlation_id,
+                    variants=variants,
+                    jsonl_path=jsonl_path,
+                )
 
         # TP (TAKE_PROFIT_LIMIT)
         tp_result = {
@@ -2282,6 +2306,20 @@ class CryptoComTradeClient:
                 variants=variants,
                 jsonl_path=jsonl_path,
             )
+            # Second-stage fallback: try TAKE_PROFIT (market trigger) if TAKE_PROFIT_LIMIT is rejected.
+            if not tp_result.get("ok"):
+                tp_result = self._create_order_try_variants(
+                    instrument_name=instrument_name,
+                    side=closing_side,
+                    order_type="TAKE_PROFIT",
+                    quantity=float(quantity),
+                    ref_price=float(ref_price),
+                    trigger_price=float(take_profit_price),
+                    limit_price=float(take_profit_price),
+                    correlation_id=correlation_id,
+                    variants=variants,
+                    jsonl_path=jsonl_path,
+                )
 
         # Flatten for structured logging at call site
         return {
