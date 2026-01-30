@@ -1619,7 +1619,9 @@ class CryptoComTradeClient:
         This is intentionally focused (format + key variations), and is only used on failure.
         """
         order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT"]
-        trigger_keys = ["trigger_price", "stop_price", "triggerPrice"]
+        # Exchange v1 docs for `private/create-order` use `ref_price` as the trigger price field.
+        # Historical/alternate endpoints and older implementations sometimes use `trigger_price` / `stop_price` / `triggerPrice`.
+        trigger_keys = ["ref_price", "trigger_price", "stop_price", "triggerPrice"]
         value_type_modes = ["str", "num"]  # string vs numeric
         tif_values = [None, "GOOD_TILL_CANCEL", "GTC", "IOC", "FOK"]
         flag_values = [None, True, False]
@@ -1894,20 +1896,27 @@ class CryptoComTradeClient:
                 if include_price:
                     params["price"] = float(limit_price)
                 # ref_price is numeric in num mode
-                if v.get("ref_price_mode") == "match_trigger":
+                if trig_key == "ref_price":
+                    # If we're using `ref_price` as the trigger field, keep it aligned to trigger_price.
                     params["ref_price"] = float(trigger_price)
                 else:
-                    params["ref_price"] = float(ref_price)
+                    if v.get("ref_price_mode") == "match_trigger":
+                        params["ref_price"] = float(trigger_price)
+                    else:
+                        params["ref_price"] = float(ref_price)
                 trig_val_for_tc = self._normalize_price_str(trigger_price)
             else:
                 params["quantity"] = qty_str
                 params[trig_key] = trig_str
                 if include_price:
                     params["price"] = limit_str
-                if v.get("ref_price_mode") == "match_trigger":
+                if trig_key == "ref_price":
                     params["ref_price"] = trig_str
                 else:
-                    params["ref_price"] = ref_str
+                    if v.get("ref_price_mode") == "match_trigger":
+                        params["ref_price"] = trig_str
+                    else:
+                        params["ref_price"] = ref_str
                 trig_val_for_tc = trig_str
 
             # Optional fields
@@ -4292,7 +4301,9 @@ class CryptoComTradeClient:
                                 f"This account likely cannot place conditional orders (TP/SL) via API."
                             )
                             try:
-                                self._mark_trigger_orders_unavailable(code=140001, message=str(error_msg or "API_DISABLED"))
+                                # Do NOT mark trigger orders unavailable here. A failure-only fallback may still
+                                # succeed via the migrated batch endpoint (`private/create-order-list`).
+                                self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg or "API_DISABLED"))
                             except Exception:
                                 pass
                             return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
@@ -4861,7 +4872,9 @@ class CryptoComTradeClient:
                                         f"This account likely cannot place conditional orders (TP/SL) via API."
                                     )
                                     try:
-                                        self._mark_trigger_orders_unavailable(code=140001, message=str(error_msg or "API_DISABLED"))
+                                        # Do NOT mark trigger orders unavailable here. A failure-only fallback may still
+                                        # succeed via the migrated batch endpoint (`private/create-order-list`).
+                                        self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg or "API_DISABLED"))
                                     except Exception:
                                         pass
                                     return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
