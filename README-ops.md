@@ -71,19 +71,19 @@ Primary path: `private/create-order` with:
 - **Stop loss**: `type=STOP_LIMIT`
 - **Take profit**: `type=TAKE_PROFIT_LIMIT`
 
-**Important (Exchange v1 change):**
+**Single conditional orders:** create `private/create-order`, cancel `private/cancel-order`, detail/open `private/get-order-detail` and `private/get-open-orders`. **Advanced endpoints** (OTO/OTOCO only): `private/advanced/create-otoco`, `private/advanced/cancel-order`, `private/advanced/cancel-all-orders`, `private/advanced/get-open-orders`, `private/advanced/get-order-detail`.
 
-- Crypto.com’s Exchange v1 docs note a migration of trigger order creation/cancellation to the **Advanced Order Management API** (effective 2025-12-17).
-- To remain compatible, on failures that look like capability/API-path issues (e.g. `API_DISABLED`), the backend will also attempt the batch endpoint `private/create-order-list` (LIST) with a single order.
+- (Legacy note: Advanced Order Management API is for OTO/OTOCO only; single conditional orders use standard endpoints above.)
+- On failures that look like capability/API-path issues (e.g. `API_DISABLED`), the backend will also attempt the batch endpoint `private/create-order-list` (LIST) with a single order.
 
 ### What happens on failure (automatic variants fallback + evidence)
 
-If either SL or TP creation fails, the backend automatically retries using a bounded grid of **format/key variations** (trigger key naming, numeric vs string types, `time_in_force`, optional flags, and `trigger_condition` spacing).
+If either SL or TP creation fails, the backend automatically retries using a bounded grid of **format/key variations** (trigger key naming, numeric vs string types, `time_in_force`, optional flags). Do not send `trigger_condition`; it is not a documented request field.
 
 - **Single summary log line**: look for tag `"[SLTP_VARIANTS]"` in backend logs.
 - **Evidence file (JSONL)**: written on the backend host to:
   - `/tmp/sltp_variants_<correlation_id>.jsonl`
-  - Each line includes: `variant_id`, `params_keys`, `http_status`, `code`, `message`, `elapsed_ms`, `created_order_id` (if any)
+  - Each line includes: `variant_id`, `params_keys`, `http_status`, `code`, `message`, `elapsed_ms`, `created_order_id` (if any). Conditional orders use documented params only (no `trigger_condition`).
 
 ### How to find `correlation_id` in logs
 
@@ -102,7 +102,7 @@ The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<c
   - The backend will try a second path (`private/create-order-list`) once.
   - If both fail with `API_DISABLED`, it will mark conditional orders as unavailable in-memory and **stop retrying variants** until the next periodic health check (24h cache).
 - **308 `Invalid price format`**:
-  - Usually fixed by sending prices as **plain decimal strings** (no scientific notation) and/or using the correct trigger key (`trigger_price` vs `stop_price` vs `triggerPrice`) and correct `trigger_condition` formatting (`">= <val>"` vs `">=<val>"`).
+  - Usually fixed by sending prices as **plain decimal strings** (no scientific notation) and/or using the correct trigger key (`trigger_price` vs `stop_price` vs `triggerPrice`). Do not send `trigger_condition`; it is not a documented request field.
 
 ### How we discovered the working format
 
@@ -112,6 +112,8 @@ The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<c
 ### Baseline “direct on Crypto.com” payload shape (what we aim to send)
 
 These are the baseline `params` keys we aim to use. The exchange can be strict about **key names** and **decimal formatting**, so the production fallback may vary these on failure.
+
+**Note:** Trigger/conditional order creation in this codebase uses `private/create-order`. The documented “advanced” create-order endpoint was incorrect (non-existent in the API); creation is not routed through it.
 
 **STOP_LIMIT (Stop Loss) via `private/create-order`**
 
@@ -124,9 +126,8 @@ These are the baseline `params` keys we aim to use. The exchange can be strict a
   "side": "SELL",
   "type": "STOP_LIMIT",
   "price": "2659.374",
-  "ref_price": "2659.374",
+  "trigger_price": "2659.374",
   "quantity": "0.0033",
-  "trigger_condition": "<= 2659.374",
   "time_in_force": "GOOD_TILL_CANCEL",
   "client_oid": "<uuid>"
 }
@@ -143,9 +144,8 @@ These are the baseline `params` keys we aim to use. The exchange can be strict a
   "side": "SELL",
   "type": "TAKE_PROFIT_LIMIT",
   "price": "2984.4086",
-  "ref_price": "2984.4086",
+  "trigger_price": "2984.4086",
   "quantity": "0.0033",
-  "trigger_condition": ">= 2984.4086",
   "time_in_force": "GOOD_TILL_CANCEL",
   "client_oid": "<uuid>"
 }
@@ -176,7 +176,7 @@ When the API indicates the trigger-order path is disabled, the backend can fall 
 **Notes**
 
 - Prices/quantities should be **plain decimal strings** (avoid scientific notation).
-- `trigger_condition` spacing can matter (some endpoints accept `">= 123.45"` but reject `">=123.45"` and vice versa), which is why the fallback tries both.
+- Do **not** send `trigger_condition`; it is not a documented request field for create-order in this codebase. Use `trigger_price` or `ref_price` only.
 
 ## Crypto.com SL/TP trigger probe (experimental)
 
