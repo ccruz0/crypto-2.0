@@ -35,18 +35,20 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
+try:
+    from app.core.crypto_com_guardrail import AUTH_40101_MESSAGE
+except ImportError:
+    AUTH_40101_MESSAGE = "Authentication failure: AWS egress IP not allowlisted for this API key"
 
 DEFAULT_BASE_URL = "https://api.crypto.com/exchange/v1"
 METHOD_CREATE_ORDER = "private/create-order"  # conditional/trigger order creation
 METHOD_GET_INSTRUMENTS = "public/get-instruments"
 METHOD_GET_ORDER_DETAIL = "private/get-order-detail"
-METHOD_ADVANCED_GET_ORDER_DETAIL = "private/advanced/get-order-detail"
 METHOD_GET_OPEN_ORDERS = "private/get-open-orders"
 METHOD_GET_ORDER_HISTORY = "private/get-order-history"
 METHOD_CANCEL_ORDER = "private/cancel-order"
-METHOD_ADVANCED_CANCEL_ORDER = "private/advanced/cancel-order"
 METHOD_CANCEL_ALL_ORDERS = "private/cancel-all-orders"
-METHOD_ADVANCED_CANCEL_ALL_ORDERS = "private/advanced/cancel-all-orders"
+METHOD_USER_BALANCE = "private/user-balance"
 
 
 def _iso_now() -> str:
@@ -473,7 +475,7 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
 
     Success classification (uses verification when present):
     - SUCCESS_CLEAN: order_id present AND (code 0 or missing) AND verified_exists == true.
-    - SUCCESS_WITH_CODE_VERIFIED: order_id present AND code != 0 AND verified_exists == true.
+    - FAIL_WITH_CODE: order_id present AND code != 0 (always failure for probe, no "success-with-code").
     - PHANTOM_ORDER: order_id present AND verified_exists == false.
     - FAIL: no order_id in result.
 
@@ -483,12 +485,12 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
 
     counts: Counter[Tuple[Any, Any, Any]] = Counter()
     samples: Dict[Tuple[Any, Any, Any], List[str]] = defaultdict(list)
+    exception_class_counts: Counter[str] = Counter()
     success_clean: List[Tuple[str, str]] = []
-    success_with_code_verified: List[Tuple[str, str, Any, Any]] = []
+    fail_with_code: List[Tuple[str, str, Any, Any]] = []  # code != 0 always FAIL for probe
     order_id_but_rejected_220: List[Tuple[str, str]] = []  # code=220 always FAIL even if order_id present
     phantom_orders: List[Dict[str, Any]] = []  # variant_id, oid, code, msg, params_highlights
     invalid_side_with_oid: List[Dict[str, Any]] = []  # first 3: sanitized response + params
-    ALLOWED_VERIFIED_CODES = {140001}
 
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -503,6 +505,9 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
                 variant_id = obj.get("variant_id")
                 if variant_id == "__meta__":
                     continue
+                # Skip filtered entries (no response field)
+                if "filtered_invalid_side_rule" in obj:
+                    continue
                 resp = obj.get("response") or {}
                 http_status = resp.get("http_status")
                 raw_body = resp.get("raw_body")
@@ -516,6 +521,10 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
                 counts[key] += 1
                 if len(samples[key]) < int(max_samples_per_group):
                     samples[key].append(str(variant_id))
+                # Track exception classes
+                exc_class = obj.get("exception_class")
+                if exc_class:
+                    exception_class_counts[exc_class] += 1
 
                 oid = _extract_order_id(raw_body)
                 verification = obj.get("verification") or {}
@@ -525,26 +534,11 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
                     if verified_exists is True:
                         if code is None or code == 0:
                             success_clean.append((str(variant_id), oid))
-                        elif code == 220:
-                            order_id_but_rejected_220.append((str(variant_id), str(oid)))
-                            msg_upper = (msg or "").upper()
-                            if "INVALID_SIDE" in msg_upper and len(invalid_side_with_oid) < 3:
-                                params = {}
-                                try:
-                                    req = obj.get("request") or {}
-                                    params = (req.get("payload") or {}).get("params") or {}
-                                except Exception:
-                                    pass
-                                invalid_side_with_oid.append({
-                                    "variant_id": variant_id,
-                                    "order_id": oid,
-                                    "code": code,
-                                    "message": msg,
-                                    "raw_body_sanitized": _sanitize_raw_body(raw_body),
-                                    "params": params,
-                                })
-                        elif code in ALLOWED_VERIFIED_CODES:
-                            success_with_code_verified.append((str(variant_id), oid, code, msg))
+                        else:
+                            # code != 0: always FAIL for probe (including 220, 140001)
+                            fail_with_code.append((str(variant_id), oid, code, msg))
+                            if code == 220:
+                                order_id_but_rejected_220.append((str(variant_id), str(oid)))
                             msg_upper = (msg or "").upper()
                             if "INVALID_SIDE" in msg_upper and len(invalid_side_with_oid) < 3:
                                 params = {}
@@ -568,7 +562,7 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
                             req = obj.get("request") or {}
                             p = (req.get("payload") or {}).get("params") or {}
                             keys = ["type", "price", "quantity", "trigger_price", "ref_price", "time_in_force", "instrument_name", "side"]
-                            params_highlights = {k: p.get(k) for k in keys if k in p and k != "trigger_condition"}
+                            params_highlights = {k: p.get(k) for k in keys if k in p}
                             # Get verification details
                             verif = obj.get("verification") or {}
                             verification_details = {
@@ -590,7 +584,7 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
                         })
                 # else: FAIL (no order_id)
     except Exception:
-        return {"ok": False, "path": path, "groups": [], "success_clean": [], "success_with_code_verified": [], "phantom_orders": []}
+        return {"ok": False, "path": path, "groups": [], "success_clean": [], "fail_with_code": [], "phantom_orders": [], "exception_class_counts": {}}
 
     print("")
     print("SUMMARY")
@@ -619,9 +613,9 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
     if success_clean:
         for vid, oid in success_clean[:10]:
             print(f"  - {vid} order_id={oid}")
-    print(f"SUCCESS_WITH_CODE_VERIFIED (order_id present, code != 0, verified_exists=true): {len(success_with_code_verified)}")
-    if success_with_code_verified:
-        for vid, oid, c, m in success_with_code_verified[:10]:
+    print(f"FAIL_WITH_CODE (order_id present, code != 0, verified_exists=true): {len(fail_with_code)}")
+    if fail_with_code:
+        for vid, oid, c, m in fail_with_code[:10]:
             print(f"  - {vid} order_id={oid} code={c} message={m}")
     print(f"ORDER_ID_BUT_REJECTED (code=220): {len(order_id_but_rejected_220)}")
     if order_id_but_rejected_220:
@@ -647,8 +641,24 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
             print(f"Example {i} variant_id={ex['variant_id']} order_id={ex['order_id']}")
             print(f"  code={ex['code']} message={ex['message']}")
             print(f"  raw_body (sanitized): {json.dumps(ex['raw_body_sanitized'], default=_json_default)}")
-            p_display = {k: v for k, v in (ex.get("params") or {}).items() if k != "trigger_condition"}
+            p_display = ex.get("params") or {}
             print(f"  params: {json.dumps(p_display, ensure_ascii=False, default=_json_default, sort_keys=True)}")
+
+    # Print exception class counts (from JSONL records)
+    if exception_class_counts:
+        print("")
+        print("Exception classes (from JSONL, top 3):")
+        for exc_class, count in exception_class_counts.most_common(3):
+            print(f"  - {exc_class}: {count}")
+
+    # 401 diagnosis hint
+    has_401 = any(k[0] == 401 for k in counts)
+    if has_401:
+        print("")
+        print(f"401 AUTHENTICATION — {AUTH_40101_MESSAGE}")
+        print("  → Check API key has 'Trade' permission in Exchange → Settings → API Keys.")
+        print("  → If preflight also failed: use Exchange API keys (not App), IP allowlist, source scripts/local/load_env_local.sh")
+        print("  → Full diagnostic: python backend/scripts/diagnose_auth_issue.py")
 
     non_140001 = [(k, n) for (k, n) in counts.items() if k[1] != 140001]
     if non_140001:
@@ -665,11 +675,12 @@ def _analyze_jsonl(path: str, max_samples_per_group: int = 3) -> Dict[str, Any]:
         "path": path,
         "groups": [{"http_status": k[0], "code": k[1], "message": k[2], "count": n} for k, n in counts.items()],
         "success_clean": [{"variant_id": v, "order_id": oid} for v, oid in success_clean],
-        "success_with_code_verified": [
+        "fail_with_code": [
             {"variant_id": v, "order_id": oid, "code": c, "message": m}
-            for v, oid, c, m in success_with_code_verified
+            for v, oid, c, m in fail_with_code
         ],
         "phantom_orders": phantom_orders,
+        "exception_class_counts": dict(exception_class_counts),
     }
 
 
@@ -821,25 +832,21 @@ def run_trigger_probe(
     create_method = METHOD_CREATE_ORDER  # standard endpoint only
     endpoint = f"{base_url.rstrip('/')}/{create_method}"
 
-    # Fetch instrument metadata once per run (best-effort). Used only for probe-side rounding.
-    instruments_payload: Optional[dict] = None
-    instruments_list: List[dict] = []
-    try:
-        instruments_payload = _fetch_instruments(base_url)
-        raw_instruments = instruments_payload.get("instruments") if isinstance(instruments_payload, dict) else []
-        instruments_list = list(raw_instruments) if isinstance(raw_instruments, list) else []
-    except Exception:
-        instruments_payload = None
-        instruments_list = []
-
+    # Preflight credential check
     api_key_raw = os.getenv("EXCHANGE_CUSTOM_API_KEY","").strip()
     api_secret_raw = os.getenv("EXCHANGE_CUSTOM_API_SECRET","").strip()
     creds_missing = (not api_key_raw) or (not api_secret_raw)
+    allow_missing = os.getenv("TRIGGER_PROBE_ALLOW_MISSING_CREDS", "0").strip() == "1"
 
-    # Preserve existing runtime behavior when credentials exist by continuing to use
-    # the same normalization for signing/requests.
-    api_key = _clean_env_secret(api_key_raw) if not creds_missing else ""
-    api_secret = _clean_env_secret(api_secret_raw) if not creds_missing else ""
+    # Print preflight info
+    print("")
+    print("=== Crypto.com Trigger Probe Preflight ===")
+    print(f"correlation_id: {correlation_id}")
+    print(f"base_url: {base_url}")
+    print(f"EXCHANGE_CUSTOM_API_KEY: {'SET' if api_key_raw else 'MISSING'}")
+    print(f"EXCHANGE_CUSTOM_API_SECRET: {'SET' if api_secret_raw else 'MISSING'}")
+    print(f"TRIGGER_PROBE_ALLOW_MISSING_CREDS: {'1' if allow_missing else '0'}")
+    print("")
 
     # Always record a header record for traceability.
     _append_jsonl(
@@ -856,6 +863,7 @@ def run_trigger_probe(
                         "EXCHANGE_CUSTOM_BASE_URL": os.getenv("EXCHANGE_CUSTOM_BASE_URL"),
                         "EXCHANGE_CUSTOM_API_KEY_set": bool(api_key_raw),
                         "EXCHANGE_CUSTOM_API_SECRET_set": bool(api_secret_raw),
+                        "TRIGGER_PROBE_ALLOW_MISSING_CREDS": allow_missing,
                     },
                 },
                 "code": None,
@@ -864,25 +872,113 @@ def run_trigger_probe(
         },
     )
 
-    # Preflight: log missing credentials once, but do not stop execution.
+    # Preflight: fail-fast if credentials missing (unless override set)
     if creds_missing:
+        missing_msg = "Missing credentials: EXCHANGE_CUSTOM_API_KEY and/or EXCHANGE_CUSTOM_API_SECRET"
         _append_jsonl(
             out_path,
             {
                 "ts": _iso_now(),
-                "variant_id": "preflight:missing_credentials",
+                "variant_id": "PRECHECK",
+                "schema": "preflight",
                 "request": {"endpoint": endpoint, "headers": {}, "payload": {}},
                 "response": {
                     "http_status": None,
                     "raw_body": None,
                     "code": None,
-                    "message": None,
+                    "message": missing_msg,
                 },
-                "exception": "Missing credentials: EXCHANGE_CUSTOM_API_KEY and/or EXCHANGE_CUSTOM_API_SECRET",
+                "exception_class": "MissingCredentials",
+                "exception_message": missing_msg,
+                "params": {},
             },
         )
+        if not allow_missing:
+            print(f"ERROR: {missing_msg}")
+            print("Set TRIGGER_PROBE_ALLOW_MISSING_CREDS=1 to continue without credentials (for testing).")
+            raise SystemExit(2)
+        else:
+            print(f"WARNING: {missing_msg}")
+            print("Continuing because TRIGGER_PROBE_ALLOW_MISSING_CREDS=1 (no real requests will be sent).")
+            print("")
+
+    # Fetch instrument metadata once per run (best-effort). Used only for probe-side rounding.
+    instruments_payload: Optional[dict] = None
+    instruments_list: List[dict] = []
+    try:
+        instruments_payload = _fetch_instruments(base_url)
+        raw_instruments = instruments_payload.get("instruments") if isinstance(instruments_payload, dict) else []
+        instruments_list = list(raw_instruments) if isinstance(raw_instruments, list) else []
+    except Exception:
+        instruments_payload = None
+        instruments_list = []
+
+    # Preserve existing runtime behavior when credentials exist by continuing to use
+    # the same normalization for signing/requests.
+    api_key = _clean_env_secret(api_key_raw) if not creds_missing else ""
+    api_secret = _clean_env_secret(api_secret_raw) if not creds_missing else ""
 
     headers = {"Content-Type": "application/json"}
+
+    # Preflight auth: call read-only private/user-balance to distinguish key/IP issues from Trade permission.
+    if not creds_missing:
+        preflight_url = f"{base_url.rstrip('/')}/{METHOD_USER_BALANCE}"
+        try:
+            preflight_payload, _ = _sign_request(api_key, api_secret, METHOD_USER_BALANCE, {})
+            preflight_resp = requests.post(
+                preflight_url, headers=headers, json=preflight_payload, timeout=15
+            )
+            try:
+                preflight_body: Any = preflight_resp.json()
+            except Exception:
+                preflight_body = preflight_resp.text
+            preflight_code, preflight_msg = _extract_error_code_message(preflight_body)
+            _append_jsonl(
+                out_path,
+                {
+                    "ts": _iso_now(),
+                    "variant_id": "PREFLIGHT_AUTH",
+                    "schema": "preflight_auth",
+                    "request": {"endpoint": preflight_url, "headers": dict(headers), "payload": {}},
+                    "response": {
+                        "http_status": preflight_resp.status_code,
+                        "raw_body": preflight_body,
+                        "code": preflight_code,
+                        "message": preflight_msg,
+                    },
+                },
+            )
+            if preflight_resp.status_code == 200 and (preflight_code == 0 or preflight_code is None):
+                print("Preflight auth: OK (private/user-balance succeeded).")
+            elif preflight_resp.status_code == 401:
+                print("Preflight auth: FAILED (HTTP 401 on private/user-balance).")
+                if preflight_code == 40101:
+                    print(f"  DIAGNOSIS 40101: {AUTH_40101_MESSAGE}")
+                    print("  - Check API key/secret (Exchange API, not App). Use: source scripts/local/load_env_local.sh")
+                    print("  - Ensure no extra newlines/spaces in .env.local values.")
+                    print("  - If key has no Trade permission, read-only may still return 40101 on some setups.")
+                elif preflight_code == 40103:
+                    print("  DIAGNOSIS 40103: IP not whitelisted. Add this machine's IP in Exchange → Settings → API Keys.")
+                else:
+                    print(f"  Code: {preflight_code} Message: {preflight_msg}")
+                print("  Full diagnostic: python backend/scripts/diagnose_auth_issue.py (after sourcing env).")
+            else:
+                print(f"Preflight auth: unexpected {preflight_resp.status_code} code={preflight_code} msg={preflight_msg}")
+        except Exception as e:
+            exc_cls = type(e).__name__
+            _append_jsonl(
+                out_path,
+                {
+                    "ts": _iso_now(),
+                    "variant_id": "PREFLIGHT_AUTH",
+                    "schema": "preflight_auth",
+                    "response": {"http_status": None, "code": None, "message": f"exception:{exc_cls}"},
+                    "exception_class": exc_cls,
+                    "exception_message": str(e),
+                },
+            )
+            print(f"Preflight auth: exception {exc_cls} - {e}")
+        print("")
 
     # Golden payload: only conditional limit types with GTC. No IOC/FOK for conditional orders.
     order_types = ["STOP_LIMIT", "TAKE_PROFIT_LIMIT"]
@@ -915,7 +1011,7 @@ def run_trigger_probe(
         ("worse", "worse"),
     ]
 
-    # Golden template: STOP_LIMIT / TAKE_PROFIT_LIMIT with trigger_price or ref_price + price + GOOD_TILL_CANCEL (no trigger_condition).
+    # Golden template: STOP_LIMIT / TAKE_PROFIT_LIMIT with trigger_price or ref_price + price + GOOD_TILL_CANCEL.
     rp_d = Decimal(str(ref_price))
     mark_price = float(ref_price)
     instrument_fixed = (instrument_name or "").strip()
@@ -1050,6 +1146,7 @@ def run_trigger_probe(
                 # - Skip signing and skip HTTP
                 ordered_params = dict(sorted((params or {}).items())) if params else {}
                 schema_tag = (attempt.get("meta") or {}).get("schema", "")
+                missing_msg = "Missing EXCHANGE_CUSTOM_API_KEY/EXCHANGE_CUSTOM_API_SECRET"
                 record = {
                     "ts": _iso_now(),
                     "variant_id": variant_id,
@@ -1071,14 +1168,15 @@ def run_trigger_probe(
                         "http_status": None,
                         "raw_body": None,
                         "code": None,
-                        "message": None,
+                        "message": f"exception:MissingCredentials",
                     },
-                    "exception": "Missing EXCHANGE_CUSTOM_API_KEY/EXCHANGE_CUSTOM_API_SECRET",
+                    "exception_class": "MissingCredentials",
+                    "exception_message": missing_msg,
                 }
                 _append_jsonl(out_path, record)
                 results.append(record)
-                grouped.setdefault((None, None, "exception"), []).append(variant_id)
-                key = (None, None, "exception")
+                grouped.setdefault((None, None, "exception:MissingCredentials"), []).append(variant_id)
+                key = (None, None, "exception:MissingCredentials")
                 if key not in best_params_by_group:
                     best_params_by_group[key] = dict(ordered_params)
                     best_variant_by_group[key] = variant_id
@@ -1184,8 +1282,14 @@ def run_trigger_probe(
                     best_params_by_group[key] = dict(params)
                 best_variant_by_group[key] = variant_id
 
-        except Exception:
+        except Exception as e:
             tb = traceback.format_exc()
+            # Extract last 3 lines of traceback
+            tb_lines = tb.strip().split('\n')
+            traceback_tail = '\n'.join(tb_lines[-3:]) if len(tb_lines) >= 3 else tb.strip()
+            
+            exception_class = e.__class__.__name__
+            exception_message = str(e)
             schema_tag = (attempt.get("meta") or {}).get("schema", "")
             record = {
                 "ts": _iso_now(),
@@ -1196,14 +1300,17 @@ def run_trigger_probe(
                     "http_status": None,
                     "raw_body": None,
                     "code": None,
-                    "message": None,
+                    "message": f"exception:{exception_class}",
                 },
-                "exception": tb,
+                "exception_class": exception_class,
+                "exception_message": exception_message,
+                "traceback_tail": traceback_tail,
+                "exception": tb,  # Keep full traceback for backward compatibility
             }
             _append_jsonl(out_path, record)
             results.append(record)
-            grouped.setdefault((None, None, "exception"), []).append(variant_id)
-            key = (None, None, "exception")
+            grouped.setdefault((None, None, f"exception:{exception_class}"), []).append(variant_id)
+            key = (None, None, f"exception:{exception_class}")
             if key not in best_params_by_group:
                 best_params_by_group[key] = dict(params)
                 best_variant_by_group[key] = variant_id
@@ -1230,6 +1337,18 @@ def run_trigger_probe(
         label = f"http={http_status} code={code} msg={msg}"
         print(f"- {len(vids):4d}  {label}")
 
+    # Print exception class summary
+    exception_groups = [(k, v) for k, v in grouped.items() if k[2] and str(k[2]).startswith("exception:")]
+    if exception_groups:
+        print("")
+        print("Exception classes (top 3):")
+        from collections import Counter
+        exc_counter = Counter()
+        for (hs, code, msg), vids in exception_groups:
+            exc_counter[msg] += len(vids)
+        for exc_msg, count in exc_counter.most_common(3):
+            print(f"  - {exc_msg}: {count}")
+
     print("")
     print("Best candidate payload per group (sample):")
     for (http_status, code, msg), vids in sorted(grouped.items(), key=_sort_key):
@@ -1239,14 +1358,13 @@ def run_trigger_probe(
         print(f"- http={http_status} code={code} msg={msg} count={len(vids)}")
         print(f"  sample_variant_id: {sample_vid}")
         try:
-            # Print params without trigger_condition (probe never sends it).
-            params_display = {k: v for k, v in sample_params.items() if k != "trigger_condition"}
+            params_display = sample_params
             print(f"  params: {json.dumps(params_display, ensure_ascii=False, default=_json_default, sort_keys=True)}")
             keys = ["type", "price", "quantity", "trigger_price", "stop_price", "ref_price", "time_in_force", "instrument_name", "side"]
             highlights = {k: params_display.get(k) for k in keys if k in params_display}
             print(f"  highlights: {json.dumps(highlights, ensure_ascii=False, default=_json_default, sort_keys=True)}")
         except Exception:
-            p_repr = {k: v for k, v in (sample_params or {}).items() if k != "trigger_condition"}
+            p_repr = sample_params or {}
             print(f"  params: {repr(p_repr)}")
 
     # Highlight any variant not returning API_DISABLED 140001

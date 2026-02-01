@@ -173,7 +173,7 @@ EGRESS AUDIT: Checking configured outbound URLs
 ======================================================================
 
 1. Checking environment variables...
-   ✓ VPN_GATE_URL: https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT (allowlisted)
+   ✓ VPN_GATE_URL: https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT (allowlisted)
    ✓ EXCHANGE_CUSTOM_BASE_URL: https://api.crypto.com/exchange/v1 (allowlisted)
    ...
 

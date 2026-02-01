@@ -276,7 +276,7 @@ curl -s https://api.ipify.org
 docker compose --profile aws exec -T backend-aws python3 -c "
 import requests
 try:
-    r = requests.get('https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT', timeout=5)
+    r = requests.get('https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT', timeout=5)
     print(f'Crypto.com API: {r.status_code}')
 except Exception as e:
     print(f'Crypto.com API error: {e}')

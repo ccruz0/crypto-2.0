@@ -252,7 +252,7 @@ docker ps -a | grep gluetun || echo "✅ No gluetun container found (expected)"
 2. **Test Crypto.com API access:**
    ```bash
    # Should work if whitelist has AWS Elastic IP
-   docker compose --profile aws exec -T backend-aws sh -c "curl -s https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT | head -20"
+   docker compose --profile aws exec -T backend-aws sh -c "curl -s https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT | head -20"
    ```
 
 3. **Test dashboard access:**

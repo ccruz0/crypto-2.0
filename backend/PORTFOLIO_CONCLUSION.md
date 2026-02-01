@@ -79,7 +79,7 @@ This is **normal cryptocurrency volatility**, not a bug.
 
 ### Price Sources (in order of priority)
 1. Crypto.com Exchange API (`/public/get-tickers`)
-2. Crypto.com specific ticker (`/public/get-ticker?instrument_name=XXX_USDT`)
+2. Crypto.com specific ticker (`/public/get-tickers?instrument_name=XXX_USDT`)
 3. CoinGecko API (fallback)
 4. Cached prices (if APIs fail)
 

@@ -43,7 +43,7 @@ Las órdenes de Take Profit (TAKE_PROFIT_LIMIT) fallan con error 229 (INVALID_RE
 
 ### Próximos Pasos Sugeridos
 
-1. **Verificar obtención de precio de mercado**: Confirmar que la llamada a `/public/get-ticker` funciona correctamente y devuelve el precio actual.
+1. **Verificar obtención de precio de mercado**: Confirmar que la llamada a `/public/get-tickers` funciona correctamente y devuelve el precio actual.
 
 2. **Comparar con órdenes exitosas**: Buscar órdenes TAKE_PROFIT_LIMIT exitosas en el historial para comparar el formato de `ref_price`.
 

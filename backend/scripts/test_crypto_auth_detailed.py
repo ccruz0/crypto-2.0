@@ -13,10 +13,14 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.core.crypto_com_guardrail import get_execution_context, SKIP_REASON
 from app.services.brokers.crypto_com_trade import CryptoComTradeClient, _clean_env_secret
 
 def test_auth():
     """Probar autenticación con diagnóstico detallado"""
+    if get_execution_context() != "AWS":
+        print(SKIP_REASON)
+        sys.exit(0)
     print("\n" + "="*70)
     print("🔍 DIAGNÓSTICO DETALLADO DE AUTENTICACIÓN")
     print("="*70 + "\n")

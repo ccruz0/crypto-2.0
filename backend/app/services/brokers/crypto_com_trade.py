@@ -18,6 +18,14 @@ import requests
 from app.utils.http_client import http_get, http_post
 
 from .crypto_com_constants import REST_BASE, CONTENT_TYPE_JSON
+from app.core.crypto_com_guardrail import (
+    enforce_crypto_com_origin,
+    AUTH_40101_MESSAGE,
+    require_aws_or_skip,
+    is_local_execution_context,
+    get_execution_context,
+    _skip_payload,
+)
 from app.core.failover_config import (
     CRYPTO_REST_BASE, CRYPTO_TIMEOUT, CRYPTO_RETRIES,
     TRADEBOT_BASE, FAILOVER_ENABLED
@@ -59,10 +67,16 @@ def _should_failover(status, exc=None):
         return True
     return status in (401, 403, 408, 409, 429, 500, 502, 503, 504)
 
+# Allowlist of non-zero codes that are acceptable when order_id exists and order is verified on exchange.
+# 220 INVALID_SIDE is NOT allowlisted: it can create ghost state and breaks SL/TP logic.
+ALLOWED_VERIFIED_NONZERO_CODES = {140001}
+
+
 class CryptoComTradeClient:
     """Crypto.com Exchange v1 Private API Client"""
     
     def __init__(self):
+        enforce_crypto_com_origin(_log=logger)
         # Check if we should use the proxy
         self._use_proxy_default = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
         self.proxy_url = os.getenv("CRYPTO_PROXY_URL", "http://127.0.0.1:9000")
@@ -85,7 +99,7 @@ class CryptoComTradeClient:
         self.crypto_auth_diag = os.getenv("CRYPTO_AUTH_DIAG", "false").lower() == "true"
         
         # In-memory cache for instrument metadata (per run)
-        self._instrument_cache: Dict[str, dict] = {}
+        self._instrument_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
         # Feature flags for account capabilities
         self._trigger_orders_available = True  # Assume available until proven otherwise
@@ -167,8 +181,10 @@ class CryptoComTradeClient:
         except Exception:
             pass
     
-    def _call_proxy(self, method: str, params: dict) -> dict:
+    def _call_proxy(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Call Crypto.com API through the proxy"""
+        if (method.startswith("private/") or "/private/" in method) and get_execution_context() != "AWS":
+            return _skip_payload(method)
         try:
             response = http_post(
                 f"{self.proxy_url}/proxy/private",
@@ -184,24 +200,20 @@ class CryptoComTradeClient:
             proxy_status = result.get("status")
             body = result.get("body", {})
             
-            # If proxy returned 401, parse the body to check for authentication error
+            # body might be a string that needs parsing; always return a dict
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except Exception:
+                    body = {"raw": body}
+            if not isinstance(body, dict):
+                body = {"raw": body}
+            
+            # If proxy returned 401, return the parsed error for failover detection
             if proxy_status == 401:
-                # body might be a string that needs parsing
-                if isinstance(body, str):
-                    try:
-                        body = json.loads(body)
-                    except:
-                        pass
-                # Return the parsed error for failover detection
                 return body
             
             if proxy_status == 200:
-                # body might be a string that needs parsing
-                if isinstance(body, str):
-                    try:
-                        return json.loads(body)
-                    except:
-                        return {}
                 return body
             else:
                 logger.error(f"Proxy returned status {proxy_status}: {body}")
@@ -243,6 +255,22 @@ class CryptoComTradeClient:
         return http_post(url, json=params, timeout=CRYPTO_TIMEOUT, calling_module="crypto_com_trade._fallback_cancel_order")
     # -----------------------------------------------------------------------
     
+    def _params_value_to_sig_str(self, value: Any) -> str:
+        """
+        Crypto.com signing canonicalization for param values.
+
+        Requirements (verified via AWS probe evidence):
+        - None -> "null"
+        - bool -> "true"/"false" (lowercase JSON literals)
+        - everything else -> str(value)
+        """
+        if value is None:
+            return "null"
+        # NOTE: bool is a subclass of int; check bool before int/other primitives.
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
     def _params_to_str(self, obj, level: int = 0) -> str:
         """Convert params to string following Crypto.com documentation exactly"""
         MAX_LEVEL = 3
@@ -252,20 +280,19 @@ class CryptoComTradeClient:
         return_str = ""
         for key in sorted(obj):
             return_str += key
-            if obj[key] is None:
-                return_str += 'null'
-            elif isinstance(obj[key], list):
+            value = obj[key]
+            if isinstance(value, list):
                 # Handle lists: if items are strings, join them; if dicts, recurse
-                for subObj in obj[key]:
-                    if isinstance(subObj, dict):
-                        return_str += self._params_to_str(subObj, level + 1)
+                for sub_obj in value:
+                    if isinstance(sub_obj, dict):
+                        return_str += self._params_to_str(sub_obj, level + 1)
                     else:
                         # For strings or other primitives, just add the value
-                        return_str += str(subObj)
-            elif isinstance(obj[key], dict):
-                return_str += self._params_to_str(obj[key], level + 1)
+                        return_str += self._params_value_to_sig_str(sub_obj)
+            elif isinstance(value, dict):
+                return_str += self._params_to_str(value, level + 1)
             else:
-                return_str += str(obj[key])
+                return_str += self._params_value_to_sig_str(value)
         return return_str
 
     def _params_to_str_insertion(self, obj, level: int = 0) -> str:
@@ -285,18 +312,16 @@ class CryptoComTradeClient:
         for key in obj.keys():
             return_str += str(key)
             value = obj.get(key)
-            if value is None:
-                return_str += "null"
-            elif isinstance(value, list):
+            if isinstance(value, list):
                 for sub_obj in value:
                     if isinstance(sub_obj, dict):
                         return_str += self._params_to_str_insertion(sub_obj, level + 1)
                     else:
-                        return_str += str(sub_obj)
+                        return_str += self._params_value_to_sig_str(sub_obj)
             elif isinstance(value, dict):
                 return_str += self._params_to_str_insertion(value, level + 1)
             else:
-                return_str += str(value)
+                return_str += self._params_value_to_sig_str(value)
         return return_str
     
     def sign_request(
@@ -307,6 +332,7 @@ class CryptoComTradeClient:
         _suppress_log: bool = False,
         _ordered_params_override: Optional[dict] = None,
         _params_str_override: Optional[str] = None,
+        _debug_return_params_str: bool = False,
         _request_id_override: Optional[int] = None,
         _nonce_override_ms: Optional[int] = None,
     ) -> dict:
@@ -316,6 +342,8 @@ class CryptoComTradeClient:
         For empty params: use empty string (verified to work)
         For non-empty params: use _params_to_str method (custom format as per Crypto.com docs)
         """
+        if (method.startswith("private/") or "/private/" in method) and get_execution_context() != "AWS":
+            return _skip_payload(method)
         nonce_ms = int(_nonce_override_ms if _nonce_override_ms is not None else time.time() * 1000)
         
         # Build params string for signature
@@ -358,6 +386,9 @@ class CryptoComTradeClient:
             "params": ordered_params,  # Use ordered params to match string_to_sign
             "nonce": nonce_ms
         }
+        # Test/debug hook: allow unit tests to assert on params_str without affecting production behavior.
+        if _debug_return_params_str:
+            payload["_debug_params_str"] = params_str
         
         # String to sign format per Crypto.com Exchange API v1:
         # Format: method + id + api_key + params_str + nonce
@@ -726,7 +757,6 @@ class CryptoComTradeClient:
                                                             try:
                                                                 cancel_result = self.cancel_order(
                                                                     order_id=str(created_order_id),
-                                                                    symbol=str(instr),
                                                                 )
                                                             except Exception as cancel_err:
                                                                 cancel_result = {"error": str(cancel_err)}
@@ -819,6 +849,9 @@ class CryptoComTradeClient:
     
     def get_account_summary(self) -> dict:
         """Get account summary (balances)"""
+        skip = require_aws_or_skip("get_account_summary")
+        if skip:
+            return {"accounts": [], **skip}
         # [CRYPTO_AUTH_DIAG] Log outbound IP before request
         try:
             from app.utils.egress_guard import validate_outbound_url, log_outbound_request
@@ -837,7 +870,8 @@ class CryptoComTradeClient:
             
             try:
                 result = self._call_proxy(method, params)
-                
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"accounts": [], **result}
                 # Check if proxy returned a 401
                 if isinstance(result, dict) and result.get("code") == 40101:
                     logger.warning("Proxy returned 401 - attempting failover to TRADE_BOT")
@@ -886,7 +920,7 @@ class CryptoComTradeClient:
                     logger.info(f"Retrieved {len(accounts)} account balances via proxy")
                     
                     # Extract top-level equity/wallet balance fields if present (proxy response)
-                    response_data = {"accounts": accounts}
+                    proxy_response_data: Dict[str, Any] = {"accounts": accounts}
                     if "result" in result and isinstance(result["result"], dict):
                         result_data = result["result"]
                         equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
@@ -897,13 +931,13 @@ class CryptoComTradeClient:
                                 if value is not None:
                                     try:
                                         equity_value = float(value) if isinstance(value, str) else float(value)
-                                        response_data["margin_equity"] = equity_value
+                                        proxy_response_data["margin_equity"] = equity_value
                                         logger.info(f"Found margin equity field '{field}' (proxy): {equity_value}")
                                         break
                                     except (ValueError, TypeError):
                                         logger.debug(f"Could not parse equity field '{field}': {value}")
                     
-                    return response_data
+                    return proxy_response_data
                 else:
                     logger.error(f"Unexpected proxy response for account summary: {result}")
                     return {"accounts": []}
@@ -927,7 +961,8 @@ class CryptoComTradeClient:
         method = "private/user-balance"
         params = {}
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"accounts": [], **payload}
         logger.info(f"Live: Calling {method} (same as proxy and get_open_orders)")
         
         try:
@@ -935,9 +970,11 @@ class CryptoComTradeClient:
             url = f"{self.base_url}/{method}"
             
             # SECURITY: Validate outbound URL against allowlist
+            from app.utils.egress_guard import validate_outbound_url, log_outbound_request, EgressGuardError
             try:
-                from app.utils.egress_guard import validate_outbound_url, log_outbound_request, EgressGuardError
-                validated_url, resolved_ip = validate_outbound_url(url, calling_module="crypto_com_trade.get_account_summary")
+                validated_url, resolved_ip = validate_outbound_url(
+                    url, calling_module="crypto_com_trade.get_account_summary"
+                )
             except EgressGuardError as e:
                 logger.error(f"[CRYPTO_TRADE] Outbound request blocked: {e}")
                 raise RuntimeError(f"Security policy violation: {e}")
@@ -986,7 +1023,7 @@ class CryptoComTradeClient:
                     # Build detailed error message with actionable guidance
                     error_details = f"Crypto.com API authentication failed: {error_msg} (code: {error_code})"
                     if error_code == 40101:
-                        error_details += ". Possible causes: 1) Invalid API key/secret - verify EXCHANGE_CUSTOM_API_KEY and EXCHANGE_CUSTOM_API_SECRET match your Crypto.com Exchange API credentials exactly, 2) Missing Read permission - enable 'Read' permission in Crypto.com Exchange API Key settings, 3) API key disabled/suspended - check API key status in Crypto.com Exchange settings."
+                        error_details += f". {AUTH_40101_MESSAGE}"
                     elif error_code == 40103:
                         error_details += ". IP address not whitelisted. Add your server's IP address to the IP whitelist in Crypto.com Exchange API Key settings. Current outbound IP may differ from expected."
                     else:
@@ -1196,8 +1233,12 @@ class CryptoComTradeClient:
                 
                 # Check position data array for equity fields (per-position)
                 if data:
+                    positions_to_check: List[Dict[str, Any]] = []
                     if isinstance(data, list):
                         for position in data:
+                            if not isinstance(position, dict):
+                                continue
+                            positions_to_check.append(position)
                             account_type = position.get("account_type")
                             if "position_balances" in position:
                                 for balance in position["position_balances"]:
@@ -1206,7 +1247,7 @@ class CryptoComTradeClient:
                                 for balance in position["balances"]:
                                     _record_balance_entry(balance, account_type)
                     elif isinstance(data, dict):
-                        # Handle single position object
+                        positions_to_check = [data]
                         account_type = data.get("account_type")
                         if "position_balances" in data:
                             for balance in data["position_balances"]:
@@ -1216,25 +1257,38 @@ class CryptoComTradeClient:
                                 _record_balance_entry(balance, account_type)
                     
                     # Check position-level equity fields
-                    if margin_equity_value is None:
-                        equity_fields = ["equity", "net_equity", "wallet_balance", "margin_equity", "total_equity", 
-                                        "available_equity", "account_equity", "balance_equity"]
-                        for field in equity_fields:
-                            if field in position:
-                                value = position[field]
-                                if value is not None:
-                                    try:
-                                        margin_equity_value = float(value) if isinstance(value, str) else float(value)
-                                        logger.info(f"Found margin equity field '{field}' in position data: {margin_equity_value}")
-                                        break
-                                    except (ValueError, TypeError):
-                                        logger.debug(f"Could not parse equity field '{field}': {value}")
+                    if margin_equity_value is None and positions_to_check:
+                        equity_fields = [
+                            "equity",
+                            "net_equity",
+                            "wallet_balance",
+                            "margin_equity",
+                            "total_equity",
+                            "available_equity",
+                            "account_equity",
+                            "balance_equity",
+                        ]
+                        for pos in positions_to_check:
+                            for field in equity_fields:
+                                if field in pos:
+                                    value = pos[field]
+                                    if value is not None:
+                                        try:
+                                            margin_equity_value = float(value) if isinstance(value, str) else float(value)
+                                            logger.info(
+                                                f"Found margin equity field '{field}' in position data: {margin_equity_value}"
+                                            )
+                                            break
+                                        except (ValueError, TypeError):
+                                            logger.debug(f"Could not parse equity field '{field}': {value}")
+                            if margin_equity_value is not None:
+                                break
                 
                 logger.info(f"Retrieved {len(accounts)} account balances (after processing both formats)")
                 
                 # Extract top-level equity/wallet balance fields if present
                 # Crypto.com margin wallet may provide pre-computed NET balance
-                response_data = {"accounts": accounts}
+                response_data: Dict[str, Any] = {"accounts": accounts}
                 
                 # Check result["result"] for equity fields (if not found in position data)
                 if margin_equity_value is None:
@@ -1272,8 +1326,157 @@ class CryptoComTradeClient:
             # NO SIMULATED DATA - Re-raise error
             raise
     
+    def _verify_order_exists(self, order_id: str, max_retries: int = 2, order_type: Optional[str] = None) -> bool:
+        """
+        Verify that an order_id exists on the exchange. Tries get-order-detail first,
+        then get-open-orders, then get-order-history as fallbacks. Uses retries with delays.
+        
+        For trigger/conditional orders, uses Advanced Order Management API endpoints.
+        Returns True if order is found, False otherwise. Never raises.
+        """
+        if not order_id or not self.api_key or not self.api_secret:
+            return False
+
+        retry_delays = [0.4, 0.8]
+        for attempt_idx, delay in enumerate(retry_delays[:max_retries]):
+            if attempt_idx > 0:
+                time.sleep(delay)
+
+            # Try 1: get-order-detail (standard endpoint; advanced only for OTO/OTOCO)
+            try:
+                method = "private/get-order-detail"
+                params = {"order_id": str(order_id)}
+                if self.use_proxy:
+                    result = self._call_proxy(method, params)
+                    if isinstance(result, dict) and result.get("code") in (0, None):
+                        res = result.get("result")
+                        if isinstance(res, dict):
+                            oid = res.get("order_id") or res.get("orderId") or res.get("client_order_id")
+                            if oid is not None and str(oid) == str(order_id):
+                                return True
+                        if res is not None:
+                            return True
+                else:
+                    payload = self.sign_request(method, params, _suppress_log=True)
+                    url = f"{self.base_url}/{method}"
+                    resp = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade._verify_order_exists")
+                    if resp.status_code == 200:
+                        try:
+                            raw = resp.json()
+                            if isinstance(raw, dict) and (raw.get("code") == 0 or raw.get("code") is None):
+                                res = raw.get("result")
+                                if isinstance(res, dict):
+                                    oid = res.get("order_id") or res.get("orderId") or res.get("client_order_id")
+                                    if oid is not None and str(oid) == str(order_id):
+                                        return True
+                                if res is not None:
+                                    return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Try 2: get-open-orders (standard endpoint; advanced only for OTO/OTOCO)
+            try:
+                orders_data = self.get_open_orders(page=0, page_size=200)
+                data = orders_data.get("data") or []
+                if isinstance(data, list):
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        oid = item.get("order_id") or item.get("orderId") or item.get("client_order_id") or item.get("id")
+                        if oid is not None and str(oid) == str(order_id):
+                            return True
+            except Exception:
+                pass
+
+            # Try 3: get-order-history (last 5 minutes)
+            try:
+                from datetime import timedelta
+                end_time_ms = int(time.time() * 1000)
+                start_time_ms = int((datetime.now() - timedelta(minutes=5)).timestamp() * 1000)
+                history_data = self.get_order_history(page_size=200, start_time=start_time_ms, end_time=end_time_ms, page=0)
+                data = history_data.get("data") or []
+                if isinstance(data, list):
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        oid = item.get("order_id") or item.get("orderId") or item.get("client_order_id") or item.get("id")
+                        if oid is not None and str(oid) == str(order_id):
+                            return True
+            except Exception:
+                pass
+
+        return False
+
+    # Order types that count as trigger/conditional for verified_exists acceptance
+    _TRIGGER_ORDER_TYPES = frozenset({"TRIGGER", "STOP_LIMIT", "STOP_MARKET", "TAKE_PROFIT_LIMIT", "TAKE_PROFIT_MARKET"})
+
+    def _is_trigger_order_type(self, order_type: str) -> bool:
+        """Check if order_type is a trigger/conditional order."""
+        return order_type in self._TRIGGER_ORDER_TYPES
+
+    def _is_advanced_oto_order(self, order_detail: Optional[Dict[str, Any]]) -> bool:
+        """
+        Return True if order is an OTO/OTOCO (advanced) order that should use advanced endpoints.
+        Uses contingency_type, list_id, or leg_id from order detail.
+        """
+        if not order_detail or not isinstance(order_detail, dict):
+            return False
+        ct = order_detail.get("contingency_type") or order_detail.get("contingencyType")
+        if ct and str(ct).upper() in ("OTO", "OTOCO"):
+            return True
+        if order_detail.get("list_id") or order_detail.get("listId"):
+            return True
+        if order_detail.get("leg_id") or order_detail.get("legId"):
+            return True
+        return False
+
+    def _get_order_detail_summary(self, order_id: str, order_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Fetch order detail from exchange and return a summary dict with type, instrument_name, status, side,
+        or None if the order cannot be fetched or result is missing.
+        Uses standard get-order-detail; advanced only for OTO/OTOCO.
+        """
+        if not order_id or not self.api_key or not self.api_secret:
+            return None
+        try:
+            method = "private/get-order-detail"
+            params = {"order_id": str(order_id)}
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+                if not isinstance(result, dict) or result.get("code") not in (0, None):
+                    return None
+                res = result.get("result")
+            else:
+                payload = self.sign_request(method, params, _suppress_log=True)
+                url = f"{self.base_url}/{method}"
+                resp = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade._get_order_detail_summary")
+                if resp.status_code != 200:
+                    return None
+                raw = resp.json()
+                if not isinstance(raw, dict) or (raw.get("code") != 0 and raw.get("code") is not None):
+                    return None
+                res = raw.get("result")
+            if not isinstance(res, dict):
+                return None
+            return {
+                "type": res.get("type") or res.get("order_type"),
+                "instrument_name": res.get("instrument_name"),
+                "status": res.get("status"),
+                "side": res.get("side"),
+                "contingency_type": res.get("contingency_type") or res.get("contingencyType"),
+                "list_id": res.get("list_id") or res.get("listId"),
+                "leg_id": res.get("leg_id") or res.get("legId"),
+            }
+        except Exception:
+            return None
+
     def get_open_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get all open/pending orders"""
+        skip = require_aws_or_skip("get_open_orders")
+        if skip:
+            return {"data": [], **skip}
         # NOTE: Reading open orders must NOT depend on LIVE_TRADING. We still need real-time
         # exchange state even when order placement is disabled. Keep LIVE_TRADING gating only
         # for write operations (place/cancel).
@@ -1290,7 +1493,8 @@ class CryptoComTradeClient:
             logger.info("Using PROXY to get open orders")
             try:
                 result = self._call_proxy(method, params)
-                
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"data": [], **result}
                 # Check if result is an error response (401 authentication failure)
                 if isinstance(result, dict) and result.get("code") in [40101, 40103]:
                     logger.warning(f"Proxy returned authentication error: {result.get('message')} - attempting failover to TRADE_BOT")
@@ -1341,7 +1545,8 @@ class CryptoComTradeClient:
             return {"error": "API credentials not configured"}
         
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"data": [], **payload}
         logger.info(f"Live: Calling {method}")
         
         try:
@@ -1377,6 +1582,9 @@ class CryptoComTradeClient:
 
     def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get trigger-based (TP/SL) open orders."""
+        skip = require_aws_or_skip("get_trigger_orders")
+        if skip:
+            return {"data": [], **skip}
         # NOTE: Reading trigger orders must NOT depend on LIVE_TRADING.
         self._refresh_runtime_flags()
 
@@ -1395,6 +1603,8 @@ class CryptoComTradeClient:
             logger.info("Using PROXY to get trigger orders")
             try:
                 result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"data": [], **result}
                 if isinstance(result, dict) and result.get("code") in [40101, 40103]:
                     logger.warning(f"Proxy authentication error while fetching trigger orders: {result.get('message')}")
                     return {"data": []}
@@ -1415,6 +1625,8 @@ class CryptoComTradeClient:
             return {"data": []}
 
         payload = self.sign_request(method, params)
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"data": [], **payload}
         try:
             url = f"{self.base_url}/{method}"
             response = http_post(
@@ -1422,7 +1634,7 @@ class CryptoComTradeClient:
                 json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=10,
-                calling_module="crypto_com_trade.get_order_history"
+                calling_module="crypto_com_trade.get_trigger_orders"
             )
             if response.status_code == 401:
                 error_data = response.json()
@@ -1472,6 +1684,9 @@ class CryptoComTradeClient:
 
             if self.use_proxy:
                 result = self._call_proxy(method, params)
+                if isinstance(result, dict) and result.get("skipped"):
+                    self._trigger_orders_available = False
+                    return False
                 if isinstance(result, dict) and result.get("code") == 0:
                     self._trigger_orders_available = True
                     return True
@@ -1484,6 +1699,9 @@ class CryptoComTradeClient:
                     return False
 
                 payload = self.sign_request(method, params)
+                if isinstance(payload, dict) and payload.get("skipped"):
+                    self._trigger_orders_available = False
+                    return False
                 url = f"{self.base_url}/{method}"
                 response = http_post(
                     url,
@@ -2084,10 +2302,91 @@ class CryptoComTradeClient:
                 # Success criteria:
                 # - Proxy: code==0 and order_id present
                 # - Direct: HTTP 200 and body code==0 (or missing) and order_id present
+                # - OR: order_id present and verified_exists=true (even if code != 0)
                 is_ok = bool(created_order_id) and (
                     (self.use_proxy and (resp_code == 0 or resp_code is None))
                     or ((not self.use_proxy) and (http_status == 200) and (resp_code == 0 or resp_code is None))
                 )
+
+                # If order_id exists but code != 0, verify order exists and optionally accept if allowlisted + order detail confirms
+                if created_order_id and not is_ok:
+                    verified_exists = self._verify_order_exists(str(created_order_id), order_type=order_type)
+                    order_detail_summary = self._get_order_detail_summary(str(created_order_id), order_type=order_type)
+                    allowlisted = resp_code in ALLOWED_VERIFIED_NONZERO_CODES
+                    # Structured log for code != 0 with order_id (always)
+                    logger.info(
+                        "Create-order returned non-zero code but order_id present",
+                        extra={
+                            "order_id": str(created_order_id),
+                            "code": resp_code,
+                            "message": resp_message,
+                            "instrument_name": instrument_name,
+                            "side": side,
+                            "type": order_type,
+                            "correlation_id": correlation_id,
+                            "verified_exists": verified_exists,
+                            "allowlisted": allowlisted,
+                            "order_detail_summary": order_detail_summary,
+                        },
+                    )
+                    if verified_exists and allowlisted:
+                        # Only accept if order detail confirms expected type (TRIGGER-like) and instrument_name match
+                        detail_type = (order_detail_summary or {}).get("type")
+                        detail_instrument = (order_detail_summary or {}).get("instrument_name")
+                        type_ok = detail_type in self._TRIGGER_ORDER_TYPES if detail_type else False
+                        instrument_ok = (detail_instrument and str(detail_instrument).upper() == str(instrument_name).upper())
+                        if type_ok and instrument_ok:
+                            is_ok = True
+                            logger.warning(
+                                "Order created with non-zero code but verified on exchange (allowlisted and order detail confirmed)",
+                                extra={
+                                    "order_id": str(created_order_id),
+                                    "code": resp_code,
+                                    "message": resp_message,
+                                    "instrument_name": instrument_name,
+                                    "side": side,
+                                    "type": order_type,
+                                    "correlation_id": correlation_id,
+                                    "verified_exists": True,
+                                    "allowlisted": True,
+                                    "order_detail_summary": order_detail_summary,
+                                },
+                            )
+                        else:
+                            logger.error(
+                                "Order created with non-zero code and verified, but order detail did not confirm type/instrument",
+                                extra={
+                                    "order_id": str(created_order_id),
+                                    "code": resp_code,
+                                    "message": resp_message,
+                                    "instrument_name": instrument_name,
+                                    "side": side,
+                                    "type": order_type,
+                                    "correlation_id": correlation_id,
+                                    "verified_exists": True,
+                                    "allowlisted": True,
+                                    "order_detail_summary": order_detail_summary,
+                                },
+                            )
+                            # is_ok remains False
+                    elif verified_exists and not allowlisted:
+                        logger.error(
+                            "Order created with non-zero code and verified, but code not in allowlist",
+                            extra={
+                                "order_id": str(created_order_id),
+                                "code": resp_code,
+                                "message": resp_message,
+                                "instrument_name": instrument_name,
+                                "side": side,
+                                "type": order_type,
+                                "correlation_id": correlation_id,
+                                "verified_exists": True,
+                                "allowlisted": False,
+                                "allowed_codes": list(ALLOWED_VERIFIED_NONZERO_CODES),
+                                "order_detail_summary": order_detail_summary,
+                            },
+                        )
+                        # is_ok remains False
 
                 if is_ok:
                     # Persist preferred variant for future reuse
@@ -2472,8 +2771,17 @@ class CryptoComTradeClient:
         )
         return combined
     
-    def get_order_history(self, page_size: int = 200, start_time: int = None, end_time: int = None, page: int = 0) -> dict:
+    def get_order_history(
+        self,
+        page_size: int = 200,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        page: int = 0,
+    ) -> dict:
         """Get order history (executed orders)"""
+        skip = require_aws_or_skip("get_order_history")
+        if skip:
+            return {"data": [], **skip}
         # According to Crypto.com docs, this endpoint accepts optional parameters:
         # - start_time: start time in milliseconds (optional)
         # - end_time: end time in milliseconds (optional)
@@ -2490,7 +2798,8 @@ class CryptoComTradeClient:
             method = "private/get-order-history"
             params = {}  # This endpoint works without params
             result = self._call_proxy(method, params)
-            
+            if isinstance(result, dict) and result.get("skipped"):
+                return {"data": [], **result}
             # Handle proxy response - try multiple possible response formats
             if "result" in result:
                 # Try "order_list" first (from old working server)
@@ -2540,7 +2849,8 @@ class CryptoComTradeClient:
             }
         
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"data": [], **payload}
         logger.info(f"Live: Calling {method} with params: {list(params.keys())}")
         
         try:
@@ -2643,6 +2953,9 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
+        skip = require_aws_or_skip("place_market_order")
+        if skip:
+            return {"order_id": None, **skip}
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
@@ -2685,6 +2998,7 @@ class CryptoComTradeClient:
         # Check verification mode BEFORE dry_run check (for SELL orders, need to normalize first)
         verify_mode = os.getenv("VERIFY_ORDER_FORMAT", "0") == "1"
         if verify_mode and side_upper == "SELL":
+            assert qty is not None
             # For verification mode on SELL orders, we need instrument metadata
             inst_meta = self._get_instrument_metadata(symbol)
             if inst_meta:
@@ -2744,7 +3058,7 @@ class CryptoComTradeClient:
         # - SELL: use "quantity" parameter (amount of crypto)
         client_oid = str(uuid.uuid4())
         
-        params = {
+        params: Dict[str, Any] = {
             "instrument_name": symbol,
             "side": side_upper,  # UPPERCASE as per documentation
             "type": "MARKET",
@@ -2760,7 +3074,9 @@ class CryptoComTradeClient:
                 params["notional"] = notional
             else:
                 # Format as string with 2-4 decimal places
-                notional_str = f"{float(notional):.2f}" if float(notional) >= 1 else f"{float(notional):.4f}"
+                assert notional is not None
+                notional_float = float(notional)
+                notional_str = f"{notional_float:.2f}" if notional_float >= 1 else f"{notional_float:.4f}"
                 params["notional"] = notional_str
         else:  # SELL
             # Get instrument metadata for debug logging
@@ -2775,6 +3091,7 @@ class CryptoComTradeClient:
                 min_quantity = "?"
             
             # Normalize quantity using shared helper
+            assert qty is not None
             raw_quantity = float(qty)
             normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
             
@@ -2846,7 +3163,8 @@ class CryptoComTradeClient:
         
         # Sign the request (includes api_key, nonce, signature)
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"order_id": None, **payload}
         # ========================================================================
         # DETAILED MARGIN ORDER REQUEST LOGGING
         # ========================================================================
@@ -2890,7 +3208,8 @@ class CryptoComTradeClient:
             
             try:
                 result = self._call_proxy(method, params)
-                
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"order_id": None, **result}
                 # Log HTTP response details (from proxy)
                 logger.info(
                     f"[ENTRY_ORDER][{source}][{request_id}] Received HTTP response from exchange (via PROXY):\n"
@@ -2953,6 +3272,7 @@ class CryptoComTradeClient:
                 raise
         else:
             # Direct API call (if not using proxy)
+            response = None  # help static analysis; set after http_post succeeds
             try:
                 # Generate unique request ID for tracking
                 import uuid as uuid_module
@@ -2977,7 +3297,13 @@ class CryptoComTradeClient:
                     f"  Params keys: {payload_params_keys}"
                 )
                 
-                response = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.place_market_order")
+                response = http_post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                    calling_module="crypto_com_trade.place_market_order",
+                )
                 
                 # Log HTTP response details
                 try:
@@ -3022,11 +3348,7 @@ class CryptoComTradeClient:
                     # Provide specific guidance based on error code
                     if error_code == 40101:
                         logger.error(
-                            "   DIAGNOSIS: Authentication failure (40101)\n"
-                            "   Possible causes:\n"
-                            "   - API key or secret is incorrect\n"
-                            "   - API key is expired or revoked\n"
-                            "   - API key doesn't have 'Trade' permission\n"
+                            f"   DIAGNOSIS: {AUTH_40101_MESSAGE}\n"
                             "   Run: python backend/scripts/diagnose_auth_issue.py for detailed diagnostics"
                         )
                     elif error_code == 40103:
@@ -3217,18 +3539,22 @@ class CryptoComTradeClient:
                 return result.get("result", {})
             except requests.exceptions.HTTPError as e:
                 # Handle other HTTP errors (4xx, 5xx)
-                try:
-                    error_data = response.json()
-                    error_code = error_data.get("code", 0)
-                    error_msg = error_data.get("message", str(e))
-                    error_details = f"{response.status_code} Server Error: {error_msg}"
-                    if error_code:
-                        error_details += f" (code: {error_code})"
-                    logger.error(f"HTTP error placing market order: {error_details}")
-                    return {"error": error_details}
-                except (ValueError, KeyError, AttributeError):
-                    logger.error(f"HTTP error placing market order: {e}")
-                    return {"error": f"{response.status_code} Server Error: {str(e)}"}
+                resp = response or getattr(e, "response", None)
+                if resp is not None:
+                    try:
+                        error_data = resp.json()
+                        error_code = error_data.get("code", 0)
+                        error_msg = error_data.get("message", str(e))
+                        error_details = f"{resp.status_code} Server Error: {error_msg}"
+                        if error_code:
+                            error_details += f" (code: {error_code})"
+                        logger.error(f"HTTP error placing market order: {error_details}")
+                        return {"error": error_details}
+                    except (ValueError, KeyError, AttributeError):
+                        logger.error(f"HTTP error placing market order: {e}")
+                        return {"error": f"{resp.status_code} Server Error: {str(e)}"}
+                logger.error(f"HTTP error placing market order: {e}")
+                return {"error": str(e)}
             except requests.exceptions.RequestException as e:
                 logger.error(f"Network error placing market order: {e}")
                 return {"error": str(e)}
@@ -3340,7 +3666,7 @@ class CryptoComTradeClient:
         
         # Build params according to Crypto.com Exchange API v1 documentation
         client_oid = str(uuid.uuid4())
-        params = {
+        params: Dict[str, Any] = {
             "instrument_name": symbol,
             "side": side.upper(),
             "type": "LIMIT",
@@ -3382,7 +3708,8 @@ class CryptoComTradeClient:
         
         # Sign the request (includes api_key, nonce, signature)
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"order_id": None, **payload}
         # ========================================================================
         # DETAILED MARGIN ORDER REQUEST LOGGING
         # ========================================================================
@@ -3415,7 +3742,8 @@ class CryptoComTradeClient:
             logger.info("Using PROXY to place limit order")
             try:
                 result = self._call_proxy(method, params)
-                
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"order_id": None, **result}
                 # Check if proxy returned a 401
                 if isinstance(result, dict) and result.get("code") == 40101:
                     logger.warning("Proxy returned 401 - attempting failover to TRADE_BOT")
@@ -3586,24 +3914,38 @@ class CryptoComTradeClient:
             logger.error(f"❌ Error placing {margin_status} limit order for {symbol}: {e}")
             return {"error": str(e)}
     
-    def cancel_order(self, order_id: str) -> dict:
-        """Cancel order by order_id"""
+    def cancel_order(self, order_id: str, order_type: Optional[str] = None) -> dict:
+        """
+        Cancel order by order_id.
+        
+        For trigger/conditional orders, uses Advanced Order Management API endpoint.
+        If order_type is not provided, attempts to determine it from order detail.
+        """
+        skip = require_aws_or_skip("cancel_order")
+        if skip:
+            return {"order_id": order_id, "skipped": True, "reason": skip.get("reason", "")}
         self._refresh_runtime_flags()
         if not self.live_trading:
             logger.info(f"DRY_RUN: cancel_order - {order_id}")
             return {"order_id": order_id, "status": "CANCELLED"}
         
-        method = "private/cancel-order"
+        # Use advanced cancel only for OTO/OTOCO orders; standard cancel for single conditional orders
+        detail = self._get_order_detail_summary(order_id)
+        if self._is_advanced_oto_order(detail):
+            method = "private/advanced/cancel-order"
+        else:
+            method = "private/cancel-order"
         params = {"order_id": order_id}
         
-        logger.info(f"Live: cancel_order - {order_id}")
+        logger.info(f"Live: cancel_order - {order_id} (method={method})")
         
         # Use proxy if enabled
         if self.use_proxy:
             logger.info("Using PROXY to cancel order")
             try:
                 result = self._call_proxy(method, params)
-                
+                if isinstance(result, dict) and result.get("skipped"):
+                    return {"order_id": order_id, **result}
                 # Check if proxy returned a 401
                 if isinstance(result, dict) and result.get("code") == 40101:
                     logger.warning("Proxy returned 401 - attempting failover to TRADE_BOT")
@@ -3630,7 +3972,8 @@ class CryptoComTradeClient:
         
         # Direct API call
         payload = self.sign_request(method, params)
-        
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"order_id": order_id, **payload}
         try:
             url = f"{self.base_url}/{method}"
             logger.debug(f"Request URL: {url}")
@@ -3795,7 +4138,10 @@ class CryptoComTradeClient:
             try:
                 from app.database import SessionLocal
                 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
-                db = SessionLocal()
+                session_factory = SessionLocal
+                if session_factory is None:
+                    raise RuntimeError("SessionLocal is None - database not available")
+                db = session_factory()
                 try:
                     buy_order = db.query(ExchangeOrder).filter(
                         ExchangeOrder.symbol == symbol,

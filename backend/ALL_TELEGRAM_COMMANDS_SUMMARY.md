@@ -97,7 +97,7 @@ Complete update of all Telegram commands with enhanced functionality, real-time 
 
 **Price Data Sources (in order):**
 1. `WatchlistItem.price` (database cache)
-2. Crypto.com API (real-time: `/public/get-ticker`)
+2. Crypto.com API (real-time: `/public/get-tickers`)
 3. `TradeSignal.current_price` (fallback)
 
 ---

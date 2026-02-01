@@ -13,6 +13,7 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.core.crypto_com_guardrail import get_execution_context, SKIP_REASON
 from app.services.brokers.crypto_com_trade import CryptoComTradeClient, _clean_env_secret
 
 def test_format(name, method, req_id, nonce, api_key, api_secret, params, params_str_func):
@@ -84,6 +85,9 @@ def test_format(name, method, req_id, nonce, api_key, api_secret, params, params
     return False
 
 def main():
+    if get_execution_context() != "AWS":
+        print(SKIP_REASON)
+        sys.exit(0)
     print("\n" + "="*70)
     print("🔍 DIAGNÓSTICO COMPLETO DE AUTENTICACIÓN CRYPTO.COM")
     print("="*70)

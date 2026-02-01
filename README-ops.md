@@ -2,6 +2,18 @@
 
 This document provides operational instructions for running the automated trading platform locally and in production.
 
+## Execution context: Local (public-only) vs AWS (full auth)
+
+Private Crypto.com API usage is **AWS-only**. Local runs must never call private endpoints.
+
+| Flow | EXECUTION_CONTEXT | Behaviour |
+|------|-------------------|-----------|
+| **Local** | `LOCAL` (default) | Public-only (e.g. `/public/get-tickers`). Private auth is skipped; no 40101, no IP allowlist needed. |
+| **AWS** | `AWS` | Full auth: public + private. Set `EXECUTION_CONTEXT=AWS` on AWS; allowlist AWS egress IP in Crypto.com Exchange. |
+
+- **Local:** `export EXECUTION_CONTEXT=LOCAL` (or unset); `make local-verify-auth-simple` → public get-tickers OK, skip message, exit 0.
+- **AWS:** `EXECUTION_CONTEXT=AWS` in env; run AWS auth verification → public and private succeed (no 40101 if IP allowlisted).
+
 ## Always run from repo root (AWS)
 
 If you run `docker compose` or `git` from `/home/ubuntu`, you will get:
@@ -275,6 +287,40 @@ python3 backend/scripts/diagnose_exchange_auth.py
 Sin creds imprime "Missing EXCHANGE_CUSTOM_API_KEY/SECRET" y AUTH_OK False.
 
 **Verificación de que NO se imprimen secretos:** Asigna valores placeholder a las variables de exchange (sin commitearlas), ejecuta el script y comprueba que esos valores no aparecen en la salida. Ejemplo: tras `python3 backend/scripts/diagnose_exchange_auth.py`, la salida debe contener solo "KEY set:", "KEY len:", "SEC set:", "SEC len:" (y opcionalmente "KEY sha256_12:", "SEC sha256_12:" si DEBUG=1). No debe contener los valores literales de key/secret ni signature.
+
+### Routing Crypto.com traffic through AWS using SSH
+
+Crypto.com Exchange API keys are **IP-whitelisted**. Production traffic must come from the AWS egress IP (e.g. `AWS_INSTANCE_IP` in `.env.aws`). **Local machines must never call Crypto.com directly** unless traffic is explicitly routed through AWS; otherwise you get **40101 Authentication failure**.
+
+**Why AWS IP is required:** The API only accepts requests from IPs configured in the key’s allowlist. Your laptop IP is not whitelisted; the backend on AWS uses the instance’s Elastic IP.
+
+**How to create an SSH SOCKS proxy (debug-only):**
+
+1. From your machine, open an SSH SOCKS tunnel to the AWS host:
+   ```bash
+   ssh -D 1080 -N -o ServerAliveInterval=60 ubuntu@<AWS_HOST_IP>
+   ```
+   `-D 1080` starts a SOCKS5 proxy on localhost:1080. Leave this terminal open; Ctrl+C stops it.
+
+2. In another terminal, export proxy env vars and run your command:
+   ```bash
+   export HTTP_PROXY=socks5://127.0.0.1:1080
+   export HTTPS_PROXY=socks5://127.0.0.1:1080
+   python3 backend/scripts/diagnose_exchange_auth.py
+   ```
+   Or use the helper: `bash scripts/local/ssh_crypto_proxy.sh` — starts the tunnel and drops you into a shell with proxy env; exit or Ctrl+D to stop the tunnel.
+
+**Required env vars when using the proxy:** `HTTP_PROXY`, `HTTPS_PROXY` (both set to e.g. `socks5://127.0.0.1:1080`). The guardrail treats SOCKS proxy as `LOCAL_VIA_SSH_PROXY` and allows calls.
+
+**How to verify routing:** With the proxy running and env set, run:
+   ```bash
+   curl -x socks5://127.0.0.1:1080 https://api.ipify.org
+   ```
+   The printed IP should be your AWS instance IP (the one in the Exchange allowlist).
+
+**Clear warning:** This setup is **debug-only, not for production**. Production runs on AWS; only the backend container there should call Crypto.com. Use the proxy only for local diagnostics (e.g. `diagnose_exchange_auth.py`).
+
+**Guardrail:** Set `CRYPTOCOM_FORCE_AWS=1` to block direct local calls. With this flag, the app and `diagnose_exchange_auth.py` abort if execution context is LOCAL (no SOCKS proxy). They allow AWS and LOCAL_VIA_SSH_PROXY (with a warning).
 
 ## Arranque local con secrets
 
