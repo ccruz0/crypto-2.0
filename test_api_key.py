@@ -1,14 +1,23 @@
+import os
+import sys
 import hmac
 import hashlib
 import time
 import requests
 import json
 
+# Single source of truth: SKIP_REASON from guardrail (no duplicated string)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+from app.core.crypto_com_guardrail import SKIP_REASON
+
 API_KEY = "z3HWF8m292zJKABkzfXWvQ"
 SECRET_KEY = "cxakp_oGDfb6D6JW396cYGz8FHmg"
 
 def test_api_key():
     """Test if the API key is valid by trying a simple request"""
+    if (os.getenv("EXECUTION_CONTEXT") or "LOCAL").strip().upper() != "AWS":
+        print(SKIP_REASON)
+        return True  # pass locally without calling private
     print("🔍 Testing API key validity...")
     
     # Test 1: Try to get account summary with minimal request
