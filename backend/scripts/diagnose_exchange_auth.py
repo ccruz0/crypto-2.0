@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Minimal Crypto.com Exchange auth diagnostic: egress IP + one signed call.
-No secrets printed. Safe to run in AWS container or locally.
+Crypto.com Exchange auth diagnostic: egress IP + one signed private call.
+No secrets printed. DEBUG=1 optionally prints sha256_12 of key/secret only.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import sys
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 try:
     import requests
@@ -105,22 +104,22 @@ def get_public_ip() -> str | None:
 
 
 def main() -> int:
-    # Credentials from env (never print)
     key_raw = os.getenv("EXCHANGE_CUSTOM_API_KEY", "").strip()
     sec_raw = os.getenv("EXCHANGE_CUSTOM_API_SECRET", "").strip()
     key = _clean_env_secret(key_raw)
     sec = _clean_env_secret(sec_raw)
+    debug = os.getenv("DEBUG", "").strip() == "1"
 
     print("KEY set:", bool(key))
     print("KEY len:", len(key))
     print("SEC set:", bool(sec))
     print("SEC len:", len(sec))
+    if debug:
+        print("KEY sha256_12:", _sha256_12(key))
+        print("SEC sha256_12:", _sha256_12(sec))
 
     ip = get_public_ip()
-    if ip is None:
-        print("Public egress IP: <unable to detect>")
-    else:
-        print("Public egress IP:", ip)
+    print("Public egress IP:", ip if ip else "UNKNOWN")
 
     if not requests:
         print("http_status: N/A")
@@ -132,12 +131,13 @@ def main() -> int:
     if not key or not sec:
         print("http_status: N/A")
         print("response code: N/A")
-        print("message: EXCHANGE_CUSTOM_API_KEY and/or EXCHANGE_CUSTOM_API_SECRET not set")
+        print("message: Missing EXCHANGE_CUSTOM_API_KEY/SECRET")
         print("AUTH_OK: False")
         return 1
 
     base_url = (os.getenv("EXCHANGE_CUSTOM_BASE_URL") or "").strip() or DEFAULT_BASE
     url = f"{base_url.rstrip('/')}/{METHOD}"
+
     payload = _sign(key, sec, METHOD, {})
 
     try:
@@ -163,7 +163,7 @@ def main() -> int:
     code = body.get("code") if isinstance(body, dict) else None
     msg = body.get("message") if isinstance(body, dict) else None
     if msg is None and isinstance(body, dict):
-        msg = body.get("result")  # some responses put message elsewhere
+        msg = body.get("result")
     msg_str = str(msg) if msg is not None else ""
 
     print("http_status:", http_status)
@@ -173,7 +173,7 @@ def main() -> int:
     print("AUTH_OK:", auth_ok)
 
     if not auth_ok and code == 40101:
-        print("Hint: Si 40101 y IP no está whitelisted -> whitelist issue (añade Public egress IP en Exchange API Keys).")
+        print("Hint: 40101 suele ser IP no whitelisted o API key/secret incorrectos")
 
     return 0 if auth_ok else 1
 

@@ -260,14 +260,21 @@ bash scripts/aws/run_diagnose_exchange_auth_aws.sh
 **Ejemplo con IP del host:**
 
 ```bash
-REMOTE_HOST=47.xxx.xxx.xxx SSH_USER=ubuntu bash scripts/aws/run_diagnose_exchange_auth_aws.sh
+REMOTE_HOST=47.x.x.x SSH_USER=ubuntu bash scripts/aws/run_diagnose_exchange_auth_aws.sh
 ```
 
-Variables opcionales: `REMOTE_HOST` (default: hilovivo-aws), `SSH_USER` (default: ubuntu), `REMOTE_REPO` (default: /home/ubuntu/automated-trading-platform), `CONTAINER_NAME` (default: backend-aws; si no existe, se usa el primer contenedor cuyo nombre contenga "backend").
+**Qué salida esperar:** `KEY set`, `KEY len`, `SEC set`, `SEC len`, `Public egress IP: <ip or UNKNOWN>`, `http_status`, `response code`, `message`, `AUTH_OK: True/False`. Al final el script bash imprime Summary con contenedor usado, IP detectada, AUTH_OK. Si 40101, hint: "40101 suele ser IP no whitelisted o API key/secret incorrectos". No se imprimen api_key, secret, signature ni payload completo.
 
-**Qué esperar en la salida:** `KEY set`, `KEY len`, `SEC set`, `SEC len`, `Public egress IP: <ip>`, `http_status`, `response code`, `message`, `AUTH_OK: True/False`. Si falla con 40101, se muestra un hint de whitelist. No se imprimen api_key, secret ni firma.
+**Modo local:**
 
-**Modo local (sin AWS):** `python3 backend/scripts/diagnose_exchange_auth.py` — usa credenciales de tu env y muestra la misma salida; si no hay creds, indica que no están configuradas.
+```bash
+cd /Users/carloscruz/automated-trading-platform
+python3 backend/scripts/diagnose_exchange_auth.py
+```
+
+Sin creds imprime "Missing EXCHANGE_CUSTOM_API_KEY/SECRET" y AUTH_OK False.
+
+**Verificación de que NO se imprimen secretos:** Asigna valores placeholder a las variables de exchange (sin commitearlas), ejecuta el script y comprueba que esos valores no aparecen en la salida. Ejemplo: tras `python3 backend/scripts/diagnose_exchange_auth.py`, la salida debe contener solo "KEY set:", "KEY len:", "SEC set:", "SEC len:" (y opcionalmente "KEY sha256_12:", "SEC sha256_12:" si DEBUG=1). No debe contener los valores literales de key/secret ni signature.
 
 ## Arranque local con secrets
 
