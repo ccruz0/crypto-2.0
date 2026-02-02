@@ -16,6 +16,13 @@ from datetime import datetime, timezone
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+try:
+    from app.core.crypto_com_guardrail import is_local_execution_context, LOCAL_SKIP_PRIVATE_MESSAGE
+except ImportError:
+    def is_local_execution_context() -> bool:
+        return (os.getenv("EXECUTION_CONTEXT", "LOCAL") or "LOCAL").strip().upper() == "LOCAL"
+    LOCAL_SKIP_PRIVATE_MESSAGE = "LOCAL mode: private Crypto.com endpoints are AWS-only"
+
 def _clean_env_secret(value: str) -> str:
     """Normalize secrets/keys loaded from env"""
     v = (value or "").strip()
@@ -67,10 +74,15 @@ def check_ip_address():
     try:
         response = requests.get("https://api.ipify.org", timeout=5)
         ip = response.text.strip()
-        print(f"Outbound IP: {ip}")
-        print(f"\n⚠️  IMPORTANT: This IP must be whitelisted in Crypto.com Exchange")
-        print(f"   Go to: https://exchange.crypto.com/ → Settings → API Keys")
-        print(f"   Edit your API key and add this IP to the whitelist")
+        print(f"Outbound IP (this machine): {ip}")
+        aws_ip = (os.getenv("AWS_INSTANCE_IP") or "").strip()
+        if aws_ip:
+            print(f"AWS IP (production, from env): {aws_ip}  ← Whitelist this in Exchange for backend on AWS")
+        print(f"\n⚠️  IMPORTANT: The IP that calls the API must be whitelisted in Crypto.com Exchange")
+        print(f"   - Running locally? Whitelist: {ip}")
+        if aws_ip:
+            print(f"   - Backend on AWS? Whitelist: {aws_ip} (from .env.aws / AWS_INSTANCE_IP)")
+        print(f"   Go to: https://exchange.crypto.com/ → Settings → API Keys → edit key → add IP(s)")
         return ip
     except Exception as e:
         print(f"❌ Could not determine IP address: {e}")
@@ -141,24 +153,21 @@ def test_authentication(api_key: str, api_secret: str):
                 error_code = error_data.get("code", 0)
                 error_msg = error_data.get("message", "Authentication failed")
                 print(f"❌ Authentication failed: {error_msg} (code: {error_code})")
-                
-                    if error_code == 40101:
-                        print("\n🔍 DIAGNOSIS: Authentication failure (40101)")
-                        print("   Possible causes:")
-                        print("   - API key or secret is incorrect")
-                        print("   - API key is expired or revoked")
-                        print("   - ⚠️  API key doesn't have 'Trade' permission (MOST COMMON)")
-                        print("      → Read operations work, but order creation fails")
-                        print("      → Solution: Enable 'Trade' permission in Crypto.com Exchange")
-                
-                elif error_code == 40103:
+                if error_code == 40101:
+                    print("\n🔍 DIAGNOSIS: Authentication failure (expected): IP not allowlisted for this API key")
+                    print("   Possible causes:")
+                    print("   - API key or secret is incorrect")
+                    print("   - API key is expired or revoked")
+                    print("   - ⚠️  API key doesn't have 'Trade' permission (MOST COMMON)")
+                    print("      → Read operations work, but order creation fails")
+                    print("      → Solution: Enable 'Trade' permission in Crypto.com Exchange")
+                if error_code == 40103:
                     print("\n🔍 DIAGNOSIS: IP address not whitelisted (40103)")
                     print("   Solution:")
                     print("   1. Go to https://exchange.crypto.com/ → Settings → API Keys")
                     print("   2. Edit your API key")
                     print("   3. Add your server's IP address to the whitelist")
                     print("   4. Wait a few minutes for changes to take effect")
-                
                 return False, f"{error_msg} (code: {error_code})"
             except:
                 print(f"❌ Authentication failed: HTTP 401")
@@ -229,12 +238,18 @@ def main():
     # Step 2: Check IP
     ip = check_ip_address()
     
+    if is_local_execution_context():
+        print("\n" + LOCAL_SKIP_PRIVATE_MESSAGE)
+        print("=" * 60)
+        return 0
+    
     # Step 3: Check proxy if enabled
     proxy_ok = check_proxy_configuration()
     
     # Step 4: Test authentication (only if not using proxy)
     use_proxy = os.getenv("USE_CRYPTO_PROXY", "false").lower() == "true"
     if not use_proxy:
+        assert api_key is not None and api_secret is not None
         auth_ok, error_msg = test_authentication(api_key, api_secret)
     else:
         print("\n" + "="*60)
@@ -268,8 +283,12 @@ def main():
             print("5. Wait a few minutes after updating IP whitelist")
     
     if ip:
-        print(f"\n🌐 Your server IP: {ip}")
-        print("   Make sure this IP is whitelisted in Crypto.com Exchange")
+        print(f"\n🌐 This machine's IP: {ip}")
+        aws_ip = (os.getenv("AWS_INSTANCE_IP") or "").strip()
+        if aws_ip:
+            print(f"   For AWS production, whitelist this IP in Exchange: {aws_ip} (from .env.aws)")
+        else:
+            print("   Make sure this IP (or your AWS egress IP) is whitelisted in Crypto.com Exchange")
     
     print("\n" + "="*60)
     return 0 if (auth_ok is not False) else 1

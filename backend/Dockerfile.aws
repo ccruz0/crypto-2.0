@@ -95,6 +95,14 @@ COPY backend/scripts/ /app/scripts/
 # This ensures the build fails immediately rather than silently missing files at runtime
 RUN test -d /app/scripts || (echo "ERROR: /app/scripts directory is missing in image" >&2 && echo "DEBUG: Contents of /app:" >&2 && ls -la /app >&2 || true && exit 1)
 RUN test -f /app/scripts/print_api_fingerprints.py || (echo "ERROR: /app/scripts/print_api_fingerprints.py is missing in image" >&2 && echo "DEBUG: Contents of /app/scripts:" >&2 && (ls -la /app/scripts >&2 || echo "/app/scripts does not exist" >&2) && exit 1)
+# Require watchlist_signal_state model (routes_dashboard imports it)
+RUN test -f /app/app/models/watchlist_signal_state.py || (echo "ERROR: watchlist_signal_state.py is missing in image" >&2 && ls -la /app/app/models/ >&2 || true && exit 1)
+# Compile-check diagnose_auth_issue.py to catch IndentationError/syntax regressions
+RUN python3 -m py_compile /app/scripts/diagnose_auth_issue.py || (echo "ERROR: diagnose_auth_issue.py failed to compile" >&2 && exit 1)
+# Compile-check verify_exchange_creds_runtime.py to catch syntax regressions
+RUN python3 -m py_compile /app/scripts/verify_exchange_creds_runtime.py || (echo "ERROR: verify_exchange_creds_runtime.py failed to compile" >&2 && exit 1)
+# Compile-check fingerprint_creds.py and verify_crypto_auth_simple.py
+RUN python3 -m py_compile /app/scripts/fingerprint_creds.py /app/scripts/verify_crypto_auth_simple.py || (echo "ERROR: fingerprint_creds.py or verify_crypto_auth_simple.py failed to compile" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time

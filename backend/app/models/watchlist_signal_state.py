@@ -1,11 +1,5 @@
-from sqlalchemy import (
-    Column,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    Index,
-)
+"""Model for watchlist_signal_state table (AWS DB schema)."""
+from sqlalchemy import Column, DateTime, Float, String
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -14,14 +8,14 @@ from app.database import Base
 class WatchlistSignalState(Base):
     """Stores per-symbol signal/alert/trade state for watchlist items."""
 
-    __tablename__ = "watchlist_signal_states"
+    # Align with existing AWS DB table (watchlist_signal_state, symbol as PK)
+    __tablename__ = "watchlist_signal_state"
 
-    id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String(50), nullable=False, unique=True, index=True)
+    symbol = Column(String(50), primary_key=True)
     strategy_key = Column(String(100), nullable=True)
-    signal_side = Column(String(10), nullable=True, default="NONE")  # BUY / SELL / NONE
+    signal_side = Column(String(10), nullable=False, default="NONE", server_default="NONE")  # BUY / SELL / NONE
     last_price = Column(Float, nullable=True)
-    evaluated_at_utc = Column(DateTime(timezone=True), nullable=True)
+    evaluated_at_utc = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     alert_status = Column(String(20), nullable=True, default="NONE")  # SENT / BLOCKED / NONE
     alert_block_reason = Column(String(500), nullable=True)
     last_alert_at_utc = Column(DateTime(timezone=True), nullable=True)
@@ -29,10 +23,7 @@ class WatchlistSignalState(Base):
     trade_block_reason = Column(String(500), nullable=True)
     last_trade_at_utc = Column(DateTime(timezone=True), nullable=True)
     correlation_id = Column(String(100), nullable=True)
-
-    __table_args__ = (
-        Index("ix_watchlist_signal_states_symbol", "symbol"),
-    )
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     def __repr__(self) -> str:
         return (
