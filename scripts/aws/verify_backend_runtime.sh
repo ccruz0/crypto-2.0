@@ -25,6 +25,8 @@ def present(name):
 
 keys = [
     "ENVIRONMENT",
+    "APP_ENV",
+    "RUNTIME_ORIGIN",
     "RUN_TELEGRAM",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
@@ -33,6 +35,17 @@ keys = [
 ]
 for key in keys:
     print(f"{key}_PRESENT={present(key)}")
+# Production: E2E_CORRELATION_ID should NOT be set unless testing
+e2e = os.getenv("E2E_CORRELATION_ID") or ""
+print(f"E2E_CORRELATION_ID_SET={'yes' if e2e.strip() else 'no'}")
+PY
+
+echo "== RUNTIME ENV VALUES (production must be aws/AWS) =="
+docker exec "$CONTAINER" python3 - <<'PY'
+import os
+for name in ["ENVIRONMENT", "APP_ENV", "RUNTIME_ORIGIN"]:
+    v = (os.getenv(name) or "").strip()
+    print(f"{name}={v or '(empty)'}")
 PY
 
 echo "== HEALTH =="
@@ -49,6 +62,23 @@ else
 fi
 echo
 
+echo "== DB watchlist_signal_state (singular table; do NOT create plural) =="
+docker exec "$CONTAINER" python3 - <<'PY'
+import sys
+sys.path.append("/app")
+try:
+    from app.database import SessionLocal
+    from app.models.watchlist_signal_state import WatchlistSignalState
+    from sqlalchemy import func
+    db = SessionLocal()
+    count = db.query(WatchlistSignalState).count()
+    latest = db.query(func.max(WatchlistSignalState.updated_at)).scalar()
+    print(f"row_count={count} latest_updated_at={latest}")
+    db.close()
+except Exception as e:
+    print(f"ERROR: {e}")
+PY
+
 echo "== EVALUATE SYMBOL =="
 KEY="$(docker exec "$CONTAINER" sh -lc 'printf "%s" "${ADMIN_ACTIONS_KEY:-${DIAGNOSTICS_API_KEY}}"' || true)"
 if [[ -z "$KEY" ]]; then
@@ -60,6 +90,9 @@ else
     -d '{"symbol":"BTC_USDT"}'
   echo
 fi
+
+echo "== LOGS [SIGNAL_STATE] and [SLTP_VARIANTS] (last 2m) =="
+docker logs --since 2m "$CONTAINER" 2>&1 | grep -E "\[SIGNAL_STATE\]|\[SLTP_VARIANTS\]" || true
 
 echo "== TELEGRAM LOGS (last 5m) =="
 docker logs --since 5m "$CONTAINER" | tail -300 | egrep "TELEGRAM|send|SUCCESS|status" || true

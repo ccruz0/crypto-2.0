@@ -6,14 +6,21 @@ import os
 import logging
 import time
 from datetime import datetime, timezone
-from fastapi import APIRouter, Header, HTTPException, Depends
+from fastapi import APIRouter, Header, HTTPException, Depends, Body
 from typing import Optional
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.telegram_notifier import telegram_notifier
 from app.services.system_health import record_telegram_send_result
+from app.services.signal_monitor import signal_monitor_service
+from app.models.watchlist_master import WatchlistItem
 
 router = APIRouter()
+
+
+class EvaluateSymbolBody(BaseModel):
+    symbol: str = "BTC_USDT"
 logger = logging.getLogger(__name__)
 
 # Rate limiting: last test timestamp (in-memory, per-process)
@@ -86,6 +93,30 @@ async def test_telegram(
         return {"ok": False, "error": str(e)}
 
 
+@router.post("/admin/debug/evaluate-symbol")
+def evaluate_symbol(
+    body: EvaluateSymbolBody = Body(...),
+    admin_key: str = Depends(verify_admin_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger signal evaluation for one symbol (admin-only, for smoke/E2E).
+    Requires X-Admin-Key header. Writes to watchlist_signal_state and may send Telegram.
+    """
+    symbol = (body.symbol or "BTC_USDT").strip().upper()
+    try:
+        watchlist_item = (
+            db.query(WatchlistItem)
+            .filter(WatchlistItem.symbol == symbol, WatchlistItem.is_deleted == False)
+            .first()
+        )
+        if not watchlist_item:
+            return {"ok": False, "error": f"symbol_not_in_watchlist:{symbol}"}
+        signal_monitor_service._check_signal_for_coin_sync(db, watchlist_item)
+        return {"ok": True, "symbol": symbol}
+    except Exception as e:
+        logger.warning(f"evaluate-symbol {symbol}: {e}", exc_info=True)
+        return {"ok": False, "error": str(e), "symbol": symbol}
 
 
 

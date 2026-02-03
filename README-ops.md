@@ -60,6 +60,20 @@ cd /home/ubuntu/automated-trading-platform
 make aws-backend-up
 ```
 
+### Deploy main to production (post-merge)
+
+1. **Git state (on AWS host):**
+   ```bash
+   cd /home/ubuntu/automated-trading-platform
+   git fetch origin main
+   git checkout main
+   git pull origin main
+   git log -1 --oneline   # confirm merge / latest commit
+   ```
+2. **Do NOT run** the migration `backend/migrations/20260128_create_watchlist_signal_states.sql` on AWS. The production DB already has the singular table `watchlist_signal_state`. Running that migration would create a different (plural) table.
+3. **Deploy:** `bash scripts/aws/aws_up_backend.sh`
+4. **Smoke / evidence:** `bash scripts/aws/verify_backend_runtime.sh` — checks health, env (ENVIRONMENT/APP_ENV/RUNTIME_ORIGIN, E2E_CORRELATION_ID), DB table `watchlist_signal_state`, triggers one-symbol evaluation, and shows Telegram / [SIGNAL_STATE] / [SLTP_VARIANTS] logs.
+
 This will:
 
 1. Render `secrets/runtime.env` from SSM or `.env.aws`
