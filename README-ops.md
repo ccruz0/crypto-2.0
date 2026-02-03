@@ -473,6 +473,36 @@ What it does:
 - Verifies admin endpoint, Telegram logs, and DB rows for SENT/BLOCKED with `reason_code`
 - Prints evidence (runtime.env presence, health) without exposing secrets
 
+## Pre-production checklist
+
+Before deploying to production (or after merging environment/bootstrap fixes), verify:
+
+### 1. Signal lifecycle
+
+- [ ] **WatchlistSignalState**: Model uses table `watchlist_signal_state` (singular); AWS DB has this table with `symbol` as PK. Do not run `20260128_create_watchlist_signal_states.sql` on existing AWS DB (it creates a different table).
+- [ ] **Signal monitor**: `market-updater` / scheduler runs with `RUNTIME_ORIGIN=AWS` so evaluations and upserts run in prod.
+- [ ] **Kill switch**: Confirm Telegram kill switch is OFF for normal operation (or intentionally ON for maintenance).
+
+### 2. Telegram delivery
+
+- [ ] **Env**: `backend-aws` and `market-updater-aws` have `ENVIRONMENT=aws`, `APP_ENV=aws`, `RUNTIME_ORIGIN=AWS` in `docker-compose.yml` (profile `aws`).
+- [ ] **Credentials**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set in `secrets/runtime.env` (from SSM or `.env.aws`); no local bootstrap script runs in prod.
+- [ ] **E2E_CORRELATION_ID**: Not set in prod (only for E2E tests); signal_monitor uses it only when provided via env.
+
+### 3. Order creation
+
+- [ ] **Guardrails**: `RUNTIME_ORIGIN=AWS` allows order placement; with `LOCAL`, orders are blocked.
+- [ ] **Crypto.com**: Exchange API keys and IP allowlist (AWS egress IP) configured; auth verification passes from AWS host.
+- [ ] **SL/TP**: Conditional order path and fallbacks (e.g. `create-order-list`) and JSONL evidence paths are known (see SL/TP section above).
+
+### 4. Health checks
+
+- [ ] **Backend**: `GET /health` returns 200; `docker compose --profile aws ps` shows `backend-aws` healthy.
+- [ ] **DB**: PostgreSQL reachable from backend; `watchlist_signal_state` table present and writable.
+- [ ] **Telegram**: Startup log shows `ENVIRONMENT=aws` and Telegram not disabled; one-shot test message (or E2E dry-run) confirms delivery.
+
+After deploy, run the Production E2E Verification (dry-run or real) and monitor backend logs for `[SIGNAL_STATE]`, `[SLTP_VARIANTS]`, and alert/trade blocks.
+
 ## Production E2E Verification
 
 Verify the complete pipeline: Signal → Alert → Telegram → Trade Decision → Order → TP/SL
