@@ -1,5 +1,5 @@
 """Database model for storing Telegram messages"""
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Index, JSON
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Index
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -34,10 +34,10 @@ class TelegramMessage(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
     # Decision tracing fields (new)
-    decision_type = Column(String(20), nullable=True, index=True)  # "SKIPPED" or "FAILED"
+    decision_type = Column(String(50), nullable=True)  # "SKIPPED" or "FAILED"
     reason_code = Column(String(100), nullable=True, index=True)  # Canonical reason code
-    reason_message = Column(Text, nullable=True)  # Human-readable reason
-    context_json = Column(JSON, nullable=True)  # Contextual data as JSON
+    reason_message = Column(String(500), nullable=True)  # Human-readable reason (DB: varchar 500)
+    context_json = Column(Text, nullable=True)  # Contextual data stored as JSON text (DB: text)
     exchange_error_snippet = Column(Text, nullable=True)  # Raw exchange error for FAILED decisions
     correlation_id = Column(String(100), nullable=True, index=True)  # Correlation ID for tracing
     

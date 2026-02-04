@@ -1161,6 +1161,9 @@ class TelegramNotifier:
         throttle_status: Optional[str] = None,
         throttle_reason: Optional[str] = None,
         origin: Optional[str] = None,  # "AWS" or "LOCAL"
+        db: Optional[Any] = None,
+        persist_only: bool = False,  # If True, only persist to DB (no Telegram send); used for dry_run
+        correlation_id: Optional[str] = None,
     ):
         """Send a buy signal alert
         
@@ -1177,9 +1180,31 @@ class TelegramNotifier:
         # Log TEST alert signal entry
         logger.info(
             f"[TEST_ALERT_SIGNAL_ENTRY] send_buy_signal called: symbol={symbol}, origin={origin}, "
-            f"source={source}, price={price:.4f}"
+            f"source={source}, price={price:.4f}, persist_only={persist_only}, correlation_id={correlation_id}"
         )
-        
+
+        # Dry-run / persist_only: only write to DB (no Telegram send, no duplicate check)
+        if persist_only and db is not None:
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                price_change_display = price_variation or "N/A"
+                sent_message = f"[DRY_RUN] BUY SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                message_id = add_telegram_message(
+                    sent_message,
+                    symbol=symbol,
+                    blocked=False,
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason or reason,
+                    db=db,
+                    correlation_id=correlation_id,
+                )
+                if message_id is not None:
+                    logger.info("[ALERT_PERSIST] dry_run BUY persisted message_id=%s correlation_id=%s", message_id, correlation_id)
+                    return {"sent": False, "message_id": message_id, "correlation_id": correlation_id}
+            except Exception as e:
+                logger.error("[ALERT_PERSIST] dry_run BUY persist failed: %s correlation_id=%s", e, correlation_id, exc_info=True)
+            return False
+
         # Check for duplicate messages before sending
         # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
         is_duplicate, duplicate_info = self._is_duplicate_message(symbol, price, reason, side="BUY")
@@ -1288,6 +1313,8 @@ class TelegramNotifier:
                     blocked=False,
                     throttle_status=throttle_status or "SENT",
                     throttle_reason=throttle_reason or reason,
+                    db=db,
+                    correlation_id=correlation_id,
                 )
                 # Return message ID if available (for orchestrator)
                 if message_id:
@@ -1312,6 +1339,9 @@ class TelegramNotifier:
         throttle_reason: Optional[str] = None,
         origin: Optional[str] = None,  # "AWS" or "LOCAL"
         balance_warning: Optional[str] = None,  # Warning about insufficient balance for trade
+        db: Optional[Any] = None,
+        persist_only: bool = False,
+        correlation_id: Optional[str] = None,
     ):
         """Send a sell signal alert
         
@@ -1328,9 +1358,31 @@ class TelegramNotifier:
         # Log TEST alert signal entry
         logger.info(
             f"[TEST_ALERT_SIGNAL_ENTRY] send_sell_signal called: symbol={symbol}, origin={origin}, "
-            f"source={source}, price={price:.4f}"
+            f"source={source}, price={price:.4f}, persist_only={persist_only}, correlation_id={correlation_id}"
         )
-        
+
+        if persist_only and db is not None:
+            try:
+                from app.api.routes_monitoring import add_telegram_message
+                price_change_display = price_variation or "N/A"
+                sent_message = f"[DRY_RUN] SELL SIGNAL: {symbol} @ ${price:,.4f} ({price_change_display}) - {reason}"
+                is_blocked = (throttle_status or "SENT").upper() == "BLOCKED"
+                message_id = add_telegram_message(
+                    sent_message,
+                    symbol=symbol,
+                    blocked=is_blocked,
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason or reason,
+                    db=db,
+                    correlation_id=correlation_id,
+                )
+                if message_id is not None:
+                    logger.info("[ALERT_PERSIST] dry_run SELL persisted message_id=%s correlation_id=%s", message_id, correlation_id)
+                    return {"sent": False, "message_id": message_id, "correlation_id": correlation_id}
+            except Exception as e:
+                logger.error("[ALERT_PERSIST] dry_run SELL persist failed: %s correlation_id=%s", e, correlation_id, exc_info=True)
+            return False
+
         # Check for duplicate messages before sending
         # Per ALERTAS_Y_ORDENES_NORMAS.md: Throttling is independent per (symbol, side)
         is_duplicate, duplicate_info = self._is_duplicate_message(symbol, price, reason, side="SELL")
@@ -1439,6 +1491,8 @@ class TelegramNotifier:
                     blocked=is_blocked,  # Mark as blocked if throttle_status is BLOCKED
                     throttle_status=throttle_status or "SENT",
                     throttle_reason=throttle_reason or reason,
+                    db=db,
+                    correlation_id=correlation_id,
                 )
                 # Return message ID if available (for orchestrator)
                 if message_id:

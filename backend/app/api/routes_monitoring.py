@@ -1,4 +1,5 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
@@ -6,13 +7,14 @@ from sqlalchemy import func, or_, cast, String
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 from app.utils.http_client import http_post
+import json
 import logging
 import time
 import asyncio
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, cast as typing_cast
 from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
@@ -230,6 +232,13 @@ async def get_monitoring_summary(
     import asyncio
     
     start_time = time.time()
+    should_calculate_signals = False
+    active_signals: List[Dict[str, Any]] = []
+    active_signals_count = 0
+    sent_count = 0
+    blocked_count = 0
+    failed_count = 0
+    active_alerts_count = 0
     
     try:
         # Use snapshot data instead of full dashboard state (much faster)
@@ -387,12 +396,15 @@ async def get_monitoring_summary(
                     # Get market data for ALL active watchlist items to ensure consistency with watchlist
                     # Always recalculate signals for active watchlist items (don't rely on snapshot)
                     # If force_refresh, recalculate all; otherwise only recalculate missing ones
-                    if force_refresh:
-                        symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
-                                          if item.symbol]
-                    else:
-                        symbols_to_check = [item.symbol.upper() for item in active_watchlist_items 
-                                          if item.symbol and item.symbol.upper() not in signals_by_symbol]
+                    symbols_to_check = []
+                    for item in active_watchlist_items:
+                        symbol_value = typing_cast(Optional[str], item.symbol)
+                        if not symbol_value:
+                            continue
+                        symbol_upper = symbol_value.upper()
+                        if not force_refresh and symbol_upper in signals_by_symbol:
+                            continue
+                        symbols_to_check.append(symbol_upper)
                     
                     if symbols_to_check:
                         log.info(f"🔧 Calculating signals for {len(symbols_to_check)} active watchlist symbols: {symbols_to_check[:5]}")
@@ -406,9 +418,10 @@ async def get_monitoring_summary(
                         
                         # Calculate signals for each active watchlist item
                         for item in active_watchlist_items:
-                            if not item.symbol:
+                            symbol_value = typing_cast(Optional[str], item.symbol)
+                            if not symbol_value:
                                 continue
-                            symbol_upper = item.symbol.upper()
+                            symbol_upper = symbol_value.upper()
                             
                             # If force_refresh, always recalculate; otherwise skip if we already have signals
                             if not force_refresh and symbol_upper in signals_by_symbol:
@@ -425,23 +438,32 @@ async def get_monitoring_summary(
                             # Resolve strategy profile
                             try:
                                 strategy_type, risk_approach = resolve_strategy_profile(
-                                    item.symbol, db=db, watchlist_item=item
+                                    symbol_value, db=db, watchlist_item=item
                                 )
                                 
                                 # Calculate trading signals
+                                price = typing_cast(Optional[float], market_data.price)
+                                rsi = typing_cast(Optional[float], market_data.rsi)
+                                atr14 = typing_cast(Optional[float], market_data.atr)
+                                ma50 = typing_cast(Optional[float], market_data.ma50)
+                                ma200 = typing_cast(Optional[float], market_data.ma200)
+                                ema10 = typing_cast(Optional[float], market_data.ema10)
+                                ma10w = typing_cast(Optional[float], market_data.ma10w)
+                                volume = typing_cast(Optional[float], market_data.current_volume)
+                                avg_volume = typing_cast(Optional[float], market_data.avg_volume)
                                 signal_result = calculate_trading_signals(
-                                    symbol=item.symbol,
-                                    price=market_data.price or 0.0,
-                                    rsi=market_data.rsi,
-                                    atr14=market_data.atr,
-                                    ma50=market_data.ma50,
-                                    ma200=market_data.ma200,
-                                    ema10=market_data.ema10,
-                                    ma10w=market_data.ma10w,
-                                    volume=market_data.current_volume,
-                                    avg_volume=market_data.avg_volume,
-                                    resistance_up=item.res_up,
-                                    buy_target=item.res_down,  # Using res_down as buy target
+                                    symbol=symbol_value,
+                                    price=price or 0.0,
+                                    rsi=rsi,
+                                    atr14=atr14,
+                                    ma50=ma50,
+                                    ma200=ma200,
+                                    ema10=ema10,
+                                    ma10w=ma10w,
+                                    volume=volume,
+                                    avg_volume=avg_volume,
+                                    resistance_up=typing_cast(Optional[float], item.res_up),
+                                    buy_target=typing_cast(Optional[float], item.res_down),  # Using res_down as buy target
                                     strategy_type=strategy_type,
                                     risk_approach=risk_approach
                                 )
@@ -775,6 +797,14 @@ def add_telegram_message(
     symbol: Optional[str] = None,
     blocked: bool = False,
     order_skipped: bool = False,
+    order_attempt: bool = False,
+    order_created: bool = False,
+    order_executed: bool = False,
+    order_canceled: bool = False,
+    sltp_attempt: bool = False,
+    sltp_created: bool = False,
+    sltp_failed: bool = False,
+    error_message: Optional[str] = None,
     db: Optional[Session] = None,
     throttle_status: Optional[str] = None,
     throttle_reason: Optional[str] = None,
@@ -819,6 +849,14 @@ def add_telegram_message(
         "symbol": symbol,
         "blocked": blocked,
         "order_skipped": order_skipped,
+        "order_attempt": order_attempt,
+        "order_created": order_created,
+        "order_executed": order_executed,
+        "order_canceled": order_canceled,
+        "sltp_attempt": sltp_attempt,
+        "sltp_created": sltp_created,
+        "sltp_failed": sltp_failed,
+        "error_message": error_message,
         "timestamp": datetime.now().isoformat(),
         "throttle_status": throttle_status,
         "throttle_reason": throttle_reason,
@@ -839,7 +877,15 @@ def add_telegram_message(
     ]
     
     # CRITICAL: Also save to database for persistence across workers and restarts
-    # Create session if not provided
+    # Guard: if caller passed a session that is no longer active, do not use it (regression prevention)
+    if db is not None and getattr(db, "is_active", True) is False:
+        log.error(
+            "[TELEGRAM_PERSIST] db session not active: symbol=%s blocked=%s reason_code=%s (returning None)",
+            symbol or "N/A",
+            blocked,
+            reason_code or "N/A",
+        )
+        return None
     db_session = db
     own_session = False
     if db_session is None and SessionLocal is not None:
@@ -876,7 +922,10 @@ def add_telegram_message(
                     db_session.close()
                 status_label = 'BLOQUEADO' if blocked else ('ORDEN SKIPPED' if order_skipped else 'ENVIADO')
                 log.info(f"Telegram message stored (duplicate skipped): {status_label} - {symbol or 'N/A'}")
-                return recent_duplicate.id  # Return existing message ID
+                return typing_cast(int, recent_duplicate.id)  # Return existing message ID
+            
+            # Serialize context_json for DB text column (dict/list -> JSON string)
+            context_json_value = json.dumps(context_json) if isinstance(context_json, (dict, list)) else context_json
             
             telegram_msg = TelegramMessage(
                 message=message,
@@ -888,14 +937,17 @@ def add_telegram_message(
                 decision_type=decision_type,
                 reason_code=reason_code,
                 reason_message=reason_message,
-                context_json=context_json,
+                context_json=context_json_value,
                 exchange_error_snippet=exchange_error_snippet,
                 correlation_id=correlation_id,
             )
             db_session.add(telegram_msg)
-            db_session.commit()
-            db_session.refresh(telegram_msg)  # Refresh to get the ID
-            message_id = telegram_msg.id
+            if own_session:
+                db_session.commit()
+                db_session.refresh(telegram_msg)
+            else:
+                db_session.flush()  # Get ID without committing; caller owns transaction
+            message_id = typing_cast(int, telegram_msg.id)
             # Log alert creation at INFO level for verification
             alert_type = "BLOCKED" if blocked else "SENT"
             log.info(
@@ -907,7 +959,14 @@ def add_telegram_message(
                 message[:100] if message else "N/A"
             )
         except Exception as db_err:
-            log.warning(f"Could not save Telegram message to database: {db_err}")
+            log.error(
+                "Could not save Telegram message to database: symbol=%s blocked=%s reason_code=%s err=%s",
+                symbol or "N/A",
+                blocked,
+                reason_code or "N/A",
+                db_err,
+                exc_info=True,
+            )
             message_id = None
             if db_session:
                 try:
@@ -975,11 +1034,11 @@ def update_telegram_message_decision_trace(
         ).order_by(TelegramMessage.timestamp.desc()).first()
         
         if recent_message:
-            # Update the message with decision tracing
+            # Update the message with decision tracing (context_json stored as text in DB)
             recent_message.decision_type = decision_type
             recent_message.reason_code = reason_code
             recent_message.reason_message = reason_message
-            recent_message.context_json = context_json
+            recent_message.context_json = json.dumps(context_json) if isinstance(context_json, (dict, list)) else context_json
             recent_message.exchange_error_snippet = exchange_error_snippet
             recent_message.correlation_id = correlation_id
             db.commit()
@@ -2340,10 +2399,10 @@ async def run_workflow(workflow_id: str, db: Session = Depends(get_db)):
             async def run_watchlist_dedup():
                 try:
                     # Run in thread to avoid blocking the event loop
-                    result = await asyncio.to_thread(cleanup_watchlist_duplicates, db, dry_run=False, soft_delete=True, generate_report=True)
+                    result = await asyncio.to_thread(cleanup_watchlist_duplicates, db, dry_run=False, soft_delete=True)
                     
                     # Get report path from result (generated by cleanup_watchlist_duplicates)
-                    report_path = result.get("report_path")
+                    report_path = typing_cast(Optional[str], result.get("report_path"))
                     
                     # Fallback: Determine report path if not in result (same logic as scheduler)
                     if not report_path:
@@ -2603,7 +2662,8 @@ async def get_recent_signals(
     from datetime import timedelta
     
     try:
-        threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
+        hours_value = float(hours or 0)
+        threshold = datetime.now(timezone.utc) - timedelta(hours=hours_value)
         
         # Build query filter - only signals that were SENT (blocked=false) and contain SIGNAL
         filters = [
@@ -2741,7 +2801,7 @@ async def get_recent_signals(
                             violation_type="FAILED_WITHOUT_TELEGRAM",
                             details={
                                 "message": "ORDER_FAILED but no Telegram failure message found",
-                                "order_intent_id": order_intent.id,
+                                "order_intent_id": order_intent.id if order_intent else None,
                             },
                         )
 
@@ -2849,6 +2909,31 @@ async def get_recent_buy_signals(
     return await get_recent_signals(db=db, side="BUY", limit=limit)
 
 
+@router.post("/diagnostics/emit-test-alert")
+async def emit_test_alert(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger emit_alert with dry_run=True to prove alert path persistence (no Telegram send, no order).
+    Goes through: emit_alert → send_buy_signal(persist_only=True) → add_telegram_message.
+    Protected by diagnostics auth (ENABLE_DIAGNOSTICS_ENDPOINTS + X-Diagnostics-Key).
+    """
+    from app.services.alert_emitter import emit_alert
+
+    _verify_diagnostics_auth(request)
+    result = emit_alert(
+        symbol="TEST_USDT",
+        side="BUY",
+        reason="[STARTUP_PROBE] persist check",
+        price=1.0,
+        db=db,
+        dry_run=True,
+    )
+    db.commit()  # add_telegram_message only flushes when db is passed; commit so row is visible
+    return {"ok": True, "persisted": bool(result), "result": str(result)}
+
+
 @router.post("/diagnostics/run-signal-order-test")
 async def run_signal_order_test(
     db: Session = Depends(get_db),
@@ -2894,7 +2979,7 @@ async def run_signal_order_test(
                     status_code=404,
                     detail="No suitable test symbol found. Ensure at least one symbol has trade_enabled=True and trade_amount_usd > 0."
                 )
-            symbol = test_item.symbol
+            symbol = typing_cast(str, test_item.symbol)
         else:
             test_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
             if not test_item:
@@ -3049,7 +3134,7 @@ async def run_e2e_test(
         test_item = db.query(WatchlistItem).first()
     if not test_item:
         raise HTTPException(status_code=404, detail="No watchlist items available for diagnostics test.")
-    symbol = test_item.symbol
+    symbol = typing_cast(str, test_item.symbol)
     current_price = test_item.price or 1.0
 
     def _simulate_outcome(signal_side: str) -> bool:
@@ -3073,6 +3158,7 @@ async def run_e2e_test(
             blocked=False,
             throttle_status="SENT",
             throttle_reason="TEST_SIGNAL",
+            db=db,
         )
         report["stages"].append(
             {"stage": "signal_created", "side": side, "signal_id": signal_id, "message": signal_text}
@@ -3129,6 +3215,7 @@ async def run_e2e_test(
                     decision_type="FAILED",
                     reason_code=decision_reason.reason_code,
                     reason_message=decision_reason.reason_message,
+                    db=db,
                 )
                 outcome = "ORDER_FAILED"
             else:

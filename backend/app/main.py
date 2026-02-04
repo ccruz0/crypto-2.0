@@ -253,6 +253,27 @@ async def startup_event():
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, init_db)
                 logger.info("Database initialization completed")
+
+                def _startup_telegram_messages_check():
+                    """No DB writes. Verifies telegram_messages table is reachable."""
+                    try:
+                        from app.database import SessionLocal
+                        from sqlalchemy import text
+                        if SessionLocal is None:
+                            logger.error("[STARTUP_DB_CHECK] telegram_messages=FAIL (SessionLocal is None)")
+                            return
+                        session = SessionLocal()
+                        try:
+                            session.execute(text("SELECT 1 FROM telegram_messages LIMIT 1"))
+                            logger.info("[STARTUP_DB_CHECK] telegram_messages=OK")
+                        except Exception as e:
+                            logger.error("[STARTUP_DB_CHECK] telegram_messages=FAIL (%s)", e)
+                        finally:
+                            session.close()
+                    except Exception as e:
+                        logger.error("[STARTUP_DB_CHECK] telegram_messages=FAIL (%s)", e)
+
+                await loop.run_in_executor(None, _startup_telegram_messages_check)
             
             # Eagerly initialize TelegramNotifier to ensure TELEGRAM_STARTUP log appears
             # This triggers __init__ which logs [TELEGRAM_STARTUP] exactly once

@@ -2,6 +2,7 @@
 Provides a single entry point for all alert emissions with standardized logging.
 """
 import logging
+import uuid
 from typing import Literal, Optional, Dict, Any
 from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import get_runtime_origin
@@ -22,6 +23,8 @@ def emit_alert(
     price_variation: Optional[str] = None,
     throttle_status: Optional[str] = None,
     throttle_reason: Optional[str] = None,
+    db: Optional[Any] = None,
+    **kwargs: Any,
 ) -> bool:
     """
     Central function to emit an alert from the monitor.
@@ -55,28 +58,89 @@ def emit_alert(
     # Get runtime origin
     origin = get_runtime_origin()
 
-    # Log the decision
+    # Correlation ID: from kwargs/context or evaluation_id (signal_monitor) or generate once per alert
+    correlation_id = (
+        kwargs.get("correlation_id")
+        or (context or {}).get("correlation_id")
+        or kwargs.get("evaluation_id")
+    )
+    if not correlation_id:
+        correlation_id = str(uuid.uuid4())
+
+    # Log the decision (include correlation_id for traceability)
     logger.info(
-        "[ALERT_DECISION] symbol=%s side=%s reason=%s dry_run=%s origin=%s context=%s",
+        "[ALERT_DECISION] symbol=%s side=%s reason=%s dry_run=%s origin=%s correlation_id=%s context=%s",
         symbol,
         side,
         reason,
         dry_run,
         origin,
+        correlation_id,
         context or {},
     )
 
-    # Skip if dry run
+    # Dry run: persist to DB only (no Telegram send, no order) for regression proof
     if dry_run:
         logger.info(
-            "[ALERT_SKIP] symbol=%s side=%s reason=%s (dry run, not sent)",
+            "[ALERT_SKIP] symbol=%s side=%s reason=%s (dry run, persisting to DB only) correlation_id=%s",
             symbol,
             side,
             reason,
+            correlation_id,
         )
-        return False
+        try:
+            if side == "BUY":
+                result = telegram_notifier.send_buy_signal(
+                    symbol=symbol,
+                    price=price,
+                    reason=reason,
+                    strategy_type=strategy_type,
+                    risk_approach=risk_approach,
+                    price_variation=price_variation,
+                    source="LIVE ALERT",
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason,
+                    origin=origin,
+                    db=db,
+                    persist_only=True,
+                    correlation_id=correlation_id,
+                )
+            else:
+                result = telegram_notifier.send_sell_signal(
+                    symbol=symbol,
+                    price=price,
+                    reason=reason,
+                    strategy_type=strategy_type,
+                    risk_approach=risk_approach,
+                    price_variation=price_variation,
+                    source="LIVE ALERT",
+                    throttle_status=throttle_status or "SENT",
+                    throttle_reason=throttle_reason,
+                    origin=origin,
+                    db=db,
+                    persist_only=True,
+                    correlation_id=correlation_id,
+                )
+            logger.info(
+                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=True persisted=%s correlation_id=%s",
+                symbol,
+                side,
+                result,
+                correlation_id,
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "[ALERT_ENQUEUED] symbol=%s side=%s dry_run=True persisted=False error=%s correlation_id=%s",
+                symbol,
+                side,
+                str(e),
+                correlation_id,
+                exc_info=True,
+            )
+            return False
 
-    # Emit the alert via telegram_notifier
+    # Emit the alert via telegram_notifier (pass db so add_telegram_message persists in same transaction)
     try:
         if side == "BUY":
             result = telegram_notifier.send_buy_signal(
@@ -90,6 +154,8 @@ def emit_alert(
                 throttle_status=throttle_status,
                 throttle_reason=throttle_reason,
                 origin=origin,
+                db=db,
+                correlation_id=correlation_id,
             )
         else:  # SELL
             result = telegram_notifier.send_sell_signal(
@@ -103,6 +169,8 @@ def emit_alert(
                 throttle_status=throttle_status,
                 throttle_reason=throttle_reason,
                 origin=origin,
+                db=db,
+                correlation_id=correlation_id,
             )
 
         # Log enqueued status
