@@ -6,8 +6,20 @@ Collected on the AWS host in this session. All commands were run from `~/automat
 
 ## 1. Services and backend serving traffic
 
-- **`docker compose ps`**: Only **backend** (container `automated-trading-platform-backend-1`) and **market-updater**, **db** are running. **backend-aws** is not running on this host.
-- **Serving traffic**: Container **automated-trading-platform-backend-1** (compose service **backend**), port 8002.
+**docker compose ps:**
+
+```
+NAME                                          IMAGE                    COMMAND                  SERVICE          STATUS                    PORTS
+automated-trading-platform-backend-1          automated-trading-platform-backend   ...   backend           Up 10 minutes (healthy)   0.0.0.0:8002->8002/tcp
+automated-trading-platform-market-updater-1   sha256:2ab94427...        ...   market-updater    Up 6 hours (healthy)      8002/tcp
+postgres_hardened                             sha256:5e79f267...        ...   db               Up 6 hours (healthy)      5432/tcp
+```
+
+**curl health:** `{"status":"ok","path":"/api/health"}`
+
+**curl monitoring/summary (first 300 chars):** `{"active_alerts":0,"active_total":0,"alert_counts":{"sent":0,"blocked":0,"failed":0},"active_signals_count":4,"active_signals":[{"symbol":"ALGO_USDT",...`
+
+- **Serving traffic**: Container **automated-trading-platform-backend-1** (compose service **backend**), port 8002. **backend-aws** is not running on this host.
 
 ---
 
@@ -71,9 +83,54 @@ context_json → Text; decision_type → String(50); reason_message → String(5
 
 ---
 
-## 3. Persistence proof (Python one-liner in container)
+## 3a. Persistence proof from real API process (diagnostics endpoint)
 
-Diagnostics endpoint was not enabled (404). Ran internal Python in container:
+Diagnostics enabled on backend: `ENABLE_DIAGNOSTICS_ENDPOINTS=1`, `DIAGNOSTICS_API_KEY` set in env (e.g. .env.local).
+
+**curl (running process):**
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8002/api/diagnostics/emit-test-alert" -H "X-Diagnostics-Key: $DIAGNOSTICS_API_KEY"
+```
+
+**Response:**
+
+```json
+{"ok":true,"persisted":true,"result":"{'sent': False, 'message_id': 10971, 'correlation_id': 'bea8d0ee-e291-415f-8bae-330fc6b3bb56'}"}
+```
+
+**Backend logs containing that correlation_id (real process, not docker exec):**
+
+```
+backend-1  | [ALERT_DECISION] symbol=TEST_USDT side=BUY reason=[STARTUP_PROBE] persist check dry_run=True origin=LOCAL correlation_id=bea8d0ee-e291-415f-8bae-330fc6b3bb56 context={}
+backend-1  | [ALERT_SKIP] symbol=TEST_USDT side=BUY reason=[STARTUP_PROBE] persist check (dry run, persisting to DB only) correlation_id=bea8d0ee-e291-415f-8bae-330fc6b3bb56
+backend-1  | [TEST_ALERT_SIGNAL_ENTRY] send_buy_signal called: symbol=TEST_USDT, ... persist_only=True, correlation_id=bea8d0ee-e291-415f-8bae-330fc6b3bb56
+backend-1  | [ALERT_PERSIST] dry_run BUY persisted message_id=10971 correlation_id=bea8d0ee-e291-415f-8bae-330fc6b3bb56
+backend-1  | [ALERT_ENQUEUED] symbol=TEST_USDT side=BUY dry_run=True persisted={...} correlation_id=bea8d0ee-e291-415f-8bae-330fc6b3bb56
+```
+
+**Psql for that correlation_id:**
+
+```sql
+SELECT id, timestamp, symbol, blocked, throttle_status, reason_code, correlation_id
+FROM telegram_messages
+WHERE correlation_id = 'bea8d0ee-e291-415f-8bae-330fc6b3bb56' ORDER BY id DESC LIMIT 5;
+```
+
+**Result:**
+
+```
+  id   |           timestamp           |  symbol   | blocked | throttle_status | reason_code |            correlation_id            
+-------+-------------------------------+-----------+---------+-----------------+-------------+--------------------------------------
+ 10971 | 2026-02-04 14:25:20.198385+00 | TEST_USDT | f       | SENT            |             | bea8d0ee-e291-415f-8bae-330fc6b3bb56
+(1 row)
+```
+
+---
+
+## 3b. Persistence proof (Python one-liner in container)
+
+Before diagnostics was enabled, ran internal Python in container:
 
 ```bash
 docker exec automated-trading-platform-backend-1 bash -lc "python3 - <<'PY'
@@ -144,7 +201,23 @@ backend-1  | 2026-02-04 14:01:37,225 [INFO] app.main: [STARTUP_DB_CHECK] telegra
 ## 7. Guard (inactive db session)
 
 - **Code**: If `db is not None` and `getattr(db, "is_active", True) is False`, we log `[TELEGRAM_PERSIST] db session not active` and return `None`.
-- **Test**: Closed the session with `db.close()` and called `add_telegram_message(..., db=db)`. In this runtime, `Session` keeps `is_active` True after `close()`, so the guard did not fire and the call used the (closed) session; result was an ID. When a runtime sets `is_active` to False for a closed session, the guard will log and return `None`.
+- **Test**: Closed the session with `db.close()` and called `add_telegram_message(..., db=db)`. Result: `result: 10972` (ID returned). In this runtime, `Session.is_active` stays True after `close()`, so the guard did not fire. `docker compose logs --since 10m backend | grep TELEGRAM_PERSIST` → no lines. When a runtime sets `is_active` to False for a closed session, the guard will log and return `None`.
+
+---
+
+## 9. Diagnostics lockdown
+
+- **Env (backend container):** `ENABLE_DIAGNOSTICS_ENDPOINTS=1`, `DIAGNOSTICS_API_KEY` set in .env.local. For production (backend-aws) use `ENABLE_DIAGNOSTICS_ENDPOINTS=0`. To make the probe repeatable: add to backend service in docker-compose the two env vars (key from env only, not default in compose).
+- **curl without header:** `404`
+- **curl with wrong key:** `404`
+- **curl with correct key:** `200` and JSON with `persisted: true`, `correlation_id`, `message_id`.
+
+---
+
+## 10. Monitoring UI source
+
+- **GET /api/monitoring/telegram-messages**: Reads from **DB first** (`TelegramMessage` query, last 30 days, blocked only). Falls back to in-memory `_telegram_messages` only if the DB query raises. Response shape unchanged. **Monitoring is DB-backed.**
+- **GET /api/monitoring/summary**: Uses DB and snapshot; active_signals etc. from DB/cache, not from `_telegram_messages`.
 
 ---
 
