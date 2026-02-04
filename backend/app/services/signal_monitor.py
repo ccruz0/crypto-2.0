@@ -335,6 +335,34 @@ class SignalMonitorService:
         self._latest_status_snapshot: Dict[str, str] = {}
         self._load_persisted_status()
 
+    def _get_telegram_runtime_config(self, refresh: bool = False) -> Dict[str, Any]:
+        """
+        Resolve Telegram runtime config once per monitor cycle to avoid stale state.
+
+        When refresh=True, forces a fresh read via TelegramNotifier.refresh_config().
+        """
+        if refresh or not hasattr(self, "_telegram_runtime_config"):
+            if telegram_notifier:
+                self._telegram_runtime_config = telegram_notifier.refresh_config()
+            else:
+                self._telegram_runtime_config = {
+                    "runtime_env": None,
+                    "run_telegram": False,
+                    "kill_switch_enabled": None,
+                    "token_set": False,
+                    "chat_id_set": False,
+                    "enabled": False,
+                    "chat_id": None,
+                    "block_reasons": ["telegram_notifier_missing"],
+                }
+        return self._telegram_runtime_config
+
+    def _telegram_send_enabled(self) -> bool:
+        return bool(self._get_telegram_runtime_config().get("enabled"))
+
+    def _telegram_chat_id(self) -> Optional[str]:
+        return self._get_telegram_runtime_config().get("chat_id")
+
     def _load_persisted_status(self) -> None:
         """Load last known status from disk so diagnostics can read state cross-process."""
         try:
@@ -1521,19 +1549,24 @@ class SignalMonitorService:
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
         try:
-            # Check Telegram health before processing
-            # Guard: Check if telegram_notifier exists and is enabled before calling methods
-            telegram_enabled = False
-            if telegram_notifier and getattr(telegram_notifier, "enabled", False) and hasattr(telegram_notifier, 'resolve_send_config'):
-                telegram_config = telegram_notifier.resolve_send_config()
-                telegram_enabled = telegram_config.get("enabled", False) if isinstance(telegram_config, dict) else getattr(telegram_notifier, "enabled", False)
-            elif telegram_notifier:
-                telegram_enabled = getattr(telegram_notifier, "enabled", False)
-            
-            if not telegram_enabled:
+            telegram_config = self._get_telegram_runtime_config(refresh=True)
+            reasons = telegram_config.get("block_reasons") or []
+            logger.info(
+                "[TELEGRAM_RUNTIME] runtime_env=%s run_telegram=%s token_set=%s chat_id_set=%s "
+                "kill_switch=%s enabled=%s chat_id=%s reasons=%s",
+                telegram_config.get("runtime_env"),
+                telegram_config.get("run_telegram"),
+                telegram_config.get("token_set"),
+                telegram_config.get("chat_id_set"),
+                telegram_config.get("kill_switch_enabled"),
+                telegram_config.get("enabled"),
+                telegram_config.get("chat_id"),
+                ",".join(reasons) if reasons else "",
+            )
+            if not bool(telegram_config.get("enabled")):
                 logger.warning(
-                    "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. "
-                    "Check ENVIRONMENT=aws and TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
+                    "[GLOBAL_BLOCKER] Telegram notifier is disabled - alerts will not be sent. reasons=%s",
+                    ",".join(reasons) if reasons else "unknown",
                 )
             
             # Fetch watchlist items in a thread pool to avoid blocking the event loop
@@ -1727,15 +1760,8 @@ class SignalMonitorService:
             "preset_min_pct": threshold_sources.get("preset_min_pct"),
             "default_min_pct": threshold_sources.get("default_min_pct"),
         }
-        # Get Telegram config (with fallback for old code versions)
-        # Guard: Check if telegram_notifier exists and is enabled before calling methods
-        telegram_config = {"enabled": False}
-        if telegram_notifier and getattr(telegram_notifier, "enabled", False) and hasattr(telegram_notifier, 'resolve_send_config'):
-            telegram_config = telegram_notifier.resolve_send_config()
-        elif telegram_notifier:
-            telegram_config = {"enabled": getattr(telegram_notifier, "enabled", False)}
-        else:
-            logger.debug("Telegram notifier is not available - skipping config check")
+        # Telegram: use cached runtime config from monitor cycle (refresh happens in monitor_signals)
+        telegram_config = self._get_telegram_runtime_config()
         logger.info(
             f"[EVAL_{evaluation_id}] {symbol} evaluation started | "
             f"strategy={strategy_display}/{risk_display} | "
@@ -2681,7 +2707,7 @@ class SignalMonitorService:
                             f"<i>Price move alert (independent of buy/sell signals)</i>"
                         )
                         try:
-                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            if self._telegram_send_enabled():
                                 telegram_notifier.send_message(message)
                                 # Production log line (single line, easy to grep)
                                 logger.info(
@@ -3440,7 +3466,7 @@ class SignalMonitorService:
                                 # E) Deep decision-grade logging
                                 logger.info(
                                     f"[TELEGRAM_SEND] {symbol} BUY status=SUCCESS message_id={message_id or 'N/A'} "
-                                    f"channel={telegram_notifier.chat_id} origin={alert_origin}"
+                                    f"channel={self._telegram_chat_id()} origin={alert_origin}"
                                 )
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
@@ -3694,7 +3720,7 @@ class SignalMonitorService:
                                             
                                             # Send Telegram failure message (required - Step 4)
                                             try:
-                                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                if self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
                                                         f"❌ <b>ORDER FAILED</b>\n\n"
                                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -3828,7 +3854,7 @@ class SignalMonitorService:
                                         
                                         # Send Telegram failure message (required - Step 4)
                                         try:
-                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                            if self._telegram_send_enabled():
                                                 telegram_notifier.send_message(
                                                     f"❌ <b>ORDER FAILED</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -4992,7 +5018,7 @@ class SignalMonitorService:
                         
                         # Send error notification to Telegram
                         try:
-                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            if self._telegram_send_enabled():
                                 telegram_notifier.send_message(
                                     f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -5463,7 +5489,7 @@ class SignalMonitorService:
                                 )
                                 logger.info(
                                     f"[TELEGRAM_SEND] {symbol} SELL status=SUCCESS message_id={message_id_sell or 'N/A'} "
-                                    f"trace_id={trace_id} channel={telegram_notifier.chat_id} origin={alert_origin}"
+                                    f"trace_id={trace_id} channel={self._telegram_chat_id()} origin={alert_origin}"
                                 )
                                 logger.info(
                                     f"✅ SELL alert SENT for {symbol}: "
@@ -5683,7 +5709,7 @@ class SignalMonitorService:
                                             
                                             # Send Telegram failure message (required)
                                             try:
-                                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                                if self._telegram_send_enabled():
                                                     telegram_notifier.send_message(
                                                         f"❌ <b>ORDER FAILED</b>\n\n"
                                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -5790,7 +5816,7 @@ class SignalMonitorService:
                                         
                                         # Send Telegram failure message (required)
                                         try:
-                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                            if self._telegram_send_enabled():
                                                 telegram_notifier.send_message(
                                                     f"❌ <b>ORDER FAILED</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -6359,7 +6385,7 @@ class SignalMonitorService:
             
             # Send error notification to Telegram
             try:
-                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                if self._telegram_send_enabled():
                     telegram_notifier.send_message(
                         f"❌ <b>ORDER CREATION FAILED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -6443,7 +6469,7 @@ class SignalMonitorService:
                     )
                     # Enviar notificación informativa (no como error crítico)
                     try:
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
                                 f"📊 Se detectó señal BUY para <b>{symbol}</b>\n"
@@ -6697,7 +6723,7 @@ class SignalMonitorService:
                 )
                 # Send Telegram alert
                 try:
-                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    if self._telegram_send_enabled():
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
@@ -6806,7 +6832,7 @@ class SignalMonitorService:
                     )
                     # Send specific authentication error notification
                     try:
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"🔐 <b>AUTOMATIC ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -6880,7 +6906,7 @@ class SignalMonitorService:
                             )
                             # Enviar notificación crítica a Telegram
                             try:
-                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                if self._telegram_send_enabled():
                                     telegram_notifier.send_message(
                                         f"🚨 <b>ERROR CRÍTICO: INSUFFICIENTE BALANCE</b>\n\n"
                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7230,7 +7256,7 @@ class SignalMonitorService:
                         if current_trade_enabled is not None:
                             trade_status_note = f"\n📊 Trade enabled status: {current_trade_enabled} (order was attempted because trade_enabled=True at that time)"
                         
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"❌ <b>AUTOMATIC ORDER CREATION FAILED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7527,7 +7553,7 @@ class SignalMonitorService:
                 logger.error(f"❌ [SL/TP] {error_msg}")
                 
                 try:
-                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    if self._telegram_send_enabled():
                         telegram_notifier.send_message(
                             f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7611,7 +7637,7 @@ class SignalMonitorService:
                             
                             if close_order_id:
                                 logger.info(f"✅ [FORCED_CLOSE] Emergency market SELL executed: order_id={close_order_id}")
-                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                if self._telegram_send_enabled():
                                     telegram_notifier.send_message(
                                         f"🔴 <b>EMERGENCY POSITION CLOSE EXECUTED</b>\n\n"
                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7628,7 +7654,7 @@ class SignalMonitorService:
                                 elif isinstance(close_result, str):
                                     close_error = close_result
                                 logger.error(f"❌ [FORCED_CLOSE] Failed to execute emergency close: {close_error}")
-                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                if self._telegram_send_enabled():
                                     telegram_notifier.send_message(
                                         f"🚨 <b>CRITICAL: FORCED CLOSE FAILED</b>\n\n"
                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7639,7 +7665,7 @@ class SignalMonitorService:
                                     )
                         else:
                             logger.error(f"❌ [FORCED_CLOSE] Cannot get current price for {symbol}")
-                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            if self._telegram_send_enabled():
                                 telegram_notifier.send_message(
                                     f"🚨 <b>CRITICAL: FORCED CLOSE BLOCKED</b>\n\n"
                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7650,7 +7676,7 @@ class SignalMonitorService:
                     except Exception as close_err:
                         logger.error(f"❌ [FORCED_CLOSE] Exception during forced close: {close_err}", exc_info=True)
                         try:
-                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                            if self._telegram_send_enabled():
                                 telegram_notifier.send_message(
                                     f"🚨 <b>CRITICAL: FORCED CLOSE EXCEPTION</b>\n\n"
                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7676,7 +7702,7 @@ class SignalMonitorService:
                         alert_origin = get_runtime_origin()
                         if DEBUG_TRADING:
                             logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling send_order_created with origin={alert_origin}")
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_order_created(
                                 symbol=symbol,
                                 side="BUY",
@@ -7814,7 +7840,7 @@ class SignalMonitorService:
                             
                             # Send Telegram notification with order IDs
                             try:
-                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                if self._telegram_send_enabled():
                                     telegram_notifier.send_message(
                                         f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7853,7 +7879,7 @@ class SignalMonitorService:
                             )
                             
                             try:
-                                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                if self._telegram_send_enabled():
                                     telegram_notifier.send_message(
                                         f"🚨 <b>CRITICAL: SL/TP CREATION FAILED</b>\n\n"
                                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7896,7 +7922,7 @@ class SignalMonitorService:
                                                 f"✅ [AUTO_CLOSE] {symbol}: Market-close order created: {close_order_id} "
                                                 f"qty={close_qty_str} to prevent unprotected position"
                                             )
-                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                            if self._telegram_send_enabled():
                                                 telegram_notifier.send_message(
                                                     f"✅ <b>Position Auto-Closed</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7910,7 +7936,7 @@ class SignalMonitorService:
                                                 f"❌ [AUTO_CLOSE_FAILED] {symbol}: Market-close order creation failed. "
                                                 f"Manual intervention required immediately!"
                                             )
-                                            if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                            if self._telegram_send_enabled():
                                                 telegram_notifier.send_message(
                                                     f"🚨 <b>CRITICAL: AUTO-CLOSE FAILED</b>\n\n"
                                                     f"📊 Symbol: <b>{symbol}</b>\n"
@@ -7925,7 +7951,7 @@ class SignalMonitorService:
                                             f"❌ [AUTO_CLOSE_EXCEPTION] {symbol}: Exception during market-close order: {market_order_err}",
                                             exc_info=True
                                         )
-                                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                                        if self._telegram_send_enabled():
                                             telegram_notifier.send_message(
                                                 f"🚨 <b>CRITICAL: AUTO-CLOSE EXCEPTION</b>\n\n"
                                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -8420,7 +8446,7 @@ class SignalMonitorService:
             
             # Send error notification to Telegram
             try:
-                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                if self._telegram_send_enabled():
                     telegram_notifier.send_message(
                         f"❌ <b>ORDER CREATION FAILED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
@@ -8477,7 +8503,7 @@ class SignalMonitorService:
                         f"No se intentará crear la orden para evitar error 306."
                     )
                     try:
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"💰 <b>BALANCE INSUFICIENTE</b>\n\n"
                                 f"📊 Se detectó señal SELL para <b>{symbol}</b>\n"
@@ -8604,7 +8630,7 @@ class SignalMonitorService:
                     )
                     # Send specific authentication error notification
                     try:
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"🔐 <b>AUTOMATIC SELL ORDER CREATION FAILED: AUTHENTICATION ERROR</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"
@@ -8806,7 +8832,7 @@ class SignalMonitorService:
                     
                     # Send Telegram notification about the error
                 try:
-                    if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    if self._telegram_send_enabled():
                         telegram_notifier.send_message(
                             f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
@@ -8842,7 +8868,7 @@ class SignalMonitorService:
             try:
                 # CRITICAL: Explicitly pass origin to ensure notifications are sent
                 alert_origin = get_runtime_origin()
-                if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                if self._telegram_send_enabled():
                     telegram_notifier.send_order_created(
                         symbol=symbol,
                         side="SELL",
@@ -9117,7 +9143,7 @@ class SignalMonitorService:
                     
                     # Send CRITICAL alert
                     try:
-                        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                        if self._telegram_send_enabled():
                             telegram_notifier.send_message(
                                 f"🚨 <b>CRITICAL: SL/TP CREATION BLOCKED</b>\n\n"
                                 f"📊 Symbol: <b>{symbol}</b>\n"

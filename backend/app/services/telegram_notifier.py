@@ -4,7 +4,7 @@ import inspect
 import socket
 import hashlib
 import time
-from typing import Optional, Literal, Dict, Tuple
+from typing import Optional, Literal, Dict, Tuple, Any, List
 from datetime import datetime
 from enum import Enum
 from os import getpid
@@ -67,28 +67,32 @@ def _get_telegram_kill_switch_status(env: Literal["local", "aws"]) -> bool:
         env: Environment identifier ("local" or "aws")
     
     Returns:
-        True if Telegram is enabled for this environment, False if disabled by kill switch
-        Defaults: true for local, false for AWS (safe defaults)
+        True if Telegram is enabled for this environment, False if disabled by kill switch.
+        Defaults: true for local, false for AWS (safe defaults) when setting is missing.
+
+    Notes:
+        This helper intentionally does NOT swallow database exceptions. Callers that
+        want fail-closed behavior should wrap it and include an explicit reason.
     """
-    try:
-        db = SessionLocal()
-        try:
-            setting_key = f"tg_enabled_{env.lower()}"
-            setting = db.query(TradingSettings).filter(
-                TradingSettings.setting_key == setting_key
-            ).first()
-            
-            if setting:
-                return setting.setting_value.lower() == "true"
-            else:
-                # Defaults: true for local, false for AWS (safe defaults)
-                return env == "local"
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"Error checking Telegram kill switch for {env}: {e}")
-        # On error, default based on environment (local=True, aws=False)
+    if SessionLocal is None:
+        logger.warning(
+            "SessionLocal is None - cannot check Telegram kill switch, using safe default."
+        )
         return env == "local"
+    db = SessionLocal()
+    try:
+        setting_key = f"tg_enabled_{env.lower()}"
+        setting = db.query(TradingSettings).filter(
+            TradingSettings.setting_key == setting_key
+        ).first()
+
+        if setting:
+            return setting.setting_value.lower() == "true"
+
+        # Defaults: true for local, false for AWS (safe defaults)
+        return env == "local"
+    finally:
+        db.close()
 
 class TelegramNotifier:
     """Telegram notification service for trading alerts
@@ -120,6 +124,7 @@ class TelegramNotifier:
         # Initialize credentials to None (will be resolved in send_message() guard)
         self.bot_token = None
         self.chat_id = None
+        self.auth_user_id = None
         self.enabled = False  # Will be determined by send_message() guard
         
         # Duplicate detection: track recently sent messages to prevent duplicates
@@ -236,6 +241,105 @@ class TelegramNotifier:
         message_hash = self._create_message_hash(symbol, price, reason, side)
         self.recent_messages[message_hash] = (current_time, symbol, price, side.upper())
         logger.debug(f"📝 Registered sent message: {side} {symbol} @ ${price:.4f} (hash: {message_hash[:8]}...)")
+
+    def refresh_config(self) -> Dict[str, Any]:
+        """
+        Resolve *current* runtime Telegram configuration without sending.
+
+        This is the single source of truth for Telegram gating and is safe to call
+        frequently (per monitoring cycle, per send attempt).
+        """
+        runtime_env = getRuntimeEnv()  # "local" or "aws"
+        settings = Settings()
+
+        def _is_truthy(value: Optional[str]) -> bool:
+            raw = (value or "").strip().lower()
+            return raw in ("1", "true", "yes", "on")
+
+        run_telegram = _is_truthy(os.getenv("RUN_TELEGRAM") or settings.RUN_TELEGRAM)
+
+        kill_switch_enabled: bool = False
+        kill_switch_error: Optional[str] = None
+        try:
+            kill_switch_enabled = bool(_get_telegram_kill_switch_status(runtime_env))
+        except Exception as exc:
+            kill_switch_enabled = False
+            kill_switch_error = f"kill_switch_error:{exc}"
+
+        if runtime_env == "aws":
+            # AWS: prefer *_AWS, fallback to generic for backward compatibility.
+            token_aws = (os.getenv("TELEGRAM_BOT_TOKEN_AWS") or settings.TELEGRAM_BOT_TOKEN_AWS or "").strip()
+            token_generic = (os.getenv("TELEGRAM_BOT_TOKEN") or settings.TELEGRAM_BOT_TOKEN or "").strip()
+            chat_aws = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
+            chat_generic = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+
+            required_token = token_aws or token_generic
+            required_chat_id = chat_aws or chat_generic
+
+            token_source = "aws" if token_aws else ("generic" if token_generic else "missing")
+            chat_id_source = "aws" if chat_aws else ("generic" if chat_generic else "missing")
+
+            local_token_present = bool((os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip())
+            local_chat_id_present = bool((os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip())
+
+            resolved_auth_user_id = (os.getenv("TELEGRAM_AUTH_USER_ID_AWS") or os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
+        else:
+            # local: prefer *_LOCAL, fallback to generic for backward compatibility.
+            required_token = (os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip()
+            if not required_token:
+                required_token = (os.getenv("TELEGRAM_BOT_TOKEN") or settings.TELEGRAM_BOT_TOKEN or "").strip()
+            required_chat_id = (os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip()
+            if not required_chat_id:
+                required_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+
+            local_token_present = False
+            local_chat_id_present = False
+            token_source = "local"
+            chat_id_source = "local"
+            resolved_auth_user_id = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
+
+        token_set = bool(required_token)
+        chat_id_set = bool(required_chat_id)
+
+        block_reasons: List[str] = []
+        if not run_telegram:
+            block_reasons.append("run_telegram_disabled")
+        if kill_switch_error:
+            block_reasons.append(kill_switch_error)
+        elif not kill_switch_enabled:
+            block_reasons.append("kill_switch_disabled")
+        if not token_set:
+            block_reasons.append("token_missing")
+        if not chat_id_set:
+            block_reasons.append("chat_id_missing")
+        # Only block for "aws_using_local_credentials" when the *selected* credentials are ambiguous/unsafe:
+        # - selected from generic vars while LOCAL vars are set (risk of picking the wrong channel/token),
+        # - or selected from LOCAL vars (not expected in aws path; kept for completeness).
+        if runtime_env == "aws" and (local_token_present or local_chat_id_present):
+            if token_source == "local" or chat_id_source == "local":
+                block_reasons.append("aws_using_local_credentials")
+            elif (token_source == "generic" or chat_id_source == "generic"):
+                block_reasons.append("aws_using_local_credentials")
+
+        enabled = not block_reasons
+
+        # Always update instance fields (even when blocked) so consumers never
+        # observe stale enabled/chat_id/token state.
+        self.bot_token = required_token or None
+        self.chat_id = required_chat_id or None
+        self.auth_user_id = resolved_auth_user_id or None
+        self.enabled = bool(enabled)
+
+        return {
+            "runtime_env": runtime_env,
+            "run_telegram": run_telegram,
+            "kill_switch_enabled": kill_switch_enabled,
+            "token_set": token_set,
+            "chat_id_set": chat_id_set,
+            "enabled": enabled,
+            "chat_id": self.chat_id,
+            "block_reasons": block_reasons,
+        }
     
     def set_bot_commands(self) -> bool:
         """Set bot commands menu for Telegram - only /menu command to avoid cluttering"""
@@ -303,57 +407,25 @@ class TelegramNotifier:
                 pass
         
         # ============================================================
-        # HARD TELEGRAM SEND GUARD (STEP 5) - SINGLE CHOKE POINT
+        # HARD TELEGRAM SEND GUARD (SINGLE SOURCE OF TRUTH)
         # ============================================================
-        # This is the ONLY place where Telegram messages can be sent.
-        # All checks must pass or sending is BLOCKED.
-        
-        # 1) Resolve runtime environment
-        runtime_env = getRuntimeEnv()  # Returns "local" or "aws"
-        
-        # 2) Resolve env-specific enabled flag (kill switch)
-        kill_switch_enabled = _get_telegram_kill_switch_status(runtime_env)
-        
-        # 3) Resolve env-specific bot token and chat ID
-        settings = Settings()
-        if runtime_env == "aws":
-            # AWS: MUST use AWS-specific credentials
-            required_token = (os.getenv("TELEGRAM_BOT_TOKEN_AWS") or settings.TELEGRAM_BOT_TOKEN_AWS or "").strip()
-            required_chat_id = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
-            # CRITICAL: AWS must NEVER use LOCAL credentials
-            local_token_present = bool((os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip())
-            local_chat_id_present = bool((os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip())
-        else:  # local
-            # LOCAL: Use LOCAL-specific credentials
-            required_token = (os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip()
-            if not required_token:
-                # Fallback to generic TELEGRAM_BOT_TOKEN for backward compatibility
-                required_token = (os.getenv("TELEGRAM_BOT_TOKEN") or settings.TELEGRAM_BOT_TOKEN or "").strip()
-            required_chat_id = (os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip()
-            if not required_chat_id:
-                # Fallback to generic TELEGRAM_CHAT_ID for backward compatibility
-                required_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
-            local_token_present = False
-            local_chat_id_present = False
-        
-        # 4) BLOCK sending if ANY condition is true:
-        block_reasons = []
-        if not kill_switch_enabled:
-            block_reasons.append("kill_switch_disabled")
-        if not required_token:
-            block_reasons.append("token_missing")
-        if not required_chat_id:
-            block_reasons.append("chat_id_missing")
-        if runtime_env == "aws" and (local_token_present or local_chat_id_present):
-            block_reasons.append("aws_using_local_credentials")
-        
-        # 5) When blocked: Log and return without sending
-        if block_reasons:
-            reason_str = ", ".join(block_reasons)
+        # Refresh and use the exact same runtime config that signal_monitor logs.
+        config = self.refresh_config()
+        runtime_env = str(config.get("runtime_env") or "local")
+
+        if not config.get("enabled"):
+            reasons = config.get("block_reasons") or []
+            reason_str = ", ".join(reasons) if reasons else "unknown"
             preview = message[:200] + "..." if len(message) > 200 else message
             logger.warning(
-                f"[TG BLOCKED] env={runtime_env} reason={reason_str} "
-                f"Message would have been: {preview}"
+                "[TG BLOCKED] env=%s run_telegram=%s kill_switch=%s token_set=%s chat_id_set=%s reasons=%s preview=%s",
+                runtime_env,
+                config.get("run_telegram"),
+                config.get("kill_switch_enabled"),
+                config.get("token_set"),
+                config.get("chat_id_set"),
+                reason_str,
+                preview,
             )
             # Register in dashboard for debugging, but mark as blocked
             try:
@@ -372,11 +444,8 @@ class TelegramNotifier:
             except Exception:
                 pass  # Don't fail if health module not available
             return False
-        
-        # 6) All checks passed - use resolved credentials
-        # Update instance variables to use resolved credentials
-        self.bot_token = required_token
-        self.chat_id = required_chat_id
+        # From here on, refresh_config() has already updated instance fields:
+        # self.bot_token, self.chat_id, self.auth_user_id, self.enabled
         
         # If we reach here, all guard checks passed - proceed to send
         # Get origin for message prefix (AWS/LOCAL/TEST)
@@ -418,7 +487,7 @@ class TelegramNotifier:
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             # Log URL without token for security
             url_safe = f"https://api.telegram.org/bot***/sendMessage"
-            payload = {
+            payload: Dict[str, Any] = {
                 "chat_id": self.chat_id,
                 "text": full_message,
                 "parse_mode": "HTML"
