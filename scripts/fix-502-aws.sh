@@ -95,7 +95,7 @@ else
     BACKEND_RUNNING=true
 fi
 
-# Check frontend container
+# Check frontend container (profile aws uses frontend-aws)
 echo ""
 echo "Checking frontend container..."
 FRONTEND_CONTAINER=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)
@@ -107,6 +107,7 @@ else
     echo "   Status: $(docker ps --filter "name=frontend" --format "{{.Status}}")"
     FRONTEND_RUNNING=true
 fi
+FRONTEND_SERVICE_NAME="${FRONTEND_CONTAINER:-frontend-aws}"
 
 # Check database container
 echo ""
@@ -193,8 +194,8 @@ if [ "$BACKEND_RUNNING" = false ] || [ "$FRONTEND_RUNNING" = false ]; then
     echo "🚀 Starting Docker services..."
     cd "$PROJECT_DIR" || cd ~/automated-trading-platform || exit 1
     
-    # Start services with AWS profile
-    docker compose --profile aws up -d db backend-aws frontend 2>&1 | head -20 || true
+    # Start services with AWS profile (frontend-aws is the service name)
+    docker compose --profile aws up -d db backend-aws frontend-aws 2>&1 | head -20 || true
     
     echo "⏳ Waiting for services to start (15 seconds)..."
     sleep 15
@@ -214,7 +215,7 @@ fi
 # Restart frontend if container is running but not responding
 if [ "$FRONTEND_RUNNING" = true ] && [ "$FRONTEND_ACCESSIBLE" = false ]; then
     echo "🔄 Restarting frontend container..."
-    docker restart frontend || true
+    docker restart "$FRONTEND_SERVICE_NAME" 2>/dev/null || docker compose --profile aws restart frontend-aws || true
     echo "⏳ Waiting for frontend to restart (5 seconds)..."
     sleep 5
     FIXES_APPLIED=true
@@ -264,7 +265,7 @@ if curl -s -f --connect-timeout 5 http://localhost:3000 > /dev/null 2>&1; then
 else
     echo "❌ Frontend is still not responding"
     echo "   Checking frontend logs..."
-    docker logs --tail 20 frontend 2>&1 | tail -5 || echo "   Cannot access logs"
+    docker logs --tail 20 frontend-aws 2>&1 | tail -5 || docker logs --tail 20 frontend 2>&1 | tail -5 || echo "   Cannot access logs"
 fi
 
 # Final nginx check

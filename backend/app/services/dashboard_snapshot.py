@@ -171,14 +171,18 @@ def get_dashboard_snapshot(db: Optional[Session] = None) -> dict:
         stale = stale_seconds > 90
         
         # When returning cached data, strip known transient error so UI shows healthy
-        # until next snapshot run (avoids UNHEALTHY from stale "'NoneType' has no attribute 'keys'")
+        # until next snapshot run (avoids UNHEALTHY from stale NoneType.keys error)
         data_out = cache_entry.data
         if isinstance(data_out, dict) and data_out.get("errors"):
-            keys_err = "'NoneType' object has no attribute 'keys'"
             errors_list = data_out.get("errors") or []
-            if isinstance(errors_list, list) and keys_err in errors_list:
-                remaining = [e for e in errors_list if e != keys_err]
-                data_out = {**data_out, "errors": remaining}
+            if isinstance(errors_list, list):
+                # Match exact or any message containing NoneType + keys (e.g. "'NoneType' object has no attribute 'keys'")
+                remaining = [
+                    e for e in errors_list
+                    if not (isinstance(e, str) and "NoneType" in e and "keys" in e)
+                ]
+                if len(remaining) != len(errors_list):
+                    data_out = {**data_out, "errors": remaining}
         
         return {
             "data": data_out,

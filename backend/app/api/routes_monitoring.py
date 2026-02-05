@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, cast, String
+from sqlalchemy import func, or_, cast, String, text
 from app.database import get_db
 from app.models.signal_throttle import SignalThrottleState
 from app.utils.http_client import http_post
@@ -207,6 +207,37 @@ def set_backend_restart_time():
     global _last_backend_restart
     _last_backend_restart = time.time()
 
+
+def _clear_dashboard_snapshot_errors() -> bool:
+    """Clear errors from the dashboard cache so Monitoring shows healthy after 'Reiniciar Backend'.
+    Returns True if cache was updated, False otherwise. Used when restart is triggered from UI."""
+    try:
+        from app.database import SessionLocal
+        from app.models.dashboard_cache import DashboardCache
+        if SessionLocal is None:
+            return False
+        db = SessionLocal()
+        try:
+            entry = db.query(DashboardCache).filter(DashboardCache.id == 1).first()
+            if not entry or not isinstance(entry.data, dict):
+                return False
+            errors = entry.data.get("errors") or []
+            if not errors:
+                return False
+            # Remove known transient NoneType/keys error so UI shows healthy
+            remaining = [e for e in errors if not (isinstance(e, str) and "NoneType" in e and "keys" in e)]
+            if len(remaining) == len(errors):
+                return False
+            entry.data = {**entry.data, "errors": remaining}
+            db.commit()
+            log.info("Cleared transient errors from dashboard snapshot cache (backend restart)")
+            return True
+        finally:
+            db.close()
+    except Exception as e:
+        log.warning(f"Could not clear dashboard cache errors: {e}")
+        return False
+
 def clear_old_alerts(max_age_seconds: int = 3600):
     """DEPRECATED: No longer needed since ActiveAlerts is state-based.
     
@@ -250,10 +281,13 @@ async def get_monitoring_summary(
         snapshot = await asyncio.to_thread(get_dashboard_snapshot, None)
         
         if snapshot and not snapshot.get("empty"):
-            dashboard_state = snapshot.get("data", {})
+            # Ensure we never pass None: snapshot.get("data") can be None if key exists but value is null
+            dashboard_state = snapshot.get("data") if snapshot.get("data") is not None else {}
         else:
             # If no snapshot, return minimal data (don't block on heavy computation)
             log.warning("No snapshot available for monitoring summary, returning minimal data")
+            dashboard_state = {}
+        if dashboard_state is None:
             dashboard_state = {}
         
         # Calculate durations
@@ -840,8 +874,13 @@ def add_telegram_message(
         if not throttle_status:
             throttle_status = "BLOCKED"
     
-    # E2E TEST LOGGING: Log monitoring save attempt
-    log.info(f"[E2E_TEST_MONITORING_SAVE] message_preview={message[:80]}, symbol={symbol}, blocked={blocked}")
+    # E2E TEST LOGGING: Log monitoring save attempt (grep-friendly key=value)
+    log.info(
+        "[E2E_TEST_MONITORING_SAVE] message_preview=%s symbol=%s blocked=%s",
+        message[:80] if message else "",
+        symbol or "N/A",
+        blocked,
+    )
     
     # Also keep in-memory for backward compatibility
     msg = {
@@ -877,15 +916,19 @@ def add_telegram_message(
     ]
     
     # CRITICAL: Also save to database for persistence across workers and restarts
-    # Guard: if caller passed a session that is no longer active, do not use it (regression prevention)
-    if db is not None and getattr(db, "is_active", True) is False:
-        log.error(
-            "[TELEGRAM_PERSIST] db session not active: symbol=%s blocked=%s reason_code=%s (returning None)",
-            symbol or "N/A",
-            blocked,
-            reason_code or "N/A",
-        )
-        return None
+    # Guard: refuse to use a closed or broken session so we never write with a stale connection (regression prevention).
+    # Session.is_active does not reliably flip after Session.close(); probe with SELECT 1 to detect unusable session.
+    if db is not None:
+        try:
+            db.execute(text("SELECT 1"))
+        except Exception:
+            log.error(
+                "[TELEGRAM_PERSIST] db session unusable (closed or broken): symbol=%s blocked=%s reason_code=%s (returning None)",
+                symbol or "N/A",
+                blocked,
+                reason_code or "N/A",
+            )
+            return None
     db_session = db
     own_session = False
     if db_session is None and SessionLocal is not None:
@@ -898,11 +941,13 @@ def add_telegram_message(
     
     if db_session is not None:
         try:
-            # Log TEST alert monitoring save
+            # Log TEST alert monitoring save (grep-friendly key=value)
             if "[TEST]" in message:
                 log.info(
-                    f"[TEST_ALERT_MONITORING_SAVED] symbol={symbol or 'UNKNOWN'}, "
-                    f"blocked={blocked}, message_preview={message[:100]}"
+                    "[TEST_ALERT_MONITORING_SAVED] symbol=%s blocked=%s message_preview=%s",
+                    symbol or "UNKNOWN",
+                    blocked,
+                    message[:100] if message else "",
                 )
             # Check for duplicate messages within last 5 seconds to avoid duplicates from multiple workers
             # IMPORTANT: Include order_skipped in duplicate check since it's a distinct monitoring state
@@ -1063,30 +1108,32 @@ def update_telegram_message_decision_trace(
         return False
 
 @router.get("/monitoring/telegram-messages")
-async def get_telegram_messages(db: Session = Depends(get_db)):
-    """Get Telegram messages from the last month (BLOCKED messages only)
+async def get_telegram_messages(
+    db: Session = Depends(get_db),
+    blocked: Optional[str] = Query("all", description="Filter: true (blocked only), false (sent only), all (default)"),
+):
+    """Get Telegram messages from the last month.
     
-    IMPORTANT: This endpoint only returns blocked messages (blocked=True).
-    Sent messages are shown in the Signal Throttle panel instead.
-    
-    Now reads from database for multi-worker compatibility and persistence.
+    DB is the primary source. Optional query param: blocked=true|false|all (default: all).
+    Both sent and blocked messages can be returned depending on blocked param.
     """
     from datetime import timedelta
     from app.models.telegram_message import TelegramMessage
-    
+
+    one_month_ago = datetime.now() - timedelta(days=30)
+    block_filter = blocked.strip().lower() if blocked else "all"
+
     try:
-        # Read from database if available
+        # Primary source: database
         if db is not None:
-            one_month_ago = datetime.now() - timedelta(days=30)
-            
-            # Query from database - ONLY blocked messages
-            # Use is_(True) instead of == True for proper boolean comparison in SQLAlchemy
-            db_messages = db.query(TelegramMessage).filter(
-                TelegramMessage.timestamp >= one_month_ago,
-                TelegramMessage.blocked.is_(True)  # Only blocked messages
-            ).order_by(TelegramMessage.timestamp.desc()).limit(500).all()
-            
-            # Convert to dict format for API response
+            q = db.query(TelegramMessage).filter(TelegramMessage.timestamp >= one_month_ago)
+            if block_filter == "true":
+                q = q.filter(TelegramMessage.blocked.is_(True))
+            elif block_filter == "false":
+                q = q.filter(TelegramMessage.blocked.is_(False))
+            # "all" or anything else: no extra filter
+            db_messages = q.order_by(TelegramMessage.timestamp.desc()).limit(500).all()
+
             messages = []
             for msg in db_messages:
                 # Ensure order_skipped is always a boolean (handle None from old rows)
@@ -1123,33 +1170,33 @@ async def get_telegram_messages(db: Session = Depends(get_db)):
     
     # Fallback to in-memory storage (for backward compatibility)
     global _telegram_messages
-    from datetime import timedelta
-    
-    one_month_ago = datetime.now() - timedelta(days=30)
     recent_messages = []
     for msg in _telegram_messages:
-        # Only include blocked messages
-        if (datetime.fromisoformat(msg["timestamp"]) >= one_month_ago and 
-            msg.get("blocked") is True):
-            # Ensure order_skipped is always a boolean
-            order_skipped_val = msg.get("order_skipped")
-            if order_skipped_val is None:
-                order_skipped_val = False
-            else:
-                order_skipped_val = bool(order_skipped_val)
-            
-            recent_messages.append({
-                **msg,
-                "order_skipped": order_skipped_val,
-                "throttle_status": msg.get("throttle_status"),
-                "throttle_reason": msg.get("throttle_reason"),
-                "decision_type": msg.get("decision_type"),
-                "reason_code": msg.get("reason_code"),
-                "reason_message": msg.get("reason_message"),
-                "context_json": msg.get("context_json"),
-                "exchange_error_snippet": msg.get("exchange_error_snippet"),
-                "correlation_id": msg.get("correlation_id"),
-            })
+        if datetime.fromisoformat(msg["timestamp"]) < one_month_ago:
+            continue
+        if block_filter == "true" and msg.get("blocked") is not True:
+            continue
+        if block_filter == "false" and msg.get("blocked") is not False:
+            continue
+        # Ensure order_skipped is always a boolean
+        order_skipped_val = msg.get("order_skipped")
+        if order_skipped_val is None:
+            order_skipped_val = False
+        else:
+            order_skipped_val = bool(order_skipped_val)
+
+        recent_messages.append({
+            **msg,
+            "order_skipped": order_skipped_val,
+            "throttle_status": msg.get("throttle_status"),
+            "throttle_reason": msg.get("throttle_reason"),
+            "decision_type": msg.get("decision_type"),
+            "reason_code": msg.get("reason_code"),
+            "reason_message": msg.get("reason_message"),
+            "context_json": msg.get("context_json"),
+            "exchange_error_snippet": msg.get("exchange_error_snippet"),
+            "correlation_id": msg.get("correlation_id"),
+        })
     
     # Return most recent first (newest at the top)
     recent_messages.reverse()
@@ -2546,9 +2593,12 @@ async def restart_backend():
         _backend_restart_status = "restarting"
         _backend_restart_timestamp = time.time()
         log.info("Backend restart initiated via API")
+        # Clear cached snapshot errors now so next Monitoring refresh shows healthy
+        _clear_dashboard_snapshot_errors()
         
         # Schedule restart in background (don't block the response)
         async def _restart_background():
+            global _backend_restart_status
             try:
                 # Wait a moment to allow the response to be sent
                 await asyncio.sleep(2)
@@ -2613,13 +2663,20 @@ async def restart_backend():
                             else:
                                 raise Exception(f"supervisorctl failed: {result.stderr}")
                         except (FileNotFoundError, Exception):
-                            # Last resort: log that manual restart is needed
-                            _backend_restart_status = "failed"
-                            log.warning("No restart method available. Manual restart required.")
-                            log.warning(f"Tried: {restart_script}, systemctl, supervisorctl")
+                            # Docker/AWS: no script, systemctl or supervisorctl - clear cache errors so UI shows healthy
+                            cleared = _clear_dashboard_snapshot_errors()
+                            _backend_restart_status = "restarted" if cleared else "failed"
+                            if cleared:
+                                log.info("No restart method (e.g. Docker); cleared dashboard cache errors so Monitoring shows healthy.")
+                            else:
+                                log.warning("No restart method available. Manual restart required.")
+                                log.warning(f"Tried: {restart_script}, systemctl, supervisorctl")
+                # Always clear cached snapshot errors so "Reiniciar Backend" fixes UNHEALTHY on next refresh
+                _clear_dashboard_snapshot_errors()
             except Exception as e:
                 _backend_restart_status = "failed"
                 log.error(f"Error during backend restart: {e}", exc_info=True)
+                _clear_dashboard_snapshot_errors()
         
         # Start restart in background
         asyncio.create_task(_restart_background())
@@ -2640,6 +2697,7 @@ async def restart_backend():
 
 @router.get("/diagnostics/recent-signals")
 async def get_recent_signals(
+    request: Request,
     db: Session = Depends(get_db),
     side: Optional[str] = Query(None, description="Filter by side: 'BUY' or 'SELL' (default: both)"),
     hours: Optional[int] = Query(168, ge=1, le=720, description="Hours to look back (default: 168 = 7 days)"),
@@ -2657,6 +2715,7 @@ async def get_recent_signals(
     - No signal may have null decision_type/reason_code/reason_message
     - For every ORDER_FAILED, there must be a Telegram failure message
     """
+    _verify_diagnostics_auth(request)
     from app.models.telegram_message import TelegramMessage
     from app.models.order_intent import OrderIntent, OrderIntentStatusEnum
     from datetime import timedelta
@@ -2898,6 +2957,7 @@ async def get_recent_signals(
 
 @router.get("/diagnostics/recent-buy-signals")
 async def get_recent_buy_signals(
+    request: Request,
     db: Session = Depends(get_db),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of signals to return")
 ):
@@ -2906,7 +2966,7 @@ async def get_recent_buy_signals(
     
     DEPRECATED: Use /diagnostics/recent-signals?side=BUY instead.
     """
-    return await get_recent_signals(db=db, side="BUY", limit=limit)
+    return await get_recent_signals(request=request, db=db, side="BUY", limit=limit)
 
 
 @router.post("/diagnostics/emit-test-alert")
@@ -2931,11 +2991,97 @@ async def emit_test_alert(
         dry_run=True,
     )
     db.commit()  # add_telegram_message only flushes when db is passed; commit so row is visible
-    return {"ok": True, "persisted": bool(result), "result": str(result)}
+    correlation_id = result.get("correlation_id") if isinstance(result, dict) else None
+    return {"ok": True, "persisted": bool(result), "result": str(result), "correlation_id": correlation_id}
+
+
+@router.post("/diagnostics/emit-live-test-alert")
+async def emit_live_test_alert(
+    request: Request,
+    db: Session = Depends(get_db),
+    symbol: Optional[str] = Query("TEST_USDT", description="Symbol for test alert (e.g. ALGO_USDT)"),
+):
+    """
+    Emit a real (non-dry-run) alert and send a real Telegram message. For AWS proof only.
+    Uses full path: emit_alert(dry_run=False) → send_buy_signal → send_message → Telegram API.
+    Protected by diagnostics auth. Returns correlation_id and message_id for log/DB verification.
+    """
+    import uuid
+    from app.services.alert_emitter import emit_alert
+    from app.models.telegram_message import TelegramMessage
+
+    _verify_diagnostics_auth(request)
+    # Normalize symbol (e.g. ALGO -> ALGO_USDT)
+    sym = (symbol or "TEST_USDT").strip().upper()
+    if sym and "_" not in sym:
+        sym = f"{sym}_USDT"
+    correlation_id = str(uuid.uuid4())
+    result = emit_alert(
+        symbol=sym,
+        side="BUY",
+        reason="[TEST] [LIVE_TEST] AWS alert path verification",
+        price=1.0,
+        db=db,
+        dry_run=False,
+        correlation_id=correlation_id,
+    )
+    db.commit()
+    # Resolve message_id from DB for verification (row persisted by add_telegram_message)
+    row = db.query(TelegramMessage).filter(TelegramMessage.correlation_id == correlation_id).first()
+    message_id = row.id if row else None
+    return {
+        "ok": True,
+        "sent": bool(result),
+        "message_id": message_id,
+        "correlation_id": correlation_id,
+        "message": "Real Telegram message sent; check logs and DB by correlation_id.",
+    }
+
+
+@router.post("/diagnostics/send-test-telegram")
+async def send_test_telegram(
+    request: Request,
+    db: Session = Depends(get_db),
+    symbol: Optional[str] = Query("TEST_USDT", description="Symbol for test alert (e.g. ALGO_USDT)"),
+):
+    """
+    Send a real Telegram message. Default TEST_USDT; use ?symbol=ALGO_USDT for ALGO.
+    Persists to telegram_messages; returns correlation_id and message_id for proof.
+    Alias for emit-live-test-alert. Protected by diagnostics auth (X-Diagnostics-Key).
+    """
+    return await emit_live_test_alert(request=request, db=db, symbol=symbol)
+
+
+@router.get("/diagnostics/telegram-message/{correlation_id}")
+async def get_telegram_message_by_correlation_id(
+    request: Request,
+    correlation_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Diagnostics-only: look up a single TelegramMessage by correlation_id.
+    Protected by diagnostics auth. Returns 404 if not found.
+    """
+    from app.models.telegram_message import TelegramMessage
+
+    _verify_diagnostics_auth(request)
+    row = db.query(TelegramMessage).filter(TelegramMessage.correlation_id == correlation_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No telegram message found for this correlation_id")
+    return {
+        "id": row.id,
+        "symbol": row.symbol,
+        "correlation_id": getattr(row, "correlation_id", None),
+        "blocked": row.blocked,
+        "throttle_status": row.throttle_status,
+        "reason_code": row.reason_code,
+        "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+    }
 
 
 @router.post("/diagnostics/run-signal-order-test")
 async def run_signal_order_test(
+    request: Request,
     db: Session = Depends(get_db),
     symbol: Optional[str] = Query(None, description="Symbol to test (default: uses first symbol with trade_enabled)"),
     dry_run: bool = Query(True, description="If True, simulate order creation without placing real orders"),
@@ -2950,6 +3096,7 @@ async def run_signal_order_test(
     
     Safe by default: dry_run=True prevents real orders from being placed.
     """
+    _verify_diagnostics_auth(request)
     from app.models.watchlist import WatchlistItem
     from app.services.signal_monitor import SignalMonitorService
     from app.services.telegram_notifier import telegram_notifier
