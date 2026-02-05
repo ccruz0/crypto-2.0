@@ -286,27 +286,28 @@ def upsert_coin(symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     
     # FIX: Accept hyphenated preset strings like "swing-aggressive" from frontend
     # The frontend sends preset values in format "preset-risk" (e.g., "swing-aggressive")
-    # but the backend's presets dict uses keys like "swing", "scalp", "intraday" (lowercase, no hyphen)
-    # Parse the preset string to extract the base preset name for validation
+    # Validation accepts preset if it exists in presets (legacy) OR strategy_rules (new format).
+    # This avoids "Unknown preset" when deployed config has only strategy_rules and no presets key.
+    def _preset_exists(name: str) -> bool:
+        if name in cfg.get("presets", {}):
+            return True
+        if name in cfg.get("strategy_rules", {}):
+            return True
+        return False
+
     if preset:
         preset_enum, _ = _parse_preset_strings(preset)
         if preset_enum:
-            # Use enum value directly (lowercase) to match config keys (e.g., PresetEnum.SWING -> "swing")
-            # The presets dictionary uses lowercase keys: "swing", "scalp", "intraday"
             base_preset_name = preset_enum.value
-            if base_preset_name not in cfg.get("presets", {}):
+            if not _preset_exists(base_preset_name):
                 raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (parsed as '{base_preset_name}')")
         else:
-            # If enum parsing fails, extract base preset name from the string (e.g., "scalp-aggressive" -> "scalp")
-            # This handles cases where the preset string format is valid but enum conversion fails
             normalized = preset.lower()
             if "-" in normalized:
                 base_preset_name = normalized.split("-", 1)[0]
             else:
                 base_preset_name = normalized
-            
-            # Check if the base preset name exists in config
-            if base_preset_name not in cfg.get("presets", {}):
+            if not _preset_exists(base_preset_name):
                 raise HTTPException(status_code=400, detail=f"Unknown preset '{preset}' (extracted base: '{base_preset_name}')")
     
     cfg.setdefault("coins", {})[symbol] = {"preset": preset, "overrides": overrides}
