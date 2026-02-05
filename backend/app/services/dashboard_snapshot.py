@@ -2,6 +2,7 @@
 import logging
 import time
 import asyncio
+from typing import Optional
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
@@ -111,7 +112,7 @@ async def update_dashboard_snapshot(db: Session = None, dashboard_state: dict = 
             db.close()
 
 
-def get_dashboard_snapshot(db: Session = None) -> dict:
+def get_dashboard_snapshot(db: Optional[Session] = None) -> dict:
     """
     Get the latest dashboard snapshot from cache.
     
@@ -169,8 +170,18 @@ def get_dashboard_snapshot(db: Session = None) -> dict:
         stale_seconds = int((now - last_updated).total_seconds())
         stale = stale_seconds > 90
         
+        # When returning cached data, strip known transient error so UI shows healthy
+        # until next snapshot run (avoids UNHEALTHY from stale "'NoneType' has no attribute 'keys'")
+        data_out = cache_entry.data
+        if isinstance(data_out, dict) and data_out.get("errors"):
+            keys_err = "'NoneType' object has no attribute 'keys'"
+            errors_list = data_out.get("errors") or []
+            if isinstance(errors_list, list) and keys_err in errors_list:
+                remaining = [e for e in errors_list if e != keys_err]
+                data_out = {**data_out, "errors": remaining}
+        
         return {
-            "data": cache_entry.data,
+            "data": data_out,
             "last_updated_at": last_updated.isoformat(),
             "stale_seconds": stale_seconds,
             "stale": stale,

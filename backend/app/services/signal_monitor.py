@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 from pathlib import Path
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
@@ -658,7 +658,7 @@ class SignalMonitorService:
             reason or "N/A",
         )
 
-    _UNSET = object()
+    _UNSET: Any = object()  # Sentinel for optional kwargs; type ignored so params stay Optional[T]
 
     def _map_alert_block_reason(self, reason: Optional[str]) -> str:
         if not reason:
@@ -701,17 +701,17 @@ class SignalMonitorService:
         db: Session,
         *,
         symbol: str,
-        strategy_key: Optional[str] = _UNSET,
-        signal_side: Optional[str] = _UNSET,
-        last_price: Optional[float] = _UNSET,
-        evaluated_at_utc: Optional[datetime] = _UNSET,
-        alert_status: Optional[str] = _UNSET,
-        alert_block_reason: Optional[str] = _UNSET,
-        trade_status: Optional[str] = _UNSET,
-        trade_block_reason: Optional[str] = _UNSET,
-        last_alert_at_utc: Optional[datetime] = _UNSET,
-        last_trade_at_utc: Optional[datetime] = _UNSET,
-        correlation_id: Optional[str] = _UNSET,
+        strategy_key: Any = _UNSET,
+        signal_side: Any = _UNSET,
+        last_price: Any = _UNSET,
+        evaluated_at_utc: Any = _UNSET,
+        alert_status: Any = _UNSET,
+        alert_block_reason: Any = _UNSET,
+        trade_status: Any = _UNSET,
+        trade_block_reason: Any = _UNSET,
+        last_alert_at_utc: Any = _UNSET,
+        last_trade_at_utc: Any = _UNSET,
+        correlation_id: Any = _UNSET,
     ) -> None:
         try:
             symbol_norm = normalize_symbol_for_exchange(symbol)
@@ -724,30 +724,30 @@ class SignalMonitorService:
                 state = WatchlistSignalState(symbol=symbol_norm)
                 db.add(state)
             if strategy_key is not self._UNSET:
-                state.strategy_key = strategy_key
+                state.strategy_key = cast(Optional[str], strategy_key)  # type: ignore[assignment]
             if signal_side is not self._UNSET:
-                normalized_side = (signal_side or "NONE").upper()
+                normalized_side = (cast(Optional[str], signal_side) or "NONE").upper()
                 if normalized_side == "WAIT":
                     normalized_side = "NONE"
-                state.signal_side = normalized_side
+                state.signal_side = normalized_side  # type: ignore[assignment]
             if last_price is not self._UNSET:
-                state.last_price = last_price
+                state.last_price = cast(Optional[float], last_price)  # type: ignore[assignment]
             if evaluated_at_utc is not self._UNSET:
-                state.evaluated_at_utc = evaluated_at_utc
+                state.evaluated_at_utc = cast(Optional[datetime], evaluated_at_utc)  # type: ignore[assignment]
             if alert_status is not self._UNSET:
-                state.alert_status = (alert_status or "NONE").upper()
+                state.alert_status = (cast(Optional[str], alert_status) or "NONE").upper()  # type: ignore[assignment]
             if alert_block_reason is not self._UNSET:
-                state.alert_block_reason = alert_block_reason
+                state.alert_block_reason = cast(Optional[str], alert_block_reason)  # type: ignore[assignment]
             if trade_status is not self._UNSET:
-                state.trade_status = (trade_status or "NONE").upper()
+                state.trade_status = (cast(Optional[str], trade_status) or "NONE").upper()  # type: ignore[assignment]
             if trade_block_reason is not self._UNSET:
-                state.trade_block_reason = trade_block_reason
+                state.trade_block_reason = cast(Optional[str], trade_block_reason)  # type: ignore[assignment]
             if last_alert_at_utc is not self._UNSET:
-                state.last_alert_at_utc = last_alert_at_utc
+                state.last_alert_at_utc = cast(Optional[datetime], last_alert_at_utc)  # type: ignore[assignment]
             if last_trade_at_utc is not self._UNSET:
-                state.last_trade_at_utc = last_trade_at_utc
+                state.last_trade_at_utc = cast(Optional[datetime], last_trade_at_utc)  # type: ignore[assignment]
             if correlation_id is not self._UNSET:
-                state.correlation_id = correlation_id
+                state.correlation_id = cast(Optional[str], correlation_id)  # type: ignore[assignment]
             db.flush()
             logger.info(
                 "[SIGNAL_STATE] symbol=%s side=%s alert_status=%s trade_status=%s correlation_id=%s",
@@ -1300,8 +1300,10 @@ class SignalMonitorService:
                     .first()
                 )
                 
-                if last_record and last_record.last_price:
-                    return last_record.last_price
+                if last_record:
+                    last_price_val = getattr(last_record, "last_price", None)
+                    if last_price_val is not None and last_price_val > 0:
+                        return float(last_price_val)
             except Exception as e:
                 logger.debug(f"Failed to fetch last alert price from DB for {symbol} {side}: {e}")
         
@@ -1486,9 +1488,12 @@ class SignalMonitorService:
             if not rows:
                 logger.warning("⚠️ No watchlist items found matching criteria!")
                 return []
-            
-            # Get column names from first row  
-            column_names = list(rows[0]._mapping.keys()) if hasattr(rows[0], '_mapping') else list(rows[0].keys())
+            first_row = rows[0]
+            if first_row is None:
+                logger.warning("⚠️ First watchlist row is None, skipping.")
+                return []
+            # Get column names from first row (guard: avoid 'NoneType' has no attribute 'keys')
+            column_names = list(first_row._mapping.keys()) if hasattr(first_row, '_mapping') else (list(first_row.keys()) if isinstance(first_row, dict) else [])
             
             watchlist_items = []
             for row in rows:
@@ -1506,11 +1511,11 @@ class SignalMonitorService:
                 # If alert_enabled column doesn't exist, infer it from trade_enabled (legacy databases)
                 # This allows the system to work with older database schemas
                 if not has_alert_enabled and has_trade_enabled:
-                    item.alert_enabled = bool(getattr(item, 'trade_enabled', False))
-                    logger.debug(f"Inferred alert_enabled={item.alert_enabled} from trade_enabled for {getattr(item, 'symbol', 'unknown')}")
+                    setattr(item, "alert_enabled", bool(getattr(item, "trade_enabled", False)))
+                    logger.debug(f"Inferred alert_enabled={getattr(item, 'alert_enabled')} from trade_enabled for {getattr(item, 'symbol', 'unknown')}")
                 # If alert_enabled column exists, ensure it's a boolean
                 elif has_alert_enabled:
-                    item.alert_enabled = bool(getattr(item, 'alert_enabled', False))
+                    setattr(item, "alert_enabled", bool(getattr(item, "alert_enabled", False)))
                 
                 watchlist_items.append(item)
             
@@ -1610,7 +1615,7 @@ class SignalMonitorService:
         """Async wrapper to run the synchronous signal check in a thread"""
         await asyncio.to_thread(self._check_signal_for_coin_sync, db, watchlist_item)
 
-    def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):
+    def _check_signal_for_coin_sync(self, db: Session, watchlist_item: WatchlistItem):  # pyright: ignore[reportGeneralTypeIssues]
         """Check signal for a specific coin and take action if needed"""
         import uuid
         import os
@@ -1819,6 +1824,7 @@ class SignalMonitorService:
                     decision_type="SKIPPED",
                     reason_code=ReasonCode.ALERT_DISABLED.value,
                     reason_message="alert_enabled=False",
+                    db=db,
                 )
             except Exception:
                 pass  # Non-critical, continue
@@ -2577,6 +2583,7 @@ class SignalMonitorService:
                             reason_message=decision_reason.reason_message,
                             context_json=decision_reason.context,
                             correlation_id=decision_reason.correlation_id,
+                            db=db,
                         )
                     except Exception as e:
                         logger.warning(f"Failed to add blocked alert message with DecisionReason: {e}", exc_info=True)
@@ -2973,6 +2980,7 @@ class SignalMonitorService:
                             reason_message=decision_reason.reason_message,
                             context_json=decision_reason.context,
                             correlation_id=decision_reason.correlation_id,
+                            db=db,
                         )
                     except Exception:
                         pass
@@ -3232,6 +3240,7 @@ class SignalMonitorService:
                             decision_type="SKIPPED",
                             reason_code=ReasonCode.ALERT_DISABLED.value,
                             reason_message="alert_enabled=False",
+                            db=db,
                         )
                     except Exception:
                         pass  # Non-critical, continue
@@ -3280,6 +3289,7 @@ class SignalMonitorService:
                             decision_type="SKIPPED",
                             reason_code=ReasonCode.ALERT_DISABLED.value,
                             reason_message="buy_alert_enabled=False",
+                            db=db,
                         )
                     except Exception:
                         pass  # Non-critical, continue
@@ -3311,6 +3321,7 @@ class SignalMonitorService:
                             decision_type="SKIPPED",
                             reason_code=ReasonCode.INVALID_TRADE_AMOUNT.value,
                             reason_message="trade_amount_usd missing or <= 0",
+                            db=db,
                         )
                     except Exception:
                         pass  # Non-critical, continue
@@ -3742,6 +3753,7 @@ class SignalMonitorService:
                                                     decision_type="FAILED",
                                                     reason_code=reason_code,
                                                     reason_message=error_msg,
+                                                    db=db,
                                                 )
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
@@ -3876,6 +3888,7 @@ class SignalMonitorService:
                                                 decision_type="FAILED",
                                                 reason_code=reason_code,
                                                 reason_message=error_msg,
+                                                db=db,
                                             )
                                         except Exception as store_err:
                                             logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
@@ -5315,6 +5328,7 @@ class SignalMonitorService:
                             decision_type="SKIPPED",
                             reason_code=ReasonCode.ALERT_DISABLED.value,
                             reason_message="sell_alert_enabled=False",
+                            db=db,
                         )
                     except Exception:
                         pass  # Non-critical, continue
@@ -5730,6 +5744,7 @@ class SignalMonitorService:
                                                     decision_type="FAILED",
                                                     reason_code=reason_code,
                                                     reason_message=error_msg,
+                                                    db=db,
                                                 )
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
@@ -5837,6 +5852,7 @@ class SignalMonitorService:
                                                 decision_type="FAILED",
                                                 reason_code=reason_code,
                                                 reason_message=error_msg,
+                                                db=db,
                                             )
                                         except Exception as store_err:
                                             logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
@@ -6292,7 +6308,7 @@ class SignalMonitorService:
                 })
                 self.last_signal_states[symbol] = state_entry
     
-    async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem, 
+    async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem,  # pyright: ignore[reportGeneralTypeIssues]
                             current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
         symbol = normalize_symbol_for_exchange(watchlist_item.symbol)
@@ -8383,7 +8399,7 @@ class SignalMonitorService:
     async def _create_sell_order(self, db: Session, watchlist_item: WatchlistItem, 
                                  current_price: float, res_up: float, res_down: float):
         """Create a SELL order automatically based on signal"""
-        symbol = watchlist_item.symbol
+        symbol = str(getattr(watchlist_item, "symbol", ""))
         
         # Resolve strategy for event emission
         strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
@@ -8428,9 +8444,10 @@ class SignalMonitorService:
             return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
         # Validate that trade_amount_usd is configured - REQUIRED, no default
-        if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+        _trade_amount_usd = float(getattr(watchlist_item, "trade_amount_usd", 0) or 0)
+        if not _trade_amount_usd or _trade_amount_usd <= 0:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
-            logger.error(f"Cannot create SELL order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
+            logger.error(f"Cannot create SELL order for {symbol}: trade_amount_usd not configured or invalid ({getattr(watchlist_item, 'trade_amount_usd')})")
             
             # Emit TRADE_BLOCKED event
             _emit_lifecycle_event(
@@ -8441,7 +8458,7 @@ class SignalMonitorService:
                 price=current_price,
                 event_type="TRADE_BLOCKED",
                 event_reason="SKIP_INVALID_TRADE_AMOUNT",
-                error_message=f"trade_amount_usd={watchlist_item.trade_amount_usd}",
+                error_message=f"trade_amount_usd={getattr(watchlist_item, 'trade_amount_usd')}",
             )
             
             # Send error notification to Telegram
@@ -8460,11 +8477,11 @@ class SignalMonitorService:
             
             raise ValueError(error_message)
         
-        amount_usd = watchlist_item.trade_amount_usd
+        amount_usd = _trade_amount_usd
         
         # Read trade_on_margin from database FIRST - CRITICAL for margin trading
         # This must be read BEFORE balance check to avoid blocking margin orders
-        user_wants_margin = watchlist_item.trade_on_margin or False
+        user_wants_margin = bool(getattr(watchlist_item, "trade_on_margin", False))
         
         # For SELL orders, we need to check if we have enough balance of the base currency
         # Extract base currency from symbol (e.g., ETH from ETH_USDT)
@@ -8656,7 +8673,7 @@ class SignalMonitorService:
                 # ========================================================================
                 # Si falla con error 306, significa que el leverage fue demasiado alto para este par
                 # Recordar el fallo e intentar con leverage reducido
-                if use_margin and error_msg and "306" in error_msg and "INSUFFICIENT_AVAILABLE_BALANCE" in error_msg:
+                if use_margin and leverage_value is not None and error_msg and "306" in error_msg and "INSUFFICIENT_AVAILABLE_BALANCE" in error_msg:
                     from app.services.margin_leverage_cache import get_leverage_cache
                     leverage_cache = get_leverage_cache()
                     
@@ -8801,9 +8818,9 @@ class SignalMonitorService:
                     from app.utils.decision_reason import make_fail, ReasonCode, classify_exchange_error
                     import uuid
                     correlation_id = str(uuid.uuid4())
-                    reason_code = classify_exchange_error(str(error_msg))
+                    reason_code_str = classify_exchange_error(str(error_msg))
                     fail_reason = make_fail(
-                        reason_code=reason_code.value,
+                        reason_code=reason_code_str,
                         message=f"SELL order placement failed: {error_msg}",
                         context={
                             "symbol": symbol,
@@ -8826,30 +8843,31 @@ class SignalMonitorService:
                         price=current_price,
                         event_type="ORDER_FAILED",
                         event_reason=fail_reason.reason_message,
-                        error_message=fail_reason.exchange_error_snippet,
+                        error_message=fail_reason.exchange_error,
                         decision_reason=fail_reason,
                     )
                     
                     # Send Telegram notification about the error
-                try:
-                    if self._telegram_send_enabled():
-                        telegram_notifier.send_message(
-                            f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
-                            f"📊 Symbol: <b>{symbol}</b>\n"
-                            f"🔴 Side: SELL\n"
-                            f"💰 Amount: ${amount_usd:,.2f}\n"
-                            f"📦 Quantity: {qty:.8f}\n"
-                            f"❌ Error: {error_msg}\n\n"
-                            f"🔍 Reason Code: {fail_reason.reason_code}\n"
-                            f"📝 Reason: {fail_reason.reason_message}"
-                        )
-                except Exception as notify_err:
-                    logger.warning(f"Failed to send Telegram error notification: {notify_err}")
-                
-                return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
+                    try:
+                        if self._telegram_send_enabled():
+                            telegram_notifier.send_message(
+                                f"❌ <b>AUTOMATIC SELL ORDER CREATION FAILED</b>\n\n"
+                                f"📊 Symbol: <b>{symbol}</b>\n"
+                                f"🔴 Side: SELL\n"
+                                f"💰 Amount: ${amount_usd:,.2f}\n"
+                                f"📦 Quantity: {qty:.8f}\n"
+                                f"❌ Error: {error_msg}\n\n"
+                                f"🔍 Reason Code: {getattr(fail_reason, 'reason_code', '')}\n"
+                                f"📝 Reason: {getattr(fail_reason, 'reason_message', '')}"
+                            )
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to send Telegram error notification: {notify_err}")
+                    
+                    return {"error": "order_placement", "error_type": "order_placement", "message": str(error_msg)}
             
             # Get order_id from result
             order_id = result.get("order_id") or result.get("client_order_id")
+            result_status = (result.get("status") or "").upper()  # Bind early for fill-confirmation path
             if not order_id:
                 error_msg = f"Order placed but no order_id returned in response"
                 logger.error(f"SELL order placed but no order_id returned for {symbol}")
@@ -8857,8 +8875,9 @@ class SignalMonitorService:
             
             filled_price = None
             try:
-                if result.get("avg_price"):
-                    filled_price = float(result.get("avg_price"))
+                avg_price_raw = result.get("avg_price")
+                if avg_price_raw is not None:
+                    filled_price = float(avg_price_raw)
             except (TypeError, ValueError):
                 filled_price = None
             if not filled_price:
@@ -8872,11 +8891,11 @@ class SignalMonitorService:
                     telegram_notifier.send_order_created(
                         symbol=symbol,
                         side="SELL",
-                    price=filled_price,
-                    quantity=qty,
-                    order_id=str(order_id),
-                    margin=use_margin,
-                    leverage=leverage_value if use_margin else None,
+                        price=float(filled_price) if filled_price is not None else 0.0,
+                        quantity=float(qty),
+                        order_id=str(order_id),
+                        margin=use_margin,
+                        leverage=int(leverage_value) if use_margin and leverage_value is not None else None,
                     dry_run=dry_run_mode,
                     order_type="MARKET",
                     origin=alert_origin  # CRITICAL: Explicitly pass origin to ensure notifications are sent
@@ -8965,6 +8984,7 @@ class SignalMonitorService:
                         # CRITICAL FIX: Create TradeSignal record and assign trade_signal_id to link automatic order
                         # This prevents automatic orders from being marked as "Manual" in Telegram notifications
                         trade_signal_id = None
+                        now_utc = datetime.now(timezone.utc)
                         try:
                             from app.services.signal_writer import upsert_trade_signal
                             from app.models.trade_signal import PresetEnum, RiskProfileEnum, SignalStatusEnum
@@ -8973,8 +8993,8 @@ class SignalMonitorService:
                             trade_signal = upsert_trade_signal(
                                 db=db,
                                 symbol=symbol,
-                                preset_enum=PresetEnum.SWING,  # Default preset for automatic orders
-                                risk_profile_enum=RiskProfileEnum.CONSERVATIVE,  # Default risk profile
+                                preset=getattr(PresetEnum.SWING, "value", "swing"),
+                                sl_profile=getattr(RiskProfileEnum.CONSERVATIVE, "value", "conservative"),
                                 rsi=None,  # Technical indicators not available at order creation time
                                 ma50=None,
                                 ma200=None,
@@ -8988,9 +9008,9 @@ class SignalMonitorService:
                                 volume_24h=None,  # Volume data not available
                                 volume_ratio=None,
                                 should_trade=True,  # Automatic order was created, so should_trade=True
-                                status_enum=SignalStatusEnum.ORDER_PLACED,  # Status: order has been placed
+                                status=getattr(SignalStatusEnum.ORDER_PLACED, "value", "ORDER_PLACED"),
                                 exchange_order_id=str(order_id),  # Link to the exchange order
-                                notes=f"Automatic SELL order created by signal monitor at ${filled_price or current_price:.4f}"
+                                notes=f"Automatic SELL order created by signal monitor at ${(filled_price or current_price):.4f}"
                             )
                             trade_signal_id = trade_signal.id
                             logger.info(f"✅ Created TradeSignal record (ID: {trade_signal_id}) for automatic SELL order: {symbol}")
@@ -8998,6 +9018,9 @@ class SignalMonitorService:
                             logger.warning(f"⚠️ Failed to create TradeSignal record for automatic order {symbol}: {signal_err}")
                             # Continue with order creation even if signal creation fails
 
+                        _avg = result.get("avg_price")
+                        _cq = result.get("cumulative_quantity")
+                        _cv = result.get("cumulative_value")
                         new_exchange_order = ExchangeOrder(
                             exchange_order_id=str(order_id),
                             client_oid=str(result.get("client_order_id", order_id)),
@@ -9005,11 +9028,11 @@ class SignalMonitorService:
                             side=OrderSideEnum.SELL,
                             order_type="MARKET",
                             status=db_status,
-                            price=float(result.get("avg_price")) if result.get("avg_price") else None,
-                            quantity=qty,
-                            cumulative_quantity=float(result.get("cumulative_quantity")) if result.get("cumulative_quantity") else qty,
-                            cumulative_value=float(result.get("cumulative_value")) if result.get("cumulative_value") else None,
-                            avg_price=float(result.get("avg_price")) if result.get("avg_price") else None,
+                            price=float(_avg) if _avg is not None else None,
+                            quantity=float(qty),
+                            cumulative_quantity=float(_cq) if _cq is not None else float(qty),
+                            cumulative_value=float(_cv) if _cv is not None else None,
+                            avg_price=float(_avg) if _avg is not None else None,
                             exchange_create_time=now_utc,
                             exchange_update_time=now_utc,
                             created_at=now_utc,
@@ -9546,12 +9569,21 @@ class SignalMonitorService:
                                 # Send system alert using health-based evaluation (throttled to once per 24h)
                                 try:
                                     from app.services.system_alerts import evaluate_and_maybe_send_system_alert
-                                    evaluate_and_maybe_send_system_alert(db=db)
+                                    if SessionLocal is not None:
+                                        _watchdog_db = SessionLocal()
+                                        try:
+                                            evaluate_and_maybe_send_system_alert(db=_watchdog_db)
+                                        finally:
+                                            _watchdog_db.close()
                                 except Exception:
                                     pass  # Don't fail monitor if alert fails
 
                     # CRITICAL: Use Postgres advisory lock to prevent duplicate runners
                     # Lock ID: 123456 (arbitrary but unique for signal monitor)
+                    if SessionLocal is None:
+                        logger.warning("SessionLocal is None - database not available, skipping signal monitor cycle")
+                        await asyncio.sleep(self.monitor_interval)
+                        continue
                     db = SessionLocal()
                     run_id = f"{os.getpid()}_{int(time.time())}"
                     host = os.getenv("HOSTNAME", "unknown")

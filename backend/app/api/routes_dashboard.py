@@ -2,14 +2,14 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Request, Response
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.database import get_db, table_has_column, engine as db_engine
 import logging
 import os
 import time
 import asyncio
 from datetime import datetime, timezone
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, cast
 import json
 from app.models.watchlist import WatchlistItem
 from app.models.watchlist_signal_state import WatchlistSignalState
@@ -32,6 +32,11 @@ from app.utils.trading_guardrails import _get_telegram_kill_switch_status
 
 router = APIRouter()
 log = logging.getLogger("app.dashboard")
+
+
+def _symbol_str(item: Any) -> str:
+    """Get symbol as str from a watchlist item or master (avoids Column[str] in type checker)."""
+    return str(getattr(item, "symbol", "") or "")
 
 
 _soft_delete_supported_cache: Optional[bool] = None
@@ -76,17 +81,17 @@ def _filter_active_watchlist(query, db: Optional[Session]):
 def _mark_item_deleted(item: WatchlistItem):
     """Reset trading flags and mark the item as deleted."""
     if hasattr(item, "is_deleted"):
-        item.is_deleted = True
+        setattr(item, "is_deleted", True)
     if hasattr(item, "trade_enabled"):
-        item.trade_enabled = False
+        setattr(item, "trade_enabled", False)
     if hasattr(item, "trade_on_margin"):
-        item.trade_on_margin = False
+        setattr(item, "trade_on_margin", False)
     if hasattr(item, "alert_enabled"):
-        item.alert_enabled = False
+        setattr(item, "alert_enabled", False)
     if hasattr(item, "trade_amount_usd"):
-        item.trade_amount_usd = None
+        setattr(item, "trade_amount_usd", None)
     if hasattr(item, "skip_sl_tp_reminder"):
-        item.skip_sl_tp_reminder = True
+        setattr(item, "skip_sl_tp_reminder", True)
 
 
 def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = None, db: Optional[Session] = None) -> Dict[str, Any]:
@@ -104,10 +109,13 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         return dt.isoformat() if dt else None
     
     # Ensure default values for fields that should always have values
-    # These fields should never be None in the API response
-    default_sl_tp_mode = item.sl_tp_mode if item.sl_tp_mode else "conservative"
-    default_order_status = item.order_status if item.order_status else "PENDING"
-    default_exchange = item.exchange if item.exchange else "CRYPTO_COM"
+    # These fields should never be None in the API response (use getattr to avoid Column bool/str in conditionals)
+    _sl_tp = getattr(item, "sl_tp_mode", None)
+    _order_status = getattr(item, "order_status", None)
+    _exchange = getattr(item, "exchange", None)
+    default_sl_tp_mode = _sl_tp if _sl_tp else "conservative"
+    default_order_status = _order_status if _order_status else "PENDING"
+    default_exchange = _exchange if _exchange else "CRYPTO_COM"
     
     serialized = {
         "id": item.id,
@@ -223,7 +231,7 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     # This ensures all watchlist items have TP/SL values based on their strategy configuration
     if (serialized["sl_price"] is None or serialized["tp_price"] is None) and current_price and current_price > 0:
         calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
-            symbol=item.symbol,
+            symbol=_symbol_str(item),
             price=current_price,
             atr=current_atr,
             watchlist_item=item,
@@ -234,17 +242,17 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
         needs_commit = False
         if calculated_sl is not None and serialized["sl_price"] is None:
             serialized["sl_price"] = calculated_sl
-            if db and item.sl_price is None:
-                item.sl_price = calculated_sl
+            if db and getattr(item, "sl_price", None) is None:
+                setattr(item, "sl_price", calculated_sl)
                 needs_commit = True
-            log.debug(f"Populated sl_price for {item.symbol} from strategy: {calculated_sl}")
+            log.debug(f"Populated sl_price for {_symbol_str(item)} from strategy: {calculated_sl}")
         
         if calculated_tp is not None and serialized["tp_price"] is None:
             serialized["tp_price"] = calculated_tp
-            if db and item.tp_price is None:
-                item.tp_price = calculated_tp
+            if db and getattr(item, "tp_price", None) is None:
+                setattr(item, "tp_price", calculated_tp)
                 needs_commit = True
-            log.debug(f"Populated tp_price for {item.symbol} from strategy: {calculated_tp}")
+            log.debug(f"Populated tp_price for {_symbol_str(item)} from strategy: {calculated_tp}")
         
         # Save calculated values to database if they were missing
         if needs_commit and db:
@@ -252,7 +260,7 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
                 db.add(item)
                 db.commit()
                 db.refresh(item)
-                log.info(f"✅ Populated missing SL/TP for {item.symbol} from strategy: SL={item.sl_price}, TP={item.tp_price}")
+                log.info(f"✅ Populated missing SL/TP for {_symbol_str(item)} from strategy: SL={getattr(item, 'sl_price')}, TP={getattr(item, 'tp_price')}")
             except Exception as e:
                 db.rollback()
                 log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
@@ -265,16 +273,16 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     try:
         from app.services.strategy_profiles import resolve_strategy_profile
         strategy_type, risk_approach = resolve_strategy_profile(
-            symbol=item.symbol,
+            symbol=_symbol_str(item),
             db=db,
             watchlist_item=item
         )
     except Exception as e:
-        log.error(f"Failed to resolve strategy for {item.symbol}: {e}", exc_info=True)
+        log.error(f"Failed to resolve strategy for {_symbol_str(item)}: {e}", exc_info=True)
         # Try to get at least risk from DB directly
-        if item.sl_tp_mode:
+        if getattr(item, "sl_tp_mode", None):
             from app.services.strategy_profiles import _normalize_approach, RiskApproach
-            risk_approach = _normalize_approach(item.sl_tp_mode)
+            risk_approach = _normalize_approach(getattr(item, "sl_tp_mode", None))
     
     # Add strategy fields to response
     serialized["strategy_preset"] = strategy_type.value if strategy_type else None
@@ -285,8 +293,8 @@ def _serialize_watchlist_item(item: WatchlistItem, market_data: Optional[Any] = 
     else:
         serialized["strategy_key"] = None
         # Log warning if strategy should be resolvable but isn't
-        if item.sl_tp_mode:
-            log.warning(f"Strategy resolution incomplete for {item.symbol}: preset={strategy_type}, risk={risk_approach}, sl_tp_mode={item.sl_tp_mode}")
+        if getattr(item, "sl_tp_mode", None):
+            log.warning(f"Strategy resolution incomplete for {_symbol_str(item)}: preset={strategy_type}, risk={risk_approach}, sl_tp_mode={getattr(item, 'sl_tp_mode')}")
     
     return serialized
 
@@ -307,29 +315,40 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
     def _iso(dt):
         return dt.isoformat() if dt else None
     
-    # Parse signals JSON if present
+    # Parse signals JSON if present (json is imported at module top)
     signals = None
-    if item.signals:
+    if getattr(item, "signals", None):
         try:
-            import json
-            signals = json.loads(item.signals) if isinstance(item.signals, str) else item.signals
+            _sig = getattr(item, "signals", None)
+            signals = json.loads(_sig) if isinstance(_sig, str) else _sig
         except (json.JSONDecodeError, TypeError):
             signals = None
     
     # Get field update timestamps
     field_updated_at = item.get_field_updated_at()
-    
+    # Resolve Column attributes to Python values for serialization (avoids Column in conditionals)
+    _ae = getattr(item, "alert_enabled", None)
+    _bae = getattr(item, "buy_alert_enabled", None)
+    _sae = getattr(item, "sell_alert_enabled", None)
+    _te = getattr(item, "trade_enabled", None)
+    _tom = getattr(item, "trade_on_margin", None)
+    _stp = getattr(item, "sl_tp_mode", None)
+    _os = getattr(item, "order_status", None)
+    _sold = getattr(item, "sold", None)
+    _skip = getattr(item, "skip_sl_tp_reminder", None)
+    _del_ = getattr(item, "is_deleted", None)
+
     serialized = {
         "id": item.id,
-        "symbol": (item.symbol or "").upper(),
-        "exchange": item.exchange or "CRYPTO_COM",
-        "alert_enabled": item.alert_enabled if item.alert_enabled is not None else False,
-        "buy_alert_enabled": item.buy_alert_enabled if item.buy_alert_enabled is not None else False,
-        "sell_alert_enabled": item.sell_alert_enabled if item.sell_alert_enabled is not None else False,
-        "trade_enabled": item.trade_enabled if item.trade_enabled is not None else False,
-        "trade_amount_usd": item.trade_amount_usd,
-        "trade_on_margin": item.trade_on_margin if item.trade_on_margin is not None else False,
-        "sl_tp_mode": item.sl_tp_mode or "conservative",
+        "symbol": (getattr(item, "symbol", "") or "").upper(),
+        "exchange": (getattr(item, "exchange", None) or "CRYPTO_COM"),
+        "alert_enabled": _ae if _ae is not None else False,
+        "buy_alert_enabled": _bae if _bae is not None else False,
+        "sell_alert_enabled": _sae if _sae is not None else False,
+        "trade_enabled": _te if _te is not None else False,
+        "trade_amount_usd": getattr(item, "trade_amount_usd", None),
+        "trade_on_margin": _tom if _tom is not None else False,
+        "sl_tp_mode": _stp or "conservative",
         "min_price_change_pct": item.min_price_change_pct,
         "sl_percentage": item.sl_percentage,
         "tp_percentage": item.tp_percentage,
@@ -350,19 +369,19 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
         "current_volume": item.current_volume,
         "avg_volume": item.avg_volume,
         "volume_24h": item.volume_24h,
-        "order_status": item.order_status or "PENDING",
+        "order_status": _os or "PENDING",
         "order_date": _iso(item.order_date),
         "purchase_price": item.purchase_price,
         "quantity": item.quantity,
-        "sold": item.sold if item.sold is not None else False,
+        "sold": _sold if _sold is not None else False,
         "sell_price": item.sell_price,
         "notes": item.notes,
         "created_at": _iso(item.created_at),
         "updated_at": _iso(item.updated_at),
         "signals": signals,
-        "skip_sl_tp_reminder": item.skip_sl_tp_reminder if item.skip_sl_tp_reminder is not None else False,
-        "is_deleted": item.is_deleted if item.is_deleted is not None else False,
-        "deleted": bool(item.is_deleted if item.is_deleted is not None else False),
+        "skip_sl_tp_reminder": _skip if _skip is not None else False,
+        "is_deleted": _del_ if _del_ is not None else False,
+        "deleted": bool(_del_ if _del_ is not None else False),
         # Include per-field update timestamps for UI
         "field_updated_at": field_updated_at,
     }
@@ -370,7 +389,7 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
     # Calculate TP/SL from strategy if needed (same logic as before)
     if (serialized["sl_price"] is None or serialized["tp_price"] is None) and serialized["price"] and serialized["price"] > 0:
         calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
-            symbol=item.symbol,
+            symbol=_symbol_str(item),
             price=serialized["price"],
             atr=serialized["atr"],
             watchlist_item=None,  # We don't have WatchlistItem here, but we can get sl_tp_mode from master
@@ -380,13 +399,13 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
         if calculated_sl is not None and serialized["sl_price"] is None:
             serialized["sl_price"] = calculated_sl
             if db:
-                item.sl_price = calculated_sl
+                setattr(item, "sl_price", calculated_sl)
                 item.set_field_updated_at('sl_price')
         
         if calculated_tp is not None and serialized["tp_price"] is None:
             serialized["tp_price"] = calculated_tp
             if db:
-                item.tp_price = calculated_tp
+                setattr(item, "tp_price", calculated_tp)
                 item.set_field_updated_at('tp_price')
         
         if db and (calculated_sl is not None or calculated_tp is not None):
@@ -395,7 +414,7 @@ def _serialize_watchlist_master(item: WatchlistMaster, db: Optional[Session] = N
                 db.refresh(item)
             except Exception as e:
                 db.rollback()
-                log.error(f"Error saving calculated SL/TP for {item.symbol}: {e}", exc_info=True)
+                log.error(f"Error saving calculated SL/TP for {_symbol_str(item)}: {e}", exc_info=True)
     
     return serialized
 
@@ -412,15 +431,14 @@ def _get_market_data_for_symbol(db: Session, symbol: str) -> Optional[Any]:
     """
     try:
         from app.models.market_price import MarketData
-        import sqlalchemy.exc
-        
+
         # Normalize symbol to uppercase for consistency
         symbol_upper = symbol.upper() if symbol else ""
         if not symbol_upper:
             return None
-            
+
         return db.query(MarketData).filter(MarketData.symbol == symbol_upper).first()
-    except sqlalchemy.exc.SQLAlchemyError as e:
+    except SQLAlchemyError as e:
         log.warning(f"Database error fetching MarketData for {symbol}: {e}")
         return None
     except Exception as e:
@@ -716,45 +734,49 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
             else:
                 last_updated = time.time()
         else:
-            # Extract balances from portfolio summary (fallback)
-            balances_list = portfolio_summary.get("balances", [])
-            # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
-            # Backend returns values explicitly:
-            # - total_usd: NET Wallet Balance (collateral - borrowed) - matches Crypto.com "Wallet Balance"
-            # - total_assets_usd: GROSS raw assets (before haircut and borrowed) - informational only
-            # - total_collateral_usd: Collateral value after haircuts - informational only
-            # - total_borrowed_usd: Total borrowed amounts (shown separately, NOT added to totals)
-            total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)  # GROSS raw assets
-            total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)  # Collateral after haircuts
-            total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)  # Borrowed (separate)
-            total_usd_value = portfolio_summary.get("total_usd", 0.0)  # NET Wallet Balance - matches Crypto.com "Wallet Balance"
-            portfolio_value_source = portfolio_summary.get("portfolio_value_source", "derived:collateral_minus_borrowed")  # Calculation method
-            last_updated = portfolio_summary.get("last_updated")
-            
-            # Capture reconcile data from portfolio_summary if present (debug mode)
-            portfolio_reconcile_data = portfolio_summary.get("reconcile")
-            
-            # Convert balances to portfolio assets format
-            portfolio_assets = [
-                {
-                    "coin": bal.get("currency", ""),
-                    "currency": bal.get("currency", ""),
-                    "symbol": bal.get("currency", ""),
-                    "balance": float(bal.get("balance", 0) or 0),
-                    "value_usd": float(bal.get("usd_value", 0) or 0),
-                    "usd_value": float(bal.get("usd_value", 0) or 0),
-                }
-                for bal in balances_list
-                if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) > 0 or float(bal.get("balance", 0) or 0) > 0)
-            ]
+            # Extract balances from portfolio summary (fallback). Guard: portfolio_summary may be None.
+            if portfolio_summary is None:
+                log.warning("[DASHBOARD_STATE] portfolio_summary=None; returning empty portfolio payload")
+                balances_list = []
+                total_assets_usd = 0.0
+                total_collateral_usd = 0.0
+                total_borrowed_usd = 0.0
+                total_usd_value = 0.0
+                portfolio_value_source = "derived:collateral_minus_borrowed"
+                last_updated = None
+                portfolio_reconcile_data = None
+                portfolio_assets = []
+            else:
+                balances_list = portfolio_summary.get("balances", [])
+                # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
+                total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
+                total_collateral_usd = portfolio_summary.get("total_collateral_usd", 0.0)
+                total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
+                total_usd_value = portfolio_summary.get("total_usd", 0.0)
+                portfolio_value_source = portfolio_summary.get("portfolio_value_source", "derived:collateral_minus_borrowed")
+                last_updated = portfolio_summary.get("last_updated")
+                portfolio_reconcile_data = portfolio_summary.get("reconcile")
+                portfolio_assets = [
+                    {
+                        "coin": bal.get("currency", ""),
+                        "currency": bal.get("currency", ""),
+                        "symbol": bal.get("currency", ""),
+                        "balance": float(bal.get("balance", 0) or 0),
+                        "value_usd": float(bal.get("usd_value", 0) or 0),
+                        "usd_value": float(bal.get("usd_value", 0) or 0),
+                    }
+                    for bal in balances_list
+                    if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) > 0 or float(bal.get("balance", 0) or 0) > 0)
+                ]
         
         # Log raw data for debugging
         log.debug(f"Portfolio data: assets={len(portfolio_assets)}, balances={len(balances_list)}, total_usd={total_usd_value}, source={portfolio_value_source}, last_updated={last_updated}")
         
         # Get unified open orders from cache - Crypto.com API is the source of truth
         unified_orders_start = time.time()
-        cached_open_orders = get_open_orders_cache()
-        unified_open_orders = cached_open_orders.get("orders", []) or []
+        cached_open_orders = get_open_orders_cache() or {}
+        _orders_raw = cached_open_orders.get("orders", [])
+        unified_open_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
         
         # Log Crypto.com API response for debugging
         cached_order_ids = {order.order_id for order in unified_open_orders}
@@ -1014,57 +1036,61 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         elapsed = time.time() - start_time
         log.info(f"✅ Dashboard state returned in {elapsed:.3f}s: {len(portfolio_assets)} assets, {len(open_orders_list)} orders")
         
-        # Log detailed diagnostics if portfolio is empty
+        # Log detailed diagnostics if portfolio is empty (never call .keys() on None)
         if len(portfolio_assets) == 0:
             log.warning("⚠️ DIAGNOSTIC: Portfolio assets is empty")
             log.warning(f"   - balances_list length: {len(balances_list)}")
-            log.warning(f"   - portfolio_summary keys: {list(portfolio_summary.keys())}")
+            if portfolio_summary is not None:
+                log.warning(f"   - portfolio_summary keys: {list(portfolio_summary.keys())}")
+            else:
+                log.warning("   - [DASHBOARD_STATE] portfolio_summary=None (snapshot path or get_portfolio_summary returned None)")
             if balances_list:
                 log.warning(f"   - First 3 balances: {balances_list[:3]}")
             else:
                 log.warning("   - balances_list is empty - checking if portfolio cache needs update")
-                # Check if we should trigger a cache update
+                # Check if we should trigger a cache update (only when portfolio_summary was used, not None)
                 try:
-                    from app.services.portfolio_cache import update_portfolio_cache
-                    log.info("   - Attempting to update portfolio cache...")
-                    update_result = await asyncio.to_thread(update_portfolio_cache, db)
-                    if update_result.get("success"):
-                        log.info("   - Portfolio cache updated successfully, retrying get_portfolio_summary")
-                        portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db, request_context)
-                        balances_list = portfolio_summary.get("balances", [])
-                        # Bug 3 Fix: Use total_usd from portfolio_summary (correctly calculated)
-                        total_usd_value = portfolio_summary.get("total_usd", 0.0)
-                        total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
-                        total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
-                        last_updated = portfolio_summary.get("last_updated")
-                        
-                        # Re-process balances
-                        portfolio_assets = []
-                        for balance in balances_list:
-                            balance_amount = balance.get("balance", 0.0)
-                            usd_value = balance.get("usd_value", 0.0)
-                            if balance_amount > 0 or usd_value > 0:
-                                currency = balance.get("currency", "")
-                                portfolio_assets.append({
-                                    "currency": currency,
-                                    "balance": balance_amount,
-                                    "usd_value": usd_value
-                                })
-
-                                try:
-                                    if currency and balance_amount and usd_value:
-                                        market_prices[currency.upper()] = float(usd_value) / float(balance_amount)
-                                except (TypeError, ValueError, ZeroDivisionError):
-                                    pass
-                        log.info(f"   - After cache update: {len(portfolio_assets)} assets loaded")
+                    if portfolio_summary is None:
+                        log.info("   - portfolio_summary is None; skipping cache update retry")
                     else:
-                        error_msg = update_result.get('error', 'Unknown error')
-                        # Check if this is an authentication error
-                        if update_result.get('auth_error') or '40101' in error_msg or 'Authentication' in error_msg:
-                            log.error(f"   - Portfolio cache update failed: {error_msg}")
-                            log.warning("   - ⚠️ Authentication error detected - will not retry immediately. Check API credentials and IP whitelist.")
+                        from app.services.portfolio_cache import update_portfolio_cache
+                        log.info("   - Attempting to update portfolio cache...")
+                        update_result = await asyncio.to_thread(update_portfolio_cache, db)
+                        if update_result.get("success"):
+                            log.info("   - Portfolio cache updated successfully, retrying get_portfolio_summary")
+                            portfolio_summary = await asyncio.to_thread(get_portfolio_summary, db, request_context)
+                            if portfolio_summary is None:
+                                log.warning("   - get_portfolio_summary still returned None after cache update")
+                            else:
+                                balances_list = portfolio_summary.get("balances", [])
+                                total_usd_value = portfolio_summary.get("total_usd", 0.0)
+                                total_assets_usd = portfolio_summary.get("total_assets_usd", 0.0)
+                                total_borrowed_usd = portfolio_summary.get("total_borrowed_usd", 0.0)
+                                last_updated = portfolio_summary.get("last_updated")
+                                portfolio_assets = []
+                                for balance in balances_list:
+                                    balance_amount = balance.get("balance", 0.0)
+                                    usd_value = balance.get("usd_value", 0.0)
+                                    if balance_amount > 0 or usd_value > 0:
+                                        currency = balance.get("currency", "")
+                                        portfolio_assets.append({
+                                            "currency": currency,
+                                            "balance": balance_amount,
+                                            "usd_value": usd_value
+                                        })
+                                        try:
+                                            if currency and balance_amount and usd_value:
+                                                market_prices[currency.upper()] = float(usd_value) / float(balance_amount)
+                                        except (TypeError, ValueError, ZeroDivisionError):
+                                            pass
+                                log.info(f"   - After cache update: {len(portfolio_assets)} assets loaded")
                         else:
-                            log.error(f"   - Portfolio cache update failed: {error_msg}")
+                            error_msg = update_result.get('error', 'Unknown error')
+                            if update_result.get('auth_error') or '40101' in error_msg or 'Authentication' in error_msg:
+                                log.error(f"   - Portfolio cache update failed: {error_msg}")
+                                log.warning("   - ⚠️ Authentication error detected - will not retry immediately. Check API credentials and IP whitelist.")
+                            else:
+                                log.error(f"   - Portfolio cache update failed: {error_msg}")
                 except Exception as update_err:
                     error_str = str(update_err)
                     if '40101' in error_str or 'Authentication' in error_str:
@@ -1453,14 +1479,14 @@ def update_watchlist_item_by_symbol(
         if "signals" in payload:
             signals_value = payload["signals"]
             if signals_value is not None:
-                item.signals = json.dumps(signals_value) if not isinstance(signals_value, str) else signals_value
+                setattr(item, "signals", json.dumps(signals_value) if not isinstance(signals_value, str) else signals_value)
             else:
-                item.signals = None
+                setattr(item, "signals", None)
             updated_fields.append('signals')
         
         # Update exchange if provided
         if "exchange" in payload:
-            item.exchange = (payload["exchange"] or "CRYPTO_COM").upper()
+            setattr(item, "exchange", (payload["exchange"] or "CRYPTO_COM").upper())
         
         if updated_fields:
             db.commit()
@@ -1597,10 +1623,10 @@ def create_watchlist_item(
     if existing_item:
         # Restore if needed
         if hasattr(existing_item, "is_deleted"):
-            existing_item.is_deleted = False
+            setattr(existing_item, "is_deleted", False)
         # Always enforce normalized identity fields
-        existing_item.symbol = symbol
-        existing_item.exchange = exchange
+        setattr(existing_item, "symbol", symbol)
+        setattr(existing_item, "exchange", exchange)
 
         # Apply only fields explicitly provided to avoid accidentally overwriting existing settings.
         updatable_fields = {
@@ -1755,7 +1781,7 @@ def create_watchlist_item(
                 change_reason = ", ".join(all_parameter_changes)
                 reset_throttle_state(
                     db, 
-                    symbol=existing_item.symbol, 
+                    symbol=_symbol_str(existing_item), 
                     strategy_key=strategy_key,
                     parameter_change_reason=change_reason
                 )
@@ -1871,7 +1897,7 @@ def create_watchlist_item(
         
         if current_price and current_price > 0:
             calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
-                symbol=item.symbol,
+                symbol=_symbol_str(item),
                 price=current_price,
                 atr=current_atr,
                 watchlist_item=item,
@@ -1881,12 +1907,12 @@ def create_watchlist_item(
             # Save calculated values to database if they're None
             updated = False
             if calculated_sl is not None and item.sl_price is None:
-                item.sl_price = calculated_sl
+                setattr(item, "sl_price", calculated_sl)
                 updated = True
                 log.debug(f"Saved calculated sl_price for new item {item.symbol}: {calculated_sl}")
             
             if calculated_tp is not None and item.tp_price is None:
-                item.tp_price = calculated_tp
+                setattr(item, "tp_price", calculated_tp)
                 updated = True
                 log.debug(f"Saved calculated tp_price for new item {item.symbol}: {calculated_tp}")
             
@@ -1960,7 +1986,7 @@ def update_watchlist_item(
             # No active canonical row exists: allow restore explicitly requested by payload.
             # (Still safer to prefer the dedicated restore endpoint.)
             try:
-                item.is_deleted = False
+                setattr(item, "is_deleted", False)
             except Exception:
                 pass
     
@@ -2367,7 +2393,7 @@ def update_watchlist_item(
                 current_price = getattr(item, "price", None)
                 reset_throttle_state(
                     db, 
-                    symbol=item.symbol, 
+                    symbol=_symbol_str(item), 
                     strategy_key=strategy_key,
                     current_price=current_price,
                     parameter_change_reason=f"CONFIG_CHANGE: {change_reason_str}",
@@ -2376,8 +2402,8 @@ def update_watchlist_item(
                 log.info(f"🔄 [CONFIG_CHANGE] Reset throttle state for {item.symbol} due to config changes: {change_reason_str}")
                 
                 # CANONICAL: Set force_next_signal for both BUY and SELL to allow immediate bypass
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="BUY", enabled=True)
-                set_force_next_signal(db, symbol=item.symbol, strategy_key=strategy_key, side="SELL", enabled=True)
+                set_force_next_signal(db, symbol=_symbol_str(item), strategy_key=strategy_key, side="BUY", enabled=True)
+                set_force_next_signal(db, symbol=_symbol_str(item), strategy_key=strategy_key, side="SELL", enabled=True)
                 log.info(f"⚡ [CONFIG_CHANGE] Set force_next_signal=True for {item.symbol} BUY/SELL - next signals will bypass throttle")
                 
             # Also clear order creation limitations (allows immediate order creation)
@@ -2452,15 +2478,15 @@ def update_watchlist_item(
             # CRITICAL: Enable alert_enabled (master switch) when trade is enabled
             # This is required for alerts to be sent (both alert_enabled AND buy_alert_enabled must be True)
             if not item.alert_enabled:
-                item.alert_enabled = True
+                setattr(item, "alert_enabled", True)
                 log.info(f"⚡ [TRADE] Auto-enabled alert_enabled (master switch) for {item.symbol} (required for all alerts)")
             # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
             # This ensures alerts are sent when signals are detected
             if not item.buy_alert_enabled:
-                item.buy_alert_enabled = True
+                setattr(item, "buy_alert_enabled", True)
                 log.info(f"⚡ [TRADE] Auto-enabled buy_alert_enabled for {item.symbol} (required for BUY alerts)")
             if not item.sell_alert_enabled:
-                item.sell_alert_enabled = True
+                setattr(item, "sell_alert_enabled", True)
                 log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {item.symbol} (required for SELL alerts)")
             db.commit()
             db.refresh(item)
@@ -2510,7 +2536,7 @@ def update_watchlist_item(
             if old_strategy_key and old_strategy_key != new_strategy_key:
                 reset_throttle_state(
                     db, 
-                    symbol=item.symbol, 
+                    symbol=_symbol_str(item), 
                     strategy_key=old_strategy_key,
                     parameter_change_reason=f"strategy changed (old: {old_strategy_key})"
                 )
@@ -2520,15 +2546,15 @@ def update_watchlist_item(
             strategy_change_reason = f"strategy changed ({old_strategy_key or 'unknown'} → {new_strategy_key})"
             reset_throttle_state(
                 db, 
-                symbol=item.symbol, 
+                symbol=_symbol_str(item), 
                 strategy_key=new_strategy_key,
                 parameter_change_reason=strategy_change_reason
             )
             log.info(f"🔄 [STRATEGY] Reset throttle state for {item.symbol} new strategy: {new_strategy_key}")
             
             # Set force_next_signal for new strategy to allow immediate signals
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="BUY", enabled=True)
-            set_force_next_signal(db, symbol=item.symbol, strategy_key=new_strategy_key, side="SELL", enabled=True)
+            set_force_next_signal(db, symbol=_symbol_str(item), strategy_key=new_strategy_key, side="BUY", enabled=True)
+            set_force_next_signal(db, symbol=_symbol_str(item), strategy_key=new_strategy_key, side="SELL", enabled=True)
             log.info(f"⚡ [STRATEGY] Set force_next_signal for {item.symbol} BUY/SELL with new strategy {new_strategy_key} - next evaluation will bypass throttle")
             
             # CRITICAL: Clear order creation limitations in SignalMonitorService
@@ -2569,7 +2595,7 @@ def update_watchlist_item(
                 log.error(f"❌ SYNC ERROR: alert_enabled mismatch for {item.symbol} ({item_id}): "
                          f"Expected {expected_value}, but DB has {actual_value}. "
                          f"Attempting to fix...")
-                item.alert_enabled = expected_value
+                setattr(item, "alert_enabled", expected_value)
                 db.commit()
                 db.refresh(item)
                 log.info(f"✅ Fixed alert_enabled sync issue for {item.symbol}")
@@ -2683,7 +2709,7 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
     # Restore the item
     try:
         if _soft_delete_supported(db) and hasattr(item, "is_deleted"):
-            item.is_deleted = False
+            setattr(item, "is_deleted", False)
             # Preserve existing alert_enabled value instead of resetting
             # This prevents alerts from being deactivated when items are restored
             # item.alert_enabled is preserved (not reset)
@@ -2971,6 +2997,9 @@ def get_expected_take_profit_summary_endpoint(db: Session = Depends(get_db)):
         # Get expected take profit summary
         log.info(f"Expected TP: Calling get_expected_take_profit_summary with {len(portfolio_assets)} assets")
         summary = get_expected_take_profit_summary(db, portfolio_assets, market_prices)
+        # Guard: service may return None on error; avoid 'NoneType' has no attribute 'keys'
+        if summary is None:
+            summary = {}
         log.info(f"Expected TP: Summary returned {len(summary)} symbols: {list(summary.keys())}")
         
         # Convert to list and sort by position_value descending

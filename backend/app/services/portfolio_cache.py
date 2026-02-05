@@ -823,6 +823,8 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
                     trade_client.api_secret = api_secret
             
             balance_data = trade_client.get_account_summary()
+            if not isinstance(balance_data, dict):
+                balance_data = {}
             
             # Build a map of currency -> raw USD value from cached balances (balances_data from query)
             raw_values_by_currency = {_normalize_currency_name(currency): float(usd_value) 
@@ -952,7 +954,7 @@ def get_portfolio_summary(db: Session, request_context: Optional[Dict] = None) -
         def scan_for_equity_fields(data, prefix=""):
             """Recursively scan data structure for all equity/balance fields."""
             found_fields = {}
-            if not isinstance(data, dict):
+            if data is None or not isinstance(data, dict):
                 return found_fields
             
             # Exhaustive list of all possible equity/balance field names
