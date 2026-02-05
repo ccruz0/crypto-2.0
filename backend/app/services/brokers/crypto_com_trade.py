@@ -1246,6 +1246,18 @@ class CryptoComTradeClient:
                             if "balances" in position:
                                 for balance in position["balances"]:
                                     _record_balance_entry(balance, account_type)
+                            # Some APIs return accounts array inside each data item
+                            if "accounts" in position:
+                                for acc in position.get("accounts") or []:
+                                    if not isinstance(acc, dict):
+                                        continue
+                                    currency = acc.get("currency", "")
+                                    if currency:
+                                        accounts.append({
+                                            "currency": currency,
+                                            "balance": str(acc.get("balance", "0")),
+                                            "available": str(acc.get("available", acc.get("balance", "0"))),
+                                        })
                     elif isinstance(data, dict):
                         positions_to_check = [data]
                         account_type = data.get("account_type")
@@ -1255,6 +1267,17 @@ class CryptoComTradeClient:
                         if "balances" in data:
                             for balance in data["balances"]:
                                 _record_balance_entry(balance, account_type)
+                        if "accounts" in data:
+                            for acc in data.get("accounts") or []:
+                                if not isinstance(acc, dict):
+                                    continue
+                                currency = acc.get("currency", "")
+                                if currency:
+                                    accounts.append({
+                                        "currency": currency,
+                                        "balance": str(acc.get("balance", "0")),
+                                        "available": str(acc.get("available", acc.get("balance", "0"))),
+                                    })
                     
                     # Check position-level equity fields
                     if margin_equity_value is None and positions_to_check:
@@ -1326,7 +1349,7 @@ class CryptoComTradeClient:
                                     data_info += f" first_keys={list(data_val[0].keys())[:15]}"
                             else:
                                 data_info = f"{type(data_val).__name__}"
-                        logger.info(
+                        logger.warning(
                             "[CRYPTO_BALANCE_SHAPE] user-balance returned 0 accounts; result.result keys=%s data=%s",
                             res_keys,
                             data_info,
