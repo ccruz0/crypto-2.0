@@ -707,8 +707,27 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         # Use portfolio snapshot if available, otherwise fall back to portfolio_summary
         portfolio_reconcile_data = None
         if portfolio_snapshot:
-            # Use snapshot data
-            portfolio_assets = portfolio_snapshot.get("assets", [])
+            # Use snapshot data. Normalize assets so frontend gets coin/currency (it filters on those).
+            raw_snapshot_assets = portfolio_snapshot.get("assets", [])
+            portfolio_assets = []
+            for asset in raw_snapshot_assets:
+                symbol = asset.get("symbol") or asset.get("coin") or asset.get("currency") or ""
+                if not symbol:
+                    continue
+                balance = float(asset.get("balance") or asset.get("total") or asset.get("free", 0) or 0)
+                value_usd = float(asset.get("value_usd") or asset.get("usd_value", 0) or 0)
+                portfolio_assets.append({
+                    "symbol": symbol,
+                    "coin": symbol,
+                    "currency": symbol,
+                    "balance": balance,
+                    "total": balance,
+                    "free": asset.get("free", 0),
+                    "locked": asset.get("locked", 0),
+                    "value_usd": value_usd,
+                    "usd_value": value_usd,
+                    "price_usd": asset.get("price_usd"),
+                })
             balances_list = [
                 {
                     "currency": asset.get("symbol") or asset.get("coin") or asset.get("currency"),
@@ -736,16 +755,72 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         else:
             # Extract balances from portfolio summary (fallback). Guard: portfolio_summary may be None.
             if portfolio_summary is None:
-                log.warning("[DASHBOARD_STATE] portfolio_summary=None; returning empty portfolio payload")
-                balances_list = []
-                total_assets_usd = 0.0
-                total_collateral_usd = 0.0
-                total_borrowed_usd = 0.0
-                total_usd_value = 0.0
-                portfolio_value_source = "derived:collateral_minus_borrowed"
-                last_updated = None
-                portfolio_reconcile_data = None
-                portfolio_assets = []
+                # No snapshot and no cache: try a one-off live fetch so Portfolio tab can show data
+                live_snapshot = None
+                try:
+                    from app.services.portfolio_snapshot import fetch_live_portfolio_snapshot, store_portfolio_snapshot
+                    log.info("[DASHBOARD_STATE] No snapshot or cache; attempting live portfolio fetch")
+                    live_snapshot = await asyncio.to_thread(fetch_live_portfolio_snapshot, db)
+                    if live_snapshot and live_snapshot.get("assets"):
+                        try:
+                            store_portfolio_snapshot(db, live_snapshot)
+                        except Exception as store_err:
+                            log.debug("Could not store live snapshot: %s", store_err)
+                except (ValueError, RuntimeError) as e:
+                    log.debug("[DASHBOARD_STATE] Live portfolio fetch skipped or failed: %s", e)
+                except Exception as e:
+                    log.debug("[DASHBOARD_STATE] Live portfolio fetch error: %s", e)
+                if live_snapshot and live_snapshot.get("assets"):
+                    raw_snapshot_assets = live_snapshot.get("assets", [])
+                    portfolio_assets = []
+                    for asset in raw_snapshot_assets:
+                        symbol = asset.get("symbol") or asset.get("coin") or asset.get("currency") or ""
+                        if not symbol:
+                            continue
+                        balance = float(asset.get("balance") or asset.get("total") or asset.get("free", 0) or 0)
+                        value_usd = float(asset.get("value_usd") or asset.get("usd_value", 0) or 0)
+                        portfolio_assets.append({
+                            "symbol": symbol,
+                            "coin": symbol,
+                            "currency": symbol,
+                            "balance": balance,
+                            "total": balance,
+                            "free": asset.get("free", 0),
+                            "locked": asset.get("locked", 0),
+                            "value_usd": value_usd,
+                            "usd_value": value_usd,
+                            "price_usd": asset.get("price_usd"),
+                        })
+                    balances_list = [
+                        {"currency": a.get("currency"), "balance": a.get("balance", 0), "usd_value": a.get("value_usd", 0)}
+                        for a in portfolio_assets
+                    ]
+                    total_assets_usd = float(live_snapshot.get("total_assets_usd", 0) or 0)
+                    total_collateral_usd = float(live_snapshot.get("total_collateral_usd", 0) or 0)
+                    total_borrowed_usd = float(live_snapshot.get("total_borrowed_usd", 0) or 0)
+                    total_usd_value = float(live_snapshot.get("total_value_usd", 0) or 0)
+                    portfolio_value_source = live_snapshot.get("portfolio_value_source", "crypto_com_live")
+                    portfolio_reconcile_data = live_snapshot.get("reconcile")
+                    as_of_str = live_snapshot.get("as_of")
+                    if as_of_str:
+                        try:
+                            last_updated = datetime.fromisoformat(as_of_str.replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            last_updated = time.time()
+                    else:
+                        last_updated = time.time()
+                    log.info("[DASHBOARD_STATE] Using live portfolio fetch: %s assets", len(portfolio_assets))
+                else:
+                    log.warning("[DASHBOARD_STATE] portfolio_summary=None; returning empty portfolio payload")
+                    balances_list = []
+                    total_assets_usd = 0.0
+                    total_collateral_usd = 0.0
+                    total_borrowed_usd = 0.0
+                    total_usd_value = 0.0
+                    portfolio_value_source = "derived:collateral_minus_borrowed"
+                    last_updated = None
+                    portfolio_reconcile_data = None
+                    portfolio_assets = []
             else:
                 balances_list = portfolio_summary.get("balances", [])
                 # CRITICAL: Crypto.com Margin "Wallet Balance" = NET Wallet Balance (collateral - borrowed)
@@ -803,7 +878,7 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                     # Standard open orders (ACTIVE, NEW, PARTIALLY_FILLED)
                     ExchangeOrder.status.in_(open_statuses),
                     # OR all SL/TP orders (might be active on exchange even if marked CANCELLED)
-                    ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),
+                    ExchangeOrder.order_role.in_(['STOP_LOSS', 'TAKE_PROFIT']),  # type: ignore[reportGeneralTypeIssues]
                     # OR orders with trigger types (STOP_LIMIT, TAKE_PROFIT_LIMIT, etc.)
                     ExchangeOrder.order_type.in_(['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT'])
                 )
@@ -813,7 +888,7 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
             
             # Log database orders for debugging
             db_order_ids = {str(order.exchange_order_id) for order in db_orders}
-            db_symbols = {order.symbol for order in db_orders if order.symbol}
+            db_symbols = {str(getattr(o, "symbol", "") or "") for o in db_orders if getattr(o, "symbol", None)}
             log.info(f"[OPEN_ORDERS] Database has {len(db_orders)} orders with open status. Order IDs: {sorted(db_order_ids)[:10]}... Symbols: {sorted(db_symbols)}")
             
             # Detect and log ghost orders (in database but not in Crypto.com)
@@ -847,7 +922,7 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         last_updated_iso = None
         if last_updated_value:
             # Check if it's already a datetime object
-            if hasattr(last_updated_value, 'isoformat'):
+            if isinstance(last_updated_value, datetime):
                 last_updated_iso = last_updated_value.isoformat()
             elif isinstance(last_updated_value, str):
                 # Already a string, use as-is
@@ -894,16 +969,17 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
         open_statuses = [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]
         db_tp_orders = db.query(ExchangeOrder).filter(
             ExchangeOrder.status.in_(open_statuses),
-            ExchangeOrder.order_type.like('%TAKE_PROFIT%')
+            ExchangeOrder.order_type.like('%TAKE_PROFIT%')  # type: ignore[reportGeneralTypeIssues]
         ).all()
         
         for order in db_tp_orders:
             # Skip if this order was already counted from cache
-            order_id_str = str(order.exchange_order_id) if order.exchange_order_id else None
+            _oid = getattr(order, "exchange_order_id", None)
+            order_id_str = str(_oid) if _oid is not None else None
             if order_id_str and order_id_str in cached_tp_order_ids:
                 continue
                 
-            symbol = order.symbol or ""
+            symbol = str(getattr(order, "symbol", "") or "")
             base_symbol = _extract_base_symbol(symbol)
             if base_symbol:
                 # Add to count (avoiding duplicates from cache)
@@ -1222,8 +1298,9 @@ async def get_dashboard_state(
 @router.get("/dashboard/open-orders-summary")
 def get_open_orders_summary():
     """Return the cached unified open orders."""
-    cache = get_open_orders_cache()
-    cached_orders = cache.get("orders", [])
+    cache = get_open_orders_cache() or {}
+    _orders_raw = cache.get("orders", [])
+    cached_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
     
     # If cache is empty, try to get orders from the same source as /dashboard/state
     if not cached_orders:
@@ -1232,25 +1309,34 @@ def get_open_orders_summary():
             from app.services.exchange_sync import ExchangeSyncService
             from app.database import SessionLocal
             sync_service = ExchangeSyncService()
-            db = SessionLocal()
+            db = SessionLocal()  # type: ignore[reportOptionalCall]
             try:
                 # Trigger a sync to populate the cache
-                sync_service.sync_open_orders(db)
-                db.commit()
+                if sync_service is not None and db is not None:
+                    sync_service.sync_open_orders(db)
+                if db is not None:
+                    db.commit()
                 # Re-read from cache after sync
-                cache = get_open_orders_cache()
-                cached_orders = cache.get("orders", [])
+                cache = get_open_orders_cache() or {}
+                _orders_raw2 = cache.get("orders", [])
+                cached_orders = cast(list, _orders_raw2) if isinstance(_orders_raw2, list) else []
                 log.info(f"Synced {len(cached_orders)} orders to cache")
             finally:
-                db.close()
+                if db is not None:
+                    db.close()
         except Exception as e:
             log.error(f"Failed to sync orders for open-orders-summary: {e}", exc_info=True)
     
     orders = [serialize_unified_order(order) for order in cached_orders]
     last_updated = cache.get("last_updated")
+    last_updated_iso: Optional[str] = None
+    if isinstance(last_updated, datetime):
+        last_updated_iso = last_updated.isoformat()
+    elif last_updated is not None:
+        last_updated_iso = str(last_updated)
     return {
         "orders": orders,
-        "last_updated": last_updated.isoformat() if last_updated else None,
+        "last_updated": last_updated_iso,
     }
 
 
@@ -1269,11 +1355,11 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         # Query watchlist_items table directly (single source of truth)
         try:
             items = db.query(WatchlistItem).filter(
-                WatchlistItem.is_deleted == False
+                WatchlistItem.is_deleted == False  # type: ignore[reportGeneralTypeIssues]
             ).order_by(WatchlistItem.created_at.desc()).limit(200).all()
             
             # QUERY_RESULT: Log all fetched rows for ALGO_USDT specifically
-            algo_db_rows = [item for item in items if item.symbol == "ALGO_USDT"]
+            algo_db_rows = [item for item in items if _symbol_str(item) == "ALGO_USDT"]
             log.info(f"[QUERY_RESULT] Total rows fetched: {len(items)}, ALGO_USDT rows: {len(algo_db_rows)}")
             for item in algo_db_rows:
                 log.info(f"[QUERY_RESULT] ALGO_USDT: id={item.id} trade_amount_usd={item.trade_amount_usd} trade_enabled={item.trade_enabled} alert_enabled={item.alert_enabled} is_deleted={getattr(item, 'is_deleted', None)}")
@@ -1292,7 +1378,7 @@ def list_watchlist_items(db: Session = Depends(get_db)):
             # Fallback: try without filter if column doesn't exist
             if "undefined column" in str(query_err).lower() or "no such column" in str(query_err).lower():
                 log.warning("Retrying watchlist items query without is_deleted filter")
-                items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()
+                items = db.query(WatchlistItem).order_by(WatchlistItem.created_at.desc()).limit(200).all()  # type: ignore[reportGeneralTypeIssues]
                 db_ids_by_symbol = {}
                 for item in items:
                     symbol_key = (item.symbol or "").upper()
@@ -1323,7 +1409,7 @@ def list_watchlist_items(db: Session = Depends(get_db)):
         result = []
         for item in canonical_items:
             # Get market data for enrichment (price, rsi, etc.) but don't mutate trade_amount_usd
-            market_data = _get_market_data_for_symbol(db, item.symbol)
+            market_data = _get_market_data_for_symbol(db, _symbol_str(item))
             serialized = _serialize_watchlist_item(item, market_data=market_data, db=db)
             
             # GUARD: Detect phantom IDs - if serialized id not in DB query results, log error and drop item
@@ -1363,7 +1449,7 @@ def list_watchlist_state(db: Session = Depends(get_db)):
     base_items = list_watchlist_items(db)
     try:
         states = db.query(WatchlistSignalState).all()
-        state_map = {s.symbol.upper(): s for s in states}
+        state_map = {str(getattr(s, "symbol", "") or "").upper(): s for s in states}
     except Exception as e:
         log.warning(f"Failed to load watchlist_signal_state: {e}")
         state_map = {}
@@ -1372,21 +1458,24 @@ def list_watchlist_state(db: Session = Depends(get_db)):
     for item in base_items:
         symbol = (item.get("symbol") or "").upper()
         state = state_map.get(symbol)
-        signal_side = state.signal_side if state and state.signal_side else "NONE"
+        signal_side = (getattr(state, "signal_side", None) or "NONE") if state else "NONE"
         if signal_side.upper() == "WAIT":
             signal_side = "NONE"
+        _eval = getattr(state, "evaluated_at_utc", None) if state else None
+        _last_alert = getattr(state, "last_alert_at_utc", None) if state else None
+        _last_trade = getattr(state, "last_trade_at_utc", None) if state else None
         item["signal_state"] = {
-            "strategy_key": state.strategy_key if state else None,
+            "strategy_key": getattr(state, "strategy_key", None) if state else None,
             "signal_side": signal_side,
-            "last_price": state.last_price if state else None,
-            "evaluated_at_utc": state.evaluated_at_utc.isoformat() if state and state.evaluated_at_utc else None,
-            "alert_status": state.alert_status if state else "NONE",
-            "alert_block_reason": state.alert_block_reason if state else None,
-            "last_alert_at_utc": state.last_alert_at_utc.isoformat() if state and state.last_alert_at_utc else None,
-            "trade_status": state.trade_status if state else "NONE",
-            "trade_block_reason": state.trade_block_reason if state else None,
-            "last_trade_at_utc": state.last_trade_at_utc.isoformat() if state and state.last_trade_at_utc else None,
-            "correlation_id": state.correlation_id if state else None,
+            "last_price": getattr(state, "last_price", None) if state else None,
+            "evaluated_at_utc": _eval.isoformat() if isinstance(_eval, datetime) else None,
+            "alert_status": getattr(state, "alert_status", "NONE") if state else "NONE",
+            "alert_block_reason": getattr(state, "alert_block_reason", None) if state else None,
+            "last_alert_at_utc": _last_alert.isoformat() if isinstance(_last_alert, datetime) else None,
+            "trade_status": getattr(state, "trade_status", "NONE") if state else "NONE",
+            "trade_block_reason": getattr(state, "trade_block_reason", None) if state else None,
+            "last_trade_at_utc": _last_trade.isoformat() if isinstance(_last_trade, datetime) else None,
+            "correlation_id": getattr(state, "correlation_id", None) if state else None,
         }
         enriched.append(item)
 
@@ -1428,7 +1517,7 @@ def update_watchlist_item_by_symbol(
         item = db.query(WatchlistItem).filter(
             WatchlistItem.symbol == symbol,
             WatchlistItem.exchange == exchange,
-            WatchlistItem.is_deleted == False
+            WatchlistItem.is_deleted == False  # type: ignore[reportGeneralTypeIssues]
         ).first()
         
         if not item:
@@ -1553,11 +1642,11 @@ def update_watchlist_item_by_symbol(
                 log.info(f"🔄 [DASHBOARD_UPDATE] Reset throttle state for {symbol} (strategy: {strategy_key}, price: {current_price})")
                 
                 # Set force_next_signal for both sides if any alert/trade field was enabled
-                alert_or_trade_enabled = (
-                    item.alert_enabled or
+                alert_or_trade_enabled = bool(
+                    getattr(item, "alert_enabled", False) or
                     getattr(item, "buy_alert_enabled", False) or
                     getattr(item, "sell_alert_enabled", False) or
-                    item.trade_enabled
+                    getattr(item, "trade_enabled", False)
                 )
                 if alert_or_trade_enabled:
                     set_force_next_signal(db, symbol=symbol, strategy_key=strategy_key, side="BUY", enabled=True)
@@ -1567,7 +1656,7 @@ def update_watchlist_item_by_symbol(
                 log.warning(f"⚠️ [DASHBOARD_UPDATE] Failed to reset throttle state for {symbol}: {throttle_err}", exc_info=True)
         
         # Return serialized item from fresh DB read
-        market_data = _get_market_data_for_symbol(db, item.symbol)
+        market_data = _get_market_data_for_symbol(db, _symbol_str(item))
         serialized_item = _serialize_watchlist_item(item, market_data=market_data, db=db)
         
         return {
@@ -1737,9 +1826,10 @@ def create_watchlist_item(
                             setattr(master, field, new_value)
                             master.set_field_updated_at(field, now)
                 if "signals" in payload:
-                    import json
+                    import json as _json
                     signals_value = payload["signals"]
-                    master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    val = _json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    setattr(master, "signals", val)
                     master.set_field_updated_at('signals', now)
                 master.updated_at = now
             else:
@@ -1754,8 +1844,10 @@ def create_watchlist_item(
                     if hasattr(existing_item, field) and hasattr(master, field):
                         setattr(master, field, getattr(existing_item, field))
                 if hasattr(existing_item, 'signals'):
-                    import json
-                    master.signals = json.dumps(existing_item.signals) if existing_item.signals and not isinstance(existing_item.signals, str) else existing_item.signals
+                    import json as _json
+                    sig = getattr(existing_item, "signals", None)
+                    val = _json.dumps(sig) if sig and not isinstance(sig, str) else sig
+                    setattr(master, "signals", val)
                 db.add(master)
         except Exception as master_err:
             log.warning(f"Error updating watchlist_master in POST /dashboard: {master_err}")
@@ -1772,7 +1864,7 @@ def create_watchlist_item(
             try:
                 from app.services.strategy_profiles import resolve_strategy_profile
                 from app.services.signal_throttle import build_strategy_key, reset_throttle_state
-                strategy_profile = resolve_strategy_profile(existing_item.symbol, db=db, watchlist_item=existing_item)
+                strategy_profile = resolve_strategy_profile(_symbol_str(existing_item), db=db, watchlist_item=existing_item)
                 strategy_key = build_strategy_key(
                     strategy_profile[0],  # strategy_type
                     strategy_profile[1]   # risk_approach
@@ -1790,7 +1882,7 @@ def create_watchlist_item(
                 log.warning(f"⚠️ [PARAMS] Failed to reset throttle state for {existing_item.symbol}: {throttle_err}", exc_info=True)
         
         # Enrich with MarketData before returning
-        md = _get_market_data_for_symbol(db, existing_item.symbol)
+        md = _get_market_data_for_symbol(db, _symbol_str(existing_item))
         return _serialize_watchlist_item(existing_item, market_data=md, db=db)
 
     # No existing row: create a new item.
@@ -1863,7 +1955,7 @@ def create_watchlist_item(
             sl_price=item.sl_price,
             tp_price=item.tp_price,
             notes=item.notes,
-            signals=json.dumps(item.signals) if item.signals and not isinstance(item.signals, str) else (item.signals if item.signals else None),
+            signals=json.dumps(getattr(item, "signals", None)) if getattr(item, "signals", None) and not isinstance(getattr(item, "signals", None), str) else (getattr(item, "signals", None) or None),
             skip_sl_tp_reminder=item.skip_sl_tp_reminder or False,
             order_status=item.order_status or "PENDING",
             order_date=item.order_date,
@@ -1890,31 +1982,34 @@ def create_watchlist_item(
         # Continue anyway - master table will be seeded on next GET request
     
     # Calculate and save TP/SL values if they're blank
-    md = _get_market_data_for_symbol(db, item.symbol)
-    if md and (item.sl_price is None or item.tp_price is None):
-        current_price = md.price if md.price is not None else item.price
-        current_atr = md.atr if md.atr is not None else item.atr
-        
-        if current_price and current_price > 0:
+    md = _get_market_data_for_symbol(db, _symbol_str(item))
+    sl_p = getattr(item, "sl_price", None)
+    tp_p = getattr(item, "tp_price", None)
+    if md and (sl_p is None or tp_p is None):
+        current_price = md.price if md.price is not None else getattr(item, "price", None)
+        current_atr = md.atr if md.atr is not None else getattr(item, "atr", None)
+        _price_float = float(current_price) if current_price is not None else None
+        _atr_float = float(current_atr) if current_atr is not None else None
+        if _price_float and _price_float > 0:
             calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
                 symbol=_symbol_str(item),
-                price=current_price,
-                atr=current_atr,
+                price=_price_float,
+                atr=_atr_float,
                 watchlist_item=item,
                 db=db
             )
             
             # Save calculated values to database if they're None
             updated = False
-            if calculated_sl is not None and item.sl_price is None:
+            if calculated_sl is not None and sl_p is None:
                 setattr(item, "sl_price", calculated_sl)
                 updated = True
-                log.debug(f"Saved calculated sl_price for new item {item.symbol}: {calculated_sl}")
+                log.debug(f"Saved calculated sl_price for new item {_symbol_str(item)}: {calculated_sl}")
             
-            if calculated_tp is not None and item.tp_price is None:
+            if calculated_tp is not None and tp_p is None:
                 setattr(item, "tp_price", calculated_tp)
                 updated = True
-                log.debug(f"Saved calculated tp_price for new item {item.symbol}: {calculated_tp}")
+                log.debug(f"Saved calculated tp_price for new item {_symbol_str(item)}: {calculated_tp}")
             
             if updated:
                 try:
@@ -1972,16 +2067,18 @@ def update_watchlist_item(
         except Exception:
             canonical = None
 
-        if canonical and canonical.id != item.id:
+        canonical_id = getattr(canonical, "id", None) if canonical else None
+        item_id_val = getattr(item, "id", None)
+        if canonical and canonical_id is not None and canonical_id != item_id_val:
             log.warning(
                 "[WATCHLIST_UPDATE_REDIRECT] Requested update for deleted duplicate id=%s symbol=%s exchange=%s -> canonical_id=%s",
-                item.id,
+                item_id_val,
                 symbol_upper,
                 exchange_upper,
-                canonical.id,
+                canonical_id,
             )
             item = canonical
-            item_id = canonical.id
+            item_id = int(canonical_id) if canonical_id is not None else (int(item_id_val) if item_id_val is not None else 0)
         elif requested_restore:
             # No active canonical row exists: allow restore explicitly requested by payload.
             # (Still safer to prefer the dedicated restore endpoint.)
@@ -2026,10 +2123,10 @@ def update_watchlist_item(
         if CONFIG_PATH and CONFIG_PATH.exists():
             config_file_mtime_before = os.path.getmtime(CONFIG_PATH)
         
-        old_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+        old_strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=item)
         old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
     except Exception as old_strategy_err:
-        log.debug(f"Could not resolve old strategy for {item.symbol}: {old_strategy_err}")
+        log.debug(f"Could not resolve old strategy for {_symbol_str(item)}: {old_strategy_err}")
     
     strategy_changed = False
     
@@ -2046,33 +2143,33 @@ def update_watchlist_item(
             if new_value is False and old_value is True:
                 # Count how many coins currently have trade_enabled=True
                 current_trade_enabled_count = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.trade_enabled == True,  # type: ignore[reportGeneralTypeIssues]
                     WatchlistItem.is_deleted == False
                 ).count()
                 log.warning(
-                    f"[TRADE_ENABLED_DISABLE] Disabling trade_enabled for {item.symbol}. "
+                    f"[TRADE_ENABLED_DISABLE] Disabling trade_enabled for {_symbol_str(item)}. "
                     f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
                     f"This should only happen if user explicitly disables it."
                 )
             elif new_value is True and old_value is False:
                 # Count how many coins will have trade_enabled=True after this change
                 current_trade_enabled_count = db.query(WatchlistItem).filter(
-                    WatchlistItem.trade_enabled == True,
+                    WatchlistItem.trade_enabled == True,  # type: ignore[reportGeneralTypeIssues]
                     WatchlistItem.is_deleted == False
                 ).count()
                 log.info(
-                    f"[TRADE_ENABLED_ENABLE] Enabling trade_enabled for {item.symbol}. "
+                    f"[TRADE_ENABLED_ENABLE] Enabling trade_enabled for {_symbol_str(item)}. "
                     f"Current count of trade_enabled=True coins: {current_trade_enabled_count}. "
                     f"After this change: {current_trade_enabled_count + 1}"
                 )
     
     alert_enabled_old_value = None
     if "alert_enabled" in payload:
-        alert_enabled_old_value = item.alert_enabled  # May be None if NULL in DB
+        alert_enabled_old_value = getattr(item, "alert_enabled", None)  # May be None if NULL in DB
         new_value = payload["alert_enabled"]
         # Check if value actually changed (handle None as False for comparison)
-        old_value_for_comparison = alert_enabled_old_value if alert_enabled_old_value is not None else False
-        new_value_for_comparison = new_value if new_value is not None else False
+        old_value_for_comparison = bool(alert_enabled_old_value) if alert_enabled_old_value is not None else False
+        new_value_for_comparison = bool(new_value) if new_value is not None else False
         if old_value_for_comparison != new_value_for_comparison:
             updates.append(f"ALERT: {'YES' if new_value else 'NO'}")
             alert_enabled_was_updated = True
@@ -2194,9 +2291,10 @@ def update_watchlist_item(
                             setattr(master, field, value)
                             master.set_field_updated_at(field, now)
                 if "signals" in payload:
-                    import json
+                    import json as _json_put
                     signals_value = payload["signals"]
-                    master.signals = json.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    val = _json_put.dumps(signals_value) if signals_value and not isinstance(signals_value, str) else signals_value
+                    setattr(master, "signals", val)
                     master.set_field_updated_at('signals', now)
                 master.updated_at = now
                 db.commit()
@@ -2217,14 +2315,15 @@ def update_watchlist_item(
                 if hasattr(WatchlistItem, "exchange") and exchange_upper:
                     q = q.filter(WatchlistItem.exchange == exchange_upper)
                 try:
-                    q = q.filter(WatchlistItem.is_deleted == False)
+                    q = q.filter(WatchlistItem.is_deleted == False)  # type: ignore[reportGeneralTypeIssues]
                 except Exception:
                     pass
                 canonical = q.order_by(WatchlistItem.created_at.desc(), WatchlistItem.id.desc()).first()
                 if canonical:
+                    _canon_id = getattr(canonical, "id", None)
                     log.warning(
                         "[WATCHLIST_UNIQUE_VIOLATION] Retrying update on canonical id=%s symbol=%s exchange=%s (requested_id=%s)",
-                        canonical.id,
+                        _canon_id,
                         symbol_upper,
                         exchange_upper,
                         item_id,
@@ -2236,7 +2335,7 @@ def update_watchlist_item(
                     # Master table updates are no longer needed
                     
                     item = canonical
-                    item_id = canonical.id
+                    item_id = int(_canon_id) if _canon_id is not None else item_id
                 else:
                     raise HTTPException(
                         status_code=409,
@@ -2264,8 +2363,8 @@ def update_watchlist_item(
     # Check alert_enabled change (using old value captured BEFORE update)
     if "alert_enabled" in payload and alert_enabled_old_value is not None:
         new_value = payload.get("alert_enabled")
-        old_comparison = alert_enabled_old_value if alert_enabled_old_value is not None else False
-        new_comparison = new_value if new_value is not None else False
+        old_comparison = bool(alert_enabled_old_value) if alert_enabled_old_value is not None else False
+        new_comparison = bool(new_value) if new_value is not None else False
         if old_comparison != new_comparison:
             config_changed = True
             config_change_reasons.append(f"alert_enabled ({'YES' if old_comparison else 'NO'} → {'YES' if new_comparison else 'NO'})")
@@ -2275,11 +2374,12 @@ def update_watchlist_item(
         new_value = payload.get("buy_alert_enabled")
         if buy_alert_enabled_old_value != new_value:
             config_changed = True
-            config_change_reasons.append(f"buy_alert_enabled ({'YES' if buy_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+            _buy_old = bool(buy_alert_enabled_old_value) if buy_alert_enabled_old_value is not None else False
+            config_change_reasons.append(f"buy_alert_enabled ({'YES' if _buy_old else 'NO'} → {'YES' if new_value else 'NO'})")
             # PHASE 0: Structured logging for UI toggle
             log.info(
-                f"[UI_TOGGLE] {item.symbol} BUY alert toggle | "
-                f"previous_state={'ENABLED' if buy_alert_enabled_old_value else 'DISABLED'} | "
+                f"[UI_TOGGLE] {_symbol_str(item)} BUY alert toggle | "
+                f"previous_state={'ENABLED' if _buy_old else 'DISABLED'} | "
                 f"new_state={'ENABLED' if new_value else 'DISABLED'}"
             )
     
@@ -2288,11 +2388,12 @@ def update_watchlist_item(
         new_value = payload.get("sell_alert_enabled")
         if sell_alert_enabled_old_value != new_value:
             config_changed = True
-            config_change_reasons.append(f"sell_alert_enabled ({'YES' if sell_alert_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+            _sell_old = bool(sell_alert_enabled_old_value) if sell_alert_enabled_old_value is not None else False
+            config_change_reasons.append(f"sell_alert_enabled ({'YES' if _sell_old else 'NO'} → {'YES' if new_value else 'NO'})")
             # PHASE 0: Structured logging for UI toggle
             log.info(
-                f"[UI_TOGGLE] {item.symbol} SELL alert toggle | "
-                f"previous_state={'ENABLED' if sell_alert_enabled_old_value else 'DISABLED'} | "
+                f"[UI_TOGGLE] {_symbol_str(item)} SELL alert toggle | "
+                f"previous_state={'ENABLED' if _sell_old else 'DISABLED'} | "
                 f"new_state={'ENABLED' if new_value else 'DISABLED'}"
             )
     
@@ -2301,7 +2402,8 @@ def update_watchlist_item(
         new_value = payload.get("trade_enabled")
         if trade_enabled_old_value != new_value:
             config_changed = True
-            config_change_reasons.append(f"trade_enabled ({'YES' if trade_enabled_old_value else 'NO'} → {'YES' if new_value else 'NO'})")
+            _trade_old = bool(trade_enabled_old_value) if trade_enabled_old_value is not None else False
+            config_change_reasons.append(f"trade_enabled ({'YES' if _trade_old else 'NO'} → {'YES' if new_value else 'NO'})")
     
     # Check min_price_change_pct change
     if "min_price_change_pct" in payload and min_price_change_pct_old_value is not None:
@@ -2335,7 +2437,7 @@ def update_watchlist_item(
             from app.models.signal_throttle import SignalThrottleState
             
             # Get current strategy (after update)
-            strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+            strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=item)
             strategy_key = build_strategy_key(
                 strategy_profile[0],  # strategy_type
                 strategy_profile[1]   # risk_approach
@@ -2356,10 +2458,11 @@ def update_watchlist_item(
 
             existing_hash = None
             try:
+                _sym = _symbol_str(item)
                 existing_state = (
                     db.query(SignalThrottleState)
                     .filter(
-                        SignalThrottleState.symbol == item.symbol,
+                        SignalThrottleState.symbol == _sym,
                         SignalThrottleState.strategy_key == strategy_key,
                         SignalThrottleState.side == "BUY",
                     )
@@ -2367,7 +2470,7 @@ def update_watchlist_item(
                 ) or (
                     db.query(SignalThrottleState)
                     .filter(
-                        SignalThrottleState.symbol == item.symbol,
+                        SignalThrottleState.symbol == _sym,
                         SignalThrottleState.strategy_key == strategy_key,
                         SignalThrottleState.side == "SELL",
                     )
@@ -2409,8 +2512,8 @@ def update_watchlist_item(
             # Also clear order creation limitations (allows immediate order creation)
             try:
                 from app.services.signal_monitor import signal_monitor_service
-                signal_monitor_service.clear_order_creation_limitations(item.symbol)
-                log.info(f"🔄 [CONFIG_CHANGE] Cleared order creation limitations for {item.symbol}")
+                signal_monitor_service.clear_order_creation_limitations(_symbol_str(item))
+                log.info(f"🔄 [CONFIG_CHANGE] Cleared order creation limitations for {_symbol_str(item)}")
             except Exception as clear_err:
                 log.warning(f"⚠️ [CONFIG_CHANGE] Failed to clear order creation limitations for {item.symbol}: {clear_err}")
             
@@ -2449,23 +2552,23 @@ def update_watchlist_item(
                 config_file_modified = True
                 log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} - strategy may have changed")
         
-        new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+        new_strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=item)
         new_strategy_key = build_strategy_key(new_strategy_profile[0], new_strategy_profile[1])
         
         # If old and new strategy keys are different, strategy changed
         if old_strategy_key and new_strategy_key and old_strategy_key != new_strategy_key:
             strategy_changed = True
-            log.info(f"🔄 [STRATEGY] Detected strategy change for {item.symbol}: {old_strategy_key} → {new_strategy_key} (from config comparison)")
+            log.info(f"🔄 [STRATEGY] Detected strategy change for {_symbol_str(item)}: {old_strategy_key} → {new_strategy_key} (from config comparison)")
         # FALLBACK: If config file was modified, assume strategy changed (even if keys are same, config might have changed)
         elif not strategy_changed and config_file_modified:
             strategy_changed = True
-            log.info(f"🔄 [STRATEGY] Config file modified for {item.symbol} - resetting throttle as safety measure")
+            log.info(f"🔄 [STRATEGY] Config file modified for {_symbol_str(item)} - resetting throttle as safety measure")
         # FALLBACK: If we couldn't detect change via comparison, but payload contains strategy-related fields, assume strategy changed
         elif not strategy_changed and ("preset" in payload or "risk_mode" in payload or "sl_tp_mode" in payload):
             strategy_changed = True
-            log.info(f"🔄 [STRATEGY] Assuming strategy change for {item.symbol} (strategy-related fields in payload) - resetting throttle as safety measure")
+            log.info(f"🔄 [STRATEGY] Assuming strategy change for {_symbol_str(item)} (strategy-related fields in payload) - resetting throttle as safety measure")
     except Exception as new_strategy_err:
-        log.debug(f"Could not resolve new strategy for {item.symbol}: {new_strategy_err}")
+        log.debug(f"Could not resolve new strategy for {_symbol_str(item)}: {new_strategy_err}")
     
     # When trade_enabled is toggled to YES, also enable alert flags (keep for backward compatibility)
     if "trade_enabled" in payload:
@@ -2477,17 +2580,17 @@ def update_watchlist_item(
         if new_value:
             # CRITICAL: Enable alert_enabled (master switch) when trade is enabled
             # This is required for alerts to be sent (both alert_enabled AND buy_alert_enabled must be True)
-            if not item.alert_enabled:
+            if not getattr(item, "alert_enabled", False):
                 setattr(item, "alert_enabled", True)
-                log.info(f"⚡ [TRADE] Auto-enabled alert_enabled (master switch) for {item.symbol} (required for all alerts)")
+                log.info(f"⚡ [TRADE] Auto-enabled alert_enabled (master switch) for {_symbol_str(item)} (required for all alerts)")
             # CRITICAL: Enable buy_alert_enabled and sell_alert_enabled when trade is enabled
             # This ensures alerts are sent when signals are detected
-            if not item.buy_alert_enabled:
+            if not getattr(item, "buy_alert_enabled", False):
                 setattr(item, "buy_alert_enabled", True)
-                log.info(f"⚡ [TRADE] Auto-enabled buy_alert_enabled for {item.symbol} (required for BUY alerts)")
-            if not item.sell_alert_enabled:
+                log.info(f"⚡ [TRADE] Auto-enabled buy_alert_enabled for {_symbol_str(item)} (required for BUY alerts)")
+            if not getattr(item, "sell_alert_enabled", False):
                 setattr(item, "sell_alert_enabled", True)
-                log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {item.symbol} (required for SELL alerts)")
+                log.info(f"⚡ [TRADE] Auto-enabled sell_alert_enabled for {_symbol_str(item)} (required for SELL alerts)")
             db.commit()
             db.refresh(item)
     
@@ -2512,21 +2615,26 @@ def update_watchlist_item(
             # If still no keys, resolve them now
             if not old_strategy_key:
                 try:
-                    # Try to get old strategy from old_sl_tp_mode, preset, or risk_mode
-                    if old_sl_tp_mode or old_preset or old_risk_mode:
+                    # Try to get old strategy from old_sl_tp_mode, preset, or risk_mode (avoid Column __bool__)
+                    _has_old = (
+                        (old_sl_tp_mode is not None and str(old_sl_tp_mode) != "")
+                        or (old_preset is not None and str(old_preset) != "")
+                        or (old_risk_mode is not None and str(old_risk_mode) != "")
+                    )
+                    if _has_old:
                         # Create a temporary watchlist item with old values to resolve strategy
                         old_item = type('obj', (object,), {
                             'sl_tp_mode': old_sl_tp_mode,
                             'preset': old_preset,
                             'risk_mode': old_risk_mode
                         })()
-                        old_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=old_item)
+                        old_strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=old_item)
                         old_strategy_key = build_strategy_key(old_strategy_profile[0], old_strategy_profile[1])
                 except Exception as parse_err:
                     log.debug(f"Could not resolve old strategy (sl_tp_mode={old_sl_tp_mode}, preset={old_preset}, risk_mode={old_risk_mode}): {parse_err}")
             
             if not new_strategy_key:
-                new_strategy_profile = resolve_strategy_profile(item.symbol, db=db, watchlist_item=item)
+                new_strategy_profile = resolve_strategy_profile(_symbol_str(item), db=db, watchlist_item=item)
                 new_strategy_key = build_strategy_key(
                     new_strategy_profile[0],  # strategy_type
                     new_strategy_profile[1]   # risk_approach
@@ -2562,8 +2670,8 @@ def update_watchlist_item(
             # so that orders can be created immediately when new strategy signals are detected
             try:
                 from app.services.signal_monitor import signal_monitor_service
-                signal_monitor_service.clear_order_creation_limitations(item.symbol)
-                log.info(f"🔄 [STRATEGY] Cleared order creation limitations for {item.symbol} - orders can be created immediately")
+                signal_monitor_service.clear_order_creation_limitations(_symbol_str(item))
+                log.info(f"🔄 [STRATEGY] Cleared order creation limitations for {_symbol_str(item)} - orders can be created immediately")
             except Exception as clear_err:
                 log.warning(f"⚠️ [STRATEGY] Failed to clear order creation limitations for {item.symbol}: {clear_err}", exc_info=True)
             
@@ -2590,9 +2698,9 @@ def update_watchlist_item(
         # Only verify and log if the value actually changed
         if alert_enabled_old_value != expected_value:
             db.refresh(item)  # Ensure we have latest from DB
-            actual_value = item.alert_enabled
+            actual_value = getattr(item, "alert_enabled", None)
             if actual_value != expected_value:
-                log.error(f"❌ SYNC ERROR: alert_enabled mismatch for {item.symbol} ({item_id}): "
+                log.error(f"❌ SYNC ERROR: alert_enabled mismatch for {_symbol_str(item)} ({item_id}): "
                          f"Expected {expected_value}, but DB has {actual_value}. "
                          f"Attempting to fix...")
                 setattr(item, "alert_enabled", expected_value)
@@ -2624,7 +2732,7 @@ def update_watchlist_item(
                 log.info(f"✅ Updated trade_enabled for {item.symbol} ({item_id}): {trade_enabled_old_value} -> {expected_value}")
     
     # Enrich with MarketData before returning
-    md = _get_market_data_for_symbol(db, item.symbol)
+    md = _get_market_data_for_symbol(db, _symbol_str(item))
     result = _serialize_watchlist_item(item, market_data=md, db=db)
     
     # Add success message if updates were made
@@ -2718,7 +2826,7 @@ def restore_watchlist_item_by_symbol(symbol: str, db: Session = Depends(get_db))
             log.info(f"✅ Restored watchlist item {symbol} (ID: {item.id})")
             
             # Enrich with MarketData before returning
-            md = _get_market_data_for_symbol(db, item.symbol)
+            md = _get_market_data_for_symbol(db, _symbol_str(item))
             return {
                 "ok": True,
                 "message": f"{symbol} has been restored",
@@ -2818,11 +2926,11 @@ def get_alert_stats(db: Session = Depends(get_db)):
         trade_coins = []
         
         for item in items:
-            symbol = (item.symbol or "").upper()
+            symbol = _symbol_str(item).upper()
             has_alert_enabled = getattr(item, "alert_enabled", False)
             has_buy = getattr(item, "buy_alert_enabled", False)
             has_sell = getattr(item, "sell_alert_enabled", False)
-            has_trade = item.trade_enabled
+            has_trade = bool(getattr(item, "trade_enabled", False))
             
             # Track master switch (alert_enabled)
             if has_alert_enabled:
