@@ -259,6 +259,80 @@ def watchlist_drift_diagnostic(db: Session = Depends(get_db)):
         )
 
 
+@router.get("/diagnostics/strategy-consistency")
+def strategy_consistency_diagnostic(db: Session = Depends(get_db)):
+    """
+    Compare trading_config.json coins preset vs resolved strategy_key for every watchlist symbol.
+    Dashboard and backend show the same strategy when config_preset (normalized) equals resolved_key.
+    Returns by_symbol, mismatches list, and summary counts.
+    """
+    try:
+        from app.models.watchlist import WatchlistItem
+        from app.services.strategy_profiles import resolve_strategy_profile
+        from app.services.signal_throttle import build_strategy_key
+        from app.services.config_loader import load_config
+
+        items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
+        cfg = load_config()
+        coins = cfg.get("coins", {})
+        by_symbol: Dict[str, Any] = {}
+        mismatches: List[Dict[str, Any]] = []
+
+        for item in items:
+            symbol = (item.symbol or "").upper()
+            if not symbol:
+                continue
+            config_preset = None
+            for k, v in coins.items():
+                if k == symbol or k == symbol.replace("_USDT", "_USD") or k == symbol.replace("_USD", "_USDT"):
+                    config_preset = v.get("preset")
+                    break
+            try:
+                strategy_type, risk_approach = resolve_strategy_profile(symbol, db, item)
+                raw = build_strategy_key(strategy_type, risk_approach)
+                resolved_key = raw.replace(":", "-") if ":" in raw else raw
+            except Exception as e:
+                resolved_key = f"error:{e!s}"
+            config_key = None
+            if config_preset:
+                if isinstance(config_preset, str) and "-" in config_preset:
+                    config_key = config_preset.lower()
+                else:
+                    base = str(config_preset).lower().split("-")[0]
+                    risk = (item.sl_tp_mode or "conservative").lower()
+                    config_key = f"{base}-{risk}"
+            match = (config_key == resolved_key) if (config_key and not resolved_key.startswith("error:")) else (resolved_key == "swing-conservative" and not config_key)
+            by_symbol[symbol] = {
+                "config_preset": config_preset,
+                "config_key": config_key,
+                "resolved_key": resolved_key,
+                "match": match,
+            }
+            if not match and not resolved_key.startswith("error:"):
+                mismatches.append({
+                    "symbol": symbol,
+                    "config_preset": config_preset,
+                    "config_key": config_key,
+                    "resolved_key": resolved_key,
+                })
+
+        total = len(by_symbol)
+        match_count = sum(1 for v in by_symbol.values() if v.get("match"))
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "total": total,
+                "match": match_count,
+                "mismatch": total - match_count,
+            },
+            "by_symbol": by_symbol,
+            "mismatches": mismatches,
+        }
+    except Exception as e:
+        logger.error(f"Error in strategy consistency diagnostic: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Diagnostic error: {str(e)}")
+
+
 @router.get("/api/diagnostics/alerts_audit")
 def alerts_audit_endpoint(
     db: Session = Depends(get_db),
