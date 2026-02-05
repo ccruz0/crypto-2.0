@@ -135,40 +135,114 @@ def fetch_live_portfolio_snapshot(db: Session) -> Dict[str, Any]:
             logger.error("[PORTFOLIO_SNAPSHOT] No data received from Crypto.com Exchange")
             raise RuntimeError("No data received from Crypto.com Exchange")
         
-        # Debug: Log raw account_data structure (only in debug mode)
-        if PORTFOLIO_SNAPSHOT_DEBUG:
-            logger.debug(f"[PORTFOLIO_SNAPSHOT_DEBUG] account_data keys: {list(account_data.keys()) if isinstance(account_data, dict) else 'not a dict'}")
+        # [PORTFOLIO_SNAPSHOT_RAW_SHAPE] Safe log: top-level keys, result keys, list counts only (no secrets)
+        def _safe_shape(obj: Any, max_keys: int = 20) -> str:
+            if obj is None:
+                return "None"
+            if not isinstance(obj, dict):
+                return f"<{type(obj).__name__}>"
+            keys = list(obj.keys())[:max_keys]
+            return str(keys)
+        top_keys = _safe_shape(account_data)
+        result_keys = "N/A"
+        result_list_counts: List[str] = []
+        if isinstance(account_data, dict) and "result" in account_data:
+            res = account_data["result"]
+            result_keys = _safe_shape(res) if isinstance(res, dict) else f"<{type(res).__name__}>"
+            if isinstance(res, dict):
+                for k in ("accounts", "data", "account", "balance", "balances"):
+                    v = res.get(k)
+                    if v is not None:
+                        n = len(v) if isinstance(v, (list, tuple)) else ("1" if isinstance(v, dict) else "?")
+                        result_list_counts.append(f"{k}={n}")
+        logger.warning(
+            "[PORTFOLIO_SNAPSHOT_RAW_SHAPE] top_keys=%s result_keys=%s list_counts=[%s]",
+            top_keys,
+            result_keys,
+            ", ".join(result_list_counts) or "none",
+        )
         
-        # Extract accounts/balances
-        accounts = []
-        if "accounts" in account_data:
-            accounts = account_data["accounts"]
-        elif "result" in account_data:
-            result = account_data["result"]
-            if "accounts" in result:
-                accounts = result["accounts"]
-            elif "data" in result:
-                # Handle position_balances format
-                data = result["data"]
-                if isinstance(data, list) and len(data) > 0:
-                    position_data = data[0]
-                    if "position_balances" in position_data:
-                        for balance in position_data["position_balances"]:
-                            instrument = balance.get("instrument_name", "")
-                            quantity = float(balance.get("quantity", "0") or 0)
-                            
-                            # Extract currency from instrument_name
-                            currency = _normalize_currency_name(instrument)
-                            
-                            if quantity > 0 and currency:
-                                accounts.append({
-                                    "currency": currency,
-                                    "balance": str(quantity),
-                                    "available": str(balance.get("max_withdrawal_balance", quantity))
-                                })
+        # Extract accounts/balances with defensive parsing for alternate response shapes
+        accounts: List[Dict[str, Any]] = []
+        candidates_checked: List[str] = []
         
-        # Always log account count (helpful for debugging)
-        logger.info(f"[PORTFOLIO_SNAPSHOT] Retrieved {len(accounts)} account balances from Crypto.com")
+        if isinstance(account_data, dict):
+            if "accounts" in account_data:
+                v = account_data["accounts"]
+                candidates_checked.append("accounts")
+                if isinstance(v, list):
+                    accounts = v
+                elif isinstance(v, dict):
+                    accounts = [v]
+            if not accounts and "result" in account_data:
+                result = account_data["result"]
+                candidates_checked.append("result")
+                if isinstance(result, dict):
+                    if "accounts" in result:
+                        v = result["accounts"]
+                        candidates_checked.append("result.accounts")
+                        if isinstance(v, list):
+                            accounts = v
+                        elif isinstance(v, dict):
+                            accounts = [v]
+                    elif "data" in result:
+                        data = result["data"]
+                        candidates_checked.append("result.data")
+                        if isinstance(data, list) and len(data) > 0:
+                            position_data = data[0]
+                            if isinstance(position_data, dict) and "position_balances" in position_data:
+                                candidates_checked.append("result.data[0].position_balances")
+                                for balance in position_data["position_balances"] or []:
+                                    instrument = balance.get("instrument_name", "")
+                                    quantity = float(balance.get("quantity", "0") or 0)
+                                    currency = _normalize_currency_name(instrument)
+                                    if quantity > 0 and currency:
+                                        accounts.append({
+                                            "currency": currency,
+                                            "balance": str(quantity),
+                                            "available": str(balance.get("max_withdrawal_balance", quantity))
+                                        })
+                        elif isinstance(data, dict):
+                            if "position_balances" in data:
+                                for balance in (data["position_balances"] or []):
+                                    instrument = balance.get("instrument_name", "")
+                                    quantity = float(balance.get("quantity", "0") or 0)
+                                    currency = _normalize_currency_name(instrument)
+                                    if quantity > 0 and currency:
+                                        accounts.append({
+                                            "currency": currency,
+                                            "balance": str(quantity),
+                                            "available": str(balance.get("max_withdrawal_balance", quantity))
+                                        })
+                    elif "account" in result:
+                        v = result["account"]
+                        candidates_checked.append("result.account")
+                        if isinstance(v, list):
+                            accounts = v
+                        elif isinstance(v, dict):
+                            accounts = [v]
+                    elif "balance" in result or "balances" in result:
+                        v = result.get("balance") or result.get("balances")
+                        candidates_checked.append("result.balance/balances")
+                        if isinstance(v, list):
+                            accounts = v
+                        elif isinstance(v, dict):
+                            accounts = [v]
+            if not accounts and "data" in account_data:
+                v = account_data["data"]
+                candidates_checked.append("data")
+                if isinstance(v, list):
+                    accounts = v
+                elif isinstance(v, dict):
+                    accounts = [v]
+        
+        if len(accounts) == 0:
+            logger.warning(
+                f"[PORTFOLIO_SNAPSHOT] No accounts extracted, candidates checked: {candidates_checked}; "
+                f"raw_shape top_keys={top_keys} result_keys={result_keys}"
+            )
+        else:
+            logger.info(f"[PORTFOLIO_SNAPSHOT] Retrieved {len(accounts)} account balances from Crypto.com")
         if PORTFOLIO_SNAPSHOT_DEBUG and accounts:
             logger.debug(f"[PORTFOLIO_SNAPSHOT_DEBUG] Sample accounts: {accounts[:3]}")
         
@@ -550,17 +624,17 @@ def get_latest_portfolio_snapshot(db: Session, max_age_minutes: int = 5) -> Opti
                 logger.debug(f"Snapshot is stale: {age.total_seconds() / 60:.1f} minutes old")
             return None
         
-        # Convert to dict
+        # Convert to dict; ensure numbers are never None for stable API JSON
         return {
-            "assets": snapshot.assets_json or [],
-            "total_assets_usd": snapshot.total_assets_usd,
-            "total_collateral_usd": snapshot.total_collateral_usd,
-            "total_borrowed_usd": snapshot.total_borrowed_usd,
-            "total_value_usd": snapshot.total_value_usd,
-            "portfolio_value_source": snapshot.portfolio_value_source,
+            "assets": snapshot.assets_json if snapshot.assets_json is not None else [],
+            "total_assets_usd": float(snapshot.total_assets_usd) if snapshot.total_assets_usd is not None else 0.0,
+            "total_collateral_usd": float(snapshot.total_collateral_usd) if snapshot.total_collateral_usd is not None else 0.0,
+            "total_borrowed_usd": float(snapshot.total_borrowed_usd) if snapshot.total_borrowed_usd is not None else 0.0,
+            "total_value_usd": float(snapshot.total_value_usd) if snapshot.total_value_usd is not None else 0.0,
+            "portfolio_value_source": snapshot.portfolio_value_source or "crypto_com_live",
             "as_of": snapshot.as_of.isoformat(),
-            "unpriced_count": snapshot.unpriced_count or 0,
-            "exchange": snapshot.exchange
+            "unpriced_count": int(snapshot.unpriced_count) if snapshot.unpriced_count is not None else 0,
+            "exchange": snapshot.exchange or "Crypto.com Exchange"
         }
     
     except Exception as e:
