@@ -1312,6 +1312,45 @@ class CryptoComTradeClient:
                 if margin_equity_value is not None:
                     response_data["margin_equity"] = margin_equity_value
                 
+                # Fallback: if user-balance returned 0 accounts, try get-account-summary (spot-style)
+                if len(accounts) == 0:
+                    try:
+                        method_fallback = "private/get-account-summary"
+                        payload_fallback = self.sign_request(method_fallback, {})
+                        if not (isinstance(payload_fallback, dict) and payload_fallback.get("skipped")):
+                            url_fb = f"{self.base_url}/{method_fallback}"
+                            from app.utils.egress_guard import validate_outbound_url, EgressGuardError
+                            try:
+                                validated_url, _ = validate_outbound_url(
+                                    url_fb, calling_module="crypto_com_trade.get_account_summary_fallback"
+                                )
+                            except EgressGuardError:
+                                raise
+                            resp_fb = http_post(
+                                validated_url,
+                                json=payload_fallback,
+                                headers={"Content-Type": "application/json"},
+                                timeout=10,
+                                calling_module="crypto_com_trade.get_account_summary_fallback",
+                            )
+                            if resp_fb.status_code == 200:
+                                res_fb = resp_fb.json()
+                                if res_fb.get("code") == 0 and isinstance(res_fb.get("result"), dict):
+                                    acc_data = res_fb["result"].get("accounts", [])
+                                    if isinstance(acc_data, list) and len(acc_data) > 0:
+                                        for acc in acc_data:
+                                            currency = acc.get("currency", "")
+                                            if currency:
+                                                accounts.append({
+                                                    "currency": currency,
+                                                    "balance": str(acc.get("balance", "0")),
+                                                    "available": str(acc.get("available", acc.get("balance", "0"))),
+                                                })
+                                        response_data["accounts"] = accounts
+                                        logger.info(f"Retrieved {len(accounts)} account balances via get-account-summary fallback")
+                    except Exception as fb_err:
+                        logger.debug("get-account-summary fallback failed: %s", fb_err)
+                
                 return response_data
             else:
                 logger.error(f"Unexpected response format: {result}")
