@@ -844,6 +844,63 @@ async def _compute_dashboard_state(db: Session, request_context: Optional[dict] 
                     if bal.get("currency") and (float(bal.get("usd_value", 0) or 0) > 0 or float(bal.get("balance", 0) or 0) > 0)
                 ]
         
+        # If cache/snapshot returned zero assets, try one-off live fetch so Portfolio tab can show data
+        if not portfolio_assets:
+            live_snapshot = None
+            try:
+                from app.services.portfolio_snapshot import fetch_live_portfolio_snapshot, store_portfolio_snapshot
+                log.info("[DASHBOARD_STATE] No assets in cache/snapshot; attempting live portfolio fetch")
+                live_snapshot = await asyncio.to_thread(fetch_live_portfolio_snapshot, db)
+                if live_snapshot and live_snapshot.get("assets"):
+                    try:
+                        store_portfolio_snapshot(db, live_snapshot)
+                    except Exception as store_err:
+                        log.debug("Could not store live snapshot: %s", store_err)
+            except (ValueError, RuntimeError) as e:
+                log.debug("[DASHBOARD_STATE] Live portfolio fetch skipped or failed: %s", e)
+            except Exception as e:
+                log.debug("[DASHBOARD_STATE] Live portfolio fetch error: %s", e)
+            if live_snapshot and live_snapshot.get("assets"):
+                raw_snapshot_assets = live_snapshot.get("assets", [])
+                portfolio_assets = []
+                for asset in raw_snapshot_assets:
+                    symbol = asset.get("symbol") or asset.get("coin") or asset.get("currency") or ""
+                    if not symbol:
+                        continue
+                    balance = float(asset.get("balance") or asset.get("total") or asset.get("free", 0) or 0)
+                    value_usd = float(asset.get("value_usd") or asset.get("usd_value", 0) or 0)
+                    portfolio_assets.append({
+                        "symbol": symbol,
+                        "coin": symbol,
+                        "currency": symbol,
+                        "balance": balance,
+                        "total": balance,
+                        "free": asset.get("free", 0),
+                        "locked": asset.get("locked", 0),
+                        "value_usd": value_usd,
+                        "usd_value": value_usd,
+                        "price_usd": asset.get("price_usd"),
+                    })
+                balances_list = [
+                    {"currency": a.get("currency"), "balance": a.get("balance", 0), "usd_value": a.get("value_usd", 0)}
+                    for a in portfolio_assets
+                ]
+                total_assets_usd = float(live_snapshot.get("total_assets_usd", 0) or 0)
+                total_collateral_usd = float(live_snapshot.get("total_collateral_usd", 0) or 0)
+                total_borrowed_usd = float(live_snapshot.get("total_borrowed_usd", 0) or 0)
+                total_usd_value = float(live_snapshot.get("total_value_usd", 0) or 0)
+                portfolio_value_source = live_snapshot.get("portfolio_value_source", "crypto_com_live")
+                portfolio_reconcile_data = live_snapshot.get("reconcile")
+                as_of_str = live_snapshot.get("as_of")
+                if as_of_str:
+                    try:
+                        last_updated = datetime.fromisoformat(as_of_str.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        last_updated = time.time()
+                else:
+                    last_updated = time.time()
+                log.info("[DASHBOARD_STATE] Using live portfolio fetch (empty cache): %s assets", len(portfolio_assets))
+        
         # Log raw data for debugging
         log.debug(f"Portfolio data: assets={len(portfolio_assets)}, balances={len(balances_list)}, total_usd={total_usd_value}, source={portfolio_value_source}, last_updated={last_updated}")
         
