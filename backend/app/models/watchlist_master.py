@@ -137,3 +137,7 @@ class WatchlistMaster(Base):
         else:
             raise ValueError(f"Field '{field_name}' does not exist on WatchlistMaster")
 
+
+# Backward compatibility: some code (e.g. routes_admin) may import WatchlistItem from here.
+WatchlistItem = WatchlistMaster
+
