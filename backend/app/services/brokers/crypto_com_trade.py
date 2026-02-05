@@ -1312,6 +1312,27 @@ class CryptoComTradeClient:
                 if margin_equity_value is not None:
                     response_data["margin_equity"] = margin_equity_value
                 
+                # Diagnostic: when user-balance returns 0 accounts, log response shape (no sensitive values)
+                if len(accounts) == 0:
+                    try:
+                        res = result.get("result")
+                        res_keys = list(res.keys()) if isinstance(res, dict) else type(res).__name__
+                        data_val = res.get("data") if isinstance(res, dict) else None
+                        data_info = "absent"
+                        if data_val is not None:
+                            if isinstance(data_val, list):
+                                data_info = f"list(len={len(data_val)})"
+                                if len(data_val) > 0 and isinstance(data_val[0], dict):
+                                    data_info += f" first_keys={list(data_val[0].keys())[:15]}"
+                            else:
+                                data_info = f"{type(data_val).__name__}"
+                        logger.info(
+                            "[CRYPTO_BALANCE_SHAPE] user-balance returned 0 accounts; result.result keys=%s data=%s",
+                            res_keys,
+                            data_info,
+                        )
+                    except Exception as _:
+                        pass
                 # Fallback: if user-balance returned 0 accounts, try get-account-summary (spot-style)
                 if len(accounts) == 0:
                     try:
