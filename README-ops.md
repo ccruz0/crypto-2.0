@@ -150,6 +150,28 @@ If you see "Log file not readable", run with sudo:
 sudo ./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
 ```
 
+### Tail logs by correlation_id (EC2 host)
+
+To inspect backend logs around the **last** occurrence of a correlation ID (e.g. for tracing a single request or E2E test), use:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+./scripts/aws_tail_correlation_logs.sh backend-aws <correlation_id>
+```
+
+**Examples:**
+
+```bash
+# Default 60 lines before/after the last match
+./scripts/aws_tail_correlation_logs.sh backend-aws a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+# More context
+CONTEXT_LINES=80 ./scripts/aws_tail_correlation_logs.sh backend-aws <correlation_id>
+
+# If permission denied
+sudo ./scripts/aws_tail_correlation_logs.sh backend-aws <correlation_id>
+```
+
 ### Meaning of common errors
 
 - **140001 `API_DISABLED`**:

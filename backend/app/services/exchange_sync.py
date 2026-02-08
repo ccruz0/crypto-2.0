@@ -19,6 +19,7 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
 from app.services.fill_dedup_postgres import get_fill_dedup
+from app.utils.pipeline_logging import log_critical_failure, make_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -2209,8 +2210,8 @@ class ExchangeSyncService:
                                     inferred_order_role = 'TAKE_PROFIT'
                                 # For other order types, leave as None (don't mislabel)
                             
-                            # Audit log: log notification attempt as JSON (delta_quantity as float for JSON)
-                            audit_log = {
+                            # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
+                            audit_log = make_json_safe({
                                 "event": "ORDER_EXECUTED_NOTIFICATION",
                                 "symbol": order_symbol,
                                 "side": side or (existing.side.value if existing.side else 'BUY'),
@@ -2227,7 +2228,7 @@ class ExchangeSyncService:
                                 "parent_order_id": existing.parent_order_id,
                                 "notify_reason": notify_reason,
                                 "handler": "exchange_sync.update_existing_order"
-                            }
+                            })
                             logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
                             
                             result = telegram_notifier.send_executed_order(
@@ -2686,8 +2687,8 @@ class ExchangeSyncService:
                                 order_role = 'TAKE_PROFIT'
                             # For other order types, leave as None (don't mislabel)
                         
-                        # Audit log: log notification attempt as JSON (delta_quantity as float for JSON)
-                        audit_log = {
+                        # Audit log: JSON-serializable (Decimal/datetime via make_json_safe)
+                        audit_log = make_json_safe({
                             "event": "ORDER_EXECUTED_NOTIFICATION",
                             "symbol": symbol,
                             "side": side,
@@ -2704,7 +2705,7 @@ class ExchangeSyncService:
                             "parent_order_id": parent_order_id,
                             "notify_reason": notify_reason,
                             "handler": "exchange_sync.new_order"
-                        }
+                        })
                         logger.info(f"[FILL_NOTIFICATION] {json.dumps(audit_log)}")
                         
                         result = telegram_notifier.send_executed_order(
@@ -2772,12 +2773,16 @@ class ExchangeSyncService:
             
         except Exception as e:
             logger.error(f"Error syncing order history: {e}", exc_info=True)
+            log_critical_failure(
+                message=str(e)[:500],
+                error_code="SYNC_ORDER_HISTORY",
+            )
             # Check if it's an authentication error
             if "40101" in str(e) or "Authentication" in str(e):
                 logger.warning("Authentication error when syncing order history - check API credentials")
             try:
                 db.rollback()
-            except:
+            except Exception:
                 pass
     
     def _run_sync_sync(self, db: Session):
