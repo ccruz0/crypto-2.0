@@ -7,7 +7,8 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from decimal import Decimal
+from typing import Dict, List, Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, not_
 from app.database import SessionLocal
@@ -17,9 +18,30 @@ from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
-from app.services.fill_tracker import get_fill_tracker
+from app.services.fill_dedup_postgres import get_fill_dedup
 
 logger = logging.getLogger(__name__)
+
+
+def _to_decimal(x: Union[Decimal, int, float, str, None]) -> Decimal:
+    """Convert to Decimal for quantity/money math. Avoids float+Decimal TypeError.
+    - Decimal -> return as-is
+    - int/float -> Decimal(str(x)) to avoid float precision issues
+    - str -> strip commas, then Decimal
+    - None -> Decimal('0')
+    """
+    if x is None:
+        return Decimal("0")
+    if isinstance(x, Decimal):
+        return x
+    if isinstance(x, (int, float)):
+        return Decimal(str(x))
+    if isinstance(x, str):
+        cleaned = (x or "").strip().replace(",", "")
+        if not cleaned:
+            return Decimal("0")
+        return Decimal(cleaned)
+    return Decimal(str(x))
 
 
 class ExchangeSyncService:
@@ -642,6 +664,8 @@ class ExchangeSyncService:
                                 logger.info(f"DRY_RUN: Would cancel REJECTED TP order {order_id} ({symbol})")
                             else:
                                 try:
+                                    from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                                    assert_exchange_mutation_allowed(db, "cancel_rejected_tp", symbol, None)
                                     # Try to cancel the order on the exchange (in case it's still there)
                                     cancel_result = trade_client.cancel_order(order_id)
                                     
@@ -673,6 +697,8 @@ class ExchangeSyncService:
                                     except Exception as notify_err:
                                         logger.warning(f"⚠️ Failed to send Telegram notification for REJECTED TP auto-cancellation: {notify_err}", exc_info=True)
                                         # Don't fail cancellation if notification fails
+                                except LiveTradingBlockedError:
+                                    logger.info("[HANDOFF_TOTAL] exchange_sync skipped action=cancel_rejected_tp symbol=%s", symbol)
                                 except Exception as cancel_err:
                                     logger.warning(f"⚠️ Could not cancel REJECTED TP order {order_id} on exchange (may already be cancelled): {cancel_err}")
                             
@@ -734,6 +760,7 @@ class ExchangeSyncService:
                         parent_order_id=inferred_parent_order_id  # Set inferred parent if available
                     )
                     db.add(new_order)
+                    logger.debug("[EXCHANGE_ORDERS_OWNER] exchange_sync upsert order_id=%s symbol=%s", order_id, symbol)
                     if inferred_order_role:
                         logger.info(f"Inferred order_role={inferred_order_role} and parent_order_id={inferred_parent_order_id} for order {order_id} ({symbol}) from exchange sync")
                 
@@ -896,6 +923,13 @@ class ExchangeSyncService:
             
             sibling = active_sibling
             
+            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+            try:
+                assert_exchange_mutation_allowed(db, "cancel_oco_sibling", getattr(filled_order, "symbol", None), None)
+            except LiveTradingBlockedError:
+                logger.info("[HANDOFF_TOTAL] exchange_sync skipped action=cancel_oco_sibling symbol=%s", getattr(filled_order, "symbol", None))
+                return False
+            
             logger.info(f"🔄 OCO: Cancelling sibling {sibling.order_role} order {sibling.exchange_order_id} (filled order: {filled_order.order_role})")
             
             # Cancel the sibling order
@@ -954,14 +988,19 @@ class ExchangeSyncService:
         strict_percentages: bool = False,
         sl_price_override: Optional[float] = None,
         tp_price_override: Optional[float] = None,
+        skip_gate: bool = False,
     ):
-        """Create SL and TP orders automatically when a LIMIT or MARKET order is filled"""
+        """Create SL and TP orders automatically when a LIMIT or MARKET order is filled.
+        When skip_gate=True, do not call assert_exchange_mutation_allowed (caller must gate).
+        Returns dict with sl_result, tp_result for all code paths."""
         from app.models.watchlist import WatchlistItem
         from app.api.routes_signals import calculate_stop_loss_and_take_profit
-        
+
+        default_result = {"sl_result": {"order_id": None, "error": None}, "tp_result": {"order_id": None, "error": None}}
+
         if not filled_price or filled_qty <= 0:
             logger.warning(f"Cannot create SL/TP for order {order_id}: invalid price ({filled_price}) or quantity ({filled_qty})")
-            return
+            return default_result
 
         # Manual/explicit TP/SL overrides must be validated early (fail fast with clear errors).
         # This is ONLY about the user-provided numbers; it does not change auth/client behavior.
@@ -1010,6 +1049,21 @@ class ExchangeSyncService:
                     f"(tp_price={tp_price_override_f}, filled_price={filled_price_f})."
                 )
         
+        # When skip_gate=True, caller (ProtectionOrderService) has already gated and checked idempotency. Do creation only.
+        if skip_gate:
+            return self._create_sl_tp_impl(
+                db=db,
+                symbol=symbol,
+                side_upper=side_upper,
+                filled_price_f=filled_price_f,
+                filled_qty=filled_qty,
+                order_id=order_id,
+                source=source,
+                strict_percentages=strict_percentages,
+                sl_price_override_f=sl_price_override_f,
+                tp_price_override_f=tp_price_override_f,
+            )
+        
         # If any protection order has already been FILLED, do not recreate protection orders.
         existing_sl_tp_filled = db.query(ExchangeOrder).filter(
             ExchangeOrder.parent_order_id == order_id,
@@ -1021,8 +1075,8 @@ class ExchangeSyncService:
                 f"⚠️ SL/TP already FILLED for order {order_id} ({symbol}): found {existing_sl_tp_filled} filled protection order(s). "
                 f"Skipping SL/TP creation."
             )
-            return
-        
+            return default_result
+
         # CRITICAL: Use a database-level lock to prevent concurrent SL/TP creation for the same order
         # This prevents race conditions where multiple calls create SL/TP simultaneously
         import time
@@ -1038,7 +1092,7 @@ class ExchangeSyncService:
                         f"🚫 BLOCKED: SL/TP creation already in progress for order {order_id} ({symbol}). "
                         f"Skipping to prevent duplicate creation."
                     )
-                    return
+                    return default_result
                 else:
                     # Lock expired, remove it
                     del self._sl_tp_creation_locks[lock_key]
@@ -1048,526 +1102,81 @@ class ExchangeSyncService:
         # Set lock
         self._sl_tp_creation_locks[lock_key] = time.time()
         
-        # Track existing active orders so we can create missing side only
-        existing_sl_active = None
-        existing_tp_active = []
-        # If TP creation is temporarily blocked (cooldown / rejected), we still want to create SL.
-        skip_tp_creation = False
-        skip_tp_reason = None
+        # Sync open orders so the single-path service sees latest state before idempotency check
         try:
-            # CRITICAL: Sync open orders from exchange FIRST to get latest status
-            # This ensures we see any orders that were created/rejected on the exchange
-            # but not yet in our database
-            try:
-                logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
-                # sync_open_orders is a regular sync method, not async
-                self.sync_open_orders(db)
-                logger.info(f"✅ Open orders synced successfully")
-            except Exception as sync_err:
-                logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
-            
-            # CRITICAL: Force database refresh to see any orders that might have been created
-            # between the sync and this check
-            db.expire_all()
-            
-            # IMPORTANT: Check if SL/TP orders already exist for this parent order to avoid duplicates
-            # Check for ACTIVE orders (NEW, ACTIVE, PARTIALLY_FILLED)
-            existing_sl_active = db.query(ExchangeOrder).filter(
-                ExchangeOrder.parent_order_id == order_id,
-                ExchangeOrder.order_role == "STOP_LOSS",
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-            ).first()
-            
-            existing_tp_active = db.query(ExchangeOrder).filter(
-                ExchangeOrder.parent_order_id == order_id,
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-                ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED])
-            ).all()  # Use .all() to check for multiple TP orders
-            
-            # Also check for REJECTED orders - if a TP was rejected, don't try to create another
-            # This prevents the DUPLICATE_CLORDID error 204
-            existing_tp_rejected = db.query(ExchangeOrder).filter(
-                ExchangeOrder.parent_order_id == order_id,
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-                ExchangeOrder.status == OrderStatusEnum.REJECTED
-            ).first()
-            
-            # Also check for RECENT REJECTED TP orders for this symbol (last 10 minutes)
-            # If a TP was recently rejected, don't try to create another immediately
-            # This prevents rapid-fire creation attempts that all get rejected
-            from datetime import timedelta
-            recent_rejected_threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
-            recent_rejected_tp = db.query(ExchangeOrder).filter(
-                ExchangeOrder.symbol == symbol,
-                ExchangeOrder.order_role == "TAKE_PROFIT",
-                ExchangeOrder.status == OrderStatusEnum.REJECTED,
-                ExchangeOrder.created_at >= recent_rejected_threshold
-            ).first()
-            
-            # If BOTH protection orders already exist and are active, do nothing.
-            if existing_sl_active and len(existing_tp_active) > 0:
-                logger.info(
-                    f"⚠️ SL/TP orders already exist (ACTIVE) for order {order_id} ({symbol}): "
-                    f"SL=exists, TP={len(existing_tp_active)} order(s). Skipping duplicate creation."
-                )
-                if len(existing_tp_active) > 1:
-                    logger.warning(
-                        f"⚠️ WARNING: Found {len(existing_tp_active)} TP orders for order {order_id} ({symbol})! "
-                        f"This indicates duplicate creation. TP IDs: {[tp.exchange_order_id for tp in existing_tp_active]}"
-                    )
-                # Best-effort cleanup of in-memory lock (also expires automatically)
-                if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
-                    del self._sl_tp_creation_locks[lock_key]
-                return
+            logger.info(f"🔄 Syncing open orders from exchange before creating SL/TP for {symbol} order {order_id}")
+            self.sync_open_orders(db)
+            logger.info(f"✅ Open orders synced successfully")
+        except Exception as sync_err:
+            logger.warning(f"⚠️ Failed to sync open orders before creating SL/TP: {sync_err}. Continuing with database check only.")
+        db.expire_all()
 
-            # If TP is missing and a TP was rejected recently, respect cooldown unless forced.
-            # IMPORTANT: This must NOT block SL creation.
-            if len(existing_tp_active) == 0 and existing_tp_rejected and not force:
-                skip_tp_creation = True
-                skip_tp_reason = (
-                    f"TP was REJECTED for this parent order (tp_id={existing_tp_rejected.exchange_order_id}). "
-                    f"Use force=true to retry."
-                )
-
-            # Also apply a short cooldown for AUTO flows only (symbol-wide), to avoid rapid-fire TP rejections.
-            # Manual endpoints should not be blocked by a rejection from another order unless the user requests it.
-            if (
-                len(existing_tp_active) == 0
-                and (not skip_tp_creation)
-                and recent_rejected_tp
-                and not force
-                and str(source).lower() != "manual"
-            ):
-                skip_tp_creation = True
-                skip_tp_reason = (
-                    f"Recent REJECTED TP exists for {symbol} "
-                    f"(tp_id={recent_rejected_tp.exchange_order_id}, parent={recent_rejected_tp.parent_order_id}, "
-                    f"created={recent_rejected_tp.created_at}). Cooldown active; use force=true to override."
-                )
-
-            if skip_tp_creation:
-                logger.warning(
-                    f"⚠️ Skipping TP creation for {symbol} order {order_id}: {skip_tp_reason} "
-                    f"(SL creation will proceed if missing)."
-                )
-        except Exception as precheck_err:
-            # Don't allow pre-check failures to block protection creation attempts entirely.
-            logger.warning(
-                f"⚠️ Pre-check failed while preparing SL/TP for {symbol} order {order_id}: {precheck_err}. "
-                f"Continuing with DB-only creation attempt."
-            )
-        
-        # Log the quantity being used for SL/TP
         logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
         
-        # Get coin configuration from watchlist
-        watchlist_item = db.query(WatchlistItem).filter(
-            WatchlistItem.symbol == symbol
-        ).first()
-        
-        if not watchlist_item:
-            logger.info(f"No watchlist item found for {symbol}, creating one with default settings for SL/TP creation")
-            # Create a temporary watchlist_item with default conservative settings
-            watchlist_item = WatchlistItem(
-                symbol=symbol,
-                exchange="CRYPTO_COM",
-                sl_tp_mode="conservative",
-                trade_enabled=False,  # SL/TP creation doesn't require trade_enabled=True
-                is_deleted=False
-            )
-            db.add(watchlist_item)
-            db.commit()
-            db.refresh(watchlist_item)
-            logger.info(f"✅ Created temporary watchlist_item for {symbol} with conservative SL/TP settings")
-        else:
-            logger.info(
-                f"Found watchlist item for {symbol}: "
-                f"sl_percentage={watchlist_item.sl_percentage}, "
-                f"tp_percentage={watchlist_item.tp_percentage}, "
-                f"sl_tp_mode={watchlist_item.sl_tp_mode}"
-            )
-        
-        # NOTE: We allow SL/TP creation even if trade_enabled=False
-        # This is because SL/TP orders are protection orders for existing positions,
-        # and should be created regardless of the trading flag (which controls new position entry)
-        # Manual orders and filled orders should always be able to get SL/TP protection
-        if not getattr(watchlist_item, 'trade_enabled', False):
-            logger.info(
-                f"ℹ️ Creating SL/TP for {symbol} order {order_id} despite trade_enabled=False. "
-                f"This is allowed because SL/TP are protection orders for existing positions."
-            )
-        
-        # CRITICAL: Determine margin mode and leverage for SL/TP orders
-        # SL/TP should match the original order's margin mode and leverage
-        # First, try to get the original order's leverage from the database
-        original_order = db.query(ExchangeOrder).filter(
-            ExchangeOrder.exchange_order_id == order_id
-        ).first()
-        
-        # Check if original order was placed with margin
-        original_is_margin = False
-        original_leverage = None
-        
-        if original_order:
-            # Try to determine if original order was margin from order data
-            # Check if order has leverage field or if we can infer from order_type
-            if hasattr(original_order, 'leverage') and original_order.leverage:
-                original_leverage = float(original_order.leverage)
-                original_is_margin = True
-            # If no leverage field, check watchlist setting (fallback)
-            elif watchlist_item.trade_on_margin:
-                original_is_margin = True
-                # We don't know the original leverage, so we'll use margin decision helper
-        
-        # Use margin decision helper to determine correct leverage for this symbol
-        # This ensures we never request leverage higher than max allowed
-        from app.services.margin_decision_helper import decide_trading_mode, log_margin_decision, DEFAULT_CONFIGURED_LEVERAGE
-        
-        # If we know the original order's leverage, use it (but still validate against max)
-        if original_is_margin and original_leverage:
-            # Validate the original leverage is still valid for this symbol
-            trading_decision = decide_trading_mode(
-                symbol=symbol,
-                configured_leverage=original_leverage,  # Use original leverage as configured
-                user_wants_margin=True
-            )
-            # If the decision says to use margin, use the original leverage (or adjusted if needed)
-            if trading_decision.use_margin:
-                is_margin = True
-                leverage = trading_decision.leverage  # This will be min(original_leverage, max_allowed)
-            else:
-                # Original leverage is no longer valid, fall back to SPOT
-                is_margin = False
-                leverage = None
-        else:
-            # No original order info or original was SPOT - use watchlist setting with margin decision
-            trading_decision = decide_trading_mode(
-                symbol=symbol,
-                configured_leverage=DEFAULT_CONFIGURED_LEVERAGE,
-                user_wants_margin=watchlist_item.trade_on_margin or False
-            )
-            is_margin = trading_decision.use_margin
-            leverage = trading_decision.leverage
-        
-        # Log the decision for debugging
-        log_margin_decision(symbol, trading_decision, original_leverage or DEFAULT_CONFIGURED_LEVERAGE)
-        
-        logger.info(
-            f"SL/TP margin settings for {symbol} order {order_id}: "
-            f"original_is_margin={original_is_margin}, original_leverage={original_leverage}, "
-            f"final_is_margin={is_margin}, final_leverage={leverage}"
-        )
-        
-        # Dynamically derive SL/TP based on strategy so they always follow the latest fill price
-        sl_tp_mode = (watchlist_item.sl_tp_mode or "conservative").lower()
-        sl_percentage = watchlist_item.sl_percentage
-        tp_percentage = watchlist_item.tp_percentage
-        atr = watchlist_item.atr or 0
+        # Single path: delegate to ProtectionOrderService (HAND_OFF_TOTAL and idempotency inside service)
+        from app.services.protection_order_service import get_protection_order_service
+        from app.services.live_trading_gate import get_live_trading
 
-        def _default_percentages(mode: str) -> tuple[float, float]:
-            if mode == "aggressive":
-                return 2.0, 2.0  # tighter stops/targets
-            return 3.0, 3.0  # conservative baseline
-
-        default_sl_pct, default_tp_pct = _default_percentages(sl_tp_mode)
-        
-        # Log what we're reading from watchlist
-        logger.info(
-            f"Reading SL/TP settings for {symbol} order {order_id}: "
-            f"watchlist_sl_pct={sl_percentage}, watchlist_tp_pct={tp_percentage}, "
-            f"mode={sl_tp_mode}, defaults=(sl={default_sl_pct}%, tp={default_tp_pct}%)"
-        )
-        
-        # Use watchlist percentages if set and > 0, otherwise use defaults
-        # CRITICAL: Check for None explicitly, and allow 0 to fall back to defaults (0% would be invalid anyway)
-        effective_sl_pct = abs(sl_percentage) if (sl_percentage is not None and sl_percentage > 0) else default_sl_pct
-        effective_tp_pct = abs(tp_percentage) if (tp_percentage is not None and tp_percentage > 0) else default_tp_pct
-        
-        # Log which values we're actually using
-        if sl_percentage is not None and sl_percentage > 0:
-            logger.info(f"Using watchlist SL percentage: {effective_sl_pct}% (from watchlist: {sl_percentage}%)")
-        else:
-            logger.info(f"Using default SL percentage: {effective_sl_pct}% (watchlist had: {sl_percentage})")
-        
-        if tp_percentage is not None and tp_percentage > 0:
-            logger.info(f"Using watchlist TP percentage: {effective_tp_pct}% (from watchlist: {tp_percentage}%)")
-        else:
-            logger.info(f"Using default TP percentage: {effective_tp_pct}% (watchlist had: {tp_percentage})")
-
-        if side == "BUY":
-            sl_price = filled_price * (1 - effective_sl_pct / 100)
-            tp_price = filled_price * (1 + effective_tp_pct / 100)
-        else:
-            sl_price = filled_price * (1 + effective_sl_pct / 100)
-            tp_price = filled_price * (1 - effective_tp_pct / 100)
-
-        # Blend with ATR-based levels if ATR is available (gives strategy-derived safety margins).
-        # For manual/explicit requests we can opt into strict % levels.
-        # If the caller provided explicit SL/TP prices, do NOT blend/adjust them.
-        if atr > 0 and not strict_percentages and sl_price_override_f is None and tp_price_override_f is None:
-            calculated = calculate_stop_loss_and_take_profit(filled_price, atr)
-            if sl_tp_mode == "aggressive":
-                atr_sl = calculated["stop_loss"]["aggressive"]["value"]
-                atr_tp = calculated["take_profit"]["aggressive"]["value"]
-            else:
-                atr_sl = calculated["stop_loss"]["conservative"]["value"]
-                atr_tp = calculated["take_profit"]["conservative"]["value"]
-
-            if side == "BUY":
-                sl_price = min(sl_price, atr_sl)
-                tp_price = max(tp_price, atr_tp)
-            else:
-                sl_price = max(sl_price, atr_sl)
-                tp_price = min(tp_price, atr_tp)
-
-        # Apply explicit overrides AFTER any optional ATR blending (overrides win).
-        if sl_price_override_f is not None:
-            logger.info(
-                f"[{source.upper()}_SLTP] Using explicit sl_price override for {symbol} order {order_id}: "
-                f"{sl_price_override_f} (filled_price={filled_price_f}, side={side_upper})"
-            )
-            sl_price = sl_price_override_f
-        if tp_price_override_f is not None:
-            logger.info(
-                f"[{source.upper()}_SLTP] Using explicit tp_price override for {symbol} order {order_id}: "
-                f"{tp_price_override_f} (filled_price={filled_price_f}, side={side_upper})"
-            )
-            tp_price = tp_price_override_f
-
-        logger.info(
-            f"✅ Calculated SL/TP dynamically for {symbol} order {order_id}: "
-            f"SL={sl_price} (pct={effective_sl_pct}%), TP={tp_price} (pct={effective_tp_pct}%), mode={sl_tp_mode}, ATR={atr}"
+        result = get_protection_order_service().request_protection_for_filled_order(
+            db=db,
+            symbol=symbol,
+            filled_order_id=order_id,
+            filled_side=side,
+            filled_price=filled_price_f,
+            quantity=filled_qty,
+            source=source,
+            correlation_id=None,
+            dry_run=False,
+            force=force,
+            strict_percentages=strict_percentages,
+            sl_price_override=sl_price_override_f,
+            tp_price_override=tp_price_override_f,
         )
 
-        # Persist the calculated values back to the watchlist for dashboard consistency
-        # CRITICAL: Only persist sl_price and tp_price if user hasn't manually set percentages
-        # If user has manually set sl_percentage or tp_percentage, preserve their values
-        # and don't overwrite with calculated prices (user's percentages take precedence)
-        user_has_manual_sl = watchlist_item.sl_percentage is not None and watchlist_item.sl_percentage != 0
-        user_has_manual_tp = watchlist_item.tp_percentage is not None and watchlist_item.tp_percentage != 0
-        
-        # Only update prices if user hasn't manually set percentages
-        # This preserves user's manual settings
-        if not user_has_manual_sl:
-            watchlist_item.sl_price = sl_price
-        if not user_has_manual_tp:
-            watchlist_item.tp_price = tp_price
-        
-        # CRITICAL FIX: Only update percentages if they were NOT set by the user
-        # If user has manually set percentages, preserve them (don't overwrite with defaults)
-        # Only write back defaults if the user hasn't set custom values
-        # This prevents overwriting user's custom settings with default values
-        if sl_percentage is None or sl_percentage == 0:
-            # User hasn't set a custom SL percentage, safe to persist the effective one (which will be the default)
-            # This allows the dashboard to show what percentage was actually used
-            watchlist_item.sl_percentage = effective_sl_pct
-            logger.info(f"Persisting SL percentage {effective_sl_pct}% to watchlist (was not set by user)")
-        else:
-            # User has set a custom SL percentage, preserve it
-            logger.info(f"Preserving user's custom SL percentage {sl_percentage}% in watchlist (not overwriting)")
-        
-        if tp_percentage is None or tp_percentage == 0:
-            # User hasn't set a custom TP percentage, safe to persist the effective one (which will be the default)
-            watchlist_item.tp_percentage = effective_tp_pct
-            logger.info(f"Persisting TP percentage {effective_tp_pct}% to watchlist (was not set by user)")
-        else:
-            # User has set a custom TP percentage, preserve it
-            logger.info(f"Preserving user's custom TP percentage {tp_percentage}% in watchlist (not overwriting)")
         try:
-            db.commit()
-        except Exception as persist_err:
-            logger.warning(f"Failed to persist dynamic SL/TP to watchlist for {symbol}: {persist_err}")
-            db.rollback()
-
-        # Round values if necessary (post-persistence) to match exchange requirements
-        # Use precision matching crypto_com_trade.py place_limit_order logic:
-        # - Prices >= 100: 2 decimal places (BTC, ETH, etc. - Crypto.com requirement)
-        # - Prices >= 1: 4-6 decimal places  
-        # - Prices < 1: 4 decimal places with 0.0001 tick size (for coins like ALGO_USDT)
-        # Note: The actual formatting with tick size will be done in place_stop_loss_order/place_take_profit_order,
-        # but we round here to avoid passing excessive precision
-        import decimal
-        # Price formatting is handled by create_stop_loss_order() and create_take_profit_order()
-        # which call place_stop_loss_order() and place_take_profit_order() respectively.
-        # These functions use normalize_price() which follows docs/trading/crypto_com_order_formatting.md:
-        # - STOP_LOSS uses ROUND_DOWN (per Rule 3)
-        # - TAKE_PROFIT uses ROUND_UP (per Rule 3)
-        # - Uses Decimal for calculations (per Rule 1)
-        # - Fetches instrument metadata (per Rule 5)
-        # - Preserves trailing zeros (per Rule 4)
-        # No pre-formatting needed here - pass raw prices to order creation functions
-        
-        from app.utils.live_trading import get_live_trading_status
-        live_trading = get_live_trading_status(db)
-        
-        # Generate OCO group ID for linking SL and TP orders
-        import uuid
-        # If we're only creating one side, try to reuse existing OCO group to keep the pair linked.
-        oco_group_id = None
-        try:
-            if existing_sl_active and getattr(existing_sl_active, "oco_group_id", None):
-                oco_group_id = existing_sl_active.oco_group_id
-            elif existing_tp_active and getattr(existing_tp_active[0], "oco_group_id", None):
-                oco_group_id = existing_tp_active[0].oco_group_id
+            if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
+                del self._sl_tp_creation_locks[lock_key]
         except Exception:
-            oco_group_id = None
-        if not oco_group_id:
-            oco_group_id = f"oco_{order_id}_{int(datetime.utcnow().timestamp())}"
-        logger.info(f"Creating SL/TP pair with OCO group: {oco_group_id}")
-        
-        # Use the reusable TP/SL order creator functions
-        from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
-        
-        # Create SL order using shared logic (only if missing)
-        if existing_sl_active:
-            logger.info(f"ℹ️ SL already exists for {symbol} order {order_id} (active: {existing_sl_active.exchange_order_id}). Skipping SL creation.")
-            sl_result = {"order_id": str(existing_sl_active.exchange_order_id), "error": None}
-        else:
-            sl_result = create_stop_loss_order(
-                db=db,
-                symbol=symbol,
-                side=side,
-                sl_price=sl_price,
-                quantity=filled_qty,
-                entry_price=filled_price,
-                parent_order_id=order_id,
-                oco_group_id=oco_group_id,
-                is_margin=is_margin,
-                leverage=leverage,
-                dry_run=not live_trading,
-                source=source
-            )
+            pass
 
-        sl_order_id = sl_result.get("order_id")
-        sl_order_error = sl_result.get("error")
+        if result.get("status") == "blocked" or result.get("status") == "skipped":
+            return None
 
-        if sl_order_id:
-            logger.info(f"✅ SL order ready for {symbol} order {order_id}: order_id={sl_order_id}")
-        else:
-            logger.error(f"❌ SL order creation failed for {symbol} order {order_id}: {sl_order_error}")
+        details = result.get("details") or {}
+        sl_result = details.get("sl_result")
+        tp_result = details.get("tp_result")
+        sl_order_id = details.get("sl_order_id")
+        tp_order_id = details.get("tp_order_id")
+        sl_price = details.get("sl_price")
+        tp_price = details.get("tp_price")
+        oco_group_id = details.get("oco_group_id")
+        skip_tp_creation = details.get("skip_tp_creation", False)
+        skip_tp_reason = details.get("skip_tp_reason")
+        live_trading = get_live_trading(db)
+        sl_order_error = (sl_result or {}).get("error")
+        tp_order_error = (tp_result or {}).get("error")
 
-        # Create TP order using shared logic (only if missing and not blocked by cooldown/rejection policy)
-        if len(existing_tp_active) > 0:
-            logger.info(
-                f"ℹ️ TP already exists for {symbol} order {order_id} "
-                f"(active count: {len(existing_tp_active)}). Skipping TP creation."
-            )
-            tp_result = {"order_id": str(existing_tp_active[0].exchange_order_id), "error": None}
-        elif skip_tp_creation:
-            tp_result = {
-                "order_id": None,
-                "error": f"Skipped TP creation: {skip_tp_reason}",
+        if result.get("status") == "already_protected":
+            return {
+                "symbol": symbol,
+                "order_id": order_id,
+                "source": source,
+                "live_trading": bool(live_trading),
+                "oco_group_id": oco_group_id,
+                "sl_price": float(sl_price) if sl_price is not None else None,
+                "tp_price": float(tp_price) if tp_price is not None else None,
+                "sl_result": sl_result,
+                "tp_result": tp_result,
+                "skip_tp_creation": bool(skip_tp_creation),
+                "skip_tp_reason": skip_tp_reason,
             }
-        else:
-            tp_result = create_take_profit_order(
-                db=db,
-                symbol=symbol,
-                side=side,
-                tp_price=tp_price,
-                quantity=filled_qty,
-                entry_price=filled_price,
-                parent_order_id=order_id,
-                oco_group_id=oco_group_id,
-                is_margin=is_margin,
-                leverage=leverage,
-                dry_run=not live_trading,
-                source=source
-            )
-        tp_order_id = tp_result.get("order_id")
-        tp_order_error = tp_result.get("error")
 
-        # Failure-only fallback: if either SL or TP creation failed, try bounded SL/TP variants.
-        # This keeps the success path unchanged (no extra calls when SL/TP succeeds).
-        try:
-            need_sl_variants = not sl_order_id
-            need_tp_variants = (not tp_order_id) and (not skip_tp_creation)
+        # status is "created" or "failed" - prepare for Telegram notification
+        watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+        sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
+        effective_sl_pct = abs(watchlist_item.sl_percentage) if (watchlist_item and getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0) else 3.0
+        effective_tp_pct = abs(watchlist_item.tp_percentage) if (watchlist_item and getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0) else 3.0
 
-            if live_trading and (need_sl_variants or need_tp_variants):
-                correlation_id = str(uuid.uuid4())
-                fallback = trade_client.create_stop_loss_take_profit_with_variations(
-                    instrument_name=symbol,
-                    side=side,  # entry side
-                    quantity=float(filled_qty),
-                    ref_price=float(filled_price),
-                    stop_loss_price=float(sl_price) if need_sl_variants else None,
-                    take_profit_price=float(tp_price) if need_tp_variants else None,
-                    correlation_id=correlation_id,
-                    existing_sl_order_id=str(sl_order_id) if sl_order_id else None,
-                    existing_tp_order_id=str(tp_order_id) if tp_order_id else None,
-                )
-
-                # Apply fallback results only for missing orders.
-                if not sl_order_id and fallback.get("ok_sl") and fallback.get("sl_order_id"):
-                    sl_order_id = str(fallback.get("sl_order_id"))
-                    sl_result = {
-                        "order_id": sl_order_id,
-                        "error": None,
-                        "variant_id": fallback.get("sl_variant_id"),
-                        "correlation_id": correlation_id,
-                    }
-                    sl_order_error = None
-
-                if not tp_order_id and fallback.get("ok_tp") and fallback.get("tp_order_id"):
-                    tp_order_id = str(fallback.get("tp_order_id"))
-                    tp_result = {
-                        "order_id": tp_order_id,
-                        "error": None,
-                        "variant_id": fallback.get("tp_variant_id"),
-                        "correlation_id": correlation_id,
-                    }
-                    tp_order_error = None
-
-                def _err_tail(errs):
-                    try:
-                        tail = (errs or [])[-3:]
-                        return [
-                            f"{e.get('code')}:{(e.get('message') or '')[:120]}"
-                            for e in tail
-                            if isinstance(e, dict)
-                        ]
-                    except Exception:
-                        return []
-
-                logger.info(
-                    "[SLTP_VARIANTS] symbol=%s correlation_id=%s ok_sl=%s ok_tp=%s "
-                    "sl_attempts=%s tp_attempts=%s sl_variant=%s tp_variant=%s "
-                    "sl_err_tail=%s tp_err_tail=%s jsonl_path=%s",
-                    symbol,
-                    correlation_id,
-                    bool(fallback.get("ok_sl")),
-                    bool(fallback.get("ok_tp")),
-                    int(fallback.get("sl_attempts") or 0),
-                    int(fallback.get("tp_attempts") or 0),
-                    fallback.get("sl_variant_id"),
-                    fallback.get("tp_variant_id"),
-                    _err_tail(fallback.get("sl_errors")),
-                    _err_tail(fallback.get("tp_errors")),
-                    fallback.get("jsonl_path"),
-                )
-        except Exception as _sltp_var_err:
-            logger.warning("SLTP variants fallback failed unexpectedly: %s", _sltp_var_err)
-        
-        # Log TP order result
-        if tp_order_id:
-            logger.info(f"✅ TP order created successfully for {symbol} order {order_id}: order_id={tp_order_id}")
-        else:
-            logger.error(f"❌ TP order creation failed for {symbol} order {order_id}: {tp_order_error}")
-        
-        # Log detailed error information if both failed
-        if not sl_order_id and not tp_order_id:
-            logger.error(f"❌ BOTH SL/TP orders failed for {symbol} order {order_id}:")
-            logger.error(f"   SL Error: {sl_order_error}")
-            logger.error(f"   TP Error: {tp_order_error}")
-            logger.error(f"   Parameters used:")
-            logger.error(f"     - Symbol: {symbol}")
-            logger.error(f"     - Side: {side} (original order side)")
-            logger.error(f"     - Entry Price: {filled_price}")
-            logger.error(f"     - Filled Quantity: {filled_qty}")
-            logger.error(f"     - SL Price: {sl_price}")
-            logger.error(f"     - TP Price: {tp_price}")
-            logger.error(f"     - Live Trading: {live_trading}")
-            logger.error(f"     - Source: auto")
-        
         # Send Telegram notification when SL/TP orders are created (ALWAYS, even if orders failed)
         # Always send Telegram notifications (even if alert_enabled is false for that coin)
         # CRITICAL: Check if notification was already sent for this order to avoid duplicates
@@ -1617,8 +1226,8 @@ class ExchangeSyncService:
                 # Best-effort cleanup of in-memory lock
                 if hasattr(self, '_sl_tp_creation_locks') and lock_key in self._sl_tp_creation_locks:
                     del self._sl_tp_creation_locks[lock_key]
-                return
-            
+                return default_result
+
             # If orders failed, send error notification with detailed error messages
             if not sl_order_id and not tp_order_id and live_trading:
                 # Build detailed error message
@@ -1714,8 +1323,90 @@ class ExchangeSyncService:
                 "skip_tp_reason": skip_tp_reason,
             }
         except Exception:
-            return None
-    
+            return default_result
+
+    def _create_sl_tp_impl(
+        self,
+        db: Session,
+        symbol: str,
+        side_upper: str,
+        filled_price_f: float,
+        filled_qty: float,
+        order_id: str,
+        source: str,
+        strict_percentages: bool,
+        sl_price_override_f: Optional[float],
+        tp_price_override_f: Optional[float],
+    ):
+        """Actual SL/TP creation (only call when skip_gate=True from ProtectionOrderService). Uses tp_sl_order_creator."""
+        from app.models.watchlist import WatchlistItem
+        from app.services.tp_sl_order_creator import create_stop_loss_order, create_take_profit_order
+
+        default_result = {"sl_result": {"order_id": None, "error": None}, "tp_result": {"order_id": None, "error": None}, "oco_group_id": None, "sl_price": None, "tp_price": None, "skip_tp_creation": False, "skip_tp_reason": None}
+        watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
+        sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
+        sl_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
+        tp_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
+        if watchlist_item:
+            if strict_percentages and getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0:
+                sl_pct = abs(float(watchlist_item.sl_percentage))
+            elif getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0:
+                sl_pct = abs(float(watchlist_item.sl_percentage))
+            if strict_percentages and getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0:
+                tp_pct = abs(float(watchlist_item.tp_percentage))
+            elif getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0:
+                tp_pct = abs(float(watchlist_item.tp_percentage))
+        if sl_price_override_f is not None:
+            sl_price = sl_price_override_f
+        else:
+            if side_upper == "BUY":
+                sl_price = filled_price_f * (1 - sl_pct / 100)
+            else:
+                sl_price = filled_price_f * (1 + sl_pct / 100)
+        if tp_price_override_f is not None:
+            tp_price = tp_price_override_f
+        else:
+            if side_upper == "BUY":
+                tp_price = filled_price_f * (1 + tp_pct / 100)
+            else:
+                tp_price = filled_price_f * (1 - tp_pct / 100)
+        sl_price = round(sl_price, 2) if sl_price >= 100 else round(sl_price, 4)
+        tp_price = round(tp_price, 2) if tp_price >= 100 else round(tp_price, 4)
+        oco_group_id = f"oco_{order_id}_{int(time.time())}"
+        sl_result = create_stop_loss_order(
+            db=db,
+            symbol=symbol,
+            side=side_upper,
+            sl_price=sl_price,
+            quantity=filled_qty,
+            entry_price=filled_price_f,
+            parent_order_id=order_id,
+            oco_group_id=oco_group_id,
+            dry_run=False,
+            source=source,
+        )
+        tp_result = create_take_profit_order(
+            db=db,
+            symbol=symbol,
+            side=side_upper,
+            tp_price=tp_price,
+            quantity=filled_qty,
+            entry_price=filled_price_f,
+            parent_order_id=order_id,
+            oco_group_id=oco_group_id,
+            dry_run=False,
+            source=source,
+        )
+        return {
+            "sl_result": sl_result,
+            "tp_result": tp_result,
+            "oco_group_id": oco_group_id,
+            "sl_price": sl_price,
+            "tp_price": tp_price,
+            "skip_tp_creation": False,
+            "skip_tp_reason": None,
+        }
+
     def _cancel_remaining_sl_tp(self, db: Session, symbol: str, executed_order_type: str, executed_order_id: str):
         """Cancel the remaining SL or TP order when one is executed"""
         try:
@@ -1887,6 +1578,12 @@ class ExchangeSyncService:
                     if not live_trading:
                         logger.info(f"DRY_RUN: Would cancel {target_order_type} order {target_order.exchange_order_id}")
                     else:
+                        from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                        try:
+                            assert_exchange_mutation_allowed(db, "cancel_sl_tp_after_exec", symbol, None)
+                        except LiveTradingBlockedError:
+                            logger.info("[HANDOFF_TOTAL] exchange_sync skipped action=cancel_sl_tp_after_exec symbol=%s order_id=%s", symbol, target_order.exchange_order_id)
+                            continue
                         # Cancel the order
                         cancel_result = trade_client.cancel_order(target_order.exchange_order_id)
                         if "error" in cancel_result:
@@ -2300,14 +1997,24 @@ class ExchangeSyncService:
                         needs_update = True
                     
                     # Always update cumulative_quantity from API (needed for fill tracking)
-                    # Parse cumulative_quantity as string if needed
+                    # ROOT CAUSE of crash: new_cumulative_qty was float (API), last_seen_qty from DB is
+                    # Numeric -> Decimal. Subtraction float - Decimal raises TypeError. Use _to_decimal throughout.
                     cumulative_qty_from_api = order_data.get('cumulative_quantity', '0') or '0'
-                    new_cumulative_qty = float(cumulative_qty_from_api) if cumulative_qty_from_api else 0
-                    last_seen_qty = existing.cumulative_quantity
+                    new_cumulative_qty = _to_decimal(cumulative_qty_from_api)
+                    last_seen_qty = _to_decimal(existing.cumulative_quantity)
                     delta_qty = new_cumulative_qty - last_seen_qty
-                    
+                    if delta_qty < 0:
+                        logger.warning(
+                            "sync_order_history negative delta (order_id=%s symbol=%s new_cumulative_qty=%s last_seen_qty=%s delta_qty=%s); clamping to 0",
+                            order_id, symbol or existing.symbol, new_cumulative_qty, last_seen_qty, delta_qty,
+                        )
+                        delta_qty = Decimal("0")
+                    logger.debug(
+                        "sync_order_history qty (order_id=%s new_cumulative_qty_type=%s last_seen_qty_type=%s delta_qty=%s)",
+                        order_id, type(new_cumulative_qty).__name__, type(last_seen_qty).__name__, delta_qty,
+                    )
                     # Always update cumulative_quantity (even if nothing else changed) for fill tracking
-                    if new_cumulative_qty != existing.cumulative_quantity:
+                    if new_cumulative_qty != _to_decimal(existing.cumulative_quantity):
                         needs_update = True
                         existing.cumulative_quantity = new_cumulative_qty
                     
@@ -2393,7 +2100,7 @@ class ExchangeSyncService:
                     # STRICT FILL-ONLY NOTIFICATION LOGIC (check even if needs_update was False)
                     # Only notify for real fills: status must be FILLED or PARTIALLY_FILLED with increased filled_qty
                     # Check fills for any order with fill status, regardless of whether other fields changed
-                    fill_tracker = get_fill_tracker()
+                    fill_dedup = get_fill_dedup(db)
                     # Use updated cumulative_quantity (already set above if it changed)
                     current_filled_qty = existing.cumulative_quantity if existing.cumulative_quantity > 0 else executed_qty
                     # Determine current status - prefer status_str from API, fallback to existing status
@@ -2404,7 +2111,7 @@ class ExchangeSyncService:
                     else:
                         current_status_str = None
                     
-                    should_notify, notify_reason = fill_tracker.should_notify_fill(
+                    should_notify, notify_reason = fill_dedup.should_notify_fill(
                         order_id=order_id,
                         current_filled_qty=current_filled_qty,
                         status=current_status_str or 'UNKNOWN'
@@ -2502,7 +2209,7 @@ class ExchangeSyncService:
                                     inferred_order_role = 'TAKE_PROFIT'
                                 # For other order types, leave as None (don't mislabel)
                             
-                            # Audit log: log notification attempt as JSON
+                            # Audit log: log notification attempt as JSON (delta_quantity as float for JSON)
                             audit_log = {
                                 "event": "ORDER_EXECUTED_NOTIFICATION",
                                 "symbol": order_symbol,
@@ -2510,7 +2217,7 @@ class ExchangeSyncService:
                                 "order_id": order_id,
                                 "status": current_status_str,
                                 "cumulative_quantity": current_filled_qty,
-                                "delta_quantity": delta_qty,
+                                "delta_quantity": float(delta_qty),
                                 "price": order_price_float or (existing.price or 0),
                                 "avg_price": existing.avg_price,
                                 "order_type": order_type,
@@ -2538,8 +2245,8 @@ class ExchangeSyncService:
                                 parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                             )
                             if result:
-                                # Record fill in persistent tracker
-                                fill_tracker.record_fill(
+                                # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+                                fill_dedup.record_fill(
                                     order_id=order_id,
                                     filled_qty=current_filled_qty,
                                     status=current_status_str,
@@ -2581,7 +2288,7 @@ class ExchangeSyncService:
                     else:
                         # Record fill even if we don't notify (for tracking)
                         if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
-                            fill_tracker.record_fill(
+                            fill_dedup.record_fill(
                                 order_id=order_id,
                                 filled_qty=current_filled_qty,
                                 status=current_status_str,
@@ -2738,19 +2445,21 @@ class ExchangeSyncService:
                                     logger.info(f"Creating SL/TP for main order {order_id}: original_side={original_side}, order_type={order_type_from_history or order_type_from_db}, filled {time_since_filled:.2f} hours ago")
                                     
                                     try:
-                                        self._create_sl_tp_for_filled_order(
-                                            db=db,
-                                            symbol=symbol or existing.symbol,
-                                            side=original_side,  # Use the original order's side (from existing.side)
-                                            filled_price=order_price_float or existing.price or 0,
-                                            filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API
-                                            order_id=order_id
+                                        from app.services.event_bus import get_event_bus
+                                        from app.services.events import OrderFilled
+                                        get_event_bus().publish(
+                                            OrderFilled(
+                                                symbol=symbol or existing.symbol,
+                                                side=original_side,
+                                                exchange_order_id=order_id,
+                                                filled_price=order_price_float or (float(existing.price) if existing.price else 0) or 0,
+                                                quantity=executed_qty,
+                                                source="exchange_sync",
+                                                correlation_id=None,
+                                            )
                                         )
                                     except Exception as sl_tp_err:
-                                        # Don't let SL/TP creation errors prevent order status update
-                                        # Log but don't re-raise - we want the order status update to be committed
-                                        logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
-                                        # Continue - order status update should still be committed even if SL/TP fails
+                                        logger.warning(f"Error publishing OrderFilled for order {order_id}: {sl_tp_err}")
                         elif is_sl_tp_order:
                             logger.debug(f"Skipping SL/TP creation for {order_type_from_history or order_type_from_db} order {order_id} - SL/TP orders should not create new SL/TP")
                     
@@ -2764,6 +2473,8 @@ class ExchangeSyncService:
                 existing_order_for_oco = db.query(ExchangeOrder).filter(ExchangeOrder.exchange_order_id == order_id).first()
                 oco_group_id_from_existing = existing_order_for_oco.oco_group_id if existing_order_for_oco else None
                 
+                # For new orders from history, delta is the full executed qty (no previous state)
+                delta_qty = _to_decimal(executed_qty)
                 new_order = ExchangeOrder(
                     exchange_order_id=order_id,
                     client_oid=order_data.get('client_oid'),
@@ -2773,7 +2484,7 @@ class ExchangeSyncService:
                     status=OrderStatusEnum.FILLED,
                     price=order_price_float,  # Will use avg_price for MARKET orders
                     quantity=executed_qty,  # Use cumulative_quantity (executed amount)
-                    cumulative_quantity=float(order_data.get('cumulative_quantity', 0)) if order_data.get('cumulative_quantity') else 0,
+                    cumulative_quantity=_to_decimal(order_data.get('cumulative_quantity') or 0),
                     cumulative_value=float(order_data.get('cumulative_value', 0)) if order_data.get('cumulative_value') else 0,
                     avg_price=float(order_data.get('avg_price')) if order_data.get('avg_price') else order_price_float,
                     exchange_create_time=create_time,
@@ -2781,8 +2492,9 @@ class ExchangeSyncService:
                     oco_group_id=oco_group_id_from_existing  # Preserve OCO group ID if it exists
                 )
                 db.add(new_order)
+                logger.debug("[EXCHANGE_ORDERS_OWNER] exchange_sync upsert (history) order_id=%s symbol=%s", order_id, symbol)
                 db.flush()  # Flush to get the order ID and relationships
-                
+
                 # Check if this is a SL or TP order that was executed - cancel the other one
                 order_type_upper = order_data.get('order_type', '').upper()
                 is_sl_tp_executed = order_type_upper in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT', 'STOP_LOSS', 'TAKE_PROFIT']
@@ -2870,26 +2582,31 @@ class ExchangeSyncService:
                             # Use side from order_data which is the original order's side
                             logger.info(f"Creating SL/TP for new main order {order_id}: side={side}, order_type={order_type}, filled {time_since_filled:.2f} hours ago")
                             try:
-                                self._create_sl_tp_for_filled_order(
-                                    db=db,
-                                    symbol=symbol,
-                                    side=side,  # This is the original order's side (BUY or SELL)
-                                    filled_price=order_price_float,
-                                    filled_qty=executed_qty,  # Always use executed_qty (cumulative_quantity) from API - this is the actual executed amount from MARKET order
-                                    order_id=order_id
+                                from app.services.event_bus import get_event_bus
+                                from app.services.events import OrderFilled
+                                get_event_bus().publish(
+                                    OrderFilled(
+                                        symbol=symbol,
+                                        side=side,
+                                        exchange_order_id=order_id,
+                                        filled_price=order_price_float,
+                                        quantity=executed_qty,
+                                        source="exchange_sync",
+                                        correlation_id=None,
+                                    )
                                 )
                             except Exception as sl_tp_err:
-                                logger.warning(f"Error creating SL/TP for order {order_id}: {sl_tp_err}")
+                                logger.warning(f"Error publishing OrderFilled for order {order_id}: {sl_tp_err}")
                 elif order_type in ['STOP_LIMIT', 'TAKE_PROFIT_LIMIT']:
                     logger.debug(f"Skipping SL/TP creation for {order_type} order {order_id} - SL/TP orders should not create new SL/TP")
                 
                 # STRICT FILL-ONLY NOTIFICATION LOGIC for new orders
                 # Only notify for real fills: status must be FILLED or PARTIALLY_FILLED with increased filled_qty
-                fill_tracker = get_fill_tracker()
+                fill_dedup = get_fill_dedup(db)
                 current_filled_qty = executed_qty
                 current_status_str = status_str if status_str in ('FILLED', 'PARTIALLY_FILLED') else None
                 
-                should_notify, notify_reason = fill_tracker.should_notify_fill(
+                should_notify, notify_reason = fill_dedup.should_notify_fill(
                     order_id=order_id,
                     current_filled_qty=current_filled_qty,
                     status=current_status_str or 'UNKNOWN'
@@ -2969,7 +2686,7 @@ class ExchangeSyncService:
                                 order_role = 'TAKE_PROFIT'
                             # For other order types, leave as None (don't mislabel)
                         
-                        # Audit log: log notification attempt as JSON
+                        # Audit log: log notification attempt as JSON (delta_quantity as float for JSON)
                         audit_log = {
                             "event": "ORDER_EXECUTED_NOTIFICATION",
                             "symbol": symbol,
@@ -2977,7 +2694,7 @@ class ExchangeSyncService:
                             "order_id": order_id,
                             "status": current_status_str,
                             "cumulative_quantity": current_filled_qty,
-                            "delta_quantity": delta_qty,
+                            "delta_quantity": float(delta_qty),
                             "price": order_price_float or 0,
                             "avg_price": order_data.get('avg_price'),
                             "order_type": order_type,
@@ -3005,8 +2722,8 @@ class ExchangeSyncService:
                             parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                         )
                         if result:
-                            # Record fill in persistent tracker
-                            fill_tracker.record_fill(
+                            # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
+                            fill_dedup.record_fill(
                                 order_id=order_id,
                                 filled_qty=current_filled_qty,
                                 status=current_status_str,
@@ -3020,7 +2737,7 @@ class ExchangeSyncService:
                 else:
                     # Record fill even if we don't notify (for tracking)
                     if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
-                        fill_tracker.record_fill(
+                        fill_dedup.record_fill(
                             order_id=order_id,
                             filled_qty=current_filled_qty,
                             status=current_status_str,

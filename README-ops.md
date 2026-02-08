@@ -120,6 +120,36 @@ grep "\[SLTP_VARIANTS\]" -n backend.log | grep "symbol=ETH_USD"
 
 The log line includes `correlation_id=...` and `jsonl_path=/tmp/sltp_variants_<correlation_id>.jsonl`.
 
+### Tail logs around a symbol (EC2 host)
+
+To inspect backend logs around the **last** occurrence of a trading symbol (e.g. after a crash or fill), use the helper script. It resolves the real container log path via `docker inspect` (so container name or short ID works) and prints a window around the last matching line.
+
+**From repo root on the EC2 host:**
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
+```
+
+**Examples:**
+
+```bash
+# Container by name (Compose service)
+./scripts/aws_tail_symbol_logs.sh backend-aws ETH_USDT
+
+# Container by short ID (from docker ps)
+./scripts/aws_tail_symbol_logs.sh abc123 DOT_USDT
+
+# More context lines (default 40 before/after)
+CONTEXT_LINES=80 ./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
+```
+
+If you see "Log file not readable", run with sudo:
+
+```bash
+sudo ./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
+```
+
 ### Meaning of common errors
 
 - **140001 `API_DISABLED`**:
