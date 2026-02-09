@@ -1,0 +1,149 @@
+443035d07c1a1527957b11aec61634081f318a30
+ M .env.local.example
+ M .gitignore
+ M TELEGRAM_MENU_FIX_APPLIED.md
+ M backend/app/api/routes_admin.py
+ M backend/app/api/routes_control.py
+ M backend/app/api/routes_dashboard.py
+ M backend/app/api/routes_diag.py
+ M backend/app/api/routes_manual_trade.py
+ M backend/app/api/routes_market.py
+ M backend/app/api/routes_monitoring.py
+ M backend/app/api/routes_orders.py
+ M backend/app/api/signal_monitor.py
+ M backend/app/core/environment.py
+ M backend/app/core/retry_circuit_week5.py
+ M backend/app/core/runtime.py
+ M backend/app/database.py
+ M backend/app/main.py
+ M backend/app/services/brokers/crypto_com_trade.py
+ M backend/app/services/config_loader.py
+ M backend/app/services/order_history_db.py
+ M backend/app/services/scheduler.py
+ M backend/app/services/signal_writer.py
+ M backend/app/services/sl_tp_checker.py
+ M backend/app/services/telegram_commands.py
+ M backend/app/services/telegram_notifier.py
+ M backend/app/services/tp_sl_order_creator.py
+ M backend/app/services/watchlist_master_seed.py
+ M backend/app/utils/live_trading.py
+ M backend/entrypoint.sh
+ M backend/requirements.txt
+ M backend/trading_config.json
+ M check_sol_order_chain.py
+ M corrected_trading_server.py
+ M frontend
+ M local_working_server.py
+ M real_trading_server.py
+ M secrets/runtime.env.example
+?? .venv_xcode/
+?? RESPONSIBILITY_MATRIX.md
+?? RUNBOOK.md
+?? STABILIZING_CHANGES_DELIVERABLES.md
+?? SYSTEM_AUDIT.md
+?? SYSTEM_CONTRACTS.md
+?? WATCHLIST_SYNC_PATCH_DELIVERABLES.md
+?? backend/app/core/exchange_formatting_week6.py
+?? backend/app/core/stage2_flags.py
+?? backend/app/models/fill_events_dedup.py
+?? backend/app/services/event_bus.py
+?? backend/app/services/event_handlers.py
+?? backend/app/services/events.py
+?? backend/app/services/fill_dedup_postgres.py
+?? backend/app/services/live_trading_gate.py
+?? backend/app/services/order_intent_service.py
+?? backend/app/services/protection_order_service.py
+?? backend/app/services/reconciler.py
+?? backend/app/services/signal_eval.py
+?? backend/app/services/throttle_service.py
+?? backend/app/services/watchlist_sync.py
+?? backend/app/tests/test_telegram_notifier_resolve_send_config.py
+?? backend/app/utils/indicators.py
+?? backend/docs/AWS_ALERT_PATH_FIX.md
+?? backend/docs/OPS_TELEGRAM_PERSISTENCE_PROBE.md
+?? backend/docs/README.md
+?? backend/docs/SECURITY_PIP_AUDIT.md
+?? backend/docs/SIGNAL_MONITOR_SYNTAXERROR_FIX.md
+?? backend/migrations/20260204_create_watchlist_master_postgres.sql
+?? backend/migrations/20260207_create_fill_events_dedup.sql
+?? backend/migrations/20260207_ensure_optional_columns_stage2.sql
+?? backend/scripts/probe_inactive_session_guard.py
+?? backend/scripts/replay_telegram_callback.py
+?? backend/scripts/verify_imports.py
+?? backend/tests/test_architecture_invariants_stage2.py
+?? backend/tests/test_crypto_com_order_verification.py
+?? backend/tests/test_crypto_com_signing_bool_canonicalization.py
+?? backend/tests/test_ema_helper.py
+?? backend/tests/test_event_bus.py
+?? backend/tests/test_event_wiring_architecture.py
+?? backend/tests/test_exchange_formatting_week6.py
+?? backend/tests/test_live_trading_gate.py
+?? backend/tests/test_no_side_effect_gets_week3.py
+?? backend/tests/test_order_intent_service_stage2.py
+?? backend/tests/test_orders_history_pagination.py
+?? backend/tests/test_pipeline_diag_week21.py
+?? backend/tests/test_price_gate_reference_fix.py
+?? backend/tests/test_protection_order_service_handoff.py
+?? backend/tests/test_reconciler_stage_week2.py
+?? backend/tests/test_signal_monitor_no_direct_protection.py
+?? backend/tests/test_signal_monitor_syntax_guard.py
+?? backend/tests/test_sltp_single_path_architecture.py
+?? backend/tests/test_telegram_aws_fallback.py
+?? backend/tests/test_telegram_callback_ack.py
+?? backend/tests/test_telegram_messages_pagination.py
+?? backend/tests/test_telegram_notifier_refresh_config.py
+?? backend/tests/test_telegram_single_token_contract.py
+?? backend/tests/test_throttle_reset_on_strategy_change.py
+?? backend/tests/test_tp_sl_week6.py
+?? backend/tests/test_tp_trigger_condition_spacing.py
+?? docker-compose.override.example.yml
+?? docs/ARCHITECTURE_TESTS.md
+?? docs/AWS_404_AND_TELEGRAM_VERIFICATION.md
+?? docs/AWS_ALERT_E2E_VERIFICATION.md
+?? docs/AWS_FIX_TELEGRAM_AND_ALGO_FINAL_REPORT.md
+?? docs/AWS_MERGED_FIXES_AND_TELEGRAM_PROOF.md
+?? docs/AWS_TELEGRAM_AND_ALGO_REPORT.md
+?? docs/AWS_TELEGRAM_DIAGNOSTICS_VERIFICATION.md
+?? docs/CRYPTOCOM_SLTP_REGRESSION.md
+?? docs/CRYPTOCOM_SL_TP_CREATION.md
+?? docs/DEPRECATIONS.md
+?? docs/EVENTS.md
+?? docs/HANDOFF_DEFENSE_AND_SINGLE_WRITER_DELIVERABLES.md
+?? docs/HAND_OFF_TOTAL_VERIFICATION.md
+?? docs/LIVE_TRADING_STABILIZATION_VERIFICATION.md
+?? docs/MASTER_PLAN_STAGE2.md
+?? docs/NO_DOCKER_AWS_RUNBOOK.md
+?? docs/ORDERS_HISTORY_PAGINATION.md
+?? docs/PIPELINE_DIAG.md
+?? docs/SLTP_SINGLE_PATH.md
+?? docs/SQLITE_USAGE_INVENTORY.md
+?? docs/TELEGRAM_MESSAGES_PAGINATION.md
+?? docs/WEEK1_PART2_EVENTBUS.md
+?? docs/WEEK1_PART3_SIGNAL_MONITOR_EVENT_ONLY.md
+?? docs/WEEK2_RECONCILER.md
+?? docs/WEEK3_CLOSEOUT.md
+?? docs/WEEK6_AUDIT_REPORT.md
+?? fix_exchange_sync_decimal.sh
+?? ops/evidence/week6_diagnostics.txt
+?? ops/evidence/week6_file_checks.txt
+?? ops/evidence/week6_git_state.txt
+?? ops/evidence/week6_pytest.txt
+?? pyrightconfig.json
+?? scripts/aws/check_and_restart_backend.sh
+?? scripts/aws/ec2_bootstrap_create_and_run_fix.sh
+?? scripts/aws/fix_telegram_and_algo_report.sh
+?? scripts/aws/health_check.sh
+?? scripts/aws/run_auth_verification_in_container.sh
+?? scripts/aws/run_diagnose_auth_aws.sh
+?? scripts/aws/run_telegram_diagnostics_and_report.sh
+?? scripts/local/analyze_trigger_probe_jsonl.py
+?? scripts/local/load_env_local.sh
+?? scripts/local/ssh_crypto_proxy.sh
+?? scripts/redeploy_aws.sh
+?? tmp/ssm_check_backend_aws_health.json
+?? tmp/ssm_diag_sltp_api_disabled_link.json
+?? tmp/ssm_logs_sltp_link_api_disabled.json
+?? tmp/ssm_redeploy_backend_aws_remove_asyncio.json
+?? tmp/ssm_run_crypto_trigger_probe_eth_usdt.json
+?? tmp/ssm_send_link_buy_telegram_alert_only.json
+?? tmp/ssm_trigger_link_buy_alert.json

@@ -31,12 +31,26 @@ NON_RETRYABLE_CODES: Set[int] = {
     422,  # Validation
     400,  # Bad request (e.g. invalid symbol)
 }
+# Exchange body codes (Crypto.com): permission/format - do not retry same request
+NON_RETRYABLE_EXCHANGE_CODES: Set[int] = {
+    308,  # Invalid price format
+    140001,  # API_DISABLED (conditional orders disabled at account level)
+}
 NON_RETRYABLE_EXCEPTIONS: Set[type] = {ValueError, TypeError, KeyError}
 
 
-def is_retryable_error(exc: BaseException, http_code: Optional[int] = None) -> bool:
-    """Classify errors: retryable (network, 5xx, rate limit) vs non-retryable (4xx auth/validation)."""
+def is_exchange_code_retryable(exchange_code: Optional[int]) -> bool:
+    """Return False for 308, 140001 so circuit/retry logic does not retry these."""
+    if exchange_code is None:
+        return True
+    return exchange_code not in NON_RETRYABLE_EXCHANGE_CODES
+
+
+def is_retryable_error(exc: BaseException, http_code: Optional[int] = None, exchange_code: Optional[int] = None) -> bool:
+    """Classify errors: retryable (network, 5xx, rate limit) vs non-retryable (4xx auth/validation, 308, 140001)."""
     if http_code is not None and http_code in NON_RETRYABLE_CODES:
+        return False
+    if exchange_code is not None and not is_exchange_code_retryable(exchange_code):
         return False
     for cls in NON_RETRYABLE_EXCEPTIONS:
         if isinstance(exc, cls):

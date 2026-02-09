@@ -1,0 +1,100 @@
+backend/app/core/retry_circuit_week5.py:36:    308,  # Invalid price format
+backend/app/core/retry_circuit_week5.py:37:    140001,  # API_DISABLED (conditional orders disabled at account level)
+backend/app/core/retry_circuit_week5.py:43:    """Return False for 308, 140001 so circuit/retry logic does not retry these."""
+backend/app/core/retry_circuit_week5.py:50:    """Classify errors: retryable (network, 5xx, rate limit) vs non-retryable (4xx auth/validation, 308, 140001)."""
+backend/app/tests/test_order_position_service.py:42:    trigger_condition=None,
+backend/app/services/open_orders.py:78:    trigger_condition: Optional[str] = None
+backend/app/services/open_orders.py:112:            "trigger_condition": self.trigger_condition,
+backend/app/services/open_orders.py:150:        trigger_condition=order.get("trigger_condition"),
+backend/app/api/routes_orders.py:74:def place_order(
+backend/app/api/routes_orders.py:87:    from app.utils.trading_guardrails import can_place_real_order
+backend/app/api/routes_orders.py:93:            assert_exchange_mutation_allowed(db, "place_order", request.symbol)
+backend/app/api/routes_orders.py:121:            allowed, block_reason = can_place_real_order(
+backend/app/api/routes_orders.py:131:            allowed, block_reason = can_place_real_order(
+backend/app/api/routes_orders.py:165:            result = trade_client.place_market_order(
+backend/app/api/routes_orders.py:172:            result = trade_client.place_limit_order(
+backend/app/api/routes_orders.py:1639:def get_tp_sl_order_values(
+backend/app/api/routes_orders.py:2340:            result = trade_client.place_market_order(
+backend/app/api/routes_orders.py:2366:            result = trade_client.place_market_order(
+backend/app/core/trading_invariants_week5.py:135:def validate_tp_sl_requires_fill(
+backend/app/core/trading_invariants_week5.py:136:    tp_sl_requested: bool,
+backend/app/core/trading_invariants_week5.py:145:    if not tp_sl_requested:
+backend/app/core/trading_invariants_week5.py:223:    tp_sl_requested: bool = False,
+backend/app/core/trading_invariants_week5.py:243:    fail = validate_tp_sl_requires_fill(
+backend/app/core/trading_invariants_week5.py:244:        tp_sl_requested, filled_price, filled_qty, symbol, correlation_id
+backend/app/api/routes_market.py:1150:                            from app.api.routes_dashboard import _calculate_tp_sl_from_strategy
+backend/app/api/routes_market.py:1151:                            calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+backend/app/core/exchange_formatting_week6.py:7:- trigger_condition format for exchange expectations.
+backend/app/core/exchange_formatting_week6.py:19:EXCHANGE_CODE_API_DISABLED = 140001
+backend/app/core/exchange_formatting_week6.py:23:REASON_EXCHANGE_API_DISABLED = "EXCHANGE_API_DISABLED"
+backend/app/core/exchange_formatting_week6.py:104:def format_trigger_condition(tp_or_sl: str, trigger_price: Decimal, comparator: str = ">=") -> str:
+backend/app/core/exchange_formatting_week6.py:106:    Build trigger_condition string for Crypto.com.
+backend/app/core/exchange_formatting_week6.py:122:    - 140001 -> EXCHANGE_API_DISABLED
+backend/app/core/exchange_formatting_week6.py:128:    if code == EXCHANGE_CODE_API_DISABLED:
+backend/app/core/exchange_formatting_week6.py:129:        return REASON_EXCHANGE_API_DISABLED
+backend/app/core/exchange_formatting_week6.py:134:    """Short operator checklist for 140001 (no secrets)."""
+backend/app/api/signal_monitor.py:1026:            assert_exchange_mutation_allowed(db, "place_market_order_auto_buy", symbol, None)
+backend/app/api/signal_monitor.py:1044:                    result = trade_client.place_market_order(
+backend/app/api/signal_monitor.py:1225:            logger.info("[HANDOFF_TOTAL] api/signal_monitor skipped place_market_order_auto_buy symbol=%s", symbol)
+backend/app/tests/test_open_orders.py:42:def test_portfolio_metrics_calculates_tp_sl():
+backend/app/tests/test_exchange_sync.py:404:                result = client.place_stop_loss_order(
+backend/app/api/routes_manual_trade.py:45:#   - trigger_condition: ">= {TP_price}"
+backend/app/api/routes_manual_trade.py:133:            main_order = trade_client.place_limit_order(
+backend/app/api/routes_manual_trade.py:189:        sl_order = trade_client.place_stop_loss_order(
+backend/app/api/routes_manual_trade.py:216:        tp_order = trade_client.place_take_profit_order(
+backend/app/models/exchange_order.py:45:    trigger_condition = Column(Numeric(20, 8), nullable=True)  # Trigger condition for stop/limit orders
+backend/app/tools/crypto_com_trigger_probe.py:8:the exchange's real behavior (e.g. API_DISABLED 140001).
+backend/app/tools/crypto_com_trigger_probe.py:538:                            # code != 0: always FAIL for probe (including 220, 140001)
+backend/app/tools/crypto_com_trigger_probe.py:663:    non_140001 = [(k, n) for (k, n) in counts.items() if k[1] != 140001]
+backend/app/tools/crypto_com_trigger_probe.py:664:    if non_140001:
+backend/app/tools/crypto_com_trigger_probe.py:666:        print("NON_140001 (samples)")
+backend/app/tools/crypto_com_trigger_probe.py:668:        for (hs, code, msg), n in sorted(non_140001, key=lambda kv: (-kv[1], str(kv[0]))):
+backend/app/tools/crypto_com_trigger_probe.py:1370:    # Highlight any variant not returning API_DISABLED 140001
+backend/app/tools/crypto_com_trigger_probe.py:1372:    print("Highlights (non-API_DISABLED outcomes):")
+backend/app/tools/crypto_com_trigger_probe.py:1376:        if code == 140001 and (msg or "").upper() == "API_DISABLED":
+backend/app/tools/crypto_com_trigger_probe.py:1381:        print("- (none) All grouped outcomes were API_DISABLED or exceptions")
+backend/app/services/tp_sl_order_creator.py:18:from app.utils.trading_guardrails import can_place_real_order
+backend/app/services/tp_sl_order_creator.py:95:            ticker_response = http_get(ticker_url, params=ticker_params, timeout=5, calling_module="tp_sl_order_creator")
+backend/app/services/tp_sl_order_creator.py:126:    # Price formatting is handled by place_take_profit_order using normalize_price()
+backend/app/services/tp_sl_order_creator.py:132:    # No pre-formatting needed here - pass raw price to place_take_profit_order
+backend/app/services/tp_sl_order_creator.py:156:            f"[{source.upper()}_TP] PAYLOAD DETAILS before calling place_take_profit_order:\n"
+backend/app/services/tp_sl_order_creator.py:170:            allowed, block_reason = can_place_real_order(
+backend/app/services/tp_sl_order_creator.py:275:        assert_exchange_mutation_allowed(db, "place_take_profit_order", symbol, None)
+backend/app/services/tp_sl_order_creator.py:276:        tp_order = trade_client.place_take_profit_order(
+backend/app/services/tp_sl_order_creator.py:299:                    "[EXCHANGE_ORDERS_OWNER] tp_sl_order_creator does not write exchange_orders; tp_order_id=%s will be synced by exchange_sync",
+backend/app/services/tp_sl_order_creator.py:345:    # Price formatting is handled by place_stop_loss_order using normalize_price()
+backend/app/services/tp_sl_order_creator.py:351:    # No pre-formatting needed here - pass raw price to place_stop_loss_order
+backend/app/services/tp_sl_order_creator.py:370:            f"[{source.upper()}_SL] PAYLOAD DETAILS before calling place_stop_loss_order:\n"
+backend/app/services/tp_sl_order_creator.py:384:            allowed, block_reason = can_place_real_order(
+backend/app/services/tp_sl_order_creator.py:492:        assert_exchange_mutation_allowed(db, "place_stop_loss_order", symbol, None)
+backend/app/services/tp_sl_order_creator.py:493:        sl_order = trade_client.place_stop_loss_order(
+backend/app/services/tp_sl_order_creator.py:513:                    "[EXCHANGE_ORDERS_OWNER] tp_sl_order_creator does not write exchange_orders; sl_order_id=%s will be synced by exchange_sync",
+backend/app/services/tp_sl_order_creator.py:589:                            ticker_response = http_get(ticker_url, params=ticker_params, timeout=5, calling_module="tp_sl_order_creator")
+backend/app/api/routes_dashboard.py:237:        calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+backend/app/api/routes_dashboard.py:395:        calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+backend/app/api/routes_dashboard.py:453:def _calculate_tp_sl_from_strategy(
+backend/app/api/routes_dashboard.py:1982:            calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
+backend/app/services/signal_monitor.py:3664:                                                self._place_order_from_signal(
+backend/app/services/signal_monitor.py:5671:                                                self._place_order_from_signal(
+backend/app/services/signal_monitor.py:6705:            from app.utils.trading_guardrails import can_place_real_order
+backend/app/services/signal_monitor.py:6706:            allowed, block_reason = can_place_real_order(
+backend/app/services/signal_monitor.py:6760:                assert_exchange_mutation_allowed(db, "place_market_order_buy", symbol, None)
+backend/app/services/signal_monitor.py:6777:                    result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:6902:                        spot_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:6997:                            retry_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:7045:                                            retry_retry_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:7120:                                spot_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:7154:                                    reduced_spot_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:7629:                            close_result: Dict[str, Any] = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:7874:                                        # place_market_order requires qty as float for SELL orders
+backend/app/services/signal_monitor.py:7876:                                        close_result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:8037:    async def _place_order_from_signal(
+backend/app/services/signal_monitor.py:8112:            assert_exchange_mutation_allowed(db, "place_order_simple", symbol, None)
+backend/app/services/signal_monitor.py:8130:                result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:8148:                result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:8522:                assert_exchange_mutation_allowed(db, "place_market_order_sell", symbol, None)
+backend/app/services/signal_monitor.py:8527:            # CRITICAL: Don't round here - let place_market_order handle formatting based on exchange requirements
+backend/app/services/signal_monitor.py:8535:            # place_market_order has logic to fetch instrument info and format quantity correctly
+backend/app/services/signal_monitor.py:8548:            result = trade_client.place_market_order(
+backend/app/services/signal_monitor.py:8551:                qty=qty,  # Pass unrounded quantity - place_market_order will format it correctly
+backend/app/services/signal_monitor.py:8662:                            retry_result = trade_client.place_market_order(

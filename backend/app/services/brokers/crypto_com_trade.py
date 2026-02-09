@@ -95,7 +95,8 @@ class CryptoComTradeClient:
         
         self.api_key = _clean_env_secret(os.getenv("EXCHANGE_CUSTOM_API_KEY", ""))
         self.api_secret = _clean_env_secret(os.getenv("EXCHANGE_CUSTOM_API_SECRET", ""))
-        self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+        from app.core.runtime import is_aws_runtime
+        self.live_trading = False if is_aws_runtime() else (os.getenv("LIVE_TRADING", "false").lower() == "true")
         self.crypto_auth_diag = os.getenv("CRYPTO_AUTH_DIAG", "false").lower() == "true"
         
         # In-memory cache for instrument metadata (per run)
@@ -151,14 +152,15 @@ class CryptoComTradeClient:
 
     def _refresh_runtime_flags(self) -> None:
         """
-        Refresh runtime flags from environment.
-
-        The client instance is long-lived, but some endpoints toggle LIVE_TRADING /
-        proxy behavior dynamically (e.g. for one-off SL/TP creation). We must re-read
-        env flags at call time rather than caching only at __init__.
+        Refresh runtime flags. In production (AWS) LIVE_TRADING is never read from env;
+        callers must pass dry_run from get_live_trading(db). In local, env can be used.
         """
         try:
-            self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
+            from app.core.runtime import is_aws_runtime
+            if is_aws_runtime():
+                self.live_trading = False
+            else:
+                self.live_trading = os.getenv("LIVE_TRADING", "false").lower() == "true"
         except Exception:
             pass
 
@@ -2620,6 +2622,8 @@ class CryptoComTradeClient:
         Failure-only fallback: attempt SL and/or TP creation with many format variations.
         Keeps the success-path unchanged by being invoked only after a normal attempt fails.
         """
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("create_stop_loss_take_profit_with_variations", instrument_name)
         entry_side = (side or "").strip().upper()
         if entry_side not in ("BUY", "SELL"):
             raise ValueError("side must be BUY or SELL (entry side)")
@@ -3036,6 +3040,8 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("place_market_order", symbol)
         skip = require_aws_or_skip("place_market_order")
         if skip:
             return {"order_id": None, **skip}
@@ -3657,6 +3663,8 @@ class CryptoComTradeClient:
         dry_run: bool = True
     ) -> dict:
         """Place limit order"""
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("place_limit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
@@ -4004,6 +4012,8 @@ class CryptoComTradeClient:
         For trigger/conditional orders, uses Advanced Order Management API endpoint.
         If order_type is not provided, attempts to determine it from order detail.
         """
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("cancel_order", None)
         skip = require_aws_or_skip("cancel_order")
         if skip:
             return {"order_id": order_id, "skipped": True, "reason": skip.get("reason", "")}
@@ -4099,9 +4109,11 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place stop loss order (STOP_LIMIT)"""
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("place_stop_loss_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
-        
+
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
             return {
@@ -4677,6 +4689,19 @@ class CryptoComTradeClient:
                             last_error = f"Error {error_code}: {error_msg}"
                             continue  # Try next variation
                         elif error_code == 308:
+                            try:
+                                from app.core.exchange_formatting_week6 import REASON_INVALID_PRICE_FORMAT
+                                logger.warning(
+                                    "symbol=%s decision=FAILED reason_code=%s code=308 pre_quantized_price=%s pre_quantized_trigger=%s quantized_price=%s quantized_trigger=%s",
+                                    symbol,
+                                    REASON_INVALID_PRICE_FORMAT,
+                                    price,
+                                    trigger_price,
+                                    price_str,
+                                    trigger_str,
+                                )
+                            except Exception:
+                                pass
                             logger.warning(f"⚠️ Variation {variation_idx} failed with error 308 (Invalid price format). Trying different price precision...")
                             last_error = f"Error {error_code}: {error_msg}"
                             
@@ -4826,6 +4851,21 @@ class CryptoComTradeClient:
                         elif error_code == 140001:
                             # Conditional orders (STOP_LIMIT/TAKE_PROFIT_LIMIT) can be disabled at the account level.
                             # If this happens, retrying formatting variations won't help.
+                            try:
+                                from app.core.exchange_formatting_week6 import (
+                                    REASON_EXCHANGE_API_DISABLED,
+                                    operator_action_for_api_disabled,
+                                )
+                                operator_action = operator_action_for_api_disabled()
+                                logger.warning(
+                                    "symbol=%s decision=BLOCKED reason_code=%s code=140001 message=%s operator_action=%s",
+                                    symbol,
+                                    REASON_EXCHANGE_API_DISABLED,
+                                    (error_msg or "API_DISABLED")[:200],
+                                    operator_action[:200],
+                                )
+                            except Exception:
+                                pass
                             logger.error(
                                 f"❌ STOP_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
                                 f"This account likely cannot place conditional orders (TP/SL) via API."
@@ -4916,9 +4956,11 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        require_mutation_allowed_for_broker("place_take_profit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
-        
+
         if actual_dry_run:
             logger.info(f"DRY_RUN: place_take_profit_order - {symbol} {side} {qty} @ {price}")
             return {
@@ -5397,6 +5439,21 @@ class CryptoComTradeClient:
                                 
                                 # If conditional orders are disabled for this account/symbol, no point trying other variations.
                                 if error_code == 140001:
+                                    try:
+                                        from app.core.exchange_formatting_week6 import (
+                                            REASON_EXCHANGE_API_DISABLED,
+                                            operator_action_for_api_disabled,
+                                        )
+                                        operator_action = operator_action_for_api_disabled()
+                                        logger.warning(
+                                            "symbol=%s decision=BLOCKED reason_code=%s code=140001 message=%s operator_action=%s",
+                                            symbol,
+                                            REASON_EXCHANGE_API_DISABLED,
+                                            (error_msg or "API_DISABLED")[:200],
+                                            operator_action[:200],
+                                        )
+                                    except Exception:
+                                        pass
                                     logger.error(
                                         f"❌ TAKE_PROFIT_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
                                         f"This account likely cannot place conditional orders (TP/SL) via API."
@@ -5411,6 +5468,17 @@ class CryptoComTradeClient:
                                 
                                 # If error 308 (Invalid price format), try next variation
                                 if error_code == 308:
+                                    try:
+                                        from app.core.exchange_formatting_week6 import REASON_INVALID_PRICE_FORMAT
+                                        logger.warning(
+                                            "symbol=%s decision=FAILED reason_code=%s code=308 pre_quantized_price=%s quantized_price=%s",
+                                            symbol,
+                                            REASON_INVALID_PRICE_FORMAT,
+                                            price,
+                                            price_fmt,
+                                        )
+                                    except Exception:
+                                        pass
                                     logger.warning(f"⚠️ Variation {variation_name_full} failed with error 308 (Invalid price format): price='{price_fmt}', trigger='{price_fmt}'. Trying next variation...")
                                     continue  # Try next params variation
                                 

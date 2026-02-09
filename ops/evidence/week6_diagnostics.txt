@@ -1,0 +1,5 @@
+# Week 6 diagnostics (if applicable)
+# No new diagnostics script for Week 6. Pipeline diagnostics unchanged:
+#   cd /Users/carloscruz/automated-trading-platform
+#   PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
+# TP/SL creation is exercised on fill; errors 308/140001 are handled in broker with structured logs.

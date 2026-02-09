@@ -1,0 +1,34 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/carloscruz/automated-trading-platform/backend
+plugins: anyio-4.9.0
+collecting ... collected 25 items
+
+tests/test_tp_sl_week6.py::test_308_classified_as_invalid_price_format PASSED [  4%]
+tests/test_tp_sl_week6.py::test_140001_classified_as_exchange_api_disabled PASSED [  8%]
+tests/test_tp_sl_week6.py::test_308_not_retryable PASSED                 [ 12%]
+tests/test_tp_sl_week6.py::test_140001_not_retryable PASSED              [ 16%]
+tests/test_tp_sl_week6.py::test_retryable_error_with_exchange_code_308 PASSED [ 20%]
+tests/test_tp_sl_week6.py::test_retryable_error_with_exchange_code_140001 PASSED [ 24%]
+tests/test_tp_sl_week6.py::test_retryable_error_with_exchange_code_0 PASSED [ 28%]
+tests/test_tp_sl_week6.py::test_simulate_308_response_logs_reason_code PASSED [ 32%]
+tests/test_tp_sl_week6.py::test_simulate_140001_response_logs_reason_code_and_blocked PASSED [ 36%]
+tests/test_exchange_formatting_week6.py::test_normalize_decimal_str_no_scientific PASSED [ 40%]
+tests/test_exchange_formatting_week6.py::test_normalize_decimal_str_no_commas PASSED [ 44%]
+tests/test_exchange_formatting_week6.py::test_normalize_decimal_str_trailing_zeros PASSED [ 48%]
+tests/test_exchange_formatting_week6.py::test_normalize_decimal_str_max_dp PASSED [ 52%]
+tests/test_exchange_formatting_week6.py::test_quantize_price PASSED      [ 56%]
+tests/test_exchange_formatting_week6.py::test_quantize_qty PASSED        [ 60%]
+tests/test_exchange_formatting_week6.py::test_validate_price_tick_ok PASSED [ 64%]
+tests/test_exchange_formatting_week6.py::test_validate_price_tick_raises PASSED [ 68%]
+tests/test_exchange_formatting_week6.py::test_validate_qty_step_below_min_raises PASSED [ 72%]
+tests/test_exchange_formatting_week6.py::test_validate_qty_step_aligned_ok PASSED [ 76%]
+tests/test_exchange_formatting_week6.py::test_format_trigger_condition_tp PASSED [ 80%]
+tests/test_exchange_formatting_week6.py::test_format_trigger_condition_sl PASSED [ 84%]
+tests/test_exchange_formatting_week6.py::test_classify_exchange_error_308 PASSED [ 88%]
+tests/test_exchange_formatting_week6.py::test_classify_exchange_error_140001 PASSED [ 92%]
+tests/test_exchange_formatting_week6.py::test_classify_exchange_error_other PASSED [ 96%]
+tests/test_exchange_formatting_week6.py::test_operator_action_for_api_disabled PASSED [100%]
+
+============================== 25 passed in 0.04s ==============================
