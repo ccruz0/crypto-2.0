@@ -30,7 +30,7 @@ from app.services.strategy_profiles import (
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
 from app.services.config_loader import get_alert_thresholds, load_config
 from app.services.order_position_service import calculate_portfolio_value_for_symbol
-from app.services.signal_throttle import (
+from app.services.throttle_service import (
     LastSignalSnapshot,
     SignalThrottleConfig,
     build_strategy_key,
@@ -1553,6 +1553,7 @@ class SignalMonitorService:
         """Monitor signals for all coins with alert_enabled = true (for alerts)
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
+        logger.debug("[SIGNAL_MONITOR_REFACTOR] flow=throttle_service+order_intent_service")
         try:
             telegram_config = self._get_telegram_runtime_config(refresh=True)
             reasons = telegram_config.get("block_reasons") or []
@@ -2226,7 +2227,7 @@ class SignalMonitorService:
         
         # CRITICAL: Check for config changes and reset throttle immediately
         # This ensures that changes to trade_amount_usd, alert_enabled, etc. reset the throttle immediately
-        from app.services.signal_throttle import reset_throttle_state
+        from app.services.throttle_service import reset_throttle_state
         config_changed = False
         logger.info(f"[CONFIG_CHECK] {symbol}: Checking config_hash. Current={config_hash_current[:16] if config_hash_current else None}..., Snapshots={len(signal_snapshots)}")
         for side, snapshot in signal_snapshots.items():
@@ -3516,7 +3517,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=BUY emit={should_emit_telegram} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
+                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -3667,6 +3668,7 @@ class SignalMonitorService:
                                                     watchlist_item=watchlist_item,
                                                     current_price=current_price,
                                                     source="orchestrator",
+                                                    correlation_id=evaluation_id,
                                                 )
                                             )
                                         finally:
@@ -4845,8 +4847,7 @@ class SignalMonitorService:
                                 f"[CRYPTO_ORDER_ATTEMPT] {symbol} BUY price=${current_price:.4f} "
                                 f"qty_usd=${watchlist_item.trade_amount_usd:.2f} trade_enabled={watchlist_item.trade_enabled}"
                             )
-                            # Use asyncio.run() to execute async function from sync context
-                            import asyncio
+                            # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
                             order_result = asyncio.run(self._create_buy_order(db, watchlist_item, current_price, res_up, res_down))
                             # Check for errors first (error dicts are truthy but have "error" key)
                             if order_result and isinstance(order_result, dict) and "error" in order_result:
@@ -5532,7 +5533,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=SELL emit={should_emit_telegram_sell} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
+                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -5674,6 +5675,7 @@ class SignalMonitorService:
                                                     watchlist_item=watchlist_item,
                                                     current_price=current_price,
                                                     source="orchestrator",
+                                                    correlation_id=evaluation_id,
                                                 )
                                             )
                                         finally:
@@ -5938,8 +5940,7 @@ class SignalMonitorService:
                                     )
                                 
                                 try:
-                                    # Use asyncio.run() to execute async function from sync context
-                                    import asyncio
+                                    # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
                                     order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
                                     
                                     # DIAGNOSTIC: Log result for TRX_USDT
@@ -6753,6 +6754,12 @@ class SignalMonitorService:
                 
                 logger.warning(f"🚫 TRADE_BLOCKED: {symbol} BUY - {block_reason}")
                 return None  # Block order
+
+            try:
+                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                assert_exchange_mutation_allowed(db, "place_market_order_buy", symbol, None)
+            except LiveTradingBlockedError:
+                return None
             
             # Emit ORDER_ATTEMPT event
             _emit_lifecycle_event(
@@ -6787,7 +6794,6 @@ class SignalMonitorService:
                     if "500" in error_msg and attempt < max_retries:
                         last_error = error_msg
                         logger.warning(f"❌ Order creation attempt {attempt + 1}/{max_retries + 1} failed for {symbol}{margin_info}: {error_msg}. Retrying in {retry_delay}s...")
-                        import asyncio
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
@@ -6800,7 +6806,6 @@ class SignalMonitorService:
                     if attempt < max_retries and "500" in str(e):
                         last_error = str(e)
                         logger.warning(f"❌ Order creation attempt {attempt + 1}/{max_retries + 1} failed with exception for {symbol}{margin_info}: {e}. Retrying in {retry_delay}s...")
-                        import asyncio
                         await asyncio.sleep(retry_delay)
                         continue
                     else:
@@ -7444,31 +7449,15 @@ class SignalMonitorService:
                             logger.warning(f"⚠️ Failed to create TradeSignal record for automatic order {symbol}: {signal_err}")
                             # Continue with order creation even if signal creation fails
 
-                        new_exchange_order = ExchangeOrder(
-                            exchange_order_id=str(order_id),
-                            client_oid=str(result.get("client_order_id", order_id)),
-                            symbol=symbol,
-                            side=OrderSideEnum.BUY,
-                            order_type="MARKET",
-                            status=db_status,
-                            price=safe_price,
-                            quantity=safe_qty,
-                            cumulative_quantity=safe_cumulative_qty,
-                            cumulative_value=safe_cumulative_val,
-                            avg_price=safe_avg_price,
-                            exchange_create_time=now_utc,  # CRITICAL: Set timestamp for cooldown checks
-                            exchange_update_time=now_utc,
-                            created_at=now_utc,
-                            updated_at=now_utc,
-                            trade_signal_id=trade_signal_id  # CRITICAL: Link to TradeSignal to mark as automatic
+                        # EXCHANGE_ORDERS_OWNER: Only exchange_sync writes exchange_orders. Order will appear after next sync.
+                        logger.info(
+                            "[EXCHANGE_ORDERS_OWNER] signal_monitor does not write exchange_orders; order_id=%s %s will be synced by exchange_sync",
+                            order_id, symbol
                         )
-                        db.add(new_exchange_order)
-                        db.commit()
-                        logger.info(f"✅ Automatic BUY order saved to ExchangeOrder (PostgreSQL): {symbol} - {order_id} with exchange_create_time={now_utc}")
                     else:
                         logger.debug(f"Order {order_id} already exists in ExchangeOrder, skipping duplicate")
                 except Exception as pg_err:
-                    logger.error(f"Error saving automatic order to ExchangeOrder (PostgreSQL): {pg_err}", exc_info=True)
+                    logger.error(f"Error in post-place order handling (PostgreSQL): {pg_err}", exc_info=True)
                     db.rollback()
                     # Continue - order_history_db save succeeded
                 
@@ -7788,9 +7777,6 @@ class SignalMonitorService:
                     else:
                         # Create SL/TP orders with normalized executed quantity
                         try:
-                            from app.services.exchange_sync import ExchangeSyncService
-                            exchange_sync = ExchangeSyncService()
-                            
                             logger.info(
                                 f"🔒 [SL/TP] Creating protection orders for BUY {symbol} order {order_id}: "
                                 f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
@@ -7809,67 +7795,29 @@ class SignalMonitorService:
                                 order_id=str(order_id),
                             )
                             
-                            # Create SL/TP orders for the filled BUY order
-                            # For BUY orders: TP is SELL side (sell at profit), SL is SELL side (sell at loss)
-                            if DEBUG_TRADING:
-                                logger.info(f"[DEBUG_TRADING] {symbol} BUY: Calling _create_sl_tp_for_filled_order with side=BUY, price={executed_avg_price}, qty={normalized_qty}")
-                            sl_tp_result = exchange_sync._create_sl_tp_for_filled_order(
-                                db=db,
-                                symbol=symbol,
-                                side="BUY",
-                                filled_price=float(executed_avg_price),
-                                filled_qty=normalized_qty,
-                                order_id=str(order_id)
-                            )
-                            
-                            # Extract SL/TP order IDs from result
-                            sl_order_id = None
-                            tp_order_id = None
-                            if isinstance(sl_tp_result, dict):
-                                sl_result = sl_tp_result.get("sl_result", {})
-                                tp_result = sl_tp_result.get("tp_result", {})
-                                if isinstance(sl_result, dict):
-                                    sl_order_id = sl_result.get("order_id")
-                                if isinstance(tp_result, dict):
-                                    tp_order_id = tp_result.get("order_id")
-                            
-                            logger.info(
-                                f"✅ [SL/TP] Protection orders created for BUY {symbol} order {order_id}: "
-                                f"SL={sl_order_id}, TP={tp_order_id}"
-                            )
-                            if DEBUG_TRADING:
-                                logger.info(f"[DEBUG_TRADING] {symbol} BUY: SL/TP creation SUCCESS - SL={sl_order_id}, TP={tp_order_id}")
-                            
-                            # Emit SLTP_CREATED event
-                            _emit_lifecycle_event(
-                                db=db,
-                                symbol=symbol,
-                                strategy_key=strategy_key,
-                                side="BUY",
-                                price=executed_avg_price,
-                                event_type="SLTP_CREATED",
-                                event_reason=f"primary_order_id={order_id}",
-                                order_id=str(order_id),
-                                sl_order_id=str(sl_order_id) if sl_order_id else None,
-                                tp_order_id=str(tp_order_id) if tp_order_id else None,
-                            )
-                            
-                            # Send Telegram notification with order IDs
+                            # Protection is OrderFilled-only: publish event; handler calls ProtectionOrderService
                             try:
-                                if self._telegram_send_enabled():
-                                    telegram_notifier.send_message(
-                                        f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
-                                        f"📊 Symbol: <b>{symbol}</b>\n"
-                                        f"📋 BUY Order ID: {order_id}\n"
-                                        f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
-                                        f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
-                                        f"📦 Quantity: {normalized_qty} (normalized)\n"
-                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
-                                        f"Protection orders created successfully."
+                                from app.services.event_bus import get_event_bus, is_event_bus_enabled
+                                from app.services.events import OrderFilled
+                                if is_event_bus_enabled():
+                                    get_event_bus().publish(
+                                        OrderFilled(
+                                            symbol=symbol,
+                                            side="BUY",
+                                            exchange_order_id=str(order_id),
+                                            filled_price=float(executed_avg_price),
+                                            quantity=normalized_qty,
+                                            source="signal_monitor",
+                                            correlation_id=None,
+                                        )
                                     )
-                            except Exception as notify_err:
-                                logger.warning(f"Failed to send SL/TP success notification: {notify_err}")
-                            
+                                else:
+                                    logger.info(
+                                        "[DEPRECATION] protection_event_skipped event_bus_disabled symbol=%s order_id=%s source=signal_monitor",
+                                        symbol, order_id,
+                                    )
+                            except Exception as ev_err:
+                                logger.warning(f"Error publishing OrderFilled for BUY {symbol} order {order_id}: {ev_err}")
                             filled_quantity = normalized_qty
                         
                         except Exception as sl_tp_err:
@@ -8018,9 +7966,6 @@ class SignalMonitorService:
             # Only attempt SL/TP creation if we have valid estimates
             if estimated_qty and estimated_qty > 0 and estimated_price > 0:
                 try:
-                    from app.services.exchange_sync import ExchangeSyncService
-                    exchange_sync = ExchangeSyncService()
-                    
                     # Normalize quantity
                     normalized_qty_str = trade_client.normalize_quantity(symbol, estimated_qty)
                     if not normalized_qty_str:
@@ -8048,55 +7993,29 @@ class SignalMonitorService:
                             order_id=str(order_id),
                         )
                         
-                        # Create SL/TP orders with estimated values
-                        sl_tp_result = exchange_sync._create_sl_tp_for_filled_order(
-                            db=db,
-                            symbol=symbol,
-                            side="BUY",
-                            filled_price=estimated_price,
-                            filled_qty=normalized_qty,
-                            order_id=str(order_id)
-                        )
-                        
-                        # Extract SL/TP order IDs from result
-                        sl_order_id = None
-                        tp_order_id = None
-                        if isinstance(sl_tp_result, dict):
-                            sl_result = sl_tp_result.get("sl_result", {})
-                            tp_result = sl_tp_result.get("tp_result", {})
-                            if isinstance(sl_result, dict):
-                                sl_order_id = sl_result.get("order_id")
-                            if isinstance(tp_result, dict):
-                                tp_order_id = tp_result.get("order_id")
-                        
-                        if sl_order_id or tp_order_id:
+                        # Unconfirmed fill: publish ProtectionRequested only (observability); no handler creates protection
+                        try:
+                            from app.services.event_bus import get_event_bus, is_event_bus_enabled
+                            from app.services.events import ProtectionRequested
+                            if is_event_bus_enabled():
+                                get_event_bus().publish(
+                                    ProtectionRequested(
+                                        symbol=symbol,
+                                        exchange_order_id=str(order_id),
+                                        source="signal_monitor_unconfirmed",
+                                        correlation_id=None,
+                                    )
+                                )
                             logger.info(
-                                f"✅ [SL/TP] Protection orders created for BUY {symbol} order {order_id} (ESTIMATED): "
-                                f"SL={sl_order_id}, TP={tp_order_id}"
+                                "[EVENT_BUS] protection requested (unconfirmed) symbol=%s order_id=%s - exchange_sync will create when FILLED",
+                                symbol, order_id,
                             )
-                            
-                            # Emit SLTP_CREATED event
-                            _emit_lifecycle_event(
-                                db=db,
-                                symbol=symbol,
-                                strategy_key=strategy_key,
-                                side="BUY",
-                                price=estimated_price,
-                                event_type="SLTP_CREATED",
-                                event_reason=f"primary_order_id={order_id} (estimated values)",
-                                order_id=str(order_id),
-                                sl_order_id=str(sl_order_id) if sl_order_id else None,
-                                tp_order_id=str(tp_order_id) if tp_order_id else None,
-                            )
-                        else:
-                            logger.warning(
-                                f"⚠️ [SL/TP] Failed to create SL/TP orders with estimated values for BUY {symbol} order {order_id}. "
-                                f"Exchange sync will handle SL/TP when order becomes FILLED."
-                            )
+                        except Exception as ev_err:
+                            logger.warning(f"Error publishing ProtectionRequested for BUY {symbol} order {order_id}: {ev_err}")
                 except Exception as sl_tp_err:
                     error_details = str(sl_tp_err)
                     logger.warning(
-                        f"⚠️ [SL/TP] Failed to create SL/TP orders with estimated values for BUY {symbol} order {order_id}: {error_details}. "
+                        f"⚠️ [SL/TP] Estimated path for BUY {symbol} order {order_id}: {error_details}. "
                         f"Exchange sync will handle SL/TP when order becomes FILLED.",
                         exc_info=True
                     )
@@ -8123,6 +8042,7 @@ class SignalMonitorService:
         watchlist_item: WatchlistItem,
         current_price: float,
         source: str = "orchestrator",
+        correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Place order immediately from signal (NO eligibility checks).
@@ -8137,6 +8057,7 @@ class SignalMonitorService:
             watchlist_item: WatchlistItem (for trade_amount_usd, trade_on_margin)
             current_price: Current price (for SELL quantity calculation)
             source: Source identifier (default: "orchestrator")
+            correlation_id: Optional correlation ID for structured logging (Week 5)
         
         Returns:
             Dict with:
@@ -8148,14 +8069,49 @@ class SignalMonitorService:
         
         # Normalize symbol once for exchange compatibility
         symbol = normalize_symbol_for_exchange(symbol)
+        corr_id = correlation_id or "N/A"
 
         # Get trade amount and margin settings (NO validation - signal was already sent)
         amount_usd = getattr(watchlist_item, 'trade_amount_usd', None) or 100.0  # Default fallback
         user_wants_margin = getattr(watchlist_item, 'trade_on_margin', False) or False
+
+        # Week 5: trading safety invariants (fail-fast)
+        quantity_for_validation = amount_usd if (side or "").strip().upper() == "BUY" else (amount_usd / current_price if current_price > 0 else 0)
+        position_exists: Optional[bool] = None
+        if (side or "").strip().upper() == "SELL":
+            try:
+                from app.services.order_position_service import count_open_positions_for_symbol
+                base_symbol = symbol.split("_")[0] if "_" in symbol else symbol
+                position_exists = count_open_positions_for_symbol(db, base_symbol) > 0
+            except Exception:
+                position_exists = False
+        try:
+            from app.core.trading_invariants_week5 import validate_trading_decision, InvariantFailure
+            fail = validate_trading_decision(
+                symbol=symbol,
+                side=side,
+                quantity=quantity_for_validation,
+                correlation_id=corr_id,
+                position_exists=position_exists,
+            )
+            if fail:
+                return {
+                    "error": fail.reason_code,
+                    "blocked": True,
+                    "message": fail.message,
+                }
+        except Exception as inv_err:
+            logger.warning("Week 5 invariants check failed, proceeding: %s", inv_err)
         
         # Get live trading status (for dry_run)
         live_trading = get_live_trading_status(db)
         dry_run_mode = not live_trading
+
+        try:
+            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+            assert_exchange_mutation_allowed(db, "place_order_simple", symbol, None)
+        except LiveTradingBlockedError:
+            return {"error": "ORDER_BLOCKED_LIVE_TRADING", "blocked": True}
         
         # Decide trading mode (margin vs spot)
         trading_decision = decide_trading_mode(
@@ -8560,6 +8516,12 @@ class SignalMonitorService:
             dry_run_mode = not live_trading
             
             logger.info(f"🔴 Creating automatic SELL order for {symbol}: amount_usd={amount_usd}, margin={use_margin}")
+
+            try:
+                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                assert_exchange_mutation_allowed(db, "place_market_order_sell", symbol, None)
+            except LiveTradingBlockedError:
+                return None
             
             # Calculate quantity for SELL order
             # CRITICAL: Don't round here - let place_market_order handle formatting based on exchange requirements
@@ -9018,34 +8980,15 @@ class SignalMonitorService:
                             logger.warning(f"⚠️ Failed to create TradeSignal record for automatic order {symbol}: {signal_err}")
                             # Continue with order creation even if signal creation fails
 
-                        _avg = result.get("avg_price")
-                        _cq = result.get("cumulative_quantity")
-                        _cv = result.get("cumulative_value")
-                        new_exchange_order = ExchangeOrder(
-                            exchange_order_id=str(order_id),
-                            client_oid=str(result.get("client_order_id", order_id)),
-                            symbol=symbol,
-                            side=OrderSideEnum.SELL,
-                            order_type="MARKET",
-                            status=db_status,
-                            price=float(_avg) if _avg is not None else None,
-                            quantity=float(qty),
-                            cumulative_quantity=float(_cq) if _cq is not None else float(qty),
-                            cumulative_value=float(_cv) if _cv is not None else None,
-                            avg_price=float(_avg) if _avg is not None else None,
-                            exchange_create_time=now_utc,
-                            exchange_update_time=now_utc,
-                            created_at=now_utc,
-                            updated_at=now_utc,
-                            trade_signal_id=trade_signal_id  # CRITICAL: Link to TradeSignal to mark as automatic
+                        # EXCHANGE_ORDERS_OWNER: Only exchange_sync writes exchange_orders. Order will appear after next sync.
+                        logger.info(
+                            "[EXCHANGE_ORDERS_OWNER] signal_monitor does not write exchange_orders; order_id=%s %s will be synced by exchange_sync",
+                            order_id, symbol
                         )
-                        db.add(new_exchange_order)
-                        db.commit()
-                        logger.info(f"✅ Automatic SELL order saved to ExchangeOrder (PostgreSQL): {symbol} - {order_id}")
                     else:
                         logger.debug(f"Order {order_id} already exists in ExchangeOrder, skipping duplicate")
                 except Exception as pg_err:
-                    logger.error(f"Error saving automatic SELL order to ExchangeOrder: {pg_err}", exc_info=True)
+                    logger.error(f"Error in post-place SELL order handling (PostgreSQL): {pg_err}", exc_info=True)
                     db.rollback()
                 
                 logger.info(f"Automatic SELL order saved to database: {symbol} - {order_id}")
@@ -9335,9 +9278,6 @@ class SignalMonitorService:
                         else:
                             # Create SL/TP orders with normalized executed quantity
                             try:
-                                from app.services.exchange_sync import ExchangeSyncService
-                                exchange_sync = ExchangeSyncService()
-                                
                                 logger.info(
                                     f"🔒 [SL/TP] Creating protection orders for SELL {symbol} order {order_id}: "
                                     f"filled_price={executed_avg_price}, executed_qty={normalized_qty} "
@@ -9356,62 +9296,29 @@ class SignalMonitorService:
                                     order_id=str(order_id),
                                 )
                                 
-                                # Create SL/TP orders for the filled SELL order
-                                # For SELL orders: TP is BUY side (buy back at profit), SL is BUY side (buy back at loss)
-                                sl_tp_result = exchange_sync._create_sl_tp_for_filled_order(
-                                    db=db,
-                                    symbol=symbol,
-                                    side="SELL",
-                                    filled_price=float(executed_avg_price),
-                                    filled_qty=normalized_qty,  # CRITICAL: Use normalized executed quantity
-                                    order_id=str(order_id)
-                                )
-                                
-                                # Extract SL/TP order IDs from result for logging
-                                # _create_sl_tp_for_filled_order returns dict with sl_result and tp_result keys
-                                sl_order_id = None
-                                tp_order_id = None
-                                if isinstance(sl_tp_result, dict):
-                                    sl_result = sl_tp_result.get("sl_result", {})
-                                    tp_result = sl_tp_result.get("tp_result", {})
-                                    if isinstance(sl_result, dict):
-                                        sl_order_id = sl_result.get("order_id")
-                                    if isinstance(tp_result, dict):
-                                        tp_order_id = tp_result.get("order_id")
-                                
-                                logger.info(
-                                    f"✅ [SL/TP] Protection orders created for SELL {symbol} order {order_id}: "
-                                    f"SL={sl_order_id}, TP={tp_order_id}"
-                                )
-                                
-                                # Emit SLTP_CREATED event
-                                _emit_lifecycle_event(
-                                    db=db,
-                                    symbol=symbol,
-                                    strategy_key=strategy_key,
-                                    side="SELL",
-                                    price=executed_avg_price,
-                                    event_type="SLTP_CREATED",
-                                    event_reason=f"primary_order_id={order_id}",
-                                    order_id=str(order_id),
-                                    sl_order_id=str(sl_order_id) if sl_order_id else None,
-                                    tp_order_id=str(tp_order_id) if tp_order_id else None,
-                                )
-                                
-                                # Send Telegram notification with order IDs
+                                # Protection is OrderFilled-only: publish event; handler calls ProtectionOrderService
                                 try:
-                                    telegram_notifier.send_message(
-                                        f"✅ <b>SL/TP ORDERS CREATED</b>\n\n"
-                                        f"📊 Symbol: <b>{symbol}</b>\n"
-                                        f"📋 SELL Order ID: {order_id}\n"
-                                        f"🛡️ SL Order ID: {sl_order_id or 'Failed'}\n"
-                                        f"🎯 TP Order ID: {tp_order_id or 'Failed'}\n"
-                                        f"📦 Quantity: {normalized_qty} (normalized)\n"
-                                        f"💵 Filled Price: ${executed_avg_price:.8f}\n\n"
-                                        f"Protection orders created successfully."
-                                    )
-                                except Exception as notify_err:
-                                    logger.warning(f"Failed to send SL/TP success notification: {notify_err}")
+                                    from app.services.event_bus import get_event_bus, is_event_bus_enabled
+                                    from app.services.events import OrderFilled
+                                    if is_event_bus_enabled():
+                                        get_event_bus().publish(
+                                            OrderFilled(
+                                                symbol=symbol,
+                                                side="SELL",
+                                                exchange_order_id=str(order_id),
+                                                filled_price=float(executed_avg_price),
+                                                quantity=normalized_qty,
+                                                source="signal_monitor",
+                                                correlation_id=None,
+                                            )
+                                        )
+                                    else:
+                                        logger.info(
+                                            "[DEPRECATION] protection_event_skipped event_bus_disabled symbol=%s order_id=%s source=signal_monitor",
+                                            symbol, order_id,
+                                        )
+                                except Exception as ev_err:
+                                    logger.warning(f"Error publishing OrderFilled for SELL {symbol} order {order_id}: {ev_err}")
                                 
                                 filled_quantity = normalized_qty
                             

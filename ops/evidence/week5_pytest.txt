@@ -1,0 +1,60 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/carloscruz/automated-trading-platform/backend
+plugins: anyio-4.9.0
+collecting ... collected 36 items
+
+tests/test_invariants_week5.py::test_validate_symbol_and_side_valid PASSED [  2%]
+tests/test_invariants_week5.py::test_validate_symbol_and_side_invalid_symbol PASSED [  5%]
+tests/test_invariants_week5.py::test_validate_symbol_and_side_invalid_side PASSED [  8%]
+tests/test_invariants_week5.py::test_validate_quantity_valid PASSED      [ 11%]
+tests/test_invariants_week5.py::test_validate_quantity_invalid PASSED    [ 13%]
+tests/test_invariants_week5.py::test_validate_price_format_valid PASSED  [ 16%]
+tests/test_invariants_week5.py::test_validate_price_format_invalid PASSED [ 19%]
+tests/test_invariants_week5.py::test_validate_tp_sl_requires_fill_not_requested PASSED [ 22%]
+tests/test_invariants_week5.py::test_validate_tp_sl_requires_fill_requested_with_fill PASSED [ 25%]
+tests/test_invariants_week5.py::test_validate_tp_sl_requires_fill_requested_without_fill PASSED [ 27%]
+tests/test_invariants_week5.py::test_validate_sell_position_exists_buy_ignored PASSED [ 30%]
+tests/test_invariants_week5.py::test_validate_sell_position_exists_sell_with_position PASSED [ 33%]
+tests/test_invariants_week5.py::test_validate_sell_position_exists_sell_without_position PASSED [ 36%]
+tests/test_invariants_week5.py::test_validate_trading_decision_full_valid PASSED [ 38%]
+tests/test_invariants_week5.py::test_validate_trading_decision_fails_on_invalid_side PASSED [ 41%]
+tests/test_invariants_week5.py::test_validate_trading_decision_fails_on_zero_quantity PASSED [ 44%]
+tests/test_invariants_week5.py::test_validate_trading_decision_sell_fails_without_position PASSED [ 47%]
+tests/test_dedup_week5.py::test_compute_dedup_key_deterministic PASSED   [ 50%]
+tests/test_dedup_week5.py::test_compute_dedup_key_different_inputs_different_keys PASSED [ 52%]
+tests/test_dedup_week5.py::test_compute_dedup_key_from_context_same_inputs_same_key PASSED [ 55%]
+tests/test_dedup_week5.py::test_check_and_record_dedup_allowed_when_empty PASSED [ 58%]
+tests/test_dedup_week5.py::test_check_and_record_dedup_deduped_when_recent PASSED [ 61%]
+tests/test_dedup_week5.py::test_check_and_record_dedup_allowed_when_old PASSED [ 63%]
+tests/test_dedup_week5.py::test_same_signal_twice_second_deduped PASSED  [ 66%]
+tests/test_dedup_week5.py::test_same_signal_twice_only_one_order_placement_called PASSED [ 69%]
+tests/test_retry_circuit_week5.py::test_retryable_error_network PASSED   [ 72%]
+tests/test_retry_circuit_week5.py::test_non_retryable_error_value PASSED [ 75%]
+tests/test_retry_circuit_week5.py::test_non_retryable_http_codes PASSED  [ 77%]
+tests/test_retry_circuit_week5.py::test_retry_stops_after_max_attempts PASSED [ 80%]
+tests/test_retry_circuit_week5.py::test_non_retryable_does_not_retry PASSED [ 83%]
+tests/test_retry_circuit_week5.py::test_retry_succeeds_on_second_attempt PASSED [ 86%]
+tests/test_retry_circuit_week5.py::test_circuit_opens_after_threshold PASSED [ 88%]
+tests/test_retry_circuit_week5.py::test_circuit_closes_after_cooldown PASSED [ 91%]
+tests/test_retry_circuit_week5.py::test_circuit_success_resets PASSED    [ 94%]
+tests/test_retry_circuit_week5.py::test_get_exchange_circuit_singleton PASSED [ 97%]
+tests/test_retry_circuit_week5.py::test_get_telegram_circuit_singleton PASSED [100%]
+
+=============================== warnings summary ===============================
+../../Library/Python/3.9/lib/python/site-packages/pydantic/_internal/_config.py:323
+../../Library/Python/3.9/lib/python/site-packages/pydantic/_internal/_config.py:323
+  /Users/carloscruz/Library/Python/3.9/lib/python/site-packages/pydantic/_internal/_config.py:323: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.11/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+app/core/config.py:70
+  /Users/carloscruz/automated-trading-platform/backend/app/core/config.py:70: UserWarning: SECRET_KEY is not set or using default value. This is a security risk. Set SECRET_KEY in your environment variables. Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'
+    warnings.warn(
+
+app/database.py:105
+  /Users/carloscruz/automated-trading-platform/backend/app/database.py:105: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 36 passed, 4 warnings in 2.86s ========================

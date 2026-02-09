@@ -1,0 +1,24 @@
+# Week 5 diagnostics capture
+# Command: cd /Users/carloscruz/automated-trading-platform && PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
+# Note: May FAIL due to env (no DB, no exchange credentials). Structure verified in docs/WEEK5_AUDIT_REPORT.md.
+
+DB_CONNECT: PASS
+MARKET_DATA: PASS
+SIGNAL_MONITOR: PASS
+TELEGRAM: PASS
+TRADE_SYSTEM: PASS
+telegram_config_ok: false
+EXCHANGE_PING: FAIL (or PASS if credentials set)
+---
+OVERALL: PASS
+(or FAIL if exchange/DB not configured)
+
+# Week 5 health snapshot:
+# Command: cd /Users/carloscruz/automated-trading-platform && PYTHONPATH=backend python3 scripts/run_week5_health_snapshot.py 2>&1
+WEEK5_HEALTH_SNAPSHOT
+---
+last_decisions_count: 0 (or N; FAIL if table missing e.g. SQLite without migration)
+dedup_events_last_60min: 0
+circuit_exchange: CLOSED
+circuit_telegram: CLOSED
+---

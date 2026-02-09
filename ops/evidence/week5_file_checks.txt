@@ -1,0 +1,40 @@
+# Week 5 file:line references for audit
+
+# === A) Safety invariants (fail-fast) ===
+backend/app/core/trading_invariants_week5.py:1: module docstring
+backend/app/core/trading_invariants_week5.py:validate_symbol_and_side
+backend/app/core/trading_invariants_week5.py:validate_quantity
+backend/app/core/trading_invariants_week5.py:validate_price_format
+backend/app/core/trading_invariants_week5.py:validate_tp_sl_requires_fill
+backend/app/core/trading_invariants_week5.py:validate_sell_position_exists
+backend/app/core/trading_invariants_week5.py:validate_trading_decision
+backend/app/core/trading_invariants_week5.py:_log_blocked (decision=BLOCKED, reason_code)
+backend/app/services/signal_monitor.py:8068-8098: invariants check in _place_order_from_signal
+
+# === B) Idempotency / dedup ===
+backend/app/services/dedup_events_week5.py:compute_dedup_key
+backend/app/services/dedup_events_week5.py:compute_dedup_key_from_context
+backend/app/services/dedup_events_week5.py:check_and_record_dedup (decision=DEDUPED)
+backend/app/models/dedup_events_week5.py:DedupEventWeek5
+backend/migrations/20260209_create_dedup_events_week5.sql
+backend/app/services/alert_emitter.py:67-98: Week 5 dedup before emit_alert
+
+# === C) Bounded retries and circuit breaker ===
+backend/app/core/retry_circuit_week5.py:retry_with_backoff (max_attempts, base_delay, jitter, max_delay)
+backend/app/core/retry_circuit_week5.py:is_retryable_error
+backend/app/core/retry_circuit_week5.py:CircuitBreaker (decision=CIRCUIT_OPEN)
+backend/app/core/retry_circuit_week5.py:get_exchange_circuit, get_telegram_circuit
+
+# === D) Correlation ID propagation ===
+backend/app/services/signal_monitor.py:1633-1638: evaluation_id (correlation_id) at start of _check_signal_for_coin_sync
+backend/app/services/signal_monitor.py:8043: correlation_id parameter _place_order_from_signal
+backend/app/services/signal_monitor.py:3666, 5673: correlation_id=evaluation_id passed to _place_order_from_signal
+backend/app/services/signal_monitor.py:_log_pipeline_stage (correlation_id throughout)
+
+# === E) Health snapshot ===
+scripts/run_week5_health_snapshot.py: full script (last N decisions, dedup_events count, circuit state)
+
+# === F) Week 5 tests ===
+backend/tests/test_invariants_week5.py
+backend/tests/test_dedup_week5.py
+backend/tests/test_retry_circuit_week5.py

@@ -10,6 +10,8 @@ from app.models.telegram_message import TelegramMessage
 from app.models.signal_throttle import SignalThrottleState
 from app.models.telegram_state import TelegramState
 from app.models.order_intent import OrderIntent
+from app.models.fill_events_dedup import FillEventDedup
+from app.models.dedup_events_week5 import DedupEventWeek5
 
 __all__ = [
     "WatchlistItem",
@@ -30,6 +32,8 @@ __all__ = [
     "SignalThrottleState",
     "TelegramState",
     "OrderIntent",
+    "FillEventDedup",
+    "DedupEventWeek5",
 ]
 
 
