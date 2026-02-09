@@ -26,9 +26,8 @@ except ModuleNotFoundError as e:
     if "app.services.fill_dedup_postgres" not in str(e):
         raise
     FILL_DEDUP_ENABLED = False
-    logging.getLogger(__name__).warning(
-        "fill_dedup_postgres module not found; fill deduplication is disabled (all fills may trigger notifications)."
-    )
+    logger = logging.getLogger(__name__)
+    logger.warning("fill_dedup_postgres module not found; fill deduplication is disabled (all fills may trigger notifications).")
 
     class _StubFillDedup:
         """No-op fill dedup when fill_dedup_postgres is missing. Allows all notifications."""
