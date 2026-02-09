@@ -19,6 +19,9 @@ from app.services.brokers.crypto_com_trade import trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
 # fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
+# EC2 verification after deploy: git reset --hard origin/main; rebuild backend image with --no-cache;
+# docker exec <backend_container> python3 -c "import app.services.exchange_sync as m; print('OK')";
+# confirm no "Worker failed to boot" or "ModuleNotFoundError" for fill_dedup_postgres in logs.
 try:
     from app.services.fill_dedup_postgres import get_fill_dedup
     FILL_DEDUP_ENABLED = True
