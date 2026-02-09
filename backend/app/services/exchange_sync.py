@@ -18,7 +18,41 @@ from app.models.trade_signal import TradeSignal, SignalStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
-from app.services.fill_dedup_postgres import get_fill_dedup
+# fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
+try:
+    from app.services.fill_dedup_postgres import get_fill_dedup
+    FILL_DEDUP_ENABLED = True
+except ModuleNotFoundError as e:
+    if "app.services.fill_dedup_postgres" not in str(e):
+        raise
+    FILL_DEDUP_ENABLED = False
+    logging.getLogger(__name__).warning(
+        "fill_dedup_postgres module not found; fill deduplication is disabled (all fills may trigger notifications)."
+    )
+
+    class _StubFillDedup:
+        """No-op fill dedup when fill_dedup_postgres is missing. Allows all notifications."""
+
+        def should_notify_fill(
+            self,
+            order_id: str,
+            current_filled_qty: Union[int, float, Decimal],
+            status: str,
+        ) -> tuple:
+            return (True, "fill_dedup disabled")
+
+        def record_fill(
+            self,
+            order_id: str,
+            filled_qty: Union[int, float, Decimal],
+            status: str,
+            notification_sent: bool = False,
+        ) -> None:
+            pass
+
+    def get_fill_dedup(db: Session):  # noqa: ARG001
+        return _StubFillDedup()
+
 from app.utils.pipeline_logging import log_critical_failure, make_json_safe
 
 logger = logging.getLogger(__name__)
