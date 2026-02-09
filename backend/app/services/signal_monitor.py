@@ -30,15 +30,46 @@ from app.services.strategy_profiles import (
 from app.api.routes_signals import calculate_stop_loss_and_take_profit
 from app.services.config_loader import get_alert_thresholds, load_config
 from app.services.order_position_service import calculate_portfolio_value_for_symbol
-from app.services.throttle_service import (
-    LastSignalSnapshot,
-    SignalThrottleConfig,
-    build_strategy_key,
-    fetch_signal_states,
-    record_signal_event,
-    should_emit_signal,
-    compute_config_hash,
-)
+# throttle_service may be absent in some deployments; run with throttling disabled if missing.
+try:
+    from app.services.throttle_service import (
+        LastSignalSnapshot,
+        SignalThrottleConfig,
+        build_strategy_key,
+        fetch_signal_states,
+        record_signal_event,
+        should_emit_signal,
+        compute_config_hash,
+    )
+    from app.services.throttle_service import reset_throttle_state
+except ModuleNotFoundError as e:
+    if "app.services.throttle_service" not in str(e):
+        raise
+    # Stubs so service runs with throttling disabled (no-op / allow-all).
+    LastSignalSnapshot = Any  # type: ignore[misc, assignment]
+    class _StubThrottleConfig:  # noqa: D101
+        def __init__(self, min_price_change_pct: float = 0, min_interval_minutes: float = 0) -> None:
+            self.min_price_change_pct = min_price_change_pct
+            self.min_interval_minutes = min_interval_minutes
+    SignalThrottleConfig = _StubThrottleConfig  # type: ignore[misc, assignment]
+    def _stub_build_strategy_key(*args: Any, **kwargs: Any) -> str:
+        return "default:default"
+    build_strategy_key = _stub_build_strategy_key  # type: ignore[misc, assignment]
+    def _stub_fetch_signal_states(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {}
+    fetch_signal_states = _stub_fetch_signal_states  # type: ignore[misc, assignment]
+    def _stub_record_signal_event(*args: Any, **kwargs: Any) -> None:
+        pass
+    record_signal_event = _stub_record_signal_event  # type: ignore[misc, assignment]
+    def _stub_should_emit_signal(*args: Any, **kwargs: Any) -> Tuple[bool, str]:
+        return (True, "throttle disabled")
+    should_emit_signal = _stub_should_emit_signal  # type: ignore[misc, assignment]
+    def _stub_compute_config_hash(*args: Any, **kwargs: Any) -> str:
+        return ""
+    compute_config_hash = _stub_compute_config_hash  # type: ignore[misc, assignment]
+    def _stub_reset_throttle_state(*args: Any, **kwargs: Any) -> None:
+        pass
+    reset_throttle_state = _stub_reset_throttle_state  # type: ignore[misc, assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -2227,7 +2258,6 @@ class SignalMonitorService:
         
         # CRITICAL: Check for config changes and reset throttle immediately
         # This ensures that changes to trade_amount_usd, alert_enabled, etc. reset the throttle immediately
-        from app.services.throttle_service import reset_throttle_state
         config_changed = False
         logger.info(f"[CONFIG_CHECK] {symbol}: Checking config_hash. Current={config_hash_current[:16] if config_hash_current else None}..., Snapshots={len(signal_snapshots)}")
         for side, snapshot in signal_snapshots.items():
