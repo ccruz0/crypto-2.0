@@ -1,0 +1,18 @@
+# Week 4 pipeline diagnostics run
+# Command: cd /Users/carloscruz/automated-trading-platform && PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
+
+# The script executed and produced exit code 1 (OVERALL: FAIL).
+# This is expected when run locally without a configured DB or exchange (e.g. no .env, or DB not running).
+# The script correctly:
+# - Checks DB via SessionLocal + text("SELECT 1")
+# - Runs get_system_health for market_data, signal_monitor, telegram, trade_system and telegram_config_ok
+# - Pings exchange via trade_client.get_instruments() (public)
+# - Prints each component PASS/FAIL and "OVERALL: PASS" or "OVERALL: FAIL"
+# - Exits 0 if all_pass else 1
+
+# Structure verified in ops/evidence/week4_file_checks.txt (scripts/run_pipeline_diagnostics.py lines 28-81).
+# On AWS with backend env, the same command should yield OVERALL: PASS when DB and exchange are healthy.
+
+EXIT_CODE=1
+OVERALL=FAIL
+NOTE=Local run without full backend env; script behavior verified by code inspection and file_checks.

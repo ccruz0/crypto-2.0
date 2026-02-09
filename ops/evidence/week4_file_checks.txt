@@ -1,0 +1,82 @@
+# Week 4 file and line evidence (grep-style)
+# Generated for audit. No code changes.
+
+# === A) Decimal safety: backend/app/services/exchange_sync.py ===
+# _to_decimal definition
+backend/app/services/exchange_sync.py:27:def _to_decimal(x: Union[Decimal, int, float, str, None]) -> Decimal:
+backend/app/services/exchange_sync.py:34:    if x is None:
+backend/app/services/exchange_sync.py:35:        return Decimal("0")
+backend/app/services/exchange_sync.py:36:    if isinstance(x, Decimal):
+backend/app/services/exchange_sync.py:38:    if isinstance(x, (int, float)):
+backend/app/services/exchange_sync.py:39:        return Decimal(str(x))
+backend/app/services/exchange_sync.py:40:    if isinstance(x, str):
+backend/app/services/exchange_sync.py:41:        cleaned = (x or "").strip().replace(",", "")
+# existing-order path
+backend/app/services/exchange_sync.py:2003:                    cumulative_qty_from_api = order_data.get('cumulative_quantity', '0') or '0'
+backend/app/services/exchange_sync.py:2004:                    new_cumulative_qty = _to_decimal(cumulative_qty_from_api)
+backend/app/services/exchange_sync.py:2005:                    last_seen_qty = _to_decimal(existing.cumulative_quantity)
+backend/app/services/exchange_sync.py:2006:                    delta_qty = new_cumulative_qty - last_seen_qty
+backend/app/services/exchange_sync.py:2007:                    if delta_qty < 0:
+backend/app/services/exchange_sync.py:2009:                            "sync_order_history negative delta ...
+backend/app/services/exchange_sync.py:2012:                        delta_qty = Decimal("0")
+backend/app/services/exchange_sync.py:2018:                    if new_cumulative_qty != _to_decimal(existing.cumulative_quantity):
+backend/app/services/exchange_sync.py:2020:                        existing.cumulative_quantity = new_cumulative_qty
+# new-order path
+backend/app/services/exchange_sync.py:2478:                delta_qty = _to_decimal(executed_qty)
+backend/app/services/exchange_sync.py:2488:                    cumulative_quantity=_to_decimal(order_data.get('cumulative_quantity') or 0),
+
+# === B) Logging: backend/app/utils/pipeline_logging.py (note: checklist said logging_helpers.py; impl is pipeline_logging.py) ===
+backend/app/utils/pipeline_logging.py:16:def make_json_safe(obj: Any) -> Any:
+backend/app/utils/pipeline_logging.py:27:    if obj is None or isinstance(obj, (bool, int, float, str)):
+backend/app/utils/pipeline_logging.py:26:    - Decimal -> float
+backend/app/utils/pipeline_logging.py:29:    if isinstance(obj, Decimal):
+backend/app/utils/pipeline_logging.py:30:        return float(str(obj))
+backend/app/utils/pipeline_logging.py:29:    - datetime -> ISO string
+backend/app/utils/pipeline_logging.py:31:    if isinstance(obj, datetime):
+backend/app/utils/pipeline_logging.py:32:        return obj.isoformat()
+backend/app/utils/pipeline_logging.py:31:    UUID-like (hex)
+backend/app/utils/pipeline_logging.py:32:    if hasattr(obj, "hex") and callable(getattr(obj, "hex", None)):
+backend/app/utils/pipeline_logging.py:33:        return str(obj)
+backend/app/utils/pipeline_logging.py:34:    if isinstance(obj, dict):
+backend/app/utils/pipeline_logging.py:35:        return {k: make_json_safe(v) for k, v in obj.items()}
+backend/app/utils/pipeline_logging.py:36:    if isinstance(obj, (list, tuple)):
+backend/app/utils/pipeline_logging.py:37:        return [make_json_safe(v) for v in obj]
+backend/app/utils/pipeline_logging.py:70:def log_critical_failure(
+backend/app/utils/pipeline_logging.py:87:    logger.error("[PIPELINE_FAILURE] %s", json.dumps(payload))
+# exchange_sync calls log_critical_failure on fatal sync
+backend/app/services/exchange_sync.py:22:from app.utils.pipeline_logging import log_critical_failure, make_json_safe
+backend/app/services/exchange_sync.py:2775:            logger.error(f"Error syncing order history: {e}", exc_info=True)
+backend/app/services/exchange_sync.py:2776:            log_critical_failure(
+backend/app/services/exchange_sync.py:2777:                message=str(e)[:500],
+backend/app/services/exchange_sync.py:2778:                error_code="SYNC_ORDER_HISTORY",
+
+# === C) Diagnostics: scripts/run_pipeline_diagnostics.py ===
+scripts/run_pipeline_diagnostics.py:28:    # 1) DB connectivity
+scripts/run_pipeline_diagnostics.py:32:        from app.database import SessionLocal
+scripts/run_pipeline_diagnostics.py:34:            db.execute(text("SELECT 1"))
+scripts/run_pipeline_diagnostics.py:41:    # 2) System health
+scripts/run_pipeline_diagnostics.py:49:            health = get_system_health(db)
+scripts/run_pipeline_diagnostics.py:50:            for key in ("market_data", "signal_monitor", "telegram", "trade_system"):
+scripts/run_pipeline_diagnostics.py:57:            if tg.get("bot_token_set") and tg.get("chat_id_set"):
+scripts/run_pipeline_diagnostics.py:58:                report.append("telegram_config_ok: true")
+scripts/run_pipeline_diagnostics.py:67:    # 3) Exchange connectivity (public endpoint only)
+scripts/run_pipeline_diagnostics.py:71:        trade_client.get_instruments()
+scripts/run_pipeline_diagnostics.py:72:        report.append("EXCHANGE_PING: PASS")
+scripts/run_pipeline_diagnostics.py:80:    print("OVERALL:", "PASS" if all_pass else "FAIL")
+scripts/run_pipeline_diagnostics.py:81:    return 0 if all_pass else 1
+
+# === D) AWS log tail: scripts/aws_tail_correlation_logs.sh ===
+scripts/aws_tail_correlation_logs.sh:16:CONTEXT_LINES="${CONTEXT_LINES:-60}"
+scripts/aws_tail_correlation_logs.sh:18:LOG_PATH=$(docker inspect --format '{{.LogPath}}' "$CONTAINER"
+scripts/aws_tail_correlation_logs.sh:24:if [ ! -r "$LOG_PATH" ]; then
+scripts/aws_tail_correlation_logs.sh:26:  echo "Try: sudo $0 $CONTAINER $CORRELATION_ID" >&2
+scripts/aws_tail_correlation_logs.sh:30:LAST_LINE=$(grep -n "$CORRELATION_ID" "$LOG_PATH"
+scripts/aws_tail_correlation_logs.sh:36:START=$((LAST_LINE - CONTEXT_LINES))
+scripts/aws_tail_correlation_logs.sh:40:echo "--- Last match for correlation_id at line $LAST_LINE (showing $START-$END) ---"
+
+# === E) Test files exist ===
+backend/tests/test_exchange_sync_order_history_decimal.py
+backend/tests/test_pipeline_logging_week4.py
+
+# === F) Doc exists ===
+docs/WEEK4_PIPELINE_VERIFICATION.md

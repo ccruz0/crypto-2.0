@@ -1,0 +1,36 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/carloscruz/automated-trading-platform/backend
+plugins: anyio-4.9.0
+collecting ... collected 22 items
+
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_float_returns_decimal PASSED [  4%]
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_decimal_returns_same PASSED [  9%]
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_string_cumulative_quantity PASSED [ 13%]
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_string_with_commas_stripped PASSED [ 18%]
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_none_returns_zero PASSED [ 22%]
+tests/test_exchange_sync_order_history_decimal.py::TestToDecimal::test_empty_string_returns_zero PASSED [ 27%]
+tests/test_exchange_sync_order_history_decimal.py::TestDeltaQtyNoTypeError::test_float_minus_decimal PASSED [ 31%]
+tests/test_exchange_sync_order_history_decimal.py::TestDeltaQtyNoTypeError::test_string_minus_decimal PASSED [ 36%]
+tests/test_exchange_sync_order_history_decimal.py::TestDeltaQtyNoTypeError::test_none_last_seen_treated_as_zero PASSED [ 40%]
+tests/test_exchange_sync_order_history_decimal.py::TestNegativeDeltaGuard::test_negative_delta_computation PASSED [ 45%]
+tests/test_exchange_sync_order_history_decimal.py::TestNegativeDeltaGuard::test_negative_delta_clamp_to_zero PASSED [ 50%]
+tests/test_exchange_sync_order_history_decimal.py::TestNewOrderPathCumulativeQuantity::test_new_order_cumulative_quantity_from_api_is_decimal PASSED [ 54%]
+tests/test_exchange_sync_order_history_decimal.py::TestNewOrderPathCumulativeQuantity::test_new_order_cumulative_quantity_string_from_api PASSED [ 59%]
+tests/test_exchange_sync_order_history_decimal.py::TestNewOrderPathCumulativeQuantity::test_new_order_cumulative_quantity_missing_uses_zero PASSED [ 63%]
+tests/test_pipeline_logging_week4.py::TestMakeJsonSafe::test_decimal_to_float PASSED [ 68%]
+tests/test_pipeline_logging_week4.py::TestMakeJsonSafe::test_datetime_to_iso_string PASSED [ 72%]
+tests/test_pipeline_logging_week4.py::TestMakeJsonSafe::test_uuid_like_to_str PASSED [ 77%]
+tests/test_pipeline_logging_week4.py::TestMakeJsonSafe::test_dict_recursive PASSED [ 81%]
+tests/test_pipeline_logging_week4.py::TestMakeJsonSafe::test_audit_log_like_payload_serializable PASSED [ 86%]
+tests/test_pipeline_logging_week4.py::TestFormatCriticalFailure::test_contains_correlation_id PASSED [ 90%]
+tests/test_pipeline_logging_week4.py::TestFormatCriticalFailure::test_optional_fields_omitted PASSED [ 95%]
+tests/test_pipeline_logging_week4.py::TestFormatCriticalFailure::test_used_in_log_payload_generation PASSED [100%]
+
+=============================== warnings summary ===============================
+(... 6 warnings omitted ...)
+
+======================== 22 passed, 6 warnings in 0.45s ========================
+
+Command run: cd /Users/carloscruz/automated-trading-platform/backend && python3 -m pytest tests/test_exchange_sync_order_history_decimal.py tests/test_pipeline_logging_week4.py -v 2>&1
