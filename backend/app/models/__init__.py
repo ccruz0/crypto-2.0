@@ -10,7 +10,14 @@ from app.models.telegram_message import TelegramMessage
 from app.models.signal_throttle import SignalThrottleState
 from app.models.telegram_state import TelegramState
 from app.models.order_intent import OrderIntent
-from app.models.fill_events_dedup import FillEventDedup
+# fill_events_dedup may be absent in some deployments; avoid boot failure if missing.
+try:
+    from app.models.fill_events_dedup import FillEventDedup
+except ModuleNotFoundError as e:
+    if str(e) == "No module named 'app.models.fill_events_dedup'":
+        FillEventDedup = None
+    else:
+        raise
 from app.models.dedup_events_week5 import DedupEventWeek5
 
 __all__ = [
