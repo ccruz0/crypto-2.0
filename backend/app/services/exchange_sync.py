@@ -91,6 +91,46 @@ def _to_decimal(x: Union[Decimal, int, float, str, None]) -> Decimal:
     return Decimal(str(x))
 
 
+# 1 hour: only notify for fills within this window unless order was created by system or admin resync
+RECENT_FILL_WINDOW_SECONDS = 3600
+
+
+def should_notify_executed_fill(
+    *,
+    db: Session,
+    order: ExchangeOrder,
+    now_utc: datetime,
+    source: str,
+    requested_by_admin: bool,
+) -> tuple[bool, str]:
+    """Gate for executed-fill Telegram notifications. Prevents history-sync spam.
+    Returns (allowed, reason).
+    A) requested_by_admin -> allow (unless already notified, then dedup).
+    B) Order created by this system (trade_signal_id or parent_order_id for SL/TP) -> allow.
+    C) Else allow only if fill is recent (within RECENT_FILL_WINDOW_SECONDS).
+    D) If we already sent notification for this order -> block.
+    """
+    if getattr(order, "execution_notified_at", None) is not None:
+        return (False, "already notified")
+    if requested_by_admin:
+        return (True, "admin resync")
+    is_system_order = (
+        getattr(order, "trade_signal_id", None) is not None
+        or getattr(order, "parent_order_id", None) is not None
+    )
+    if is_system_order:
+        return (True, "system order")
+    filled_at = getattr(order, "exchange_update_time", None) or getattr(order, "exchange_create_time", None)
+    if not filled_at:
+        return (False, "historical fill: no timestamp")
+    if filled_at.tzinfo is None:
+        filled_at = filled_at.replace(tzinfo=timezone.utc)
+    age_seconds = (now_utc - filled_at).total_seconds()
+    if age_seconds > RECENT_FILL_WINDOW_SECONDS:
+        return (False, "historical fill: outside window")
+    return (True, "recent fill")
+
+
 class ExchangeSyncService:
     """Service to sync exchange data with database"""
     
@@ -2158,13 +2198,31 @@ class ExchangeSyncService:
                     else:
                         current_status_str = None
                     
-                    should_notify, notify_reason = fill_dedup.should_notify_fill(
-                        order_id=order_id,
-                        current_filled_qty=current_filled_qty,
-                        status=current_status_str or 'UNKNOWN'
-                    ) if current_status_str else (False, f"Status {status_str} is not a fill status")
+                    gate_ok, gate_reason = should_notify_executed_fill(
+                        db=db,
+                        order=existing,
+                        now_utc=datetime.now(timezone.utc),
+                        source="sync_order_history",
+                        requested_by_admin=False,
+                    )
+                    if not gate_ok:
+                        should_notify, notify_reason = False, gate_reason
+                        if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
+                            fill_dedup.record_fill(
+                                order_id=order_id,
+                                filled_qty=current_filled_qty,
+                                status=current_status_str,
+                                notification_sent=False,
+                            )
+                        logger.debug(f"Skipping notification for order {order_id}: {gate_reason}")
+                    else:
+                        should_notify, notify_reason = fill_dedup.should_notify_fill(
+                            order_id=order_id,
+                            current_filled_qty=current_filled_qty,
+                            status=current_status_str or 'UNKNOWN'
+                        ) if current_status_str else (False, f"Status {status_str} is not a fill status")
                     
-                    if should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
+                    if gate_ok and should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
                         try:
                             from app.services.telegram_notifier import telegram_notifier
                             
@@ -2292,6 +2350,7 @@ class ExchangeSyncService:
                                 parent_order_id=existing.parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                             )
                             if result:
+                                existing.execution_notified_at = datetime.now(timezone.utc)
                                 # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                                 fill_dedup.record_fill(
                                     order_id=order_id,
@@ -2653,14 +2712,32 @@ class ExchangeSyncService:
                 current_filled_qty = executed_qty
                 current_status_str = status_str if status_str in ('FILLED', 'PARTIALLY_FILLED') else None
                 
-                should_notify, notify_reason = fill_dedup.should_notify_fill(
-                    order_id=order_id,
-                    current_filled_qty=current_filled_qty,
-                    status=current_status_str or 'UNKNOWN'
-                ) if current_status_str else (False, f"Status {status_str} is not a fill status")
+                gate_ok_new, gate_reason_new = should_notify_executed_fill(
+                    db=db,
+                    order=new_order,
+                    now_utc=datetime.now(timezone.utc),
+                    source="sync_order_history",
+                    requested_by_admin=False,
+                )
+                if not gate_ok_new:
+                    should_notify, notify_reason = False, gate_reason_new
+                    if current_status_str in ('FILLED', 'PARTIALLY_FILLED') and current_filled_qty > 0:
+                        fill_dedup.record_fill(
+                            order_id=order_id,
+                            filled_qty=current_filled_qty,
+                            status=current_status_str,
+                            notification_sent=False,
+                        )
+                    logger.debug(f"Skipping notification for new order {order_id}: {gate_reason_new}")
+                else:
+                    should_notify, notify_reason = fill_dedup.should_notify_fill(
+                        order_id=order_id,
+                        current_filled_qty=current_filled_qty,
+                        status=current_status_str or 'UNKNOWN'
+                    ) if current_status_str else (False, f"Status {status_str} is not a fill status")
                 
                 # Send Telegram notification for new executed order with execution time
-                if should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
+                if gate_ok_new and should_notify and current_status_str in ('FILLED', 'PARTIALLY_FILLED'):
                     try:
                         from app.services.telegram_notifier import telegram_notifier
                         
@@ -2769,6 +2846,7 @@ class ExchangeSyncService:
                             parent_order_id=parent_order_id  # Pass parent_order_id to determine if order is SL/TP
                         )
                         if result:
+                            new_order.execution_notified_at = datetime.now(timezone.utc)
                             # Record fill in persistent tracker (Postgres or SQLite per USE_DB_FILL_DEDUP)
                             fill_dedup.record_fill(
                                 order_id=order_id,

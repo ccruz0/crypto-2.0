@@ -60,6 +60,9 @@ class ExchangeOrder(Base):
     parent_order_id = Column(String(100), nullable=True, index=True)  # Parent order that triggered SL/TP creation
     oco_group_id = Column(String(100), nullable=True, index=True)  # Group ID to link SL and TP orders together
     order_role = Column(String(20), nullable=True)  # PARENT, STOP_LOSS, TAKE_PROFIT
-    
+
+    # When we sent Telegram "ORDER EXECUTED" for this order (avoids history-sync spam and duplicates)
+    execution_notified_at = Column(DateTime(timezone=True), nullable=True)
+
     def __repr__(self):
         return f"<ExchangeOrder(exchange_order_id={self.exchange_order_id}, symbol={self.symbol}, side={self.side}, status={self.status})>"
