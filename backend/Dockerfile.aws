@@ -105,9 +105,11 @@ RUN python3 -m py_compile /app/scripts/verify_exchange_creds_runtime.py || (echo
 RUN python3 -m py_compile /app/scripts/fingerprint_creds.py /app/scripts/verify_crypto_auth_simple.py || (echo "ERROR: fingerprint_creds.py or verify_crypto_auth_simple.py failed to compile" >&2 && exit 1)
 # Boot-path import check: fail build if app.main cannot be imported (e.g. missing optional modules like throttle_service)
 RUN python3 -c "import app.services.signal_monitor as m; assert hasattr(m, 'should_emit_signal'); assert hasattr(m, 'SignalThrottleConfig'); print('OK: signal_monitor imports (throttle_service optional)')" || (echo "ERROR: signal_monitor import failed - ensure throttle_service is optional" >&2 && exit 1)
-# Boot-path import check: exchange_sync must import cleanly (fill_dedup_postgres optional)
-RUN python3 -c "import app.services.exchange_sync as m; print('OK: exchange_sync imports (fill_dedup_postgres optional)')" \
-  || (echo 'ERROR: exchange_sync import failed – fill_dedup_postgres must be optional' >&2 && exit 1)
+# Boot-path import check: exchange_sync must import cleanly (fill_dedup_postgres optional; build_strategy_key from throttle_service or fallback)
+RUN python3 -c "import app.services.exchange_sync as m; print('OK: exchange_sync imports')" \
+  || (echo 'ERROR: exchange_sync import failed' >&2 && exit 1)
+# Boot-path import check: app.main must import cleanly
+RUN python3 -c "import app.main; print('OK: app.main imports')" || (echo "ERROR: app.main import failed - boot path broken" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time

@@ -55,6 +55,16 @@ except ModuleNotFoundError as e:
     def get_fill_dedup(db: Session):  # noqa: ARG001
         return _StubFillDedup()
 
+# build_strategy_key helper: throttle_service when present, else fallback (same pattern as signal_monitor).
+try:
+    from app.services.throttle_service import build_strategy_key as _build_strategy_key
+except ModuleNotFoundError as e:
+    if "app.services.throttle_service" not in str(e):
+        raise
+    def _build_strategy_key(*args: object, **kwargs: object) -> str:
+        return "default:default"
+build_strategy_key = _build_strategy_key
+
 from app.utils.pipeline_logging import log_critical_failure, make_json_safe
 
 logger = logging.getLogger(__name__)
@@ -482,7 +492,7 @@ class ExchangeSyncService:
                                 if old_status != OrderStatusEnum.FILLED:
                                     try:
                                         from app.services.signal_monitor import _emit_lifecycle_event
-                                        from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                        from app.services.strategy_profiles import resolve_strategy_profile
                                         from app.models.watchlist import WatchlistItem
                                         
                                         watchlist_item = db.query(WatchlistItem).filter(
@@ -519,7 +529,7 @@ class ExchangeSyncService:
                                 if old_status != OrderStatusEnum(resolved_status):
                                     try:
                                         from app.services.signal_monitor import _emit_lifecycle_event
-                                        from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                        from app.services.strategy_profiles import resolve_strategy_profile
                                         from app.models.watchlist import WatchlistItem
                                         
                                         watchlist_item = db.query(WatchlistItem).filter(
@@ -2068,7 +2078,7 @@ class ExchangeSyncService:
                             if status_str == 'CANCELLED' and old_status != OrderStatusEnum.CANCELLED:
                                 try:
                                     from app.services.signal_monitor import _emit_lifecycle_event
-                                    from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                    from app.services.strategy_profiles import resolve_strategy_profile
                                     from app.models.watchlist import WatchlistItem
                                     
                                     # Resolve strategy for event emission
@@ -2294,7 +2304,7 @@ class ExchangeSyncService:
                                 # Emit ORDER_EXECUTED event
                                 try:
                                     from app.services.signal_monitor import _emit_lifecycle_event
-                                    from app.services.strategy_profiles import resolve_strategy_profile, build_strategy_key
+                                    from app.services.strategy_profiles import resolve_strategy_profile
                                     from app.models.watchlist import WatchlistItem
                                     
                                     # Resolve strategy for event emission
