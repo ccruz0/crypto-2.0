@@ -389,6 +389,13 @@ class TelegramNotifier:
         Returns:
             True if message sent successfully, False otherwise
         """
+        global _TELEGRAM_COOLDOWN_UNTIL_TS
+        now = time.time()
+        if _TELEGRAM_COOLDOWN_UNTIL_TS and now < _TELEGRAM_COOLDOWN_UNTIL_TS:
+            remaining = int(_TELEGRAM_COOLDOWN_UNTIL_TS - now)
+            logger.warning("[TELEGRAM_COOLDOWN] Skipping send (cooldown active), remaining=%ds", remaining)
+            return False
+
         # Extract symbol for logging (used later in TELEGRAM_SEND)
         # Use provided symbol if available, otherwise extract from message
         if symbol is None:
@@ -518,6 +525,20 @@ class TelegramNotifier:
                 # ============================================================
                 status_code = response.status_code
                 response_text = response.text[:500] if response.text else ""
+                if response is not None and response.status_code == 429:
+                    try:
+                        data = response.json() if response.content else {}
+                    except Exception:
+                        data = {}
+                    retry_after = int((data.get("parameters") or {}).get("retry_after") or 60)
+                    _TELEGRAM_COOLDOWN_UNTIL_TS = time.time() + retry_after
+                    logger.warning("[TELEGRAM_COOLDOWN] Activated for %ds due to 429", retry_after)
+                    logger.error(
+                        "[TELEGRAM_RESPONSE] status=%d RESULT=FAILURE response_text=%s",
+                        response.status_code,
+                        response_text,
+                    )
+                    return False
                 
                 if status_code == 200:
                     try:
