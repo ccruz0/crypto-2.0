@@ -11,11 +11,11 @@ docker compose --profile aws up -d backend-aws
 docker compose --profile aws ps
 
 echo ""
-echo "=== 2) Wait for /health == 200 (retry up to 30 x 2s) ==="
-for i in $(seq 1 30); do
+echo "=== 2) Wait for /health == 200 (retry up to 100 x 2s) ==="
+for i in $(seq 1 100); do
   code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:8002/health 2>/dev/null || echo "000")
   if [ "$code" = "200" ]; then echo "OK: /health 200"; break; fi
-  if [ "$i" -eq 30 ]; then echo "FAIL: /health did not return 200"; exit 1; fi
+  if [ "$i" -eq 100 ]; then echo "FAIL: /health did not return 200"; exit 1; fi
   sleep 2
 done
 

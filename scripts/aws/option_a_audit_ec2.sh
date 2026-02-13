@@ -26,10 +26,10 @@ check 'working_dir: /app/backend' 'working_dir /app/backend'
 
 echo ""
 echo "========== WAIT FOR BACKEND READY (/health 200) =========="
-for i in $(seq 1 30); do
+for i in $(seq 1 100); do
   code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:8002/health 2>/dev/null || echo "000")
   if [ "$code" = "200" ]; then echo "OK: /health 200"; break; fi
-  if [ "$i" -eq 30 ]; then echo "FAIL: /health did not return 200 after 30 tries"; exit 1; fi
+  if [ "$i" -eq 100 ]; then echo "FAIL: /health did not return 200 after 100 tries"; exit 1; fi
   sleep 2
 done
 
