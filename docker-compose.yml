@@ -269,8 +269,8 @@ services:
     # volumes:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     volumes:
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/app:ro
       - ./backend/ai_runs:/app/backend/ai_runs
       - aws_trading_config_data:/data
     working_dir: /app/backend
