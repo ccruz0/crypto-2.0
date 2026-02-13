@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from app.models.market_price import MarketPrice, MarketData
 from app.models.watchlist import WatchlistItem
@@ -32,14 +32,37 @@ def record_telegram_send_result(success: bool):
     _last_telegram_send_ok = success
     _last_telegram_send_time = datetime.now(timezone.utc)
 
+# DB connectivity timeout (ms) for /api/health/system so it never hangs on DB down
+_HEALTH_DB_TIMEOUT_MS = 2000
+
+
 def get_system_health(db: Session) -> Dict:
     """
     Compute system health status.
+    Uses a short DB timeout so the endpoint never hangs on DB unavailability.
     
     Returns:
         Dict with global_status, timestamp, and component statuses
     """
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Fast DB connectivity check with timeout so we never hang
+    try:
+        db.execute(text(f"SET statement_timeout = '{_HEALTH_DB_TIMEOUT_MS}'"))
+        db.execute(text("SELECT 1"))
+        db.execute(text("SET statement_timeout = '0'"))  # reset so rest of health checks are not limited
+    except Exception as e:
+        logger.warning(f"DB connectivity check failed (timeout or down): {e}")
+        return {
+            "global_status": "FAIL",
+            "timestamp": timestamp,
+            "db_status": "down",
+            "market_data": {"status": "FAIL", "fresh_symbols": 0, "stale_symbols": 0, "max_age_minutes": None},
+            "market_updater": {"status": "FAIL", "is_running": False, "last_heartbeat_age_minutes": None},
+            "signal_monitor": {"status": "FAIL", "is_running": False, "last_cycle_age_minutes": None},
+            "telegram": {"status": "FAIL", "enabled": False, "chat_id_set": False, "bot_token_set": False, "last_send_ok": None},
+            "trade_system": {"status": "FAIL", "open_orders": 0, "max_open_orders": None, "order_intents_table_exists": False, "last_check_ok": False},
+        }
     
     # Get thresholds from env (defaults)
     stale_market_minutes = float(os.getenv("HEALTH_STALE_MARKET_MINUTES", "30"))

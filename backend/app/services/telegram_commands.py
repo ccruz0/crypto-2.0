@@ -64,6 +64,9 @@ elif AUTH_CHAT_ID:
     logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized user ID (backward compatibility): {AUTH_CHAT_ID}")
 
 TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
+# Set to True when startup diagnostics get 401 (token invalid); disables polling/commands without crashing
+_telegram_startup_401: bool = False
+
 if not TELEGRAM_ENABLED:
     logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
 
@@ -229,22 +232,27 @@ def _run_startup_diagnostics() -> None:
     
     Can be enabled with TELEGRAM_DIAGNOSTICS=1 environment variable.
     When enabled, also performs a no-offset getUpdates probe to check for pending updates.
+    On 401 (token invalid): logs one line only (no URL/token), disables Telegram gracefully, does not crash.
     """
-    # Check if diagnostics mode is enabled
+    global _telegram_startup_401
     diagnostics_enabled = os.getenv("TELEGRAM_DIAGNOSTICS", "0").strip() == "1"
     
     if not TELEGRAM_ENABLED or not BOT_TOKEN:
         logger.warning("[TG] Startup diagnostics skipped: Telegram not enabled")
         return
     
+    log_prefix = "[TG_DIAG]" if diagnostics_enabled else "[TG]"
     try:
         # 1. Call getMe
-        log_prefix = "[TG_DIAG]" if diagnostics_enabled else "[TG]"
         if diagnostics_enabled:
             logger.info(f"{log_prefix} Running startup diagnostics (TELEGRAM_DIAGNOSTICS=1)...")
         else:
             logger.info(f"{log_prefix} Running startup diagnostics...")
         response = http_get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5, calling_module="telegram_commands")
+        if response.status_code == 401:
+            _telegram_startup_401 = True
+            logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
+            return
         response.raise_for_status()
         bot_info = response.json()
         if bot_info.get("ok"):
@@ -257,6 +265,10 @@ def _run_startup_diagnostics() -> None:
         
         # 2. Call getWebhookInfo
         response = http_get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo", timeout=5, calling_module="telegram_commands")
+        if response.status_code == 401:
+            _telegram_startup_401 = True
+            logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
+            return
         response.raise_for_status()
         webhook_info = response.json()
         if webhook_info.get("ok"):
@@ -273,6 +285,10 @@ def _run_startup_diagnostics() -> None:
                 response = http_post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", json={"drop_pending_updates": True}, timeout=5
                 , calling_module="telegram_commands")
+                if response.status_code == 401:
+                    _telegram_startup_401 = True
+                    logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
+                    return
                 response.raise_for_status()
                 delete_result = response.json()
                 if delete_result.get("ok"):
@@ -291,6 +307,10 @@ def _run_startup_diagnostics() -> None:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
                 params = {"limit": 10, "timeout": 0}
                 response = http_get(url, params=params, timeout=5, calling_module="telegram_commands")
+                if response.status_code == 401:
+                    _telegram_startup_401 = True
+                    logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
+                    return
                 response.raise_for_status()
                 data = response.json()
                 if data.get("ok"):
@@ -307,13 +327,19 @@ def _run_startup_diagnostics() -> None:
             except Exception as probe_err:
                 logger.error(f"{log_prefix} getUpdates probe error: {probe_err}")
             
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 401:
+            _telegram_startup_401 = True
+            logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
+            return
+        logger.error(f"{log_prefix} Startup diagnostics failed: {e}", exc_info=False)
     except Exception as e:
         logger.error(f"{log_prefix} Startup diagnostics failed: {e}", exc_info=True)
 
 
 def _probe_updates_without_offset() -> List[Dict]:
     """Probe Telegram for updates without offset to detect missed updates."""
-    if not TELEGRAM_ENABLED or not BOT_TOKEN:
+    if _telegram_startup_401 or not TELEGRAM_ENABLED or not BOT_TOKEN:
         return []
     
     try:
@@ -928,6 +954,8 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
     NOTE: Lock acquisition is handled by the caller (process_telegram_commands).
     This function assumes the lock is already held.
     """
+    if _telegram_startup_401:
+        return []
     # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
     if not is_aws_runtime():
         # LOCAL runtime: Only allow polling with DEV token

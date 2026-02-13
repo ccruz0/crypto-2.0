@@ -23,6 +23,7 @@ Security:
 - All requests are logged for audit
 """
 import logging
+import re
 import time
 from typing import Optional, Dict, Any, Tuple
 import uuid
@@ -34,6 +35,14 @@ from app.utils.egress_guard import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_telegram_url(url: str) -> str:
+    """Never log Telegram bot token. Redact to api.telegram.org/bot***/..."""
+    if not url or "api.telegram.org" not in url or "/bot" not in url:
+        return url
+    return re.sub(r"(https?://api\.telegram\.org/bot)[^/]+", r"\1***", url)
+
 
 # Try to import requests (synchronous)
 try:
@@ -133,10 +142,10 @@ def http_get(
                     f"(redirected from {validated_url}, called from {calling_module})"
                 )
         
-        # Log the request for security audit (use final URL if redirects were followed)
+        # Log the request for security audit (never log Telegram token)
         log_url = response.url if allow_redirects else validated_url
         log_outbound_request(
-            log_url,
+            _redact_telegram_url(log_url),
             method="GET",
             status_code=response.status_code,
             calling_module=calling_module,
@@ -146,14 +155,14 @@ def http_get(
         return response
     
     except requests.exceptions.RequestException as e:
-        # Log failed requests
+        # Log failed requests (never log Telegram token)
         logger.error(
-            f"[HTTP_CLIENT] GET request failed: {url} (called from {calling_module}): {e}"
+            f"[HTTP_CLIENT] GET request failed: {_redact_telegram_url(url)} (called from {calling_module}): {e}"
         )
         raise
     except Exception as e:
         logger.error(
-            f"[HTTP_CLIENT] Unexpected error in http_get: {url} (called from {calling_module}): {e}"
+            f"[HTTP_CLIENT] Unexpected error in http_get: {_redact_telegram_url(url)} (called from {calling_module}): {e}"
         )
         raise
 
@@ -256,7 +265,7 @@ def http_post(
         # Log the request for security audit (use final URL if redirects were followed)
         log_url = response.url if allow_redirects_post else validated_url
         log_outbound_request(
-            log_url,
+            _redact_telegram_url(log_url),
             method="POST",
             status_code=response.status_code,
             calling_module=calling_module,
@@ -266,14 +275,14 @@ def http_post(
         return response
     
     except requests.exceptions.RequestException as e:
-        # Log failed requests
+        # Log failed requests (never log Telegram token)
         logger.error(
-            f"[HTTP_CLIENT] POST request failed: {url} (called from {calling_module}): {e}"
+            f"[HTTP_CLIENT] POST request failed: {_redact_telegram_url(url)} (called from {calling_module}): {e}"
         )
         raise
     except Exception as e:
         logger.error(
-            f"[HTTP_CLIENT] Unexpected error in http_post: {url} (called from {calling_module}): {e}"
+            f"[HTTP_CLIENT] Unexpected error in http_post: {_redact_telegram_url(url)} (called from {calling_module}): {e}"
         )
         raise
 
@@ -327,7 +336,7 @@ async def async_http_get(
                     
                     # Log the request for security audit
                     log_outbound_request(
-                        validated_url,
+                        _redact_telegram_url(validated_url),
                         method="GET",
                         status_code=status_code,
                         calling_module=calling_module,
@@ -336,7 +345,7 @@ async def async_http_get(
                     
                     return status_code, data
         except Exception as e:
-            logger.error(f"[HTTP_CLIENT] aiohttp GET failed: {url}: {e}")
+            logger.error(f"[HTTP_CLIENT] aiohttp GET failed: {_redact_telegram_url(url)}: {e}")
             return None, None
     
     # Fallback to httpx if available
@@ -349,7 +358,7 @@ async def async_http_get(
             
             # Log the request for security audit
             log_outbound_request(
-                validated_url,
+                _redact_telegram_url(validated_url),
                 method="GET",
                 status_code=status_code,
                 calling_module=calling_module,
@@ -361,6 +370,6 @@ async def async_http_get(
         logger.error("[HTTP_CLIENT] Neither aiohttp nor httpx is available for async requests")
         return None, None
     except Exception as e:
-        logger.error(f"[HTTP_CLIENT] httpx GET failed: {url}: {e}")
+        logger.error(f"[HTTP_CLIENT] httpx GET failed: {_redact_telegram_url(url)}: {e}")
         return None, None
 

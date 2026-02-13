@@ -43,11 +43,13 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
     """
     Get system health status.
     Single source of truth for health monitoring.
+    Uses a short DB timeout so the endpoint never hangs; returns 503 when db_status=down.
     """
     try:
         from app.services.system_health import get_system_health
         health = get_system_health(db)
-        return JSONResponse(content=health, headers=_NO_CACHE_HEADERS)
+        status_code = 503 if health.get("db_status") == "down" else 200
+        return JSONResponse(content=health, status_code=status_code, headers=_NO_CACHE_HEADERS)
     except Exception as e:
         log.error(f"Error computing system health: {e}", exc_info=True)
         return JSONResponse(
