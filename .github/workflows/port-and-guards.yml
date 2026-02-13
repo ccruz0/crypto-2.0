@@ -1,0 +1,41 @@
+# Port hardening and DB/order_intents guards
+# Runs on PR: syntax-check scripts, verify_no_public_ports (fixture + repo), script modes
+name: Port and guards
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docker-compose.yml'
+      - 'scripts/aws/**'
+      - 'scripts/deploy_aws.sh'
+      - '.github/workflows/port-and-guards.yml'
+      - 'tests/fixtures/docker-compose.ports-ok.yml'
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          for f in scripts/aws/*.sh scripts/deploy_aws.sh; do
+            [ -f "$f" ] && bash -n "$f" || true
+          done
+
+      - name: Verify ports (fixture)
+        run: |
+          out=$(COMPOSE=tests/fixtures/docker-compose.ports-ok.yml bash scripts/aws/verify_no_public_ports.sh)
+          [ "$out" = "PASS" ] || { echo "Expected PASS got: $out"; exit 1; }
+
+      - name: Verify ports (repo compose)
+        run: |
+          out=$(bash scripts/aws/verify_no_public_ports.sh)
+          [ "$out" = "PASS" ] || { echo "Expected PASS got: $out"; exit 1; }
+
+      - name: Scripts executable
+        run: |
+          for f in scripts/aws/verify_no_public_ports.sh scripts/aws/diag_db_and_order_intents.sh scripts/aws/bootstrap_order_intents.sh; do
+            [ -f "$f" ] && [ -x "$f" ] || { echo "Not executable or missing: $f"; exit 1; }
+          done

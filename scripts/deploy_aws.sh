@@ -33,6 +33,15 @@ if [ ! -f ".env.aws" ]; then
     echo -e "${YELLOW}⚠️  WARNING: .env.aws not found. Deployment may fail if required env vars are missing.${NC}"
 fi
 
+# Port hardening: must pass before deploy
+echo "🔒 Verifying localhost-only port bindings..."
+if [ -f "$REPO_ROOT/scripts/aws/verify_no_public_ports.sh" ]; then
+    if ! bash "$REPO_ROOT/scripts/aws/verify_no_public_ports.sh"; then
+        echo -e "${RED}❌ FAIL: verify_no_public_ports.sh failed. Deploy stopped.${NC}"
+        exit 1
+    fi
+fi
+
 echo "📁 Repository root: $REPO_ROOT"
 echo ""
 
@@ -73,6 +82,20 @@ docker compose --profile aws pull || {
     echo -e "${YELLOW}⚠️  WARNING: docker compose pull failed (may be expected if using local builds)${NC}"
 }
 
+# Step 5b: Render runtime env (if script exists)
+if [ -f "$REPO_ROOT/scripts/aws/render_runtime_env.sh" ]; then
+    echo "📜 Rendering runtime env..."
+    bash "$REPO_ROOT/scripts/aws/render_runtime_env.sh" || true
+fi
+
+# Step 5c: Bootstrap order_intents table (idempotent)
+echo ""
+echo "🗄️  Bootstrapping order_intents table..."
+if ! bash "$REPO_ROOT/scripts/aws/bootstrap_order_intents.sh"; then
+    echo -e "${RED}❌ FAIL: bootstrap_order_intents.sh failed. Deploy stopped.${NC}"
+    exit 1
+fi
+
 # Step 6: Build and start services
 echo ""
 echo "🚀 Building and starting services..."
@@ -93,6 +116,16 @@ docker compose --profile aws ps || {
     echo -e "${RED}❌ ERROR: Failed to get service status${NC}"
     exit 1
 }
+
+# Step 8b: DB + order_intents diagnostic (must pass)
+echo ""
+echo "🗄️  Running DB + order_intents diagnostic..."
+if [ -f "$REPO_ROOT/scripts/aws/diag_db_and_order_intents.sh" ]; then
+    if ! bash "$REPO_ROOT/scripts/aws/diag_db_and_order_intents.sh"; then
+        echo -e "${RED}❌ FAIL: diag_db_and_order_intents.sh failed. Deploy stopped.${NC}"
+        exit 1
+    fi
+fi
 
 # Step 9: Health check
 echo ""

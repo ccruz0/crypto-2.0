@@ -1,0 +1,9 @@
+# Minimal fixture for verify_no_public_ports.sh (must PASS)
+# Only the two AWS localhost bindings are present.
+services:
+  backend-aws:
+    ports:
+      - "127.0.0.1:8002:8002"
+  frontend-aws:
+    ports:
+      - "127.0.0.1:3000:3000"
