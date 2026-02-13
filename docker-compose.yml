@@ -66,7 +66,8 @@ services:
       # NOTE: .env.secrets.local is optional - if you need it, create it manually and it will be auto-loaded
       # NOTE: .env.aws is NOT loaded for local dev to avoid AWS config conflicts
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only (.env / .env.local)
+      - DATABASE_URL=${DATABASE_URL}
       - ENVIRONMENT=local
       - APP_ENV=local
       - RUNTIME_ORIGIN=LOCAL
@@ -124,7 +125,8 @@ services:
       - .env.local
       - .env.aws
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only (.env / .env.local / .env.aws)
+      - DATABASE_URL=${DATABASE_URL}
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
@@ -202,7 +204,8 @@ services:
       # CRITICAL: Do NOT load .env.local - AWS must never have LOCAL Telegram credentials
       # This ensures AWS backend cannot access TELEGRAM_BOT_TOKEN_LOCAL or TELEGRAM_CHAT_ID_LOCAL
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only (.env.aws + secrets/runtime.env)
+      - DATABASE_URL=${DATABASE_URL}
       # Telegram Safety: AWS backend must use ENVIRONMENT=aws and only AWS Telegram credentials
       - ENVIRONMENT=aws
       - APP_ENV=aws
@@ -304,7 +307,8 @@ services:
       - .env
       - .env.local
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only
+      - DATABASE_URL=${DATABASE_URL}
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
@@ -342,7 +346,8 @@ services:
       - .env
       - .env.aws
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only (.env.aws)
+      - DATABASE_URL=${DATABASE_URL}
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
