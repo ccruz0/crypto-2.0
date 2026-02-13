@@ -257,6 +257,9 @@ services:
       # Telegram/admin keys are injected via secrets/runtime.env (rendered by scripts/aws/render_runtime_env.sh)
       # Persist strategy config so dashboard strategy changes survive restarts (RUNBOOK 8.5)
       - TRADING_CONFIG_PATH=/data/trading_config.json
+      # Option A: tail_logs + host-visible ai_runs
+      - AI_ENGINE_COMPOSE_DIR=/app
+      - AI_RUNS_DIR=/app/backend/ai_runs
     # SECURITY NOTE:
     # Never publish backend ports on 0.0.0.0 in production.
     # Use 127.0.0.1 binding or internal docker network only.
@@ -266,7 +269,11 @@ services:
     # volumes:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/app:ro
+      - ./backend/ai_runs:/app/backend/ai_runs
       - aws_trading_config_data:/data
+    working_dir: /app/backend
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
