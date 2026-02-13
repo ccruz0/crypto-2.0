@@ -265,7 +265,7 @@ services:
     # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
     # Ports are exposed for external API access (health checks, frontend calls)
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
     # volumes:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     volumes:
@@ -437,7 +437,7 @@ services:
       - NEXT_PUBLIC_API_URL=/api
       - NEXT_PUBLIC_ENVIRONMENT=${NEXT_PUBLIC_ENVIRONMENT:-aws}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     # Production build: use CMD from Dockerfile (node server.js)
     # For faster updates during development, you can temporarily mount volumes:
     # volumes:

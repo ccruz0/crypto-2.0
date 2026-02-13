@@ -12,6 +12,14 @@ echo ""
 docker compose --profile aws ps 2>/dev/null || true
 echo ""
 
+backend_status=$(docker compose --profile aws ps -a --format '{{.Service}} {{.Status}}' 2>/dev/null | grep -E '^backend-aws ' || true)
+if [[ -z "$backend_status" ]] || ! echo "$backend_status" | grep -qE '\bUp\b'; then
+    echo "FAIL: backend-aws is not running."
+    docker compose --profile aws ps -a 2>/dev/null || true
+    docker compose --profile aws logs --tail 120 backend-aws 2>/dev/null || true
+    exit 1
+fi
+
 set +e
 docker compose --profile aws exec -T backend-aws python - <<'PY'
 import os
