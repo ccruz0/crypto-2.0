@@ -4,6 +4,7 @@ Supports optional tool_calls (search_repo, read_snippet, tail_logs); logs to too
 """
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -82,9 +83,20 @@ def _write_sltp_doctor_report(run_dir: str, tool_entries: list[dict[str, Any]]) 
             elif isinstance(res, dict) and "error" in res:
                 logs_excerpt = str(res.get("error", ""))[:_MAX_LOGS_EXCERPT_CHARS]
 
+    payload_numeric_validation = "FAIL" if "payload_numeric_validation FAIL" in (logs_excerpt or "") else "PASS"
+    scientific_notation_detected = bool(re.search(r"\d+[eE][+-]?\d+", logs_excerpt or ""))
+    # Real env mismatch: excerpt contains both sandbox/uat and prod (api.crypto.com) hints
+    _ex = (logs_excerpt or "").lower()
+    _has_sandbox_uat = "uat" in _ex or "sandbox" in _ex
+    _has_prod = "api.crypto.com" in _ex
+    environment_mismatch_detected = bool(_has_sandbox_uat and _has_prod)
+
     report = {
         "doctor": "sltp",
         "generated_at_utc": generated_at_utc,
+        "payload_numeric_validation": payload_numeric_validation,
+        "scientific_notation_detected": scientific_notation_detected,
+        "environment_mismatch_detected": environment_mismatch_detected,
         "findings": {
             "queries": queries_findings,
             "logs_excerpt": logs_excerpt,
@@ -217,7 +229,12 @@ def run_ai_task(payload: dict[str, Any]) -> dict[str, Any]:
     base_dir = _get_ai_runs_dir()
     timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H%M%S")
     run_dir = os.path.join(base_dir, timestamp)
-    os.makedirs(run_dir, exist_ok=True)
+    try:
+        os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(run_dir, exist_ok=True)
+    except OSError:
+        run_dir = os.path.join("/tmp", "ai_runs_fallback", timestamp)
+        os.makedirs(run_dir, exist_ok=True)
 
     input_path = os.path.join(run_dir, "input.json")
     with open(input_path, "w") as f:

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 from contextvars import ContextVar
 
 # Import requests for exception types (used in exception handlers)
@@ -66,6 +67,51 @@ def _should_failover(status, exc=None):
     if exc is not None:
         return True
     return status in (401, 403, 408, 409, 429, 500, 502, 503, 504)
+
+
+def _safe_base_url(url: Optional[str]) -> str:
+    """Return scheme + host only (no path/query). Safe for logging; no tokens."""
+    if not url:
+        return ""
+    try:
+        p = urlparse(url)
+        if p.netloc:
+            return f"{p.scheme or 'https'}://{p.netloc}"
+        return (url[:80] + "...") if len(url) > 80 else url
+    except Exception:
+        return (url[:80] + "...") if len(url) > 80 else url
+
+
+def _classify_140001_context(
+    base_url: Optional[str],
+    is_sandbox_mode: Optional[bool] = None,
+    api_env_hint: Optional[str] = None,
+) -> dict:
+    """
+    Return structured 140001 error context for SL/TP. Safe for logging (no secrets).
+    api_env_hint inferred from base_url if not provided: uat/sandbox => sandbox, api.crypto.com => prod.
+    """
+    safe_base = _safe_base_url(base_url)
+    if api_env_hint is not None and api_env_hint != "":
+        hint = str(api_env_hint).strip().lower()
+        if hint not in ("prod", "sandbox", "unknown"):
+            hint = "unknown"
+    else:
+        lower = (base_url or "").lower()
+        if "uat" in lower or "sandbox" in lower:
+            hint = "sandbox"
+        elif "api.crypto.com" in lower:
+            hint = "prod"
+        else:
+            hint = "unknown"
+    return {
+        "error_code": 140001,
+        "category": "permissions_or_account_configuration",
+        "message": "API_DISABLED: Check API key permissions, account settings, or environment mismatch",
+        "api_env_hint": hint,
+        "base_url": safe_base,
+    }
+
 
 # Allowlist of non-zero codes that are acceptable when order_id exists and order is verified on exchange.
 # 220 INVALID_SIDE is NOT allowlisted: it can create ghost state and breaks SL/TP logic.
@@ -1908,6 +1954,61 @@ class CryptoComTradeClient:
         msg_str = str(msg) if msg is not None else None
         return code_int, msg_str
 
+    def _try_create_order_list_with_params(self, params: dict) -> Tuple[bool, Optional[str], Optional[dict]]:
+        """
+        One-shot fallback: place a single trigger order via private/create-order-list.
+        Use when private/create-order returns 140001. params must have all numeric fields as strings.
+        Returns (ok, order_id, raw_response_summary). raw_response_summary only on failure (code/message/error).
+        """
+        from app.core.exchange_formatting_week6 import validate_sltp_payload_numeric
+
+        ok_val, errs = validate_sltp_payload_numeric(params)
+        if not ok_val:
+            return False, None, {"error": "payload_invalid_for_list"}
+
+        list_method = "private/create-order-list"
+        order_payload = {
+            "instrument_name": str(params.get("instrument_name", "")),
+            "side": str(params.get("side", "")).strip().upper(),
+            "type": str(params.get("type", "")),
+            "quantity": str(params.get("quantity", "")),
+            "trigger_price": str(params.get("trigger_price", "")),
+            "ref_price": str(params.get("ref_price", "")),
+        }
+        if params.get("price") is not None:
+            order_payload["price"] = str(params["price"])
+        order_payload["client_oid"] = str(params.get("client_oid", uuid.uuid4()))
+        if params.get("time_in_force"):
+            order_payload["time_in_force"] = str(params["time_in_force"])
+        list_params = {"contingency_type": "NONE", "order_list": [order_payload]}
+        try:
+            if self.use_proxy:
+                resp = self._call_proxy(list_method, list_params)
+            else:
+                payload = self.sign_request(list_method, list_params, _suppress_log=True)
+                r = http_post(
+                    f"{self.base_url}/{list_method}",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10,
+                    calling_module="crypto_com_trade._try_create_order_list_with_params",
+                )
+                resp = r.json() if r.ok else None
+            if isinstance(resp, dict) and isinstance(resp.get("result"), list) and resp["result"]:
+                first = resp["result"][0]
+                if isinstance(first, dict):
+                    oid = first.get("order_id") or first.get("client_order_id")
+                    code = first.get("code", resp.get("code", 0))
+                    if oid and (code == 0 or code is None):
+                        return True, str(oid), None
+            code = (resp or {}).get("code") if isinstance(resp, dict) else None
+            msg = (resp or {}).get("message", "") if isinstance(resp, dict) else ""
+            return False, None, {"error": (msg or "create-order-list failed")[:200], "code": code, "message": msg}
+        except Exception as e:
+            safe_msg = str(e)[:200] if e else "unknown"
+            logger.debug("create-order-list fallback failed: %s", safe_msg)
+            return False, None, {"error": safe_msg}
+
     def _mark_trigger_orders_unavailable(self, *, code: int, message: str) -> None:
         """
         Mark trigger/conditional order capability unavailable for 24h and emit a rate-limited alert.
@@ -3005,7 +3106,8 @@ class CryptoComTradeClient:
         is_margin: bool = False, 
         leverage: Optional[float] = None, 
         dry_run: bool = True,
-        source: str = "AUTO"  # "AUTO" for bot orders, "TEST" for test scripts
+        source: str = "AUTO",  # "AUTO" for bot orders, "TEST" for test scripts
+        trade_on_margin_from_watchlist: bool = True,  # If False, risk_guard forces spot
     ) -> dict:
         """
         Place market order (SPOT or MARGIN)
@@ -3140,6 +3242,38 @@ class CryptoComTradeClient:
                 "price": "0",  # Market orders don't have price at creation
                 "created_time": int(time.time() * 1000)
             }
+        
+        # Risk guard: block unsafe trades before constructing payload
+        try:
+            from app.services.risk_guard import check_trade_allowed, RiskViolationError
+            summary = self.get_account_summary()
+            account_equity = float(
+                summary.get("margin_equity")
+                or summary.get("account_equity")
+                or summary.get("equity")
+                or 0
+            )
+            total_margin_exposure = float(summary.get("total_margin_exposure") or 0)
+            daily_loss_pct = float(summary.get("daily_loss_pct") or 0)
+            trade_value_usd = float(notional) if side_upper == "BUY" and notional is not None else 0.0
+            check_trade_allowed(
+                symbol=symbol,
+                side=side_upper,
+                is_margin=is_margin,
+                leverage=leverage,
+                trade_value_usd=trade_value_usd,
+                entry_price=None,
+                account_equity=account_equity,
+                total_margin_exposure=total_margin_exposure,
+                daily_loss_pct=daily_loss_pct,
+                trade_on_margin_from_watchlist=trade_on_margin_from_watchlist,
+            )
+        except RiskViolationError:
+            raise
+        except Exception as e:
+            logger.critical("[RISK_GUARD] Failed to run risk check: %s", e, exc_info=True)
+            from app.services.risk_guard import RiskViolationError
+            raise RiskViolationError(f"Risk check failed: {e}", reason_code="RISK_GUARD_BLOCKED")
         
         # Build params according to Crypto.com Exchange API v1 documentation
         # For MARKET orders:
@@ -3660,7 +3794,8 @@ class CryptoComTradeClient:
         *, 
         is_margin: bool = False, 
         leverage: Optional[float] = None, 
-        dry_run: bool = True
+        dry_run: bool = True,
+        trade_on_margin_from_watchlist: bool = True,
     ) -> dict:
         """Place limit order"""
         from app.services.live_trading_gate import require_mutation_allowed_for_broker
@@ -3680,6 +3815,34 @@ class CryptoComTradeClient:
                 "price": str(price),
                 "created_time": int(time.time() * 1000)
             }
+        
+        try:
+            from app.services.risk_guard import check_trade_allowed, RiskViolationError
+            summary = self.get_account_summary()
+            account_equity = float(
+                summary.get("margin_equity") or summary.get("account_equity") or summary.get("equity") or 0
+            )
+            total_margin_exposure = float(summary.get("total_margin_exposure") or 0)
+            daily_loss_pct = float(summary.get("daily_loss_pct") or 0)
+            trade_value_usd = float(qty) * float(price)
+            check_trade_allowed(
+                symbol=symbol,
+                side=side.upper(),
+                is_margin=is_margin,
+                leverage=leverage,
+                trade_value_usd=trade_value_usd,
+                entry_price=price,
+                account_equity=account_equity,
+                total_margin_exposure=total_margin_exposure,
+                daily_loss_pct=daily_loss_pct,
+                trade_on_margin_from_watchlist=trade_on_margin_from_watchlist,
+            )
+        except RiskViolationError:
+            raise
+        except Exception as e:
+            logger.critical("[RISK_GUARD] Failed to run risk check: %s", e, exc_info=True)
+            from app.services.risk_guard import RiskViolationError
+            raise RiskViolationError(f"Risk check failed: {e}", reason_code="RISK_GUARD_BLOCKED")
         
         method = "private/create-order"
         # Build params according to Crypto.com Exchange API v1 documentation
@@ -4129,99 +4292,34 @@ class CryptoComTradeClient:
             }
         
         method = "private/create-order"
-        
-        # Normalize price using helper function (per Rule 3: STOP_LOSS uses ROUND_DOWN)
-        # For STOP_LIMIT orders, execution price should also use ROUND_DOWN (conservative)
-        normalized_price_str = self.normalize_price(symbol, price, side, order_type="STOP_LOSS")
-        if normalized_price_str is None:
-            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format price"
-            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
-            try:
-                from app.services.telegram_notifier import telegram_notifier
-                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
-            except Exception:
-                pass
-            return {
-                "error": error_msg,
-                "status": "FAILED",
-                "reason": "instrument_metadata_unavailable"
-            }
-        price_str = normalized_price_str
-        
-        # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
-        raw_quantity = float(qty)
-        normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
-        
-        # Fail-safe: block order if normalization failed
-        if normalized_qty_str is None:
-            inst_meta = self._get_instrument_metadata(symbol)
-            min_quantity = (
-                (inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?")
-                if inst_meta
-                else "?"
-            )
-            error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
-            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
-            try:
-                from app.services.telegram_notifier import telegram_notifier
-                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
-            except Exception:
-                pass
-            return {
-                "error": error_msg,
-                "status": "FAILED",
-                "reason": "quantity_below_min"
-            }
-        
-        # Get instrument metadata for debug logging
         inst_meta = self._get_instrument_metadata(symbol)
-        if inst_meta:
-            quantity_decimals = inst_meta["quantity_decimals"]
-            qty_tick_size = inst_meta["qty_tick_size"]
-            min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
-        else:
-            quantity_decimals = 2
-            qty_tick_size = "0.01"
-            min_quantity = "?"
-        
-        # Deterministic debug logs (before sending order)
+        if not inst_meta:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format SL payload"
+            logger.error("❌ [STOP_LOSS_ORDER] %s", error_msg)
+            return {"error": error_msg, "status": "FAILED", "reason": "instrument_metadata_unavailable"}
+        try:
+            from app.core.exchange_formatting_week6 import format_price_for_exchange, format_qty_for_exchange
+        except ImportError:
+            return {"error": "Formatting module unavailable", "status": "FAILED", "reason": "config"}
+        price_str = format_price_for_exchange(inst_meta, price, round_up=False)
+        trigger_str = format_price_for_exchange(inst_meta, trigger_price, round_up=False)
+        ref_price_str = trigger_str
+        qty_str = format_qty_for_exchange(inst_meta, qty)
+        min_qty_str = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "0"
+        if Decimal(str(qty_str)) < Decimal(str(min_qty_str)):
+            error_msg = f"Quantity {qty_str} for {symbol} below min_quantity {min_qty_str}"
+            logger.error("❌ [STOP_LOSS_ORDER] %s", error_msg)
+            return {"error": error_msg, "status": "FAILED", "reason": "quantity_below_min"}
+        quantity_decimals = inst_meta.get("quantity_decimals", 2)
+        qty_tick_size = inst_meta.get("qty_tick_size", "?")
+        min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
         logger.info("=" * 80)
-        logger.info(f"[ORDER_PLACEMENT] Preparing STOP_LIMIT order")
-        logger.info(f"  Symbol: {symbol}")
-        logger.info(f"  Side: {side}")
-        logger.info(f"  Order Type: STOP_LIMIT")
-        logger.info(f"  Price: {price} -> {price_str}")
-        logger.info(f"  Raw Quantity: {raw_quantity}")
-        logger.info(f"  Final Quantity: {normalized_qty_str}")
-        logger.info(f"  Instrument Rules:")
-        logger.info(f"    - quantity_decimals: {quantity_decimals}")
-        logger.info(f"    - qty_tick_size: {qty_tick_size}")
-        logger.info(f"    - min_quantity: {min_quantity}")
+        logger.info("[ORDER_PLACEMENT] Preparing STOP_LIMIT order  Symbol: %s  Side: %s", symbol, side)
+        logger.info("  Price: %s -> %s  Trigger: %s -> %s  Ref: %s", price, price_str, trigger_price, trigger_str, ref_price_str)
+        logger.info("  Quantity: %s -> %s  min_quantity=%s", qty, qty_str, min_quantity)
         logger.info("=" * 80)
-        
-        qty_str = normalized_qty_str
-        
-        # Normalize trigger_price using helper function (per Rule 3: STOP_LOSS triggers use ROUND_DOWN)
-        normalized_trigger_str = self.normalize_price(symbol, trigger_price, side, order_type="STOP_LOSS")
-        if normalized_trigger_str is None:
-            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format trigger_price"
-            logger.error(f"❌ [STOP_LOSS_ORDER] {error_msg}")
-            try:
-                from app.services.telegram_notifier import telegram_notifier
-                telegram_notifier.send_message(f"⚠️ STOP_LOSS order failed: {error_msg}")
-            except Exception:
-                pass
-            return {
-                "error": error_msg,
-                "status": "FAILED",
-                "reason": "instrument_metadata_unavailable"
-            }
-        trigger_str = normalized_trigger_str
-        
-        # Now that trigger_str is defined, log trigger mapping deterministically.
-        logger.info(f"  Trigger Price: {trigger_price} -> {trigger_str}")
-        
-        # For STOP_LIMIT orders, ref_price should be the LAST BUY PRICE (entry price) from order history
+        raw_quantity = float(qty)
+        # For STOP_LIMIT orders, ref_price equals trigger_price (SL price) for Trigger Condition display
         # However, Crypto.com uses ref_price for the Trigger Condition display
         # Based on user feedback: Trigger Condition should equal trigger_price (SL price), not ref_price (entry price)
         # So we set ref_price = trigger_price to ensure Trigger Condition shows the correct value
@@ -4255,28 +4353,7 @@ class CryptoComTradeClient:
         # IMPORTANT: For STOP_LIMIT orders, Crypto.com uses ref_price for Trigger Condition display
         # User requirement: Trigger Condition should equal trigger_price (SL price), not entry_price
         # Therefore, set ref_price = trigger_price to ensure correct Trigger Condition display
-        ref_price = trigger_price  # Use trigger_price (SL price) for ref_price so Trigger Condition shows correctly
-        
-        logger.info(f"Using ref_price={ref_price} (trigger_price/SL price) for STOP_LIMIT order Trigger Condition, trigger_price={trigger_price}, entry_price={entry_price_for_ref}")
-        
-        # Format ref_price with SAME precision as trigger_price to ensure they match exactly
-        # This is critical: Crypto.com uses ref_price for Trigger Condition display
-        # We want Trigger Condition to show SL price (trigger_price), so ref_price should equal trigger_price
-        # Normalize ref_price using same method as trigger_price (per Rule 3: STOP_LOSS uses ROUND_DOWN)
-        # Since ref_price should match trigger_price, we'll normalize it and then force exact match
-        normalized_ref_str = self.normalize_price(symbol, ref_price, side, order_type="STOP_LOSS")
-        if normalized_ref_str is None:
-            # If normalization fails, just use trigger_str (they should be equal anyway)
-            ref_price_str = trigger_str
-        else:
-            ref_price_str = normalized_ref_str
-        
-        # CRITICAL: Ensure ref_price_str equals trigger_str exactly (both represent SL price)
-        # This ensures Trigger Condition shows SL price, not entry_price
-        if ref_price_str != trigger_str:
-            logger.warning(f"⚠️ ref_price_str ({ref_price_str}) != trigger_str ({trigger_str}). Forcing ref_price_str = trigger_str to ensure correct Trigger Condition.")
-            ref_price_str = trigger_str  # Force exact match
-        
+        # ref_price_str already set equal to trigger_str above (deterministic)
         # Generate client_oid for tracking
         client_oid = str(uuid.uuid4())
         
@@ -4399,9 +4476,8 @@ class CryptoComTradeClient:
                 import uuid as uuid_module
                 request_id = str(uuid_module.uuid4())
                 
-                logger.info(f"Live: place_stop_loss_order - {symbol} {side} {qty} @ {price} trigger={trigger_price}")
-                logger.info(f"Params sent: {params}")  # Log params at INFO level for debugging
-                logger.info(f"Price string: '{price_str}', Quantity string: '{qty_str}', Trigger string: '{trigger_str}'")
+                logger.info(f"Live: place_stop_loss_order - {symbol} {side} qty/price/trigger (redacted)")
+                logger.info(f"Params keys: {list(params.keys())}")
                 
                 # Use proxy if enabled (same as successful orders)
                 if self.use_proxy:
@@ -4471,6 +4547,14 @@ class CryptoComTradeClient:
                         # Fall through to direct API call below
                 
                 # Direct API call (when proxy is disabled or proxy failed)
+                try:
+                    from app.core.exchange_formatting_week6 import validate_sltp_payload_numeric
+                    ok_val, errs = validate_sltp_payload_numeric(params)
+                    if not ok_val:
+                        logger.error("[SL_ORDER] payload_numeric_validation FAIL: %s", errs)
+                        continue
+                except Exception:
+                    pass
                 payload = self.sign_request(method, params)
                 # SECURITY: never log signed payloads (api_key/sig).
                 try:
@@ -4775,18 +4859,23 @@ class CryptoComTradeClient:
                             for prec_decimals, prec_tick in price_precision_levels:
                                 logger.info(f"🔄 Trying variation {variation_idx} with price precision {prec_decimals} decimals (tick_size={prec_tick})...")
                                 
-                                # Re-format price with new precision using proper tick size rounding
+                                # Re-format price with new precision using proper tick size rounding (no scientific notation)
                                 # Per Rule 3: STOP_LOSS uses ROUND_DOWN (conservative trigger)
+                                try:
+                                    from app.core.exchange_formatting_week6 import normalize_decimal_str
+                                except Exception:
+                                    normalize_decimal_str = None
                                 price_decimal_new = decimal.Decimal(str(price))
                                 tick_decimal_new = decimal.Decimal(str(prec_tick))
                                 price_decimal_new = (price_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal_new
-                                price_str_new = f"{price_decimal_new:.{prec_decimals}f}"
-                                
-                                # Re-format trigger_price with same precision
-                                # Per Rule 3: STOP_LOSS triggers use ROUND_DOWN
                                 trigger_decimal_new = decimal.Decimal(str(trigger_price))
                                 trigger_decimal_new = (trigger_decimal_new / tick_decimal_new).quantize(decimal.Decimal('1'), rounding=decimal.ROUND_DOWN) * tick_decimal_new
-                                trigger_str_new = f"{trigger_decimal_new:.{prec_decimals}f}"
+                                if normalize_decimal_str:
+                                    price_str_new = normalize_decimal_str(price_decimal_new, max_dp=8)
+                                    trigger_str_new = normalize_decimal_str(trigger_decimal_new, max_dp=8)
+                                else:
+                                    price_str_new = f"{price_decimal_new:.{prec_decimals}f}"
+                                    trigger_str_new = f"{trigger_decimal_new:.{prec_decimals}f}"
                                 
                                 logger.info(f"Price formatted: {price} -> '{price_str_new}', Trigger: {trigger_price} -> '{trigger_str_new}'")
                                 
@@ -4849,34 +4938,21 @@ class CryptoComTradeClient:
                             last_error = f"Error {error_code}: {error_msg}"
                             continue  # Try next variation
                         elif error_code == 140001:
-                            # Conditional orders (STOP_LIMIT/TAKE_PROFIT_LIMIT) can be disabled at the account level.
-                            # If this happens, retrying formatting variations won't help.
-                            try:
-                                from app.core.exchange_formatting_week6 import (
-                                    REASON_EXCHANGE_API_DISABLED,
-                                    operator_action_for_api_disabled,
-                                )
-                                operator_action = operator_action_for_api_disabled()
-                                logger.warning(
-                                    "symbol=%s decision=BLOCKED reason_code=%s code=140001 message=%s operator_action=%s",
-                                    symbol,
-                                    REASON_EXCHANGE_API_DISABLED,
-                                    (error_msg or "API_DISABLED")[:200],
-                                    operator_action[:200],
-                                )
-                            except Exception:
-                                pass
-                            logger.error(
-                                f"❌ STOP_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
-                                f"This account likely cannot place conditional orders (TP/SL) via API."
+                            ctx = _classify_140001_context(self.base_url)
+                            logger.warning(
+                                "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=Likely permission or env mismatch",
+                                symbol, ctx["api_env_hint"], ctx["base_url"],
                             )
                             try:
-                                # Do NOT mark trigger orders unavailable here. A failure-only fallback may still
-                                # succeed via the migrated batch endpoint (`private/create-order-list`).
                                 self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg or "API_DISABLED"))
                             except Exception:
                                 pass
-                            return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
+                            ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
+                            if ok_list and order_id_list:
+                                logger.info("STOP_LIMIT placed via create-order-list after 140001 from create-order")
+                                return {"order_id": order_id_list, "error": None}
+                            fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
+                            return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
                         
                         # For other errors, return immediately
                         logger.error(f"Error creating stop loss order: HTTP {response.status_code}, code={error_code}, message={error_msg}, symbol={symbol}, price={price}, qty={qty}")
@@ -4975,100 +5051,33 @@ class CryptoComTradeClient:
             }
         
         method = "private/create-order"
-        
-        # Normalize price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
-        normalized_price_str = self.normalize_price(symbol, price, side, order_type="TAKE_PROFIT")
-        if normalized_price_str is None:
-            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format price"
-            logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
-            try:
-                from app.services.telegram_notifier import telegram_notifier
-                telegram_notifier.send_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
-            except Exception:
-                pass
-            return {
-                "error": error_msg,
-                "status": "FAILED",
-                "reason": "instrument_metadata_unavailable"
-            }
-        price_str = normalized_price_str
-        
-        # Normalize quantity using shared helper (per documented logic: docs/trading/crypto_com_order_formatting.md)
-        raw_quantity = float(qty)
-        normalized_qty_str = self.normalize_quantity(symbol, raw_quantity)
-        
-        # Fail-safe: block order if normalization failed
-        if normalized_qty_str is None:
-            inst_meta = self._get_instrument_metadata(symbol)
-            min_quantity = (
-                (inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?")
-                if inst_meta
-                else "?"
-            )
-            error_msg = f"Quantity {raw_quantity} for {symbol} is below min_quantity {min_quantity} after normalization"
-            logger.error(f"❌ [TAKE_PROFIT_ORDER] {error_msg}")
-            try:
-                from app.services.telegram_notifier import telegram_notifier
-                telegram_notifier.send_message(f"⚠️ TAKE_PROFIT order failed: {error_msg}")
-            except Exception:
-                pass
-            return {
-                "error": error_msg,
-                "status": "FAILED",
-                "reason": "quantity_below_min"
-            }
-        
-        # Get instrument metadata for debug logging
         inst_meta = self._get_instrument_metadata(symbol)
-        if inst_meta:
-            quantity_decimals = inst_meta["quantity_decimals"]
-            qty_tick_size = inst_meta["qty_tick_size"]
-            min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
-        else:
-            quantity_decimals = 4
-            qty_tick_size = "0.0001"
-            min_quantity = "?"
-        
-        # Deterministic debug logs (before sending order)
+        if not inst_meta:
+            error_msg = f"Instrument metadata unavailable for {symbol} - cannot format TP payload"
+            logger.error("❌ [TAKE_PROFIT_ORDER] %s", error_msg)
+            return {"error": error_msg, "status": "FAILED", "reason": "instrument_metadata_unavailable"}
+        try:
+            from app.core.exchange_formatting_week6 import format_price_for_exchange, format_qty_for_exchange
+        except ImportError:
+            return {"error": "Formatting module unavailable", "status": "FAILED", "reason": "config"}
+        price_str = format_price_for_exchange(inst_meta, price, round_up=True)
+        trigger_str = price_str
+        ref_price_str = trigger_str
+        qty_str = format_qty_for_exchange(inst_meta, qty)
+        min_qty_str = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "0"
+        if Decimal(str(qty_str)) < Decimal(str(min_qty_str)):
+            error_msg = f"Quantity {qty_str} for {symbol} below min_quantity {min_qty_str}"
+            logger.error("❌ [TAKE_PROFIT_ORDER] %s", error_msg)
+            return {"error": error_msg, "status": "FAILED", "reason": "quantity_below_min"}
+        quantity_decimals = inst_meta.get("quantity_decimals", 4)
+        qty_tick_size = inst_meta.get("qty_tick_size", "?")
+        min_quantity = inst_meta.get("min_quantity") or inst_meta.get("qty_tick_size") or "?"
         logger.info("=" * 80)
-        logger.info(f"[ORDER_PLACEMENT] Preparing TAKE_PROFIT_LIMIT order")
-        logger.info(f"  Symbol: {symbol}")
-        logger.info(f"  Side: {side}")
-        logger.info(f"  Order Type: TAKE_PROFIT_LIMIT")
-        logger.info(f"  Price: {price} -> {price_str}")
-        logger.info(f"  Raw Quantity: {raw_quantity}")
-        logger.info(f"  Final Quantity: {normalized_qty_str}")
-        logger.info(f"  Instrument Rules:")
-        logger.info(f"    - quantity_decimals: {quantity_decimals}")
-        logger.info(f"    - qty_tick_size: {qty_tick_size}")
-        logger.info(f"    - min_quantity: {min_quantity}")
+        logger.info("[ORDER_PLACEMENT] Preparing TAKE_PROFIT_LIMIT order  Symbol: %s  Side: %s", symbol, side)
+        logger.info("  Price: %s -> %s  Trigger/Ref: %s  Quantity: %s -> %s", price, price_str, ref_price_str, qty, qty_str)
         logger.info("=" * 80)
-        
-        qty_str = normalized_qty_str
-        
-        # Format trigger_price if provided (should be equal to price for TAKE_PROFIT_LIMIT)
-        # IMPORTANT: For TAKE_PROFIT_LIMIT, trigger_price MUST equal price (TP Value)
-        # Both represent the same value: the price at which the order triggers and executes
-        trigger_str = None
-        if trigger_price is not None:
-            # Verify that trigger_price equals price (both should be TP Value)
-            if abs(trigger_price - price) > 0.0001:  # Allow small floating point differences
-                logger.warning(f"⚠️ TAKE_PROFIT_LIMIT: trigger_price ({trigger_price}) != price ({price}). Setting trigger_price = price.")
-                trigger_price = price  # Force equality
-            
-            # Normalize trigger_price using helper function (per Rule 3: TAKE_PROFIT uses ROUND_UP)
-            normalized_trigger_str = self.normalize_price(symbol, trigger_price, side, order_type="TAKE_PROFIT")
-            if normalized_trigger_str is None:
-                # If normalization fails, use price_str (they should be equal anyway)
-                trigger_str = price_str
-            else:
-                trigger_str = normalized_trigger_str
-        else:
-            # If no trigger_price provided, use price as trigger (both are TP Value)
-            logger.info(f"TAKE_PROFIT_LIMIT: No trigger_price provided, using price ({price}) as trigger_price (TP Value)")
-            trigger_price = price  # Set trigger_price to price
-            trigger_str = price_str  # Use same formatted string (already normalized)
-        
+        if trigger_price is None:
+            trigger_price = price
         # Generate client_oid for tracking
         client_oid = str(uuid.uuid4())
         
@@ -5081,12 +5090,6 @@ class CryptoComTradeClient:
         inst_meta_format = self._get_instrument_metadata(symbol) or {}
         price_tick_size_str = str(inst_meta_format.get("price_tick_size") or "0.01")
         price_decimals_format = inst_meta_format.get("price_decimals")
-
-        # Ensure trigger_price is set (must equal price for TAKE_PROFIT_LIMIT)
-        if trigger_price is None:
-            trigger_price = price
-            trigger_str = price_str
-            logger.info(f"TAKE_PROFIT_LIMIT: trigger_price was None, using price ({price}) as trigger_price")
 
         # Derive decimal candidates from metadata + current normalized string
         base_decimals = len(price_str.split(".", 1)[1]) if "." in price_str else 0
@@ -5254,8 +5257,7 @@ class CryptoComTradeClient:
                         request_id = str(uuid_module.uuid4())
                         
                         logger.info(f"🔄 Trying TAKE_PROFIT_LIMIT variation {variation_name_full}: price='{price_fmt}', trigger_price='{trigger_price_val}', ref_price='{ref_price_val_str}', trigger_condition='{trigger_condition_val}', quantity='{qty_str}', side='{side_fmt}'")
-                        logger.info(f"   📦 FULL PAYLOAD: {params}")
-                        logger.debug(f"   Full params: {params}")
+                        logger.info(f"   📦 Payload keys: {list(params.keys())}")
                     
                         # Use proxy if enabled (same as successful orders)
                         if self.use_proxy:
@@ -5326,6 +5328,11 @@ class CryptoComTradeClient:
                                 # Fall through to direct API call below
                         
                         # Direct API call (when proxy is disabled or proxy failed)
+                        from app.core.exchange_formatting_week6 import validate_sltp_payload_numeric
+                        ok_val, errs = validate_sltp_payload_numeric(params)
+                        if not ok_val:
+                            logger.warning(f"[TP_ORDER] payload_numeric_validation FAIL: {errs}")
+                            continue
                         # DEBUG: Log before sign_request
                         logger.info(f"[DEBUG][{source.upper()}][{request_id}] About to call sign_request for variation {variation_name_full}")
                         
@@ -5439,32 +5446,21 @@ class CryptoComTradeClient:
                                 
                                 # If conditional orders are disabled for this account/symbol, no point trying other variations.
                                 if error_code == 140001:
-                                    try:
-                                        from app.core.exchange_formatting_week6 import (
-                                            REASON_EXCHANGE_API_DISABLED,
-                                            operator_action_for_api_disabled,
-                                        )
-                                        operator_action = operator_action_for_api_disabled()
-                                        logger.warning(
-                                            "symbol=%s decision=BLOCKED reason_code=%s code=140001 message=%s operator_action=%s",
-                                            symbol,
-                                            REASON_EXCHANGE_API_DISABLED,
-                                            (error_msg or "API_DISABLED")[:200],
-                                            operator_action[:200],
-                                        )
-                                    except Exception:
-                                        pass
-                                    logger.error(
-                                        f"❌ TAKE_PROFIT_LIMIT rejected with code 140001 (API_DISABLED): {error_msg}. "
-                                        f"This account likely cannot place conditional orders (TP/SL) via API."
+                                    ctx = _classify_140001_context(self.base_url)
+                                    logger.warning(
+                                        "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=Likely permission or env mismatch",
+                                        symbol, ctx["api_env_hint"], ctx["base_url"],
                                     )
                                     try:
-                                        # Do NOT mark trigger orders unavailable here. A failure-only fallback may still
-                                        # succeed via the migrated batch endpoint (`private/create-order-list`).
                                         self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg or "API_DISABLED"))
                                     except Exception:
                                         pass
-                                    return {"error": f"Error {error_code}: {error_msg} (API_DISABLED)"}
+                                    ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
+                                    if ok_list and order_id_list:
+                                        logger.info("TAKE_PROFIT_LIMIT placed via create-order-list after 140001 from create-order")
+                                        return {"order_id": order_id_list, "error": None}
+                                    fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
+                                    return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
                                 
                                 # If error 308 (Invalid price format), try next variation
                                 if error_code == 308:

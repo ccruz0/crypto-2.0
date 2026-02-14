@@ -32,9 +32,10 @@ def _to_decimal(x: Any) -> Decimal:
     return Decimal(str(x))
 
 
-def normalize_decimal_str(x: Decimal, max_dp: int = 8, min_dp: Optional[int] = None) -> str:
+def normalize_decimal_str(x: Any, max_dp: int = 8, min_dp: Optional[int] = None) -> str:
     """
-    Format Decimal as plain decimal string: no commas, no scientific notation.
+    Format value as plain decimal string: no commas, no scientific notation.
+    Accepts Decimal or numeric; uses '.' decimal separator only.
     Optionally strip trailing zeros; keep at least min_dp decimal places if required.
     """
     if not isinstance(x, Decimal):
@@ -101,6 +102,39 @@ def validate_qty_step(symbol_meta: dict, qty: Decimal) -> None:
         raise ValueError(f"Quantity {qty} not aligned to step {step}")
 
 
+def format_price_for_exchange(symbol_meta: dict, price: Any, round_up: bool = False) -> str:
+    """
+    Quantize price to instrument tick size and return a string suitable for Crypto.com API.
+    - Uses '.' decimal separator only.
+    - No scientific notation.
+    - Preserves enough decimal places for the tick size.
+    """
+    price_q = quantize_price(symbol_meta, price, round_up=round_up)
+    tick_str = symbol_meta.get("price_tick_size") or "0.01"
+    tick = _to_decimal(tick_str)
+    max_dp = 8
+    if tick > 0:
+        if "." in str(tick_str):
+            frac = str(tick_str).split(".", 1)[1].rstrip("0")
+            max_dp = max(max_dp, len(frac))
+    return normalize_decimal_str(price_q, max_dp=max_dp, min_dp=None)
+
+
+def format_qty_for_exchange(symbol_meta: dict, qty: Any) -> str:
+    """
+    Quantize quantity to lot size and return a string suitable for Crypto.com API.
+    - Uses '.' decimal separator only; no scientific notation.
+    """
+    qty_q = quantize_qty(symbol_meta, qty)
+    step_str = symbol_meta.get("qty_tick_size") or symbol_meta.get("quantity_step") or "0.01"
+    step = _to_decimal(step_str)
+    max_dp = 8
+    if step > 0 and "." in str(step_str):
+        frac = str(step_str).split(".", 1)[1].rstrip("0")
+        max_dp = max(max_dp, len(frac))
+    return normalize_decimal_str(qty_q, max_dp=max_dp, min_dp=None)
+
+
 def format_trigger_condition(tp_or_sl: str, trigger_price: Decimal, comparator: str = ">=") -> str:
     """
     Build trigger_condition string for Crypto.com.
@@ -137,3 +171,32 @@ def operator_action_for_api_disabled() -> str:
         "check IP allowlist and sub-account permissions; "
         "see docs/CRYPTOCOM_SL_TP_CREATION.md"
     )
+
+
+def _is_scientific_notation(s: str) -> bool:
+    """True if string looks like a numeric in scientific notation (e.g. 1e-5, 2E+3)."""
+    if not isinstance(s, str) or not s:
+        return False
+    s = s.strip().lower()
+    if "e" not in s:
+        return False
+    parts = s.split("e", 1)
+    return len(parts) == 2 and parts[0].strip() != "" and parts[1].strip() != ""
+
+
+def validate_sltp_payload_numeric(params: dict) -> tuple[bool, list[str]]:
+    """
+    Validate that a payload has no floats and no scientific notation in numeric fields.
+    Returns (ok, list of error descriptions). Used before sending SL/TP to API.
+    """
+    errors: list[str] = []
+    numeric_keys = ("price", "quantity", "trigger_price", "ref_price", "stop_price")
+    for k, v in params.items():
+        if k not in numeric_keys:
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            errors.append(f"field {k} is numeric (int/float), must be string")
+            continue
+        if isinstance(v, str) and _is_scientific_notation(v):
+            errors.append(f"field {k} contains scientific notation")
+    return (len(errors) == 0, errors)

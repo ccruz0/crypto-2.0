@@ -1,3 +1,5 @@
+name: automated-trading-platform
+
 services:
   # ============================================
   # GLUETUN (VPN Container) - REMOVED
@@ -273,7 +275,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/ai_runs:/app/backend/ai_runs
       - aws_trading_config_data:/data
-    working_dir: /app/backend
+    group_add:
+      - "0"
+    working_dir: /app
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
