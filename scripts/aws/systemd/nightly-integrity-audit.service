@@ -1,0 +1,17 @@
+[Unit]
+Description=Nightly integrity audit (ports, health, stability, reconcile intents, portfolio consistency)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+ExecStart=/home/ubuntu/automated-trading-platform/scripts/aws/nightly_integrity_audit.sh
+EnvironmentFile=-/home/ubuntu/automated-trading-platform/secrets/runtime.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nightly-integrity-audit
+
+[Install]
+WantedBy=multi-user.target

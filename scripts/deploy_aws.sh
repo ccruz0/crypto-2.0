@@ -67,13 +67,50 @@ echo "   Branch: $(git branch --show-current)"
 echo "   Status: $(git status --short | wc -l | tr -d ' ') uncommitted files"
 echo ""
 
-# Step 5: Pull Docker images (if applicable)
+# Step 5: Render secrets/runtime.env (required for backend-aws and market-updater-aws)
+# Aligns with README-ops: do not run compose without runtime.env.
+echo "🔐 Rendering secrets/runtime.env..."
+if [ ! -f "scripts/aws/render_runtime_env.sh" ]; then
+    echo -e "${RED}❌ ERROR: scripts/aws/render_runtime_env.sh not found. Use canonical deploy path.${NC}"
+    exit 1
+fi
+bash scripts/aws/render_runtime_env.sh || {
+  echo -e "${RED}❌ ERROR: render_runtime_env.sh failed.${NC}" >&2
+  exit 1
+}
+if [ ! -f "secrets/runtime.env" ]; then
+    echo -e "${RED}❌ ERROR: secrets/runtime.env missing after render. Aborting.${NC}"
+    exit 1
+fi
+echo "   runtime.env presence=YES"
+
+# Step 5b: Ensure no inline secrets in compose files (do not echo any secret values)
+bash scripts/aws/check_no_inline_secrets_in_compose.sh || {
+  echo "❌ Inline secrets detected in compose file(s). Aborting deploy." >&2
+  exit 1
+}
+
+# Step 5c: Verify no public ports (if script present)
+if [ -f "scripts/aws/verify_no_public_ports.sh" ]; then
+  bash scripts/aws/verify_no_public_ports.sh || {
+    echo "❌ Public port check failed. Aborting deploy." >&2
+    exit 1
+  }
+fi
+
+# Step 5d: Validate compose config (no config output; never run raw docker compose config on EC2)
+bash scripts/aws/safe_compose_check.sh || {
+  echo "❌ docker-compose config invalid. Aborting deploy." >&2
+  exit 1
+}
+
+# Step 6: Pull Docker images (if applicable)
 echo "🐳 Pulling Docker images..."
 docker compose --profile aws pull || {
     echo -e "${YELLOW}⚠️  WARNING: docker compose pull failed (may be expected if using local builds)${NC}"
 }
 
-# Step 6: Build and start services
+# Step 7: Build and start services
 echo ""
 echo "🚀 Building and starting services..."
 docker compose --profile aws up -d --build || {
@@ -81,12 +118,12 @@ docker compose --profile aws up -d --build || {
     exit 1
 }
 
-# Step 7: Wait for services to start
+# Step 8: Wait for services to start
 echo ""
 echo "⏳ Waiting for services to start (15 seconds)..."
 sleep 15
 
-# Step 8: Verify services
+# Step 9: Verify services
 echo ""
 echo "✅ Service status:"
 docker compose --profile aws ps || {
@@ -94,7 +131,7 @@ docker compose --profile aws ps || {
     exit 1
 }
 
-# Step 9: Health check
+# Step 10: Health check
 echo ""
 echo "🏥 Health check..."
 HEALTH_URL="http://localhost:8002/api/health/system"
@@ -134,7 +171,7 @@ else
     echo "   Response preview: $(echo "$HEALTH_RESPONSE" | head -c 200)..."
 fi
 
-# Step 10: Optional cleanup (guarded)
+# Step 11: Optional cleanup (guarded)
 if [ "${CLEANUP_DOCKER_IMAGES:-false}" = "true" ]; then
     echo ""
     echo "🧹 Cleaning up unused Docker images..."

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run nightly integrity audit at 03:15 Europe/Madrid
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+TimestampTimezone=Europe/Madrid
+
+[Install]
+WantedBy=timers.target

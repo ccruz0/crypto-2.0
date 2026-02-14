@@ -26,7 +26,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-atp}
       POSTGRES_USER: ${POSTGRES_USER:-trader}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traderpass}
+      # POSTGRES_PASSWORD from env_file only (.env / .env.aws) - never inline
       POSTGRES_INITDB_ARGS: --auth=scram-sha-256
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -66,7 +66,7 @@ services:
       # NOTE: .env.secrets.local is optional - if you need it, create it manually and it will be auto-loaded
       # NOTE: .env.aws is NOT loaded for local dev to avoid AWS config conflicts
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL from env_file only
       - ENVIRONMENT=local
       - APP_ENV=local
       - RUNTIME_ORIGIN=LOCAL
@@ -124,13 +124,11 @@ services:
       - .env.local
       - .env.aws
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL, TELEGRAM_BOT_TOKEN_LOCAL, TELEGRAM_CHAT_ID_LOCAL, CRYPTO_PROXY_TOKEN from env_file only
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=${RUNTIME_ORIGIN:-LOCAL}
-      - TELEGRAM_BOT_TOKEN_LOCAL=${TELEGRAM_BOT_TOKEN_LOCAL:-<REDACTED_TELEGRAM_TOKEN>}
-      - TELEGRAM_CHAT_ID_LOCAL=${TELEGRAM_CHAT_ID_LOCAL:-839853931}
       - TRADING_ENABLED=${TRADING_ENABLED:-false}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
@@ -139,7 +137,6 @@ services:
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
-      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - UVICORN_WORKERS=1
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
@@ -156,8 +153,6 @@ services:
       - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
       # Portfolio reconcile debug (enables reconcile bundle in portfolio response)
       - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
-      # TELEGRAM_BOT_TOKEN_LOCAL and TELEGRAM_CHAT_ID_LOCAL are loaded from .env.local via env_file
-      # Generic TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID removed - use explicit *_LOCAL vars
     ports:
       - "8002:8002"
     volumes:
@@ -189,6 +184,7 @@ services:
   # AWS alert/Telegram: ENVIRONMENT=aws, RUNTIME_ORIGIN=AWS, RUN_TELEGRAM=true (injected below).
   # Telegram credentials from .env.aws / secrets/runtime.env (TELEGRAM_BOT_TOKEN_AWS, TELEGRAM_CHAT_ID_AWS).
   backend-aws:
+    image: automated-trading-platform-backend-aws
     build:
       context: .
       dockerfile: backend/Dockerfile.aws
@@ -202,8 +198,7 @@ services:
       # CRITICAL: Do NOT load .env.local - AWS must never have LOCAL Telegram credentials
       # This ensures AWS backend cannot access TELEGRAM_BOT_TOKEN_LOCAL or TELEGRAM_CHAT_ID_LOCAL
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
-      # Telegram Safety: AWS backend must use ENVIRONMENT=aws and only AWS Telegram credentials
+      # DATABASE_URL from env_file only (.env.aws + secrets/runtime.env)
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
@@ -229,11 +224,11 @@ services:
       # Backend connects directly from AWS Elastic IP 47.130.143.159 to api.crypto.com/exchange/v1
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
-      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
+      # CRYPTO_PROXY_TOKEN from env_file only
       - UVICORN_WORKERS=1
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
-      - DISABLE_AUTH=${DISABLE_AUTH:-true}
+      - DISABLE_AUTH=${DISABLE_AUTH:-false}
       - VPN_GATE_ENABLED=${VPN_GATE_ENABLED:-true}
       - VPN_GATE_URL=${VPN_GATE_URL:-https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT}
       - VPN_GATE_EXPECTS_JSON=${VPN_GATE_EXPECTS_JSON:-true}
@@ -262,26 +257,89 @@ services:
       # Telegram/admin keys are injected via secrets/runtime.env (rendered by scripts/aws/render_runtime_env.sh)
       # Persist strategy config so dashboard strategy changes survive restarts (RUNBOOK 8.5)
       - TRADING_CONFIG_PATH=/data/trading_config.json
-    # NOTE: Backend AWS connects directly to Crypto.com Exchange via AWS Elastic IP
-    # Ports are exposed for external API access (health checks, frontend calls)
+      # Option A: tail_logs + host-visible ai_runs
+      - AI_ENGINE_COMPOSE_DIR=/app
+      - AI_RUNS_DIR=/app/backend/ai_runs
+    # SECURITY NOTE:
+    # Never publish backend ports on 0.0.0.0 in production.
+    # Use 127.0.0.1 binding or internal docker network only.
+    # Public access must go through nginx only.
     ports:
       - "127.0.0.1:8002:8002"
     # volumes:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     volumes:
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backend/ai_runs:/app/backend/ai_runs
       - aws_trading_config_data:/data
+    working_dir: /app/backend
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
     # Use >1 worker so /ping_fast stays responsive even during slow endpoints.
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
     restart: always
+    # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=5)"]
       interval: 120s
-      timeout: 15s
+      timeout: 20s
       retries: 5
       start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "1G"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - aws
+
+  # ============================================
+  # BACKEND AWS CANARY (same image as backend-aws, port 8003; for weighted deploy)
+  # ============================================
+  backend-aws-canary:
+    image: automated-trading-platform-backend-aws
+    env_file:
+      - .env
+      - .env.aws
+      - ./secrets/runtime.env
+    environment:
+      # DATABASE_URL from env_file only
+      - ENVIRONMENT=aws
+      - APP_ENV=aws
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      - RUNTIME_ORIGIN=AWS
+      - EXECUTION_CONTEXT=AWS
+      - TRADING_ENABLED=${TRADING_ENABLED:-true}
+      - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
+      - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
+      - API_BASE_URL=http://backend-aws-canary:8002
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
+      - LIVE_TRADING=${LIVE_TRADING:-true}
+      - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
+      - UVICORN_WORKERS=1
+      - ENABLE_DIAGNOSTICS_ENDPOINTS=1
+      - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
+      - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
+      - TRADING_CONFIG_PATH=/data/trading_config.json
+    ports:
+      - "8003:8002"
+    volumes:
+      - aws_trading_config_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8002/ping_fast', timeout=10)"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     deploy:
       resources:
         limits:
@@ -304,7 +362,7 @@ services:
       - .env
       - .env.local
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL, CRYPTO_PROXY_TOKEN from env_file only
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
       - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
@@ -312,7 +370,6 @@ services:
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
-      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
     depends_on:
       db:
         condition: service_healthy
@@ -341,17 +398,16 @@ services:
     env_file:
       - .env
       - .env.aws
+      - ./secrets/runtime.env
     environment:
-      - DATABASE_URL=postgresql://trader:${POSTGRES_PASSWORD:-traderpass}@db:5432/atp
+      # DATABASE_URL, CRYPTO_PROXY_TOKEN from env_file only
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=AWS
       - LIVE_TRADING=${LIVE_TRADING:-true}
-      # Use crypto-proxy by default in AWS profile (more reliable auth/IP handling)
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
-      - CRYPTO_PROXY_TOKEN=${CRYPTO_PROXY_TOKEN:-CRYPTO_PROXY_SECURE_TOKEN_2024}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
       - CRYPTO_REST_BASE=https://api.crypto.com/exchange/v1
       # Price move alert configuration (market-updater runs signal monitor loop)
@@ -365,10 +421,11 @@ services:
     #   - ./backend:/app  # Commented out for production - use built image instead of mounting local files
     command: python3 run_updater.py
     restart: unless-stopped
+    # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://backend-aws:8002/ping_fast', timeout=5)"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 60s
+      timeout: 15s
       retries: 3
       start_period: 30s
     profiles:
@@ -475,6 +532,80 @@ services:
       - aws
 
   # ============================================
+  # OBSERVABILITY (internal only; bind 127.0.0.1)
+  # ============================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: atp-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./scripts/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+    profiles:
+      - aws
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: atp-grafana
+    env_file:
+      - .env
+      - .env.aws
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      # GF_SECURITY_ADMIN_PASSWORD from env_file only (.env.aws: set GF_SECURITY_ADMIN_PASSWORD)
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_HTTP_PORT=3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./scripts/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    profiles:
+      - aws
+
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: atp-node-exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "127.0.0.1:9100:9100"
+    restart: unless-stopped
+    profiles:
+      - aws
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: atp-cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    profiles:
+      - aws
+
+  # ============================================
   # AWS-SPECIFIC SERVICES
   # ============================================
   aws-backup:
@@ -486,9 +617,9 @@ services:
       - .env
       - .env.aws
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-atp}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      # POSTGRES_PASSWORD from env_file only
     volumes:
       - aws_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -503,6 +634,8 @@ services:
 volumes:
   postgres_data:
   aws_postgres_data:
+  prometheus_data:
+  grafana_data:
   # For RUNBOOK 8.5: persist strategy config; uncomment backend-aws volume mount and TRADING_CONFIG_PATH to use
   aws_trading_config_data:
 

@@ -1,11 +1,32 @@
 #!/usr/bin/env bash
 # Option A EC2 audit: verify backend-aws compose wiring, docker in container, doctor:auth, report.
-# Safe: never prints tokens, secrets, or env file contents.
+# Safe: never prints tokens, secrets, env values, or expanded compose config.
 set -euo pipefail
 
 REPO_ROOT="/home/ubuntu/automated-trading-platform"
 cd "$REPO_ROOT"
-echo "REPO_ROOT=$REPO_ROOT"
+
+# Wait for backend readiness (retry GET /health until 200)
+wait_for_health() {
+  local url="http://127.0.0.1:8002/api/health"
+  local max=30
+  local i=1
+  while [ "$i" -le "$max" ]; do
+    if code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null); then
+      if [ "$code" = "200" ]; then
+        return 0
+      fi
+    fi
+    sleep 2
+    i=$((i + 1))
+  done
+  return 1
+}
+
+echo "========== Waiting for /health 200 (up to 60s) =========="
+if ! wait_for_health; then
+  echo "WARN: /health did not return 200; continuing anyway"
+fi
 
 echo ""
 echo "========== A) BASELINE (host) =========="
@@ -14,57 +35,61 @@ git log -3 --oneline
 docker compose --profile aws ps
 
 echo ""
-echo "========== B) COMPOSE WIRING (host) =========="
-docker compose --profile aws config > /tmp/compose.aws.config
-echo "--- backend-aws service block ---"
-awk '/^  backend-aws:/{f=1} f{print} /^  [a-z].*:/ && !/^  backend-aws:/{if(f) exit}' /tmp/compose.aws.config || true
-echo "--- grep: socket, :/app:ro, AI_ENGINE_COMPOSE_DIR, AI_RUNS_DIR, ai_runs, working_dir ---"
-grep -E '/var/run/docker\.sock|\.:/app:ro|AI_ENGINE_COMPOSE_DIR|AI_RUNS_DIR|/app/backend/ai_runs|working_dir|backend/ai_runs' /tmp/compose.aws.config || true
+echo "========== B) COMPOSE WIRING (host) — safe checks only =========="
+# Read docker-compose.yml directly; never run "docker compose config" (expands secrets).
+grep -q '/var/run/docker.sock' docker-compose.yml && echo "OK: docker.sock volume" || echo "MISSING: docker.sock volume"
+grep -q '/app/docker-compose.yml' docker-compose.yml && echo "OK: compose file mount" || echo "MISSING: compose file mount"
+grep -q '/app/backend/ai_runs' docker-compose.yml && echo "OK: ai_runs mount" || echo "MISSING: ai_runs mount"
+grep -q 'AI_ENGINE_COMPOSE_DIR' docker-compose.yml && echo "OK: AI_ENGINE_COMPOSE_DIR" || echo "MISSING: AI_ENGINE_COMPOSE_DIR"
+grep -q 'AI_RUNS_DIR' docker-compose.yml && echo "OK: AI_RUNS_DIR" || echo "MISSING: AI_RUNS_DIR"
+grep -q 'working_dir:.*/app/backend' docker-compose.yml && echo "OK: working_dir /app/backend" || echo "MISSING: working_dir /app/backend"
 
 echo ""
 echo "========== C) DOCKER INSIDE CONTAINER (backend-aws) =========="
 docker compose --profile aws exec -T backend-aws bash -lc '
 set -e
-echo "== inside container =="
 whoami
 pwd
-ls -la /var/run/docker.sock || true
-echo "AI_ENGINE_COMPOSE_DIR=$AI_ENGINE_COMPOSE_DIR"
-echo "AI_RUNS_DIR=$AI_RUNS_DIR"
-test -f /app/docker-compose.yml && echo "compose file OK: /app/docker-compose.yml" || echo "compose file MISSING at /app/docker-compose.yml"
-docker version || true
-docker compose version || true
-cd /app
-docker compose --profile aws ps || true
+test -S /var/run/docker.sock && echo "docker.sock: OK" || echo "docker.sock: MISSING"
+test -f /app/docker-compose.yml && echo "compose file: OK" || echo "compose file: MISSING"
+# Do not echo env values
+test -n "${AI_ENGINE_COMPOSE_DIR:-}" && echo "AI_ENGINE_COMPOSE_DIR: set" || echo "AI_ENGINE_COMPOSE_DIR: unset"
+test -n "${AI_RUNS_DIR:-}" && echo "AI_RUNS_DIR: set" || echo "AI_RUNS_DIR: unset"
+docker version --format "{{.Client.Version}}" 2>/dev/null | head -1 || echo "docker: not found"
+docker compose version 2>/dev/null && echo "docker compose: OK" || echo "docker compose: FAIL"
+cd /app && docker compose --profile aws ps >/dev/null 2>&1 && echo "compose ps from /app: OK" || echo "compose ps from /app: FAIL"
 ' || true
 
 echo ""
 echo "========== D) ROUTE CHECK (host) =========="
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8002/api/ai/run || true
-curl -sS -D /tmp/openapi.headers -o /tmp/openapi.json http://127.0.0.1:8002/openapi.json || true
-echo "--- openapi headers (first 10 lines) ---"
-head -10 /tmp/openapi.headers || true
-echo "--- openapi paths ---"
+for _ in 1 2 3; do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:8002/api/ai/run 2>/dev/null) && break
+  sleep 1
+done
+echo "GET /api/ai/run status: ${code:-unknown}"
+for _ in 1 2 3; do
+  curl -sS -o /tmp/openapi.json --connect-timeout 5 http://127.0.0.1:8002/openapi.json 2>/dev/null && break
+  sleep 1
+done
 python3 -c "
 import json
 try:
     d = json.load(open('/tmp/openapi.json'))
     paths = d.get('paths') or {}
-    print('num_paths:', len(paths))
     print('has_/api/ai/run:', '/api/ai/run' in paths)
-    ai = [p for p in paths if 'ai' in p or 'doctor' in p]
-    print('paths containing ai or doctor:', ai)
 except Exception as e:
-    print('parse error:', e)
-" || true
+    print('openapi parse error:', type(e).__name__)
+" 2>/dev/null || true
 
 echo ""
 echo "========== E) DOCTOR AUTH + REPORT CHECK =========="
-curl -sS -X POST http://127.0.0.1:8002/api/ai/run \
-  -H "Content-Type: application/json" \
-  -d '{"task":"doctor:auth","mode":"sandbox","apply_changes":false}' \
-  -o /tmp/doctor_auth.json || true
-python3 -m json.tool < /tmp/doctor_auth.json 2>/dev/null || cat /tmp/doctor_auth.json
+for _ in 1 2 3; do
+  curl -sS -X POST http://127.0.0.1:8002/api/ai/run \
+    -H "Content-Type: application/json" \
+    -d '{"task":"doctor:auth","mode":"sandbox","apply_changes":false}' \
+    -o /tmp/doctor_auth.json 2>/dev/null && break
+  sleep 2
+done
 
 RUN_DIR=$(python3 -c "
 import json
@@ -74,39 +99,25 @@ try:
     print(d.replace('/app/', '', 1) if d.startswith('/app/') else d)
 except Exception:
     print('')
-") || RUN_DIR=""
-echo "RUN_DIR=$RUN_DIR"
+" 2>/dev/null) || RUN_DIR=""
+echo "run_dir: ${RUN_DIR:-<empty>}"
 
-echo "--- host: backend/ai_runs and RUN_DIR ---"
-ls -la backend/ai_runs 2>/dev/null || true
-[ -n "$RUN_DIR" ] && ls -la "$RUN_DIR" 2>/dev/null || true
-
-echo "--- container: /app/backend/ai_runs and /app/RUN_DIR ---"
-docker compose --profile aws exec -T backend-aws ls -la /app/backend/ai_runs 2>/dev/null || true
-[ -n "$RUN_DIR" ] && docker compose --profile aws exec -T backend-aws ls -la "/app/$RUN_DIR" 2>/dev/null || true
-
-echo "--- report.json (tail_logs_source, compose_dir_used, logs_excerpt len, first 40 lines of file) ---"
 if [ -n "$RUN_DIR" ]; then
+  echo "report.json fields (safe only):"
   docker compose --profile aws exec -T backend-aws cat "/app/$RUN_DIR/report.json" 2>/dev/null | python3 -c "
 import json, sys
 try:
     r = json.load(sys.stdin)
-    print('tail_logs_source:', r.get('tail_logs_source'))
-    print('compose_dir_used:', r.get('compose_dir_used'))
-    ex = r.get('findings', {}).get('logs_excerpt', '')
+    findings = r.get('findings') or {}
+    ex = findings.get('logs_excerpt') or r.get('logs_excerpt') or ''
+    print('tail_logs_source:', r.get('tail_logs_source', 'N/A'))
+    print('compose_dir_used:', r.get('compose_dir_used', 'N/A'))
     print('logs_excerpt length:', len(ex))
-    print('--- first 40 lines of report.json ---')
-    raw = json.dumps(r, indent=2)
-    for i, line in enumerate(raw.splitlines()[:40]):
-        print(line)
-    print('--- logs_excerpt (capped 4000 chars) ---')
-    print(ex[:4000])
+    # Do not print raw excerpt (may contain sensitive lines)
 except Exception as e:
-    print('parse error:', e)
+    print('parse error:', type(e).__name__)
     sys.exit(1)
-" || true
-else
-  echo "RUN_DIR empty, skip report"
+" 2>/dev/null || true
 fi
 
 echo ""
@@ -116,9 +127,10 @@ if [ -n "$RUN_DIR" ]; then
 import json, sys
 try:
     r = json.load(sys.stdin)
+    findings = r.get('findings') or {}
+    ex = findings.get('logs_excerpt') or r.get('logs_excerpt') or ''
     src = r.get('tail_logs_source')
     comp = r.get('compose_dir_used')
-    ex = r.get('findings', {}).get('logs_excerpt', '')
     c1 = src == 'docker_compose'
     c2 = comp == '/app'
     c3 = 'docker-compose.yml not found' not in ex
@@ -127,12 +139,12 @@ try:
         print('PASS (all 4 checks)')
     else:
         print('FAIL')
-        if not c1: print('  - tail_logs_source != docker_compose (got: %s)' % repr(src))
-        if not c2: print('  - compose_dir_used != /app (got: %s)' % repr(comp))
+        if not c1: print('  - tail_logs_source != docker_compose (got:', repr(src), ')')
+        if not c2: print('  - compose_dir_used != /app (got:', repr(comp), ')')
         if not c3: print('  - logs_excerpt contains docker-compose.yml not found')
         if not c4: print('  - logs_excerpt length <= 200 (got %s)' % len(ex))
 except Exception as e:
-    print('FAIL (could not read report:', e, ')')
+    print('FAIL (could not read report:', type(e).__name__, ')')
     sys.exit(1)
 " || echo "FAIL (no report or read error)"
 else

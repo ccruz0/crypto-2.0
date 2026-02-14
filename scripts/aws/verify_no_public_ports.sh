@@ -2,7 +2,6 @@
 # Enforce localhost-only for AWS profile: backend-aws (8002) and frontend-aws (3000).
 # FAIL if docker-compose.yml contains "0.0.0.0:8002" or "0.0.0.0:3000".
 # PASS only if it contains both "127.0.0.1:8002:8002" and "127.0.0.1:3000:3000".
-# Does NOT fail on bare "8002:8002" or "3000:3000" in non-AWS profiles.
 # Output: PASS or FAIL only. No secrets.
 set -euo pipefail
 
