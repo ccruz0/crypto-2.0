@@ -28,6 +28,21 @@ run_with_retries() {
   done
 }
 
+# Wait for backend to answer /api/health/system before burning health_guard retries
+wait_for_backend_ready() {
+  local tries="${1:-18}"   # 18 x 5s = 90s
+  local sleep_s="${2:-5}"
+  local i=1
+  while [[ "$i" -le "$tries" ]]; do
+    if curl -fsS --max-time 2 http://127.0.0.1:8002/api/health/system >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$sleep_s"
+    i=$((i + 1))
+  done
+  return 1
+}
+
 STEPS=(
   "scripts/aws/verify_no_public_ports.sh"
   "scripts/aws/health_guard.sh"
@@ -47,7 +62,8 @@ for i in "${!STEPS[@]}"; do
   step="${STEPS[$i]}"
   name="${STEP_NAMES[$i]}"
   if [[ "$name" == "health_guard" ]]; then
-    if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 3 5; then
+    wait_for_backend_ready 18 5 || exit 1
+    if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 5 10; then
       ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
       "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
       echo "FAIL"
