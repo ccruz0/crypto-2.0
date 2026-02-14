@@ -131,7 +131,8 @@ fi
 if ! echo "$PORT_OUT" | grep -q "127.0.0.1:3000"; then
   block "PHASE F: 127.0.0.1:3000 not found"
 fi
-if echo "$PORT_OUT" | grep -E "(:8002|:3000)" | grep -q "0.0.0.0"; then
+# Only block if bind address is 0.0.0.0 (ss also shows peer 0.0.0.0:* which is not the bind)
+if echo "$PORT_OUT" | grep -qE "0\.0\.0\.0:(8002|3000)(\s|$)"; then
   block "PHASE F: Ports 8002 or 3000 must not bind to 0.0.0.0"
 fi
 
