@@ -29,15 +29,23 @@ Run on EC2:
 cd /home/ubuntu/automated-trading-platform
 git pull
 docker compose --profile aws up -d db backend-aws frontend-aws
-bash scripts/aws/final_ec2_hard_verification.sh
+bash scripts/aws/ec2_quick_verify.sh
 echo "exit=$?"
 ```
 
-When exit=0: paste sanitized script output below (verdict line only). Confirm exit=0. Then append to bottom of this report exactly:
+When exit=0: paste below (sanitized). Then append to bottom of this report exactly: `PHASE 6 — EC2 VALIDATION COMPLETE`.
 
-`PHASE 6 — EC2 VALIDATION COMPLETE`
+**EC2 HARD VERIFICATION (PASS)** — fill when run on EC2 and exit=0:
 
-*(Paste EC2 pass output here when achieved.)*
+| Item | Value |
+|------|--------|
+| Date/time | *(UTC when run)* |
+| Hostname | *(from EC2)* |
+| Egress IP | *(curl -s https://api.ipify.org on EC2)* |
+| Git HEAD short | *(git rev-parse --short HEAD)* |
+| Final verdict line | PHASE 6 — EC2 VALIDATION COMPLETE |
+
+No secrets.
 
 ---
 
