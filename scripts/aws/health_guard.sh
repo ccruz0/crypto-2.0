@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
-if command -v docker >/dev/null 2>&1 && docker compose ps backend-aws 2>/dev/null | grep -q backend-aws; then
+if command -v docker >/dev/null 2>&1 && docker compose --profile aws ps backend-aws 2>/dev/null | grep -q backend-aws; then
   if curl -sf -o /dev/null --connect-timeout 5 "http://127.0.0.1:8002/health" 2>/dev/null; then
     echo "PASS"
     exit 0

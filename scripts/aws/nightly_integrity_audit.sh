@@ -88,6 +88,8 @@ if ! ensure_stack_up; then
   echo "FAIL"
   exit 1
 fi
+# Brief settle so health_guard's docker ps + curl see a stable backend
+sleep 5
 
 for i in "${!STEPS[@]}"; do
   step="${STEPS[$i]}"
