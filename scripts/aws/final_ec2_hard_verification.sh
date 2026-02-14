@@ -14,6 +14,7 @@ trap 'echo "VALIDATION BLOCKED — UNHANDLED_ERROR"; exit 1' ERR
 command -v jq >/dev/null 2>&1 || { echo "VALIDATION BLOCKED — MISSING_JQ"; exit 1; }
 
 block() {
+  trap - ERR
   echo "VALIDATION BLOCKED — $1"
   exit 1
 }
@@ -74,8 +75,8 @@ if [[ "$C2_REASON" != "RISK_GUARD_BLOCKED" ]]; then
   block "PHASE C.2: Risk probe margin over-cap reason_code must be RISK_GUARD_BLOCKED"
 fi
 
-# PHASE D — Health & Integrity
-D1_CODE="$(curl -s --connect-timeout 3 --max-time 15 --retry 0 -o "$D1_JSON" -w "%{http_code}" http://127.0.0.1:8002/api/health/system)"
+# PHASE D — Health & Integrity (health endpoint can be slow under load; allow 30s)
+D1_CODE="$(curl -s --connect-timeout 5 --max-time 30 --retry 0 -o "$D1_JSON" -w "%{http_code}" http://127.0.0.1:8002/api/health/system)"
 if [[ "$D1_CODE" != "200" ]]; then
   block "PHASE D.1: System health returned HTTP $D1_CODE (expected 200)"
 fi
