@@ -42,11 +42,11 @@ run_with_retries() {
   local i=1
   while true; do
     if [[ "$show_stderr" == "show_stderr" ]]; then
-      if "${cmd}" >/dev/null; then
+      if bash "${cmd}" >/dev/null; then
         return 0
       fi
     else
-      if "${cmd}" >/dev/null 2>&1; then
+      if bash "${cmd}" >/dev/null 2>&1; then
         return 0
       fi
     fi
@@ -112,7 +112,7 @@ for i in "${!STEPS[@]}"; do
       echo "FAIL"
       exit 1
     fi
-  elif ! "${REPO_ROOT}/${step}" >/dev/null 2>&1; then
+  elif ! bash "${REPO_ROOT}/${step}" >/dev/null 2>&1; then
     ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
     "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
     echo "FAIL"
