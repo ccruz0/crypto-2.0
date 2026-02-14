@@ -200,7 +200,7 @@ services:
       # CRITICAL: Do NOT load .env.local - AWS must never have LOCAL Telegram credentials
       # This ensures AWS backend cannot access TELEGRAM_BOT_TOKEN_LOCAL or TELEGRAM_CHAT_ID_LOCAL
     environment:
-      # DATABASE_URL from env_file only (.env.aws + secrets/runtime.env)
+      # DATABASE_URL from env_file only; host must be "db" (not a container IP) or backend gets 503
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
@@ -330,8 +330,9 @@ services:
       - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
       - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
       - TRADING_CONFIG_PATH=/data/trading_config.json
+    # Bind to loopback only (Phase F: no public binds for 8002/3000/8003)
     ports:
-      - "8003:8002"
+      - "127.0.0.1:8003:8002"
     volumes:
       - aws_trading_config_data:/data
     extra_hosts:
