@@ -1,0 +1,16 @@
+# Alertmanager config for Phase 7.1 — route all alerts to Telegram via webhook relay.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram
+  group_by: ["alertname", "job"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 2h
+
+receivers:
+  - name: telegram
+    webhook_configs:
+      - url: "http://telegram-alerts:9119/alert"
+        send_resolved: true

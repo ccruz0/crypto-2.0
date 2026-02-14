@@ -1,0 +1,66 @@
+groups:
+  - name: base
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: "critical" }
+        annotations:
+          summary: "Target down: {{ $labels.job }} {{ $labels.instance }}"
+          description: "Scrape target {{ $labels.job }} {{ $labels.instance }} has been down for more than 2m."
+
+      - alert: HostDiskFillingUp
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.15
+        for: 10m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Disk low on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Filesystem {{ $labels.mountpoint }} has less than 15% space available for 10m."
+
+      - alert: ContainerRestartsHigh
+        expr: increase(container_start_time_seconds[15m]) > 2
+        for: 5m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Container restarts detected (cadvisor)"
+          description: "One or more containers restarted more than twice in the last 15m."
+
+  - name: backend_api
+    rules:
+      - alert: BackendHigh5xxRate
+        expr: (
+          sum(rate(http_requests_total{job="backend",status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total{job="backend"}[5m])), 1e-9)
+        ) > 0.02
+        for: 5m
+        labels: { severity: "critical" }
+        annotations:
+          summary: "Backend 5xx rate > 2%"
+          description: "5xx response rate on backend exceeded 2% over the last 5m."
+
+      - alert: BackendP95LatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="backend"}[5m]))) > 0.8
+        for: 10m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Backend p95 latency > 800ms"
+          description: "95th percentile HTTP request latency on backend exceeded 800ms for 10m."
+
+      - alert: MarketUpdaterStalled
+        expr: max(market_updater_heartbeat_age_seconds{job="market_updater"}) > 900
+        for: 5m
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Market updater heartbeat age > 15m"
+          description: "Market updater has not sent a heartbeat in over 15 minutes."
+
+  - name: test
+    rules:
+      - alert: TestTelegramAlert
+        expr: vector(1)
+        for: 10s
+        labels: { severity: "warning" }
+        annotations:
+          summary: "Test alert"
+          description: "If you see this, Alertmanager -> Telegram is wired."

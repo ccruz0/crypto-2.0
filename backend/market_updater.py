@@ -73,6 +73,48 @@ except Exception as e:
     logger.warning(f"Signal writer not available: {e}")
     SIGNAL_WRITER_AVAILABLE = False
 
+# Prometheus heartbeat for Phase 7 observability (MarketUpdaterStalled alert)
+_METRICS_AVAILABLE = False
+_heartbeat_gauge = None
+_last_heartbeat = [time.time()]
+
+try:
+    from prometheus_client import Gauge, start_http_server
+    _heartbeat_gauge = Gauge(
+        "market_updater_heartbeat_age_seconds",
+        "Seconds since last successful market data update",
+    )
+    _METRICS_AVAILABLE = True
+except ImportError:
+    pass
+
+
+def record_heartbeat() -> None:
+    """Call after each successful update_market_data(); used for Prometheus gauge."""
+    _last_heartbeat[0] = time.time()
+
+
+def _heartbeat_update_loop() -> None:
+    """Background thread: refresh gauge every 5s so scrapes see current age."""
+    while True:
+        time.sleep(5)
+        if _heartbeat_gauge is not None:
+            _heartbeat_gauge.set(time.time() - _last_heartbeat[0])
+
+
+def start_metrics_server(port: int = 9101) -> None:
+    """Start /metrics HTTP server and heartbeat gauge updater (call once at process start)."""
+    if not _METRICS_AVAILABLE or _heartbeat_gauge is None:
+        return
+    try:
+        start_http_server(port)
+        logger.info("Market updater metrics server listening on port %s", port)
+        import threading
+        t = threading.Thread(target=_heartbeat_update_loop, daemon=True)
+        t.start()
+    except Exception as e:
+        logger.warning("Could not start metrics server: %s", e)
+
 
 def fetch_ohlcv_data(symbol: str, interval: str = "1h", limit: int = 200) -> Optional[List[Dict]]:
     """Fetch OHLCV data from Crypto.com API with fallback to Binance if Crypto.com doesn't have the pair"""
@@ -889,12 +931,15 @@ async def update_market_data():
 
 async def run_updater():
     """Main updater loop - runs every 60 seconds"""
+    start_metrics_server(9101)
+
     logger.info("Market data updater worker started")
     logger.info("Update interval: 60 seconds")
     
     # Run initial update immediately
     logger.info("Running initial update...")
     await update_market_data()
+    record_heartbeat()
     
     # Track update count for heartbeat
     update_count = 0
@@ -907,7 +952,8 @@ async def run_updater():
             update_count += 1
             logger.info("Scheduled update: running update_market_data()")
             await update_market_data()
-            
+            record_heartbeat()
+
             # Heartbeat log every 10 updates (~10 minutes)
             current_time = time.time()
             if update_count % 10 == 0 or (current_time - last_heartbeat_time) >= 600:

@@ -26,6 +26,7 @@ from app.api.routes_admin import router as admin_router
 from app.api.routes_portfolio import router as portfolio_router
 from app.api.routes_ai import router as ai_router
 from app.api.routes_risk_probe import router as risk_probe_router
+from app.api.routes_metrics import router as metrics_router
 import os
 import logging
 import time
@@ -39,6 +40,50 @@ from app.core.logging_config import setup_logging
 setup_logging()
 
 logger = logging.getLogger(__name__)
+
+# Prometheus metrics (Phase 7 observability)
+try:
+    from prometheus_client import Counter, Histogram
+    _http_requests_total = Counter(
+        "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
+    )
+    _http_request_duration = Histogram(
+        "http_request_duration_seconds", "HTTP request latency", ["method", "path"]
+    )
+    _PROM_AVAILABLE = True
+except Exception:
+    _http_requests_total = _http_request_duration = None
+    _PROM_AVAILABLE = False
+
+SLOW_CALL_MS = 800  # log requests slower than this
+
+
+class PromMetricsMiddleware(BaseHTTPMiddleware):
+    """Record request count, latency, and log slow calls."""
+
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        elapsed = time.perf_counter() - start
+
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or request.url.path
+
+        if _PROM_AVAILABLE and _http_requests_total and _http_request_duration:
+            status = str(response.status_code)
+            _http_requests_total.labels(method=request.method, path=path, status=status).inc()
+            _http_request_duration.labels(method=request.method, path=path).observe(elapsed)
+
+        if elapsed * 1000 > SLOW_CALL_MS:
+            logger.warning(
+                "SLOW_CALL %s %s %s %.1fms",
+                path,
+                response.status_code,
+                request.method,
+                elapsed * 1000,
+            )
+        return response
+
 
 # DEBUG: Flags to disable services (read from environment variables)
 # These flags allow disabling services for debugging/performance testing
@@ -126,6 +171,7 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,  # Cache preflight requests for 1 hour
     )
+app.add_middleware(PromMetricsMiddleware)
 
 # Build fingerprint middleware - adds commit/build time and DB fingerprint to all responses
 class BuildFingerprintMiddleware(BaseHTTPMiddleware):
@@ -601,6 +647,7 @@ app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
 app.include_router(ai_router)
 app.include_router(risk_probe_router, prefix="/api", tags=["risk"])
+app.include_router(metrics_router, prefix="/api", tags=["metrics"])
 
 # Alias health under /api for reverse-proxy setups that expect /api/health
 # Defined AFTER routers so /api/health/system can be matched first
