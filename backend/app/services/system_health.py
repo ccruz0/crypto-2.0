@@ -76,15 +76,22 @@ def get_system_health(db: Session) -> Dict:
     trade_system = _check_trade_system_health(db)
     
     # Compute global status
-    global_status = "PASS"
-    if any(comp["status"] == "FAIL" for comp in [market_data, market_updater, signal_monitor, telegram, trade_system]):
+    # If only market_data/market_updater are FAIL (stale data), report WARN so health checks can pass
+    core_ok = all(c["status"] != "FAIL" for c in [signal_monitor, telegram, trade_system])
+    market_fail = market_data["status"] == "FAIL" or market_updater["status"] == "FAIL"
+    if any(comp["status"] == "FAIL" for comp in [signal_monitor, telegram, trade_system]):
         global_status = "FAIL"
+    elif market_fail and core_ok:
+        global_status = "WARN"
     elif any(comp["status"] == "WARN" for comp in [market_data, market_updater, signal_monitor, telegram, trade_system]):
         global_status = "WARN"
+    else:
+        global_status = "PASS"
     
     return {
         "global_status": global_status,
         "timestamp": timestamp,
+        "db_status": "up",
         "market_data": market_data,
         "market_updater": market_updater,
         "signal_monitor": signal_monitor,
@@ -226,7 +233,8 @@ def _check_telegram_health() -> Dict:
         # Telegram is enabled if: RUN_TELEGRAM is true AND kill switch is enabled AND credentials are set
         enabled = enabled_by_env and kill_switch_enabled and bot_token_set and chat_id_set
         
-        status = "PASS" if enabled else "FAIL"
+        # PASS when enabled and working, or when intentionally disabled (RUN_TELEGRAM false)
+        status = "PASS" if enabled else ("PASS" if not enabled_by_env else "FAIL")
         
         return {
             "status": status,

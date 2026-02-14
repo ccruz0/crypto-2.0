@@ -57,6 +57,7 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
             content={
                 "global_status": "FAIL",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "db_status": "down",
                 "error": str(e)
             },
             headers=_NO_CACHE_HEADERS

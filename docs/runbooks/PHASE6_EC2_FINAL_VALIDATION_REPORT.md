@@ -6,6 +6,22 @@
 
 ---
 
+## Prerequisites (EC2 configuration)
+
+### DB host must be `db`, not a container IP
+
+- `DATABASE_URL` must use host **`db`** (the Compose service name), not a hardcoded Docker IP (e.g. `172.19.0.3`). Container IPs change across restarts; the backend will then fail to connect and `/api/health/system` will return 503.
+- **Correct:** `DATABASE_URL=postgresql://trader:<password>@db:5432/atp`
+- **Wrong:** `DATABASE_URL=postgresql://trader:<password>@172.19.0.3:5432/atp`
+- Set this in `.env.aws` or whichever env file Compose loads for `backend-aws`. Do not commit real passwords; use placeholders in tracked example files.
+
+### Canary must bind to 127.0.0.1 if enabled
+
+- Phase F requires no public binds for 8002, 3000, or 8003. If `backend-aws-canary` is used, its port must be **127.0.0.1:8003:8002**, not `0.0.0.0:8003`.
+- In `docker-compose.yml`, canary ports must be: `"127.0.0.1:8003:8002"`.
+
+---
+
 ## LOCAL DRY RUN (EXPECTED FAIL)
 
 Script: `scripts/aws/final_ec2_hard_verification.sh`
@@ -48,6 +64,21 @@ echo "exit=$?"
 | exit code line | must be `exit=0` |
 
 Do not mark COMPLETE until these are pasted verbatim.
+
+### EC2 evidence template (paste block when Phase 6 passes)
+
+```text
+--- EC2 HARD VERIFICATION (PASS) ---
+UTC timestamp:     <output of date -u +"%Y-%m-%dT%H:%M:%SZ">
+hostname:          <output of hostname>
+egress IP:         <output of curl -s https://api.ipify.org>
+git short HEAD:    <output of git rev-parse --short HEAD>
+verifier output:
+<full output of bash scripts/aws/final_ec2_hard_verification.sh>
+exit=0
+PHASE 6 — EC2 VALIDATION COMPLETE
+--------------------------------
+```
 
 **Risk probe behaviour:** Spot probe does not block Phase 6 when equity is unavailable; the endpoint returns 200 with `allowed: true` and `note: equity_unavailable_spot_probe_allowed`. Margin probe remains strict: when equity metrics are missing and exchange fetch fails, it returns 400. User-balance parsing (total_cash_balance, total_available_balance, etc.) is used when available from the exchange.
 

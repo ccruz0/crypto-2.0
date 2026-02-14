@@ -112,37 +112,44 @@ def test_signal_monitor_health_running(mock_signal_monitor):
 
 
 def test_telegram_health_enabled(mock_telegram_notifier):
-    """Test telegram health returns PASS when enabled"""
-    mock_telegram_notifier.enabled = True
-    mock_telegram_notifier.chat_id = "123456789"
-    mock_telegram_notifier.bot_token = "token123"
-    
-    result = _check_telegram_health()
-    
+    """Test telegram health returns PASS when enabled (RUN_TELEGRAM=true and credentials set)"""
+    with patch.dict("os.environ", {"RUN_TELEGRAM": "true", "TELEGRAM_BOT_TOKEN_AWS": "token", "TELEGRAM_CHAT_ID_AWS": "123"}, clear=False):
+        with patch("app.core.runtime.is_aws_runtime", return_value=True):
+            with patch("app.services.telegram_notifier._get_telegram_kill_switch_status", return_value=True):
+                result = _check_telegram_health()
     assert result["status"] == "PASS"
     assert result["enabled"] is True
     assert result["chat_id_set"] is True
 
 
 def test_telegram_health_disabled(mock_telegram_notifier):
-    """Test telegram health returns FAIL when disabled"""
+    """Test telegram health returns FAIL when RUN_TELEGRAM=true but credentials missing"""
     mock_telegram_notifier.enabled = False
     mock_telegram_notifier.chat_id = None
     mock_telegram_notifier.bot_token = None
-    
-    result = _check_telegram_health()
-    
+    with patch.dict("os.environ", {"RUN_TELEGRAM": "true"}, clear=False):
+        result = _check_telegram_health()
     assert result["status"] == "FAIL"
+    assert result["enabled"] is False
+
+
+def test_telegram_health_intentionally_disabled(mock_telegram_notifier):
+    """Test telegram health returns PASS when RUN_TELEGRAM=false (intentionally disabled)"""
+    mock_telegram_notifier.enabled = False
+    with patch.dict("os.environ", {"RUN_TELEGRAM": "false"}, clear=False):
+        result = _check_telegram_health()
+    assert result["status"] == "PASS"
     assert result["enabled"] is False
 
 
 def test_trade_system_health_pass(mock_db):
     """Test trade system health returns PASS when within limits"""
-    with patch('app.services.system_health.count_total_open_positions', return_value=5):
-        result = _check_trade_system_health(mock_db)
-        
-        assert result["status"] == "PASS"
-        assert result["open_orders"] == 5
+    with patch("app.services.system_health.count_total_open_positions", return_value=5):
+        with patch("app.database.table_exists", return_value=True):
+            result = _check_trade_system_health(mock_db)
+    assert result["status"] == "PASS"
+    assert result["open_orders"] == 5
+    assert result["order_intents_table_exists"] is True
 
 
 def test_trade_system_health_warn(mock_db):
@@ -188,4 +195,52 @@ def test_system_alerts_throttle():
     # After 25 hours, should be allowed again
     _last_alert_times["TEST_ALERT"] = datetime.now(timezone.utc) - timedelta(hours=25)
     assert _should_send_alert("TEST_ALERT", throttle_hours=24) is True
+
+
+# --- get_system_health global_status transitions ---
+
+def test_get_system_health_db_down_returns_fail(mock_db):
+    """DB down => global_status FAIL, db_status down"""
+    mock_db.execute.side_effect = Exception("connection refused")
+    result = get_system_health(mock_db)
+    assert result["global_status"] == "FAIL"
+    assert result["db_status"] == "down"
+    assert result["trade_system"]["order_intents_table_exists"] is False
+
+
+def test_get_system_health_db_up_market_stale_returns_warn(mock_db):
+    """DB up + trade_system OK + market_data/updater stale => global_status WARN"""
+    mock_db.execute.return_value = None
+    market_ret = {"status": "FAIL", "fresh_symbols": 0, "stale_symbols": 2, "max_age_minutes": 60.0}
+    updater_ret = {"status": "FAIL", "is_running": False, "last_heartbeat_age_minutes": 60.0}
+    signal_ret = {"status": "PASS", "is_running": True, "last_cycle_age_minutes": 1.0}
+    telegram_ret = {"status": "PASS", "enabled": True}
+    trade_ret = {"status": "PASS", "open_orders": 0, "max_open_orders": 10, "order_intents_table_exists": True, "last_check_ok": True}
+    with patch("app.services.system_health._check_market_data_health", return_value=market_ret), \
+         patch("app.services.system_health._check_market_updater_health", return_value=updater_ret), \
+         patch("app.services.system_health._check_signal_monitor_health", return_value=signal_ret), \
+         patch("app.services.system_health._check_telegram_health", return_value=telegram_ret), \
+         patch("app.services.system_health._check_trade_system_health", return_value=trade_ret):
+        result = get_system_health(mock_db)
+    assert result["global_status"] == "WARN"
+    assert result["db_status"] == "up"
+
+
+def test_get_system_health_all_ok_returns_pass(mock_db):
+    """All components OK => global_status PASS"""
+    mock_db.execute.return_value = None
+    market_ret = {"status": "PASS", "fresh_symbols": 1, "stale_symbols": 0, "max_age_minutes": 5.0}
+    updater_ret = {"status": "PASS", "is_running": True, "last_heartbeat_age_minutes": 5.0}
+    signal_ret = {"status": "PASS", "is_running": True, "last_cycle_age_minutes": 1.0}
+    telegram_ret = {"status": "PASS", "enabled": True}
+    trade_ret = {"status": "PASS", "open_orders": 0, "max_open_orders": 10, "order_intents_table_exists": True, "last_check_ok": True}
+    with patch("app.services.system_health._check_market_data_health", return_value=market_ret), \
+         patch("app.services.system_health._check_market_updater_health", return_value=updater_ret), \
+         patch("app.services.system_health._check_signal_monitor_health", return_value=signal_ret), \
+         patch("app.services.system_health._check_telegram_health", return_value=telegram_ret), \
+         patch("app.services.system_health._check_trade_system_health", return_value=trade_ret):
+        result = get_system_health(mock_db)
+    assert result["global_status"] == "PASS"
+    assert result["db_status"] == "up"
+    assert result["trade_system"]["order_intents_table_exists"] is True
 
