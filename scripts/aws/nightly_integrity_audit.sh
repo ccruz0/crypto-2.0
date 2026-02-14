@@ -40,6 +40,9 @@ wait_for_backend_ready() {
     sleep "$sleep_s"
     i=$((i + 1))
   done
+  # Diagnostic: one verbose curl so logs show why (connection refused, timeout, etc.)
+  echo "Backend not ready after ${tries} tries; last curl attempt:" >&2
+  curl -v --max-time 5 http://127.0.0.1:8002/health 2>&1 || true
   return 1
 }
 
@@ -62,7 +65,10 @@ for i in "${!STEPS[@]}"; do
   step="${STEPS[$i]}"
   name="${STEP_NAMES[$i]}"
   if [[ "$name" == "health_guard" ]]; then
-    wait_for_backend_ready 18 5 || exit 1
+    if ! wait_for_backend_ready 18 5; then
+      echo "Audit FAIL: backend not ready within 90s (health_guard not run)" >&2
+      exit 1
+    fi
     if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 5 10; then
       ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
       "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
