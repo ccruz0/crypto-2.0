@@ -240,6 +240,8 @@ sudo journalctl -u nightly-integrity-audit.service -n 120 --no-pager
 
 **Evidence in this run:** Not captured (sudo not available in this environment). On EC2, record timer active and last service run result (PASS or exact FAIL).
 
+**Timer configuration:** Timer uses local server time (`OnCalendar=*-*-* 03:15:00`). No fixed timezone embedded; runs at 03:15 in the server’s local timezone on any host.
+
 ---
 
 ## PASS/FAIL checklist
