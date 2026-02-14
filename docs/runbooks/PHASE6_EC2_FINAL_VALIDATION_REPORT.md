@@ -21,37 +21,33 @@ No secrets. Expected to fail locally when Docker profile is not running or Crypt
 
 ---
 
-## EC2 HARD VERIFICATION (PASS)
+## EC2 HARD VERIFICATION — PENDING
 
-Run on EC2:
+Run on EC2 and paste outputs here (no secrets):
 
 ```bash
 cd /home/ubuntu/automated-trading-platform
-git pull
+date -u +"%Y-%m-%dT%H:%M:%SZ"
+hostname
+curl -s https://api.ipify.org; echo
+git rev-parse --short HEAD
 docker compose --profile aws up -d db backend-aws frontend-aws
 bash scripts/aws/ec2_quick_verify.sh
 echo "exit=$?"
 ```
 
-When exit=0: paste below (sanitized). Then append to bottom of this report exactly: `PHASE 6 — EC2 VALIDATION COMPLETE`.
+**Required evidence (paste verbatim from EC2 run):**
 
-**EC2 HARD VERIFICATION (PASS)** — evidence from run on EC2 (exit=0):
+| Field | Source |
+|-------|--------|
+| UTC timestamp | `date -u +"%Y-%m-%dT%H:%M:%SZ"` on EC2 |
+| hostname | `hostname` on EC2 |
+| egress IP | `curl -s https://api.ipify.org` on EC2 |
+| git short HEAD | `git rev-parse --short HEAD` on EC2 |
+| full ec2_quick_verify.sh output | exact lines printed by the script |
+| exit code line | must be `exit=0` |
 
-| Item | Value |
-|------|--------|
-| UTC timestamp | *(paste from Part A: date -u +"%Y-%m-%dT%H:%M:%SZ")* |
-| hostname | *(paste from Part A: hostname)* |
-| egress IP | *(paste from Part A: curl -s https://api.ipify.org)* |
-| git short HEAD | *(paste from Part A: git rev-parse --short HEAD)* |
-| exit code | 0 |
-
-**Script output (exact lines from ec2_quick_verify.sh, no secrets):**
-```
-(paste full ec2_quick_verify.sh output here)
-exit=0
-```
-
-No secrets.
+Do not mark COMPLETE until these are pasted verbatim.
 
 ---
 
@@ -346,6 +342,6 @@ If any one item fails: do not declare completion; fix root cause and re-run full
 
 ---
 
-**Completion:** After running the full verification on the EC2 host with the EC2 egress IP allowlisted and all items above passing, the script prints and exit=0:
+**Completion:** Not declared until EC2 hard verification evidence is pasted above.
 
-PHASE 6 — EC2 VALIDATION COMPLETE
+PHASE 6 — EC2 VALIDATION PENDING (awaiting hard verification evidence)
