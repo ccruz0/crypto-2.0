@@ -28,13 +28,13 @@ run_with_retries() {
   done
 }
 
-# Wait for backend to answer /api/health/system before burning health_guard retries
+# Wait for backend to answer (simple /health) before burning health_guard retries
 wait_for_backend_ready() {
   local tries="${1:-18}"   # 18 x 5s = 90s
   local sleep_s="${2:-5}"
   local i=1
   while [[ "$i" -le "$tries" ]]; do
-    if curl -fsS --max-time 2 http://127.0.0.1:8002/api/health/system >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 http://127.0.0.1:8002/health >/dev/null 2>&1; then
       return 0
     fi
     sleep "$sleep_s"
