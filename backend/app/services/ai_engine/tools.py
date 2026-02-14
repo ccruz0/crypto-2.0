@@ -178,6 +178,8 @@ def tail_logs(service: str, lines: int = 100) -> dict[str, Any]:
                     "service": service,
                     "output": (out.stdout or "") + (out.stderr or ""),
                     "returncode": out.returncode,
+                    "tail_logs_source": "docker_compose",
+                    "compose_dir_used": str(cwd.resolve()),
                 }
         return {"error": "docker-compose.yml not found"}
     except FileNotFoundError:

@@ -1,60 +1,74 @@
 #!/usr/bin/env bash
 # Option A EC2 audit: verify backend-aws compose wiring, docker in container, doctor:auth, report.
-# Safe: never prints tokens, secrets, or expanded compose config. No docker compose config.
+# Safe: never prints tokens, secrets, env values, or expanded compose config.
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="/home/ubuntu/automated-trading-platform"
 cd "$REPO_ROOT"
+
+# Wait for backend readiness (retry GET /health until 200)
+wait_for_health() {
+  local url="http://127.0.0.1:8002/api/health"
+  local max=30
+  local i=1
+  while [ "$i" -le "$max" ]; do
+    if code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null); then
+      if [ "$code" = "200" ]; then
+        return 0
+      fi
+    fi
+    sleep 2
+    i=$((i + 1))
+  done
+  return 1
+}
+
+echo "========== Waiting for /health 200 (up to 60s) =========="
+if ! wait_for_health; then
+  echo "WARN: /health did not return 200; continuing anyway"
+fi
 
 echo ""
 echo "========== A) BASELINE (host) =========="
 git branch --show-current
-git log -1 --oneline
-docker compose --profile aws ps 2>/dev/null || true
+git log -3 --oneline
+docker compose --profile aws ps
 
 echo ""
-echo "========== B) COMPOSE WIRING (host) — safe grep only =========="
-# Read docker-compose.yml only; never run docker compose config (expands secrets).
-COMPOSE_YML="$REPO_ROOT/docker-compose.yml"
-check() { if grep -q "$1" "$COMPOSE_YML" 2>/dev/null; then echo "OK: $2"; else echo "MISSING: $2"; fi; }
-check '/var/run/docker.sock' 'docker.sock volume'
-check '/app/docker-compose.yml' 'compose file mount'
-check '/app/backend/ai_runs' 'ai_runs mount'
-check 'AI_ENGINE_COMPOSE_DIR' 'AI_ENGINE_COMPOSE_DIR'
-check 'AI_RUNS_DIR' 'AI_RUNS_DIR'
-check 'working_dir: /app/backend' 'working_dir /app/backend'
-
-echo ""
-echo "========== WAIT FOR BACKEND READY (/health 200) =========="
-for i in $(seq 1 100); do
-  code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:8002/health 2>/dev/null || echo "000")
-  if [ "$code" = "200" ]; then echo "OK: /health 200"; break; fi
-  if [ "$i" -eq 100 ]; then echo "FAIL: /health did not return 200 after 100 tries"; exit 1; fi
-  sleep 2
-done
+echo "========== B) COMPOSE WIRING (host) — safe checks only =========="
+# Read docker-compose.yml directly; never run "docker compose config" (expands secrets).
+grep -q '/var/run/docker.sock' docker-compose.yml && echo "OK: docker.sock volume" || echo "MISSING: docker.sock volume"
+grep -q '/app/docker-compose.yml' docker-compose.yml && echo "OK: compose file mount" || echo "MISSING: compose file mount"
+grep -q '/app/backend/ai_runs' docker-compose.yml && echo "OK: ai_runs mount" || echo "MISSING: ai_runs mount"
+grep -q 'AI_ENGINE_COMPOSE_DIR' docker-compose.yml && echo "OK: AI_ENGINE_COMPOSE_DIR" || echo "MISSING: AI_ENGINE_COMPOSE_DIR"
+grep -q 'AI_RUNS_DIR' docker-compose.yml && echo "OK: AI_RUNS_DIR" || echo "MISSING: AI_RUNS_DIR"
+grep -q 'working_dir:.*/app/backend' docker-compose.yml && echo "OK: working_dir /app/backend" || echo "MISSING: working_dir /app/backend"
 
 echo ""
 echo "========== C) DOCKER INSIDE CONTAINER (backend-aws) =========="
 docker compose --profile aws exec -T backend-aws bash -lc '
 set -e
-echo "sock:"; test -S /var/run/docker.sock && echo OK || echo MISSING
-echo "compose_file:"; test -f /app/docker-compose.yml && echo OK || echo MISSING
-echo "ai_runs_dir:"; test -d /app/backend/ai_runs && echo OK || echo MISSING
-echo "docker_cli:"; command -v docker >/dev/null && echo OK || echo MISSING
-echo "docker_compose_v2:"; docker compose version >/dev/null 2>&1 && echo OK || echo MISSING
-echo "compose_ps_from_/app:"; (cd /app && docker compose --profile aws ps >/dev/null 2>&1) && echo OK || echo FAIL
-# Do not echo AI_ENGINE_COMPOSE_DIR or AI_RUNS_DIR values (safety).
-' 2>/dev/null || true
+whoami
+pwd
+test -S /var/run/docker.sock && echo "docker.sock: OK" || echo "docker.sock: MISSING"
+test -f /app/docker-compose.yml && echo "compose file: OK" || echo "compose file: MISSING"
+# Do not echo env values
+test -n "${AI_ENGINE_COMPOSE_DIR:-}" && echo "AI_ENGINE_COMPOSE_DIR: set" || echo "AI_ENGINE_COMPOSE_DIR: unset"
+test -n "${AI_RUNS_DIR:-}" && echo "AI_RUNS_DIR: set" || echo "AI_RUNS_DIR: unset"
+docker version --format "{{.Client.Version}}" 2>/dev/null | head -1 || echo "docker: not found"
+docker compose version 2>/dev/null && echo "docker compose: OK" || echo "docker compose: FAIL"
+cd /app && docker compose --profile aws ps >/dev/null 2>&1 && echo "compose ps from /app: OK" || echo "compose ps from /app: FAIL"
+' || true
 
 echo ""
 echo "========== D) ROUTE CHECK (host) =========="
 for _ in 1 2 3; do
-  code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:8002/api/ai/run 2>/dev/null || echo "000")
-  [ -n "$code" ] && break; sleep 1
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 http://127.0.0.1:8002/api/ai/run 2>/dev/null) && break
+  sleep 1
 done
-echo "GET /api/ai/run status: $code"
+echo "GET /api/ai/run status: ${code:-unknown}"
 for _ in 1 2 3; do
-  curl -sS --connect-timeout 5 -o /tmp/openapi.json http://127.0.0.1:8002/openapi.json 2>/dev/null && break
+  curl -sS -o /tmp/openapi.json --connect-timeout 5 http://127.0.0.1:8002/openapi.json 2>/dev/null && break
   sleep 1
 done
 python3 -c "
@@ -64,7 +78,7 @@ try:
     paths = d.get('paths') or {}
     print('has_/api/ai/run:', '/api/ai/run' in paths)
 except Exception as e:
-    print('parse error:', e)
+    print('openapi parse error:', type(e).__name__)
 " 2>/dev/null || true
 
 echo ""
@@ -76,6 +90,7 @@ for _ in 1 2 3; do
     -o /tmp/doctor_auth.json 2>/dev/null && break
   sleep 2
 done
+
 RUN_DIR=$(python3 -c "
 import json
 try:
@@ -85,59 +100,35 @@ try:
 except Exception:
     print('')
 " 2>/dev/null) || RUN_DIR=""
-echo "run_dir: $RUN_DIR"
-
-echo "Host backend/ai_runs exists:"; test -d backend/ai_runs && echo YES || echo NO
+echo "run_dir: ${RUN_DIR:-<empty>}"
 
 if [ -n "$RUN_DIR" ]; then
-  docker compose --profile aws exec -T backend-aws python3 -c "
-import json, sys, re
+  echo "report.json fields (safe only):"
+  docker compose --profile aws exec -T backend-aws cat "/app/$RUN_DIR/report.json" 2>/dev/null | python3 -c "
+import json, sys
 try:
-    # run_dir may be backend/ai_runs/<id> or similar
-    run_dir = '''$RUN_DIR'''.strip()
-    base = '/app'
-    report_path = run_dir if run_dir.startswith('/') else base + '/' + run_dir
-    if not report_path.endswith('report.json'):
-        report_path = report_path.rstrip('/') + '/report.json'
-    with open(report_path) as f:
-        r = json.load(f)
-    # Support both top-level and findings.logs_excerpt
-    ex = r.get('logs_excerpt') or r.get('findings', {}).get('logs_excerpt', '')
-    print('tail_logs_source:', r.get('tail_logs_source'))
-    print('compose_dir_used:', r.get('compose_dir_used'))
+    r = json.load(sys.stdin)
+    findings = r.get('findings') or {}
+    ex = findings.get('logs_excerpt') or r.get('logs_excerpt') or ''
+    print('tail_logs_source:', r.get('tail_logs_source', 'N/A'))
+    print('compose_dir_used:', r.get('compose_dir_used', 'N/A'))
     print('logs_excerpt length:', len(ex))
-    # Only print first 20 lines if they look like normal gunicorn/uvicorn lines (no tokens)
-    lines = ex.splitlines()[:20]
-    safe = True
-    for L in lines:
-        if re.search(r'(token|secret|key|password|bearer|authorization)\s*[:=]', L, re.I):
-            safe = False
-            break
-    if safe and lines:
-        for L in lines:
-            print(L)
-    else:
-        print('logs_excerpt present (redacted)')
+    # Do not print raw excerpt (may contain sensitive lines)
 except Exception as e:
-    print('report read error:', e)
+    print('parse error:', type(e).__name__)
     sys.exit(1)
-" 2>/dev/null || echo "Could not read report"
+" 2>/dev/null || true
 fi
 
 echo ""
 echo "========== F) PASS/FAIL =========="
 if [ -n "$RUN_DIR" ]; then
-  docker compose --profile aws exec -T backend-aws python3 -c "
+  docker compose --profile aws exec -T backend-aws cat "/app/$RUN_DIR/report.json" 2>/dev/null | python3 -c "
 import json, sys
 try:
-    run_dir = '''$RUN_DIR'''.strip()
-    base = '/app'
-    report_path = run_dir if run_dir.startswith('/') else base + '/' + run_dir
-    if not report_path.endswith('report.json'):
-        report_path = report_path.rstrip('/') + '/report.json'
-    with open(report_path) as f:
-        r = json.load(f)
-    ex = r.get('logs_excerpt') or r.get('findings', {}).get('logs_excerpt', '')
+    r = json.load(sys.stdin)
+    findings = r.get('findings') or {}
+    ex = findings.get('logs_excerpt') or r.get('logs_excerpt') or ''
     src = r.get('tail_logs_source')
     comp = r.get('compose_dir_used')
     c1 = src == 'docker_compose'
@@ -148,14 +139,14 @@ try:
         print('PASS (all 4 checks)')
     else:
         print('FAIL')
-        if not c1: print('  - tail_logs_source != docker_compose (got: %s)' % repr(src))
-        if not c2: print('  - compose_dir_used != /app (got: %s)' % repr(comp))
+        if not c1: print('  - tail_logs_source != docker_compose (got:', repr(src), ')')
+        if not c2: print('  - compose_dir_used != /app (got:', repr(comp), ')')
         if not c3: print('  - logs_excerpt contains docker-compose.yml not found')
         if not c4: print('  - logs_excerpt length <= 200 (got %s)' % len(ex))
 except Exception as e:
-    print('FAIL (could not read report:', e, ')')
+    print('FAIL (could not read report:', type(e).__name__, ')')
     sys.exit(1)
-" 2>/dev/null || echo "FAIL (no report or read error)"
+" || echo "FAIL (no report or read error)"
 else
   echo "FAIL (RUN_DIR empty)"
 fi

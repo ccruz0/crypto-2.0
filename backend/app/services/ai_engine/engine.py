@@ -132,9 +132,21 @@ def _write_auth_doctor_report(run_dir: str, tool_entries: list[dict[str, Any]]) 
             elif isinstance(res, dict) and "error" in res:
                 logs_excerpt = str(res.get("error", ""))[:_MAX_LOGS_EXCERPT_CHARS]
 
+    tail_logs_source = None
+    compose_dir_used = None
+    for entry in tool_entries:
+        if entry.get("tool") == "tail_logs":
+            res = entry.get("result")
+            if isinstance(res, dict):
+                tail_logs_source = res.get("tail_logs_source")
+                compose_dir_used = res.get("compose_dir_used")
+            break
+
     report = {
         "doctor": "auth",
         "generated_at_utc": generated_at_utc,
+        "tail_logs_source": tail_logs_source,
+        "compose_dir_used": compose_dir_used,
         "findings": {
             "queries": queries_findings,
             "logs_excerpt": logs_excerpt,
