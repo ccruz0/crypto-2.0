@@ -51,7 +51,7 @@ trap 'rm -f "$C1_JSON" "$C2_JSON" "$D1_JSON"' EXIT
 # Spot probe: tiny trade value so it stays under 10% equity cap when exchange returns equity
 C1_CODE="$(curl -s --connect-timeout 3 --max-time 15 --retry 0 -o "$C1_JSON" -w "%{http_code}" -X POST http://127.0.0.1:8002/api/risk/probe \
   -H "Content-Type: application/json" \
-  -d '{"symbol":"BTC_USDT","side":"BUY","price":1,"quantity":0.0001,"is_margin":false,"trade_on_margin_from_watchlist":false}')"
+  -d '{"symbol":"BTC_USDT","side":"BUY","price":1,"quantity":0.0001,"is_margin":false,"trade_on_margin_from_watchlist":false}')" || C1_CODE="000"
 if [[ "$C1_CODE" != "200" ]]; then
   block "PHASE C.1: Risk probe spot returned HTTP $C1_CODE (expected 200)"
 fi
@@ -62,7 +62,7 @@ fi
 
 C2_CODE="$(curl -s --connect-timeout 3 --max-time 15 --retry 0 -o "$C2_JSON" -w "%{http_code}" -X POST http://127.0.0.1:8002/api/risk/probe \
   -H "Content-Type: application/json" \
-  -d '{"symbol":"BTC_USDT","side":"BUY","price":50000,"quantity":0.01,"is_margin":true,"leverage":10,"trade_on_margin_from_watchlist":true}')"
+  -d '{"symbol":"BTC_USDT","side":"BUY","price":50000,"quantity":0.01,"is_margin":true,"leverage":10,"trade_on_margin_from_watchlist":true}')" || C2_CODE="000"
 if [[ "$C2_CODE" != "400" ]]; then
   block "PHASE C.2: Risk probe margin over-cap returned HTTP $C2_CODE (expected 400)"
 fi
