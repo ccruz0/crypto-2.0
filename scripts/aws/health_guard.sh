@@ -15,6 +15,8 @@ if command -v docker >/dev/null 2>&1 && docker compose --profile aws ps backend-
     fi
     sleep 2
   done
+  echo "FAIL (curl /health failed after 5 attempts)" >&2
+  curl -s -o /dev/null -w "last_curl_http=%{http_code}\n" --connect-timeout 2 --max-time 2 "http://127.0.0.1:8002/health" 2>&1 || true
   echo "FAIL"
   exit 1
 fi

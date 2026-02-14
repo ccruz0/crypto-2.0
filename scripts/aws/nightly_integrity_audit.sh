@@ -38,10 +38,17 @@ run_with_retries() {
   local name="$2"
   local retries="${3:-3}"
   local delay="${4:-5}"
+  local show_stderr="${5:-}"
   local i=1
   while true; do
-    if "${cmd}" >/dev/null 2>&1; then
-      return 0
+    if [[ "$show_stderr" == "show_stderr" ]]; then
+      if "${cmd}" >/dev/null; then
+        return 0
+      fi
+    else
+      if "${cmd}" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
     if [[ $i -ge $retries ]]; then
       return 1
@@ -99,7 +106,7 @@ for i in "${!STEPS[@]}"; do
       echo "Audit FAIL: backend not ready within 90s (health_guard not run)" >&2
       exit 1
     fi
-    if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 5 10; then
+    if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 5 10 "show_stderr"; then
       ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
       "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
       echo "FAIL"
