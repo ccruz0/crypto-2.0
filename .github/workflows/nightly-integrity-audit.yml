@@ -1,0 +1,28 @@
+# Lightweight integrity checks that can run on GitHub-hosted runners.
+# Full nightly audit (including reconcile_order_intents and portfolio_consistency_check)
+# runs on EC2 via systemd timer. See docs/runbooks/EC2_NIGHTLY_INTEGRITY_AUDIT.md.
+name: Nightly Integrity Audit (CI-only)
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity-audit-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify no public ports
+        run: bash scripts/aws/verify_no_public_ports.sh
+
+      - name: Health guard
+        run: bash scripts/aws/health_guard.sh
+
+      - name: Stability check
+        run: bash scripts/aws/stability_check.sh
