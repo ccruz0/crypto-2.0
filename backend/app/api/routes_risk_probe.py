@@ -2,6 +2,7 @@
 Dry-run risk guard probe: POST /api/risk/probe
 Calls risk_guard.check_trade_allowed only. Does NOT place orders or sign requests.
 No secrets in request/response or logs.
+Spot probe may return 200 when equity unavailable (Phase 6); margin remains strict.
 """
 import logging
 from fastapi import APIRouter, HTTPException, Body
@@ -14,12 +15,17 @@ logger = logging.getLogger(__name__)
 def _get_equity_from_exchange() -> tuple[float, float, float]:
     """
     Attempt to get account_equity, total_margin_exposure, daily_loss_pct from exchange.
+    Prefers Crypto.com private/user-balance parsing (total_cash_balance, etc.).
     Returns (account_equity, total_margin_exposure, daily_loss_pct).
     Never logs or returns secrets. On failure raises ValueError.
     """
     try:
         from app.services.brokers.crypto_com_trade import CryptoComTradeClient
         client = CryptoComTradeClient()
+        try:
+            return client.get_equity_from_user_balance()
+        except ValueError:
+            pass
         summary = client.get_account_summary()
         if not summary or isinstance(summary.get("skipped"), dict):
             raise ValueError("Exchange summary unavailable")
@@ -43,8 +49,9 @@ def _get_equity_from_exchange() -> tuple[float, float, float]:
 def risk_probe(body: dict = Body(...)):
     """
     Dry-run risk guard probe. Runs check_trade_allowed only; does NOT place orders or sign.
-    Optionally pass account_equity, total_margin_exposure, daily_loss_pct when exchange is unavailable.
-    Returns 200 { "allowed": true } or 400 { "allowed": false, "reason": "...", "reason_code": "RISK_GUARD_BLOCKED" }.
+    Spot (is_margin=false): returns 200 allowed=true when equity unavailable (note in body).
+    Margin (is_margin=true): requires equity metrics or exchange fetch; blocks with 400 if unavailable.
+    Returns 200 { "allowed": true } or 400 { "allowed": false, "reason_code": "RISK_GUARD_BLOCKED" }.
     """
     try:
         symbol = str(body.get("symbol", "")).strip() or "UNKNOWN"
@@ -85,6 +92,14 @@ def risk_probe(body: dict = Body(...)):
                 if daily_loss_pct is None:
                     daily_loss_pct = daily
             except ValueError:
+                if not is_margin:
+                    return JSONResponse(
+                        status_code=200,
+                        content={
+                            "allowed": True,
+                            "note": "equity_unavailable_spot_probe_allowed",
+                        },
+                    )
                 return JSONResponse(
                     status_code=400,
                     content={

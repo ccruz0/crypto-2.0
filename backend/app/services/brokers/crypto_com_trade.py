@@ -1456,6 +1456,72 @@ class CryptoComTradeClient:
             logger.error(f"Error getting account balance: {e}")
             # NO SIMULATED DATA - Re-raise error
             raise
+
+    def get_equity_from_user_balance(self) -> Tuple[float, float, float]:
+        """
+        Call private/user-balance and parse equity-like and exposure fields.
+        Returns (account_equity, total_margin_exposure, daily_loss_pct).
+        Raises ValueError if response unusable. No secrets logged.
+        """
+        skip = require_aws_or_skip("get_equity_from_user_balance")
+        if skip:
+            raise ValueError("Exchange unavailable (AWS/skip)")
+        if not self.api_key or not self.api_secret:
+            raise ValueError("API credentials not configured")
+        method = "private/user-balance"
+        params = {}
+        payload = self.sign_request(method, params)
+        if isinstance(payload, dict) and payload.get("skipped"):
+            raise ValueError("Exchange skipped")
+        url = f"{self.base_url}/{method}"
+        try:
+            from app.utils.egress_guard import validate_outbound_url, EgressGuardError
+            validated_url, _ = validate_outbound_url(
+                url, calling_module="crypto_com_trade.get_equity_from_user_balance"
+            )
+            url = validated_url
+        except EgressGuardError as e:
+            raise ValueError("Outbound blocked") from e
+        response = http_post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+            calling_module="crypto_com_trade.get_equity_from_user_balance",
+        )
+        if response.status_code == 401:
+            raise ValueError("Exchange auth failed")
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict) or result.get("code") not in (0, None):
+            raise ValueError("Exchange response invalid")
+        res = result.get("result")
+        if not isinstance(res, dict):
+            raise ValueError("Exchange result missing")
+        data = res.get("data")
+        obj: Dict[str, Any] = {}
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            obj = data[0]
+        elif isinstance(data, dict):
+            obj = data
+        if not obj:
+            obj = res
+        def _float(key: str, default: float = 0.0) -> float:
+            v = obj.get(key)
+            if v is None:
+                return default
+            try:
+                return float(v) if isinstance(v, str) else float(v)
+            except (ValueError, TypeError):
+                return default
+        equity = _float("total_cash_balance") or _float("total_available_balance") or _float("total_margin_balance")
+        if equity <= 0:
+            equity = _float("margin_equity") or _float("account_equity") or _float("equity") or _float("total_equity")
+        if equity <= 0:
+            raise ValueError("Account equity not available from user-balance")
+        exposure = _float("total_position_cost") or _float("total_initial_margin")
+        daily_pct = _float("daily_loss_pct")
+        return (equity, exposure, daily_pct)
     
     def _verify_order_exists(self, order_id: str, max_retries: int = 2, order_type: Optional[str] = None) -> bool:
         """

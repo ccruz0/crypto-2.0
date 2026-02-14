@@ -1,6 +1,6 @@
 """
 Tests for POST /api/risk/probe. No real API calls; mock risk_guard / exchange.
-Route exists (not 404); spot returns 200 allowed=true when valid; margin over-cap returns 400 RISK_GUARD_BLOCKED.
+Route exists (not 404); spot returns 200 allowed=true when valid or when equity unavailable; margin over-cap returns 400 RISK_GUARD_BLOCKED.
 """
 import pytest
 from unittest.mock import patch
@@ -24,6 +24,16 @@ PROBE_BODY = {
     "account_equity": 10_000.0,
     "total_margin_exposure": 0.0,
     "daily_loss_pct": 0.0,
+}
+
+# Spot with NO equity params (verifier sends this)
+SPOT_NO_METRICS = {
+    "symbol": "BTC_USDT",
+    "side": "BUY",
+    "price": 50000,
+    "quantity": 0.01,
+    "is_margin": False,
+    "trade_on_margin_from_watchlist": False,
 }
 
 
@@ -53,6 +63,34 @@ def test_risk_probe_spot_ok_when_metrics_provided():
     r = client.post("/api/risk/probe", json=PROBE_BODY)
     assert r.status_code == 200
     assert r.json().get("allowed") is True
+
+
+def test_risk_probe_spot_no_metrics_returns_200_when_exchange_unavailable():
+    """Spot with NO metrics: when _get_equity_from_exchange fails, return 200 allowed=true (Phase 6)."""
+    with patch("app.api.routes_risk_probe._get_equity_from_exchange") as mock_fetch:
+        mock_fetch.side_effect = ValueError("exchange unavailable")
+        r = client.post("/api/risk/probe", json=SPOT_NO_METRICS)
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("allowed") is True
+    assert data.get("note") == "equity_unavailable_spot_probe_allowed"
+
+
+def test_risk_probe_margin_no_metrics_returns_400_when_exchange_unavailable():
+    """Margin with NO metrics: when _get_equity_from_exchange fails, return 400 (strict)."""
+    body = {
+        **SPOT_NO_METRICS,
+        "is_margin": True,
+        "leverage": 5.0,
+        "trade_on_margin_from_watchlist": True,
+    }
+    with patch("app.api.routes_risk_probe._get_equity_from_exchange") as mock_fetch:
+        mock_fetch.side_effect = ValueError("exchange unavailable")
+        r = client.post("/api/risk/probe", json=body)
+    assert r.status_code == 400
+    data = r.json()
+    assert data.get("allowed") is False
+    assert data.get("reason_code") == "RISK_GUARD_BLOCKED"
 
 
 def test_probe_trade_on_margin_from_watchlist_false_forces_spot_returns_200():

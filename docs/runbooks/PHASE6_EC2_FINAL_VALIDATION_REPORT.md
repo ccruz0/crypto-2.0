@@ -49,6 +49,8 @@ echo "exit=$?"
 
 Do not mark COMPLETE until these are pasted verbatim.
 
+**Risk probe behaviour:** Spot probe does not block Phase 6 when equity is unavailable; the endpoint returns 200 with `allowed: true` and `note: equity_unavailable_spot_probe_allowed`. Margin probe remains strict: when equity metrics are missing and exchange fetch fails, it returns 400. User-balance parsing (total_cash_balance, total_available_balance, etc.) is used when available from the exchange.
+
 ---
 
 **To close Phase 6 on EC2:** SSH into the instance, ensure the EC2 egress IP is allowlisted in the Crypto.com API key, then run:
