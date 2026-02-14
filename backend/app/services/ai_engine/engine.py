@@ -83,17 +83,31 @@ def _write_sltp_doctor_report(run_dir: str, tool_entries: list[dict[str, Any]]) 
             elif isinstance(res, dict) and "error" in res:
                 logs_excerpt = str(res.get("error", ""))[:_MAX_LOGS_EXCERPT_CHARS]
 
-    payload_numeric_validation = "FAIL" if "payload_numeric_validation FAIL" in (logs_excerpt or "") else "PASS"
-    scientific_notation_detected = bool(re.search(r"\d+[eE][+-]?\d+", logs_excerpt or ""))
+    logs_excerpt = logs_excerpt or ""
+
+    payload_numeric_validation = "FAIL" if "payload_numeric_validation FAIL" in logs_excerpt else "PASS"
+    scientific_notation_detected = bool(re.search(r"\d+[eE][+-]?\d+", logs_excerpt))
     # Real env mismatch: excerpt contains both sandbox/uat and prod (api.crypto.com) hints
-    _ex = (logs_excerpt or "").lower()
+    _ex = logs_excerpt.lower()
     _has_sandbox_uat = "uat" in _ex or "sandbox" in _ex
     _has_prod = "api.crypto.com" in _ex
     environment_mismatch_detected = bool(_has_sandbox_uat and _has_prod)
 
+    tail_logs_source = "unknown"
+    compose_dir_used = "/app"
+    for entry in tool_entries:
+        if entry.get("tool") == "tail_logs":
+            tail_logs_result = entry.get("result")
+            if isinstance(tail_logs_result, dict):
+                tail_logs_source = tail_logs_result.get("tail_logs_source") or "unknown"
+                compose_dir_used = tail_logs_result.get("compose_dir_used") or "/app"
+            break
+
     report = {
         "doctor": "sltp",
         "generated_at_utc": generated_at_utc,
+        "tail_logs_source": tail_logs_source,
+        "compose_dir_used": compose_dir_used,
         "payload_numeric_validation": payload_numeric_validation,
         "scientific_notation_detected": scientific_notation_detected,
         "environment_mismatch_detected": environment_mismatch_detected,

@@ -64,3 +64,32 @@ def test_doctor_report_file_environment_mismatch(tmp_path):
     with open(path) as f:
         report = json.load(f)
     assert report["environment_mismatch_detected"] is True
+
+
+def _generate_fake_sltp_report_without_tail_logs(tmp_path):
+    """Call _write_sltp_doctor_report with no tail_logs tool entry (simulates tail_logs failure / missing)."""
+    try:
+        from app.services.ai_engine.engine import _write_sltp_doctor_report
+    except Exception:
+        pytest.skip("engine module not importable")
+    tool_entries = [
+        {"tool": "search_repo", "args": {"query": "stop loss"}, "result": []},
+    ]
+    path = _write_sltp_doctor_report(str(tmp_path), tool_entries)
+    with open(path) as f:
+        return json.load(f)
+
+
+def test_sltp_report_always_contains_compose_fields(tmp_path):
+    """Report always has tail_logs_source and compose_dir_used (fallback to unknown and /app when tail_logs fails)."""
+    try:
+        from app.services.ai_engine.engine import _write_sltp_doctor_report
+    except Exception:
+        pytest.skip("engine module not importable")
+    report = _generate_fake_sltp_report_without_tail_logs(tmp_path)
+    assert "tail_logs_source" in report
+    assert "compose_dir_used" in report
+    assert report["tail_logs_source"] is not None
+    assert report["compose_dir_used"] is not None
+    assert report["tail_logs_source"] == "unknown"
+    assert report["compose_dir_used"] == "/app"
