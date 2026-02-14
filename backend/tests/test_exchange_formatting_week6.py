@@ -10,6 +10,7 @@ from app.core.exchange_formatting_week6 import (
     quantize_qty,
     validate_price_tick,
     validate_qty_step,
+    validate_sltp_payload_numeric,
     format_trigger_condition,
     classify_exchange_error_code,
     operator_action_for_api_disabled,
@@ -112,3 +113,16 @@ def test_operator_action_for_api_disabled():
     msg = operator_action_for_api_disabled()
     assert "API" in msg or "conditional" in msg or "permissions" in msg
     assert "CRYPTOCOM" in msg or "docs" in msg
+
+
+def test_validate_sltp_payload_numeric_rejects_none():
+    """T2: validate_sltp_payload_numeric rejects None for numeric fields; ok=False and error mentions missing/invalid."""
+    params = {
+        "price": None,
+        "quantity": "0.01",
+        "trigger_price": "50000",
+        "ref_price": "50000",
+    }
+    ok, errors = validate_sltp_payload_numeric(params)
+    assert ok is False
+    assert any("price" in e and ("missing" in e or "invalid" in e) for e in errors)

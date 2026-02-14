@@ -213,3 +213,71 @@ def test_tp_140001_fallback_also_140001_returns_structured_error(mock_inst_meta,
     assert result.get("error_code") == 140001
     assert result.get("fallback_attempted") is True
     assert "fallback_error" in result
+
+
+def _mock_http_post_200_body_140001_then_list_success(url, *args, **kwargs):
+    """create-order returns HTTP 200 with body code 140001; create-order-list returns success (R1 path)."""
+    if "create-order-list" in (url or ""):
+        r = MagicMock()
+        r.ok = True
+        r.status_code = 200
+        r.json.return_value = {"result": [{"order_id": "r1-fallback-oid", "code": 0}]}
+        return r
+    r = MagicMock()
+    r.ok = True
+    r.status_code = 200
+    r.json.return_value = {"code": 140001, "message": "API_DISABLED", "result": None}
+    return r
+
+
+def _mock_http_post_200_body_140001_then_list_fail(url, *args, **kwargs):
+    """create-order returns HTTP 200 with body code 140001; create-order-list returns 140001 (fallback fails)."""
+    if "create-order-list" in (url or ""):
+        r = MagicMock()
+        r.ok = True
+        r.status_code = 200
+        r.json.return_value = {"result": [{"code": 140001, "message": "API_DISABLED"}]}
+        return r
+    r = MagicMock()
+    r.ok = True
+    r.status_code = 200
+    r.json.return_value = {"code": 140001, "message": "API_DISABLED", "result": None}
+    return r
+
+
+def test_sl_200_body_140001_triggers_fallback_success():
+    """T1: HTTP 200 with JSON body code 140001 triggers fallback; fallback succeeds -> order_id, error None."""
+    with patch.dict("os.environ", {"EXECUTION_CONTEXT": "AWS", "LIVE_TRADING": "true"}, clear=False):
+        with patch("app.services.brokers.crypto_com_trade.http_post", side_effect=_mock_http_post_200_body_140001_then_list_success) as mock_http:
+            with patch("app.services.brokers.crypto_com_trade.CryptoComTradeClient._get_instrument_metadata", return_value=_FAKE_INST_META):
+                from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+                client = CryptoComTradeClient()
+                client.live_trading = True
+                client.use_proxy = False
+                client.base_url = "https://api.crypto.com/exchange/v1"
+                with patch.object(client, "_refresh_runtime_flags"), patch.object(client, "sign_request", return_value={"id": 1, "params": {}}):
+                    result = client.place_stop_loss_order("BTC_USDT", "SELL", 50000.0, 0.001, 49000.0, dry_run=False, source="test")
+    assert result.get("order_id") == "r1-fallback-oid"
+    assert result.get("error") is None
+    assert result != {}
+    create_list_calls = [c for c in mock_http.call_args_list if c[0] and "create-order-list" in (c[0][0] or "")]
+    assert len(create_list_calls) == 1
+
+
+def test_sl_200_body_140001_triggers_fallback_fails_structured_error():
+    """T1: HTTP 200 with JSON body code 140001 triggers fallback; fallback fails -> structured error, fallback_attempted=True."""
+    with patch.dict("os.environ", {"EXECUTION_CONTEXT": "AWS", "LIVE_TRADING": "true"}, clear=False):
+        with patch("app.services.brokers.crypto_com_trade.http_post", side_effect=_mock_http_post_200_body_140001_then_list_fail) as mock_http:
+            with patch("app.services.brokers.crypto_com_trade.CryptoComTradeClient._get_instrument_metadata", return_value=_FAKE_INST_META):
+                from app.services.brokers.crypto_com_trade import CryptoComTradeClient
+                client = CryptoComTradeClient()
+                client.live_trading = True
+                client.use_proxy = False
+                client.base_url = "https://api.crypto.com/exchange/v1"
+                with patch.object(client, "_refresh_runtime_flags"), patch.object(client, "sign_request", return_value={"id": 1, "params": {}}):
+                    result = client.place_stop_loss_order("BTC_USDT", "SELL", 50000.0, 0.001, 49000.0, dry_run=False, source="test")
+    assert result.get("category") == "permissions_or_account_configuration"
+    assert result.get("fallback_attempted") is True
+    assert "fallback_error" in result
+    create_list_calls = [c for c in mock_http.call_args_list if c[0] and "create-order-list" in (c[0][0] or "")]
+    assert len(create_list_calls) == 1

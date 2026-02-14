@@ -5065,6 +5065,25 @@ class CryptoComTradeClient:
                             logger.error(f"TRADE_BOT fallback failed for SL order: {fallback_err}", exc_info=True)
                     return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
                 
+                # HTTP 200 but body code 140001: treat like non-200 140001 (fallback, then structured error if needed)
+                if isinstance(result, dict) and (result.get("code") == 140001 or result.get("code") == "140001"):
+                    error_msg = result.get("message", "API_DISABLED")
+                    ctx = _classify_140001_context(self.base_url)
+                    logger.warning(
+                        "SLTP_140001 instrument_name=%s order_type=STOP_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001",
+                        symbol, ctx["api_env_hint"], ctx["base_url"],
+                    )
+                    try:
+                        self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg))
+                    except Exception:
+                        pass
+                    ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
+                    if ok_list and order_id_list:
+                        logger.info("STOP_LIMIT placed via create-order-list after 140001 from create-order (200 body)")
+                        return {"order_id": order_id_list, "error": None}
+                    fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
+                    return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
+                
                 logger.info(f"✅ Successfully placed stop loss order with variation {variation_idx}: {variation_name}")
                 logger.debug(f"Response: {result}")
                 
@@ -5617,6 +5636,25 @@ class CryptoComTradeClient:
                                         exc_info=True,
                                     )
                             return {"error": f"Authentication failed: {error_msg} (code: {error_code})"}
+                        
+                        # HTTP 200 but body code 140001: treat like non-200 140001 (fallback, then structured error if needed)
+                        if isinstance(result, dict) and (result.get("code") == 140001 or result.get("code") == "140001"):
+                            error_msg = result.get("message", "API_DISABLED")
+                            ctx = _classify_140001_context(self.base_url)
+                            logger.warning(
+                                "SLTP_140001 instrument_name=%s order_type=TAKE_PROFIT_LIMIT endpoint=private/create-order api_env_hint=%s base_host=%s note=HTTP 200 with code 140001",
+                                symbol, ctx["api_env_hint"], ctx["base_url"],
+                            )
+                            try:
+                                self._send_conditional_orders_api_disabled_alert(code=140001, message=str(error_msg))
+                            except Exception:
+                                pass
+                            ok_list, order_id_list, raw_list = self._try_create_order_list_with_params(params)
+                            if ok_list and order_id_list:
+                                logger.info("TAKE_PROFIT_LIMIT placed via create-order-list after 140001 from create-order (200 body)")
+                                return {"order_id": order_id_list, "error": None}
+                            fallback_err = (raw_list.get("error", str(raw_list or ""))[:200]) if raw_list else "unknown"
+                            return {**ctx, "error": ctx["message"], "fallback_attempted": True, "fallback_error": fallback_err}
                         
                         order_result = result.get("result", {})
                         order_id = order_result.get("order_id") or order_result.get("id")
