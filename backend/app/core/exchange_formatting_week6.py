@@ -194,6 +194,17 @@ def validate_sltp_payload_numeric(params: dict) -> tuple[bool, list[str]]:
     for k, v in params.items():
         if k not in numeric_keys:
             continue
+        if v is None:
+            errors.append(f"missing numeric field: {k}")
+            continue
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                errors.append(f"missing numeric field: {k}")
+                continue
+            if s.lower() == "none":
+                errors.append(f"invalid numeric field: {k}=None")
+                continue
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             errors.append(f"field {k} is numeric (int/float), must be string")
             continue
