@@ -34,7 +34,7 @@ wait_for_backend_ready() {
   local sleep_s="${2:-5}"
   local i=1
   while [[ "$i" -le "$tries" ]]; do
-    if curl -fsS --max-time 2 http://127.0.0.1:8002/health >/dev/null 2>&1; then
+    if curl -fsS --max-time 5 http://127.0.0.1:8002/health >/dev/null 2>&1; then
       return 0
     fi
     sleep "$sleep_s"
