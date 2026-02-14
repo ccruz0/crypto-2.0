@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 # Nightly integrity audit entrypoint. Runs on EC2. PASS/FAIL only. On any failure: one Telegram alert, then exit 1.
 set -euo pipefail
+# Safe PS4 for tracing (bash -x): FUNCNAME[0] can be unset at top-level; :-MAIN avoids set -u break
+PS4='+ ${BASH_SOURCE}:${LINENO}:${FUNCNAME[0]:-MAIN}: '
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 GIT_HASH="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+
+run_with_retries() {
+  local cmd="$1"
+  local name="$2"
+  local retries="${3:-3}"
+  local delay="${4:-5}"
+  local i=1
+  while true; do
+    if "${cmd}" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ $i -ge $retries ]]; then
+      return 1
+    fi
+    sleep "$delay"
+    i=$((i + 1))
+  done
+}
+
 STEPS=(
   "scripts/aws/verify_no_public_ports.sh"
   "scripts/aws/health_guard.sh"
@@ -25,7 +46,14 @@ STEP_NAMES=(
 for i in "${!STEPS[@]}"; do
   step="${STEPS[$i]}"
   name="${STEP_NAMES[$i]}"
-  if ! "${REPO_ROOT}/${step}" >/dev/null 2>&1; then
+  if [[ "$name" == "health_guard" ]]; then
+    if ! run_with_retries "${REPO_ROOT}/${step}" "health_guard" 3 5; then
+      ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
+      "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
+      echo "FAIL"
+      exit 1
+    fi
+  elif ! "${REPO_ROOT}/${step}" >/dev/null 2>&1; then
     ALERT_MSG="Nightly integrity FAIL: ${name} | git: ${GIT_HASH}"
     "${SCRIPT_DIR}/_notify_telegram_fail.sh" "${ALERT_MSG}" 2>/dev/null || true
     echo "FAIL"
