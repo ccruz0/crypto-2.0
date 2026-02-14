@@ -25,6 +25,7 @@ from app.api.routes_reports import router as reports_router
 from app.api.routes_admin import router as admin_router
 from app.api.routes_portfolio import router as portfolio_router
 from app.api.routes_ai import router as ai_router
+from app.api.routes_risk_probe import router as risk_probe_router
 import os
 import logging
 import time
@@ -599,6 +600,7 @@ app.include_router(diag_router, prefix="/api", tags=["diagnostics"])
 app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(admin_router, prefix="/api", tags=["admin"])
 app.include_router(ai_router)
+app.include_router(risk_probe_router, prefix="/api", tags=["risk"])
 
 # Alias health under /api for reverse-proxy setups that expect /api/health
 # Defined AFTER routers so /api/health/system can be matched first
