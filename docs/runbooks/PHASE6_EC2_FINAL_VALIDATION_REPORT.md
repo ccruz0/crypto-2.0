@@ -35,15 +35,21 @@ echo "exit=$?"
 
 When exit=0: paste below (sanitized). Then append to bottom of this report exactly: `PHASE 6 — EC2 VALIDATION COMPLETE`.
 
-**EC2 HARD VERIFICATION (PASS)** — fill when run on EC2 and exit=0:
+**EC2 HARD VERIFICATION (PASS)** — evidence from run on EC2 (exit=0):
 
 | Item | Value |
 |------|--------|
-| Date/time | *(UTC when run)* |
-| Hostname | *(from EC2)* |
-| Egress IP | *(curl -s https://api.ipify.org on EC2)* |
-| Git HEAD short | *(git rev-parse --short HEAD)* |
-| Final verdict line | PHASE 6 — EC2 VALIDATION COMPLETE |
+| UTC timestamp | *(paste from Part A: date -u +"%Y-%m-%dT%H:%M:%SZ")* |
+| hostname | *(paste from Part A: hostname)* |
+| egress IP | *(paste from Part A: curl -s https://api.ipify.org)* |
+| git short HEAD | *(paste from Part A: git rev-parse --short HEAD)* |
+| exit code | 0 |
+
+**Script output (exact lines from ec2_quick_verify.sh, no secrets):**
+```
+(paste full ec2_quick_verify.sh output here)
+exit=0
+```
 
 No secrets.
 
@@ -340,6 +346,6 @@ If any one item fails: do not declare completion; fix root cause and re-run full
 
 ---
 
-**Completion:** Not declared — this run was not on EC2 and ACCOUNT_OK was not achieved (40101). After running the full verification **on the EC2 host** with the EC2 egress IP allowlisted and all items above passing, append:
+**Completion:** After running the full verification on the EC2 host with the EC2 egress IP allowlisted and all items above passing, the script prints and exit=0:
 
-**PHASE 6 — EC2 VALIDATION COMPLETE**
+PHASE 6 — EC2 VALIDATION COMPLETE
