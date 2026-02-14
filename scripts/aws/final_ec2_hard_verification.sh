@@ -76,7 +76,8 @@ if [[ "$C2_REASON" != "RISK_GUARD_BLOCKED" ]]; then
 fi
 
 # PHASE D — Health & Integrity (health endpoint can be slow under load; allow 30s)
-D1_CODE="$(curl -s --connect-timeout 5 --max-time 30 --retry 0 -o "$D1_JSON" -w "%{http_code}" http://127.0.0.1:8002/api/health/system)"
+# Capture curl exit so set -e doesn't fire on connection failure; we block() below with real message
+D1_CODE="$(curl -s --connect-timeout 5 --max-time 30 --retry 0 -o "$D1_JSON" -w "%{http_code}" http://127.0.0.1:8002/api/health/system)" || D1_CODE="000"
 if [[ "$D1_CODE" != "200" ]]; then
   block "PHASE D.1: System health returned HTTP $D1_CODE (expected 200)"
 fi
