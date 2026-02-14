@@ -10,6 +10,29 @@ cd "${REPO_ROOT}"
 
 GIT_HASH="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
 
+# Start stack if needed so audit never runs against "nothing listening on 8002"
+ensure_stack_up() {
+  cd "$REPO_ROOT"
+
+  # Start required services (idempotent)
+  docker compose --profile aws up -d db backend-aws >/dev/null 2>&1 || return 1
+
+  # Wait up to 120s for API
+  local tries=24
+  local sleep_s=5
+  local i=1
+
+  while [ "$i" -le "$tries" ]; do
+    if curl -fsS --max-time 2 http://127.0.0.1:8002/api/health/system >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$sleep_s"
+    i=$((i+1))
+  done
+
+  return 1
+}
+
 run_with_retries() {
   local cmd="$1"
   local name="$2"
@@ -60,6 +83,11 @@ STEP_NAMES=(
   "reconcile_order_intents"
   "portfolio_consistency_check"
 )
+
+if ! ensure_stack_up; then
+  echo "FAIL"
+  exit 1
+fi
 
 for i in "${!STEPS[@]}"; do
   step="${STEPS[$i]}"
