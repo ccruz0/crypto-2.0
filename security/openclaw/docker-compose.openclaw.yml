@@ -1,0 +1,42 @@
+services:
+  egress-proxy:
+    image: ubuntu/squid:latest
+    container_name: egress-proxy
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    ports:
+      - "3128:3128"
+    networks:
+      - claw_net
+    restart: unless-stopped
+
+  openclaw-agent:
+    image: python:3.12-slim
+    container_name: openclaw-agent
+    depends_on:
+      - egress-proxy
+    working_dir: /repo
+    volumes:
+      - ../../:/repo
+    secrets:
+      - openai_api_key
+    environment:
+      - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+      - OPENAI_MODEL=gpt-5
+      - HTTPS_PROXY=http://egress-proxy:3128
+      - HTTP_PROXY=http://egress-proxy:3128
+      - NO_PROXY=localhost,127.0.0.1,egress-proxy
+      - PIP_DISABLE_PIP_VERSION_CHECK=1
+      - PIP_NO_CACHE_DIR=1
+    networks:
+      - claw_net
+    stdin_open: true
+    tty: true
+
+secrets:
+  openai_api_key:
+    file: ./.openai_api_key
+
+networks:
+  claw_net:
+    driver: bridge
