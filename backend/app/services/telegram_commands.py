@@ -24,7 +24,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post
-from app.utils.redact import mask_chat_id, mask_sequence_of_ids
+from app.utils.redact import mask_chat_id, mask_sequence_of_ids, sanitize_telegram_api_response_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -1041,7 +1041,11 @@ def send_command_response(chat_id: str, message: str) -> bool:
         
         if response.status_code != 200:
             error_data = response.json() if response.content else {}
-            logger.error(f"[TG][ERROR] Failed to send message: {response.status_code} - {error_data}")
+            logger.error(
+                "[TG][ERROR] Failed to send message: %s - %s",
+                response.status_code,
+                sanitize_telegram_api_response_for_log(error_data),
+            )
             # Try without parse_mode as fallback
             try:
                 payload_no_parse = {
@@ -1064,9 +1068,17 @@ def send_command_response(chat_id: str, message: str) -> bool:
         if hasattr(e, 'response') and e.response is not None:
             try:
                 error_data = e.response.json()
-                logger.error(f"[TG][ERROR] Error details: {error_data}")
-            except:
-                logger.error(f"[TG][ERROR] Error response: {e.response.text[:200]}")
+                logger.error(
+                    "[TG][ERROR] Error details: %s",
+                    sanitize_telegram_api_response_for_log(error_data),
+                )
+            except Exception:
+                logger.error(
+                    "[TG][ERROR] Error response: %s",
+                    sanitize_telegram_api_response_for_log(
+                        e.response.text if getattr(e.response, "text", None) else None
+                    ),
+                )
         return False
 
 

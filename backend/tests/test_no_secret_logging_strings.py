@@ -55,3 +55,21 @@ def test_telegram_commands_auth_logs_mask_user_id() -> None:
                 "telegram_commands.py must log authorized user ID with mask_chat_id(...), not raw"
             )
             break
+
+
+def test_telegram_commands_no_raw_api_response_in_logs() -> None:
+    """PR1: No Telegram API response body logged unfiltered (no leak via error_data/response.text)."""
+    p = Path(__file__).resolve().parents[1] / "app" / "services" / "telegram_commands.py"
+    s = p.read_text(encoding="utf-8")
+    for line in s.splitlines():
+        if "logger." not in line or "[TG][ERROR]" not in line:
+            continue
+        # If this line logs error_data or response.text, it must use the sanitizer
+        if "error_data" in line and ("}" in line or "%" in line or "format" in line):
+            assert "sanitize_telegram" in line, (
+                "telegram_commands.py must not log raw error_data; use sanitize_telegram_api_response_for_log"
+            )
+        if "response.text" in line:
+            assert "sanitize_telegram" in line, (
+                "telegram_commands.py must not log raw e.response.text; use sanitize_telegram_api_response_for_log"
+            )
