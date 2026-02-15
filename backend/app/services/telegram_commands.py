@@ -24,6 +24,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post
+from app.utils.redact import mask_chat_id, mask_sequence_of_ids
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,12 @@ if _env_auth_user_ids:
         user_id = user_id.strip()
         if user_id:
             AUTHORIZED_USER_IDS.add(user_id)
-            logger.info(f"[TG][AUTH] Added authorized user ID: {user_id}")
+            logger.info("[TG][AUTH] Added authorized user ID: %s", mask_chat_id(user_id))
 elif AUTH_CHAT_ID:
     # Fallback: if no TELEGRAM_AUTH_USER_ID is set, use TELEGRAM_CHAT_ID as authorized user ID
     # This allows backward compatibility but note: TELEGRAM_CHAT_ID is typically a channel ID
     AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-    logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized user ID (backward compatibility): {AUTH_CHAT_ID}")
+    logger.info("[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized user ID (backward compatibility): %s", mask_chat_id(str(AUTH_CHAT_ID)))
 
 TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
 # Set to True when startup diagnostics get 401 (token invalid); disables polling/commands without crashing
@@ -134,9 +135,9 @@ def _is_authorized(chat_id: str, user_id: str) -> bool:
     
     logger.info(
         "[TG][AUTH] Unauthorized command blocked: chat_id=%s user_id=%s authorized_ids=%s",
-        chat_id_str or "N/A",
-        user_id_str or "N/A",
-        ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+        mask_chat_id(chat_id_str) if chat_id_str else "N/A",
+        mask_chat_id(user_id_str) if user_id_str else "N/A",
+        mask_sequence_of_ids(list(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
     )
     return False
 
@@ -836,14 +837,14 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
             "parse_mode": "HTML",
             "reply_markup": keyboard,
         }
-        logger.info(f"[TG] Sending menu message to chat_id={chat_id}, text_preview={text[:50]}..., keyboard_type={list(keyboard.keys())}")
+        logger.info(f"[TG] Sending menu message to chat_id={mask_chat_id(chat_id)}, text_preview={text[:50]}..., keyboard_type={list(keyboard.keys())}")
         logger.debug(f"[TG] Full keyboard structure: {json.dumps(keyboard, indent=2)}")
         response = http_post(url, json=payload, timeout=10, calling_module="telegram_commands")
         response.raise_for_status()
         result = response.json()
         if result.get("ok"):
             message_id = result.get('result', {}).get('message_id')
-            logger.info(f"[TG] Menu message sent successfully to chat_id={chat_id}, message_id={message_id}")
+            logger.info(f"[TG] Menu message sent successfully to chat_id={mask_chat_id(chat_id)}, message_id={message_id}")
             return True
         else:
             error_desc = result.get('description', 'Unknown error')
@@ -851,10 +852,10 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
             return False
     except requests.exceptions.HTTPError as e:
         error_body = e.response.text if hasattr(e, 'response') and e.response else str(e)
-        logger.error(f"[TG][ERROR] HTTP error sending menu message to chat_id={chat_id}: {e}, response: {error_body}")
+        logger.error(f"[TG][ERROR] HTTP error sending menu message to chat_id={mask_chat_id(chat_id)}: {e}, response: {error_body}")
         return False
     except Exception as e:
-        logger.error(f"[TG][ERROR] Failed to send menu message to chat_id={chat_id}: {e}", exc_info=True)
+        logger.error(f"[TG][ERROR] Failed to send menu message to chat_id={mask_chat_id(str(chat_id))}: {e}", exc_info=True)
         return False
 
 
