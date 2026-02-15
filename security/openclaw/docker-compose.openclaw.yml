@@ -11,11 +11,11 @@ services:
     restart: unless-stopped
 
   openclaw-agent:
-    image: python:3.12-slim
+    image: node:20-slim
     container_name: openclaw-agent
     depends_on:
       - egress-proxy
-    working_dir: /repo
+    working_dir: /repo/security/openclaw/vendor/openclaw
     volumes:
       - ../../:/repo
     secrets:
