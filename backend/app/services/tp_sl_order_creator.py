@@ -164,23 +164,22 @@ def create_take_profit_order(
         # Check guardrails before placing TP order (ignore Trade Yes since this is for existing position)
         if not dry_run:
             order_usd_value = tp_execution_price * quantity
-            allowed, block_reason = can_place_real_order(
+            allowed, block_reason, reason_code = can_place_real_order(
                 db=db,
                 symbol=symbol,
                 order_usd_value=order_usd_value,
                 side=tp_side,
-                ignore_trade_yes=True,  # SL/TP is for existing positions
-                ignore_daily_limit=True,  # Do not block protective orders by daily limit
-                ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                ignore_trade_yes=True,
+                ignore_daily_limit=True,
+                ignore_usd_limit=True,
             )
             if not allowed:
-                # Emit lifecycle event and send Telegram notification
                 try:
                     from app.services.signal_monitor import _emit_lifecycle_event
                     _emit_lifecycle_event(
                         db=db,
                         symbol=symbol,
-                        strategy_key="",  # Not available for SL/TP
+                        strategy_key="",
                         side=tp_side,
                         price=tp_execution_price,
                         event_type="SLTP_BLOCKED",
@@ -188,24 +187,68 @@ def create_take_profit_order(
                     )
                 except Exception as e:
                     logger.warning(f"Failed to emit lifecycle event for blocked TP: {e}")
-                
-                # Send Telegram notification
+
                 try:
+                    code_line = f"\n📋 <b>Reason code:</b> {reason_code}" if reason_code else ""
                     telegram_notifier.send_message(
                         f"🚫 <b>SL/TP BLOCKED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
                         f"🔄 Type: TAKE PROFIT\n"
                         f"💰 Price: ${tp_execution_price:.4f}\n"
                         f"📦 Quantity: {quantity}\n\n"
-                        f"🚫 <b>Reason:</b> {block_reason}",
+                        f"🚫 <b>Reason:</b> {block_reason}{code_line}",
                         symbol=symbol,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram alert for blocked TP: {e}")
-                
+
                 logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} TP {tp_side} - {block_reason}")
                 return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
-        
+
+            # PR#5: Stale data gate before placing TP
+            from app.models.market_price import MarketData, MarketPrice
+            from app.utils.data_freshness import require_fresh
+            _now_utc = datetime.now(timezone.utc)
+            _md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            _mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+            _data_ts = (_md.updated_at if _md else None) or (_mp.updated_at if _mp else None)
+            _fresh_ok, _stale_msg, _stale_code, _stale_details = require_fresh(
+                _data_ts, now=_now_utc, max_age_minutes=30, data_name="market_data", symbol=symbol
+            )
+            if not _fresh_ok:
+                try:
+                    from app.services.signal_monitor import _emit_lifecycle_event
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    _dr = make_skip(
+                        reason_code=ReasonCode.STALE_DATA.value,
+                        message=_stale_msg,
+                        context={**_stale_details, "symbol": symbol},
+                        source="data_freshness",
+                    )
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key="",
+                        side=tp_side,
+                        price=tp_execution_price,
+                        event_type="SLTP_BLOCKED",
+                        event_reason=_stale_msg,
+                        decision_reason=_dr,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit lifecycle for stale TP block: {e}")
+                try:
+                    _ds = f" last_ts={_stale_details.get('last_ts_iso') or 'missing'} age_sec={_stale_details.get('age_seconds')} max_age_min={_stale_details.get('max_age_minutes')}"
+                    telegram_notifier.send_message(
+                        f"🚫 <b>SL/TP BLOCKED</b>\n\n📊 Symbol: <b>{symbol}</b>\n🔄 Type: TAKE PROFIT\n"
+                        f"💰 Price: ${tp_execution_price:.4f}\n\n🚫 <b>Reason:</b> {_stale_msg}\n📋 <b>Reason code:</b> {_stale_code}{_ds}",
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram for stale TP block: {e}")
+                logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} TP - STALE_DATA - {_stale_msg}")
+                return {"order_id": None, "error": f"SL/TP blocked: {_stale_msg}"}
+
         # PART B: Fetch instrument rules ONCE and log structured [SLTP_NORMALIZE] for TP
         inst_meta_tp = trade_client._get_instrument_metadata(symbol)
         if not inst_meta_tp:
@@ -281,8 +324,8 @@ def create_take_profit_order(
             source=source  # Propagate source to HTTP logging
         )
         
-        if "error" not in tp_order:
-            tp_order_id = tp_order.get("order_id") or tp_order.get("client_order_id")
+        tp_order_id = tp_order.get("order_id") or tp_order.get("client_order_id")
+        if tp_order_id and not tp_order.get("error"):
             logger.info(
                 f"✅ Created TP order (TAKE_PROFIT_LIMIT) for {symbol} @ {tp_price} "
                 f"(trigger={tp_trigger}, price={tp_execution_price})"
@@ -311,16 +354,31 @@ def create_take_profit_order(
                     logger.warning(f"Failed to save TP order to database: {db_err}")
                     db.rollback()
             
-            return {"order_id": tp_order_id, "error": None}
+            out = {"order_id": tp_order_id, "error": None, "side": "TP", "symbol": symbol}
+            if "fallback_attempted" in tp_order:
+                out["fallback_attempted"] = tp_order["fallback_attempted"]
+            return out
         else:
             tp_order_error = tp_order.get("error", "Unknown error")
             logger.error(f"❌ Failed to create TP order (TAKE_PROFIT_LIMIT) for {symbol} @ {tp_price}: {tp_order_error}")
-            return {"order_id": None, "error": tp_order_error}
-            
+            # PR12: pass through structured error (tried_variants, last_error) for robustness matrix
+            out = {"order_id": None, "error": tp_order_error, "side": "TP", "symbol": symbol}
+            if "tried_variants" in tp_order:
+                out["tried_variants"] = tp_order["tried_variants"]
+            if "last_error" in tp_order:
+                out["last_error"] = tp_order["last_error"]
+            if "error_code" in tp_order:
+                out["error_code"] = tp_order["error_code"]
+            if "error_message" in tp_order:
+                out["error_message"] = tp_order["error_message"]
+            if "fallback_attempted" in tp_order:
+                out["fallback_attempted"] = tp_order["fallback_attempted"]
+            return out
+
     except Exception as e:
         tp_order_error = str(e)
         logger.error(f"❌ Error creating TP order (TAKE_PROFIT_LIMIT) for {symbol}: {e}", exc_info=True)
-        return {"order_id": None, "error": tp_order_error}
+        return {"order_id": None, "error": tp_order_error, "side": "TP", "symbol": symbol}
 
 
 def create_stop_loss_order(
@@ -393,23 +451,22 @@ def create_stop_loss_order(
         # Check guardrails before placing SL order (ignore Trade Yes since this is for existing position)
         if not dry_run:
             order_usd_value = sl_price * quantity
-            allowed, block_reason = can_place_real_order(
+            allowed, block_reason, reason_code = can_place_real_order(
                 db=db,
                 symbol=symbol,
                 order_usd_value=order_usd_value,
                 side=sl_side,
-                ignore_trade_yes=True,  # SL/TP is for existing positions
-                ignore_daily_limit=True,  # Do not block protective orders by daily limit
-                ignore_usd_limit=True,  # Do not block protective orders by USD limit
+                ignore_trade_yes=True,
+                ignore_daily_limit=True,
+                ignore_usd_limit=True,
             )
             if not allowed:
-                # Emit lifecycle event and send Telegram notification
                 try:
                     from app.services.signal_monitor import _emit_lifecycle_event
                     _emit_lifecycle_event(
                         db=db,
                         symbol=symbol,
-                        strategy_key="",  # Not available for SL/TP
+                        strategy_key="",
                         side=sl_side,
                         price=sl_price,
                         event_type="SLTP_BLOCKED",
@@ -417,24 +474,68 @@ def create_stop_loss_order(
                     )
                 except Exception as e:
                     logger.warning(f"Failed to emit lifecycle event for blocked SL: {e}")
-                
-                # Send Telegram notification
+
                 try:
+                    code_line = f"\n📋 <b>Reason code:</b> {reason_code}" if reason_code else ""
                     telegram_notifier.send_message(
                         f"🚫 <b>SL/TP BLOCKED</b>\n\n"
                         f"📊 Symbol: <b>{symbol}</b>\n"
                         f"🔄 Type: STOP LOSS\n"
                         f"💰 Price: ${sl_price:.4f}\n"
                         f"📦 Quantity: {quantity}\n\n"
-                        f"🚫 <b>Reason:</b> {block_reason}",
+                        f"🚫 <b>Reason:</b> {block_reason}{code_line}",
                         symbol=symbol,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram alert for blocked SL: {e}")
-                
+
                 logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} SL {sl_side} - {block_reason}")
                 return {"order_id": None, "error": f"SL/TP blocked: {block_reason}"}
-        
+
+            # PR#5: Stale data gate before placing SL
+            from app.models.market_price import MarketData, MarketPrice
+            from app.utils.data_freshness import require_fresh
+            _now_utc = datetime.now(timezone.utc)
+            _md = db.query(MarketData).filter(MarketData.symbol == symbol).first()
+            _mp = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
+            _data_ts = (_md.updated_at if _md else None) or (_mp.updated_at if _mp else None)
+            _fresh_ok, _stale_msg, _stale_code, _stale_details = require_fresh(
+                _data_ts, now=_now_utc, max_age_minutes=30, data_name="market_data", symbol=symbol
+            )
+            if not _fresh_ok:
+                try:
+                    from app.services.signal_monitor import _emit_lifecycle_event
+                    from app.utils.decision_reason import make_skip, ReasonCode
+                    _dr = make_skip(
+                        reason_code=ReasonCode.STALE_DATA.value,
+                        message=_stale_msg,
+                        context={**_stale_details, "symbol": symbol},
+                        source="data_freshness",
+                    )
+                    _emit_lifecycle_event(
+                        db=db,
+                        symbol=symbol,
+                        strategy_key="",
+                        side=sl_side,
+                        price=sl_price,
+                        event_type="SLTP_BLOCKED",
+                        event_reason=_stale_msg,
+                        decision_reason=_dr,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to emit lifecycle for stale SL block: {e}")
+                try:
+                    _ds = f" last_ts={_stale_details.get('last_ts_iso') or 'missing'} age_sec={_stale_details.get('age_seconds')} max_age_min={_stale_details.get('max_age_minutes')}"
+                    telegram_notifier.send_message(
+                        f"🚫 <b>SL/TP BLOCKED</b>\n\n📊 Symbol: <b>{symbol}</b>\n🔄 Type: STOP LOSS\n"
+                        f"💰 Price: ${sl_price:.4f}\n\n🚫 <b>Reason:</b> {_stale_msg}\n📋 <b>Reason code:</b> {_stale_code}{_ds}",
+                        symbol=symbol,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram for stale SL block: {e}")
+                logger.warning(f"🚫 SL/TP_BLOCKED: {symbol} SL - STALE_DATA - {_stale_msg}")
+                return {"order_id": None, "error": f"SL/TP blocked: {_stale_msg}"}
+
         # PART B: Fetch instrument rules ONCE and log structured [SLTP_NORMALIZE]
         inst_meta = trade_client._get_instrument_metadata(symbol)
         if not inst_meta:
@@ -513,8 +614,8 @@ def create_stop_loss_order(
             source=source  # Propagate source to HTTP logging
         )
         
-        if "error" not in sl_order:
-            sl_order_id = sl_order.get("order_id") or sl_order.get("client_order_id")
+        sl_order_id = sl_order.get("order_id") or sl_order.get("client_order_id")
+        if sl_order_id and not sl_order.get("error"):
             logger.info(f"✅ Created SL order for {symbol} @ {sl_price}")
 
             # Save SL order to database with OCO fields (same as automatic creation)
@@ -540,7 +641,10 @@ def create_stop_loss_order(
                     logger.warning(f"Failed to save SL order to database: {db_err}")
                     db.rollback()
             
-            return {"order_id": sl_order_id, "error": None}
+            out = {"order_id": sl_order_id, "error": None, "side": "SL", "symbol": symbol}
+            if "fallback_attempted" in sl_order:
+                out["fallback_attempted"] = sl_order["fallback_attempted"]
+            return out
         else:
             sl_order_error = sl_order.get("error", "Unknown error")
             logger.error(f"❌ Failed to create SL order for {symbol} @ {sl_price}: {sl_order_error}")
@@ -643,10 +747,22 @@ def create_stop_loss_order(
                 except Exception as telegram_err:
                     logger.warning(f"Failed to send small position alert: {telegram_err}", exc_info=True)
 
-            return {"order_id": None, "error": sl_order_error}
-            
+            # PR12: pass through structured error (tried_variants, last_error) for robustness matrix
+            out = {"order_id": None, "error": sl_order_error, "side": "SL", "symbol": symbol}
+            if "tried_variants" in sl_order:
+                out["tried_variants"] = sl_order["tried_variants"]
+            if "last_error" in sl_order:
+                out["last_error"] = sl_order["last_error"]
+            if "error_code" in sl_order:
+                out["error_code"] = sl_order["error_code"]
+            if "error_message" in sl_order:
+                out["error_message"] = sl_order["error_message"]
+            if "fallback_attempted" in sl_order:
+                out["fallback_attempted"] = sl_order["fallback_attempted"]
+            return out
+
     except Exception as e:
         sl_order_error = str(e)
         logger.error(f"❌ Error creating SL order for {symbol}: {e}", exc_info=True)
-        return {"order_id": None, "error": sl_order_error}
+        return {"order_id": None, "error": sl_order_error, "side": "SL", "symbol": symbol}
 

@@ -27,7 +27,7 @@ class TestTPOrderGuardrails:
     def test_tp_blocked_when_live_off(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
         """Test that TP order is blocked when Live toggle is OFF"""
         # Setup: guardrails block the order
-        mock_can_place.return_value = (False, "blocked: Live toggle is OFF")
+        mock_can_place.return_value = (False, "blocked: Live toggle is OFF", "LIVE_TRADING_OFF")
         
         # Call create_take_profit_order
         result = create_take_profit_order(
@@ -67,7 +67,7 @@ class TestTPOrderGuardrails:
     def test_tp_blocked_when_kill_switch_on(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
         """Test that TP order is blocked when Telegram kill switch is ON"""
         # Setup: guardrails block the order
-        mock_can_place.return_value = (False, "blocked: Telegram kill switch is ON")
+        mock_can_place.return_value = (False, "blocked: Telegram kill switch is ON", "KILL_SWITCH")
         
         # Call create_take_profit_order
         result = create_take_profit_order(
@@ -94,14 +94,18 @@ class TestTPOrderGuardrails:
         assert call_args[1]["event_type"] == "SLTP_BLOCKED"
         assert "kill switch" in call_args[1]["event_reason"].lower()
     
+    @patch('app.services.tp_sl_order_creator.trade_client._get_instrument_metadata')
+    @patch('app.utils.data_freshness.require_fresh')
     @patch('app.services.tp_sl_order_creator.telegram_notifier')
     @patch('app.services.signal_monitor._emit_lifecycle_event')
     @patch('app.services.tp_sl_order_creator.can_place_real_order')
     @patch.object(trade_client, 'place_take_profit_order')
-    def test_tp_allowed_when_guardrails_pass(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
+    def test_tp_allowed_when_guardrails_pass(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_require_fresh, mock_inst_meta, mock_db):
         """Test that TP order is placed when guardrails pass"""
+        mock_require_fresh.return_value = (True, None, None, {})
+        mock_inst_meta.return_value = {"min_quantity": "0.001", "qty_tick_size": "0.001", "price_tick_size": "0.01", "quantity_decimals": 8}
         # Setup: guardrails allow the order
-        mock_can_place.return_value = (True, None)
+        mock_can_place.return_value = (True, None, None)
         mock_place_order.return_value = {"order_id": "tp_12345"}
         
         # Call create_take_profit_order
@@ -160,7 +164,7 @@ class TestSLOrderGuardrails:
     def test_sl_blocked_when_live_off(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
         """Test that SL order is blocked when Live toggle is OFF"""
         # Setup: guardrails block the order
-        mock_can_place.return_value = (False, "blocked: Live toggle is OFF")
+        mock_can_place.return_value = (False, "blocked: Live toggle is OFF", "LIVE_TRADING_OFF")
         
         # Call create_stop_loss_order
         result = create_stop_loss_order(
@@ -200,7 +204,7 @@ class TestSLOrderGuardrails:
     def test_sl_blocked_when_kill_switch_on(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
         """Test that SL order is blocked when Telegram kill switch is ON"""
         # Setup: guardrails block the order
-        mock_can_place.return_value = (False, "blocked: Telegram kill switch is ON")
+        mock_can_place.return_value = (False, "blocked: Telegram kill switch is ON", "KILL_SWITCH")
         
         # Call create_stop_loss_order
         result = create_stop_loss_order(
@@ -227,14 +231,18 @@ class TestSLOrderGuardrails:
         assert call_args[1]["event_type"] == "SLTP_BLOCKED"
         assert "kill switch" in call_args[1]["event_reason"].lower()
     
+    @patch('app.services.tp_sl_order_creator.trade_client._get_instrument_metadata')
+    @patch('app.utils.data_freshness.require_fresh')
     @patch('app.services.tp_sl_order_creator.telegram_notifier')
     @patch('app.services.signal_monitor._emit_lifecycle_event')
     @patch('app.services.tp_sl_order_creator.can_place_real_order')
     @patch.object(trade_client, 'place_stop_loss_order')
-    def test_sl_allowed_when_guardrails_pass(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_db):
+    def test_sl_allowed_when_guardrails_pass(self, mock_place_order, mock_can_place, mock_emit_event, mock_telegram, mock_require_fresh, mock_inst_meta, mock_db):
         """Test that SL order is placed when guardrails pass"""
+        mock_require_fresh.return_value = (True, None, None, {})
+        mock_inst_meta.return_value = {"min_quantity": "0.001", "qty_tick_size": "0.001", "price_tick_size": "0.01", "quantity_decimals": 8}
         # Setup: guardrails allow the order
-        mock_can_place.return_value = (True, None)
+        mock_can_place.return_value = (True, None, None)
         mock_place_order.return_value = {"order_id": "sl_12345"}
         
         # Call create_stop_loss_order
@@ -286,7 +294,7 @@ class TestSLOrderGuardrails:
     def test_can_place_called_with_ignore_trade_yes(self, mock_can_place, mock_db):
         """Test that can_place_real_order is called with ignore_trade_yes=True for SL/TP"""
         # Setup
-        mock_can_place.return_value = (True, None)
+        mock_can_place.return_value = (True, None, None)
         
         # Call create_stop_loss_order
         create_stop_loss_order(
