@@ -20,6 +20,7 @@ from app.services.telegram_notifier import telegram_notifier
 from app.services.alert_emitter import emit_alert
 from app.core.runtime import get_runtime_origin
 from app.utils.symbols import normalize_symbol_for_exchange
+from app.utils.redact import mask_chat_id
 from app.api.routes_signals import get_signals
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import (
@@ -32,7 +33,7 @@ from app.services.config_loader import get_alert_thresholds, load_config
 from app.services.order_position_service import calculate_portfolio_value_for_symbol
 # throttle_service may be absent in some deployments; run with throttling disabled if missing.
 try:
-    from app.services.throttle_service import (
+    from app.services.throttle_service import (  # type: ignore[reportMissingImports]
         LastSignalSnapshot,
         SignalThrottleConfig,
         build_strategy_key,
@@ -41,7 +42,7 @@ try:
         should_emit_signal,
         compute_config_hash,
     )
-    from app.services.throttle_service import reset_throttle_state
+    from app.services.throttle_service import reset_throttle_state  # type: ignore[reportMissingImports]
 except ModuleNotFoundError as e:
     if "app.services.throttle_service" not in str(e):
         raise
@@ -1597,7 +1598,7 @@ class SignalMonitorService:
                 telegram_config.get("chat_id_set"),
                 telegram_config.get("kill_switch_enabled"),
                 telegram_config.get("enabled"),
-                telegram_config.get("chat_id"),
+                mask_chat_id(telegram_config.get("chat_id")),
                 ",".join(reasons) if reasons else "",
             )
             if not bool(telegram_config.get("enabled")):
@@ -2140,7 +2141,7 @@ class SignalMonitorService:
                 evaluation_id,
                 threshold_context,
                 telegram_config.get("enabled"),
-                telegram_config.get("chat_id"),
+                mask_chat_id(telegram_config.get("chat_id")),
             )
 
             self._log_pipeline_stage(
@@ -3508,7 +3509,7 @@ class SignalMonitorService:
                                 # E) Deep decision-grade logging
                                 logger.info(
                                     f"[TELEGRAM_SEND] {symbol} BUY status=SUCCESS message_id={message_id or 'N/A'} "
-                                    f"channel={self._telegram_chat_id()} origin={alert_origin}"
+                                    f"channel={mask_chat_id(self._telegram_chat_id())} origin={alert_origin}"
                                 )
                                 logger.info(
                                     f"✅ BUY alert SENT for {symbol}: alert_enabled={watchlist_item.alert_enabled}, "
@@ -3547,7 +3548,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=BUY emit={should_emit_telegram} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
+                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -4872,6 +4873,42 @@ class SignalMonitorService:
                             correlation_id=evaluation_id,
                         )
                         try:
+                            # PR#5: Stale data gate - block if market data is older than 30 min or missing timestamp
+                            from app.utils.data_freshness import require_fresh
+                            data_ts = (md.updated_at if md else None) or (mp.updated_at if mp else None)
+                            fresh_ok, stale_msg, stale_code, stale_details = require_fresh(
+                                data_ts, now=now_utc, max_age_minutes=30, data_name="market_data", symbol=symbol
+                            )
+                            if not fresh_ok:
+                                from app.utils.decision_reason import make_skip, ReasonCode
+                                import uuid
+                                _corr_id = str(uuid.uuid4())
+                                _dr = make_skip(
+                                    reason_code=ReasonCode.STALE_DATA.value,
+                                    message=stale_msg,
+                                    context={**stale_details, "symbol": symbol},
+                                    source="data_freshness",
+                                    correlation_id=_corr_id,
+                                )
+                                _emit_lifecycle_event(
+                                    db=db,
+                                    symbol=symbol,
+                                    strategy_key=strategy_key,
+                                    side="BUY",
+                                    price=current_price,
+                                    event_type="TRADE_BLOCKED",
+                                    event_reason=stale_msg,
+                                    decision_reason=_dr,
+                                )
+                                if self._telegram_send_enabled():
+                                    _detail_str = f" last_ts={stale_details.get('last_ts_iso') or 'missing'} age_sec={stale_details.get('age_seconds')} max_age_min={stale_details.get('max_age_minutes')}"
+                                    telegram_notifier.send_message(
+                                        f"🚫 <b>TRADE BLOCKED</b>\n\n📊 Symbol: <b>{symbol}</b>\n🔄 Side: BUY\n💵 Price: ${current_price:.4f}\n\n"
+                                        f"🚫 <b>Reason:</b> {stale_msg}\n📋 <b>Reason code:</b> {stale_code}{_detail_str}",
+                                        symbol=symbol,
+                                    )
+                                logger.warning(f"🚫 TRADE_BLOCKED: {symbol} BUY - STALE_DATA - {stale_msg}")
+                                return
                             # E) Deep decision-grade logging for order attempt
                             logger.info(
                                 f"[CRYPTO_ORDER_ATTEMPT] {symbol} BUY price=${current_price:.4f} "
@@ -5534,7 +5571,7 @@ class SignalMonitorService:
                                 )
                                 logger.info(
                                     f"[TELEGRAM_SEND] {symbol} SELL status=SUCCESS message_id={message_id_sell or 'N/A'} "
-                                    f"trace_id={trace_id} channel={self._telegram_chat_id()} origin={alert_origin}"
+                                    f"trace_id={trace_id} channel={mask_chat_id(self._telegram_chat_id())} origin={alert_origin}"
                                 )
                                 logger.info(
                                     f"✅ SELL alert SENT for {symbol}: "
@@ -5563,7 +5600,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=SELL emit={should_emit_telegram_sell} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
+                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -5969,63 +6006,98 @@ class SignalMonitorService:
                                         f"trade_on_margin={getattr(watchlist_item, 'trade_on_margin', False)}"
                                     )
                                 
-                                try:
-                                    # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
-                                    order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
-                                    
-                                    # DIAGNOSTIC: Log result for TRX_USDT
-                                    if symbol == "TRX_USDT" or symbol == "TRX_USD":
-                                        logger.info(
-                                            f"🔍 [DIAGNOSTIC] {symbol} _create_sell_order result: "
-                                            f"result_type={type(order_result).__name__}, "
-                                            f"has_error={'error' in order_result if isinstance(order_result, dict) else 'N/A'}, "
-                                            f"result={order_result}"
+                                # PR#6: Stale data gate (same as BUY) - block SELL if market data is older than 30 min or missing timestamp
+                                from app.utils.data_freshness import require_fresh
+                                data_ts = (md.updated_at if md else None) or (mp.updated_at if mp else None)
+                                fresh_ok, stale_msg, stale_code, stale_details = require_fresh(
+                                    data_ts, now=now_utc, max_age_minutes=30, data_name="market_data", symbol=symbol
+                                )
+                                if not fresh_ok:
+                                    from app.utils.decision_reason import make_skip, ReasonCode
+                                    import uuid as _uuid_sell
+                                    _corr_id = str(_uuid_sell.uuid4())
+                                    _dr = make_skip(
+                                        reason_code=ReasonCode.STALE_DATA.value,
+                                        message=stale_msg,
+                                        context={**stale_details, "symbol": symbol},
+                                        source="data_freshness",
+                                        correlation_id=_corr_id,
+                                    )
+                                    _emit_lifecycle_event(
+                                        db=db,
+                                        symbol=symbol,
+                                        strategy_key=strategy_key,
+                                        side="SELL",
+                                        price=current_price,
+                                        event_type="TRADE_BLOCKED",
+                                        event_reason=stale_msg,
+                                        decision_reason=_dr,
+                                    )
+                                    if self._telegram_send_enabled():
+                                        _detail_str = f" last_ts={stale_details.get('last_ts_iso') or 'missing'} age_sec={stale_details.get('age_seconds')} max_age_min={stale_details.get('max_age_minutes')}"
+                                        telegram_notifier.send_message(
+                                            f"🚫 <b>TRADE BLOCKED</b>\n\n📊 Symbol: <b>{symbol}</b>\n🔄 Side: SELL\n💵 Price: ${current_price:.4f}\n\n"
+                                            f"🚫 <b>Reason:</b> {stale_msg}\n📋 <b>Reason code:</b> {stale_code}{_detail_str}",
+                                            symbol=symbol,
                                         )
-                                    # Check for errors first (error dicts are truthy but have "error" key)
-                                    if order_result and isinstance(order_result, dict) and "error" in order_result:
-                                        # Handle error cases
-                                        error_type = order_result.get("error_type")
-                                        error_msg = order_result.get("message")
-                                        if error_type == "balance":
-                                            logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
-                                        elif error_type == "trade_disabled":
-                                            logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
-                                        elif error_type == "authentication":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
-                                        elif error_type == "order_placement":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Order placement error - {error_msg}")
-                                        elif error_type == "no_order_id":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: No order ID returned - {error_msg}")
-                                        elif error_type == "exception":
-                                            logger.error(f"❌ SELL order creation failed for {symbol}: Exception - {error_msg}")
+                                    logger.warning(f"🚫 TRADE_BLOCKED: {symbol} SELL - STALE_DATA - {stale_msg}")
+                                else:
+                                    try:
+                                        # Use asyncio.run() to execute async function from sync context (asyncio imported at module top)
+                                        order_result = asyncio.run(self._create_sell_order(db, watchlist_item, current_price, res_up, res_down))
+                                        # DIAGNOSTIC: Log result for TRX_USDT
+                                        if symbol == "TRX_USDT" or symbol == "TRX_USD":
+                                            logger.info(
+                                                f"🔍 [DIAGNOSTIC] {symbol} _create_sell_order result: "
+                                                f"result_type={type(order_result).__name__}, "
+                                                f"has_error={'error' in order_result if isinstance(order_result, dict) else 'N/A'}, "
+                                                f"result={order_result}"
+                                            )
+                                        # Check for errors first (error dicts are truthy but have "error" key)
+                                        if order_result and isinstance(order_result, dict) and "error" in order_result:
+                                            # Handle error cases
+                                            error_type = order_result.get("error_type")
+                                            error_msg = order_result.get("message")
+                                            if error_type == "balance":
+                                                logger.warning(f"⚠️ SELL order creation blocked for {symbol}: Insufficient balance - {error_msg}")
+                                            elif error_type == "trade_disabled":
+                                                logger.warning(f"🚫 SELL order creation blocked for {symbol}: Trade is disabled - {error_msg}")
+                                            elif error_type == "authentication":
+                                                logger.error(f"❌ SELL order creation failed for {symbol}: Authentication error - {error_msg}")
+                                            elif error_type == "order_placement":
+                                                logger.error(f"❌ SELL order creation failed for {symbol}: Order placement error - {error_msg}")
+                                            elif error_type == "no_order_id":
+                                                logger.error(f"❌ SELL order creation failed for {symbol}: No order ID returned - {error_msg}")
+                                            elif error_type == "exception":
+                                                logger.error(f"❌ SELL order creation failed for {symbol}: Exception - {error_msg}")
+                                            else:
+                                                logger.warning(f"⚠️ SELL order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
+                                        elif order_result:
+                                            # Success case - order was created
+                                            filled_price = order_result.get("filled_price")
+                                            if filled_price:
+                                                logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
+                                            persist_price = filled_price or current_price
+                                            if not sell_state_recorded:
+                                                try:
+                                                    record_signal_event(
+                                                        db,
+                                                        symbol=symbol,
+                                                        strategy_key=strategy_key,
+                                                        side="SELL",
+                                                        price=persist_price,
+                                                        source="order",
+                                                        emit_reason="Order created",
+                                                    )
+                                                    sell_state_recorded = True
+                                                except Exception as state_err:
+                                                    logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
                                         else:
-                                            logger.warning(f"⚠️ SELL order creation failed for {symbol} (error_type: {error_type}, reason: {error_msg or 'unknown'})")
-                                    elif order_result:
-                                        # Success case - order was created
-                                        filled_price = order_result.get("filled_price")
-                                        if filled_price:
-                                            logger.info(f"✅ SELL order created successfully for {symbol}: filled_price=${filled_price:.4f}")
-                                        persist_price = filled_price or current_price
-                                        if not sell_state_recorded:
-                                            try:
-                                                record_signal_event(
-                                                    db,
-                                                    symbol=symbol,
-                                                    strategy_key=strategy_key,
-                                                    side="SELL",
-                                                    price=persist_price,
-                                                    source="order",
-                                                    emit_reason="Order created",
-                                                )
-                                                sell_state_recorded = True
-                                            except Exception as state_err:
-                                                logger.warning(f"Failed to persist SELL throttle state after order for {symbol}: {state_err}")
-                                    else:
-                                        # order_result is None or falsy
-                                        logger.warning(f"⚠️ SELL order creation returned None for {symbol} (unknown reason)")
-                                except Exception as order_err:
-                                    logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
-                                    # Don't raise - alert was sent, order creation is secondary
+                                            # order_result is None or falsy
+                                            logger.warning(f"⚠️ SELL order creation returned None for {symbol} (unknown reason)")
+                                    except Exception as order_err:
+                                        logger.error(f"❌ SELL order creation failed for {symbol}: {order_err}", exc_info=True)
+                                        # Don't raise - alert was sent, order creation is secondary
                         else:
                             # Log specific reason why order wasn't created
                             reasons = []
@@ -6731,21 +6803,20 @@ class SignalMonitorService:
             # leverage_value is already set from trading_decision above
             logger.info(f"📊 ORDER PARAMETERS: symbol={symbol}, side={side_upper}, notional={amount_usd}, is_margin={use_margin}, leverage={leverage_value}")
             
-            # Check trading guardrails before order placement
+            # Check trading guardrails before order placement (PR#4: reason_code for TRADE_BLOCKED)
             from app.utils.trading_guardrails import can_place_real_order
-            allowed, block_reason = can_place_real_order(
+            allowed, block_reason, reason_code = can_place_real_order(
                 db=db,
                 symbol=symbol,
                 order_usd_value=amount_usd,
                 side="BUY",
             )
             if not allowed:
-                # Create DecisionReason for SKIP
                 from app.utils.decision_reason import make_skip, ReasonCode
                 import uuid
                 correlation_id = str(uuid.uuid4())
                 decision_reason = make_skip(
-                    reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+                    reason_code=reason_code or ReasonCode.GUARDRAIL_BLOCKED.value,
                     message=f"Trading guardrail blocked order for {symbol}: {block_reason}",
                     context={
                         "symbol": symbol,
@@ -6757,7 +6828,6 @@ class SignalMonitorService:
                     correlation_id=correlation_id,
                 )
                 logger.info(f"[DECISION] symbol={symbol} decision=SKIPPED reason={decision_reason.reason_code} context={decision_reason.context}")
-                # Emit TRADE_BLOCKED lifecycle event
                 _emit_lifecycle_event(
                     db=db,
                     symbol=symbol,
@@ -6768,20 +6838,20 @@ class SignalMonitorService:
                     event_reason=block_reason,
                     decision_reason=decision_reason,
                 )
-                # Send Telegram alert
                 try:
                     if self._telegram_send_enabled():
+                        code_line = f"\n📋 <b>Reason code:</b> {reason_code}" if reason_code else ""
                         telegram_notifier.send_message(
                             f"🚫 <b>TRADE BLOCKED</b>\n\n"
                             f"📊 Symbol: <b>{symbol}</b>\n"
-                        f"🔄 Side: BUY\n"
-                        f"💵 Value: ${amount_usd:.2f}\n\n"
-                        f"🚫 <b>Reason:</b> {block_reason}",
-                        symbol=symbol,
-                    )
+                            f"🔄 Side: BUY\n"
+                            f"💵 Value: ${amount_usd:.2f}\n\n"
+                            f"🚫 <b>Reason:</b> {block_reason}{code_line}",
+                            symbol=symbol,
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to send Telegram alert for blocked order: {e}")
-                
+
                 logger.warning(f"🚫 TRADE_BLOCKED: {symbol} BUY - {block_reason}")
                 return None  # Block order
 
