@@ -4785,7 +4785,7 @@ class SignalMonitorService:
                         import uuid
                         correlation_id = str(uuid.uuid4())
                         decision_reason = make_skip(
-                            reason_code=ReasonCode.GUARDRAIL_BLOCKED.value,
+                            reason_code=ReasonCode.PORTFOLIO_LIMIT.value,
                             message=f"Portfolio value limit exceeded for {symbol}. Portfolio value ${portfolio_value:.2f} > limit ${limit_value:.2f} (3x trade_amount).",
                             context={
                                 "symbol": symbol,
