@@ -2,6 +2,8 @@
 
 Claw proposes commands; you approve; SSH runs as `ubuntu` with the dedicated key. Nothing runs without typing `YES`.
 
+**Triple containment:** denylist blocks dangerous patterns → allowlist permits only read-only diagnostics → you approve with `YES` → audit + log.
+
 ## One-time setup (you do this on your Mac / EC2)
 
 1. **Create SSH key** (does not touch existing keys):
@@ -23,18 +25,21 @@ Claw proposes commands; you approve; SSH runs as `ubuntu` with the dedicated key
 ./ops/clawctl/clawctl.sh "ps -eo ppid=,stat= | awk '\$2 ~ /^Z/ {print \$1}' | sort | uniq -c | sort -nr | head -20"
 ```
 
+- **Denylist** blocks dangerous commands (exit 2). **Allowlist** permits only diagnostic commands (exit 3 if outside scope).
 - Script shows the command and asks for `YES`.
 - On `YES`, it SSHs to EC2, runs the command, and saves output under `ops/clawctl/logs/`.
-- Requests and approved commands are stored under `requests/` and `approved/`.
+- Requests and approved commands are stored under `requests/` and `approved/`. Approved runs are appended to `audit.md`.
+- Each run is also appended as one JSON line to `logs/ec2_exec.jsonl` (ts, host, cmd, rc, duration_s, request, approved, log) for search, dashboards, and scripting. The script exits with the remote command’s exit code.
 
 ## Workflow with Claw
 
-- You ask Claw: “Propose the exact read-only command to run on EC2.”
+- You ask Claw: “Propose read-only diagnostics to …” (e.g. identify zombie parent PIDs and the systemd unit responsible).
 - Claw outputs one line; you run: `./ops/clawctl/clawctl.sh "<paste>"`
 - Claw never gets SSH; execution is only after your confirmation.
 
 ## Optional next steps
 
-- Command denylist (e.g. block `rm`, `kill`, `docker stop`).
-- Auto-logging to a markdown audit report.
-- Integration as an OpenClaw tool.
+- Wire as an official OpenClaw tool.
+- Structured JSON logging for analytics.
+- Dry-run diff mode for docker/systemd.
+- Auto-batching for long investigations.
