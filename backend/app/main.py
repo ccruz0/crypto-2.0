@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Prometheus metrics (Phase 7 observability)
 try:
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter, Histogram  # type: ignore[reportMissingImports]
     _http_requests_total = Counter(
         "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
     )
@@ -221,9 +221,13 @@ logger.info(f"CORS middleware enabled with origins: {cors_origins}")
 @app.on_event("startup")
 async def startup_event():
     """Startup event - must complete immediately to allow requests"""
+    # Resolve Telegram token early (encrypted only)
+    try:
+        from app.core.telegram_secrets import resolve_telegram_token
+        resolve_telegram_token()
+    except RuntimeError:
+        raise
     # Normalize legacy AWS env vars into canonical names
-    if not os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_BOT_TOKEN_AWS"):
-        os.environ["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN_AWS", "")
     if not os.getenv("TELEGRAM_CHAT_ID") and os.getenv("TELEGRAM_CHAT_ID_AWS"):
         os.environ["TELEGRAM_CHAT_ID"] = os.getenv("TELEGRAM_CHAT_ID_AWS", "")
     if not os.getenv("ADMIN_ACTIONS_KEY") and os.getenv("DIAGNOSTICS_API_KEY"):
@@ -242,8 +246,6 @@ async def startup_event():
     run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower() in ("1", "true", "yes", "on")
     if is_aws() and run_telegram:
         missing = []
-        if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
-            missing.append("TELEGRAM_BOT_TOKEN")
         if not (os.getenv("TELEGRAM_CHAT_ID") or "").strip():
             missing.append("TELEGRAM_CHAT_ID")
         if missing:
@@ -289,6 +291,8 @@ async def startup_event():
             if engine and Base:
                 def init_db():
                     try:
+                        # Ensure all SQLAlchemy models are registered before create_all
+                        import app.models  # noqa: F401
                         Base.metadata.create_all(bind=engine)
                         if ensure_optional_columns:
                             ensure_optional_columns(engine)

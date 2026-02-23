@@ -19,6 +19,7 @@ except ModuleNotFoundError as e:
     else:
         raise
 from app.models.dedup_events_week5 import DedupEventWeek5
+from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 
 __all__ = [
     "WatchlistItem",
@@ -41,6 +42,8 @@ __all__ = [
     "OrderIntent",
     "FillEventDedup",
     "DedupEventWeek5",
+    "PortfolioBalance",
+    "PortfolioSnapshot",
 ]
 
 
