@@ -4591,7 +4591,15 @@ def process_telegram_commands(db: Session = None) -> None:
         # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
         # If lock cannot be acquired, another poller is active - skip this cycle
         if not _acquire_poller_lock(db):
-            logger.debug("[TG] Another poller is active, skipping this cycle")
+            if os.environ.get("TELEGRAM_SELF_TERMINATE_ON_LOCK_FAIL") == "1" and is_aws_runtime():
+                logger.warning(
+                    "[TG] Poller lock not acquired in AWS and TELEGRAM_SELF_TERMINATE_ON_LOCK_FAIL=1; "
+                    "exiting process to prevent duplicate pollers"
+                )
+                sys.exit(0)
+            logger.warning("[TG] Another poller is active; skipping this cycle (no polling). Set TELEGRAM_SELF_TERMINATE_ON_LOCK_FAIL=1 on AWS to self-terminate.")
+            if is_aws_runtime():
+                time.sleep(5)
             return
         
         try:

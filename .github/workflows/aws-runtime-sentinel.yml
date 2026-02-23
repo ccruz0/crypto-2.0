@@ -1,0 +1,109 @@
+name: AWS Runtime Sentinel
+
+on:
+  schedule:
+    # Daily at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  verify-and-alert:
+    name: Verify production and alert on drift
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-southeast-1
+      AWS_DEFAULT_REGION: ap-southeast-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install boto3
+
+      - name: Run AWS runtime verification
+        id: verify
+        run: |
+          python scripts/aws_runtime_verify.py --json-out runtime-report.json --history-dir runtime-history
+          code=$?
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 0 ]; then
+            echo "classification=PRODUCTION_SAFE" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 1 ]; then
+            echo "classification=PRODUCTION_AT_RISK" >> "$GITHUB_OUTPUT"
+          else
+            echo "classification=CRITICAL_RUNTIME_VIOLATION" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Auto-kill escalation
+        if: steps.verify.outputs.exitcode == '2' && secrets.ALLOW_AUTO_KILL == 'true'
+        run: |
+          python scripts/aws_runtime_verify.py --json-out runtime-report.json --history-dir runtime-history --auto-kill
+          echo "Auto-kill run completed (remediation.attempted=true in runtime-report.json)"
+          exit 0
+
+      # Upload after auto-kill so artifact contains final JSON (with remediation when CRITICAL)
+      - name: Upload runtime artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-sentinel-artifacts
+          path: |
+            runtime-report.json
+            runtime-history/
+
+      - name: Log production safe
+        if: steps.verify.outputs.exitcode == '0'
+        run: echo "Production Safe"
+
+      - name: Send Telegram alert
+        if: steps.verify.outputs.exitcode != '0'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set; skipping Telegram alert"
+            exit 0
+          fi
+          CLASSIFICATION="${{ steps.verify.outputs.classification }}"
+          INSTANCE="atp-rebuild-2026"
+          REGION="ap-southeast-1"
+          if [ "${{ steps.verify.outputs.exitcode }}" = "2" ] && [ "${{ secrets.ALLOW_AUTO_KILL }}" = "true" ]; then
+            AUTO_KILL_MSG="auto-kill attempted"
+          elif [ "${{ steps.verify.outputs.exitcode }}" = "2" ]; then
+            AUTO_KILL_MSG="auto-kill skipped (ALLOW_AUTO_KILL not true)"
+          else
+            AUTO_KILL_MSG="auto-kill not run (only for CRITICAL)"
+          fi
+          MESSAGE="🚨 AWS Runtime Alert
+          Classification: ${CLASSIFICATION}
+          Instance: ${INSTANCE}
+          Region: ${REGION}
+          ${AUTO_KILL_MSG}
+          Action Required: Review aws_runtime_verify output and artifacts."
+          TEXT=$(echo "$MESSAGE" | sed 's/^          //')
+          PAYLOAD=$(jq -n --arg chat "$TELEGRAM_CHAT_ID" --arg text "$TEXT" '{chat_id: $chat, text: $text}')
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            -o /tmp/telegram_response.json
+          if ! grep -q '"ok":true' /tmp/telegram_response.json 2>/dev/null; then
+            echo "::warning::Telegram API returned non-OK response (check TELEGRAM_CHAT_ID and bot token)"
+          fi
+
+      - name: Emit error summary
+        if: steps.verify.outputs.exitcode != '0'
+        run: |
+          echo "::error::Production runtime is not PRODUCTION_SAFE. Classification: ${{ steps.verify.outputs.classification }}"
+
+      - name: Fail job if not safe
+        if: steps.verify.outputs.exitcode != '0'
+        run: exit ${{ steps.verify.outputs.exitcode }}
