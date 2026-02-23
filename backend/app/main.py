@@ -225,6 +225,8 @@ async def startup_event():
     try:
         from app.core.telegram_secrets import resolve_telegram_token
         resolve_telegram_token()
+    except ModuleNotFoundError:
+        logger.warning("app.core.telegram_secrets not found; Telegram token from env only")
     except RuntimeError:
         raise
     # Normalize legacy AWS env vars into canonical names
