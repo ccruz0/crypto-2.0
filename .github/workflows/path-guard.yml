@@ -1,0 +1,79 @@
+# Path Guard — CI security gate for protected paths.
+# PRs that touch protected paths (trading, secrets, deploy) ALWAYS fail; no label bypass.
+# See: docs/openclaw/ARCHITECTURE.md §8, docs/openclaw/LABEL_BYPASS_AUDIT_REPORT.md
+name: Path Guard
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  path-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          git fetch origin "${{ github.event.pull_request.base.ref }}"
+          FILES=$(git diff --name-only "$BASE"..."$HEAD" 2>/dev/null || git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD 2>/dev/null || echo "")
+          echo "changed<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Check protected paths
+        run: |
+          set -e
+          CHANGED="${{ steps.changed.outputs.changed }}"
+          PROTECTED=(
+            "backend/app/api/routes_control.py"
+            "backend/app/api/routes_manual_trade.py"
+            "backend/app/api/routes_orders.py"
+            "backend/app/services/brokers/crypto_com_trade.py"
+            "backend/app/core/runtime.py"
+            "backend/app/utils/trading_guardrails.py"
+            "backend/app/core/telegram_secrets.py"
+            "secrets/"
+            ".env.aws"
+            ".env.prod.example"
+            "secrets/runtime.env.example"
+            "nginx/dashboard.conf"
+            "docker-compose.yml"
+            "backend/Dockerfile.aws"
+            ".github/workflows/deploy.yml"
+          )
+          VIOLATIONS=""
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            for p in "${PROTECTED[@]}"; do
+              if [ "${p: -1}" = "/" ]; then
+                prefix="${p%/}"
+                if [ "$file" = "$prefix" ] || [ "${file#$prefix/}" != "$file" ]; then
+                  VIOLATIONS="${VIOLATIONS}\n  - $file (protected: $p)"
+                  break
+                fi
+              else
+                if [ "$file" = "$p" ] || [ "${file#$p}" != "$file" ]; then
+                  VIOLATIONS="${VIOLATIONS}\n  - $file (protected: $p)"
+                  break
+                fi
+              fi
+            done
+          done <<< "$CHANGED"
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Changes touch protected paths. Remove changes from protected paths or merge via an explicit branch rule override (no label bypass)."
+            echo -e "Protected path violations:$VIOLATIONS"
+            exit 1
+          fi
+          echo "No protected paths changed. Pass."
+          exit 0
