@@ -48,10 +48,8 @@ def _redact_telegram_url(url: str) -> str:
 try:
     import requests
     REQUESTS_AVAILABLE = True
-    requests_exceptions = requests.exceptions  # re-export for exception handling in callers
 except ImportError:
     REQUESTS_AVAILABLE = False
-    requests_exceptions = None  # type: ignore
     logger.warning("requests library not available")
 
 # Try to import aiohttp (async)
@@ -60,20 +58,6 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
-
-
-def is_aws_metadata_reachable(timeout: float = 1.0) -> bool:
-    """
-    Check if AWS instance metadata (169.254.169.254) is reachable.
-    Uses urllib only inside this module (single allowed place for urllib.request).
-    """
-    try:
-        import urllib.request
-        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/", method="GET")
-        urllib.request.urlopen(req, timeout=timeout)
-        return True
-    except Exception:
-        return False
 
 
 def http_get(

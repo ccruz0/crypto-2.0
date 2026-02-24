@@ -10,17 +10,20 @@ import random
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-# Async HTTP availability: use http_client's aiohttp/httpx (no direct aiohttp import here)
-from app.utils.http_client import async_http_get, AIOHTTP_AVAILABLE
+try:
+    import aiohttp  # type: ignore
+
+    _USE_AIOHTTP = True
+except ImportError:  # pragma: no cover - environment dependent
+    aiohttp = None
+    _USE_AIOHTTP = False
 
 try:
     import httpx  # type: ignore
-    _HTTPX_AVAILABLE = True
 except ImportError:  # pragma: no cover - environment dependent
     httpx = None
-    _HTTPX_AVAILABLE = False
 
-HTTP_CLIENT_AVAILABLE = AIOHTTP_AVAILABLE or _HTTPX_AVAILABLE
+HTTP_CLIENT_AVAILABLE = _USE_AIOHTTP or httpx is not None
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,7 @@ async def _http_get_json(url: str, timeout: Optional[float] = None) -> Tuple[Opt
         timeout = 5.0
 
     # Use mandatory http_client which enforces egress guard
+    from app.utils.http_client import async_http_get
     return await async_http_get(url, timeout=timeout, calling_module="data_sources._http_get_json")
 
 class DataSource:

@@ -9,13 +9,14 @@ from datetime import datetime
 from enum import Enum
 from os import getpid
 import pytz
+import requests
 from app.core.config import Settings
 from app.core.runtime import is_aws_runtime, get_runtime_origin
 from app.core.environment import getRuntimeEnv
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
 from app.models.trading_settings import TradingSettings
-from app.utils.http_client import http_get, http_post, requests_exceptions
+from app.utils.http_client import http_get, http_post
 
 logger = logging.getLogger(__name__)
 
@@ -581,7 +582,7 @@ class TelegramNotifier:
                         logger.debug(f"Could not persist failed Telegram send to DB: {db_err}")
                 
                 response.raise_for_status()
-            except requests_exceptions.HTTPError as e:
+            except requests.exceptions.HTTPError as e:
                 # Log Telegram error with details
                 status_code = e.response.status_code if hasattr(e, 'response') and e.response else "unknown"
                 error_body = e.response.text[:200] if hasattr(e, 'response') and e.response else str(e)[:200] if str(e) else "unknown"
