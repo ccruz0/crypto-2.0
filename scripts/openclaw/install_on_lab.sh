@@ -37,10 +37,15 @@ chmod 700 ~/secrets
 if [ ! -s ~/secrets/openclaw_token ]; then
   touch ~/secrets/openclaw_token
   chmod 600 ~/secrets/openclaw_token
-  echo "Paste your GitHub fine-grained PAT (Contents R/W, Pull requests R/W, Metadata R), then Enter:"
-  read -r -s TOKEN
-  echo -n "$TOKEN" > ~/secrets/openclaw_token
-  unset TOKEN
+  if [ -n "${OPENCLAW_TOKEN-}" ]; then
+    echo -n "$OPENCLAW_TOKEN" > ~/secrets/openclaw_token
+    unset OPENCLAW_TOKEN
+  else
+    echo "Paste your GitHub fine-grained PAT (Contents R/W, Pull requests R/W, Metadata R), then Enter:"
+    read -r -s TOKEN
+    echo -n "$TOKEN" > ~/secrets/openclaw_token
+    unset TOKEN
+  fi
 fi
 test -r ~/secrets/openclaw_token && echo "Token file OK" || { echo "ERROR: no token"; exit 1; }
 
