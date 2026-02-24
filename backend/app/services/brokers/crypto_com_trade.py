@@ -12,11 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from contextvars import ContextVar
 
-# Import requests for exception types (used in exception handlers)
-import requests
-
-# Use mandatory http_client wrapper for all outbound HTTP requests
-from app.utils.http_client import http_get, http_post
+# Use mandatory http_client wrapper for all outbound HTTP requests and exception types
+from app.utils.http_client import http_get, http_post, requests_exceptions
 
 from .crypto_com_constants import REST_BASE, CONTENT_TYPE_JSON
 from app.core.crypto_com_guardrail import (
@@ -989,7 +986,7 @@ class CryptoComTradeClient:
                 else:
                     logger.error(f"Unexpected proxy response for account summary: {result}")
                     return {"accounts": []}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     fr = self._fallback_balance()
@@ -1448,7 +1445,7 @@ class CryptoComTradeClient:
                 logger.error(f"Unexpected response format: {result}")
                 raise ValueError(f"Invalid response format: {result}")
                 
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             logger.error(f"HTTP error getting account balance: {e}")
             # NO SIMULATED DATA - Raise error instead
             raise RuntimeError(f"Failed to get account balance from Crypto.com: {e}")
@@ -1722,7 +1719,7 @@ class CryptoComTradeClient:
                             logger.info(f"Failover successful: retrieved {len(orders)} orders from TRADE_BOT")
                             return {"data": orders if isinstance(orders, list) else []}
                     return {"data": []}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     fr = self._fallback_open_orders()
@@ -1770,7 +1767,7 @@ class CryptoComTradeClient:
             data = result.get("result", {}).get("data", [])
             return {"data": data}
             
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             logger.error(f"Network error getting open orders: {e}")
             return {"error": str(e)}
         except Exception as e:
@@ -1813,7 +1810,7 @@ class CryptoComTradeClient:
 
                 logger.warning(f"Unexpected proxy response for trigger orders: {result}")
                 return {"data": []}
-            except requests.exceptions.RequestException as exc:
+            except requests_exceptions.RequestException as exc:
                 logger.error(f"Proxy trigger orders error: {exc}")
                 return {"data": []}
 
@@ -1856,7 +1853,7 @@ class CryptoComTradeClient:
             data = result.get("result", {}).get("data", [])
             logger.info(f"Retrieved {len(data) if isinstance(data, list) else 0} trigger orders from Crypto.com")
             return {"data": data if isinstance(data, list) else []}
-        except requests.exceptions.RequestException as exc:
+        except requests_exceptions.RequestException as exc:
             logger.error(f"Network error getting trigger orders: {exc}")
             return {"data": []}
         except Exception as exc:
@@ -3155,7 +3152,7 @@ class CryptoComTradeClient:
             logger.warning(f"Unexpected response format: {result}")
             return {"data": []}
             
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             logger.error(f"Network error getting order history: {e}")
             return {"data": []}
         except Exception as e:
@@ -3536,7 +3533,7 @@ class CryptoComTradeClient:
                 else:
                     logger.error(f"Unexpected proxy response: {result}")
                     return {"error": "Failed to place market order via proxy"}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     order_data = {
@@ -3826,7 +3823,7 @@ class CryptoComTradeClient:
                 logger.debug(f"Full response: {result}")
                 
                 return result.get("result", {})
-            except requests.exceptions.HTTPError as e:
+            except requests_exceptions.HTTPError as e:
                 # Handle other HTTP errors (4xx, 5xx)
                 resp = response or getattr(e, "response", None)
                 if resp is not None:
@@ -3844,7 +3841,7 @@ class CryptoComTradeClient:
                         return {"error": f"{resp.status_code} Server Error: {str(e)}"}
                 logger.error(f"HTTP error placing market order: {e}")
                 return {"error": str(e)}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.error(f"Network error placing market order: {e}")
                 return {"error": str(e)}
             except Exception as e:
@@ -4091,7 +4088,7 @@ class CryptoComTradeClient:
                 else:
                     logger.error(f"Unexpected proxy response: {result}")
                     return {"error": "Failed to place limit order via proxy"}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     order_data = {
@@ -4203,7 +4200,7 @@ class CryptoComTradeClient:
             
             return result.get("result", {})
             
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             margin_status = f"MARGIN (leverage={params.get('leverage', 'N/A')})" if is_margin else "SPOT"
             logger.error(f"❌ Network error placing {margin_status} limit order for {symbol}: {e}")
             # Try to parse error response for more details
@@ -4283,7 +4280,7 @@ class CryptoComTradeClient:
                 else:
                     logger.error(f"Unexpected proxy response: {result}")
                     return {"error": "Failed to cancel order via proxy"}
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"Proxy error: {e} - attempting failover to TRADE_BOT")
                 if _should_failover(None, e):
                     fr = self._fallback_cancel_order(order_id)
@@ -4316,7 +4313,7 @@ class CryptoComTradeClient:
             
             return result.get("result", {})
             
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             logger.error(f"Network error cancelling order: {e}")
             return {"error": str(e)}
         except Exception as e:
@@ -4605,7 +4602,7 @@ class CryptoComTradeClient:
                         logger.warning(f"Proxy SL order success but missing order_id: {result}")
                         last_error = "Proxy success missing order_id"
                         continue
-                    except requests.exceptions.RequestException as proxy_err:
+                    except requests_exceptions.RequestException as proxy_err:
                         logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
                         # Fall through to direct API call below
                     except Exception as proxy_err:
@@ -4876,9 +4873,8 @@ class CryptoComTradeClient:
                             
                             if not got_instrument_info_retry:
                                 try:
-                                    import requests as req
                                     inst_url = "https://api.crypto.com/exchange/v1/public/get-instruments"
-                                    inst_response = req.get(inst_url, timeout=10)
+                                    inst_response = http_get(inst_url, timeout=10, calling_module="crypto_com_trade")
                                     if inst_response.status_code == 200:
                                         inst_data = inst_response.json()
                                         if "result" in inst_data and "instruments" in inst_data["result"]:
@@ -5089,7 +5085,7 @@ class CryptoComTradeClient:
                 
                 return result.get("result", {})
                 
-            except requests.exceptions.RequestException as e:
+            except requests_exceptions.RequestException as e:
                 logger.warning(f"⚠️ Variation {variation_idx} failed with network error: {e}. Trying next variation...")
                 last_error = str(e)
                 continue  # Try next variation
@@ -5405,7 +5401,7 @@ class CryptoComTradeClient:
                                 logger.warning(f"Proxy TP order success but missing order_id: {result}")
                                 last_error = "Proxy success missing order_id"
                                 continue
-                            except requests.exceptions.RequestException as proxy_err:
+                            except requests_exceptions.RequestException as proxy_err:
                                 logger.warning(f"Proxy error: {proxy_err} - falling back to direct API call")
                                 # Fall through to direct API call below
                             except Exception as proxy_err:
@@ -5449,7 +5445,7 @@ class CryptoComTradeClient:
                                 timeout=10,
                                 calling_module="crypto_com_trade.place_take_profit_order",
                             )
-                        except requests.exceptions.RequestException as e:
+                        except requests_exceptions.RequestException as e:
                             logger.warning(
                                 f"⚠️ Variation {variation_name_full} failed with network error: {e}. Trying next variation..."
                             )
@@ -6075,7 +6071,7 @@ class CryptoComTradeClient:
                 logger.error(f"Unexpected response format: {result}")
                 return []
                 
-        except requests.exceptions.RequestException as e:
+        except requests_exceptions.RequestException as e:
             logger.error(f"HTTP error getting instruments: {e}")
             # Return common symbols as fallback
             return ["BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "ADA_USDT", "DOGE_USDT", "XRP_USDT", "MATIC_USDT"]

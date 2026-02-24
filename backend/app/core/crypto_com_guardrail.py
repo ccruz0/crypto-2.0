@@ -10,6 +10,8 @@ import os
 import sys
 from typing import Literal, Optional
 
+from app.utils.http_client import is_aws_metadata_reachable
+
 logger = logging.getLogger(__name__)
 
 ContextKind = Literal["AWS", "LOCAL_VIA_SSH_PROXY", "LOCAL"]
@@ -64,13 +66,8 @@ def _is_aws() -> bool:
                     return True
     except OSError:
         pass
-    try:
-        import urllib.request
-        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/", method="GET")
-        urllib.request.urlopen(req, timeout=1)
+    if is_aws_metadata_reachable(timeout=1.0):
         return True
-    except Exception:
-        pass
     return False
 
 

@@ -10,7 +10,6 @@ import time
 import tempfile
 import sys
 import json
-import requests
 from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -23,7 +22,7 @@ from sqlalchemy.sql import func
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
-from app.utils.http_client import http_get, http_post
+from app.utils.http_client import http_get, http_post, requests_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +326,7 @@ def _run_startup_diagnostics() -> None:
             except Exception as probe_err:
                 logger.error(f"{log_prefix} getUpdates probe error: {probe_err}")
             
-    except requests.exceptions.HTTPError as e:
+    except requests_exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 401:
             _telegram_startup_401 = True
             logger.warning("[TG] Startup diagnostics failed: unauthorized (token invalid) — disabling Telegram commands")
@@ -849,7 +848,7 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
             error_desc = result.get('description', 'Unknown error')
             logger.error(f"[TG] Menu message API returned not OK: {error_desc}, full response: {result}")
             return False
-    except requests.exceptions.HTTPError as e:
+    except requests_exceptions.HTTPError as e:
         error_body = e.response.text if hasattr(e, 'response') and e.response else str(e)
         logger.error(f"[TG][ERROR] HTTP error sending menu message to chat_id={chat_id}: {e}, response: {error_body}")
         return False
@@ -1003,10 +1002,10 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         if data.get("ok"):
             return data.get("result", [])
         return []
-    except requests.exceptions.Timeout:
+    except requests_exceptions.Timeout:
         # Timeout is expected when no new messages - return empty list
         return []
-    except requests.exceptions.HTTPError as http_err:
+    except requests_exceptions.HTTPError as http_err:
         status = getattr(http_err.response, 'status_code', None)
         if status == 409:
             # 409 conflict - another client is polling or webhook is active
