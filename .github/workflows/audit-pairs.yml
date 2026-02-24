@@ -15,6 +15,10 @@ on:
       - 'backend/scripts/fix_watchlist_duplicates.py'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   audit:
     runs-on: ubuntu-latest

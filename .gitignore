@@ -45,6 +45,7 @@
 .env.production.local
 .env.secrets.local
 .env.test.local
+.env.lab
 .hypothesis/
 .idea/
 .installed.cfg

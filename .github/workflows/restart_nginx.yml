@@ -3,6 +3,9 @@ name: Restart Nginx on AWS
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   restart-nginx:
     runs-on: ubuntu-latest

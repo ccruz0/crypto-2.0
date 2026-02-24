@@ -13,6 +13,10 @@ on:
       - '.github/workflows/dashboard-data-integrity.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   dashboard-data-integrity:
     runs-on: ubuntu-latest
@@ -26,129 +30,129 @@ jobs:
           
       - name: Checkout code
         uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+        with:
+          fetch-depth: 0
+
+      - name: Checkout frontend repository
+        continue-on-error: true
+        run: |
+          if [ -d "frontend/.git" ]; then
+            echo "✅ Frontend is a git repository, checking out..."
+            cd frontend
+            git fetch origin || echo "⚠️ Git fetch failed, continuing..."
+            git checkout main || git checkout master || git checkout $(git branch -r | head -1 | sed 's/origin\///' | xargs) || echo "⚠️ Git checkout failed, continuing with current branch..."
+            cd ..
+          else
+            echo "⚠️ Frontend is not a git repository, cloning..."
+            rm -rf frontend
+            git clone https://github.com/ccruz0/frontend.git frontend || {
+              echo "❌ Failed to clone frontend repository"
+              echo "⚠️ This might be due to authentication. Checking if frontend directory exists..."
+              if [ ! -d "frontend" ]; then
+                echo "❌ Frontend directory does not exist and clone failed."
+                echo "⚠️ Workflow will continue but tests may fail"
+              fi
+            }
+          fi
+          echo "✅ Frontend checkout complete"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify frontend directory
+        continue-on-error: true
+        run: |
+          if [ ! -d "frontend" ]; then
+            echo "⚠️ frontend directory not found - workflow will continue"
+            exit 0
+          fi
+          echo "✅ frontend directory exists"
+          ls -la frontend/ | head -10
+          if [ ! -f "frontend/package.json" ]; then
+            echo "⚠️ package.json not found in frontend directory - workflow will continue"
+            exit 0
+          fi
+          echo "✅ package.json found"
+
+      - name: Install dependencies
+        continue-on-error: true
+        working-directory: frontend
+        run: |
+          if [ ! -f package.json ]; then
+            echo "⚠️ package.json not found - skipping dependency installation"
+            exit 0
+          fi
+          if [ -f package-lock.json ]; then
+            npm ci || npm install || echo "⚠️ npm install failed, continuing..."
+          else
+            npm install || echo "⚠️ npm install failed, continuing..."
+          fi
+          exit 0  # Always succeed
+
+      - name: Install Playwright browsers
+        continue-on-error: true
+        working-directory: frontend
+        run: npx playwright install --with-deps
       
-    - name: Checkout frontend repository
-      continue-on-error: true
-      run: |
-        if [ -d "frontend/.git" ]; then
-          echo "✅ Frontend is a git repository, checking out..."
-          cd frontend
-          git fetch origin || echo "⚠️ Git fetch failed, continuing..."
-          git checkout main || git checkout master || git checkout $(git branch -r | head -1 | sed 's/origin\///' | xargs) || echo "⚠️ Git checkout failed, continuing with current branch..."
-          cd ..
-        else
-          echo "⚠️ Frontend is not a git repository, cloning..."
-          rm -rf frontend
-          git clone https://github.com/ccruz0/frontend.git frontend || {
-            echo "❌ Failed to clone frontend repository"
-            echo "⚠️ This might be due to authentication. Checking if frontend directory exists..."
-            if [ ! -d "frontend" ]; then
-              echo "❌ Frontend directory does not exist and clone failed."
-              echo "⚠️ Workflow will continue but tests may fail"
-            fi
-          }
-        fi
-        echo "✅ Frontend checkout complete"
-      
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-        
-    - name: Verify frontend directory
-      continue-on-error: true
-      run: |
-        if [ ! -d "frontend" ]; then
-          echo "⚠️ frontend directory not found - workflow will continue"
-          exit 0
-        fi
-        echo "✅ frontend directory exists"
-        ls -la frontend/ | head -10
-        if [ ! -f "frontend/package.json" ]; then
-          echo "⚠️ package.json not found in frontend directory - workflow will continue"
-          exit 0
-        fi
-        echo "✅ package.json found"
-        
-    - name: Install dependencies
-      continue-on-error: true
-      working-directory: frontend
-      run: |
-        if [ ! -f package.json ]; then
-          echo "⚠️ package.json not found - skipping dependency installation"
-          exit 0
-        fi
-        if [ -f package-lock.json ]; then
-          npm ci || npm install || echo "⚠️ npm install failed, continuing..."
-        else
-          npm install || echo "⚠️ npm install failed, continuing..."
-        fi
-        exit 0  # Always succeed
-      
-    - name: Install Playwright browsers
-      continue-on-error: true
-      working-directory: frontend
-      run: npx playwright install --with-deps
-      
-    - name: Run data integrity tests
-      id: run_tests
-      continue-on-error: true
-      working-directory: frontend
-      env:
-        BASE_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
-        DASHBOARD_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
-        API_URL: ${{ secrets.API_URL || 'https://dashboard.hilovivo.com/api' }}
-      run: npx playwright test tests/data-integrity --reporter=html
-      
-    - name: Upload Playwright report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: playwright-report
-        path: frontend/playwright-report/
-        retention-days: 30
-        
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results
-        path: frontend/test-results/
-        retention-days: 30
-        
-    - name: Upload discrepancy reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: data-integrity-reports
-        path: frontend/test-results/data-integrity/*.json
-        retention-days: 30
-        if-no-files-found: ignore
-        
-    - name: Generate consolidated JSON report
-      if: always()
-      working-directory: frontend
-      continue-on-error: true
-      env:
-        GITHUB_RUN_ID: ${{ github.run_id }}
-        GITHUB_SHA: ${{ github.sha }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
-      run: |
-        set +e  # Don't exit on error
-        mkdir -p reports
-        echo "Generating consolidated report..."
-        echo "GITHUB_RUN_ID: ${GITHUB_RUN_ID}"
-        echo "GITHUB_SHA: ${GITHUB_SHA}"
-        echo "GITHUB_REF_NAME: ${GITHUB_REF_NAME}"
-        
-        node -e '
-        const fs = require("fs");
-        const path = require("path");
-        
-        try {
-          const reportsDir = path.join(process.cwd(), "test-results/data-integrity");
+      - name: Run data integrity tests
+        id: run_tests
+        continue-on-error: true
+        working-directory: frontend
+        env:
+          BASE_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
+          API_URL: ${{ secrets.API_URL || 'https://dashboard.hilovivo.com/api' }}
+        run: npx playwright test tests/data-integrity --reporter=html
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 30
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: frontend/test-results/
+          retention-days: 30
+
+      - name: Upload discrepancy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-integrity-reports
+          path: frontend/test-results/data-integrity/*.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Generate consolidated JSON report
+        if: always()
+        working-directory: frontend
+        continue-on-error: true
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set +e  # Don't exit on error
+          mkdir -p reports
+          echo "Generating consolidated report..."
+          echo "GITHUB_RUN_ID: ${GITHUB_RUN_ID}"
+          echo "GITHUB_SHA: ${GITHUB_SHA}"
+          echo "GITHUB_REF_NAME: ${GITHUB_REF_NAME}"
+          
+          node -e '
+          const fs = require("fs");
+          const path = require("path");
+          
+          try {
+            const reportsDir = path.join(process.cwd(), "test-results/data-integrity");
           const outputPath = path.join(process.cwd(), "reports/dashboard-data-integrity.json");
           
           const report = {
@@ -251,334 +255,328 @@ jobs:
           
           fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
           console.log("✅ Consolidated report generated:", outputPath);
-        } catch (err) {
-          console.error("❌ Error generating report:", err);
-          process.exit(1);
-        }
-        ' || {
+          } catch (err) {
+            console.error("❌ Error generating report:", err);
+            process.exit(1);
+          }
+          ' || {
           echo "⚠️ Report generation had errors, but continuing..."
           # Create a minimal report if generation failed
           cat > reports/dashboard-data-integrity.json <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${GITHUB_RUN_ID}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${GITHUB_SHA}",
-    "branch": "${GITHUB_REF_NAME}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Report generation encountered an error. Please check workflow logs."
-}
-EOF
-        }
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${GITHUB_RUN_ID}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${GITHUB_SHA}",
+              "branch": "${GITHUB_REF_NAME}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Report generation encountered an error. Please check workflow logs."
+          }
+          EOF
+          }
         
-        if [ -f "reports/dashboard-data-integrity.json" ]; then
+          if [ -f "reports/dashboard-data-integrity.json" ]; then
           echo "✅ Report file created successfully"
           echo "Report size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
-        else
+          else
           echo "❌ Report file was not created even after fallback"
           echo "⚠️ Creating absolute minimal report..."
           mkdir -p reports
           cat > reports/dashboard-data-integrity.json <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${GITHUB_RUN_ID}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${GITHUB_SHA}",
-    "branch": "${GITHUB_REF_NAME}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Report generation failed. Please check workflow logs."
-}
-EOF
-          echo "✅ Minimal report created"
-        fi
-        
-    - name: Upload consolidated report artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: dashboard-data-integrity-report
-        path: frontend/reports/dashboard-data-integrity.json
-        retention-days: 30
-        if-no-files-found: ignore
-        
-    - name: Install jq
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y jq
-        
-    - name: Diagnostic - Check previous steps
-      if: always()
-      run: |
-        echo "=== DIAGNOSTIC: CHECKING PREVIOUS STEPS ==="
-        echo "Run tests outcome: ${{ steps.run_tests.outcome }}"
-        echo "Generate report outcome: ${{ steps.generate_report.outcome }}"
-        echo "Current directory: $(pwd)"
-        echo "Frontend directory exists: $([ -d frontend ] && echo 'yes' || echo 'no')"
-        if [ -d frontend ]; then
-          echo "Frontend reports directory exists: $([ -d frontend/reports ] && echo 'yes' || echo 'no')"
-          if [ -d frontend/reports ]; then
-            echo "Report files in frontend/reports:"
-            ls -la frontend/reports/ 2>&1 || echo "Cannot list reports directory"
-          fi
-        fi
-        
-    - name: POST report to backend
-      if: always()
-      continue-on-error: true
-      working-directory: frontend
-      env:
-        BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
-        REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
-        GITHUB_RUN_ID: ${{ github.run_id }}
-        GITHUB_SHA: ${{ github.sha }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
-      run: |
-        echo "=== POSTING REPORT TO BACKEND (Main Job) ==="
-        echo "Backend URL: ${BACKEND_URL}"
-        echo "GitHub Run ID: ${GITHUB_RUN_ID}"
-        echo "Current directory: $(pwd)"
-        echo "Report secret set: $([ -n "${REPORT_SECRET}" ] && echo 'yes' || echo 'no')"
-        
-        # Ensure we have a report file - create minimal if missing
-        if [ ! -f "reports/dashboard-data-integrity.json" ]; then
-          echo "⚠️ Report file not found, creating minimal report..."
-          mkdir -p reports
-          cat > reports/dashboard-data-integrity.json <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${GITHUB_RUN_ID}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${GITHUB_SHA}",
-    "branch": "${GITHUB_REF_NAME}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Report file was not generated. Please check workflow logs."
-}
-EOF
-        fi
-        
-        # Validate JSON before posting
-        echo "Validating report JSON..."
-        if ! jq empty reports/dashboard-data-integrity.json 2>/dev/null; then
-          echo "❌ Report file is not valid JSON, recreating..."
-          cat > reports/dashboard-data-integrity.json <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${GITHUB_RUN_ID}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${GITHUB_SHA}",
-    "branch": "${GITHUB_REF_NAME}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Report file was invalid JSON. Please check workflow logs."
-}
-EOF
-        fi
-        
-        # Ensure run_id and cursor_prompt are set
-        echo "Updating report with GitHub Run ID..."
-        jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' reports/dashboard-data-integrity.json > /tmp/report_updated.json
-        mv /tmp/report_updated.json reports/dashboard-data-integrity.json
-        
-        if ! jq -e '.cursor_prompt' reports/dashboard-data-integrity.json > /dev/null 2>&1; then
-          echo "⚠️ cursor_prompt missing, adding default..."
-          jq '.cursor_prompt = "Report generated from workflow run."' reports/dashboard-data-integrity.json > /tmp/report_updated.json
-          mv /tmp/report_updated.json reports/dashboard-data-integrity.json
-        fi
-        
-        echo "Report file size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
-        
-        # Post to backend with retry logic
-        MAX_RETRIES=3
-        RETRY_COUNT=0
-        SUCCESS=false
-        
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
-          RETRY_COUNT=$((RETRY_COUNT + 1))
-          echo ""
-          echo "📤 Attempt $RETRY_COUNT of $MAX_RETRIES: Posting report to backend..."
-          
-          HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
-            -H "Content-Type: application/json" \
-            -H "X-Report-Secret: ${REPORT_SECRET}" \
-            -d "@reports/dashboard-data-integrity.json" \
-            -w "%{http_code}" \
-            -s -o /tmp/report_response.json \
-            --max-time 30 \
-            --connect-timeout 10 \
-            --fail-with-body 2>&1 | tail -1 || echo "000")
-          
-          echo "HTTP Response Code: $HTTP_CODE"
-          
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-            echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
-            if [ -f /tmp/report_response.json ]; then
-              echo "Response: $(cat /tmp/report_response.json)"
-            fi
-            SUCCESS=true
-          else
-            echo "❌ Failed to post report (HTTP $HTTP_CODE)"
-            if [ -f /tmp/report_response.json ]; then
-              echo "Error Response: $(cat /tmp/report_response.json)"
-            fi
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-              echo "⏳ Waiting 5 seconds before retry..."
-              sleep 5
-            fi
-          fi
-        done
-        
-        if [ "$SUCCESS" = false ]; then
-          echo ""
-          echo "⚠️ WARNING: Failed to post report after $MAX_RETRIES attempts"
-          echo "Report file contents:"
-          cat reports/dashboard-data-integrity.json
-          echo ""
-          echo "⚠️ This is not a critical error - workflow will continue"
-          echo "The post-report job will also attempt to post the report"
-          exit 0  # Don't fail the workflow
-        fi
-        
-        echo ""
-        echo "✅ Report posting completed successfully!"
-        
-    - name: Generate report summary
-      if: always()
-      working-directory: frontend
-      run: |
-        echo "## 📊 Dashboard Data Integrity Report" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Test Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Count discrepancy reports
-        if [ -d "test-results/data-integrity" ]; then
-          REPORT_COUNT=$(find test-results/data-integrity -name "*-discrepancies.json" -type f | wc -l | tr -d ' ')
-          if [ "$REPORT_COUNT" -gt 0 ]; then
-            echo "⚠️ **$REPORT_COUNT discrepancy report(s) generated**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Discrepancy Reports" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            for report in test-results/data-integrity/*-discrepancies.json; do
-              if [ -f "$report" ]; then
-                TAB_NAME=$(basename "$report" | sed 's/-discrepancies.json//')
-                DISCREPANCY_COUNT=$(cat "$report" | grep -o '"discrepancyCount":[0-9]*' | grep -o '[0-9]*' || echo "0")
-                echo "- **$TAB_NAME**: $DISCREPANCY_COUNT discrepancies found" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          else
-            echo "✅ **No discrepancies found**" >> $GITHUB_STEP_SUMMARY
-          fi
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Download artifacts to view:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Playwright HTML Report**: playwright-report/" >> $GITHUB_STEP_SUMMARY
-        echo "- **Test Results**: test-results/ (includes screenshots)" >> $GITHUB_STEP_SUMMARY
-        echo "- **Discrepancy Reports**: data-integrity-reports/ (JSON files)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "📊 **View Dashboard Report:** [Open Report Page](${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}/reports/dashboard-data-integrity)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "After downloading artifacts:" >> $GITHUB_STEP_SUMMARY
-        echo "1. Open \`playwright-report/index.html\` in browser for full test report" >> $GITHUB_STEP_SUMMARY
-        echo "2. Check \`data-integrity-reports/*.json\` for detailed discrepancy data" >> $GITHUB_STEP_SUMMARY
-        
-    - name: Comment PR with report link
-      if: github.event_name == 'pull_request' && always()
-      continue-on-error: true
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          const path = require('path');
-          
-          let comment = '## 📊 Dashboard Data Integrity Test Results\n\n';
-          
-          // Check for discrepancy reports
-          const reportsDir = path.join(process.cwd(), 'frontend/test-results/data-integrity');
-          if (fs.existsSync(reportsDir)) {
-            const reports = fs.readdirSync(reportsDir)
-              .filter(f => f.endsWith('-discrepancies.json'))
-              .map(f => {
-                const content = JSON.parse(fs.readFileSync(path.join(reportsDir, f), 'utf8'));
-                return {
-                  name: f.replace('-discrepancies.json', ''),
-                  count: content.discrepancyCount || 0
-                };
-              });
-            
-            if (reports.length > 0) {
-              comment += '⚠️ **Discrepancies Detected:**\n\n';
-              reports.forEach(r => {
-                comment += `- **${r.name}**: ${r.count} discrepancy(ies)\n`;
-              });
-              comment += '\n';
-            } else {
-              comment += '✅ **No discrepancies found**\n\n';
-            }
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${GITHUB_RUN_ID}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${GITHUB_SHA}",
+              "branch": "${GITHUB_REF_NAME}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Report generation failed. Please check workflow logs."
           }
+          EOF
+          echo "✅ Minimal report created"
+          fi
+        
+          - name: Upload consolidated report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-data-integrity-report
+          path: frontend/reports/dashboard-data-integrity.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Diagnostic - Check previous steps
+        if: always()
+        run: |
+          echo "=== DIAGNOSTIC: CHECKING PREVIOUS STEPS ==="
+          echo "Run tests outcome: ${{ steps.run_tests.outcome }}"
+          echo "Generate report outcome: ${{ steps.generate_report.outcome }}"
+          echo "Current directory: $(pwd)"
+          echo "Frontend directory exists: $([ -d frontend ] && echo 'yes' || echo 'no')"
+          if [ -d frontend ]; then
+            echo "Frontend reports directory exists: $([ -d frontend/reports ] && echo 'yes' || echo 'no')"
+            if [ -d frontend/reports ]; then
+              echo "Report files in frontend/reports:"
+              ls -la frontend/reports/ 2>&1 || echo "Cannot list reports directory"
+            fi
+          fi
+
+      - name: POST report to backend
+        if: always()
+        continue-on-error: true
+        working-directory: frontend
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
+          REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "=== POSTING REPORT TO BACKEND (Main Job) ==="
+          echo "Backend URL: ${BACKEND_URL}"
+          echo "GitHub Run ID: ${GITHUB_RUN_ID}"
+          echo "Current directory: $(pwd)"
+          echo "Report secret set: $([ -n "${REPORT_SECRET}" ] && echo 'yes' || echo 'no')"
           
-          comment += '📦 **Artifacts:** Download the workflow artifacts to view:\n';
-          comment += '- Playwright HTML report\n';
-          comment += '- Discrepancy JSON reports\n';
-          comment += '- Screenshots (if any failures)\n\n';
-          comment += `🔗 **View in Actions:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          if [ ! -f "reports/dashboard-data-integrity.json" ]; then
+            echo "⚠️ Report file not found, creating minimal report..."
+            mkdir -p reports
+            cat > reports/dashboard-data-integrity.json <<EOF
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${GITHUB_RUN_ID}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${GITHUB_SHA}",
+              "branch": "${GITHUB_REF_NAME}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Report file was not generated. Please check workflow logs."
+          }
+          EOF
+          fi
           
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: comment
-          });
-    
-    - name: Final success step
-      if: always()
-      run: |
-        echo "✅ Workflow completed. Report generation and posting attempted."
-        echo "Job status will reflect the outcome, but report should be available."
-        exit 0
+          echo "Validating report JSON..."
+          if ! jq empty reports/dashboard-data-integrity.json 2>/dev/null; then
+            echo "❌ Report file is not valid JSON, recreating..."
+            cat > reports/dashboard-data-integrity.json <<EOF
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${GITHUB_RUN_ID}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${GITHUB_SHA}",
+              "branch": "${GITHUB_REF_NAME}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Report file was invalid JSON. Please check workflow logs."
+          }
+          EOF
+          fi
+          
+          echo "Updating report with GitHub Run ID..."
+          jq --arg run_id "${GITHUB_RUN_ID}" '.run.run_id = $run_id' reports/dashboard-data-integrity.json > /tmp/report_updated.json
+          mv /tmp/report_updated.json reports/dashboard-data-integrity.json
+          
+          if ! jq -e '.cursor_prompt' reports/dashboard-data-integrity.json > /dev/null 2>&1; then
+            echo "⚠️ cursor_prompt missing, adding default..."
+            jq '.cursor_prompt = "Report generated from workflow run."' reports/dashboard-data-integrity.json > /tmp/report_updated.json
+            mv /tmp/report_updated.json reports/dashboard-data-integrity.json
+          fi
+          
+          echo "Report file size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
+          
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = false ]; do
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo ""
+            echo "📤 Attempt $RETRY_COUNT of $MAX_RETRIES: Posting report to backend..."
+            
+            HTTP_CODE=$(curl -X POST "${BACKEND_URL}/api/reports/dashboard-data-integrity" \
+              -H "Content-Type: application/json" \
+              -H "X-Report-Secret: ${REPORT_SECRET}" \
+              -d "@reports/dashboard-data-integrity.json" \
+              -w "%{http_code}" \
+              -s -o /tmp/report_response.json \
+              --max-time 30 \
+              --connect-timeout 10 \
+              --fail-with-body 2>&1 | tail -1 || echo "000")
+            
+            echo "HTTP Response Code: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              echo "✅ Report successfully posted to backend (HTTP $HTTP_CODE)"
+              if [ -f /tmp/report_response.json ]; then
+                echo "Response: $(cat /tmp/report_response.json)"
+              fi
+              SUCCESS=true
+            else
+              echo "❌ Failed to post report (HTTP $HTTP_CODE)"
+              if [ -f /tmp/report_response.json ]; then
+                echo "Error Response: $(cat /tmp/report_response.json)"
+              fi
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "⏳ Waiting 5 seconds before retry..."
+                sleep 5
+              fi
+            fi
+          done
+          
+          if [ "$SUCCESS" = false ]; then
+            echo ""
+            echo "⚠️ WARNING: Failed to post report after $MAX_RETRIES attempts"
+            echo "Report file contents:"
+            cat reports/dashboard-data-integrity.json
+            echo ""
+            echo "⚠️ This is not a critical error - workflow will continue"
+            echo "The post-report job will also attempt to post the report"
+            exit 0
+          fi
+          
+          echo ""
+          echo "✅ Report posting completed successfully!"
+
+      - name: Generate report summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "## 📊 Dashboard Data Integrity Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "test-results/data-integrity" ]; then
+            REPORT_COUNT=$(find test-results/data-integrity -name "*-discrepancies.json" -type f | wc -l | tr -d ' ')
+            if [ "$REPORT_COUNT" -gt 0 ]; then
+              echo "⚠️ **$REPORT_COUNT discrepancy report(s) generated**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Discrepancy Reports" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              for report in test-results/data-integrity/*-discrepancies.json; do
+                if [ -f "$report" ]; then
+                  TAB_NAME=$(basename "$report" | sed 's/-discrepancies.json//')
+                  DISCREPANCY_COUNT=$(cat "$report" | grep -o '"discrepancyCount":[0-9]*' | grep -o '[0-9]*' || echo "0")
+                  echo "- **$TAB_NAME**: $DISCREPANCY_COUNT discrepancies found" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+            else
+              echo "✅ **No discrepancies found**" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download artifacts to view:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Playwright HTML Report**: playwright-report/" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test Results**: test-results/ (includes screenshots)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Discrepancy Reports**: data-integrity-reports/ (JSON files)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 **View Dashboard Report:** [Open Report Page](${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}/reports/dashboard-data-integrity)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "After downloading artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Open \`playwright-report/index.html\` in browser for full test report" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check \`data-integrity-reports/*.json\` for detailed discrepancy data" >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment PR with report link
+        if: github.event_name == 'pull_request' && always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            let comment = '## 📊 Dashboard Data Integrity Test Results\n\n';
+            
+            const reportsDir = path.join(process.cwd(), 'frontend/test-results/data-integrity');
+            if (fs.existsSync(reportsDir)) {
+              const reports = fs.readdirSync(reportsDir)
+                .filter(f => f.endsWith('-discrepancies.json'))
+                .map(f => {
+                  const content = JSON.parse(fs.readFileSync(path.join(reportsDir, f), 'utf8'));
+                  return {
+                    name: f.replace('-discrepancies.json', ''),
+                    count: content.discrepancyCount || 0
+                  };
+                });
+              
+              if (reports.length > 0) {
+                comment += '⚠️ **Discrepancies Detected:**\n\n';
+                reports.forEach(r => {
+                  comment += `- **${r.name}**: ${r.count} discrepancy(ies)\n`;
+                });
+                comment += '\n';
+              } else {
+                comment += '✅ **No discrepancies found**\n\n';
+              }
+            }
+            
+            comment += '📦 **Artifacts:** Download the workflow artifacts to view:\n';
+            comment += '- Playwright HTML report\n';
+            comment += '- Discrepancy JSON reports\n';
+            comment += '- Screenshots (if any failures)\n\n';
+            comment += `🔗 **View in Actions:** ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Final success step
+        if: always()
+        run: |
+          echo "✅ Workflow completed. Report generation and posting attempted."
+          echo "Job status will reflect the outcome, but report should be available."
+          exit 0
 
   post-report:
     runs-on: ubuntu-latest
@@ -643,26 +641,26 @@ EOF
             mkdir -p report
             REPORT_FILE="report/dashboard-data-integrity.json"
             cat > "$REPORT_FILE" <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${{ github.run_id }}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${{ github.sha }}",
-    "branch": "${{ github.ref_name }}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Workflow encountered an error. Report was not generated. Please check workflow logs."
-}
-EOF
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${{ github.run_id }}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${{ github.sha }}",
+              "branch": "${{ github.ref_name }}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Workflow encountered an error. Report was not generated. Please check workflow logs."
+          }
+          EOF
             echo "created=true" >> $GITHUB_OUTPUT
             echo "report_file=$REPORT_FILE" >> $GITHUB_OUTPUT
           else
@@ -696,37 +694,36 @@ EOF
             fi
           done
           
-          # If not found, create minimal report
           if [ -z "$REPORT_FILE" ]; then
             echo "⚠️ Report file not found, creating minimal report..."
             mkdir -p report
             REPORT_FILE="report/dashboard-data-integrity.json"
             cat > "$REPORT_FILE" <<EOF
-{
-  "run": {
-    "workflow": "Dashboard Data Integrity",
-    "run_id": "${GITHUB_RUN_ID}",
-    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "commit": "${GITHUB_SHA}",
-    "branch": "${GITHUB_REF_NAME}",
-    "status": "ERROR"
-  },
-  "summary": {
-    "inconsistencies_total": 0,
-    "blockers": 0,
-    "high": 0,
-    "medium": 0,
-    "low": 0
-  },
-  "inconsistencies": [],
-  "cursor_prompt": "Report artifact was not available. Please check workflow logs."
-}
-EOF
+          {
+            "run": {
+              "workflow": "Dashboard Data Integrity",
+              "run_id": "${GITHUB_RUN_ID}",
+              "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "commit": "${GITHUB_SHA}",
+              "branch": "${GITHUB_REF_NAME}",
+              "status": "ERROR"
+            },
+            "summary": {
+              "inconsistencies_total": 0,
+              "blockers": 0,
+              "high": 0,
+              "medium": 0,
+              "low": 0
+            },
+            "inconsistencies": [],
+            "cursor_prompt": "Report artifact was not available. Please check workflow logs."
+          }
+          EOF
           fi
           
           echo "Using report file: $REPORT_FILE"
           
-          # Validate JSON before posting
+          echo "Validating report JSON..."
           echo "Validating report JSON..."
           if ! jq empty "$REPORT_FILE" 2>/dev/null; then
             echo "❌ Report file is not valid JSON"
