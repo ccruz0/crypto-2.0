@@ -1,0 +1,17 @@
+---
+description: Production EC2 instance ID — use atp-rebuild-2026 for PROD; crypto 2.0 is ignored.
+globs:
+  - "**/*.sh"
+  - ".github/workflows/*.yml"
+  - "docs/aws/**"
+  - "docs/audit/**"
+  - "docs/openclaw/**"
+---
+
+# AWS production instance (PROD)
+
+- **Production (PROD):** atp-rebuild-2026, instance ID **i-087953603011543c5**. Deploy target, EC2_HOST = dashboard.hilovivo.com.
+- **Lab:** atp-lab-ssm-clean, instance ID **i-0d82c172235770a0d**. OpenClaw only; no production secrets.
+- **crypto 2.0** (i-08726dc37133b2454) is **ignored**; do not use for production scripts, workflows, or docs.
+
+When adding or editing scripts or workflows that need an EC2 instance ID for production, use **i-087953603011543c5**. Reference: docs/aws/AWS_PROD_QUICK_REFERENCE.md.

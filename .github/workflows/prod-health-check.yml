@@ -1,0 +1,48 @@
+# Verify PROD (dashboard) public API is reachable. No deploy, no secrets required.
+name: Prod Health Check
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Every 6 hours
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PROD API
+        id: health
+        run: |
+          URL="${PROD_HEALTH_URL:-https://dashboard.hilovivo.com/api/health}"
+          # vars.PROD_HEALTH_URL can override; else default above
+          echo "Checking: $URL"
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 15 "$URL" 2>/dev/null || echo "000")
+          echo "http_code=$CODE" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" = "200" ]; then
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+            echo "✅ PROD API reachable (HTTP $CODE)"
+          else
+            echo "status=fail" >> "$GITHUB_OUTPUT"
+            echo "❌ PROD API returned HTTP $CODE"
+            exit 1
+          fi
+        env:
+          # Override with repo variable PROD_HEALTH_URL if needed
+          PROD_HEALTH_URL: ${{ vars.PROD_HEALTH_URL }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Prod Health Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.health.outputs.status }}" = "ok" ]; then
+            echo "✅ **PROD API:** Reachable (HTTP ${{ steps.health.outputs.http_code }})" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ **PROD API:** Not reachable or non-200 (HTTP ${{ steps.health.outputs.http_code }})" >> "$GITHUB_STEP_SUMMARY"
+          fi

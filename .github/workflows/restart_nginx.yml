@@ -20,7 +20,7 @@ jobs:
         
     - name: Restart Nginx and verify backend
       env:
-        INSTANCE_ID: i-08726dc37133b2454
+        INSTANCE_ID: i-087953603011543c5  # atp-rebuild-2026 (PROD). Do not use crypto 2.0.
       run: |
         echo "🔄 Reiniciando nginx y verificando backend..."
         

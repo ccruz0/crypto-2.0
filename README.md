@@ -2,13 +2,15 @@
 
 A full-stack automated trading platform built with FastAPI (backend) and Next.js (frontend).
 
-[![Dashboard Data Integrity](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml/badge.svg)](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml)
+[![Dashboard Data Integrity](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml/badge.svg)](https://github.com/ccruz0/crypto-2.0/actions/workflows/dashboard-data-integrity.yml) [![Prod Health Check](https://github.com/ccruz0/crypto-2.0/actions/workflows/prod-health-check.yml/badge.svg)](https://github.com/ccruz0/crypto-2.0/actions/workflows/prod-health-check.yml)
 
 ## 🚨 Deployment Policy
 
 **⚠️ IMPORTANT: All production operations are executed via SSH on the EC2 instance. Production services run as Docker Compose containers using the AWS profile.**
 
 For complete deployment guidelines, see: **[DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md)** and **[docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md)**
+
+**Production at a glance:** PROD = **atp-rebuild-2026** · Dashboard: **https://dashboard.hilovivo.com** · Runbooks & checks: [docs/aws/](docs/aws/) ([quick ref](docs/aws/AWS_PROD_QUICK_REFERENCE.md) · [runbook index](docs/aws/RUNBOOK_INDEX.md)).
 
 **Key Points:**
 - ✅ All production operations via SSH on AWS EC2 instance
@@ -106,6 +108,7 @@ For production AWS deployment, see [`docs/AWS_CRYPTO_COM_CONNECTION.md`](docs/AW
 - [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) - Single source of truth for AWS deployment commands
 - [AWS_DEPLOY_PLAYBOOK.md](AWS_DEPLOY_PLAYBOOK.md) - Complete deploy-by-commit guide with rollback procedures
 - [DEV.md](DEV.md) - Local development and AWS deploy-by-commit procedures
+- [docs/aws/](docs/aws/) - AWS PROD/LAB: instance IDs, health checks, runbooks ([quick reference](docs/aws/AWS_PROD_QUICK_REFERENCE.md), [runbook index](docs/aws/RUNBOOK_INDEX.md))
 
 ### Local Development (Dev Only - NOT Production)
 

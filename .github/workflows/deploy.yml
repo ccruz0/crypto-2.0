@@ -34,6 +34,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      # EC2_HOST must be atp-rebuild-2026 (PROD): dashboard.hilovivo.com or its Elastic IP. Do not use crypto 2.0.
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ubuntu
       EC2_KEY: ${{ secrets.EC2_KEY }}
@@ -82,7 +83,7 @@ jobs:
         # Validate required connection configuration
         if [ -z "$EC2_HOST" ]; then
           echo "❌ Error: EC2_HOST is not set. Add it as a repository secret or variable."
-          echo "💡 Set EC2_HOST to the current Elastic IP or DNS name (e.g., dashboard.hilovivo.com)"
+          echo "💡 Production is atp-rebuild-2026 (i-087953603011543c5). Set EC2_HOST to its DNS or Elastic IP (e.g. dashboard.hilovivo.com). Do not use crypto 2.0."
           exit 1
         fi
         if [ -z "$EC2_KEY" ]; then
@@ -231,6 +232,17 @@ jobs:
           echo "✅ Health check passed: market_updater=$MARKET_UPDATER_STATUS, stale_symbols=$MARKET_DATA_STALE"
         else
           echo "⚠️  jq not available, skipping detailed health check"
+        fi
+        
+        # Verify public URL (PROD at EC2_HOST) responds
+        if [ -n "${API_BASE_URL:-}" ]; then
+          echo "🔍 Verifying public API at $API_BASE_URL..."
+          PUBLIC_CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 15 "${API_BASE_URL%/}/health" 2>/dev/null || echo "000")
+          if [ "$PUBLIC_CODE" = "200" ]; then
+            echo "✅ Public API reachable (HTTP $PUBLIC_CODE)"
+          else
+            echo "⚠️  Public API returned HTTP $PUBLIC_CODE (deploy may still be OK; check nginx/dashboard)"
+          fi
         fi
         
         echo "🧹 Cleaning up..."

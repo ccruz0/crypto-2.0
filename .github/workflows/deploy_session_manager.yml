@@ -46,7 +46,7 @@ jobs:
         
     - name: Deploy to EC2 using Session Manager
       env:
-        INSTANCE_ID: i-08726dc37133b2454
+        INSTANCE_ID: i-087953603011543c5  # atp-rebuild-2026 (PROD). Do not use crypto 2.0.
       run: |
         set -e  # Exit on any error
         
