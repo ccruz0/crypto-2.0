@@ -1,0 +1,62 @@
+# docker-compose.openclaw.yml
+# Lab only. Do NOT use on Production. No production secrets.
+#
+# Hardening: non-root user, read_only, cap_drop ALL, no-new-privileges,
+# mem/cpu limits, token only via read-only file mount (never in env).
+# Token on host: ~/secrets/openclaw_token (chmod 600). No docker socket.
+# See: docs/openclaw/RUNBOOK_SECURE_INSTALL.md, FINAL_SECURITY_CHECKLIST.md
+
+name: openclaw-lab
+
+services:
+  openclaw:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/your-org/openclaw:latest}
+    container_name: openclaw
+    env_file:
+      - .env.lab
+    environment:
+      - OPENCLAW_MODE=lab
+      - RUNTIME_ORIGIN=LOCAL
+      - GIT_REPO_URL=${GIT_REPO_URL}
+      # Path only; token bytes are in file (never in env or logs)
+      - OPENCLAW_TOKEN_FILE=/run/secrets/openclaw_token
+    volumes:
+      - openclaw_workspace:/workspace
+      - openclaw_logs:/var/log/openclaw
+      # Read-only: GitHub token on LAB (fixed path; no env expansion)
+      - /home/ubuntu/secrets/openclaw_token:/run/secrets/openclaw_token:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M,mode=1777
+    user: "1000:1000"
+    pids_limit: 256
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+    ports:
+      - "8080:8080"
+    networks:
+      - openclaw_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # No docker socket (security)
+
+volumes:
+  openclaw_workspace:
+  openclaw_logs:
+
+networks:
+  openclaw_net:
+    driver: bridge
