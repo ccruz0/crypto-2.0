@@ -33,7 +33,6 @@ services:
     tmpfs:
       - /tmp:size=128M,mode=1777
     user: "1000:1000"
-    pids_limit: 256
     restart: unless-stopped
     deploy:
       resources:
