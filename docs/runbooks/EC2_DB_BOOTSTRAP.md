@@ -140,7 +140,9 @@ sudo systemctl start atp-health-alert.service
 sudo journalctl -u atp-health-alert.service -n 50 --no-pager
 ```
 
-Dry run (no token needed to test logic): `ATP_ALERT_DRY_RUN=1 bash scripts/diag/health_snapshot_telegram_alert.sh`.
+Dry run (confirms env/decrypt and message formatting without sending):  
+`ATP_ALERT_DRY_RUN=1 bash scripts/diag/health_snapshot_telegram_alert.sh`.  
+With only `TELEGRAM_BOT_TOKEN_ENCRYPTED` (and key in `.telegram_key` or `secrets/telegram_key`), the script decrypts and should no longer print “missing”; use dry run to confirm.
 
 ---
 

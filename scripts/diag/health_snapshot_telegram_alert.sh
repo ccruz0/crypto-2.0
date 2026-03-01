@@ -29,12 +29,42 @@ load_telegram_env() {
   [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_BOT_TOKEN_AWS:-}" ] && TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN_AWS}"
 }
 
+# If TELEGRAM_BOT_TOKEN is not set but TELEGRAM_BOT_TOKEN_ENCRYPTED is present in env files,
+# decrypt using existing repo mechanism and set TELEGRAM_BOT_TOKEN in-memory. Returns 0 if
+# token is available (plain or decrypted), 1 if decrypt failed or not applicable.
+resolve_telegram_token() {
+  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    return 0
+  fi
+  # Check if encrypted token exists in any loaded env (we already sourced .env, .env.aws, runtime.env)
+  if [ -z "${TELEGRAM_BOT_TOKEN_ENCRYPTED:-}" ]; then
+    return 1
+  fi
+  local tmpf
+  tmpf="$(mktemp 2>/dev/null)" || true
+  [ -z "$tmpf" ] || [ ! -w "$tmpf" ] && return 1
+  local ret=1
+  if (cd "$REPO_ROOT" && python3 "$REPO_ROOT/scripts/diag/decrypt_telegram_token_for_alert.py" "$tmpf" 2>/dev/null) && [ -r "$tmpf" ] && [ -s "$tmpf" ]; then
+    TELEGRAM_BOT_TOKEN="$(cat "$tmpf")"
+    ret=0
+  fi
+  rm -f "$tmpf" 2>/dev/null || true
+  return "$ret"
+}
+
 main() {
   cd "$REPO_ROOT" || true
   load_telegram_env
 
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    resolve_telegram_token || true
+  fi
   if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-    echo "ATP health alert: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing; skip send."
+    if [ -n "${TELEGRAM_BOT_TOKEN_ENCRYPTED:-}" ]; then
+      echo "ATP health alert: decryption failed; skip send."
+    else
+      echo "ATP health alert: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing; skip send."
+    fi
     exit 0
   fi
 
