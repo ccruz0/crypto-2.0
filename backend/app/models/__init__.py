@@ -9,6 +9,7 @@ from app.models.dashboard_cache import DashboardCache
 from app.models.telegram_message import TelegramMessage
 from app.models.signal_throttle import SignalThrottleState
 from app.models.telegram_state import TelegramState
+from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.models.order_intent import OrderIntent
 # fill_events_dedup may be absent in some deployments; avoid boot failure if missing.
 try:
@@ -38,6 +39,8 @@ __all__ = [
     "TelegramMessage",
     "SignalThrottleState",
     "TelegramState",
+    "PortfolioBalance",
+    "PortfolioSnapshot",
     "OrderIntent",
     "FillEventDedup",
     "DedupEventWeek5",

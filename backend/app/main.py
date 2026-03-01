@@ -289,6 +289,7 @@ async def startup_event():
             if engine and Base:
                 def init_db():
                     try:
+                        import app.models  # noqa: F401 - ensure all models registered before create_all
                         Base.metadata.create_all(bind=engine)
                         if ensure_optional_columns:
                             ensure_optional_columns(engine)
