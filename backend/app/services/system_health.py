@@ -57,7 +57,13 @@ def get_system_health(db: Session) -> Dict:
             "global_status": "FAIL",
             "timestamp": timestamp,
             "db_status": "down",
-            "market_data": {"status": "FAIL", "fresh_symbols": 0, "stale_symbols": 0, "max_age_minutes": None},
+            "market_data": {
+                "status": "FAIL",
+                "fresh_symbols": 0,
+                "stale_symbols": 0,
+                "max_age_minutes": None,
+                "health_symbol_source": None,
+            },
             "market_updater": {"status": "FAIL", "is_running": False, "last_heartbeat_age_minutes": None},
             "signal_monitor": {"status": "FAIL", "is_running": False, "last_cycle_age_minutes": None},
             "telegram": {"status": "FAIL", "enabled": False, "chat_id_set": False, "bot_token_set": False, "last_send_ok": None},
@@ -99,62 +105,62 @@ def get_system_health(db: Session) -> Dict:
         "trade_system": trade_system,
     }
 
+# Minimum recent symbols for market_data PASS when using market_prices fallback (empty watchlist)
+_MARKET_DATA_FALLBACK_PASS_MIN_SYMBOLS = 5
+
+
 def _check_market_data_health(db: Session, stale_threshold_minutes: float) -> Dict:
-    """Check market data freshness"""
+    """Check market data freshness. When watchlist_items is empty, use market_prices recency (fallback)."""
     try:
         stale_threshold = timedelta(minutes=stale_threshold_minutes)
         now = datetime.now(timezone.utc)
-        
-        # Get all watchlist symbols
+
+        # Get all watchlist symbols (active only)
         watchlist_items = db.query(WatchlistItem).filter(
-            WatchlistItem.is_deleted == False
+            WatchlistItem.is_deleted == False  # noqa: E712
         ).all()
-        
+
         if not watchlist_items:
-            return {
-                "status": "WARN",
-                "fresh_symbols": 0,
-                "stale_symbols": 0,
-                "max_age_minutes": None,
-            }
-        
+            # Fallback: use market_prices recency so empty watchlist does not falsely fail health
+            return _check_market_data_health_fallback(db, stale_threshold_minutes, now, stale_threshold)
+
         symbols = [item.symbol for item in watchlist_items]
         fresh_count = 0
         stale_count = 0
         max_age_minutes = 0.0
-        
+
         for symbol in symbols:
             market_price = db.query(MarketPrice).filter(
                 MarketPrice.symbol == symbol
             ).first()
-            
+
             if not market_price or not market_price.updated_at:
                 stale_count += 1
                 continue
-            
-            # Check if stale
+
             updated_at = market_price.updated_at
             if updated_at.tzinfo is None:
                 updated_at = updated_at.replace(tzinfo=timezone.utc)
-            
+
             age = now - updated_at
             age_minutes = age.total_seconds() / 60
             max_age_minutes = max(max_age_minutes, age_minutes)
-            
+
             if age > stale_threshold:
                 stale_count += 1
             else:
                 fresh_count += 1
-        
+
         status = "FAIL" if stale_count == len(symbols) and len(symbols) > 0 else "PASS"
         if stale_count > 0 and stale_count < len(symbols):
             status = "WARN"
-        
+
         return {
             "status": status,
             "fresh_symbols": fresh_count,
             "stale_symbols": stale_count,
             "max_age_minutes": round(max_age_minutes, 2) if max_age_minutes > 0 else None,
+            "health_symbol_source": "watchlist_items",
         }
     except Exception as e:
         logger.error(f"Error checking market data health: {e}", exc_info=True)
@@ -163,6 +169,64 @@ def _check_market_data_health(db: Session, stale_threshold_minutes: float) -> Di
             "fresh_symbols": 0,
             "stale_symbols": 0,
             "max_age_minutes": None,
+            "health_symbol_source": None,
+        }
+
+
+def _check_market_data_health_fallback(
+    db: Session, stale_threshold_minutes: float, now: datetime, stale_threshold: timedelta
+) -> Dict:
+    """When watchlist_items is empty: compute freshness from market_prices. PASS >= 5 recent, WARN 1-4, FAIL 0."""
+    try:
+        cutoff = now - stale_threshold
+        rows = (
+            db.query(MarketPrice.symbol, MarketPrice.updated_at)
+            .filter(MarketPrice.symbol.isnot(None), MarketPrice.updated_at.isnot(None))
+            .all()
+        )
+        fresh_symbols_set = set()
+        max_age_minutes = 0.0
+        for symbol, updated_at in rows:
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age_minutes = (now - updated_at).total_seconds() / 60
+            max_age_minutes = max(max_age_minutes, age_minutes)
+            if updated_at >= cutoff:
+                fresh_symbols_set.add(symbol)
+        fresh_symbols = len(fresh_symbols_set)
+        total_symbols = len({s for s, _ in rows})
+        stale_count = total_symbols - fresh_symbols
+
+        if fresh_symbols >= _MARKET_DATA_FALLBACK_PASS_MIN_SYMBOLS:
+            status = "PASS"
+        elif fresh_symbols >= 1:
+            status = "WARN"
+        else:
+            status = "FAIL"
+
+        logger.info(
+            "Watchlist empty; using market_prices fallback for health. fresh=%s total=%s",
+            fresh_symbols,
+            total_symbols,
+        )
+
+        return {
+            "status": status,
+            "fresh_symbols": fresh_symbols,
+            "stale_symbols": stale_count,
+            "max_age_minutes": round(max_age_minutes, 2) if max_age_minutes > 0 else None,
+            "health_symbol_source": "market_prices_fallback",
+            "message": "Watchlist empty; using market_prices fallback for health.",
+        }
+    except Exception as e:
+        logger.error(f"Error in market_data fallback health: {e}", exc_info=True)
+        return {
+            "status": "FAIL",
+            "fresh_symbols": 0,
+            "stale_symbols": 0,
+            "max_age_minutes": None,
+            "health_symbol_source": "market_prices_fallback",
+            "message": "Watchlist empty; using market_prices fallback for health.",
         }
 
 def _check_signal_monitor_health(stale_threshold_minutes: float) -> Dict:

@@ -62,10 +62,11 @@ def test_market_data_health_stale(mock_db):
     mock_db.query.return_value.filter.return_value.first.side_effect = market_prices
     
     result = _check_market_data_health(mock_db, stale_threshold_minutes=30)
-    
+
     assert result["status"] == "FAIL"
     assert result["stale_symbols"] == 2
     assert result["fresh_symbols"] == 0
+    assert result.get("health_symbol_source") == "watchlist_items"
 
 
 def test_market_data_health_fresh(mock_db):
@@ -83,10 +84,62 @@ def test_market_data_health_fresh(mock_db):
     mock_db.query.return_value.filter.return_value.first.return_value = market_price
     
     result = _check_market_data_health(mock_db, stale_threshold_minutes=30)
-    
+
     assert result["status"] == "PASS"
     assert result["stale_symbols"] == 0
     assert result["fresh_symbols"] == 1
+    assert result.get("health_symbol_source") == "watchlist_items"
+
+
+def test_market_data_health_empty_watchlist_fallback_pass(mock_db):
+    """Empty watchlist + >= 5 recent market_prices => PASS, health_symbol_source = market_prices_fallback"""
+    now = datetime.now(timezone.utc)
+    fresh_time = now - timedelta(minutes=5)
+    # Empty watchlist
+    mock_db.query.return_value.filter.return_value.all.side_effect = [
+        [],  # WatchlistItem.query.filter(...).all() -> []
+        [  # MarketPrice fallback query: (symbol, updated_at)
+            ("BTC_USDT", fresh_time),
+            ("ETH_USDT", fresh_time),
+            ("SOL_USDT", fresh_time),
+            ("AVAX_USDT", fresh_time),
+            ("DOT_USDT", fresh_time),
+            ("LINK_USDT", fresh_time),
+        ],
+    ]
+    result = _check_market_data_health(mock_db, stale_threshold_minutes=30)
+    assert result["status"] == "PASS"
+    assert result["fresh_symbols"] == 6
+    assert result.get("health_symbol_source") == "market_prices_fallback"
+    assert "Watchlist empty" in (result.get("message") or "")
+
+
+def test_market_data_health_empty_watchlist_fallback_warn(mock_db):
+    """Empty watchlist + 1–4 recent market_prices => WARN"""
+    now = datetime.now(timezone.utc)
+    fresh_time = now - timedelta(minutes=5)
+    mock_db.query.return_value.filter.return_value.all.side_effect = [
+        [],
+        [("BTC_USDT", fresh_time), ("ETH_USDT", fresh_time), ("SOL_USDT", fresh_time)],
+    ]
+    result = _check_market_data_health(mock_db, stale_threshold_minutes=30)
+    assert result["status"] == "WARN"
+    assert result["fresh_symbols"] == 3
+    assert result.get("health_symbol_source") == "market_prices_fallback"
+
+
+def test_market_data_health_empty_watchlist_fallback_fail(mock_db):
+    """Empty watchlist + 0 recent market_prices => FAIL"""
+    now = datetime.now(timezone.utc)
+    stale_time = now - timedelta(minutes=40)
+    mock_db.query.return_value.filter.return_value.all.side_effect = [
+        [],
+        [("BTC_USDT", stale_time), ("ETH_USDT", stale_time)],
+    ]
+    result = _check_market_data_health(mock_db, stale_threshold_minutes=30)
+    assert result["status"] == "FAIL"
+    assert result["fresh_symbols"] == 0
+    assert result.get("health_symbol_source") == "market_prices_fallback"
 
 
 def test_signal_monitor_health_stalled(mock_signal_monitor):
