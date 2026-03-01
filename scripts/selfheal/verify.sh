@@ -63,11 +63,18 @@ main() {
     exit 5
   fi
 
+  # PASS: both market_data and market_updater PASS
+  # DEGRADED: market_data WARN but updater PASS (1–4 symbols fresh) — do not trigger heal
+  if [ "${md_status:-}" = "PASS" ] && [ "${mu_status:-}" = "PASS" ]; then
+    : # fall through to signal_monitor
+  elif [ "${md_status:-}" = "WARN" ] && [ "${mu_status:-}" = "PASS" ]; then
+    echo "DEGRADED:MARKET_DATA_WARN_UPDATER_PASS"
+    exit 0
+  fi
   if [ "${md_status:-}" != "PASS" ]; then
     echo "FAIL:MARKET_DATA:${md_status:-missing}"
     exit 6
   fi
-
   if [ "${mu_status:-}" != "PASS" ]; then
     echo "FAIL:MARKET_UPDATER:${mu_status:-missing}"
     exit 7
