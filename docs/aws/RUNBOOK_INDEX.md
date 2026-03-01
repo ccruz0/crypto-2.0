@@ -31,6 +31,11 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [../openclaw/SIGUIENTE_PASOS_OPENCLAW.md](../openclaw/SIGUIENTE_PASOS_OPENCLAW.md) | Deploy OpenClaw on LAB (atp-lab-ssm-clean). |
 | [../openclaw/RUNBOOK_OPENCLAW_LAB.md](../openclaw/RUNBOOK_OPENCLAW_LAB.md) | OpenClaw en LAB: pasos copy-paste (conexión, token, .env.lab, compose). |
 | [../openclaw/LAB_SETUP_AND_VALIDATION.md](../openclaw/LAB_SETUP_AND_VALIDATION.md) | OpenClaw token, Git, API permission tests on LAB. |
+| [../openclaw/DEPLOY_OPENCLAW_NGINX_PROD.md](../openclaw/DEPLOY_OPENCLAW_NGINX_PROD.md) | Deploy /openclaw/ block on dashboard Nginx (script + manual); duplicate default server, htpasswd. |
+| [../runbooks/EC2_DASHBOARD_LIVE_DATA_FIX.md](../runbooks/EC2_DASHBOARD_LIVE_DATA_FIX.md) | Dashboard visible but health FAIL / no live data / "Invalid API key": ATP_API_KEY, market-updater, order_intents repair. |
+| [../runbooks/EC2_SELFHEAL_DEPLOY.md](../runbooks/EC2_SELFHEAL_DEPLOY.md) | Deploy self-heal on EC2: git pull, systemd timer, .env fallback, 203/EXEC fix. |
+| [../runbooks/EC2_FIX_MARKET_DATA_NOW.md](../runbooks/EC2_FIX_MARKET_DATA_NOW.md) | Fix market_data/market_updater FAIL now: restore verify.sh (emitter), .env, restart stack, update-cache, diagnose updater. |
+| [../runbooks/EC2_DB_BOOTSTRAP.md](../runbooks/EC2_DB_BOOTSTRAP.md) | Create watchlist_items (and related tables): bootstrap schema before enabling self-heal timer; .env.aws fix. |
 
 ---
 
@@ -40,6 +45,7 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 2. **Check Actions:** Last “Deploy to AWS EC2” and “Prod Health Check” runs — any failures?
 3. **If API not 200:** You need access to PROD (SSM or SSH). Follow [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md) if SSM is ConnectionLost; then on the instance run `docker compose --profile aws ps` and check nginx/backend logs.
 4. **If SSM is Online:** Use Session Manager to open a shell on atp-rebuild-2026 and run [AWS_BRINGUP_RUNBOOK.md](AWS_BRINGUP_RUNBOOK.md) verification steps or [AWS_LIVE_AUDIT.md](AWS_LIVE_AUDIT.md) §2.
+5. **If dashboard loads but health fails or no live data:** See [EC2_DASHBOARD_LIVE_DATA_FIX.md](../runbooks/EC2_DASHBOARD_LIVE_DATA_FIX.md) (ATP_API_KEY, market-updater, order_intents, repair).
 
 ---
 

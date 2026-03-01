@@ -1,0 +1,13 @@
+[Unit]
+Description=ATP Self-Heal (safe)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+ExecStart=/home/ubuntu/automated-trading-platform/scripts/selfheal/run.sh
+
+[Install]
+WantedBy=multi-user.target

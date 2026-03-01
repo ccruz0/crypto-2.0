@@ -197,12 +197,35 @@ def ensure_optional_columns(db_engine=None):
             logger.info(f"[BOOT] order_intents table OK")
     except Exception as table_err:
         logger.error(f"Error ensuring order_intents table exists: {table_err}", exc_info=True)
-    
-    table_configs = {}
-    
+
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"
     )
+    # Ensure watchlist_items exists (market-updater and signal_monitor depend on it; crash if missing)
+    try:
+        if not table_exists(engine_to_use, watchlist_table):
+            logger.warning(f"Table {watchlist_table} does not exist - creating it")
+            Base.metadata.create_all(bind=engine_to_use, tables=[WatchlistItem.__table__])
+            logger.info(f"[BOOT] Created table {watchlist_table}")
+        else:
+            logger.info(f"[BOOT] {watchlist_table} table OK")
+    except Exception as table_err:
+        logger.error(f"Error ensuring {watchlist_table} table exists: {table_err}", exc_info=True)
+
+    # Ensure market_data / market_price exist (market-updater writes to them)
+    try:
+        from app.models.market_price import MarketData, MarketPrice
+        for model, name in [(MarketData, "market_data"), (MarketPrice, "market_price")]:
+            tbl = getattr(model, "__table__", None)
+            tname = getattr(model, "__tablename__", name)
+            if tbl and not table_exists(engine_to_use, tname):
+                logger.warning(f"Table {tname} does not exist - creating it")
+                Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
+                logger.info(f"[BOOT] Created table {tname}")
+    except Exception as table_err:
+        logger.warning(f"Could not ensure market_data/market_price tables: {table_err}")
+
+    table_configs = {}
     table_configs[watchlist_table] = [
         ("is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
         ("min_price_change_pct", "DOUBLE PRECISION"),

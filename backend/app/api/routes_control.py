@@ -549,10 +549,10 @@ def test_telegram_message(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/health/fix")
 async def fix_backend_health():
-    """Fix backend health issues by restarting services and clearing errors"""
+    """Fix backend health by restarting in-process services only. No schema mutation. Schema: use scripts/db/bootstrap.sh or POST /api/health/repair (x-api-key)."""
     try:
         log.info("🔧 Fixing backend health - restarting services...")
-        
+
         # Stop all services first
         try:
             exchange_sync_service.stop()
