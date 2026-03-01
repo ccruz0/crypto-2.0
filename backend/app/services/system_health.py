@@ -292,52 +292,44 @@ def _check_market_updater_health(market_data: Dict, stale_threshold_minutes: flo
 
 def _check_trade_system_health(db: Session) -> Dict:
     """Check trade system health"""
+    # Check order_intents table first so we always report it even if open_orders fails
+    order_intents_table_exists = False
     try:
-        # Count open positions
+        from app.database import engine, table_exists
+        from app.models.order_intent import OrderIntent
+        order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
+            OrderIntent, "__tablename__", "order_intents"
+        )
+        order_intents_table_exists = table_exists(engine, order_intents_table)
+    except Exception as table_check_err:
+        logger.warning(f"Error checking order_intents table: {table_check_err}")
+
+    try:
         open_orders = count_total_open_positions(db)
-        
-        # Get max open orders from config (if available)
-        max_open_orders = None
-        try:
-            from app.services.config_loader import get_trading_config
-            config = get_trading_config()
-            if config and "max_open_orders" in config:
-                max_open_orders = config.get("max_open_orders")
-        except Exception:
-            pass
-        
-        # Check if order_intents table exists (critical for orchestrator)
-        order_intents_table_exists = False
-        try:
-            from app.database import engine, table_exists
-            from app.models.order_intent import OrderIntent
-            order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
-                OrderIntent, "__tablename__", "order_intents"
-            )
-            order_intents_table_exists = table_exists(engine, order_intents_table)
-        except Exception as table_check_err:
-            logger.warning(f"Error checking order_intents table: {table_check_err}")
-        
-        status = "PASS"
-        if not order_intents_table_exists:
-            status = "FAIL"  # Critical table missing
-        elif max_open_orders is not None and open_orders > max_open_orders:
-            status = "WARN"
-        
-        return {
-            "status": status,
-            "open_orders": open_orders,
-            "max_open_orders": max_open_orders,
-            "order_intents_table_exists": order_intents_table_exists,
-            "last_check_ok": True,
-        }
     except Exception as e:
-        logger.error(f"Error checking trade system health: {e}", exc_info=True)
-        return {
-            "status": "FAIL",
-            "open_orders": 0,
-            "max_open_orders": None,
-            "order_intents_table_exists": False,
-            "last_check_ok": False,
-        }
+        logger.warning(f"Error counting open positions: {e}")
+        open_orders = 0
+
+    max_open_orders = None
+    try:
+        from app.services.config_loader import get_trading_config
+        config = get_trading_config()
+        if config and "max_open_orders" in config:
+            max_open_orders = config.get("max_open_orders")
+    except Exception:
+        pass
+
+    status = "PASS"
+    if not order_intents_table_exists:
+        status = "FAIL"  # Critical table missing
+    elif max_open_orders is not None and open_orders > max_open_orders:
+        status = "WARN"
+
+    return {
+        "status": status,
+        "open_orders": open_orders,
+        "max_open_orders": max_open_orders,
+        "order_intents_table_exists": order_intents_table_exists,
+        "last_check_ok": True,
+    }
 

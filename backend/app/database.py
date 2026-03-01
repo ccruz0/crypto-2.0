@@ -211,26 +211,54 @@ def ensure_optional_columns(db_engine=None):
     except Exception as table_err:
         logger.warning(f"Could not ensure market_data/market_price tables: {table_err}")
 
-    # Ensure order_intents table exists. If create_all fails due to orphan index (e.g. ix_order_intents_signal_id),
-    # drop the index and retry.
+    # Ensure order_intents table exists. If create_all fails (e.g. orphan index), try drop+retry;
+    # if that still fails, create table and indexes via raw SQL with IF NOT EXISTS.
     order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
         OrderIntent, "__tablename__", "order_intents"
     )
     try:
         if not table_exists(engine_to_use, order_intents_table):
             logger.warning(f"Table {order_intents_table} does not exist - creating it")
+            created = False
             try:
                 Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
+                created = True
                 logger.info(f"[BOOT] Created table {order_intents_table}")
             except Exception as create_err:
                 err_msg = str(create_err)
                 if "ix_order_intents_signal_id" in err_msg and "already exists" in err_msg:
-                    logger.warning("Orphan index ix_order_intents_signal_id exists; dropping and retrying create")
-                    with engine_to_use.begin() as conn:
-                        conn.execute(text("DROP INDEX IF EXISTS ix_order_intents_signal_id CASCADE"))
-                    Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
-                    logger.info(f"[BOOT] Created table {order_intents_table} after dropping orphan index")
-                else:
+                    try:
+                        with engine_to_use.begin() as conn:
+                            conn.execute(text("DROP INDEX IF EXISTS ix_order_intents_signal_id CASCADE"))
+                            Base.metadata.create_all(bind=conn, tables=[OrderIntent.__table__])
+                        created = True
+                        logger.info(f"[BOOT] Created table {order_intents_table} after dropping orphan index")
+                    except Exception as retry_err:
+                        logger.warning("Drop+retry failed, creating order_intents via raw SQL: %s", retry_err)
+                        with engine_to_use.begin() as conn:
+                            conn.execute(text("""
+                                CREATE TABLE IF NOT EXISTS order_intents (
+                                    id SERIAL PRIMARY KEY,
+                                    idempotency_key VARCHAR(200) NOT NULL,
+                                    signal_id INTEGER,
+                                    symbol VARCHAR(50) NOT NULL,
+                                    side VARCHAR(10) NOT NULL,
+                                    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                                    order_id VARCHAR(100),
+                                    error_message TEXT,
+                                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                                    UNIQUE(idempotency_key)
+                                )
+                            """))
+                            for idx_sql in (
+                                "CREATE INDEX IF NOT EXISTS ix_order_intents_signal_id ON order_intents (signal_id)",
+                                "CREATE INDEX IF NOT EXISTS ix_order_intents_symbol_side ON order_intents (symbol, side)",
+                            ):
+                                conn.execute(text(idx_sql))
+                        created = True
+                        logger.info(f"[BOOT] Created table {order_intents_table} via raw SQL")
+                if not created:
                     raise
         else:
             logger.info(f"[BOOT] order_intents table OK")
