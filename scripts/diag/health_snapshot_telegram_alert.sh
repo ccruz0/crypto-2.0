@@ -16,7 +16,8 @@ DRY_RUN="${ATP_ALERT_DRY_RUN:-0}"
 
 load_telegram_env() {
   local f
-  for f in "secrets/runtime.env" ".env" ".env.aws"; do
+  # Load .env and .env.aws first, then secrets/runtime.env last so runtime (token) overrides empty placeholders
+  for f in ".env" ".env.aws" "secrets/runtime.env"; do
     if [ -f "$REPO_ROOT/$f" ]; then
       set +u
       # shellcheck source=/dev/null

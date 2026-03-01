@@ -116,6 +116,34 @@ sudo systemctl status atp-selfheal.timer --no-pager
 
 ---
 
+## Telegram alerts (optional)
+
+Health snapshot failures can trigger a single Telegram message with cooldown. The script reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from env files (no hardcoded secrets).
+
+**Enable:**
+
+1. Ensure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set. Prefer **`secrets/runtime.env`** (loaded last so it overrides empty placeholders in `.env`/`.env.aws`). Alternatively use `TELEGRAM_BOT_TOKEN_AWS` / `TELEGRAM_CHAT_ID_AWS` in any of those files.
+2. Install the timer:
+   ```bash
+   cd /home/ubuntu/automated-trading-platform
+   sudo cp scripts/selfheal/systemd/atp-health-alert.service scripts/selfheal/systemd/atp-health-alert.timer /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now atp-health-alert.timer
+   ```
+
+**Optional env (defaults):** `ATP_HEALTH_SNAPSHOT_LOG` (/var/log/atp/health_snapshots.log), `ATP_ALERT_LINES` (5000), `ATP_ALERT_COOLDOWN_MINUTES` (30), `ATP_ALERT_RULE` (streak_fail_3). Supported rules: `streak_fail_3`, `fail_count_5_in_30m`, `updater_age_gt5_3runs`. State/cooldown: `/var/lib/atp/health_alert_state.json`.
+
+**Test:**
+
+```bash
+sudo systemctl start atp-health-alert.service
+sudo journalctl -u atp-health-alert.service -n 50 --no-pager
+```
+
+Dry run (no token needed to test logic): `ATP_ALERT_DRY_RUN=1 bash scripts/diag/health_snapshot_telegram_alert.sh`.
+
+---
+
 ## Optional: seed watchlist from market_prices
 
 If you want `watchlist_items` populated from symbols already in `market_prices` (e.g. after a DB reset), run from the backend container:
