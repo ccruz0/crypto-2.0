@@ -21,7 +21,8 @@ unhealthy="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -ci 
 tmp_exit=""
 tmp_exit="$(mktemp 2>/dev/null)" || true
 if [ -n "$tmp_exit" ] && [ -w "$tmp_exit" ]; then
-  verify_output="$(cd "$REPO_ROOT" && (./scripts/selfheal/verify.sh 2>/dev/null; echo $? > "$tmp_exit") | cat)"
+  # Inner subshell must not inherit set -e so we always write exit code when verify returns non-zero
+  verify_output="$(cd "$REPO_ROOT" && (set +e; ./scripts/selfheal/verify.sh 2>/dev/null; echo $? > "$tmp_exit") | cat)" || true
   verify_exit="$(cat "$tmp_exit" 2>/dev/null)" || verify_exit="0"
   rm -f "$tmp_exit"
 else
@@ -52,10 +53,10 @@ if command -v jq >/dev/null 2>&1 && [ -n "$tmp_sys" ] && [ -r "$tmp_sys" ]; then
     --argjson verify_exit "$verify_exit" \
     --arg verify_label "$verify_label" \
     --slurpfile sys "$tmp_sys" \
-    '{ts:$ts, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, system:$sys[0]}')"
+    '{ts:$ts, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, market_data_status:($sys[0].market_data.status // "unknown"), market_updater_status:($sys[0].market_updater.status // "unknown"), system:$sys[0]}')"
   echo "$payload" >> "$LOG_FILE"
   rm -f "$tmp_sys"
 else
-  echo "{\"ts\":\"$timestamp\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"system\":{}}" >> "$LOG_FILE"
+  echo "{\"ts\":\"$timestamp\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"market_data_status\":\"unknown\",\"market_updater_status\":\"unknown\",\"system\":{}}" >> "$LOG_FILE"
   [ -n "$tmp_sys" ] && rm -f "$tmp_sys"
 fi
