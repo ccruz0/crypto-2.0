@@ -11,6 +11,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 disk_pct="$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}' || echo "?")"
 unhealthy="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -ci unhealthy || echo "0")"
+unhealthy="${unhealthy//[^0-9]/}"
+[ -z "$unhealthy" ] && unhealthy="0"
 health_system="$(curl -sS --max-time 5 "$BASE/api/health/system" 2>/dev/null || echo "{}")"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
