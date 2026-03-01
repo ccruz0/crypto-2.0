@@ -3,8 +3,10 @@ Description=Run ATP self-heal every 2 minutes
 
 [Timer]
 OnBootSec=60
-OnUnitActiveSec=120
+# Every 2 minutes on the clock (0, 2, 4, ...) so list-timers shows next trigger clearly
+OnCalendar=*:0/2
 AccuracySec=10
+Persistent=true
 
 [Install]
 WantedBy=timers.target

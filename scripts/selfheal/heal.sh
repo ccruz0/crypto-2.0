@@ -28,11 +28,18 @@ docker_prune() {
 restart_stack() {
   local repo_dir="${1:-$HOME/automated-trading-platform}"
   local env_file="$repo_dir/.env"
-  if [[ ! -f "$env_file" ]]; then
+  if [ ! -f "$env_file" ]; then
     echo ".env missing at $env_file. Copy .env.example to .env and set DATABASE_URL/POSTGRES_PASSWORD. Skipping compose."
     return 0
   fi
   cd "$repo_dir"
+  if [ -x scripts/aws/ensure_env_aws.sh ]; then
+    REPO_DIR="$repo_dir" ./scripts/aws/ensure_env_aws.sh || true
+  fi
+  if [ ! -f .env.aws ]; then
+    echo ".env.aws still missing after ensure_env_aws; skipping compose restart."
+    return 0
+  fi
   docker compose --profile aws up -d --remove-orphans
   docker compose --profile aws restart || true
 }
