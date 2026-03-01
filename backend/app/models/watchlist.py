@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON, UniqueConstraint, text
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, JSON, UniqueConstraint
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -11,9 +11,8 @@ class WatchlistItem(Base):
     is_deleted = Column(
         Boolean,
         default=False,
-        nullable=False,
-        server_default=text("0")
-    )  # Soft delete flag - only deleted entries are hidden
+        nullable=False
+    )  # Soft delete; no server_default so PostgreSQL accepts CREATE (no integer 0)
     
     # Unique constraint to prevent duplicates: one watchlist entry per (symbol, exchange) combination
     __table_args__ = (

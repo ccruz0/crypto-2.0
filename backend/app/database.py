@@ -227,7 +227,7 @@ def ensure_optional_columns(db_engine=None):
                 if "ix_order_intents_signal_id" in err_msg and "already exists" in err_msg:
                     logger.warning("Orphan index ix_order_intents_signal_id exists; dropping and retrying create")
                     with engine_to_use.begin() as conn:
-                        conn.execute(text("DROP INDEX IF EXISTS ix_order_intents_signal_id"))
+                        conn.execute(text("DROP INDEX IF EXISTS ix_order_intents_signal_id CASCADE"))
                     Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
                     logger.info(f"[BOOT] Created table {order_intents_table} after dropping orphan index")
                 else:
@@ -239,7 +239,7 @@ def ensure_optional_columns(db_engine=None):
 
     table_configs = {}
     table_configs[watchlist_table] = [
-        ("is_deleted", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("is_deleted", "BOOLEAN NOT NULL DEFAULT false"),
         ("min_price_change_pct", "DOUBLE PRECISION"),
     ]
     
