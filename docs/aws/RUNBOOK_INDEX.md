@@ -39,6 +39,12 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 
 ---
 
+## Stability and diagnostics
+
+See **[../runbooks/EC2_DB_BOOTSTRAP.md](../runbooks/EC2_DB_BOOTSTRAP.md)** § Diagnostics and stability: market fallback check (run in backend container, no prod data change), verify.sh DEGRADED (market_data WARN + market_updater PASS = OK), ensure_env_aws, and hourly health snapshot (install systemd timer; log at `/var/log/atp/health_snapshots.log`).
+
+---
+
 ## If PROD (dashboard) is down
 
 1. **Check from repo:** `./scripts/aws/prod_status.sh` → PROD API OK?

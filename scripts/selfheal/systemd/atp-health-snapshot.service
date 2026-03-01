@@ -1,0 +1,13 @@
+[Unit]
+Description=ATP hourly health snapshot to /var/log/atp/health_snapshots.log
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+ExecStart=/home/ubuntu/automated-trading-platform/scripts/diag/health_snapshot_log.sh
+# Root so /var/log/atp can be created and written
+User=root
+
+[Install]
+WantedBy=multi-user.target

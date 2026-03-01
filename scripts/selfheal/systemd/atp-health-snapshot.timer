@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ATP health snapshot every hour
+
+[Timer]
+OnBootSec=300
+OnCalendar=hourly
+AccuracySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

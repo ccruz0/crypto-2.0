@@ -93,7 +93,26 @@ docker logs --tail 120 automated-trading-platform-market-updater-aws-1 2>&1 | ta
 # 8) Re-enable timer only if verify passes
 ./scripts/selfheal/verify.sh && sudo systemctl start atp-selfheal.timer
 sudo systemctl status atp-selfheal.timer --no-pager
+
+# If you updated the timer unit (OnCalendar=*:0/2), reload and restart:
+# sudo cp scripts/selfheal/systemd/atp-selfheal.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart atp-selfheal.timer
 ```
+
+---
+
+## Diagnostics and stability
+
+- **Market fallback check:** Run inside the backend container to see what fallback health would return (no prod data change):  
+  `docker exec automated-trading-platform-backend-aws-1 python /app/scripts/diag/market_health_fallback_check.py`  
+  Prints `distinct_recent_symbols`, `max_age_minutes`, `computed status` (PASS/WARN/FAIL).
+
+- **verify.sh DEGRADED:** If `market_data` is WARN and `market_updater` is PASS, verify exits 0 with `DEGRADED:MARKET_DATA_WARN_UPDATER_PASS` and does not trigger heal.
+
+- **ensure_env_aws:** Before compose, self-heal runs `scripts/aws/ensure_env_aws.sh` when present and executable; it creates `.env.aws` from `.env` or `.env.example` if missing.
+
+- **Hourly health snapshot:** Logs one JSON line per run to `/var/log/atp/health_snapshots.log` (ts, disk_pct, unhealthy_count, full `/api/health/system`). Install once:  
+  `sudo cp scripts/selfheal/systemd/atp-health-snapshot.service scripts/selfheal/systemd/atp-health-snapshot.timer /etc/systemd/system/`  
+  then `sudo systemctl daemon-reload` and `sudo systemctl enable --now atp-health-snapshot.timer`.
 
 ---
 
