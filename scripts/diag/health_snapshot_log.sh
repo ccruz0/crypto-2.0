@@ -6,7 +6,7 @@
 set -euo pipefail
 
 LOG_FILE="${ATP_HEALTH_SNAPSHOT_LOG:-/var/log/atp/health_snapshots.log}"
-BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
+BASE="${BASE:-${ATP_HEALTH_BASE:-http://127.0.0.1:8002}}"
 REPO_ROOT="${ATP_REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -54,10 +54,10 @@ if command -v jq >/dev/null 2>&1 && [ -n "$tmp_sys" ] && [ -r "$tmp_sys" ]; then
     --argjson verify_exit "$verify_exit" \
     --arg verify_label "$verify_label" \
     --slurpfile sys "$tmp_sys" \
-    '{ts:$ts, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, market_data_status:($sys[0].market_data.status // "unknown"), market_updater_status:($sys[0].market_updater.status // "unknown"), system:$sys[0]}')"
+    '{ts:$ts, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, global_status:($sys[0].global_status // "unknown"), market_data_status:($sys[0].market_data.status // "unknown"), market_updater_status:($sys[0].market_updater.status // "unknown"), system:$sys[0]}')"
   echo "$payload" >> "$LOG_FILE"
   rm -f "$tmp_sys"
 else
-  echo "{\"ts\":\"$timestamp\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"market_data_status\":\"unknown\",\"market_updater_status\":\"unknown\",\"system\":{}}" >> "$LOG_FILE"
+  echo "{\"ts\":\"$timestamp\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"global_status\":\"unknown\",\"market_data_status\":\"unknown\",\"market_updater_status\":\"unknown\",\"system\":{}}" >> "$LOG_FILE"
   [ -n "$tmp_sys" ] && rm -f "$tmp_sys"
 fi

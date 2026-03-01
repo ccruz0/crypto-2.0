@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE="http://127.0.0.1:8002"
+BASE="${BASE:-http://127.0.0.1:8002}"
 
 disk_use_pct() {
   df -P / | awk 'NR==2 {gsub("%","",$5); print $5}'
