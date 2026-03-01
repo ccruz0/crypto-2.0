@@ -14,7 +14,8 @@ mkdir -p "$(dirname "$LOG_FILE")"
 # Numeric: digits only, safe for --argjson
 disk_pct="$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}' 2>/dev/null | tr -dc '0-9' | head -c 3)"
 [ -z "$disk_pct" ] && disk_pct="100"
-unhealthy="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -ci unhealthy 2>/dev/null | tr -dc '0-9')"
+# grep -c exits 1 when no match; avoid pipefail killing the script
+unhealthy="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | (grep -ci unhealthy 2>/dev/null || echo 0) | tr -dc '0-9')"
 [ -z "$unhealthy" ] && unhealthy="0"
 
 # Verify outcome: what ops considers OK (PASS / DEGRADED / FAIL)
