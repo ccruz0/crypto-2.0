@@ -1,5 +1,15 @@
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional
+
+# Resolve TELEGRAM_BOT_TOKEN from env or by decrypting TELEGRAM_BOT_TOKEN_ENCRYPTED
+# (secrets/runtime.env). Must run before Settings() so token is in os.environ.
+def _inject_telegram_token_from_encrypted() -> None:
+    from app.core.telegram_secrets import resolve_telegram_token_from_env
+    token = resolve_telegram_token_from_env()
+    if token:
+        os.environ["TELEGRAM_BOT_TOKEN"] = token
+        os.environ["TELEGRAM_BOT_TOKEN_AWS"] = token
 
 
 class Settings(BaseSettings):
@@ -59,6 +69,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"  # Ignore extra environment variables
 
+
+_inject_telegram_token_from_encrypted()
 settings = Settings()
 
 # Validate SECRET_KEY is set (critical for security)

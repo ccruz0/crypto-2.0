@@ -227,9 +227,12 @@ services:
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-false}
       - CRYPTO_PROXY_URL=${CRYPTO_PROXY_URL:-http://host.docker.internal:9000}
       # CRYPTO_PROXY_TOKEN from env_file only
+      # TELEGRAM: decrypt TELEGRAM_BOT_TOKEN_ENCRYPTED (secrets/runtime.env) with key from TELEGRAM_KEY_FILE
+      - TELEGRAM_KEY_FILE=/app/secrets/telegram_key
       - UVICORN_WORKERS=1
       - DISABLE_MIDDLEWARES=0
       - ENABLE_CORS=1
+      # x-api-key auth: ATP_API_KEY from env_file (secrets/runtime.env) for /api/engine/run-once etc.
       - DISABLE_AUTH=${DISABLE_AUTH:-false}
       - VPN_GATE_ENABLED=${VPN_GATE_ENABLED:-true}
       - VPN_GATE_URL=${VPN_GATE_URL:-https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT}
@@ -275,6 +278,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/ai_runs:/app/backend/ai_runs
       - aws_trading_config_data:/data
+      # Telegram decrypt: key for TELEGRAM_BOT_TOKEN_ENCRYPTED (secrets/runtime.env)
+      - ./secrets/telegram_key:/app/secrets/telegram_key:ro
     group_add:
       - "0"
     working_dir: /app
@@ -330,11 +335,13 @@ services:
       - PORTFOLIO_DEBUG=${PORTFOLIO_DEBUG:-1}
       - PORTFOLIO_RECONCILE_DEBUG=${PORTFOLIO_RECONCILE_DEBUG:-1}
       - TRADING_CONFIG_PATH=/data/trading_config.json
+      - TELEGRAM_KEY_FILE=/app/secrets/telegram_key
     # Bind to loopback only (Phase F: no public binds for 8002/3000/8003)
     ports:
       - "127.0.0.1:8003:8002"
     volumes:
       - aws_trading_config_data:/data
+      - ./secrets/telegram_key:/app/secrets/telegram_key:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
@@ -545,6 +552,7 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
       - --web.enable-lifecycle
     volumes:
       - ./scripts/aws/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
