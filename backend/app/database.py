@@ -183,25 +183,12 @@ def ensure_optional_columns(db_engine=None):
     except Exception as import_err:
         logger.warning(f"Cannot load models to verify optional columns: {import_err}")
         return
-    
-    # Ensure order_intents table exists (created automatically by Base.metadata.create_all, but defensive check)
-    try:
-        order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
-            OrderIntent, "__tablename__", "order_intents"
-        )
-        if not table_exists(engine_to_use, order_intents_table):
-            logger.warning(f"Table {order_intents_table} does not exist - creating it")
-            Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
-            logger.info(f"[BOOT] Created table {order_intents_table}")
-        else:
-            logger.info(f"[BOOT] order_intents table OK")
-    except Exception as table_err:
-        logger.error(f"Error ensuring order_intents table exists: {table_err}", exc_info=True)
 
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"
     )
-    # Ensure watchlist_items exists (market-updater and signal_monitor depend on it; crash if missing)
+    # Create watchlist_items first (market-updater and signal_monitor depend on it); then market tables; then order_intents.
+    # Order matters: optional_columns loop below ALTERs these tables, so they must exist.
     try:
         if not table_exists(engine_to_use, watchlist_table):
             logger.warning(f"Table {watchlist_table} does not exist - creating it")
@@ -212,7 +199,6 @@ def ensure_optional_columns(db_engine=None):
     except Exception as table_err:
         logger.error(f"Error ensuring {watchlist_table} table exists: {table_err}", exc_info=True)
 
-    # Ensure market_data / market_price exist (market-updater writes to them)
     try:
         from app.models.market_price import MarketData, MarketPrice
         for model, name in [(MarketData, "market_data"), (MarketPrice, "market_price")]:
@@ -224,6 +210,32 @@ def ensure_optional_columns(db_engine=None):
                 logger.info(f"[BOOT] Created table {tname}")
     except Exception as table_err:
         logger.warning(f"Could not ensure market_data/market_price tables: {table_err}")
+
+    # Ensure order_intents table exists. If create_all fails due to orphan index (e.g. ix_order_intents_signal_id),
+    # drop the index and retry.
+    order_intents_table = getattr(getattr(OrderIntent, "__table__", None), "name", None) or getattr(
+        OrderIntent, "__tablename__", "order_intents"
+    )
+    try:
+        if not table_exists(engine_to_use, order_intents_table):
+            logger.warning(f"Table {order_intents_table} does not exist - creating it")
+            try:
+                Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
+                logger.info(f"[BOOT] Created table {order_intents_table}")
+            except Exception as create_err:
+                err_msg = str(create_err)
+                if "ix_order_intents_signal_id" in err_msg and "already exists" in err_msg:
+                    logger.warning("Orphan index ix_order_intents_signal_id exists; dropping and retrying create")
+                    with engine_to_use.begin() as conn:
+                        conn.execute(text("DROP INDEX IF EXISTS ix_order_intents_signal_id"))
+                    Base.metadata.create_all(bind=engine_to_use, tables=[OrderIntent.__table__])
+                    logger.info(f"[BOOT] Created table {order_intents_table} after dropping orphan index")
+                else:
+                    raise
+        else:
+            logger.info(f"[BOOT] order_intents table OK")
+    except Exception as table_err:
+        logger.error(f"Error ensuring order_intents table exists: {table_err}", exc_info=True)
 
     table_configs = {}
     table_configs[watchlist_table] = [
@@ -249,6 +261,9 @@ def ensure_optional_columns(db_engine=None):
     try:
         with engine_to_use.begin() as conn:
             for table_name, optional_columns in table_configs.items():
+                if not table_exists(engine_to_use, table_name):
+                    logger.debug("Skipping optional columns for %s (table does not exist)", table_name)
+                    continue
                 for column_name, column_sql in optional_columns:
                     if table_has_column(engine_to_use, table_name, column_name):
                         continue
