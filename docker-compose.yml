@@ -280,6 +280,8 @@ services:
       - aws_trading_config_data:/data
       # Telegram decrypt: key for TELEGRAM_BOT_TOKEN_ENCRYPTED (secrets/runtime.env)
       - ./secrets/telegram_key:/app/secrets/telegram_key:ro
+      # Optional: mount runtime.env so dashboard modal can persist exchange credentials (host file must be writable by backend user, e.g. chown 10001:10001 secrets/runtime.env)
+      - ./secrets/runtime.env:/app/secrets/runtime.env
     group_add:
       - "0"
     working_dir: /app
