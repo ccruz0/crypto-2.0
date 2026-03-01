@@ -4,6 +4,8 @@ When **market_data** and **market_updater** stay FAIL with `relation "watchlist_
 
 **Rule:** `/api/health/fix` = restarts only (no schema mutation). Schema is created by `scripts/db/bootstrap.sh` (one-time or deploy-time) or by backend startup/repair.
 
+**Health fallback:** If `watchlist_items` is empty, `/api/health/system` uses **market_prices** recency for `market_data` and `market_updater` (no need to seed watchlist for health to pass). Response includes `health_symbol_source`: `"watchlist_items"` or `"market_prices_fallback"`, and when using fallback a `message`: *"Watchlist empty; using market_prices fallback for health."* Empty watchlist is not fatal; PASS when ≥5 recent symbols in `market_prices`, WARN for 1–4, FAIL for 0.
+
 ---
 
 ## If git pull fails: "untracked working tree files would be overwritten"
@@ -92,6 +94,18 @@ docker logs --tail 120 automated-trading-platform-market-updater-aws-1 2>&1 | ta
 ./scripts/selfheal/verify.sh && sudo systemctl start atp-selfheal.timer
 sudo systemctl status atp-selfheal.timer --no-pager
 ```
+
+---
+
+## Optional: seed watchlist from market_prices
+
+If you want `watchlist_items` populated from symbols already in `market_prices` (e.g. after a DB reset), run from the backend container:
+
+```bash
+docker exec automated-trading-platform-backend-aws-1 python /app/scripts/db/seed_watchlist_from_market_prices.py
+```
+
+Or from the repo root (with backend env): `python scripts/db/seed_watchlist_from_market_prices.py`. Inserts only missing symbols; safe to run multiple times. Health can still pass with an empty watchlist (market_prices fallback).
 
 ---
 
