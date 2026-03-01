@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     UniqueConstraint,
     Index,
+    text,
 )
 from sqlalchemy.sql import func
 
@@ -27,7 +28,7 @@ class SignalThrottleState(Base):
     last_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_source = Column(String(20), nullable=True)  # alert / order
     emit_reason = Column(String(500), nullable=True)  # Reason why signal was emitted (e.g., price change %, strategy change, side change)
-    force_next_signal = Column(Boolean, default=False, nullable=False, server_default=func.false())  # Force bypass throttle on next evaluation
+    force_next_signal = Column(Boolean, default=False, nullable=False, server_default=text("false"))  # Force bypass throttle on next evaluation
     config_hash = Column(String(128), nullable=True)  # Hash of whitelisted config fields to detect real changes
 
     __table_args__ = (
