@@ -19,7 +19,7 @@ class WatchlistMaster(Base):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False, default="CRYPTO_COM")
-    is_deleted = Column(Boolean, default=False, nullable=False, server_default=text("0"))
+    is_deleted = Column(Boolean, default=False, nullable=False, server_default=text("false"))
     
     # Unique constraint
     __table_args__ = (
