@@ -275,9 +275,12 @@ def _check_telegram_health() -> Dict:
         run_telegram = os.getenv("RUN_TELEGRAM", "").strip().lower()
         enabled_by_env = run_telegram in ("true", "1", "yes")
         
-        # Check kill switch status
+        # Check kill switch status (allow Telegram if DB check fails so token/chat_id still reported)
         from app.services.telegram_notifier import _get_telegram_kill_switch_status
-        kill_switch_enabled = _get_telegram_kill_switch_status(runtime_env)
+        try:
+            kill_switch_enabled = _get_telegram_kill_switch_status(runtime_env)
+        except Exception:
+            kill_switch_enabled = True
         
         # Check credentials based on environment
         if runtime_env == "aws":
