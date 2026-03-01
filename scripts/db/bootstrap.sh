@@ -16,10 +16,16 @@ cd "$REPO_ROOT"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-postgres_hardened}"
 BACKEND_CONTAINER="${BACKEND_CONTAINER:-automated-trading-platform-backend-aws-1}"
 
-# Check if watchlist_items exists (via Postgres)
+# Check if watchlist_items exists (via backend container so we don't need postgres password on host)
 check_watchlist_table() {
-  docker exec "$POSTGRES_CONTAINER" psql -U trader -d atp -tAc \
-    "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='watchlist_items';" 2>/dev/null || echo ""
+  docker exec "$BACKEND_CONTAINER" python -c "
+from app.database import engine
+from sqlalchemy import inspect
+if engine is None:
+    raise SystemExit(1)
+insp = inspect(engine)
+print('1' if 'watchlist_items' in insp.get_table_names() else '')
+" 2>/dev/null || echo ""
 }
 
 # Run schema ensure via backend (ensure_optional_columns creates watchlist_items, order_intents, market_data, market_price)

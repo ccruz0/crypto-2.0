@@ -6,6 +6,22 @@ When **market_data** and **market_updater** stay FAIL with `relation "watchlist_
 
 ---
 
+## If git pull fails: "untracked working tree files would be overwritten"
+
+EC2 may have local copies of `scripts/selfheal/*` that conflict with the repo. Use the repo version and pull:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+# Backup local selfheal if you need it, then replace with repo
+rm -rf scripts/selfheal/heal.sh scripts/selfheal/run.sh scripts/selfheal/verify.sh \
+  scripts/selfheal/systemd/atp-selfheal.service scripts/selfheal/systemd/atp-selfheal.timer
+git pull origin main
+```
+
+Or move the whole directory aside and pull: `mv scripts/selfheal scripts/selfheal.bak && git pull origin main`
+
+---
+
 ## Verify repo has the code (run first on EC2)
 
 If these are missing, you're not deployed. Pull and push from your dev machine so EC2 gets the files.
@@ -46,10 +62,12 @@ sudo systemctl stop atp-selfheal.timer || true
 # 2) Pull latest
 git pull origin main
 
-# 3) Ensure .env and .env.aws exist (avoid compose errors)
+# 3) Ensure .env, .env.aws, .env.local, secrets/runtime.env (avoid compose errors)
 [ ! -f .env ] && cp .env.example .env && echo "Created .env"
 test -f .env.aws || cp .env .env.aws && echo "Created .env.aws from .env"
-ls -la .env .env.aws
+[ ! -f .env.local ] && touch .env.local && echo "Created empty .env.local"
+mkdir -p secrets && [ ! -f secrets/runtime.env ] && touch secrets/runtime.env
+ls -la .env .env.aws .env.local secrets/runtime.env
 
 # 4) Rebuild backend to include schema fix (ensure_optional_columns creates watchlist_items etc.)
 docker compose --profile aws build backend-aws
@@ -92,15 +110,19 @@ sudo systemctl stop atp-selfheal.timer || true
 git pull origin main
 ```
 
-### 3) .env and .env.aws
+### 3) .env, .env.aws, and secrets/runtime.env
 
 ```bash
 [ ! -f .env ] && cp .env.example .env && echo "Created .env"
 test -f .env.aws || cp .env .env.aws && echo "Created .env.aws from .env"
-ls -la .env .env.aws
+# Avoid "env file ... not found" from compose
+mkdir -p secrets
+[ ! -f secrets/runtime.env ] && ( touch secrets/runtime.env || cp secrets/runtime.env.example secrets/runtime.env 2>/dev/null || true )
+[ ! -f .env.local ] && touch .env.local && echo "Created empty .env.local (compose may reference it)"
+ls -la .env .env.aws .env.local secrets/runtime.env
 ```
 
-Edit `.env` / `.env.aws` so `DATABASE_URL` and `POSTGRES_PASSWORD` are correct.
+Edit `.env` / `.env.aws` so `DATABASE_URL` and `POSTGRES_PASSWORD` are correct. Optionally add `ATP_API_KEY` to `secrets/runtime.env` for x-api-key endpoints.
 
 ### 4) Build backend and bring stack up
 
