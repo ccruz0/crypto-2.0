@@ -3073,16 +3073,25 @@ class CryptoComTradeClient:
             raise RuntimeError("Crypto.com API credentials not configured (EXCHANGE_CUSTOM_API_KEY/SECRET).")
         
         # Use private/get-order-history endpoint (not advanced - for regular orders)
-        # Per Crypto.com Exchange API doc: first page = { "limit": N } only (no start_time/end_time).
-        # Pagination uses end_time (last record's create_time_ns) + limit, not page numbers.
+        # Per Crypto.com Exchange API doc: when start_time/end_time are omitted, default is
+        # start_time = end_time - 1 day, so we only get last 24h. Always send a wide window.
+        # Doc: "Default: end_time - 1 day" for start_time; "Default: current system timestamp" for end_time.
         method = "private/get-order-history"
         limit = min(int(page_size or 100), 100)  # Doc max 100
         params = {"limit": limit}
-        # First page (page==0): no time range. Next pages: end_time + optional start_time.
-        if page > 0 and end_time is not None:
-            params["end_time"] = int(end_time)
-        if page > 0 and start_time is not None:
-            params["start_time"] = int(start_time)
+        now_ms = int(time.time() * 1000)
+        # First page (page==0): send explicit time range so we don't get only last 1 day (API default).
+        # History is kept for 6 months per doc; use 180 days for initial fetch.
+        if page == 0:
+            end_ms = int(end_time) if end_time is not None else now_ms
+            start_ms = int(start_time) if start_time is not None else (end_ms - 180 * 24 * 60 * 60 * 1000)
+            params["end_time"] = end_ms
+            params["start_time"] = start_ms
+        else:
+            if page > 0 and end_time is not None:
+                params["end_time"] = int(end_time)
+            if page > 0 and start_time is not None:
+                params["start_time"] = int(start_time)
         
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
@@ -3227,7 +3236,7 @@ class CryptoComTradeClient:
                             logger.info("Trying get-trades fallback (private/get-trades with limit=%s)", limit)
                             try:
                                 trades_method = "private/get-trades"
-                                trades_params = {"limit": limit}
+                                trades_params = {"limit": limit, "start_time": params["start_time"], "end_time": params["end_time"]}
                                 payload_trades = self.sign_request(trades_method, trades_params)
                                 if not (isinstance(payload_trades, dict) and payload_trades.get("skipped")):
                                     resp_t = http_post(
