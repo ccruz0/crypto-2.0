@@ -3137,19 +3137,46 @@ class CryptoComTradeClient:
             response.raise_for_status()
             result = response.json()
             
-            logger.info(f"Successfully retrieved order history")
-            logger.debug(f"Response keys: {list(result.keys())}")
+            # Log response structure for diagnostics (keys only, no sensitive data)
+            top_keys = list(result.keys()) if isinstance(result, dict) else []
+            inner_keys = []
+            data_value = None
+            if isinstance(result, dict) and "result" in result:
+                inner = result["result"]
+                inner_keys = list(inner.keys()) if isinstance(inner, dict) else []
+                if "data" in inner:
+                    data_value = inner["data"]
+                elif "order_list" in inner:
+                    data_value = inner["order_list"]
+            _data_len = len(data_value) if isinstance(data_value, (list, dict)) else 0
+            logger.info(
+                "Order history response: result_keys=%s result.result_keys=%s data_type=%s data_len=%s",
+                top_keys,
+                inner_keys,
+                type(data_value).__name__ if data_value is not None else None,
+                _data_len,
+            )
             
-            # Crypto.com returns {"result": {"data": [...]}} or {"result": {"order_list": [...]}}
-            if "result" in result:
-                if "data" in result["result"]:
-                    data = result["result"]["data"]
-                    return {"data": data}
-                elif "order_list" in result["result"]:
-                    data = result["result"]["order_list"]
+            # Crypto.com Exchange can return:
+            # - {"result": {"data": [...]}}  (list of orders)
+            # - {"result": {"order_list": [...]}}  (list of orders)
+            # - {"result": {"data": {"order_list": [...]}}}  (nested)
+            if "result" in result and isinstance(result["result"], dict):
+                res = result["result"]
+                data = None
+                if "data" in res:
+                    raw = res["data"]
+                    if isinstance(raw, list):
+                        data = raw
+                    elif isinstance(raw, dict) and "order_list" in raw:
+                        data = raw["order_list"]
+                if data is None and "order_list" in res:
+                    raw = res["order_list"]
+                    data = raw if isinstance(raw, list) else None
+                if isinstance(data, list):
                     return {"data": data}
             
-            logger.warning(f"Unexpected response format: {result}")
+            logger.warning("Order history unexpected format: result_keys=%s", top_keys)
             return {"data": []}
             
         except requests_exceptions.RequestException as e:
