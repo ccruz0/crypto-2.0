@@ -1953,17 +1953,16 @@ class ExchangeSyncService:
             from datetime import timedelta
             end_time_ms = int(time.time() * 1000)
             # Use 180 days for manual syncs (when max_pages > 10), otherwise 30 days
-            sync_days = 180 if max_pages > 10 else 30
-            start_time = datetime.now(timezone.utc) - timedelta(days=sync_days)
-            start_time_ms = int(start_time.timestamp() * 1000)
-            logger.info(f"Using order history date range: last {sync_days} days ({start_time} to now), max_pages={max_pages}")
+            # Crypto.com API: first page = limit only (most recent); next pages = end_time (cursor) + limit
+            next_end_time_ms = None  # None for first page
+            logger.info(f"Order history sync: first page limit={min(page_size, 100)}, then cursor-based pagination, max_pages={max_pages}")
             
             for page_num in range(max_pages):
                 response = trade_client.get_order_history(
-                    page_size=page_size, 
+                    page_size=page_size,
                     page=page_num,
-                    start_time=start_time_ms,
-                    end_time=end_time_ms
+                    start_time=None,  # Not sent for first page; API uses "most recent"
+                    end_time=next_end_time_ms
                 )
                 
                 if not response or 'data' not in response:
@@ -1976,8 +1975,17 @@ class ExchangeSyncService:
                 all_orders.extend(page_orders)
                 logger.debug(f"Fetched page {page_num + 1}: {len(page_orders)} orders (total so far: {len(all_orders)})")
                 
-                # If we got fewer orders than page_size, we've reached the end
-                if len(page_orders) < page_size:
+                if len(page_orders) < min(page_size, 100):
+                    break
+                # Cursor for next page: last order's create_time (ms) or create_time_ns
+                last = page_orders[-1]
+                next_end_time_ms = last.get('create_time_ns') or last.get('create_time')
+                if next_end_time_ms is not None:
+                    try:
+                        next_end_time_ms = int(next_end_time_ms)
+                    except (TypeError, ValueError):
+                        next_end_time_ms = None
+                if next_end_time_ms is None:
                     break
             
             orders = all_orders

@@ -3073,36 +3073,21 @@ class CryptoComTradeClient:
             raise RuntimeError("Crypto.com API credentials not configured (EXCHANGE_CUSTOM_API_KEY/SECRET).")
         
         # Use private/get-order-history endpoint (not advanced - for regular orders)
-        # IMPORTANT: Without params, it only returns 1 order. We need date filters to get all orders.
+        # Per Crypto.com Exchange API doc: first page = { "limit": N } only (no start_time/end_time).
+        # Pagination uses end_time (last record's create_time_ns) + limit, not page numbers.
         method = "private/get-order-history"
-        
-        # Build params - use date range if provided, otherwise get last 30 days
-        # IMPORTANT: Crypto.com API requires all numeric params to be integers, not strings
-        params = {}
-        if start_time is not None or end_time is not None:
-            if start_time is not None:
-                params['start_time'] = int(start_time)  # Ensure integer type
-            if end_time is not None:
-                params['end_time'] = int(end_time)  # Ensure integer type
-            if page_size:
-                params['page_size'] = int(page_size)  # Ensure integer type
-            params['page'] = int(page)  # Ensure integer type
-        else:
-            # Default: Get last 30 days of orders
-            from datetime import datetime, timedelta
-            end_time_ms = int(time.time() * 1000)
-            start_time_ms = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
-            params = {
-                'start_time': int(start_time_ms),  # Ensure integer type
-                'end_time': int(end_time_ms),  # Ensure integer type
-                'page_size': int(page_size),  # Ensure integer type
-                'page': int(page)  # Ensure integer type
-            }
+        limit = min(int(page_size or 100), 100)  # Doc max 100
+        params = {"limit": limit}
+        # First page (page==0): no time range. Next pages: end_time + optional start_time.
+        if page > 0 and end_time is not None:
+            params["end_time"] = int(end_time)
+        if page > 0 and start_time is not None:
+            params["start_time"] = int(start_time)
         
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
             return {"data": [], **payload}
-        logger.info(f"Live: Calling {method} with params: {list(params.keys())}")
+        logger.info(f"Live: Calling {method} with params: {list(params.keys())} (page={page})")
         
         try:
             url = f"{self.base_url}/{method}"
@@ -3161,19 +3146,46 @@ class CryptoComTradeClient:
             # - {"result": {"data": [...]}}  (list of orders)
             # - {"result": {"order_list": [...]}}  (list of orders)
             # - {"result": {"data": {"order_list": [...]}}}  (nested)
-            if "result" in result and isinstance(result["result"], dict):
-                res = result["result"]
-                data = None
+            def _extract_data(res: dict) -> Optional[list]:
                 if "data" in res:
                     raw = res["data"]
                     if isinstance(raw, list):
-                        data = raw
-                    elif isinstance(raw, dict) and "order_list" in raw:
-                        data = raw["order_list"]
-                if data is None and "order_list" in res:
+                        return raw
+                    if isinstance(raw, dict) and "order_list" in raw:
+                        return raw["order_list"]
+                if "order_list" in res:
                     raw = res["order_list"]
-                    data = raw if isinstance(raw, list) else None
+                    return raw if isinstance(raw, list) else None
+                return None
+
+            if "result" in result and isinstance(result["result"], dict):
+                data = _extract_data(result["result"])
                 if isinstance(data, list):
+                    # First page with limit returned 0: retry with empty params (doc default)
+                    if page == 0 and len(data) == 0:
+                        logger.info("Order history returned 0 with limit; retrying with empty params")
+                        payload_empty = self.sign_request(method, {})
+                        if not (isinstance(payload_empty, dict) and payload_empty.get("skipped")):
+                            try:
+                                resp2 = http_post(
+                                    f"{self.base_url}/{method}", json=payload_empty,
+                                    headers={"Content-Type": "application/json"}, timeout=10,
+                                    calling_module="crypto_com_trade.get_order_history_empty_fallback"
+                                )
+                                resp2.raise_for_status()
+                                r2 = resp2.json()
+                                if isinstance(r2.get("result"), dict):
+                                    data2 = _extract_data(r2["result"])
+                                    if isinstance(data2, list) and len(data2) > 0:
+                                        logger.info("Empty-params fallback returned %s orders", len(data2))
+                                        return {"data": data2}
+                            except Exception as fallback_err:
+                                logger.warning("Empty-params fallback failed: %s", fallback_err)
+                        if len(data) == 0:
+                            logger.warning(
+                                "Order history empty. Check: API key is for Crypto.com Exchange (not App); "
+                                "key has order history / Read permission; account has orders."
+                            )
                     return {"data": data}
             
             logger.warning("Order history unexpected format: result_keys=%s", top_keys)
