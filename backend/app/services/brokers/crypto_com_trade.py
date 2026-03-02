@@ -2786,7 +2786,7 @@ class CryptoComTradeClient:
         Failure-only fallback: attempt SL and/or TP creation with many format variations.
         Keeps the success-path unchanged by being invoked only after a normal attempt fails.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("create_stop_loss_take_profit_with_variations", instrument_name)
         entry_side = (side or "").strip().upper()
         if entry_side not in ("BUY", "SELL"):
@@ -3134,8 +3134,12 @@ class CryptoComTradeClient:
                 elif "order_list" in inner:
                     data_value = inner["order_list"]
             _data_len = len(data_value) if isinstance(data_value, (list, dict)) else 0
+            api_code = result.get("code") if isinstance(result, dict) else None
+            api_message = result.get("message") if isinstance(result, dict) else None
             logger.info(
-                "Order history response: result_keys=%s result.result_keys=%s data_type=%s data_len=%s",
+                "Order history response: code=%s message=%s result_keys=%s result.result_keys=%s data_type=%s data_len=%s",
+                api_code,
+                api_message,
                 top_keys,
                 inner_keys,
                 type(data_value).__name__ if data_value is not None else None,
@@ -3182,9 +3186,37 @@ class CryptoComTradeClient:
                             except Exception as fallback_err:
                                 logger.warning("Empty-params fallback failed: %s", fallback_err)
                         if len(data) == 0:
+                            # Portfolio works with same key → try explicit Spot instrument (API may return only Derivatives by default)
+                            for spot_inst in ("BTC_USDT", "BCH_USDT", "ETH_USDT"):
+                                try:
+                                    params_spot = {"limit": limit, "instrument_name": spot_inst}
+                                    payload_spot = self.sign_request(method, params_spot)
+                                    if isinstance(payload_spot, dict) and payload_spot.get("skipped"):
+                                        continue
+                                    resp_spot = http_post(
+                                        f"{self.base_url}/{method}", json=payload_spot,
+                                        headers={"Content-Type": "application/json"}, timeout=10,
+                                        calling_module="crypto_com_trade.get_order_history_spot_fallback"
+                                    )
+                                    resp_spot.raise_for_status()
+                                    r_spot = resp_spot.json()
+                                    if isinstance(r_spot.get("result"), dict):
+                                        data_spot = _extract_data(r_spot["result"])
+                                        if isinstance(data_spot, list) and len(data_spot) > 0:
+                                            logger.info(
+                                                "Order history returned %s orders with instrument_name=%s (Spot fallback)",
+                                                len(data_spot),
+                                                spot_inst,
+                                            )
+                                            return {"data": data_spot}
+                                except Exception as spot_err:
+                                    logger.debug("Spot fallback %s: %s", spot_inst, spot_err)
+                                time.sleep(1)  # Rate limit: 1 req/s for get-order-history
                             logger.warning(
-                                "Order history empty. Check: API key is for Crypto.com Exchange (not App); "
-                                "key has order history / Read permission; account has orders."
+                                "Order history empty (limit, empty params, and Spot instrument fallbacks returned 0). "
+                                "API code=%s message=%s",
+                                api_code,
+                                api_message,
                             )
                     return {"data": data}
             
@@ -3244,7 +3276,7 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_market_order", symbol)
         skip = require_aws_or_skip("place_market_order")
         if skip:
@@ -3900,7 +3932,7 @@ class CryptoComTradeClient:
         trade_on_margin_from_watchlist: bool = True,
     ) -> dict:
         """Place limit order"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_limit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
@@ -4277,7 +4309,7 @@ class CryptoComTradeClient:
         For trigger/conditional orders, uses Advanced Order Management API endpoint.
         If order_type is not provided, attempts to determine it from order detail.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("cancel_order", None)
         skip = require_aws_or_skip("cancel_order")
         if skip:
@@ -4374,7 +4406,7 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place stop loss order (STOP_LIMIT)"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_stop_loss_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
@@ -5152,7 +5184,7 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
         require_mutation_allowed_for_broker("place_take_profit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
