@@ -3087,7 +3087,17 @@ class CryptoComTradeClient:
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
             return {"data": [], **payload}
-        logger.info(f"Live: Calling {method} with params: {list(params.keys())} (page={page})")
+        # Step 1 isolation: confirm we hit production Exchange (not sandbox) and which base URL
+        base = getattr(self, "base_url", "") or ""
+        env_hint = "production" if "api.crypto.com" in base and "exchange" in base else "check_base_url"
+        logger.info(
+            "Order history API: base_url=%s env=%s method=%s params=%s (page=%s)",
+            base,
+            env_hint,
+            method,
+            list(params.keys()),
+            page,
+        )
         
         try:
             url = f"{self.base_url}/{method}"
@@ -3214,6 +3224,7 @@ class CryptoComTradeClient:
                                 time.sleep(1)  # Rate limit: 1 req/s for get-order-history
                             # Last resort: try private/get-trades (executed trades); same key often works when get-order-history is empty
                             time.sleep(1)
+                            logger.info("Trying get-trades fallback (private/get-trades with limit=%s)", limit)
                             try:
                                 trades_method = "private/get-trades"
                                 trades_params = {"limit": limit}
@@ -3228,6 +3239,7 @@ class CryptoComTradeClient:
                                     rt = resp_t.json()
                                     if isinstance(rt.get("result"), dict) and isinstance(rt["result"].get("data"), list):
                                         trades_list = rt["result"]["data"]
+                                        logger.info("get-trades fallback: API returned %s trades", len(trades_list))
                                         if trades_list:
                                             # Aggregate by order_id into order-like dicts for sync
                                             by_order: Dict[str, Dict[str, Any]] = {}
