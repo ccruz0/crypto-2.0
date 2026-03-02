@@ -3212,8 +3212,62 @@ class CryptoComTradeClient:
                                 except Exception as spot_err:
                                     logger.debug("Spot fallback %s: %s", spot_inst, spot_err)
                                 time.sleep(1)  # Rate limit: 1 req/s for get-order-history
+                            # Last resort: try private/get-trades (executed trades); same key often works when get-order-history is empty
+                            time.sleep(1)
+                            try:
+                                trades_method = "private/get-trades"
+                                trades_params = {"limit": limit}
+                                payload_trades = self.sign_request(trades_method, trades_params)
+                                if not (isinstance(payload_trades, dict) and payload_trades.get("skipped")):
+                                    resp_t = http_post(
+                                        f"{self.base_url}/{trades_method}", json=payload_trades,
+                                        headers={"Content-Type": "application/json"}, timeout=10,
+                                        calling_module="crypto_com_trade.get_order_history_trades_fallback"
+                                    )
+                                    resp_t.raise_for_status()
+                                    rt = resp_t.json()
+                                    if isinstance(rt.get("result"), dict) and isinstance(rt["result"].get("data"), list):
+                                        trades_list = rt["result"]["data"]
+                                        if trades_list:
+                                            # Aggregate by order_id into order-like dicts for sync
+                                            by_order: Dict[str, Dict[str, Any]] = {}
+                                            for t in trades_list:
+                                                oid = str(t.get("order_id") or "")
+                                                if not oid:
+                                                    continue
+                                                qty = str(t.get("traded_quantity") or "0")
+                                                price = t.get("traded_price")
+                                                if oid not in by_order:
+                                                    by_order[oid] = {
+                                                        "order_id": oid,
+                                                        "instrument_name": t.get("instrument_name", ""),
+                                                        "side": t.get("side", ""),
+                                                        "status": "FILLED",
+                                                        "order_type": "MARKET",
+                                                        "quantity": qty,
+                                                        "cumulative_quantity": "0",
+                                                        "avg_price": price,
+                                                        "create_time": t.get("create_time"),
+                                                        "update_time": t.get("create_time"),
+                                                    }
+                                                try:
+                                                    cur = float(by_order[oid]["cumulative_quantity"])
+                                                    by_order[oid]["cumulative_quantity"] = str(cur + float(qty))
+                                                    by_order[oid]["quantity"] = str(float(by_order[oid]["quantity"]) + float(qty))
+                                                except (TypeError, ValueError):
+                                                    by_order[oid]["cumulative_quantity"] = qty
+                                                    by_order[oid]["quantity"] = qty
+                                            orders_from_trades = list(by_order.values())
+                                            logger.info(
+                                                "Order history empty; get-trades fallback returned %s trades -> %s orders",
+                                                len(trades_list),
+                                                len(orders_from_trades),
+                                            )
+                                            return {"data": orders_from_trades}
+                            except Exception as trades_err:
+                                logger.warning("get-trades fallback failed: %s", trades_err)
                             logger.warning(
-                                "Order history empty (limit, empty params, and Spot instrument fallbacks returned 0). "
+                                "Order history empty (limit, empty params, Spot instruments, get-trades all returned 0). "
                                 "API code=%s message=%s",
                                 api_code,
                                 api_message,
