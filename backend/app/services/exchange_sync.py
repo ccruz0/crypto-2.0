@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional, Union
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, not_
+from sqlalchemy import and_, not_, text
 from app.database import SessionLocal
 from app.models.exchange_balance import ExchangeBalance
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.trade_signal import TradeSignal, SignalStatusEnum
-from app.services.brokers.crypto_com_trade import trade_client
+from app.services.brokers.crypto_com_trade import CryptoComTradeClient, trade_client
 from app.services.open_orders import merge_orders, UnifiedOpenOrder
 from app.services.open_orders_cache import store_unified_open_orders, update_open_orders_cache
 # fill_dedup_postgres may be absent in some deployments; run with fill dedup disabled if missing.
@@ -23,7 +23,7 @@ from app.services.open_orders_cache import store_unified_open_orders, update_ope
 # docker exec <backend_container> python3 -c "import app.services.exchange_sync as m; print('OK')";
 # confirm no "Worker failed to boot" or "ModuleNotFoundError" for fill_dedup_postgres in logs.
 try:
-    from app.services.fill_dedup_postgres import get_fill_dedup
+    from app.services.fill_dedup_postgres import get_fill_dedup  # pyright: ignore[reportMissingImports]
     FILL_DEDUP_ENABLED = True
 except ModuleNotFoundError as e:
     if "app.services.fill_dedup_postgres" not in str(e):
@@ -57,7 +57,7 @@ except ModuleNotFoundError as e:
 
 # build_strategy_key helper: throttle_service when present, else fallback (same pattern as signal_monitor).
 try:
-    from app.services.throttle_service import build_strategy_key as _build_strategy_key
+    from app.services.throttle_service import build_strategy_key as _build_strategy_key  # pyright: ignore[reportMissingImports]
 except ModuleNotFoundError as e:
     if "app.services.throttle_service" not in str(e):
         raise
@@ -421,9 +421,9 @@ class ExchangeSyncService:
                 ).all()
                 
                 for orphaned in orphaned_balances:
-                    orphaned.free = 0
-                    orphaned.locked = 0
-                    orphaned.total = 0
+                    orphaned.free = Decimal("0")
+                    orphaned.locked = Decimal("0")
+                    orphaned.total = Decimal("0")
                     orphaned.updated_at = datetime.now(timezone.utc)
                     logger.debug(f"Zeroed out orphaned balance for asset: {orphaned.asset}")
             
@@ -727,11 +727,11 @@ class ExchangeSyncService:
                     existing.symbol = symbol
                     existing.side = OrderSideEnum.BUY if side == 'BUY' else OrderSideEnum.SELL
                     existing.status = status
-                    existing.price = order_price_float
-                    existing.quantity = float(order_data.get('quantity', 0)) if order_data.get('quantity') else 0
-                    existing.cumulative_quantity = float(order_data.get('cumulative_quantity', 0)) if order_data.get('cumulative_quantity') else 0
-                    existing.cumulative_value = float(order_data.get('cumulative_value', 0)) if order_data.get('cumulative_value') else 0
-                    existing.avg_price = float(order_data.get('avg_price')) if order_data.get('avg_price') else None
+                    existing.price = _to_decimal(order_price_float) if order_price_float is not None else None
+                    existing.quantity = _to_decimal(order_data.get('quantity') or 0)
+                    existing.cumulative_quantity = _to_decimal(order_data.get('cumulative_quantity') or 0)
+                    existing.cumulative_value = _to_decimal(order_data.get('cumulative_value') or 0)
+                    existing.avg_price = _to_decimal(order_data.get('avg_price')) if order_data.get('avg_price') else None
                     existing.exchange_create_time = create_time
                     existing.exchange_update_time = update_time
                     existing.updated_at = datetime.utcnow()
@@ -751,7 +751,7 @@ class ExchangeSyncService:
                                 logger.info(f"DRY_RUN: Would cancel REJECTED TP order {order_id} ({symbol})")
                             else:
                                 try:
-                                    from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                                    from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
                                     assert_exchange_mutation_allowed(db, "cancel_rejected_tp", symbol, None)
                                     # Try to cancel the order on the exchange (in case it's still there)
                                     cancel_result = trade_client.cancel_order(order_id)
@@ -978,7 +978,7 @@ class ExchangeSyncService:
             # Find active sibling first (to cancel if still active)
             active_sibling = None
             for sib in all_siblings:
-                if sib.status in [OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]:
+                if sib.status in [OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]:
                     active_sibling = sib
                     break
             
@@ -1010,7 +1010,7 @@ class ExchangeSyncService:
             
             sibling = active_sibling
             
-            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
             try:
                 assert_exchange_mutation_allowed(db, "cancel_oco_sibling", getattr(filled_order, "symbol", None), None)
             except LiveTradingBlockedError:
@@ -1201,8 +1201,8 @@ class ExchangeSyncService:
         logger.info(f"Creating SL/TP for {symbol} order {order_id}: filled_price={filled_price}, filled_qty={filled_qty}")
         
         # Single path: delegate to ProtectionOrderService (HAND_OFF_TOTAL and idempotency inside service)
-        from app.services.protection_order_service import get_protection_order_service
-        from app.services.live_trading_gate import get_live_trading
+        from app.services.protection_order_service import get_protection_order_service  # pyright: ignore[reportMissingImports]
+        from app.services.live_trading_gate import get_live_trading  # pyright: ignore[reportMissingImports]
 
         result = get_protection_order_service().request_protection_for_filled_order(
             db=db,
@@ -1261,8 +1261,10 @@ class ExchangeSyncService:
         # status is "created" or "failed" - prepare for Telegram notification
         watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
         sl_tp_mode = (getattr(watchlist_item, "sl_tp_mode", None) or "conservative").lower() if watchlist_item else "conservative"
-        effective_sl_pct = abs(watchlist_item.sl_percentage) if (watchlist_item and getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0) else 3.0
-        effective_tp_pct = abs(watchlist_item.tp_percentage) if (watchlist_item and getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0) else 3.0
+        _sl_pct = getattr(watchlist_item, "sl_percentage", None) if watchlist_item else None
+        _tp_pct = getattr(watchlist_item, "tp_percentage", None) if watchlist_item else None
+        effective_sl_pct = abs(float(_sl_pct)) if (_sl_pct is not None and float(_sl_pct) > 0) else 3.0
+        effective_tp_pct = abs(float(_tp_pct)) if (_tp_pct is not None and float(_tp_pct) > 0) else 3.0
 
         # Send Telegram notification when SL/TP orders are created (ALWAYS, even if orders failed)
         # Always send Telegram notifications (even if alert_enabled is false for that coin)
@@ -1358,10 +1360,12 @@ class ExchangeSyncService:
                 sl_ref_from_order = sl_price  # ref_price should equal sl_price (trigger_price)
                 
                 # Always send notification, even if one order failed
+                sl_price_f = float(sl_price) if sl_price is not None else 0.0
+                tp_price_f = float(tp_price) if tp_price is not None else 0.0
                 result = telegram_notifier.send_sl_tp_orders(
                     symbol=symbol,
-                    sl_price=sl_price,
-                    tp_price=tp_price,
+                    sl_price=sl_price_f,
+                    tp_price=tp_price_f,
                     quantity=filled_qty,
                     mode=sl_tp_mode,
                     sl_order_id=str(sl_order_id) if sl_order_id else None,
@@ -1435,14 +1439,16 @@ class ExchangeSyncService:
         sl_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
         tp_pct = 3.0 if sl_tp_mode == "conservative" else 2.0
         if watchlist_item:
-            if strict_percentages and getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0:
-                sl_pct = abs(float(watchlist_item.sl_percentage))
-            elif getattr(watchlist_item, "sl_percentage", None) is not None and watchlist_item.sl_percentage > 0:
-                sl_pct = abs(float(watchlist_item.sl_percentage))
-            if strict_percentages and getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0:
-                tp_pct = abs(float(watchlist_item.tp_percentage))
-            elif getattr(watchlist_item, "tp_percentage", None) is not None and watchlist_item.tp_percentage > 0:
-                tp_pct = abs(float(watchlist_item.tp_percentage))
+            _sl = getattr(watchlist_item, "sl_percentage", None)
+            _tp = getattr(watchlist_item, "tp_percentage", None)
+            if strict_percentages and _sl is not None and float(_sl) > 0:
+                sl_pct = abs(float(_sl))
+            elif _sl is not None and float(_sl) > 0:
+                sl_pct = abs(float(_sl))
+            if strict_percentages and _tp is not None and float(_tp) > 0:
+                tp_pct = abs(float(_tp))
+            elif _tp is not None and float(_tp) > 0:
+                tp_pct = abs(float(_tp))
         if sl_price_override_f is not None:
             sl_price = sl_price_override_f
         else:
@@ -1526,7 +1532,7 @@ class ExchangeSyncService:
                         ExchangeOrder.symbol == symbol,
                         ExchangeOrder.parent_order_id == executed_order.parent_order_id,
                         ExchangeOrder.order_type == target_order_type,
-                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                         ExchangeOrder.exchange_order_id != executed_order_id
                     )
                 ).all()
@@ -1561,7 +1567,7 @@ class ExchangeSyncService:
                             ExchangeOrder.order_role == target_role,
                             ExchangeOrder.order_type == target_order_type,
                             ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
-                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id
                         )
                     ).all()
@@ -1582,7 +1588,7 @@ class ExchangeSyncService:
                             ExchangeOrder.symbol == symbol,
                             ExchangeOrder.order_type == target_order_type,
                             ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
-                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id,
                             ExchangeOrder.exchange_create_time >= time_window_start,
                             ExchangeOrder.exchange_create_time <= time_window_end
@@ -1601,7 +1607,7 @@ class ExchangeSyncService:
                             ExchangeOrder.symbol == symbol,
                             ExchangeOrder.order_type == target_order_type,
                             ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
-                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                            ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                             ExchangeOrder.exchange_order_id != executed_order_id,
                             ExchangeOrder.created_at >= time_window_start,
                             ExchangeOrder.created_at <= time_window_end
@@ -1618,7 +1624,7 @@ class ExchangeSyncService:
                         ExchangeOrder.symbol == symbol,
                         ExchangeOrder.order_type == target_order_type,
                         ExchangeOrder.side == executed_order.side,  # Same side ensures correct position
-                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.OPEN, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
+                        ExchangeOrder.status.in_([OrderStatusEnum.NEW, OrderStatusEnum.ACTIVE, OrderStatusEnum.ACTIVE, OrderStatusEnum.PARTIALLY_FILLED]),
                     ExchangeOrder.exchange_order_id != executed_order_id
                 )
             ).all()
@@ -1665,7 +1671,7 @@ class ExchangeSyncService:
                     if not live_trading:
                         logger.info(f"DRY_RUN: Would cancel {target_order_type} order {target_order.exchange_order_id}")
                     else:
-                        from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                        from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
                         try:
                             assert_exchange_mutation_allowed(db, "cancel_sl_tp_after_exec", symbol, None)
                         except LiveTradingBlockedError:
@@ -1918,79 +1924,344 @@ class ExchangeSyncService:
                 
         except Exception as e:
             logger.error(f"Error in _notify_already_cancelled_sl_tp for {symbol}: {e}", exc_info=True)
-    
-    def sync_order_history(self, db: Session, page_size: int = 200, max_pages: int = 5):
-        """Sync order history from Crypto.com - only adds new executed orders
-        
+
+    # Time window constants for order history subdivision (ms)
+    MS_PER_DAY = 24 * 60 * 60 * 1000
+    MS_PER_HOUR = 60 * 60 * 1000
+    MS_PER_5MIN = 5 * 60 * 1000
+    MS_PER_MIN = 60 * 1000
+
+    def _fetch_range_subdivided(
+        self,
+        trade_client: CryptoComTradeClient,
+        instrument_name: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+        all_orders: List[dict],
+        seen_ids: set,
+        window_sizes: Optional[List[int]] = None,
+    ) -> None:
+        """Subdivide [start_ms, end_ms] and fetch until count < limit or window size == min (1m).
+        When at 1m and still full, log WARNING and merge (may be truncating).
+        Always walks the whole range; does not break early and skip remaining sub-windows.
+        """
+        if window_sizes is None:
+            window_sizes = [
+                self.MS_PER_DAY,
+                self.MS_PER_HOUR,
+                self.MS_PER_5MIN,
+                self.MS_PER_MIN,
+            ]
+        range_ms = end_ms - start_ms
+        if range_ms <= 0:
+            return
+        # Chunk size: largest in hierarchy that is smaller than current range (next level down)
+        chunk_ms = None
+        for ws in sorted(window_sizes, reverse=True):
+            if ws < range_ms:
+                chunk_ms = ws
+                break
+        if chunk_ms is None:
+            chunk_ms = self.MS_PER_MIN  # at floor
+        # Walk the whole parent window: iterate backwards from end_ms to start_ms
+        chunk_end = end_ms
+        while chunk_end > start_ms:
+            chunk_start = max(start_ms, chunk_end - chunk_ms)
+            response = trade_client.get_order_history(
+                start_time=chunk_start,
+                end_time=chunk_end,
+                page=0,
+                page_size=limit,
+                instrument_name=instrument_name,
+            )
+            page_orders = response.get("data", []) if response else []
+            fetched = len(page_orders)
+            for o in page_orders:
+                oid = o.get("order_id")
+                if oid and str(oid) not in seen_ids:
+                    seen_ids.add(str(oid))
+                    all_orders.append(o)
+            if fetched < limit:
+                chunk_end = chunk_start
+                continue
+            # Full page: subdivide this chunk with next smaller window size in hierarchy
+            next_smaller = None
+            for ws in sorted(window_sizes, reverse=True):
+                if ws < chunk_ms:
+                    next_smaller = ws
+                    break
+            if next_smaller is not None:
+                self._fetch_range_subdivided(
+                    trade_client,
+                    instrument_name,
+                    chunk_start,
+                    chunk_end,
+                    limit,
+                    all_orders,
+                    seen_ids,
+                    window_sizes=window_sizes,
+                )
+            else:
+                # At floor (1 min) and still full
+                logger.warning(
+                    "Order history window still full at 1m; may be truncating instrument=%s start_ms=%s end_ms=%s",
+                    instrument_name,
+                    chunk_start,
+                    chunk_end,
+                )
+            chunk_end = chunk_start
+        return
+
+    def _fetch_order_history_windowed(
+        self,
+        trade_client: CryptoComTradeClient,
+        instrument_name: str,
+        lookback_days: int = 180,
+        window_days: int = 7,
+        limit: int = 100,
+    ) -> List[dict]:
+        """Fetch order history for one instrument using time-windowed requests.
+        Crypto.com returns data only when instrument_name is set AND the time window is narrow.
+        Avoids large 180-day single requests that return empty.
+        Subdivides full-page windows down to 1 day -> 1 hour -> 5 min -> 1 min; logs WARNING at 1m if still full.
+        """
+        now_ms = int(time.time() * 1000)
+        end_ms = now_ms
+        start_ms = now_ms - lookback_days * self.MS_PER_DAY
+        all_orders: List[dict] = []
+        seen_ids: set = set()
+        window_end = end_ms
+        while window_end > start_ms:
+            window_start = max(start_ms, window_end - window_days * self.MS_PER_DAY)
+            logger.info(
+                "Order history window fetch: instrument=%s start_ms=%s end_ms=%s window_days=%s limit=%s",
+                instrument_name,
+                window_start,
+                window_end,
+                window_days,
+                limit,
+            )
+            response = trade_client.get_order_history(
+                start_time=window_start,
+                end_time=window_end,
+                page=0,
+                page_size=limit,
+                instrument_name=instrument_name,
+            )
+            page_orders = response.get("data", []) if response else []
+            fetched = len(page_orders)
+            for o in page_orders:
+                oid = o.get("order_id")
+                if oid and str(oid) not in seen_ids:
+                    seen_ids.add(str(oid))
+                    all_orders.append(o)
+            logger.info(
+                "Order history window result: instrument=%s fetched=%s stored=%s",
+                instrument_name,
+                fetched,
+                len(all_orders),
+            )
+            if fetched == limit:
+                # Subdivide this window: 1d -> 1h -> 5min -> 1min; walk whole parent, log WARNING at 1m if still full
+                self._fetch_range_subdivided(
+                    trade_client,
+                    instrument_name,
+                    window_start,
+                    window_end,
+                    limit,
+                    all_orders,
+                    seen_ids,
+                )
+            window_end = window_start
+        return all_orders
+
+    def sync_order_history_for_instrument(
+        self,
+        db: Session,
+        trade_client: CryptoComTradeClient,
+        instrument_name: str,
+        lookback_days: int = 180,
+        window_days: int = 7,
+        limit: int = 100,
+    ) -> int:
+        """Fetch order history for one instrument via windowed requests and upsert into DB.
+        Returns total count of orders stored (new + updated) for this instrument.
+        """
+        orders = self._fetch_order_history_windowed(
+            trade_client, instrument_name, lookback_days, window_days, limit
+        )
+        return self.sync_order_history(
+            db,
+            page_size=limit,
+            max_pages=1,
+            instrument_name=instrument_name,
+            prefetched_orders=orders,
+        )
+
+    def _order_history_cursor_get_and_advance(
+        self, db: Session, symbol_count: int, max_per_run: int
+    ) -> tuple[int, int]:
+        """Get current cursor and advance for next run. Uses Postgres (persistent, row lock) or file fallback.
+        Returns (start_index, next_cursor). Survives container restart when using DB.
+        """
+        if symbol_count <= 0:
+            return (0, 0)
+        n = min(max_per_run, symbol_count)
+        # 1) Try Postgres: one-row table, row lock for multi-worker safety
+        try:
+            db.execute(text(
+                "CREATE TABLE IF NOT EXISTS sync_order_history_cursor (id INTEGER PRIMARY KEY DEFAULT 1, cursor_index INTEGER NOT NULL DEFAULT 0)"
+            ))
+            db.commit()
+        except Exception as e:
+            logger.debug("Order history cursor table create skip: %s", e)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        try:
+            row = db.execute(
+                text("SELECT cursor_index FROM sync_order_history_cursor WHERE id = 1 FOR UPDATE")
+            ).fetchone()
+            if row is None:
+                db.execute(text("INSERT INTO sync_order_history_cursor (id, cursor_index) VALUES (1, 0)"))
+                cursor = 0
+            else:
+                cursor = int(row[0])
+            start_index = cursor % symbol_count
+            next_cursor = (start_index + n) % symbol_count
+            db.execute(text("UPDATE sync_order_history_cursor SET cursor_index = :nc WHERE id = 1"), {"nc": next_cursor})
+            db.commit()
+            return (start_index, next_cursor)
+        except Exception as e:
+            logger.warning("Order history cursor DB failed, using file fallback: %s", e)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        # 2) File fallback (set ORDER_HISTORY_SYNC_CURSOR_PATH to a mounted volume to survive restart; fcntl lock for multi-worker)
+        cursor_path = os.environ.get("ORDER_HISTORY_SYNC_CURSOR_PATH", "/tmp/order_history_sync_cursor")
+        cursor = 0
+        if os.path.isfile(cursor_path):
+            try:
+                with open(cursor_path, "r") as f:
+                    try:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        cursor = int(f.read().strip() or "0")
+                    except ImportError:
+                        cursor = int(f.read().strip() or "0")
+                    finally:
+                        try:
+                            import fcntl
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+            except (ValueError, OSError):
+                cursor = 0
+        start_index = cursor % symbol_count
+        next_cursor = (start_index + n) % symbol_count
+        try:
+            with open(cursor_path, "w") as f:
+                try:
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    f.write(str(next_cursor))
+                except ImportError:
+                    f.write(str(next_cursor))
+                finally:
+                    try:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+        except OSError:
+            pass
+        return (start_index, next_cursor)
+
+    def sync_order_history(self, db: Session, page_size: int = 200, max_pages: int = 5, instrument_name: Optional[str] = None, prefetched_orders: Optional[List[dict]] = None):  # pyright: ignore[reportGeneralTypeIssues]
+        """Sync order history from Crypto.com - only adds new executed orders.
+
+        Uses per-instrument time-windowed fetch: Crypto.com returns data only when
+        instrument_name is set and the time window is narrow (single 180-day request returns empty).
+
         Args:
             db: Database session
             page_size: Number of orders per page (default 200)
-            max_pages: Maximum number of pages to fetch (default 5, can be increased for manual sync)
+            max_pages: Maximum number of pages to fetch (default 5, unused when using windowed fetch)
+            instrument_name: Optional symbol (e.g. BCH_USDT) to fetch history for one instrument only.
+            prefetched_orders: If set, use this list instead of fetching (used by sync_order_history_for_instrument).
         """
+        # Normalize: empty string -> None so we don't use single-instrument path with ""
+        _instrument = (instrument_name or "").strip() or None
+        _single = _instrument is not None and prefetched_orders is None
+        logger.info(
+            "sync_order_history called: instrument_name=%s prefetched_orders=%s (single-instrument=%s)",
+            _instrument,
+            "set" if prefetched_orders is not None else "None",
+            _single,
+        )
         try:
             from app.services.telegram_notifier import telegram_notifier
-            
+
+            # Single instrument: delegate to windowed sync and return (Crypto.com returns data only with instrument_name + narrow window)
+            if _single:
+                logger.info("sync_order_history: delegating to sync_order_history_for_instrument instrument=%s", _instrument)
+                return self.sync_order_history_for_instrument(
+                    db, trade_client, _instrument,
+                    lookback_days=180, window_days=7, limit=100,
+                )
+
             # Purge stale processed order IDs before processing
             self._purge_stale_processed_orders()
-            
+
             # Track orders processed in this cycle - mark as processed only AFTER successful commit
             orders_processed_this_cycle = []
-            
-            # Get order history with pagination to fetch more historical orders
-            # Crypto.com API supports pagination with page parameter
-            # We'll fetch multiple pages to get more historical data
-            all_orders = []
-            logger.info(f"Starting order history sync: page_size={page_size}, max_pages={max_pages}")
-            
-            # IMPORTANT: Use a stable wide window for history sync.
-            #
-            # We previously optimized by starting from (most recent FILLED - 1 day) which can
-            # cause missing orders on the same day (or after DB resets) and create discrepancies
-            # between Crypto.com "Order History" and the dashboard.
-            #
-            # Crypto.com UI supports up to ~180d. For manual syncs (max_pages > 10), use 180 days.
-            # For automatic syncs, use 30 days to balance performance.
-            from datetime import timedelta
-            end_time_ms = int(time.time() * 1000)
-            # Use 180 days for manual syncs (when max_pages > 10), otherwise 30 days
-            # Crypto.com API: first page = limit only (most recent); next pages = end_time (cursor) + limit
-            next_end_time_ms = None  # None for first page
-            logger.info(f"Order history sync: first page limit={min(page_size, 100)}, then cursor-based pagination, max_pages={max_pages}")
-            
-            for page_num in range(max_pages):
-                response = trade_client.get_order_history(
-                    page_size=page_size,
-                    page=page_num,
-                    start_time=None,  # Not sent for first page; API uses "most recent"
-                    end_time=next_end_time_ms
+
+            if prefetched_orders is not None:
+                orders = prefetched_orders
+                logger.info("Order history sync: using prefetched_orders count=%s", len(orders))
+            else:
+                # Multi-symbol: build symbol list (watchlist or default), cap per run, rotate cursor, sleep between symbols
+                try:
+                    from app.models.watchlist import WatchlistItem
+                    rows = db.query(WatchlistItem.symbol).filter(
+                        WatchlistItem.is_deleted == False  # noqa: E712
+                    ).distinct().all()
+                    symbols = [r[0] for r in rows if r[0]]
+                except Exception:
+                    symbols = []
+                if not symbols:
+                    symbols = ["BTC_USDT", "ETH_USDT", "BCH_USDT", "ATOM_USDT"]
+                    logger.info("Order history sync: no watchlist symbols, using default list count=%s", len(symbols))
+                else:
+                    logger.info("Order history sync: watchlist symbols count=%s", len(symbols))
+                # Cap symbols per run and rotate; cursor in Postgres (survives restart, row lock for multi-worker) or file fallback
+                ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN = 20
+                ORDER_HISTORY_SYNC_SLEEP_BETWEEN_SYMBOLS_SEC = 0.2
+                start_index, next_cursor = self._order_history_cursor_get_and_advance(
+                    db, len(symbols), ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN
                 )
-                
-                if not response or 'data' not in response:
-                    break
-                    
-                page_orders = response.get('data', [])
-                if not page_orders:
-                    break
-                    
-                all_orders.extend(page_orders)
-                logger.debug(f"Fetched page {page_num + 1}: {len(page_orders)} orders (total so far: {len(all_orders)})")
-                
-                if len(page_orders) < min(page_size, 100):
-                    break
-                # Cursor for next page: last order's create_time (ms) or create_time_ns
-                last = page_orders[-1]
-                next_end_time_ms = last.get('create_time_ns') or last.get('create_time')
-                if next_end_time_ms is not None:
-                    try:
-                        next_end_time_ms = int(next_end_time_ms)
-                    except (TypeError, ValueError):
-                        next_end_time_ms = None
-                if next_end_time_ms is None:
-                    break
-            
-            orders = all_orders
-            pages_fetched = min(max_pages, len(all_orders) // page_size + 1) if all_orders else 0
-            logger.info(f"📥 Received {len(orders)} total orders from API history (fetched {pages_fetched} pages)")
+                n = min(ORDER_HISTORY_SYNC_MAX_SYMBOLS_PER_RUN, len(symbols))
+                symbols_this_run = [symbols[(start_index + i) % len(symbols)] for i in range(n)] if symbols else []
+                total_stored = 0
+                for i, sym in enumerate(symbols_this_run):
+                    if i > 0:
+                        time.sleep(ORDER_HISTORY_SYNC_SLEEP_BETWEEN_SYMBOLS_SEC)
+                    total_stored += self.sync_order_history_for_instrument(
+                        db, trade_client, sym,
+                        lookback_days=180, window_days=7, limit=100,
+                    )
+                logger.info(
+                    "Order history sync: multi-symbol this_run=%s total_stored=%s next_cursor=%s",
+                    len(symbols_this_run),
+                    total_stored,
+                    next_cursor,
+                )
+                return total_stored
+            pages_fetched = len(orders)  # windowed fetch does not use page count
+            logger.info("📥 Received %s total orders from API history (windowed fetch)", len(orders))
             
             # Note: private/advanced/get-order-history returns order history (executed orders)
             # These should already be FILLED or other terminal states
@@ -2902,7 +3173,8 @@ class ExchangeSyncService:
                 db.rollback()
                 # Do NOT mark orders as processed if commit failed - they should be retried in next sync
                 raise
-            
+            return new_orders_count
+
         except Exception as e:
             logger.error(f"Error syncing order history: {e}", exc_info=True)
             log_critical_failure(
@@ -2916,7 +3188,8 @@ class ExchangeSyncService:
                 db.rollback()
             except Exception:
                 pass
-    
+            return 0
+
     def _run_sync_sync(self, db: Session):
         """Run one sync cycle - synchronous worker that runs in thread pool"""
         self.sync_balances(db)
@@ -2932,6 +3205,9 @@ class ExchangeSyncService:
     
     async def run_sync(self):
         """Run one sync cycle - async wrapper that delegates to thread pool"""
+        if SessionLocal is None:
+            logger.warning("Database not available (SessionLocal is None), skipping sync")
+            return
         db = SessionLocal()
         try:
             await asyncio.to_thread(self._run_sync_sync, db)

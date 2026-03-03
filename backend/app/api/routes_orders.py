@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, cast
 from enum import Enum
 from datetime import timezone
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from app.utils.redact import redact_secrets
 import logging
 import os
 import time
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,7 +87,9 @@ def place_order(
     from app.database import SessionLocal
     from app.utils.trading_guardrails import can_place_real_order
     from app.services.telegram_notifier import telegram_notifier
-    
+
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="Database not available")
     db = SessionLocal()
     try:
         live_trading = get_live_trading_status(db)
@@ -132,7 +135,7 @@ def place_order(
             )
             # If blocked only due to MAX_USD_PER_ORDER and we don't have real price, allow it
             # (other checks like Live toggle, kill switch, Trade Yes, etc. still apply)
-            if not allowed and "MAX_USD_PER_ORDER" in block_reason:
+            if not allowed and block_reason and "MAX_USD_PER_ORDER" in block_reason:
                 logger.info(f"MAX_USD_PER_ORDER check skipped for MARKET order {request.symbol} (price unavailable)")
                 allowed = True
         
@@ -165,10 +168,14 @@ def place_order(
                 dry_run=not live_trading
             )
         elif request.type == OrderType.LIMIT:
+            # Price is guaranteed non-None after validation above
+            price = request.price
+            if price is None:
+                raise HTTPException(status_code=400, detail="Price required for LIMIT orders")
             result = trade_client.place_limit_order(
                 request.symbol,
                 request.side.value,
-                request.price,
+                price,
                 request.qty,
                 dry_run=not live_trading
             )
@@ -234,8 +241,10 @@ def cancel_order(
     if not request.order_id and not request.client_oid:
         raise HTTPException(status_code=400, detail="order_id or client_oid required")
     
+    order_id = request.order_id or request.client_oid
+    if order_id is None:
+        raise HTTPException(status_code=400, detail="order_id or client_oid required")
     try:
-        order_id = request.order_id or request.client_oid
         result = trade_client.cancel_order(order_id)
         
         logger.debug(f"Response: {redact_secrets(result)}")
@@ -566,8 +575,8 @@ def create_sl_tp_for_order(
             try:
                 setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
                 if setting:
-                    setting.setting_value = "true"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "true")
+                    setattr(setting, "updated_at", datetime.now(timezone.utc))
                 else:
                     setting = TradingSettings(
                         setting_key="LIVE_TRADING",
@@ -689,9 +698,9 @@ def create_sl_tp_for_order(
             )
             # Set percentages if provided
             if sl_percentage is not None:
-                watchlist_item.sl_percentage = sl_percentage
+                setattr(watchlist_item, "sl_percentage", sl_percentage)
             if tp_percentage is not None:
-                watchlist_item.tp_percentage = tp_percentage
+                setattr(watchlist_item, "tp_percentage", tp_percentage)
             db.add(watchlist_item)
             db.commit()
             db.refresh(watchlist_item)
@@ -701,9 +710,9 @@ def create_sl_tp_for_order(
             # We don't modify trade_enabled here - it's not needed for protection orders
             # Update percentages if provided
             if sl_percentage is not None:
-                watchlist_item.sl_percentage = sl_percentage
+                setattr(watchlist_item, "sl_percentage", sl_percentage)
             if tp_percentage is not None:
-                watchlist_item.tp_percentage = tp_percentage
+                setattr(watchlist_item, "tp_percentage", tp_percentage)
             db.commit()
             db.refresh(watchlist_item)
         
@@ -797,8 +806,8 @@ def create_sl_tp_for_order(
                     pass
                 setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
                 if setting:
-                    setting.setting_value = "true" if prev_live else "false"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "true" if prev_live else "false")
+                    setattr(setting, "updated_at", datetime.now(timezone.utc))
                     db.commit()
                 os.environ["LIVE_TRADING"] = "true" if prev_live else "false"
                 logger.info(f"✅ Restored LIVE_TRADING to {prev_live} after create-sl-tp request")
@@ -943,9 +952,9 @@ def create_sl_tp_with_order_details(
                 trade_enabled=False  # SL/TP creation doesn't require trade_enabled=True
             )
             if request.sl_percentage is not None:
-                watchlist_item.sl_percentage = request.sl_percentage
+                setattr(watchlist_item, "sl_percentage", request.sl_percentage)
             if request.tp_percentage is not None:
-                watchlist_item.tp_percentage = request.tp_percentage
+                setattr(watchlist_item, "tp_percentage", request.tp_percentage)
             db.add(watchlist_item)
             db.commit()
             db.refresh(watchlist_item)
@@ -955,9 +964,9 @@ def create_sl_tp_with_order_details(
             # We don't modify trade_enabled here - it's not needed for protection orders
             # Update percentages if provided
             if request.sl_percentage is not None:
-                watchlist_item.sl_percentage = request.sl_percentage
+                setattr(watchlist_item, "sl_percentage", request.sl_percentage)
             if request.tp_percentage is not None:
-                watchlist_item.tp_percentage = request.tp_percentage
+                setattr(watchlist_item, "tp_percentage", request.tp_percentage)
             db.commit()
             db.refresh(watchlist_item)
         
@@ -1048,7 +1057,8 @@ def get_open_orders(
         from app.services.open_orders import serialize_unified_order
         
         cached_open_orders = get_open_orders_cache()
-        unified_open_orders = cached_open_orders.get("orders", []) or []
+        _orders_raw = cached_open_orders.get("orders", []) or []
+        unified_open_orders = cast(list, _orders_raw) if isinstance(_orders_raw, list) else []
         
         # Log Crypto.com API response for debugging
         cached_order_ids = {order.order_id for order in unified_open_orders}
@@ -1517,6 +1527,7 @@ def get_order_history(
     limit: int = 100,  # Default to 100 orders per page
     offset: int = 0,   # Default to start from beginning
     sync: bool = Query(False, description="If true, sync latest history from Crypto.com before returning"),
+    symbol: Optional[str] = Query(None, description="Filter by symbol (e.g. BCH_USDT). When set with sync=true, fetches history for this instrument only (required when exchange returns empty for global history)."),
     db: Session = Depends(get_db),
     # Temporarily disable authentication for local testing
     # current_user = None if _should_disable_auth() else Depends(get_current_user)
@@ -1526,13 +1537,17 @@ def get_order_history(
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 
         # Optional: sync with exchange on-demand (used by dashboard Refresh).
-        # This keeps the dashboard aligned with Crypto.com without forcing a sync on every request.
+        # When symbol is provided, sync only that instrument (Crypto.com often returns empty for global history; per-instrument works).
         if sync and db is not None:
             try:
                 from app.services.exchange_sync import exchange_sync_service
-                logger.info("🔄 /orders/history sync=true - syncing order history from exchange before query")
-                # Use larger window and more pages for manual sync to capture all orders
-                exchange_sync_service.sync_order_history(db, page_size=200, max_pages=50)
+                logger.info(
+                    "🔄 /orders/history sync=true - syncing order history (symbol=%s instrument_name=%s)",
+                    symbol,
+                    symbol,
+                )
+                # Use larger window and more pages for manual sync to capture all orders; pass instrument_name when symbol filter is set
+                exchange_sync_service.sync_order_history(db, page_size=200, max_pages=50, instrument_name=symbol)
                 db.commit()
             except Exception as sync_err:
                 # Don't fail the history endpoint if the exchange is temporarily unreachable.
@@ -1571,6 +1586,8 @@ def get_order_history(
         query = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).order_by(
             func.coalesce(ExchangeOrder.exchange_update_time, ExchangeOrder.updated_at).desc()
         )
+        if symbol:
+            query = query.filter(ExchangeOrder.symbol == symbol)
             
         # Optimize total count query - only do it for first page to avoid timeout
         # For subsequent pages, estimate based on results
@@ -1582,7 +1599,7 @@ def get_order_history(
                 # Get exact count only for first page with reasonable limit
                 # Use a timeout-safe approach: get count in a separate try/except
                 try:
-                    total_count = db.query(ExchangeOrder).filter(ExchangeOrder.status.in_(executed_statuses)).count()
+                    total_count = query.count()
                     logger.debug(f"Got exact count: {total_count}")
                 except Exception as count_err:
                     logger.warning(f"Count query failed, will estimate: {count_err}")
@@ -2050,15 +2067,15 @@ def sync_order_from_exchange(
             
             # Update other fields from Crypto.com
             if order_data.get('price'):
-                order.price = float(order_data.get('price', 0))
+                order.price = Decimal(str(order_data.get('price', 0)))
             if order_data.get('avg_price'):
-                order.avg_price = float(order_data.get('avg_price', 0))
+                order.avg_price = Decimal(str(order_data.get('avg_price', 0)))
             if order_data.get('quantity'):
-                order.quantity = float(order_data.get('quantity', 0))
+                order.quantity = Decimal(str(order_data.get('quantity', 0)))
             if order_data.get('cumulative_quantity'):
-                order.cumulative_quantity = float(order_data.get('cumulative_quantity', 0))
+                order.cumulative_quantity = Decimal(str(order_data.get('cumulative_quantity', 0)))
             if order_data.get('cumulative_value'):
-                order.cumulative_value = float(order_data.get('cumulative_value', 0))
+                order.cumulative_value = Decimal(str(order_data.get('cumulative_value', 0)))
             
             order.updated_at = datetime.now(timezone.utc)
             
@@ -2388,6 +2405,8 @@ def quick_order(
     
     from app.utils.live_trading import get_live_trading_status
     from app.database import SessionLocal
+    if SessionLocal is None:
+        raise HTTPException(status_code=503, detail="Database not available")
     db = SessionLocal()
     try:
         live_trading = get_live_trading_status(db)
@@ -2492,7 +2511,7 @@ def quick_order(
                 quantity=telegram_qty,
                 order_id=str(order_id),
                 margin=final_is_margin,  # Use decision from above
-                leverage=final_leverage,  # Use dynamic leverage from decision
+                leverage=int(final_leverage) if final_leverage is not None else None,  # Use dynamic leverage from decision
                 dry_run=dry_run_mode,
                 order_type="MARKET"  # Specify MARKET order type
             )
@@ -2610,8 +2629,8 @@ def create_sl_tp_for_last_order(
             try:
                 setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
                 if setting:
-                    setting.setting_value = "true"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "true")
+                    setattr(setting, "updated_at", datetime.now(timezone.utc))
                 else:
                     setting = TradingSettings(
                         setting_key="LIVE_TRADING",
@@ -2738,13 +2757,13 @@ def create_sl_tp_for_last_order(
         original_tp_pct = watchlist_item.tp_percentage
         
         if sl_percentage is not None:
-            watchlist_item.sl_percentage = abs(sl_percentage)
+            setattr(watchlist_item, "sl_percentage", abs(sl_percentage))
         if tp_percentage is not None:
-            watchlist_item.tp_percentage = abs(tp_percentage)
-        
+            setattr(watchlist_item, "tp_percentage", abs(tp_percentage))
+
         db.commit()
         db.refresh(watchlist_item)
-        
+
         logger.info(
             f"Creating SL/TP for order {last_order.exchange_order_id}: "
             f"price={filled_price}, qty={filled_qty}, SL={watchlist_item.sl_percentage}%, TP={watchlist_item.tp_percentage}%"
@@ -2825,15 +2844,15 @@ def create_sl_tp_for_last_order(
             # Restore original percentages if they were temporarily changed
             if sl_percentage is not None or tp_percentage is not None:
                 if original_sl_pct is not None:
-                    watchlist_item.sl_percentage = original_sl_pct
+                    setattr(watchlist_item, "sl_percentage", original_sl_pct)
                 elif sl_percentage is not None:
-                    watchlist_item.sl_percentage = None  # Remove if it was None originally
-                
+                    setattr(watchlist_item, "sl_percentage", None)  # Remove if it was None originally
+
                 if original_tp_pct is not None:
-                    watchlist_item.tp_percentage = original_tp_pct
+                    setattr(watchlist_item, "tp_percentage", original_tp_pct)
                 elif tp_percentage is not None:
-                    watchlist_item.tp_percentage = None  # Remove if it was None originally
-                
+                    setattr(watchlist_item, "tp_percentage", None)  # Remove if it was None originally
+
                 db.commit()
 
     except HTTPException:
@@ -2853,8 +2872,8 @@ def create_sl_tp_for_last_order(
                 from app.models.trading_settings import TradingSettings
                 setting = db.query(TradingSettings).filter(TradingSettings.setting_key == "LIVE_TRADING").first()
                 if setting:
-                    setting.setting_value = "true" if prev_live else "false"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "true" if prev_live else "false")
+                    setattr(setting, "updated_at", datetime.now(timezone.utc))
                     db.commit()
                 os.environ["LIVE_TRADING"] = "true" if prev_live else "false"
                 logger.info(f"✅ Restored LIVE_TRADING to {prev_live} after create-sl-tp-for-last-order request")
