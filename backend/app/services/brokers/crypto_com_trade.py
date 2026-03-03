@@ -1666,6 +1666,30 @@ class CryptoComTradeClient:
         except Exception:
             return None
 
+    def get_order_detail(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch full order detail from exchange (private/get-order-detail). Returns full response dict with 'result' (instrument_name, create_time, etc.), or None."""
+        if not order_id or not self.api_key or not self.api_secret:
+            return None
+        try:
+            method = "private/get-order-detail"
+            params = {"order_id": str(order_id)}
+            if self.use_proxy:
+                result = self._call_proxy(method, params)
+                if not isinstance(result, dict) or result.get("code") not in (0, None):
+                    return None
+                return result
+            payload = self.sign_request(method, params, _suppress_log=True)
+            url = f"{self.base_url}/{method}"
+            resp = http_post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10, calling_module="crypto_com_trade.get_order_detail")
+            if resp.status_code != 200:
+                return None
+            raw = resp.json()
+            if not isinstance(raw, dict) or (raw.get("code") != 0 and raw.get("code") is not None):
+                return None
+            return raw
+        except Exception:
+            return None
+
     def get_open_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get all open/pending orders"""
         skip = require_aws_or_skip("get_open_orders")
@@ -3028,16 +3052,19 @@ class CryptoComTradeClient:
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
         page: int = 0,
+        instrument_name: Optional[str] = None,
+        fetch_margin: bool = True,
     ) -> dict:
-        """Get order history (executed orders)"""
+        """Get order history (executed orders). Pass instrument_name (e.g. BCH_USDT) to fetch history for a single instrument (required when exchange returns empty for global history). When fetch_margin is True and the default/spot path returns 0, tries private/get-order-history with spot_margin=MARGIN (Cross margin orders)."""
         skip = require_aws_or_skip("get_order_history")
         if skip:
             return {"data": [], **skip}
         # According to Crypto.com docs, this endpoint accepts optional parameters:
         # - start_time: start time in milliseconds (optional)
         # - end_time: end time in milliseconds (optional)
-        # - page_size: number of results per page (optional)
+        # - page_size / limit: number of results per page (optional)
         # - page: page number (optional)
+        # - instrument_name: filter by symbol (optional; often required for margin/cross orders)
         # Without params, it only returns 1 order. We need to use date filters to get all orders.
         
         # NOTE: Reading order history must NOT depend on LIVE_TRADING.
@@ -3047,7 +3074,9 @@ class CryptoComTradeClient:
         if self.use_proxy:
             logger.info("Using PROXY to get order history")
             method = "private/get-order-history"
-            params = {}  # This endpoint works without params
+            params = {}
+            if instrument_name:
+                params["instrument_name"] = instrument_name
             result = self._call_proxy(method, params)
             if isinstance(result, dict) and result.get("skipped"):
                 return {"data": [], **result}
@@ -3078,7 +3107,7 @@ class CryptoComTradeClient:
         # Doc: "Default: end_time - 1 day" for start_time; "Default: current system timestamp" for end_time.
         method = "private/get-order-history"
         limit = min(int(page_size or 100), 100)  # Doc max 100
-        params = {"limit": limit}
+        params: Dict[str, Any] = {"limit": limit}
         now_ms = int(time.time() * 1000)
         # First page (page==0): send explicit time range so we don't get only last 1 day (API default).
         # History is kept for 6 months per doc; use 180 days for initial fetch.
@@ -3092,10 +3121,15 @@ class CryptoComTradeClient:
                 params["end_time"] = int(end_time)
             if page > 0 and start_time is not None:
                 params["start_time"] = int(start_time)
+        if instrument_name:
+            params["instrument_name"] = instrument_name
         
         payload = self.sign_request(method, params)
         if isinstance(payload, dict) and payload.get("skipped"):
             return {"data": [], **payload}
+        # Log param keys only (no values) for EC2 verification of params_count and instrument_name
+        params_keys = sorted(params.keys())
+        logger.info("get-order-history params_keys=%s", params_keys)
         # Step 1 isolation: confirm we hit production Exchange (not sandbox) and which base URL
         base = getattr(self, "base_url", "") or ""
         env_hint = "production" if "api.crypto.com" in base and "exchange" in base else "check_base_url"
@@ -3184,10 +3218,13 @@ class CryptoComTradeClient:
             if "result" in result and isinstance(result["result"], dict):
                 data = _extract_data(result["result"])
                 if isinstance(data, list):
-                    # First page with limit returned 0: retry with empty params (doc default)
+                    # First page with limit returned 0: retry with empty params (doc default); preserve instrument_name if provided
                     if page == 0 and len(data) == 0:
-                        logger.info("Order history returned 0 with limit; retrying with empty params")
-                        payload_empty = self.sign_request(method, {})
+                        empty_params: Dict[str, Any] = {}
+                        if instrument_name:
+                            empty_params["instrument_name"] = instrument_name
+                        logger.info("Order history returned 0 with limit; retrying with params=%s", list(empty_params.keys()))
+                        payload_empty = self.sign_request(method, empty_params)
                         if not (isinstance(payload_empty, dict) and payload_empty.get("skipped")):
                             try:
                                 resp2 = http_post(
@@ -3206,7 +3243,11 @@ class CryptoComTradeClient:
                                 logger.warning("Empty-params fallback failed: %s", fallback_err)
                         if len(data) == 0:
                             # Portfolio works with same key → try explicit Spot instrument (API may return only Derivatives by default)
-                            for spot_inst in ("BTC_USDT", "BCH_USDT", "ETH_USDT"):
+                            # When instrument_name was provided, try it first, then fallback list
+                            spot_defaults = ("BTC_USDT", "BCH_USDT", "ETH_USDT")
+                            spot_list = (instrument_name,) + spot_defaults if instrument_name else spot_defaults
+                            spot_list = tuple(dict.fromkeys(spot_list))  # dedupe, preserve order
+                            for spot_inst in spot_list:
                                 try:
                                     params_spot = {"limit": limit, "instrument_name": spot_inst}
                                     payload_spot = self.sign_request(method, params_spot)
@@ -3236,7 +3277,10 @@ class CryptoComTradeClient:
                             logger.info("Trying get-trades fallback (private/get-trades with limit=%s)", limit)
                             try:
                                 trades_method = "private/get-trades"
-                                trades_params = {"limit": limit, "start_time": params["start_time"], "end_time": params["end_time"]}
+                                trades_params: Dict[str, Any] = {"limit": limit, "start_time": params["start_time"], "end_time": params["end_time"]}
+                                if instrument_name:
+                                    trades_params["instrument_name"] = instrument_name
+                                logger.info("get-trades params_keys=%s", sorted(trades_params.keys()))
                                 payload_trades = self.sign_request(trades_method, trades_params)
                                 if not (isinstance(payload_trades, dict) and payload_trades.get("skipped")):
                                     resp_t = http_post(
@@ -3287,8 +3331,47 @@ class CryptoComTradeClient:
                                             return {"data": orders_from_trades}
                             except Exception as trades_err:
                                 logger.warning("get-trades fallback failed: %s", trades_err)
+                            # Margin fallback: Crypto.com UI shows "Margin Mode: Cross" for margin orders.
+                            # private/get-order-history may return only spot by default; try spot_margin=MARGIN
+                            # (create-order uses spot_margin: SPOT|MARGIN; history may accept same param).
+                            if fetch_margin and page == 0:
+                                try:
+                                    time.sleep(1)  # Rate limit
+                                    margin_params: Dict[str, Any] = {"limit": limit, "spot_margin": "MARGIN"}
+                                    # Use same time window as primary request
+                                    if "end_time" in params:
+                                        margin_params["end_time"] = params["end_time"]
+                                    if "start_time" in params:
+                                        margin_params["start_time"] = params["start_time"]
+                                    if instrument_name:
+                                        margin_params["instrument_name"] = instrument_name
+                                    logger.info(
+                                        "Order history empty for default/spot; trying margin (spot_margin=MARGIN) params_keys=%s",
+                                        sorted(margin_params.keys()),
+                                    )
+                                    payload_margin = self.sign_request(method, margin_params)
+                                    if not (isinstance(payload_margin, dict) and payload_margin.get("skipped")):
+                                        resp_m = http_post(
+                                            f"{self.base_url}/{method}", json=payload_margin,
+                                            headers={"Content-Type": "application/json"}, timeout=10,
+                                            calling_module="crypto_com_trade.get_order_history_margin_fallback"
+                                        )
+                                        resp_m.raise_for_status()
+                                        rm = resp_m.json()
+                                        if isinstance(rm.get("result"), dict):
+                                            data_margin = _extract_data(rm["result"])
+                                            if isinstance(data_margin, list) and len(data_margin) > 0:
+                                                logger.info(
+                                                    "Order history margin fallback returned %s orders (spot_margin=MARGIN)",
+                                                    len(data_margin),
+                                                )
+                                                return {"data": data_margin}
+                                    else:
+                                        logger.debug("Margin fallback skipped (sign_request skipped)")
+                                except Exception as margin_err:
+                                    logger.warning("Margin order history fallback failed: %s", margin_err)
                             logger.warning(
-                                "Order history empty (limit, empty params, Spot instruments, get-trades all returned 0). "
+                                "Order history empty (limit, empty params, Spot instruments, get-trades, margin all returned 0). "
                                 "API code=%s message=%s",
                                 api_code,
                                 api_message,

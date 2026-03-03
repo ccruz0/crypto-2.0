@@ -1968,13 +1968,27 @@ class ExchangeSyncService:
         chunk_end = end_ms
         while chunk_end > start_ms:
             chunk_start = max(start_ms, chunk_end - chunk_ms)
-            response = trade_client.get_order_history(
-                start_time=chunk_start,
-                end_time=chunk_end,
-                page=0,
-                page_size=limit,
-                instrument_name=instrument_name,
-            )
+            try:
+                response = trade_client.get_order_history(
+                    start_time=chunk_start,
+                    end_time=chunk_end,
+                    page=0,
+                    page_size=limit,
+                    instrument_name=instrument_name,
+                )
+            except TypeError as e:
+                if "instrument_name" in str(e):
+                    logger.warning(
+                        "Broker get_order_history does not accept instrument_name (old client?). Calling without it."
+                    )
+                    response = trade_client.get_order_history(
+                        start_time=chunk_start,
+                        end_time=chunk_end,
+                        page=0,
+                        page_size=limit,
+                    )
+                else:
+                    raise
             page_orders = response.get("data", []) if response else []
             fetched = len(page_orders)
             for o in page_orders:
@@ -2042,13 +2056,27 @@ class ExchangeSyncService:
                 window_days,
                 limit,
             )
-            response = trade_client.get_order_history(
-                start_time=window_start,
-                end_time=window_end,
-                page=0,
-                page_size=limit,
-                instrument_name=instrument_name,
-            )
+            try:
+                response = trade_client.get_order_history(
+                    start_time=window_start,
+                    end_time=window_end,
+                    page=0,
+                    page_size=limit,
+                    instrument_name=instrument_name,
+                )
+            except TypeError as e:
+                if "instrument_name" in str(e):
+                    logger.warning(
+                        "Broker get_order_history does not accept instrument_name (old client?). Calling without it; per-instrument sync may return empty. Update crypto_com_trade.py and rebuild."
+                    )
+                    response = trade_client.get_order_history(
+                        start_time=window_start,
+                        end_time=window_end,
+                        page=0,
+                        page_size=limit,
+                    )
+                else:
+                    raise
             page_orders = response.get("data", []) if response else []
             fetched = len(page_orders)
             for o in page_orders:
