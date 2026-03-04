@@ -27,9 +27,11 @@ from app.api.routes_portfolio import router as portfolio_router
 from app.api.routes_ai import router as ai_router
 from app.api.routes_risk_probe import router as risk_probe_router
 from app.api.routes_metrics import router as metrics_router
+from app.api.routes_settings import router as settings_router
 import os
 import logging
 import time
+from typing import List, cast
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 # Prometheus metrics (Phase 7 observability)
 try:
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter, Histogram  # pyright: ignore[reportMissingImports]
     _http_requests_total = Counter(
         "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
     )
@@ -287,12 +289,13 @@ async def startup_event():
             
             # Database initialization in thread
             if engine and Base:
+                _engine, _Base = engine, Base
                 def init_db():
                     try:
                         import app.models  # noqa: F401 - ensure all models registered before create_all
-                        Base.metadata.create_all(bind=engine)
+                        _Base.metadata.create_all(bind=_engine)
                         if ensure_optional_columns:
-                            ensure_optional_columns(engine)
+                            ensure_optional_columns(_engine)
                         logger.info("Database tables initialized (including optional columns)")
                     except Exception as e:
                         logger.warning(f"Database initialization failed: {e}")
@@ -419,7 +422,11 @@ async def startup_event():
             from app.models.watchlist import WatchlistItem
             from app.services.portfolio_cache import get_portfolio_summary
             
+            if SessionLocal is None:
+                logger.warning("SessionLocal is None, skipping watchlist sync")
+                return
             db = SessionLocal()
+            assert db is not None
             try:
                 # Get portfolio symbols
                 portfolio_symbols = set()
@@ -435,8 +442,8 @@ async def startup_event():
                     logger.warning(f"Error getting portfolio for watchlist sync: {portfolio_err}")
                 
                 # Get existing watchlist symbols
-                existing_items = db.query(WatchlistItem).all()
-                existing_symbols = {item.symbol.upper() for item in existing_items if not item.is_deleted}
+                existing_items = cast(List[WatchlistItem], db.query(WatchlistItem).all())
+                existing_symbols = {item.symbol.upper() for item in existing_items if not getattr(item, "is_deleted", False)}
                 
                 # Check if watchlist is empty
                 count = len(existing_symbols)
@@ -649,6 +656,7 @@ app.include_router(admin_router, prefix="/api", tags=["admin"])
 app.include_router(ai_router)
 app.include_router(risk_probe_router, prefix="/api", tags=["risk"])
 app.include_router(metrics_router, prefix="/api", tags=["metrics"])
+app.include_router(settings_router, prefix="/api", tags=["settings"])
 
 # Alias health under /api for reverse-proxy setups that expect /api/health
 # Defined AFTER routers so /api/health/system can be matched first
@@ -661,3 +669,9 @@ def api_health():
     elapsed_ms = (t1 - t0) * 1000
     logger.info(f"PERF: /api/health handler executed in {elapsed_ms:.2f}ms")
     return result
+
+
+@app.get("/api/ping_fast")
+def api_ping_fast():
+    """Alias for /ping_fast when accessed via nginx proxy at /api/ping_fast."""
+    return {"status": "ok", "source": "ping_fast"}
