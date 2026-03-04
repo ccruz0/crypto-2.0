@@ -11,11 +11,14 @@ if [[ ! -f "$NGINX_SITE" ]]; then
 fi
 
 TS="$(date +%s)"
-BAK="${NGINX_SITE}.bak.${TS}"
+# Backup outside sites-enabled so nginx does not load it (avoids "duplicate default server")
+BAK_DIR="/etc/nginx/backups"
+BAK="${BAK_DIR}/$(basename "$NGINX_SITE").bak.${TS}"
 
 echo "Target: $NGINX_SITE"
 echo "Backup: $BAK"
 
+sudo mkdir -p "$BAK_DIR"
 sudo cp -a "$NGINX_SITE" "$BAK"
 
 # Count occurrences before
