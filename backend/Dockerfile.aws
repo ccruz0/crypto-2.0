@@ -115,6 +115,7 @@ RUN python3 -m py_compile /app/scripts/diagnose_auth_issue.py || (echo "ERROR: d
 RUN python3 -m py_compile /app/scripts/verify_exchange_creds_runtime.py || (echo "ERROR: verify_exchange_creds_runtime.py failed to compile" >&2 && exit 1)
 # Compile-check fingerprint_creds.py and verify_crypto_auth_simple.py
 RUN python3 -m py_compile /app/scripts/fingerprint_creds.py /app/scripts/verify_crypto_auth_simple.py || (echo "ERROR: fingerprint_creds.py or verify_crypto_auth_simple.py failed to compile" >&2 && exit 1)
+RUN python3 -m py_compile /app/scripts/diagnose_open_vs_trigger_orders.py || (echo "ERROR: diagnose_open_vs_trigger_orders.py failed to compile" >&2 && exit 1)
 # Boot-path import check: fail build if app.main cannot be imported (e.g. missing optional modules like throttle_service)
 RUN python3 -c "import app.services.signal_monitor as m; assert hasattr(m, 'should_emit_signal'); assert hasattr(m, 'SignalThrottleConfig'); print('OK: signal_monitor imports (throttle_service optional)')" || (echo "ERROR: signal_monitor import failed - ensure throttle_service is optional" >&2 && exit 1)
 # Boot-path import check: exchange_sync must import cleanly (fill_dedup_postgres optional; build_strategy_key from throttle_service or fallback)
