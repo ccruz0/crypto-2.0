@@ -1120,6 +1120,8 @@ def get_open_orders(
                 "status": unified_order.status,
                 "quantity": float(unified_order.quantity) if unified_order.quantity else 0.0,
                 "price": float(unified_order.price) if unified_order.price else None,
+                "trigger_price": float(unified_order.trigger_price) if unified_order.trigger_price is not None else None,
+                "is_trigger": getattr(unified_order, "is_trigger", False),
                 "avg_price": None,  # Not available in unified order
                 "cumulative_quantity": 0.0,  # Not available in unified order
                 "cumulative_value": 0.0,  # Not available in unified order

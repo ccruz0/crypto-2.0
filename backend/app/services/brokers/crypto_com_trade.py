@@ -1798,6 +1798,70 @@ class CryptoComTradeClient:
             logger.error(f"Error getting open orders: {e}")
             return {"error": str(e)}
 
+    TRIGGER_ORDER_TYPES = ("STOP_LOSS", "STOP_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT")
+
+    def _get_trigger_orders_via_advanced(self) -> dict:
+        """
+        Fallback when private/get-trigger-orders returns 40101: use private/advanced/get-open-orders
+        and filter for trigger-type orders (STOP_LOSS, TAKE_PROFIT, etc.). Same auth as other private calls.
+        """
+        method = "private/advanced/get-open-orders"
+        params = {}  # Omit instrument_name for 'all' per Exchange API docs
+        if not self.api_key or not self.api_secret:
+            return {"data": []}
+        payload = self.sign_request(method, params)
+        if isinstance(payload, dict) and payload.get("skipped"):
+            return {"data": []}
+        try:
+            url = f"{self.base_url}/{method}"
+            response = http_post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=10,
+                calling_module="crypto_com_trade.get_trigger_orders_advanced"
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "Advanced get-open-orders returned HTTP %s (body: %s)",
+                    response.status_code,
+                    (response.text or "")[:200],
+                )
+                return {"data": []}
+            result = response.json()
+            if result.get("code") != 0:
+                logger.warning(
+                    "Advanced get-open-orders code=%s message=%s",
+                    result.get("code"),
+                    result.get("message"),
+                )
+                return {"data": []}
+            data = result.get("result", {}).get("data", [])
+            if not isinstance(data, list):
+                return {"data": []}
+            # Filter to trigger-type orders only (advanced returns LIMIT + STOP_LOSS/TAKE_PROFIT etc.)
+            filtered = [
+                o for o in data
+                if isinstance(o, dict)
+                and (o.get("order_type") or o.get("type") or "").upper() in self.TRIGGER_ORDER_TYPES
+            ]
+            logger.info(
+                "Trigger orders via advanced/get-open-orders fallback: %d trigger orders from %d total (order_types in data: %s)",
+                len(filtered),
+                len(data),
+                [((x.get("order_type") or x.get("type")) or "?") for x in (data[:5] if isinstance(data, list) else [])],
+            )
+            if data and not filtered:
+                logger.warning(
+                    "Advanced get-open-orders returned %d orders but none matched trigger types %s; check order_type/type field",
+                    len(data),
+                    self.TRIGGER_ORDER_TYPES,
+                )
+            return {"data": filtered}
+        except Exception as e:
+            logger.debug("Advanced get-open-orders fallback failed: %s", e)
+            return {"data": []}
+
     def get_trigger_orders(self, page: int = 0, page_size: int = 200) -> dict:
         """Get trigger-based (TP/SL) open orders."""
         skip = require_aws_or_skip("get_trigger_orders")
@@ -1806,10 +1870,11 @@ class CryptoComTradeClient:
         # NOTE: Reading trigger orders must NOT depend on LIVE_TRADING.
         self._refresh_runtime_flags()
 
-        # Check if trigger orders are available for this account
+        # Health check gates legacy endpoint; when it fails with 40101 we still allow this path
+        # so the fallback can run. If health says unavailable, try fallback once before giving up.
         if not self._check_trigger_orders_health():
-            logger.debug("Trigger orders not available for this account, returning empty list")
-            return {"data": []}
+            logger.debug("Trigger orders health False; trying advanced fallback once")
+            return self._get_trigger_orders_via_advanced()
 
         method = "private/get-trigger-orders"
         params = {
@@ -1859,16 +1924,19 @@ class CryptoComTradeClient:
                 error_code = error_data.get("code", 0)
                 logger.error(f"Authentication failed for trigger orders: {error_data}")
 
-                # Check if this is a permanent feature limitation (not just temporary auth issue)
                 if error_code == 40101:
-                    # Set feature flag that trigger orders are not available
+                    # Legacy get-trigger-orders not allowed for this key; try Advanced Order API fallback
+                    logger.info("get-trigger-orders returned 40101, trying private/advanced/get-open-orders fallback")
+                    fallback = self._get_trigger_orders_via_advanced()
+                    fallback_data = fallback.get("data") or []
+                    if fallback_data:
+                        return fallback
+                    # Fallback also empty; treat as trigger orders not available
                     self._trigger_orders_available = False
                     logger.warning(
-                        "⚠️ Trigger orders not available for this account (40101 auth failure). "
-                        "SL/TP will use STOP_LIMIT/TAKE_PROFIT_LIMIT orders instead. "
-                        "Setting TRIGGER_ORDERS_ENABLED=false"
+                        "⚠️ Trigger orders not available (40101 on legacy endpoint, advanced fallback returned no trigger orders). "
+                        "SL/TP will use STOP_LIMIT/TAKE_PROFIT_LIMIT orders instead."
                     )
-                    # Send system alert once per 24h
                     self._send_trigger_orders_unavailable_alert()
                 return {"data": []}
 
@@ -1935,8 +2003,11 @@ class CryptoComTradeClient:
                 elif response.status_code == 401:
                     error_data = response.json()
                     if error_data.get("code") == 40101:
-                        self._trigger_orders_available = False
-                        return False
+                        # Legacy get-trigger-orders not allowed for this key. Allow get_trigger_orders
+                        # to run anyway so it can try private/advanced/get-open-orders fallback.
+                        self._trigger_orders_available = True
+                        logger.info("Legacy get-trigger-orders returned 40101; allowing trigger path so fallback can run")
+                        return True
 
             # If we get here, assume available (don't change cached state)
             return self._trigger_orders_available

@@ -46,6 +46,7 @@
 .env.secrets.local
 .env.test.local
 .env.lab
+.openclaw_pat
 .hypothesis/
 .idea/
 .installed.cfg
@@ -93,3 +94,4 @@ yarn-error.log*
 
 # local scratch
 /docs/_scratch/
+.telegram_key

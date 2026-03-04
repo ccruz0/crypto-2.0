@@ -133,7 +133,12 @@ def _build_unified_order(order: Dict[str, Any], is_trigger: bool) -> Optional[Un
     order_type = (order.get("order_type") or order.get("type") or ("TRIGGER" if is_trigger else "LIMIT")).upper()
 
     price = _safe_decimal(order.get("limit_price") or order.get("price"))
-    trigger_price = _safe_decimal(order.get("trigger_price") or order.get("stop_price") or order.get("stop_limit_price"))
+    trigger_price = _safe_decimal(
+        order.get("trigger_price")
+        or order.get("stop_price")
+        or order.get("stop_limit_price")
+        or order.get("ref_price")
+    )
     quantity = _safe_decimal(order.get("quantity") or order.get("order_amount") or order.get("size")) or Decimal("0")
 
     return UnifiedOpenOrder(
