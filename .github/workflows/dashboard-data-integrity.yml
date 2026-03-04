@@ -22,6 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     name: Dashboard Data Integrity Validation
     continue-on-error: true
+    env:
+      DASHBOARD_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
+      API_URL: ${{ secrets.API_URL || 'https://dashboard.hilovivo.com/api' }}
+      BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
+      REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
     steps:
       - name: Install jq
         run: |
@@ -101,9 +106,9 @@ jobs:
         continue-on-error: true
         working-directory: frontend
         env:
-          BASE_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
-          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}
-          API_URL: ${{ secrets.API_URL || 'https://dashboard.hilovivo.com/api' }}
+          BASE_URL: ${{ env.DASHBOARD_URL }}
+          DASHBOARD_URL: ${{ env.DASHBOARD_URL }}
+          API_URL: ${{ env.API_URL }}
         run: npx playwright test tests/data-integrity --reporter=html
 
       - name: Upload Playwright report
@@ -132,6 +137,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Generate consolidated JSON report
+        id: generate_report
         if: always()
         working-directory: frontend
         continue-on-error: true
@@ -284,14 +290,14 @@ jobs:
           }
           EOF
           }
-        
+
           if [ -f "reports/dashboard-data-integrity.json" ]; then
-          echo "✅ Report file created successfully"
-          echo "Report size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
+            echo "✅ Report file created successfully"
+            echo "Report size: $(wc -c < reports/dashboard-data-integrity.json) bytes"
           else
-          echo "❌ Report file was not created even after fallback"
-          echo "⚠️ Creating absolute minimal report..."
-          mkdir -p reports
+            echo "❌ Report file was not created even after fallback"
+            echo "⚠️ Creating absolute minimal report..."
+            mkdir -p reports
           cat > reports/dashboard-data-integrity.json <<EOF
           {
             "run": {
@@ -315,8 +321,9 @@ jobs:
           EOF
           echo "✅ Minimal report created"
           fi
-        
-          - name: Upload consolidated report artifact
+
+      # Upload step (separate from generate_report run block)
+      - name: Upload consolidated report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -351,8 +358,8 @@ jobs:
         continue-on-error: true
         working-directory: frontend
         env:
-          BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
-          REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+          BACKEND_URL: ${{ env.BACKEND_URL }}
+          REPORT_SECRET: ${{ env.REPORT_SECRET }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -518,7 +525,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📊 **View Dashboard Report:** [Open Report Page](${{ secrets.DASHBOARD_URL || 'https://dashboard.hilovivo.com' }}/reports/dashboard-data-integrity)" >> $GITHUB_STEP_SUMMARY
+          echo "📊 **View Dashboard Report:** [Open Report Page](${{ env.DASHBOARD_URL }}/reports/dashboard-data-integrity)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "After downloading artifacts:" >> $GITHUB_STEP_SUMMARY
           echo "1. Open \`playwright-report/index.html\` in browser for full test report" >> $GITHUB_STEP_SUMMARY
@@ -586,12 +593,12 @@ jobs:
     name: Post Report to Backend
     steps:
       - name: Download report artifact
+        id: download_artifact
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: dashboard-data-integrity-report
           path: ./report
-          continue-on-error: true
-        id: download_artifact
         
       - name: Debug artifact download
         if: always()
@@ -672,8 +679,8 @@ jobs:
           
       - name: POST report to backend
         env:
-          BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://dashboard.hilovivo.com' }}
-          REPORT_SECRET: ${{ secrets.REPORT_SECRET || 'dashboard-data-integrity-secret-2024' }}
+          BACKEND_URL: ${{ env.BACKEND_URL }}
+          REPORT_SECRET: ${{ env.REPORT_SECRET }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
