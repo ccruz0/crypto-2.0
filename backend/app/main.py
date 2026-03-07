@@ -414,6 +414,23 @@ async def startup_event():
                     logger.warning(f"Failed to setup Telegram: {e}")
             else:
                 logger.warning("PERF: Telegram commands DISABLED for performance testing")
+
+            # Agent scheduler: periodic Notion task scanner
+            try:
+                from app.services.agent_scheduler import start_agent_scheduler_loop
+                notion_api_key = (os.getenv("NOTION_API_KEY") or "").strip()
+                notion_task_db = (os.getenv("NOTION_TASK_DB") or "").strip()
+                if notion_api_key and notion_task_db:
+                    asyncio.create_task(start_agent_scheduler_loop())
+                    logger.info("Agent scheduler loop started (Notion task scanner)")
+                else:
+                    logger.info(
+                        "Agent scheduler loop skipped: NOTION_API_KEY=%s NOTION_TASK_DB=%s",
+                        "set" if notion_api_key else "MISSING",
+                        "set" if notion_task_db else "MISSING",
+                    )
+            except Exception as e:
+                logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
     
