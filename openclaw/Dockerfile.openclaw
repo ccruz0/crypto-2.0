@@ -12,4 +12,4 @@ ENV OPENCLAW_CONFIG_HOME=/tmp/.openclaw
 
 COPY openclaw/docker-entrypoint.sh /openclaw-entrypoint.sh
 ENTRYPOINT ["/bin/sh", "/openclaw-entrypoint.sh"]
-# Base image CMD (e.g. gateway --bind lan) is passed as args to entrypoint
+CMD ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--allow-unconfigured"]
