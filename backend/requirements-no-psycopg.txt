@@ -31,7 +31,7 @@ numpy==2.1.1
 pytz==2024.2
 
 # Trading APIs
-ccxt==4.2.65
+ccxt==4.5.42
 alpaca-trade-api==3.1.1
 
 # Background tasks
