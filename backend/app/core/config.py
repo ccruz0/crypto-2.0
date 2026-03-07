@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     BINANCE_SECRET_KEY: Optional[str] = None
     ALPACA_API_KEY: Optional[str] = None
     ALPACA_SECRET_KEY: Optional[str] = None
+    NOTION_API_KEY: Optional[str] = None
+    NOTION_TASK_DB: Optional[str] = None
+
+    # OpenClaw integration (AI agent via HTTP API)
+    OPENCLAW_API_URL: Optional[str] = None
+    OPENCLAW_API_TOKEN: Optional[str] = None
+    OPENCLAW_TIMEOUT_SECONDS: Optional[int] = None
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
@@ -66,7 +73,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID_LOCAL: Optional[str] = None  # Local development channel (not used for sending)
     
     class Config:
-        env_file = ".env"
+        env_file = (".env", "backend/.env", "secrets/runtime.env")
         extra = "ignore"  # Ignore extra environment variables
 
 

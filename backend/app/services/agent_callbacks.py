@@ -675,6 +675,119 @@ def validate_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, 
         return {"success": False, "summary": str(e)}
 
 
+def _apply_via_openclaw(
+    prepared_task: dict[str, Any],
+    prompt_builder_fn: Callable,
+    save_subdir: str,
+    file_prefix: str,
+    fallback_fn: Optional[CallbackFn] = None,
+) -> dict[str, Any]:
+    """Send a task to OpenClaw for AI analysis, save the result, fall back to template on failure."""
+    task_id = _safe_task_id(prepared_task)
+    title = _safe_task_title(prepared_task) or "Untitled"
+
+    try:
+        from app.services.openclaw_client import is_openclaw_configured, send_to_openclaw
+    except Exception as e:
+        logger.warning("openclaw_client import failed: %s — using fallback", e)
+        if fallback_fn:
+            return fallback_fn(prepared_task)
+        return {"success": False, "summary": f"openclaw_client unavailable: {e}"}
+
+    if not is_openclaw_configured():
+        logger.info("OpenClaw not configured — using template fallback for task %s", task_id)
+        if fallback_fn:
+            return fallback_fn(prepared_task)
+        return {"success": False, "summary": "OPENCLAW_API_TOKEN not configured"}
+
+    try:
+        user_prompt, instructions = prompt_builder_fn(prepared_task)
+        result = send_to_openclaw(user_prompt, task_id=task_id, instructions=instructions)
+    except Exception as e:
+        logger.warning("OpenClaw call failed for task %s: %s — using fallback", task_id, e)
+        if fallback_fn:
+            return fallback_fn(prepared_task)
+        return {"success": False, "summary": f"OpenClaw error: {e}"}
+
+    if not result.get("success"):
+        error = result.get("error", "unknown")
+        logger.warning("OpenClaw returned error for task %s: %s — using fallback", task_id, error)
+        if fallback_fn:
+            return fallback_fn(prepared_task)
+        return {"success": False, "summary": f"OpenClaw error: {error}"}
+
+    content = result.get("content") or ""
+    if not content.strip():
+        logger.warning("OpenClaw returned empty content for task %s — using fallback", task_id)
+        if fallback_fn:
+            return fallback_fn(prepared_task)
+        return {"success": False, "summary": "OpenClaw returned empty response"}
+
+    root = _repo_root()
+    out_dir = root / save_subdir
+    _ensure_dir(out_dir)
+
+    note_path = out_dir / f"{file_prefix}-{task_id}.md"
+    note_contents = (
+        f"# {title}\n\n"
+        f"- **Notion page id**: `{task_id}`\n"
+        f"- **Source**: OpenClaw AI analysis\n\n"
+        f"---\n\n"
+        f"{content}\n"
+    )
+
+    note_path.write_text(note_contents, encoding="utf-8")
+
+    idx_path = out_dir / "README.md"
+    idx_line = f"- [{file_prefix} {task_id}: {title}]({file_prefix}-{task_id}.md)"
+    if not idx_path.exists():
+        idx_path.write_text(f"# AI analysis notes\n\n{idx_line}\n", encoding="utf-8")
+    else:
+        _append_line_if_missing(idx_path, idx_line)
+
+    summary = content.strip()[:200]
+    logger.info("OpenClaw analysis saved for task %s at %s (%d chars)", task_id, note_path, len(content))
+    return {"success": True, "summary": f"[OpenClaw] {summary}"}
+
+
+def _validate_openclaw_note(
+    prepared_task: dict[str, Any],
+    save_subdir: str,
+    file_prefix: str,
+) -> dict[str, Any]:
+    """Validate that an OpenClaw-generated note exists and has content."""
+    task_id = _safe_task_id(prepared_task)
+    if not task_id:
+        return {"success": False, "summary": "missing task.id"}
+    root = _repo_root()
+    note_path = root / save_subdir / f"{file_prefix}-{task_id}.md"
+    ok, msg = _validate_nonempty_markdown(note_path)
+    if not ok:
+        return {"success": False, "summary": msg}
+    return {"success": True, "summary": "OpenClaw note validated (non-empty)"}
+
+
+def _make_openclaw_callback(
+    prompt_builder_fn: Callable,
+    save_subdir: str,
+    file_prefix: str,
+    fallback_fn: Optional[CallbackFn] = None,
+) -> CallbackFn:
+    """Factory: return an apply callback that delegates to OpenClaw with a template fallback."""
+    def _apply(prepared_task: dict[str, Any]) -> dict[str, Any]:
+        return _apply_via_openclaw(
+            prepared_task, prompt_builder_fn, save_subdir, file_prefix, fallback_fn,
+        )
+    return _apply
+
+
+def _make_openclaw_validator(save_subdir: str, file_prefix: str) -> CallbackFn:
+    """Factory: return a validate callback for OpenClaw-generated notes."""
+    def _validate(prepared_task: dict[str, Any]) -> dict[str, Any]:
+        return _validate_openclaw_note(prepared_task, save_subdir, file_prefix)
+    return _validate
+
+
 def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
     """
     Select a safe default callback pack based on prepared_task content.
@@ -693,31 +806,44 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
     logger.debug("select_default_callbacks_for_task: type=%r title=%r", _task_type, _task_title)
 
     if _is_documentation_eligible(prepared_task):
+        from app.services.openclaw_client import build_documentation_prompt
         return {
-            "apply_change_fn": apply_documentation_task,
-            "validate_fn": validate_documentation_task,
+            "apply_change_fn": _make_openclaw_callback(
+                build_documentation_prompt,
+                "docs/agents/generated-notes", "notion-task",
+                fallback_fn=apply_documentation_task,
+            ),
+            "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
             "deploy_fn": None,
-            "selection_reason": "documentation-like task (docs/runbooks/agent docs keywords)",
+            "selection_reason": "documentation task (OpenClaw AI analysis with template fallback)",
         }
 
     if _is_monitoring_triage_eligible(prepared_task):
+        from app.services.openclaw_client import build_monitoring_prompt
         return {
-            "apply_change_fn": apply_monitoring_triage_task,
-            "validate_fn": validate_monitoring_triage_task,
+            "apply_change_fn": _make_openclaw_callback(
+                build_monitoring_prompt,
+                "docs/runbooks/triage", "notion-triage",
+                fallback_fn=apply_monitoring_triage_task,
+            ),
+            "validate_fn": _make_openclaw_validator("docs/runbooks/triage", "notion-triage"),
             "deploy_fn": None,
-            "selection_reason": "monitoring/infrastructure triage task (monitoring keywords or inferred monitoring-infra area)",
+            "selection_reason": "monitoring triage task (OpenClaw AI analysis with template fallback)",
         }
 
-    # Bug investigation: check early (type-based match is reliable and should not
-    # be shadowed by broad keyword-based analysis checks below that may fail imports).
     if _is_bug_investigation_eligible(prepared_task):
         logger.info("select_default_callbacks_for_task: matched bug_investigation type=%r title=%r", _task_type, _task_title)
+        from app.services.openclaw_client import build_investigation_prompt
         return {
-            "apply_change_fn": apply_bug_investigation_task,
-            "validate_fn": validate_bug_investigation_task,
+            "apply_change_fn": _make_openclaw_callback(
+                build_investigation_prompt,
+                "docs/agents/bug-investigations", "notion-bug",
+                fallback_fn=apply_bug_investigation_task,
+            ),
+            "validate_fn": _make_openclaw_validator("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
-            "selection_reason": "bug investigation task (documentation-only investigation note; approval-gated)",
+            "selection_reason": "bug investigation task (OpenClaw AI analysis with template fallback; approval-gated)",
         }
 
     if _is_profile_setting_analysis_eligible(prepared_task):
@@ -818,6 +944,26 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             }
         except Exception as e:
             logger.warning("strategy analysis callbacks unavailable (falling through): %s", e)
+
+    # No specific callback matched — try OpenClaw with a generic prompt as last resort
+    try:
+        from app.services.openclaw_client import build_generic_prompt, is_openclaw_configured
+        if is_openclaw_configured():
+            logger.info(
+                "select_default_callbacks_for_task: no specific match, using generic OpenClaw for type=%r title=%r",
+                _task_type, _task_title,
+            )
+            return {
+                "apply_change_fn": _make_openclaw_callback(
+                    build_generic_prompt,
+                    "docs/agents/generated-notes", "notion-task",
+                ),
+                "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
+                "deploy_fn": None,
+                "selection_reason": "generic OpenClaw analysis (no specific callback matched)",
+            }
+    except Exception as e:
+        logger.debug("openclaw generic fallback unavailable: %s", e)
 
     logger.warning(
         "select_default_callbacks_for_task: NO callback matched type=%r title=%r — returning None apply_change_fn",

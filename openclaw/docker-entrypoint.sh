@@ -58,8 +58,10 @@ if [ -n "$OPENCLAW_TRUSTED_PROXIES" ]; then
   PROXIES_JSON="$PROXIES_JSON]"
 fi
 
+ENABLE_HTTP_RESPONSES="${OPENCLAW_HTTP_RESPONSES:-true}"
+
 MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}"
-MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-openai/gpt-4o,anthropic/claude-opus-4-6}"
+MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3-5-haiku-20241022}"
 FALLBACKS_JSON="["
 FF=1
 OLDIFS="$IFS"; IFS=','
@@ -81,22 +83,37 @@ if [ -f "$CONFIG_FILE" ]; then
       const proxies = JSON.parse(process.argv[3]);
       const primary = process.argv[4];
       const fallbacks = JSON.parse(process.argv[5]);
+      const enableHttpResponses = process.argv[6] === 'true';
       const orig = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
       const origins = JSON.parse(fs.readFileSync(originsPath, 'utf8'));
       if (!orig.gateway) orig.gateway = {};
       if (!orig.gateway.controlUi) orig.gateway.controlUi = {};
       orig.gateway.controlUi.allowedOrigins = origins;
       if (proxies.length > 0) orig.gateway.trustedProxies = proxies;
+      if (enableHttpResponses) {
+        if (!orig.gateway.http) orig.gateway.http = {};
+        if (!orig.gateway.http.endpoints) orig.gateway.http.endpoints = {};
+        if (!orig.gateway.http.endpoints.responses) orig.gateway.http.endpoints.responses = {};
+        orig.gateway.http.endpoints.responses.enabled = true;
+      }
       if (!orig.agents) orig.agents = {};
       if (!orig.agents.defaults) orig.agents.defaults = {};
       orig.agents.defaults.model = { primary, fallbacks };
       fs.writeFileSync(cfgPath, JSON.stringify(orig, null, 2));
-    " "$CONFIG_FILE" "$ORIGINS_FILE" "$PROXIES_JSON" "$MODEL_PRIMARY" "$FALLBACKS_JSON"
+    " "$CONFIG_FILE" "$ORIGINS_FILE" "$PROXIES_JSON" "$MODEL_PRIMARY" "$FALLBACKS_JSON" "$ENABLE_HTTP_RESPONSES"
+  else
+    if [ "$ENABLE_HTTP_RESPONSES" = "true" ]; then
+      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+    else
+      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+    fi
+  fi
+else
+  if [ "$ENABLE_HTTP_RESPONSES" = "true" ]; then
+    printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
   else
     printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
   fi
-else
-  printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
 fi
 rm -f "$ORIGINS_FILE"
 
