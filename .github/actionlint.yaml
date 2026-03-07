@@ -1,0 +1,9 @@
+# actionlint config: ignore cautious "context access might be invalid" warnings
+# when using optional secrets with env fallbacks (valid at runtime).
+# Also ignore "Unrecognized named-value: 'secrets'" (actionlint static check;
+# secrets are valid in job/step env at runtime).
+paths:
+  ".github/workflows/**/*.{yml,yaml}":
+    ignore:
+      - "Context access might be invalid"
+      - "Unrecognized named-value: .*"

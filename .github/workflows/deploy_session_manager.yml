@@ -1,9 +1,15 @@
+# Single source of truth for deploy: push to main runs this (SSM). No SSH deploy on push.
 name: Deploy to AWS EC2 (Session Manager)
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -194,6 +200,8 @@ jobs:
           echo "⚠️ Deployment status: $FINAL_STATUS"
           echo "Check the output above for details"
         fi
-        
+
+        # Do NOT apply OpenClaw nginx proxy to LAB IP (172.31.x.x) on PROD — PROD must not use lab infrastructure (see .cursor/rules/aws-prod-instance.mdc).
+
         echo "🎉 Deployment command sent successfully!"
 

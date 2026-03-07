@@ -29,6 +29,7 @@ from app.services.notion_task_reader import get_high_priority_pending_tasks
 from app.services.notion_tasks import (
     NOTION_API_BASE,
     NOTION_VERSION,
+    update_notion_task_metadata,
     update_notion_task_status,
     update_notion_task_version_metadata,
 )
@@ -169,6 +170,131 @@ def summarize_deployment_result(success: bool, summary: str | None = None) -> st
     """Build a short text summary of a deployment step for Notion or logs."""
     s = (summary or "").strip() or ("succeeded" if success else "failed")
     return f"Deployment: {'succeeded' if success else 'failed'} — {s}"
+
+
+def _enrich_metadata_from_openclaw(prepared_task: dict[str, Any], task_id: str) -> None:
+    """Best-effort: populate Notion task metadata fields from OpenClaw structured sections.
+
+    Reads ``prepared_task["_openclaw_sections"]`` (stashed by the OpenClaw
+    callback) and writes matching fields to Notion via
+    ``update_notion_task_metadata``.  Silently no-ops when sections are
+    absent or the Notion update fails.
+    """
+    sections = (prepared_task or {}).get("_openclaw_sections") or {}
+    if not sections or not task_id:
+        return
+
+    metadata: dict[str, str] = {}
+
+    risk_level = sections.get("Risk Level")
+    if risk_level and risk_level.strip().lower() != "n/a":
+        first_line = risk_level.strip().splitlines()[0]
+        metadata["risk_level"] = first_line[:100]
+
+    affected_files = sections.get("Affected Files")
+    if affected_files and affected_files.strip().lower() != "n/a":
+        metadata["repo"] = affected_files.strip()[:200]
+
+    testing_plan = sections.get("Testing Plan")
+    if testing_plan and testing_plan.strip().lower() != "n/a":
+        metadata["test_status"] = "plan-available"
+
+    if not metadata:
+        return
+
+    try:
+        result = update_notion_task_metadata(task_id, metadata)
+        logger.info(
+            "OpenClaw metadata enrichment task_id=%s updated=%s skipped=%s",
+            task_id, result.get("updated_fields"), result.get("skipped_fields"),
+        )
+    except Exception as e:
+        logger.warning("_enrich_metadata_from_openclaw failed task_id=%s: %s", task_id, e)
+
+
+def _generate_cursor_handoff(prepared_task: dict[str, Any], task_id: str) -> None:
+    """Best-effort: generate and save a Cursor implementation handoff prompt.
+
+    Only runs when OpenClaw structured sections are available on the
+    prepared_task.  Failures are logged and silently ignored.
+    """
+    sections = (prepared_task or {}).get("_openclaw_sections") or {}
+    if not sections or not task_id:
+        return
+    try:
+        from app.services.cursor_handoff import generate_cursor_handoff
+        result = generate_cursor_handoff(prepared_task)
+        if result.get("success"):
+            logger.info("Cursor handoff generated task_id=%s path=%s", task_id, result.get("path"))
+        else:
+            logger.debug("Cursor handoff generation returned success=False task_id=%s", task_id)
+    except Exception as e:
+        logger.warning("_generate_cursor_handoff failed task_id=%s: %s", task_id, e)
+
+
+def _record_test_gate_result(
+    task_id: str,
+    validation_attempted: bool,
+    validation_success: bool,
+    validation_summary: str,
+    current_status: str,
+) -> None:
+    """Best-effort: record the validation outcome via the test gate.
+
+    Writes the ``test_status`` Notion metadata field.  Does NOT advance
+    status here — the legacy executor already handles status transitions
+    directly.  The ``advance_on_pass=False`` flag ensures this is
+    metadata-only so the legacy flow is not disrupted.
+    """
+    try:
+        from app.services.task_test_gate import record_test_result, test_outcome_from_validation
+        outcome, summary = test_outcome_from_validation(validation_attempted, validation_success, validation_summary)
+        record_test_result(
+            task_id,
+            outcome,
+            summary=summary,
+            advance_on_pass=False,
+            current_status=current_status,
+        )
+    except Exception as e:
+        logger.debug("_record_test_gate_result failed task_id=%s: %s", task_id, e)
+
+
+def _run_post_deploy_smoke_check(task_id: str, prepared_task: dict[str, Any]) -> str:
+    """Run a post-deploy smoke check when enabled.
+
+    Returns one of:
+        ``"passed"``  — smoke check ran and passed; caller should mark task done.
+        ``"blocked"`` — smoke check ran and failed; caller should not advance.
+        ``""``        — smoke check was not enabled/applicable; legacy flow.
+    """
+    enable = (os.environ.get("ATP_SMOKE_CHECK_ENABLED") or "").strip().lower()
+    if enable not in ("1", "true", "yes"):
+        return ""
+    try:
+        from app.services.deploy_smoke_check import (
+            run_smoke_check,
+            record_smoke_check_result,
+        )
+        logger.info("execute_prepared_notion_task: running post-deploy smoke check task_id=%s", task_id)
+        smoke = run_smoke_check()
+        record_smoke_check_result(
+            task_id,
+            smoke,
+            advance_on_pass=False,
+            current_status="deploying",
+        )
+        if smoke.get("ok"):
+            logger.info("execute_prepared_notion_task: smoke check passed task_id=%s", task_id)
+            return "passed"
+        logger.warning(
+            "execute_prepared_notion_task: smoke check FAILED task_id=%s summary=%s",
+            task_id, smoke.get("summary"),
+        )
+        return "blocked"
+    except Exception as exc:
+        logger.warning("_run_post_deploy_smoke_check failed task_id=%s: %s", task_id, exc)
+        return ""
 
 
 def infer_repo_area_for_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -680,6 +806,13 @@ def execute_prepared_task_if_approved(
         }
 
     # Run execution (approval not required, or approved=True)
+    #
+    # Extended lifecycle: tasks whose callback pack is marked manual_only
+    # use the full investigation → patch-approval → deploy-approval flow
+    # instead of the legacy in-progress → testing → deployed shortcut.
+    if callback_selection.get("manual_only") and prepared_task:
+        prepared_task["_use_extended_lifecycle"] = True
+
     apply_fn = callback_selection.get("apply_change_fn")
     validate_fn = callback_selection.get("validate_fn")
     deploy_fn = callback_selection.get("deploy_fn")
@@ -833,6 +966,63 @@ def execute_prepared_notion_task(
             "in-progress", False,
         )
 
+    # ----- Step 1b: enrich Notion metadata from OpenClaw structured sections
+    _enrich_metadata_from_openclaw(prepared_task, task_id)
+
+    # ----- Step 1c: generate Cursor handoff prompt (best-effort, never blocks)
+    _generate_cursor_handoff(prepared_task, task_id)
+
+    # ----- Extended lifecycle gate: investigation-complete -----
+    # For manual_only tasks the executor pauses here and sends a Telegram
+    # message with [Approve Patch] / [Reject] / [View Report].  The human
+    # decision resumes the lifecycle via the existing callback handlers
+    # (patch_approve → ready-for-patch, task_reject → rejected).
+    use_extended_lifecycle = bool((prepared_task or {}).get("_use_extended_lifecycle"))
+    if use_extended_lifecycle:
+        inv_ok = update_notion_task_status(task_id, "investigation-complete")
+        logger.info(
+            "execute_prepared_notion_task: extended lifecycle → investigation-complete "
+            "task_id=%s status_updated=%s",
+            task_id, inv_ok,
+        )
+        exec_msg = summarize_execution_result(True, apply_summary)
+        _append_notion_page_comment(
+            task_id,
+            f"[{executed_at}] {exec_msg}\n"
+            "Investigation complete — waiting for human patch approval via Telegram.",
+        )
+        sections = (prepared_task or {}).get("_openclaw_sections") or {}
+        try:
+            from app.services.agent_telegram_approval import send_investigation_complete_approval
+            tg = send_investigation_complete_approval(task_id, task_title, sections=sections)
+            logger.info(
+                "execute_prepared_notion_task: send_investigation_complete_approval "
+                "task_id=%s sent=%s message_id=%s",
+                task_id, tg.get("sent"), tg.get("message_id"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "execute_prepared_notion_task: send_investigation_complete_approval "
+                "failed task_id=%s: %s",
+                task_id, exc,
+            )
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "extended_investigation_complete",
+                task_id=task_id,
+                task_title=task_title,
+                details={"status": "investigation-complete"},
+            )
+        except Exception:
+            pass
+        return result(
+            True, True, apply_summary,
+            False, False, False, "",
+            False, False, "",
+            "investigation-complete", True,
+        )
+
     # ----- Step 2 & 3: move to testing and append execution summary
     testing_updated = update_notion_task_status(task_id, "testing")
     if testing_updated:
@@ -855,6 +1045,7 @@ def execute_prepared_notion_task(
             msg = summarize_validation_result(False, validation_summary)
             _append_notion_page_comment(task_id, f"[{executed_at}] {msg}")
             logger.warning("execute_prepared_notion_task: validation failed task_id=%s summary=%s", task_id, validation_summary)
+            _record_test_gate_result(task_id, validation_attempted, False, validation_summary, "testing")
             # Apply succeeded and task moved to testing — mark success=True
             # to prevent infinite retry loops. Validation issues are soft
             # failures that should be resolved manually, not re-executed.
@@ -865,7 +1056,77 @@ def execute_prepared_notion_task(
                 "testing", True,
             )
         logger.info("execute_prepared_notion_task: validation passed task_id=%s", task_id)
+
+        # ----- Extended lifecycle gate: awaiting-deploy-approval -----
+        # Record the test result and pause for human deploy approval.  The
+        # existing deploy_approve handler checks the test gate, moves the
+        # task to deploying, and can trigger a smoke check.
+        if use_extended_lifecycle:
+            try:
+                from app.services.task_test_gate import record_test_result, test_outcome_from_validation
+                gate_outcome, gate_summary = test_outcome_from_validation(True, True, validation_summary)
+                gate = record_test_result(
+                    task_id, gate_outcome,
+                    summary=gate_summary,
+                    advance_on_pass=True,
+                    current_status="testing",
+                )
+                logger.info(
+                    "execute_prepared_notion_task: extended test gate task_id=%s advanced=%s",
+                    task_id, gate.get("advanced"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "execute_prepared_notion_task: extended test gate failed task_id=%s: %s",
+                    task_id, exc,
+                )
+                update_notion_task_status(task_id, "awaiting-deploy-approval")
+
+            val_msg = summarize_validation_result(True, validation_summary)
+            _append_notion_page_comment(
+                task_id,
+                f"[{executed_at}] {val_msg}\n"
+                "Tests passed — waiting for human deploy approval via Telegram.",
+            )
+            sections = (prepared_task or {}).get("_openclaw_sections") or {}
+            try:
+                from app.services.agent_telegram_approval import send_patch_deploy_approval
+                tg = send_patch_deploy_approval(
+                    task_id, task_title,
+                    test_summary=validation_summary,
+                    sections=sections,
+                )
+                logger.info(
+                    "execute_prepared_notion_task: send_patch_deploy_approval "
+                    "task_id=%s sent=%s message_id=%s",
+                    task_id, tg.get("sent"), tg.get("message_id"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "execute_prepared_notion_task: send_patch_deploy_approval "
+                    "failed task_id=%s: %s",
+                    task_id, exc,
+                )
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "extended_awaiting_deploy_approval",
+                    task_id=task_id,
+                    task_title=task_title,
+                    details={"validation_summary": validation_summary},
+                )
+            except Exception:
+                pass
+            return result(
+                True, True, apply_summary,
+                testing_updated, True, True, validation_summary,
+                False, False, "",
+                "awaiting-deploy-approval", True,
+            )
+
+        _record_test_gate_result(task_id, True, True, validation_summary, "testing")
     else:
+        _record_test_gate_result(task_id, False, False, "", "testing")
         _append_notion_page_comment(task_id, f"[{executed_at}] Validation still required (no validate_fn supplied). Task left in testing.")
         logger.info("execute_prepared_notion_task: no validate_fn; task left in testing task_id=%s", task_id)
         return result(
@@ -898,16 +1159,29 @@ def execute_prepared_notion_task(
             )
         logger.info("execute_prepared_notion_task: deployment succeeded task_id=%s", task_id)
 
+    # ----- Step 5b: post-deploy smoke check (extended lifecycle only)
+    smoke_outcome = _run_post_deploy_smoke_check(task_id, prepared_task)
+
+    if smoke_outcome == "blocked":
+        return result(
+            True, True, apply_summary,
+            testing_updated, True, True, validation_summary,
+            deployment_attempted, True, deployment_summary,
+            "blocked", False,
+        )
+
     # ----- Step 6 & 7: move to deployed and append final comment
-    deployed_updated = update_notion_task_status(task_id, "deployed")
+    final_status = "done" if smoke_outcome == "passed" else "deployed"
+    deployed_updated = update_notion_task_status(task_id, final_status)
     if deployed_updated:
-        logger.info("execute_prepared_notion_task: moved to deployed task_id=%s task_title=%r", task_id, task_title)
+        logger.info("execute_prepared_notion_task: moved to %s task_id=%s task_title=%r", final_status, task_id, task_title)
     try:
         from app.services.agent_activity_log import log_agent_event
-        log_agent_event("execution_completed", task_id=task_id, task_title=task_title, details={"final_status": "deployed"})
+        log_agent_event("execution_completed", task_id=task_id, task_title=task_title, details={"final_status": final_status})
     except Exception as e:
         logger.debug("log_agent_event(execution_completed) failed: %s", e)
-    final_comment = f"[{executed_at}] Validation passed. Deployment: {deployment_summary}. Status set to deployed."
+    smoke_note = f" Smoke check: {smoke_outcome}." if smoke_outcome else ""
+    final_comment = f"[{executed_at}] Validation passed. Deployment: {deployment_summary}.{smoke_note} Status set to {final_status}."
     _append_notion_page_comment(task_id, final_comment)
 
     # Version release traceability (best-effort): mark released in Notion + changelog + activity log.
@@ -928,6 +1202,203 @@ def execute_prepared_notion_task(
         True, True, apply_summary,
         testing_updated, True, True, validation_summary,
         deployment_attempted, deployment_ok, deployment_summary,
-        "deployed", True,
+        final_status, True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Extended lifecycle continuation: ready-for-patch → patching → validation
+# ---------------------------------------------------------------------------
+
+
+def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
+    """Continue the extended lifecycle for a task approved for patching.
+
+    Called by the scheduler when it finds tasks in ``ready-for-patch``.
+    The sequence is:
+
+        ready-for-patch → patching → run validate_fn
+            → if passed:  awaiting-deploy-approval + Telegram deploy approval
+            → if failed:  stays in patching (manual fix required)
+
+    This function does **not** re-run the apply step — the investigation
+    artifacts already exist from the first executor run.  It only runs
+    validation to verify those artifacts and then gates on human deploy
+    approval.
+
+    Returns a structured dict.  Never raises.
+    """
+    task_id = (task_id or "").strip()
+    ts = _utc_now_iso()
+
+    def _result(ok: bool, stage: str, summary: str, final_status: str = "") -> dict[str, Any]:
+        return {
+            "ok": ok,
+            "task_id": task_id,
+            "stage": stage,
+            "summary": summary,
+            "final_status": final_status,
+            "timestamp": ts,
+        }
+
+    if not task_id:
+        return _result(False, "init", "empty task_id")
+
+    # --- 1. Read the task from Notion ---
+    try:
+        from app.services.notion_task_reader import get_notion_task_by_id
+        task = get_notion_task_by_id(task_id)
+    except Exception as exc:
+        logger.warning("advance_ready_for_patch_task: Notion read failed task_id=%s: %s", task_id, exc)
+        return _result(False, "read", str(exc))
+
+    if not task:
+        logger.warning("advance_ready_for_patch_task: task not found task_id=%s", task_id)
+        return _result(False, "read", "task not found in Notion")
+
+    task_title = str(task.get("task") or "").strip()
+    current_status = str(task.get("status") or "").strip().lower()
+
+    if current_status != "ready-for-patch":
+        logger.info(
+            "advance_ready_for_patch_task: skipping task_id=%s status=%s (expected ready-for-patch)",
+            task_id, current_status,
+        )
+        return _result(False, "status_check", f"status is {current_status}, not ready-for-patch")
+
+    logger.info(
+        "advance_ready_for_patch_task: starting continuation task_id=%s title=%r",
+        task_id, task_title,
+    )
+
+    # --- 2. Move to patching ---
+    patching_ok = update_notion_task_status(task_id, "patching")
+    if not patching_ok:
+        logger.warning("advance_ready_for_patch_task: failed to move to patching task_id=%s", task_id)
+        return _result(False, "patching", "Notion status update to patching failed")
+    logger.info("advance_ready_for_patch_task: moved to patching task_id=%s", task_id)
+
+    # --- 3. Reconstruct a minimal prepared_task for callback selection ---
+    repo_area = infer_repo_area_for_task(task)
+    prepared_task: dict[str, Any] = {
+        "task": task,
+        "repo_area": repo_area,
+        "claim": {"status_updated": True},
+        "_use_extended_lifecycle": True,
+    }
+
+    # --- 4. Re-select callbacks to obtain validate_fn ---
+    try:
+        select_fn = _get_callbacks_selector()
+        callback_selection = select_fn(prepared_task)
+    except Exception as exc:
+        logger.warning("advance_ready_for_patch_task: callback selection failed task_id=%s: %s", task_id, exc)
+        _append_notion_page_comment(task_id, f"[{ts}] Callback re-selection failed during patching: {exc}")
+        return _result(False, "callback_selection", str(exc), "patching")
+
+    validate_fn = callback_selection.get("validate_fn")
+    if validate_fn is None:
+        logger.info("advance_ready_for_patch_task: no validate_fn — leaving in patching task_id=%s", task_id)
+        _append_notion_page_comment(
+            task_id,
+            f"[{ts}] No validation callback available. Task stays in patching for manual validation.",
+        )
+        return _result(True, "validation", "no validate_fn available", "patching")
+
+    # --- 5. Run validation ---
+    val_ok, val_summary = _run_callback(prepared_task, validate_fn, "validate")
+
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(
+            "patch_validation_completed",
+            task_id=task_id,
+            task_title=task_title,
+            details={"passed": val_ok, "summary": val_summary},
+        )
+    except Exception:
+        pass
+
+    if not val_ok:
+        logger.warning(
+            "advance_ready_for_patch_task: validation failed task_id=%s summary=%s",
+            task_id, val_summary,
+        )
+        _append_notion_page_comment(
+            task_id,
+            f"[{ts}] {summarize_validation_result(False, val_summary)}\n"
+            "Task stays in patching — manual fix or re-investigation required.",
+        )
+        try:
+            from app.services.task_test_gate import record_test_result, test_outcome_from_validation
+            outcome, summary = test_outcome_from_validation(True, False, val_summary)
+            record_test_result(task_id, outcome, summary=summary, advance_on_pass=False, current_status="patching")
+        except Exception:
+            pass
+        return _result(False, "validation", val_summary, "patching")
+
+    logger.info("advance_ready_for_patch_task: validation passed task_id=%s", task_id)
+
+    # --- 6. Record test gate and advance to awaiting-deploy-approval ---
+    try:
+        from app.services.task_test_gate import record_test_result, test_outcome_from_validation
+        outcome, summary = test_outcome_from_validation(True, True, val_summary)
+        gate = record_test_result(
+            task_id, outcome,
+            summary=summary,
+            advance_on_pass=True,
+            current_status="patching",
+        )
+        logger.info(
+            "advance_ready_for_patch_task: test gate task_id=%s advanced=%s",
+            task_id, gate.get("advanced"),
+        )
+    except Exception as exc:
+        logger.warning("advance_ready_for_patch_task: test gate failed task_id=%s: %s", task_id, exc)
+        update_notion_task_status(task_id, "awaiting-deploy-approval")
+
+    _append_notion_page_comment(
+        task_id,
+        f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
+        "Tests passed — waiting for human deploy approval via Telegram.",
+    )
+
+    # --- 7. Send deploy approval Telegram message ---
+    # Load sections from sidecar files (the investigation produced these earlier)
+    sections: dict[str, Any] = {}
+    try:
+        from app.services.cursor_handoff import _load_sections_from_sidecar
+        sections = _load_sections_from_sidecar(task_id)
+    except Exception:
+        pass
+
+    try:
+        from app.services.agent_telegram_approval import send_patch_deploy_approval
+        tg = send_patch_deploy_approval(
+            task_id, task_title,
+            test_summary=val_summary,
+            sections=sections,
+        )
+        logger.info(
+            "advance_ready_for_patch_task: send_patch_deploy_approval task_id=%s sent=%s",
+            task_id, tg.get("sent"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "advance_ready_for_patch_task: send_patch_deploy_approval failed task_id=%s: %s",
+            task_id, exc,
+        )
+
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(
+            "patch_advanced_to_deploy_approval",
+            task_id=task_id,
+            task_title=task_title,
+            details={"validation_summary": val_summary},
+        )
+    except Exception:
+        pass
+
+    return _result(True, "deploy_approval_sent", val_summary, "awaiting-deploy-approval")
 

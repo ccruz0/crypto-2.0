@@ -11,7 +11,9 @@ All functions return structured dicts (success/summary) and avoid raising where 
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -104,21 +106,27 @@ def _validate_markdown_links_exist(md_path: Path) -> tuple[bool, str]:
     """
     Validate that any *relative* markdown link targets in md_path exist on disk.
     Skips URLs and anchors.
+
+    Links are resolved against both the note's parent directory *and* the
+    repo root because OpenClaw often generates repo-root-relative paths
+    (e.g. ``docs/architecture/system-map.md``) inside notes that live
+    under ``docs/agents/bug-investigations/``.
     """
     content = md_path.read_text(encoding="utf-8")
     targets = _markdown_links(content)
+    root = _repo_root()
     for t in targets:
         if not t or "://" in t:
             continue
         if t.startswith("#"):
             continue
-        # Strip anchors from relative links: foo.md#section
         t_clean = t.split("#", 1)[0]
         if not t_clean:
             continue
-        resolved = (md_path.parent / t_clean).resolve()
-        if not resolved.exists():
-            return False, f"broken relative link target: {t} (resolved to {resolved.as_posix()})"
+        from_parent = (md_path.parent / t_clean).resolve()
+        from_root = (root / t_clean).resolve()
+        if not from_parent.exists() and not from_root.exists():
+            return False, f"broken relative link target: {t} (tried {from_parent.as_posix()} and {from_root.as_posix()})"
     return True, "ok"
 
 
@@ -303,14 +311,12 @@ def apply_documentation_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
         note_path = notes_dir / f"notion-task-{task_id}.md"
         idx_path = notes_dir / "README.md"
 
-        # Build relative links (from generated-notes/ directory) to existing docs.
         def rel_link(target_repo_path: str) -> str:
             target = (root / target_repo_path).resolve()
             try:
-                rel = target.relative_to(notes_dir)
+                return os.path.relpath(target, notes_dir.resolve())
             except Exception:
-                rel = Path(target_repo_path)
-            return rel.as_posix()
+                return target_repo_path
 
         relevant_docs = list(repo_area.get("relevant_docs") or [])
         relevant_runbooks = list(repo_area.get("relevant_runbooks") or [])
@@ -427,10 +433,9 @@ def apply_monitoring_triage_task(prepared_task: dict[str, Any]) -> dict[str, Any
         def rel_link(from_dir: Path, target_repo_path: str) -> str:
             target = (root / target_repo_path).resolve()
             try:
-                rel = target.relative_to(from_dir)
+                return os.path.relpath(target, from_dir.resolve())
             except Exception:
-                rel = Path(target_repo_path)
-            return rel.as_posix()
+                return target_repo_path
 
         likely_files = list(repo_area.get("likely_files") or [])
         relevant_docs = list(repo_area.get("relevant_docs") or [])
@@ -556,10 +561,9 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
         def rel_link(from_dir: Path, target_repo_path: str) -> str:
             target = (root / target_repo_path).resolve()
             try:
-                rel = target.relative_to(from_dir)
+                return os.path.relpath(target, from_dir.resolve())
             except Exception:
-                rel = Path(target_repo_path)
-            return rel.as_posix()
+                return target_repo_path
 
         likely_files = list(repo_area.get("likely_files") or [])
         relevant_docs = list(repo_area.get("relevant_docs") or [])
@@ -723,6 +727,17 @@ def _apply_via_openclaw(
             return fallback_fn(prepared_task)
         return {"success": False, "summary": "OpenClaw returned empty response"}
 
+    # Parse structured sections (gracefully returns None values for missing ones)
+    try:
+        from app.services.openclaw_client import parse_investigation_sections
+        sections = parse_investigation_sections(content)
+    except Exception:
+        sections = {}
+
+    # Stash sections on prepared_task for downstream metadata enrichment
+    if sections:
+        prepared_task["_openclaw_sections"] = sections
+
     root = _repo_root()
     out_dir = root / save_subdir
     _ensure_dir(out_dir)
@@ -738,6 +753,24 @@ def _apply_via_openclaw(
 
     note_path.write_text(note_contents, encoding="utf-8")
 
+    # Save parsed sections as JSON sidecar for downstream consumption
+    if sections:
+        sidecar_path = out_dir / f"{file_prefix}-{task_id}.sections.json"
+        sidecar_data = {
+            "task_id": task_id,
+            "title": title,
+            "source": "openclaw",
+            "sections": sections,
+        }
+        try:
+            sidecar_path.write_text(
+                json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            logger.info("Structured sections sidecar saved at %s", sidecar_path)
+        except Exception as e:
+            logger.warning("Failed to write sections sidecar for task %s: %s", task_id, e)
+
     idx_path = out_dir / "README.md"
     idx_line = f"- [{file_prefix} {task_id}: {title}]({file_prefix}-{task_id}.md)"
     if not idx_path.exists():
@@ -747,7 +780,7 @@ def _apply_via_openclaw(
 
     summary = content.strip()[:200]
     logger.info("OpenClaw analysis saved for task %s at %s (%d chars)", task_id, note_path, len(content))
-    return {"success": True, "summary": f"[OpenClaw] {summary}"}
+    return {"success": True, "summary": f"[OpenClaw] {summary}", "sections": sections}
 
 
 def _validate_openclaw_note(

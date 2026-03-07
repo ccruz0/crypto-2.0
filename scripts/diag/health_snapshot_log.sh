@@ -34,6 +34,13 @@ verify_label="$(echo "$verify_output" | tail -n 1)"
 [ -z "$verify_label" ] && verify_label="unknown"
 verify_exit="$(echo "$verify_exit" | tr -dc '0-9')"
 [ -z "$verify_exit" ] && verify_exit="0"
+# severity: one field for alerts/dashboards (OK | DEGRADED | FAIL)
+case "$verify_label" in
+  PASS) severity="OK" ;;
+  DEGRADED*) severity="DEGRADED" ;;
+  FAIL*) severity="FAIL" ;;
+  *) severity="unknown" ;;
+esac
 
 health_system="$(curl -sS --max-time 5 "$BASE/api/health/system" 2>/dev/null || echo "{}")"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -49,15 +56,16 @@ fi
 if command -v jq >/dev/null 2>&1 && [ -n "$tmp_sys" ] && [ -r "$tmp_sys" ]; then
   payload="$(jq -cn \
     --arg ts "$timestamp" \
+    --arg severity "$severity" \
     --argjson disk_pct "$disk_pct" \
     --argjson unhealthy "$unhealthy" \
     --argjson verify_exit "$verify_exit" \
     --arg verify_label "$verify_label" \
     --slurpfile sys "$tmp_sys" \
-    '{ts:$ts, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, global_status:($sys[0].global_status // "unknown"), market_data_status:($sys[0].market_data.status // "unknown"), market_updater_status:($sys[0].market_updater.status // "unknown"), system:$sys[0]}')"
+    '{ts:$ts, severity:$severity, disk_pct:$disk_pct, unhealthy:$unhealthy, verify_exit:$verify_exit, verify_label:$verify_label, global_status:($sys[0].global_status // "unknown"), market_data_status:($sys[0].market_data.status // "unknown"), market_updater_status:($sys[0].market_updater.status // "unknown"), market_updater_age_minutes:($sys[0].market_updater.last_heartbeat_age_minutes // null), system:$sys[0]}')"
   echo "$payload" >> "$LOG_FILE"
   rm -f "$tmp_sys"
 else
-  echo "{\"ts\":\"$timestamp\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"global_status\":\"unknown\",\"market_data_status\":\"unknown\",\"market_updater_status\":\"unknown\",\"system\":{}}" >> "$LOG_FILE"
+  echo "{\"ts\":\"$timestamp\",\"severity\":\"$severity\",\"disk_pct\":$disk_pct,\"unhealthy\":$unhealthy,\"verify_exit\":$verify_exit,\"verify_label\":\"$verify_label\",\"global_status\":\"unknown\",\"market_data_status\":\"unknown\",\"market_updater_status\":\"unknown\",\"market_updater_age_minutes\":null,\"system\":{}}" >> "$LOG_FILE"
   [ -n "$tmp_sys" ] && rm -f "$tmp_sys"
 fi

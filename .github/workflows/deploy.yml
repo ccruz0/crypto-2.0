@@ -1,4 +1,7 @@
-name: Deploy to AWS EC2
+# LEGACY: Deploy via SSH/rsync. Not triggered on push.
+# Default deploy on push to main is "Deploy to AWS EC2 (Session Manager)" (deploy_session_manager.yml).
+# Use this workflow only for manual SSH-based deploy (e.g. when SSM is unavailable).
+name: Deploy to AWS EC2 (Legacy SSH)
 
 # ============================================
 # DEPLOYMENT WORKFLOW NOTES
@@ -19,9 +22,7 @@ name: Deploy to AWS EC2
 # ============================================
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,14 +34,15 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # No GitHub Environment is used; use Repository Variables (Settings → Secrets and variables → Actions → Variables).
     env:
       # EC2_HOST must be atp-rebuild-2026 (PROD): dashboard.hilovivo.com or its Elastic IP. Do not use crypto 2.0.
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ubuntu
       EC2_KEY: ${{ secrets.EC2_KEY }}
-      # Backend configuration (required - set in repository secrets)
-      PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
-      API_BASE_URL: ${{ secrets.API_BASE_URL }}
+      # PUBLIC_BASE_URL / API_BASE_URL: set in Repository Variables (Actions → Variables). Required so the deploy step and backend know the public API endpoint.
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
     
     steps:
     - name: Checkout API
@@ -75,8 +77,18 @@ jobs:
     - name: Audit trading pairs
       run: |
         python3 scripts/audit_pairs_focused.py || exit 1
+
+    - name: Debug base urls present
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${PUBLIC_BASE_URL:-}" ]]; then echo "PUBLIC_BASE_URL=SET"; else echo "PUBLIC_BASE_URL=MISSING"; fi
+        if [[ -n "${API_BASE_URL:-}" ]]; then echo "API_BASE_URL=SET"; else echo "API_BASE_URL=MISSING"; fi
       
     - name: Deploy to EC2
+      env:
+        PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+        API_BASE_URL: ${{ vars.API_BASE_URL }}
       run: |
         set -e  # Exit on any error
         

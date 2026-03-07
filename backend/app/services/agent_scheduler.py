@@ -57,32 +57,22 @@ def _task_and_area_text(prepared_bundle: dict[str, Any]) -> str:
 
 def is_task_already_in_flight(task_id: str) -> bool:
     """
-    True if this task already has an approval record and is pending, running, or completed.
-    Used to avoid sending duplicate approval requests or re-executing.
+    True if this task already has an approval record — prevents the main
+    scheduler from re-sending approval requests or re-processing tasks that
+    are already tracked by the approval/execution lifecycle.
+
+    The retry mechanism (``retry_approved_failed_tasks``) handles re-execution
+    of approved-but-failed tasks separately with its own retry limit.
     """
     if not (task_id or "").strip():
         return False
     try:
-        from app.services.agent_telegram_approval import (
-            get_task_approval_decision,
-            get_task_execution_state,
-            EXECUTION_STATUS_RUNNING,
-            EXECUTION_STATUS_COMPLETED,
-        )
+        from app.services.agent_telegram_approval import get_task_approval_decision
     except Exception as e:
         logger.warning("agent_scheduler: is_task_already_in_flight import failed %s", e)
         return False
     decision = get_task_approval_decision(task_id)
-    if not decision:
-        return False
-    status = (decision.get("status") or "").lower()
-    if status == "pending":
-        return True
-    exec_state = get_task_execution_state(task_id)
-    if not exec_state:
-        return False
-    ex_status = (exec_state.get("execution_status") or "").lower()
-    if ex_status == EXECUTION_STATUS_RUNNING or ex_status == EXECUTION_STATUS_COMPLETED:
+    if decision:
         return True
     return False
 
@@ -294,6 +284,56 @@ def retry_approved_failed_tasks() -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Extended lifecycle continuation: ready-for-patch → patching → validation
+# ---------------------------------------------------------------------------
+
+
+def continue_ready_for_patch_tasks(*, max_tasks: int = 3) -> list[dict[str, Any]]:
+    """Pick up tasks in ``ready-for-patch`` and advance them through validation.
+
+    Called once per scheduler loop iteration, after the main intake cycle.
+    Queries Notion for tasks whose status is ``ready-for-patch`` and runs
+    :func:`advance_ready_for_patch_task` for each (up to *max_tasks*).
+
+    Returns a list of per-task result dicts.  Never raises.
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+        from app.services.agent_task_executor import advance_ready_for_patch_task
+    except Exception as e:
+        logger.warning("continue_ready_for_patch_tasks: import failed %s", e)
+        return []
+
+    tasks = get_tasks_by_status(["ready-for-patch", "Ready for Patch"], max_results=max_tasks)
+    if not tasks:
+        return []
+
+    logger.info("continue_ready_for_patch_tasks: found %d task(s) in ready-for-patch", len(tasks))
+
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        tid = str(task.get("id") or "").strip()
+        title = str(task.get("task") or "").strip()
+        if not tid:
+            continue
+        logger.info("continue_ready_for_patch_tasks: advancing task_id=%s title=%r", tid, title)
+        _log_event("scheduler_patch_continuation", task_id=tid, task_title=title, details={})
+        try:
+            r = advance_ready_for_patch_task(tid)
+            logger.info(
+                "continue_ready_for_patch_tasks: task_id=%s ok=%s stage=%s final_status=%s",
+                tid, r.get("ok"), r.get("stage"), r.get("final_status"),
+            )
+            results.append(r)
+        except Exception as exc:
+            logger.error(
+                "continue_ready_for_patch_tasks: task_id=%s raised %s", tid, exc, exc_info=True,
+            )
+            results.append({"task_id": tid, "ok": False, "stage": "error", "summary": str(exc)})
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Background loop: runs run_agent_scheduler_cycle() periodically
 # ---------------------------------------------------------------------------
 
@@ -353,6 +393,17 @@ async def start_agent_scheduler_loop() -> None:
                 )
         except Exception as e:
             logger.error("agent_scheduler_loop: retry_approved_failed_tasks raised %s", e, exc_info=True)
+
+        try:
+            patch_results = await loop.run_in_executor(None, continue_ready_for_patch_tasks)
+            if patch_results:
+                logger.info(
+                    "scheduler_patch_continuation_done count=%d advanced=%d",
+                    len(patch_results),
+                    sum(1 for r in patch_results if r.get("ok")),
+                )
+        except Exception as e:
+            logger.error("agent_scheduler_loop: continue_ready_for_patch_tasks raised %s", e, exc_info=True)
 
         try:
             from app.services.agent_anomaly_detector import run_anomaly_detection_cycle

@@ -1,6 +1,11 @@
 """Database model for exchange orders"""
-from sqlalchemy import Column, Integer, String, Float, DateTime, Numeric, Enum as SQLEnum
+from decimal import Decimal
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import Integer, String, DateTime, Numeric, Enum as SQLEnum
 from sqlalchemy.sql import func
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import ENUM
 from app.database import Base
 import enum
@@ -27,42 +32,46 @@ class OrderStatusEnum(str, enum.Enum):
 class ExchangeOrder(Base):
     """Model for storing exchange orders from Crypto.com"""
     __tablename__ = "exchange_orders"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    exchange_order_id = Column(String(100), nullable=False, unique=True, index=True)
-    client_oid = Column(String(100), nullable=True, index=True)
-    symbol = Column(String(50), nullable=False, index=True)
-    side = Column(SQLEnum(OrderSideEnum, name="order_side_enum"), nullable=False)
-    order_type = Column(String(20), nullable=True)  # LIMIT, MARKET, etc.
-    status = Column(SQLEnum(OrderStatusEnum, name="order_status_enum"), nullable=False, default=OrderStatusEnum.NEW, index=True)
-    
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    exchange_order_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    client_oid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    side: Mapped[OrderSideEnum] = mapped_column(SQLEnum(OrderSideEnum, name="order_side_enum"), nullable=False)
+    order_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # LIMIT, MARKET, etc.
+    status: Mapped[OrderStatusEnum] = mapped_column(
+        SQLEnum(OrderStatusEnum, name="order_status_enum"), nullable=False, default=OrderStatusEnum.NEW, index=True
+    )
+
     # Price and quantity
-    price = Column(Numeric(20, 8), nullable=True)
-    quantity = Column(Numeric(20, 8), nullable=False)
-    cumulative_quantity = Column(Numeric(20, 8), nullable=True, default=0)
-    cumulative_value = Column(Numeric(20, 8), nullable=True, default=0)
-    avg_price = Column(Numeric(20, 8), nullable=True)
-    trigger_condition = Column(Numeric(20, 8), nullable=True)  # Trigger condition for stop/limit orders
-    
+    price: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    cumulative_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True, default=0)
+    cumulative_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True, default=0)
+    avg_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
+    trigger_condition: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
+
     # Timestamps from exchange
-    exchange_create_time = Column(DateTime(timezone=True), nullable=True)
-    exchange_update_time = Column(DateTime(timezone=True), nullable=True)
-    
+    exchange_create_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    exchange_update_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Local timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)
-    imported_at = Column(DateTime(timezone=True), nullable=True, index=True)  # Timestamp when order was imported from CSV
-    
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
+    )
+    imported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
     # Link to trade signal (optional)
-    trade_signal_id = Column(Integer, nullable=True, index=True)
-    
+    trade_signal_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+
     # OCO (One-Cancels-Other) linking for SL/TP pairs
-    parent_order_id = Column(String(100), nullable=True, index=True)  # Parent order that triggered SL/TP creation
-    oco_group_id = Column(String(100), nullable=True, index=True)  # Group ID to link SL and TP orders together
-    order_role = Column(String(20), nullable=True)  # PARENT, STOP_LOSS, TAKE_PROFIT
+    parent_order_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    oco_group_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    order_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # When we sent Telegram "ORDER EXECUTED" for this order (avoids history-sync spam and duplicates)
-    execution_notified_at = Column(DateTime(timezone=True), nullable=True)
+    execution_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self):
         return f"<ExchangeOrder(exchange_order_id={self.exchange_order_id}, symbol={self.symbol}, side={self.side}, status={self.status})>"

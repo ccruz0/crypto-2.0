@@ -1,0 +1,18 @@
+# Dependabot: actualizaciones de dependencias (recomendación de auditoría GitHub)
+# Ver: docs/audit/GITHUB_REPOSITORY_AUDIT.md
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"

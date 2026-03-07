@@ -66,6 +66,21 @@ automated-trading-platform/
 
 **Note**: Production services run in Docker Compose containers using `--profile aws`, managed via SSH on AWS EC2. Local development uses `--profile local`. See [DEPLOYMENT_POLICY.md](DEPLOYMENT_POLICY.md) and [docs/contracts/deployment_aws.md](docs/contracts/deployment_aws.md) for details.
 
+## Documentation
+
+**GitHub is the single source of truth for all technical documentation.** All architecture, runbooks, and system documentation live inside the [**/docs**](docs/) directory.
+
+- **[docs/README.md](docs/README.md)** — Index of all documentation and directory structure.
+- **architecture** — [System map](docs/architecture/system-map.md) (start here for agents), [System overview](docs/architecture/system-overview.md), components, data flow.
+- **infrastructure** — [AWS setup](docs/infrastructure/aws-setup.md), [Docker setup](docs/infrastructure/docker-setup.md).
+- **runbooks** — [Deploy](docs/runbooks/deploy.md), [Restart services](docs/runbooks/restart-services.md), and [runbook index](docs/aws/RUNBOOK_INDEX.md).
+- **integrations** — [Crypto.com API](docs/integrations/crypto-api.md) and related.
+- **operations** — [Monitoring](docs/operations/monitoring.md) and health checks.
+- **agents** — [Agent context](docs/agents/context.md), [Task system](docs/agents/task-system.md), [README](docs/agents/README.md) — for Cursor, OpenClaw, and autonomous agents.
+- **decision-log** — [Record of decisions](docs/decision-log/README.md) (why we chose X, consequences).
+
+Notion is used for projects, tasks, and decisions and may reference this repo. Cursor is used for development; OpenClaw for execution — both read and update docs here.
+
 ## Getting Started
 
 ### Production (AWS Only)

@@ -4769,6 +4769,23 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             except Exception as approval_err:
                 logger.error(f"[TG][APPROVAL] Error handling {_action} callback: {approval_err}", exc_info=True)
                 send_command_response(chat_id, f"❌ Error processing {_action}: {str(approval_err)[:200]}")
+        elif callback_data.startswith("patch_approve:") or callback_data.startswith("deploy_approve:") or callback_data.startswith("task_reject:") or callback_data.startswith("view_report:") or callback_data.startswith("smoke_check:"):
+            if callback_data.startswith("patch_approve:"):
+                _action = "approve_patch"
+            elif callback_data.startswith("deploy_approve:"):
+                _action = "approve_deploy"
+            elif callback_data.startswith("task_reject:"):
+                _action = "reject"
+            elif callback_data.startswith("smoke_check:"):
+                _action = "smoke_check"
+            else:
+                _action = "view_report"
+            logger.info(f"[TG][EXT_APPROVAL] Routing callback_data='{callback_data}' action={_action} chat_id={chat_id} user_id={user_id}")
+            try:
+                _handle_extended_approval_callback(chat_id, user_id, username, callback_data, _action, message_id=message_id)
+            except Exception as ext_err:
+                logger.error(f"[TG][EXT_APPROVAL] Error handling {_action} callback: {ext_err}", exc_info=True)
+                send_command_response(chat_id, f"❌ Error processing {_action}: {str(ext_err)[:200]}")
         else:
             logger.warning(f"[TG] Unknown callback_data: {callback_data}")
             send_command_response(chat_id, f"❓ Unknown command: {callback_data}")
@@ -5172,6 +5189,277 @@ def _handle_agent_approval_callback(
             return
         logger.info(f"[TG][APPROVAL] Denied task_id={task_id} by {who}")
         _edit_approval_card(chat_id, message_id, f"❌ <b>Denied</b> by {who}\nExecution will not run.", task_id)
+
+
+def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
+    """Check whether a task's test status allows deploy approval.
+
+    Reads the ``Test Status`` metadata from Notion.  Returns
+    ``(allowed, reason)`` where *allowed* is True only when the test
+    status clearly indicates ``passed``.
+
+    Legacy tasks (status in the legacy lifecycle set) bypass the gate
+    so existing flows are not disrupted.
+    """
+    try:
+        from app.services.notion_task_reader import get_notion_task_by_id
+        task = get_notion_task_by_id(task_id)
+    except Exception as exc:
+        logger.warning("[DEPLOY_GATE] failed to read task page task_id=%s: %s", task_id, exc)
+        return False, "unable to read task metadata from Notion"
+
+    if task is None:
+        return False, "task not found in Notion"
+
+    current_status = (task.get("status") or "").strip().lower()
+
+    legacy_statuses = {"planned", "in-progress", "testing", "deployed"}
+    if current_status in legacy_statuses:
+        return True, f"legacy lifecycle (status={current_status}) — gate bypassed"
+
+    test_status_raw = (task.get("test_status") or "").strip()
+    if not test_status_raw:
+        return False, "Test Status is empty — tests must pass before deploy"
+
+    test_status_lower = test_status_raw.lower()
+
+    if test_status_lower.startswith("passed"):
+        return True, f"tests passed ({test_status_raw[:80]})"
+
+    if test_status_lower.startswith("failed"):
+        return False, f"tests failed ({test_status_raw[:80]})"
+
+    if test_status_lower.startswith("partial"):
+        return False, f"tests partial ({test_status_raw[:80]})"
+
+    if test_status_lower.startswith("not-run") or test_status_lower.startswith("not run"):
+        return False, f"tests not run ({test_status_raw[:80]})"
+
+    if "passed" in test_status_lower:
+        return True, f"tests passed ({test_status_raw[:80]})"
+
+    return False, f"unrecognised test status: {test_status_raw[:80]}"
+
+
+def _handle_extended_approval_callback(
+    chat_id: str,
+    user_id: str,
+    username: str,
+    callback_data: str,
+    action: str,
+    message_id: Optional[int] = None,
+) -> None:
+    """Handle extended lifecycle approval actions: approve_patch, approve_deploy, reject, view_report."""
+    logger.info(
+        "[TG][EXT_APPROVAL] action=%s callback_data=%s chat_id=%s user_id=%s message_id=%s",
+        action, callback_data[:60], chat_id, user_id, message_id,
+    )
+    try:
+        from app.services.agent_telegram_approval import (
+            PREFIX_APPROVE_PATCH,
+            PREFIX_APPROVE_DEPLOY,
+            PREFIX_REJECT,
+            PREFIX_VIEW_REPORT,
+            PREFIX_SMOKE_CHECK,
+            get_openclaw_report_for_task,
+        )
+    except ImportError as imp_err:
+        logger.error("[TG][EXT_APPROVAL] import failed: %s", imp_err, exc_info=True)
+        send_command_response(chat_id, "❌ Extended approval module unavailable.")
+        return
+
+    # Extract task_id from callback_data
+    task_id = ""
+    for prefix in (PREFIX_APPROVE_PATCH, PREFIX_APPROVE_DEPLOY, PREFIX_REJECT, PREFIX_VIEW_REPORT, PREFIX_SMOKE_CHECK):
+        if callback_data.startswith(prefix):
+            task_id = callback_data[len(prefix):].strip()
+            break
+    if not task_id:
+        logger.warning("[TG][EXT_APPROVAL] missing task_id in callback_data=%s", callback_data)
+        send_command_response(chat_id, "❌ Invalid callback (missing task_id).")
+        return
+
+    who = username or user_id or "unknown"
+
+    if action == "view_report":
+        report_html = get_openclaw_report_for_task(task_id)
+        send_command_response(chat_id, f"📋 <b>OpenClaw report</b>\n\n{report_html[:3800]}")
+        return
+
+    # Actions that change Notion status
+    try:
+        from app.services.notion_tasks import (
+            TASK_STATUS_READY_FOR_PATCH,
+            TASK_STATUS_DEPLOYING,
+            TASK_STATUS_REJECTED,
+            update_notion_task_status,
+        )
+    except ImportError as imp_err:
+        logger.error("[TG][EXT_APPROVAL] notion_tasks import failed: %s", imp_err, exc_info=True)
+        send_command_response(chat_id, "❌ Status update module unavailable.")
+        return
+
+    if action == "approve_patch":
+        ok = update_notion_task_status(task_id, TASK_STATUS_READY_FOR_PATCH,
+                                       append_comment=f"Patch approved by {who} via Telegram.")
+        if ok:
+            logger.info("[TG][EXT_APPROVAL] task %s → ready-for-patch by %s", task_id, who)
+            _edit_approval_card(chat_id, message_id,
+                                f"✅ <b>Patch approved</b> by {who}\nTask moved to <b>ready-for-patch</b>.", task_id)
+        else:
+            logger.warning("[TG][EXT_APPROVAL] Notion status update failed task_id=%s", task_id)
+            _edit_approval_card(chat_id, message_id,
+                                f"⚠️ Patch approved by {who} but Notion status update failed.", task_id)
+
+        # Best-effort: ensure a Cursor handoff prompt exists for this task
+        try:
+            from app.services.cursor_handoff import generate_cursor_handoff
+            handoff = generate_cursor_handoff({"task": {"id": task_id, "task": ""}, "_openclaw_sections": {}})
+            if handoff.get("success"):
+                logger.info("[TG][EXT_APPROVAL] Cursor handoff ensured for task %s", task_id)
+        except Exception as handoff_err:
+            logger.debug("[TG][EXT_APPROVAL] Cursor handoff generation skipped: %s", handoff_err)
+
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("patch_approved", task_id=task_id, details={"approved_by": who, "notion_updated": ok})
+        except Exception:
+            pass
+        return
+
+    if action == "approve_deploy":
+        # --- Deploy gate: require passing test status ---
+        gate_passed, gate_reason = _check_deploy_test_gate(task_id)
+        if not gate_passed:
+            logger.info(
+                "[TG][EXT_APPROVAL] deploy blocked by test gate task_id=%s reason=%s who=%s",
+                task_id, gate_reason, who,
+            )
+            send_command_response(
+                chat_id,
+                f"🚫 <b>Deploy blocked</b>\n\n"
+                f"Task <code>{task_id[:12]}</code> cannot be deployed.\n"
+                f"<b>Reason:</b> {gate_reason}\n\n"
+                f"Tests must pass before deploy approval. "
+                f"Check the task's <b>Test Status</b> in Notion or re-run tests.",
+            )
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event("deploy_blocked_by_test_gate", task_id=task_id,
+                                details={"who": who, "reason": gate_reason})
+            except Exception:
+                pass
+            return
+
+        ok = update_notion_task_status(task_id, TASK_STATUS_DEPLOYING,
+                                       append_comment=f"Deploy approved by {who} via Telegram. (Test gate: {gate_reason})")
+        if ok:
+            logger.info("[TG][EXT_APPROVAL] task %s → deploying by %s", task_id, who)
+            _edit_approval_card(chat_id, message_id,
+                                f"🚀 <b>Deploy approved</b> by {who}\nTask moved to <b>deploying</b>.", task_id)
+        else:
+            logger.warning("[TG][EXT_APPROVAL] Notion status update failed task_id=%s", task_id)
+            _edit_approval_card(chat_id, message_id,
+                                f"⚠️ Deploy approved by {who} but Notion status update failed.", task_id)
+
+        # --- Trigger real deployment via GitHub Actions ---
+        deploy_result: dict = {}
+        try:
+            from app.services.deploy_trigger import trigger_deploy_workflow
+            deploy_result = trigger_deploy_workflow(task_id=task_id, triggered_by=who)
+            if deploy_result.get("ok"):
+                logger.info(
+                    "[TG][EXT_APPROVAL] deploy workflow triggered task_id=%s summary=%s",
+                    task_id, deploy_result.get("summary"),
+                )
+                send_command_response(
+                    chat_id,
+                    f"⚙️ <b>Deploy triggered</b>\n\n"
+                    f"{deploy_result.get('summary', '')}\n\n"
+                    f"Use the <b>Smoke Check</b> button after ~5 min to verify.",
+                )
+            else:
+                error = deploy_result.get("error") or deploy_result.get("summary") or "unknown error"
+                logger.error(
+                    "[TG][EXT_APPROVAL] deploy trigger FAILED task_id=%s error=%s",
+                    task_id, error,
+                )
+                send_command_response(
+                    chat_id,
+                    f"⚠️ <b>Deploy trigger failed</b>\n\n"
+                    f"Task is in <b>deploying</b> but the workflow could not be dispatched.\n"
+                    f"<b>Error:</b> <code>{str(error)[:300]}</code>\n\n"
+                    f"You can trigger the deploy manually from GitHub Actions.",
+                )
+        except Exception as deploy_exc:
+            logger.error(
+                "[TG][EXT_APPROVAL] deploy trigger raised task_id=%s: %s",
+                task_id, deploy_exc, exc_info=True,
+            )
+            send_command_response(
+                chat_id,
+                f"⚠️ <b>Deploy trigger error</b>\n\n"
+                f"Task is in <b>deploying</b> but an error occurred: <code>{str(deploy_exc)[:300]}</code>\n\n"
+                f"You can trigger the deploy manually from GitHub Actions.",
+            )
+
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("deploy_approved", task_id=task_id, details={
+                "approved_by": who,
+                "notion_updated": ok,
+                "deploy_triggered": deploy_result.get("ok", False),
+                "deploy_summary": deploy_result.get("summary", ""),
+            })
+        except Exception:
+            pass
+        return
+
+    if action == "smoke_check":
+        send_command_response(chat_id, f"🔍 Running post-deploy smoke check for task <code>{task_id[:12]}</code>…")
+        try:
+            from app.services.deploy_smoke_check import (
+                run_and_record_smoke_check,
+                format_smoke_result_for_telegram,
+            )
+            smoke = run_and_record_smoke_check(task_id, advance_on_pass=True, current_status="deploying")
+            report = format_smoke_result_for_telegram(smoke)
+            send_command_response(chat_id, report)
+            logger.info(
+                "[TG][EXT_APPROVAL] smoke check completed task_id=%s outcome=%s",
+                task_id, smoke.get("outcome"),
+            )
+        except Exception as smoke_err:
+            logger.error("[TG][EXT_APPROVAL] smoke check failed task_id=%s: %s", task_id, smoke_err, exc_info=True)
+            send_command_response(chat_id, f"❌ Smoke check error: {str(smoke_err)[:200]}")
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("smoke_check_triggered", task_id=task_id, details={"triggered_by": who, "source": "telegram"})
+        except Exception:
+            pass
+        return
+
+    if action == "reject":
+        ok = update_notion_task_status(task_id, TASK_STATUS_REJECTED,
+                                       append_comment=f"Task rejected by {who} via Telegram.")
+        if ok:
+            logger.info("[TG][EXT_APPROVAL] task %s → rejected by %s", task_id, who)
+            _edit_approval_card(chat_id, message_id,
+                                f"❌ <b>Rejected</b> by {who}\nTask marked as <b>rejected</b>.", task_id)
+        else:
+            logger.warning("[TG][EXT_APPROVAL] Notion status update failed task_id=%s", task_id)
+            _edit_approval_card(chat_id, message_id,
+                                f"⚠️ Rejected by {who} but Notion status update failed.", task_id)
+
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("task_rejected", task_id=task_id, details={"rejected_by": who, "notion_updated": ok})
+        except Exception:
+            pass
+        return
+
+    logger.warning("[TG][EXT_APPROVAL] unrecognised action=%s task_id=%s", action, task_id)
+    send_command_response(chat_id, f"❓ Unknown action: {action}")
 
 
 def _handle_setting_callback(chat_id: str, callback_data: str, message_id: Optional[int], db: Optional[Session]) -> None:

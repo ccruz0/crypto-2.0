@@ -1,0 +1,46 @@
+---
+description: EC2 production setup — nginx, Docker profile aws, dashboard.hilovivo.com. Use when editing deployment, nginx, or runbooks for the AWS instance.
+globs: 
+  - "**/docker-compose*.yml"
+  - "**/nginx*.conf"
+  - "**/sites-available/**"
+  - "docs/runbooks/**"
+  - "docs/aws/**"
+---
+
+# EC2 / Nginx / Dashboard production (crypto-2.0 / ATP)
+
+You are working on repo "crypto-2.0" (Automated Trading Platform) deployed on an AWS EC2 Ubuntu 24.04 instance behind nginx at https://dashboard.hilovivo.com.
+
+**Goal:** Make the platform fully operational in production:
+- Frontend served at / (dashboard.hilovivo.com)
+- Backend served at /api/
+- Docker Compose stack runs reliably using profile "aws"
+- nginx reverse proxy routes correctly to local loopback ports
+- Provide a verification checklist and small scripts/runbooks to reproduce and debug
+
+**Hard constraints:**
+- Do NOT expose backend/db ports publicly. Bind to 127.0.0.1 only.
+- Do NOT broaden inbound security group rules; keep inbound minimal.
+- Outbound must allow apt/docker pulls (80/443 + DNS or all outbound).
+- Prefer minimal diffs; do not rewrite the whole repo.
+- Never assume ports: read docker-compose.yml and confirm via `ss -tlnp`.
+- Always include `cd` before commands when referencing a directory.
+
+**Inbound vs Outbound (not contradictory):**
+- **Inbound:** minimal — only what you use (SSH from your IP, 80/443 if serving web).
+- **Outbound:** allow egress so the instance can reach apt/Ubuntu, Docker Hub, etc. (e.g. "All traffic 0.0.0.0/0" or at least 80/443 + DNS). Blocking outbound breaks apt update and installs.
+
+**What to do when changing deployment/nginx:**
+1. Inspect docker-compose.yml: AWS profile services, host ports for frontend-aws and backend-aws (expected 127.0.0.1:3000 and 127.0.0.1:8002), health endpoints.
+2. Create/update nginx site config for dashboard.hilovivo.com: "/" -> frontend port, "/api/" -> backend port; required proxy headers; Upgrade/Connection for websocket; proxy_read_timeout 60s.
+3. Update production verification runbook: commands to bring stack up, confirm listeners, curl locally and public domain, view logs.
+4. Update troubleshooting: docker "no service selected" (profile flags), nginx default page (nginx -T to find active site), backend works locally but not via domain (path prefix and location ordering), apt connectivity (SG outbound vs route/NAT).
+
+**Deliverables when making changes:**
+- Exact file(s) to change and minimal diffs
+- Exact nginx config content
+- Runbook under docs/runbooks/ with verification and troubleshooting
+- Definition of Done checklist with objective tests
+
+Always start by reading docker-compose.yml and confirming real ports and service names; then propose minimal changes and verification commands.

@@ -1,0 +1,55 @@
+---
+description: OpenClaw must use same-origin WebSocket URLs behind /openclaw/. Never hardcode localhost/ports in code or examples.
+globs:
+  - "docs/openclaw/**"
+  - "scripts/openclaw/**"
+  - "**/reference-frontend/**"
+  - "**/openclaw/**"
+---
+
+# OpenClaw WebSocket rule (same-origin)
+
+Production serves OpenClaw under:
+
+- https://dashboard.hilovivo.com/openclaw/
+- WebSocket path: /openclaw/ws (proxied by Nginx)
+
+## Forbidden (code and examples)
+
+Do not add or suggest any of these in frontend or reference code:
+
+- `ws://localhost...`
+- `ws://127.0.0.1...`
+- Any hardcoded host/port for OpenClaw WS (e.g. `:8081`, `:19001`)
+- `new WebSocket("ws://...")` where the URL is a fixed string with host/port
+
+Local dev overrides must be done via env vars only, never hardcoded in code.
+
+## Required (same-origin)
+
+**Preferred:** use a helper with env override + same-origin fallback:
+
+```ts
+getOpenClawWsUrl()
+```
+
+**Allowed inline pattern (browser context):**
+
+```ts
+const proto = location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${proto}//${location.host}/openclaw/ws`;
+```
+
+**Env override (local dev only):**
+
+- Next.js: `NEXT_PUBLIC_OPENCLAW_WS_URL`
+- Vite: `VITE_OPENCLAW_WS_URL`
+
+If set, the helper may return the env value. If not set, it must derive the URL from `location` and `/openclaw/ws`.
+
+## Cursor instructions
+
+- Never introduce hardcoded localhost/ports for OpenClaw WebSocket in code or docs examples.
+- Always route WebSocket through the same origin using `/openclaw/ws`.
+- Assume OpenClaw is reverse-proxied under `/openclaw/`.
+- Prefer env override first (for local dev), then same-origin fallback.

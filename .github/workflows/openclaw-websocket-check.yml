@@ -1,0 +1,21 @@
+name: OpenClaw WebSocket Rule
+
+on:
+  pull_request:
+    paths:
+      - "docs/openclaw/**"
+      - "scripts/openclaw/**"
+      - "**/reference-frontend/**"
+      - "**/openclaw/**"
+
+jobs:
+  websocket-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run OpenClaw WebSocket rule
+        run: |
+          bash scripts/checks/check-openclaw-websocket.sh

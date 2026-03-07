@@ -88,6 +88,8 @@ secrets/runtime.env
 var/
 venv.bak/
 venv/
+.venv/
+runtime-history/
 wheels/
 yarn-debug.log*
 yarn-error.log*

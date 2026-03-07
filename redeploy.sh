@@ -34,17 +34,39 @@ if [[ $COMMAND_ID == Error* ]] || [[ -z "$COMMAND_ID" ]]; then
 fi
 
 echo "✅ Command ID: $COMMAND_ID"
-echo "⏳ Waiting 120s for build and restart..."
-sleep 120
+echo "⏳ Waiting up to 300s for pull + build + restart (no-cache build can take 5–10 min)..."
+sleep 300
 
 echo ""
 echo "📊 Output:"
-aws ssm get-command-invocation \
+INVOCATION=$(aws ssm get-command-invocation \
     --command-id "$COMMAND_ID" \
     --instance-id "$INSTANCE_ID" \
     --region "$REGION" \
-    --query '[Status, StandardOutputContent, StandardErrorContent]' \
-    --output text 2>&1 | head -80
+    --output json 2>&1)
+STATUS=$(echo "$INVOCATION" | grep -o '"Status": "[^"]*"' | cut -d'"' -f4)
+DETAILS=$(echo "$INVOCATION" | grep -o '"StatusDetails": "[^"]*"' | cut -d'"' -f4)
+STDOUT=$(echo "$INVOCATION" | grep -o '"StandardOutputContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g')
+STDERR=$(echo "$INVOCATION" | grep -o '"StandardErrorContent": "[^"]*"' | cut -d'"' -f4 | sed 's/\\n/\n/g')
+
+echo "Status: $STATUS"
+[[ -n "$DETAILS" ]] && echo "Details: $DETAILS"
+[[ -n "$STDOUT" ]] && echo "Stdout: $STDOUT"
+[[ -n "$STDERR" ]] && echo "Stderr: $STDERR"
+
+if [[ "$STATUS" == "Undeliverable" ]] || [[ "$STATUS" == "Failed" ]]; then
+    echo ""
+    echo "⚠️  Deploy did not complete (SSM: $STATUS). If Undeliverable, the instance may be unreachable via SSM."
+    echo "   Run these commands on EC2 (SSH or new SSM session) to deploy manually:"
+    echo ""
+    echo "   cd $REPO_DIR"
+    echo "   git pull origin main"
+    echo "   docker compose --profile aws build --no-cache backend-aws frontend-aws"
+    echo "   docker compose --profile aws up -d"
+    echo "   sudo systemctl restart nginx"
+    echo ""
+    exit 1
+fi
 
 echo ""
-echo "🎉 Redeploy requested. Verify: curl -s https://dashboard.hilovivo.com/api/ping_fast"
+echo "🎉 Redeploy completed. Verify: curl -s https://dashboard.hilovivo.com/api/ping_fast"

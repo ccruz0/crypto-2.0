@@ -2,6 +2,8 @@
 Monitors trading signals and automatically creates orders when BUY/SELL conditions are met
 for coins with alert_enabled = true
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -10,6 +12,18 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple, cast
 from pathlib import Path
+
+
+def _to_float(val: Any) -> float:
+    """Convert ORM Column or value to float for type checker and runtime."""
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
@@ -32,7 +46,7 @@ from app.services.config_loader import get_alert_thresholds, load_config
 from app.services.order_position_service import calculate_portfolio_value_for_symbol
 # throttle_service may be absent in some deployments; run with throttling disabled if missing.
 try:
-    from app.services.throttle_service import (
+    from app.services.throttle_service import (  # pyright: ignore[reportMissingImports]
         LastSignalSnapshot,
         SignalThrottleConfig,
         build_strategy_key,
@@ -41,7 +55,7 @@ try:
         should_emit_signal,
         compute_config_hash,
     )
-    from app.services.throttle_service import reset_throttle_state
+    from app.services.throttle_service import reset_throttle_state  # pyright: ignore[reportMissingImports]
 except ModuleNotFoundError as e:
     if "app.services.throttle_service" not in str(e):
         raise
@@ -865,8 +879,8 @@ class SignalMonitorService:
         signal_exists: bool,
         alert_enabled: bool,
         trade_enabled: bool,
-        snapshot: Optional[LastSignalSnapshot],
-        throttle_config: SignalThrottleConfig,
+        snapshot: Optional[Any],
+        throttle_config: Any,
         now_utc: datetime,
         evaluation_id: str
     ) -> None:
@@ -1642,6 +1656,16 @@ class SignalMonitorService:
                     continue  # Continue with next coin even if one fails
         except Exception as e:
             logger.error(f"Error in monitor_signals: {e}", exc_info=True)
+            try:
+                from app.services.notion_tasks import create_bug_task
+                create_bug_task(
+                    title="Unexpected strategy exception",
+                    project="Crypto Trading",
+                    details=f"Error in monitor_signals: {str(e)[:500]}.",
+                )
+                logger.info("Trading failure triggered Notion bug task: Unexpected strategy exception")
+            except Exception as notion_err:
+                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
     
     async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem):
         """Async wrapper to run the synchronous signal check in a thread"""
@@ -3547,7 +3571,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=BUY emit={should_emit_telegram} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
+                                from app.services.order_intent_service import create_order_intent, update_order_intent_status  # pyright: ignore[reportMissingImports]
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -3789,6 +3813,16 @@ class SignalMonitorService:
                                                 )
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
+                                            try:
+                                                from app.services.notion_tasks import create_bug_task
+                                                create_bug_task(
+                                                    title="Order placement system failure",
+                                                    project="Crypto Trading",
+                                                    details=f"symbol={symbol} side=BUY error={error_msg[:300]}.",
+                                                )
+                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY)")
+                                            except Exception as notion_err:
+                                                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                                         else:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
@@ -3924,6 +3958,16 @@ class SignalMonitorService:
                                             )
                                         except Exception as store_err:
                                             logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
+                                        try:
+                                            from app.services.notion_tasks import create_bug_task
+                                            create_bug_task(
+                                                title="Order placement system failure",
+                                                project="Crypto Trading",
+                                                details=f"symbol={symbol} side=BUY exception: {error_msg[:300]}.",
+                                            )
+                                            logger.info("Trading failure triggered Notion bug task: Order placement system failure (BUY exception)")
+                                        except Exception as notion_err:
+                                            logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                             except Exception as orchestrator_err:
                                 # Orchestrator error - log but don't fail the signal
                                 logger.error(f"[ORCHESTRATOR] {symbol} BUY Orchestrator error: {orchestrator_err}", exc_info=True)
@@ -5563,7 +5607,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=SELL emit={should_emit_telegram_sell} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status
+                                from app.services.order_intent_service import create_order_intent, update_order_intent_status  # pyright: ignore[reportMissingImports]
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -5780,6 +5824,16 @@ class SignalMonitorService:
                                                 )
                                             except Exception as store_err:
                                                 logger.debug(f"Failed to store ORDER FAILED message: {store_err}")
+                                            try:
+                                                from app.services.notion_tasks import create_bug_task
+                                                create_bug_task(
+                                                    title="Order placement system failure",
+                                                    project="Crypto Trading",
+                                                    details=f"symbol={symbol} side=SELL error={error_msg[:300]}.",
+                                                )
+                                                logger.info("Trading failure triggered Notion bug task: Order placement system failure (SELL)")
+                                            except Exception as notion_err:
+                                                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
                                         else:
                                             # Order created successfully
                                             order_id = order_result.get("order_id")
@@ -6342,7 +6396,7 @@ class SignalMonitorService:
     async def _create_buy_order(self, db: Session, watchlist_item: WatchlistItem,  # pyright: ignore[reportGeneralTypeIssues]
                             current_price: float, res_up: float, res_down: float):
         """Create a BUY order automatically based on signal"""
-        symbol = normalize_symbol_for_exchange(watchlist_item.symbol)
+        symbol = normalize_symbol_for_exchange(str(getattr(watchlist_item, "symbol", "")))
         
         # Resolve strategy for event emission
         strategy_type, risk_approach = resolve_strategy_profile(symbol, db, watchlist_item)
@@ -6350,7 +6404,8 @@ class SignalMonitorService:
         
         # CRITICAL: Double-check trade_enabled flag before proceeding
         # This prevents order creation attempts when trade_enabled is False
-        if not getattr(watchlist_item, 'trade_enabled', False):
+        trade_enabled_val = bool(getattr(watchlist_item, "trade_enabled", False))
+        if not trade_enabled_val:
             logger.warning(
                 f"🚫 Blocked BUY order creation for {symbol}: trade_enabled=False. "
                 f"This function should not be called when trade is disabled."
@@ -6396,7 +6451,8 @@ class SignalMonitorService:
             return {"error": "trade_disabled", "error_type": "trade_disabled", "message": f"Trade is disabled for {symbol}"}
         
         # Validate that trade_amount_usd is configured - REQUIRED, no default
-        if not watchlist_item.trade_amount_usd or watchlist_item.trade_amount_usd <= 0:
+        trade_amount_val = _to_float(getattr(watchlist_item, "trade_amount_usd", None))
+        if trade_amount_val <= 0:
             error_message = f"⚠️ CONFIGURACIÓN REQUERIDA\n\nEl campo 'Amount USD' no está configurado para {symbol}.\n\nPor favor configura el campo 'Amount USD' en la Watchlist del Dashboard antes de crear órdenes automáticas."
             logger.error(f"Cannot create BUY order for {symbol}: trade_amount_usd not configured or invalid ({watchlist_item.trade_amount_usd})")
             
@@ -6406,11 +6462,11 @@ class SignalMonitorService:
             correlation_id = str(uuid.uuid4())
             decision_reason = make_skip(
                 reason_code=ReasonCode.INVALID_TRADE_AMOUNT.value,
-                message=f"Invalid trade amount for {symbol}. trade_amount_usd={watchlist_item.trade_amount_usd}.",
+                message=f"Invalid trade amount for {symbol}. trade_amount_usd={trade_amount_val}.",
                 context={
                     "symbol": symbol,
-                    "trade_enabled": getattr(watchlist_item, 'trade_enabled', False),
-                    "trade_amount_usd": watchlist_item.trade_amount_usd,
+                    "trade_enabled": trade_enabled_val,
+                    "trade_amount_usd": trade_amount_val,
                     "price": current_price,
                 },
                 source="precheck",
@@ -6446,11 +6502,11 @@ class SignalMonitorService:
             
             raise ValueError(error_message)
         
-        amount_usd = watchlist_item.trade_amount_usd
+        amount_usd = _to_float(getattr(watchlist_item, "trade_amount_usd", None))
         
         # Read trade_on_margin from database FIRST - CRITICAL for margin trading
         # This must be read BEFORE balance check to avoid blocking margin orders
-        user_wants_margin = watchlist_item.trade_on_margin or False
+        user_wants_margin = bool(getattr(watchlist_item, "trade_on_margin", False))
         
         # ========================================================================
         # VERIFICACIÓN PREVIA: Balance disponible antes de crear orden
@@ -6765,7 +6821,7 @@ class SignalMonitorService:
                     side="BUY",
                     price=current_price,
                     event_type="TRADE_BLOCKED",
-                    event_reason=block_reason,
+                    event_reason=block_reason or "blocked",
                     decision_reason=decision_reason,
                 )
                 # Send Telegram alert
@@ -6786,7 +6842,7 @@ class SignalMonitorService:
                 return None  # Block order
 
             try:
-                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
                 assert_exchange_mutation_allowed(db, "place_market_order_buy", symbol, None)
             except LiveTradingBlockedError:
                 return None
@@ -7006,14 +7062,14 @@ class SignalMonitorService:
                     # Record the failure
                     leverage_cache.record_leverage_failure(
                         symbol=symbol,
-                        attempted_leverage=leverage_value,
+                        attempted_leverage=leverage_value if leverage_value is not None else 1.0,
                         error_code=306
                     )
                     
                     # Get next leverage to try (reduced)
                     next_leverage = leverage_cache.get_next_try_leverage(
                         symbol=symbol,
-                        failed_leverage=leverage_value,
+                        failed_leverage=leverage_value if leverage_value is not None else 1.0,
                         min_leverage=1.0
                     )
                     
@@ -7248,10 +7304,10 @@ class SignalMonitorService:
                     from app.utils.decision_reason import make_fail, classify_exchange_error
                     import uuid
                     correlation_id = str(uuid.uuid4())
-                    reason_code = classify_exchange_error(error_msg)
+                    reason_code = classify_exchange_error(error_msg or "")
                     decision_reason = make_fail(
                         reason_code=reason_code,
-                        message=f"Buy order failed for {symbol}: {error_msg}",
+                        message=f"Buy order failed for {symbol}: {error_msg or ''}",
                         context={
                             "symbol": symbol,
                             "price": current_price,
@@ -7259,13 +7315,13 @@ class SignalMonitorService:
                             "use_margin": use_margin,
                             "leverage": leverage_value,
                             "dry_run": dry_run_mode,
-                            "trade_enabled": current_trade_enabled if current_trade_enabled is not None else getattr(watchlist_item, 'trade_enabled', None),
+                            "trade_enabled": current_trade_enabled if current_trade_enabled is not None else getattr(watchlist_item, "trade_enabled", None),
                         },
-                        exchange_error=error_msg,
+                        exchange_error=error_msg or "",
                         source="exchange",
                         correlation_id=correlation_id,
                     )
-                    logger.error(f"[DECISION] symbol={symbol} decision=FAILED reason={decision_reason.reason_code} exchange_error={error_msg[:200]}")
+                    logger.error(f"[DECISION] symbol={symbol} decision=FAILED reason={decision_reason.reason_code} exchange_error={(error_msg or '')[:200]}")
                     # Emit ORDER_FAILED event
                     _emit_lifecycle_event(
                         db=db,
@@ -7290,7 +7346,7 @@ class SignalMonitorService:
                             reason_code=decision_reason.reason_code,
                             reason_message=decision_reason.reason_message,
                             context_json=decision_reason.context,
-                            exchange_error_snippet=decision_reason.exchange_error_snippet,
+                            exchange_error_snippet=decision_reason.exchange_error,
                             correlation_id=decision_reason.correlation_id,
                         )
                     except Exception as update_err:
@@ -7298,7 +7354,7 @@ class SignalMonitorService:
                     
                     # Send Telegram notification about the error
                     try:
-                        error_details = error_msg
+                        error_details = error_msg or ""
                         if use_margin:
                             error_details += "\n\n⚠️ <b>MARGIN ORDER FAILED</b> - Insufficient margin balance available.\nThe account may be over-leveraged or margin trading may not be enabled."
                         
@@ -7334,8 +7390,9 @@ class SignalMonitorService:
 
             filled_price = None
             try:
-                if result.get("avg_price"):
-                    filled_price = float(result.get("avg_price"))
+                avg_price_val = result.get("avg_price")
+                if avg_price_val is not None:
+                    filled_price = _to_float(avg_price_val)
             except (TypeError, ValueError):
                 filled_price = None
             if not filled_price:
@@ -7454,8 +7511,8 @@ class SignalMonitorService:
                             trade_signal = upsert_trade_signal(
                                 db=db,
                                 symbol=symbol,
-                                preset_enum=PresetEnum.SWING,  # Default preset for automatic orders
-                                risk_profile_enum=RiskProfileEnum.CONSERVATIVE,  # Default risk profile
+                                preset="swing",  # Default preset for automatic orders
+                                sl_profile="conservative",  # Default risk profile
                                 rsi=None,  # Technical indicators not available at order creation time
                                 ma50=None,
                                 ma200=None,
@@ -7469,9 +7526,9 @@ class SignalMonitorService:
                                 volume_24h=None,  # Volume data not available
                                 volume_ratio=None,
                                 should_trade=True,  # Automatic order was created, so should_trade=True
-                                status_enum=SignalStatusEnum.ORDER_PLACED,  # Status: order has been placed
+                                status="order_placed",  # Status: order has been placed
                                 exchange_order_id=str(order_id),  # Link to the exchange order
-                                notes=f"Automatic BUY order created by signal monitor at ${filled_price or current_price:.4f}"
+                                notes=f"Automatic BUY order created by signal monitor at ${(filled_price or current_price):.4f}"
                             )
                             trade_signal_id = trade_signal.id
                             logger.info(f"✅ Created TradeSignal record (ID: {trade_signal_id}) for automatic BUY order: {symbol}")
@@ -7504,10 +7561,12 @@ class SignalMonitorService:
         # Get filled quantity from result
         filled_quantity = None
         try:
-            if result.get("cumulative_quantity"):
-                filled_quantity = float(result.get("cumulative_quantity"))
-            elif result.get("quantity"):
-                filled_quantity = float(result.get("quantity"))
+            cum_qty = result.get("cumulative_quantity")
+            qty = result.get("quantity")
+            if cum_qty is not None:
+                filled_quantity = _to_float(cum_qty)
+            elif qty is not None:
+                filled_quantity = _to_float(qty)
             else:
                 # Estimate from amount_usd and filled_price
                 if filled_price:
@@ -8138,7 +8197,7 @@ class SignalMonitorService:
         dry_run_mode = not live_trading
 
         try:
-            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+            from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
             assert_exchange_mutation_allowed(db, "place_order_simple", symbol, None)
         except LiveTradingBlockedError:
             return {"error": "ORDER_BLOCKED_LIVE_TRADING", "blocked": True}
@@ -8548,7 +8607,7 @@ class SignalMonitorService:
             logger.info(f"🔴 Creating automatic SELL order for {symbol}: amount_usd={amount_usd}, margin={use_margin}")
 
             try:
-                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError
+                from app.services.live_trading_gate import assert_exchange_mutation_allowed, LiveTradingBlockedError  # pyright: ignore[reportMissingImports]
                 assert_exchange_mutation_allowed(db, "place_market_order_sell", symbol, None)
             except LiveTradingBlockedError:
                 return None

@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, cast, String, text
 from app.database import get_db
+from app.deps.auth import get_current_user
 from app.models.signal_throttle import SignalThrottleState
 from app.utils.http_client import http_post
 import json
@@ -38,6 +39,54 @@ def _verify_diagnostics_auth(request: Request) -> None:
     if not provided_key or provided_key != expected_key:
         raise HTTPException(status_code=404, detail="Not found")
 
+
+def _create_notion_incidents_for_health_failure(health: Dict[str, Any]) -> None:
+    """
+    When system health is FAIL, create Notion incident tasks for each failed component.
+    Uses stable titles and stable details so notion_tasks deduplication works. Non-throwing.
+    """
+    try:
+        from app.services.notion_tasks import create_incident_task
+    except Exception as imp_err:
+        log.debug("Notion tasks not available for health incidents: %s", imp_err)
+        return
+    if health.get("db_status") == "down":
+        create_incident_task(
+            title="Database connectivity check failed",
+            details="component=database; db_status=down.",
+        )
+        log.info("Monitoring failure triggered Notion incident: Database connectivity check failed")
+    sm = health.get("signal_monitor") or {}
+    if sm.get("status") == "FAIL":
+        create_incident_task(
+            title="Trading engine health check failed",
+            details="component=signal_monitor; status=FAIL.",
+        )
+        log.info("Monitoring failure triggered Notion incident: Trading engine health check failed")
+    tg = health.get("telegram") or {}
+    if tg.get("status") == "FAIL":
+        create_incident_task(
+            title="Telegram delivery check failed",
+            details="component=telegram; status=FAIL.",
+        )
+        log.info("Monitoring failure triggered Notion incident: Telegram delivery check failed")
+    tsys = health.get("trade_system") or {}
+    if tsys.get("status") == "FAIL":
+        create_incident_task(
+            title="Trade system health check failed",
+            details="component=trade_system; status=FAIL.",
+        )
+        log.info("Monitoring failure triggered Notion incident: Trade system health check failed")
+    md = health.get("market_data") or {}
+    mu = health.get("market_updater") or {}
+    if md.get("status") == "FAIL" or mu.get("status") == "FAIL":
+        create_incident_task(
+            title="Market data health check failed",
+            details=f"market_data={md.get('status')}; market_updater={mu.get('status')}.",
+        )
+        log.info("Monitoring failure triggered Notion incident: Market data health check failed")
+
+
 @router.get("/health/system", name="get_system_health")
 async def get_system_health_endpoint(db: Session = Depends(get_db)):
     """
@@ -49,9 +98,23 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
         from app.services.system_health import get_system_health
         health = get_system_health(db)
         status_code = 503 if health.get("db_status") == "down" else 200
+        if health.get("global_status") == "FAIL":
+            try:
+                _create_notion_incidents_for_health_failure(health)
+            except Exception as notion_err:
+                log.debug("Notion incident creation failed (non-fatal): %s", notion_err)
         return JSONResponse(content=health, status_code=status_code, headers=_NO_CACHE_HEADERS)
     except Exception as e:
         log.error(f"Error computing system health: {e}", exc_info=True)
+        try:
+            from app.services.notion_tasks import create_incident_task
+            create_incident_task(
+                title="System health check failed",
+                details=f"Error computing system health: {str(e)[:500]}.",
+            )
+            log.info("Monitoring failure triggered Notion incident: System health check failed")
+        except Exception as notion_err:
+            log.debug("Notion incident creation failed (non-fatal): %s", notion_err)
         return JSONResponse(
             status_code=500,
             content={
@@ -62,6 +125,26 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
             },
             headers=_NO_CACHE_HEADERS
         )
+
+
+@router.post("/health/repair", name="health_repair")
+async def health_repair(current_user=Depends(get_current_user)):
+    """
+    Idempotent repair: ensure optional columns and critical tables (e.g. order_intents) exist.
+    Requires x-api-key header (ATP_API_KEY). Use after disk/startup issues to fix order_intents_table_exists.
+    """
+    try:
+        from app.database import engine, ensure_optional_columns
+        if engine is None or ensure_optional_columns is None:
+            raise HTTPException(status_code=503, detail="Database not available")
+        ensure_optional_columns(engine)
+        return {"ok": True, "message": "Repair completed (optional columns and order_intents table ensured)."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Health repair failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ---------------------------------------------------------------------------
 # Helpers for parsing TelegramMessage text into structured throttle events.

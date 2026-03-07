@@ -1,0 +1,21 @@
+---
+description: OpenClaw lives in a separate repo; ATP only holds docs and reference. Propose changes, do not edit OpenClaw source directly.
+globs:
+  - "docs/openclaw/**"
+  - "scripts/openclaw/**"
+  - "openclaw/**"
+  - "**/reference-frontend/**"
+---
+
+# OpenClaw is outside ATP (atp-rebuild-2026)
+
+**Constraint:** The OpenClaw frontend/app repo (the one that builds `ghcr.io/ccruz0/openclaw`) is **not** inside this instance (automated-trading-platform / atp-rebuild-2026). Do not assume OpenClaw source code lives in this workspace.
+
+**What to do:**
+- **Look inside ATP only** for: docs, runbooks, reference code, and scripts (e.g. `docs/openclaw/`, `docs/openclaw/reference-frontend/`, `scripts/openclaw/`).
+- **Propose changes** for the OpenClaw repo: write runbooks, paste reference code (e.g. `getOpenClawWsUrl.ts`), minimal diffs, and verification commands that the user (or another session) can apply in the OpenClaw repo.
+- Do **not** try to edit the OpenClaw frontend source directly in this workspace; if you find OpenClaw-like code under `security/openclaw/` or elsewhere, treat it as reference or a copy, and still document “apply in the real OpenClaw repo.”
+
+**Where reference lives in ATP:**
+- `docs/openclaw/reference-frontend/` — example helper and .env.example for WebSocket URL / base path.
+- `docs/openclaw/*.md` — runbooks and deliverables (e.g. OPENCLAW_WS_FIX_APPLY_NOW.md) with steps, greps, and diffs to run in the OpenClaw repo.

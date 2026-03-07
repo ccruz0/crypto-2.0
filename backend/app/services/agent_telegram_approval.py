@@ -23,10 +23,21 @@ PREFIX_DENY = "agent_deny:"
 PREFIX_SUMMARY = "agent_summary:"
 PREFIX_EXECUTE = "agent_execute:"
 
+# Extended lifecycle callback data prefixes
+PREFIX_APPROVE_PATCH = "patch_approve:"
+PREFIX_APPROVE_DEPLOY = "deploy_approve:"
+PREFIX_REJECT = "task_reject:"
+PREFIX_VIEW_REPORT = "view_report:"
+PREFIX_SMOKE_CHECK = "smoke_check:"
+
 # In-memory cache: task_id -> { prepared_bundle, status, requested_at, approved_by, decision_at }
 # DB is source of truth; memory is optional cache for same-process fast path.
 _APPROVAL_STORE: dict[str, dict[str, Any]] = {}
 _STORE_LOCK = threading.Lock()
+
+# Lightweight cache for OpenClaw structured sections (task_id → sections dict).
+# Populated when investigation-complete or patch-deploy approval messages are sent.
+_SECTIONS_CACHE: dict[str, dict[str, Any]] = {}
 
 # Telegram message length limit
 TELEGRAM_TEXT_LIMIT = 4096
@@ -804,8 +815,11 @@ def complete_task_execution(task_id: str, summary: str = "") -> bool:
             pass
 
 
+MAX_EXECUTION_RETRIES = 3
+
+
 def fail_task_execution(task_id: str, summary: str = "") -> bool:
-    """Set execution_status=failed, execution_summary=summary (executed_at not set)."""
+    """Set execution_status=failed, increment retry_count, execution_summary=summary."""
     task_id = (task_id or "").strip()
     db = _get_db_session()
     if db is None:
@@ -817,6 +831,19 @@ def fail_task_execution(task_id: str, summary: str = "") -> bool:
             return False
         row.execution_status = EXECUTION_STATUS_FAILED
         row.execution_summary = (summary or "").strip()[:5000] if summary else None
+        current_count = getattr(row, "retry_count", 0) or 0
+        row.retry_count = current_count + 1
+        if row.retry_count >= MAX_EXECUTION_RETRIES:
+            logger.warning(
+                "fail_task_execution: retry_count=%d reached MAX_EXECUTION_RETRIES=%d for task_id=%s — "
+                "marking completed to stop retries",
+                row.retry_count, MAX_EXECUTION_RETRIES, task_id,
+            )
+            row.execution_status = EXECUTION_STATUS_COMPLETED
+            row.execution_summary = (
+                f"Exhausted {MAX_EXECUTION_RETRIES} retries. Last failure: "
+                + ((summary or "").strip()[:4000])
+            )
         db.commit()
         return True
     except Exception as e:
@@ -1013,8 +1040,8 @@ def execute_prepared_task_from_telegram_decision(task_id: str) -> dict[str, Any]
 
 def get_approved_retryable_task_ids(max_results: int = 5) -> list[str]:
     """
-    Return task_ids that are approved but whose execution failed or never started.
-    The scheduler uses this to retry stalled tasks.
+    Return task_ids that are approved but whose execution failed or never started,
+    and whose retry_count has not exceeded MAX_EXECUTION_RETRIES.
     """
     db = _get_db_session()
     if db is None:
@@ -1022,18 +1049,24 @@ def get_approved_retryable_task_ids(max_results: int = 5) -> list[str]:
     try:
         from sqlalchemy import or_
         from app.models.agent_approval_state import AgentApprovalState
+        retry_col = getattr(AgentApprovalState, "retry_count", None)
+        base_filter = [
+            AgentApprovalState.status == "approved",
+            or_(
+                AgentApprovalState.execution_status.in_([
+                    EXECUTION_STATUS_FAILED,
+                    EXECUTION_STATUS_NOT_STARTED,
+                ]),
+                AgentApprovalState.execution_status.is_(None),
+            ),
+        ]
+        if retry_col is not None:
+            base_filter.append(
+                or_(retry_col < MAX_EXECUTION_RETRIES, retry_col.is_(None))
+            )
         rows = (
             db.query(AgentApprovalState)
-            .filter(
-                AgentApprovalState.status == "approved",
-                or_(
-                    AgentApprovalState.execution_status.in_([
-                        EXECUTION_STATUS_FAILED,
-                        EXECUTION_STATUS_NOT_STARTED,
-                    ]),
-                    AgentApprovalState.execution_status.is_(None),
-                ),
-            )
+            .filter(*base_filter)
             .limit(max_results)
             .all()
         )
@@ -1046,3 +1079,229 @@ def get_approved_retryable_task_ids(max_results: int = 5) -> list[str]:
             db.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Extended lifecycle: investigation-complete / patch-deploy approval messages
+# ---------------------------------------------------------------------------
+
+
+def format_openclaw_summary_for_telegram(sections: dict[str, Any]) -> str:
+    """Build a short HTML-formatted Telegram summary from OpenClaw structured sections.
+
+    Extracts Task Summary, Risk Level, Affected Files, and Recommended Fix.
+    Gracefully handles missing sections (returns what's available).
+    """
+    parts: list[str] = []
+
+    task_summary = sections.get("Task Summary")
+    if task_summary and str(task_summary).strip().lower() != "n/a":
+        parts.append(f"<b>Summary:</b> {str(task_summary).strip()[:300]}")
+
+    risk = sections.get("Risk Level")
+    if risk and str(risk).strip().lower() != "n/a":
+        parts.append(f"<b>Risk:</b> {str(risk).strip().splitlines()[0][:100]}")
+
+    files = sections.get("Affected Files")
+    if files and str(files).strip().lower() != "n/a":
+        file_lines = [l.strip() for l in str(files).strip().splitlines() if l.strip()][:5]
+        parts.append("<b>Files:</b>\n" + "\n".join(file_lines))
+
+    fix = sections.get("Recommended Fix")
+    if fix and str(fix).strip().lower() != "n/a":
+        parts.append(f"<b>Fix:</b> {str(fix).strip()[:400]}")
+
+    if not parts:
+        return "<i>(no structured report available)</i>"
+    return "\n\n".join(parts)
+
+
+def send_investigation_complete_approval(
+    task_id: str,
+    title: str,
+    sections: dict[str, Any] | None = None,
+    chat_id: str | None = None,
+) -> dict[str, Any]:
+    """Send a Telegram message after OpenClaw investigation completes.
+
+    Buttons: [Approve Patch] [Reject] [View Report]
+
+    Returns ``{"sent": bool, "chat_id": str, "task_id": str, "message_id": int | None}``.
+    """
+    task_id = (task_id or "").strip()
+    title = (title or "(no title)")[:200]
+    target_chat = (chat_id or "").strip() or _get_default_chat_id()
+
+    if not task_id:
+        return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
+    if not target_chat:
+        return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    sections = sections or {}
+    with _STORE_LOCK:
+        _SECTIONS_CACHE[task_id] = sections
+
+    summary_html = format_openclaw_summary_for_telegram(sections)
+    risk_line = ""
+    risk = sections.get("Risk Level")
+    if risk and str(risk).strip().lower() != "n/a":
+        risk_line = f"<b>Risk Level:</b> {str(risk).strip().splitlines()[0][:80]}\n"
+
+    lines = [
+        "<b>🔍 Investigation complete</b>",
+        "",
+        f"<b>Task:</b> {title}",
+        risk_line.rstrip(),
+        "",
+        summary_html,
+    ]
+    text = "\n".join(l for l in lines if l is not None)
+    if len(text) > TELEGRAM_TEXT_LIMIT:
+        text = text[: TELEGRAM_TEXT_LIMIT - 3] + "..."
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Approve Patch", "callback_data": f"{PREFIX_APPROVE_PATCH}{task_id}"},
+                {"text": "❌ Reject", "callback_data": f"{PREFIX_REJECT}{task_id}"},
+            ],
+            [{"text": "📋 View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"}],
+        ]
+    }
+
+    sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
+    logger.info(
+        "send_investigation_complete_approval task_id=%s sent=%s message_id=%s",
+        task_id, sent, message_id,
+    )
+
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(
+            "investigation_approval_sent",
+            task_id=task_id,
+            task_title=title,
+            details={"chat_id": target_chat, "sent": sent, "message_id": message_id},
+        )
+    except Exception:
+        pass
+
+    return {"sent": sent, "chat_id": target_chat, "task_id": task_id, "message_id": message_id}
+
+
+def send_patch_deploy_approval(
+    task_id: str,
+    title: str,
+    test_summary: str = "",
+    sections: dict[str, Any] | None = None,
+    chat_id: str | None = None,
+) -> dict[str, Any]:
+    """Send a Telegram message after patch + tests complete.
+
+    Buttons: [Approve Deploy] [Reject] [View Report]
+
+    Returns ``{"sent": bool, "chat_id": str, "task_id": str, "message_id": int | None}``.
+    """
+    task_id = (task_id or "").strip()
+    title = (title or "(no title)")[:200]
+    target_chat = (chat_id or "").strip() or _get_default_chat_id()
+
+    if not task_id:
+        return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
+    if not target_chat:
+        return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    if sections:
+        with _STORE_LOCK:
+            _SECTIONS_CACHE[task_id] = sections
+
+    test_block = (test_summary or "").strip()[:500] or "(no test output)"
+
+    lines = [
+        "<b>🚀 Patch ready for deploy</b>",
+        "",
+        f"<b>Task:</b> {title}",
+        "",
+        f"<b>Test results:</b>\n<pre>{test_block}</pre>",
+    ]
+    text = "\n".join(lines)
+    if len(text) > TELEGRAM_TEXT_LIMIT:
+        text = text[: TELEGRAM_TEXT_LIMIT - 3] + "..."
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "\U0001f680 Approve Deploy", "callback_data": f"{PREFIX_APPROVE_DEPLOY}{task_id}"},
+                {"text": "\u274c Reject", "callback_data": f"{PREFIX_REJECT}{task_id}"},
+            ],
+            [
+                {"text": "\U0001f50d Smoke Check", "callback_data": f"{PREFIX_SMOKE_CHECK}{task_id}"},
+                {"text": "\U0001f4cb View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"},
+            ],
+        ]
+    }
+
+    sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
+    logger.info(
+        "send_patch_deploy_approval task_id=%s sent=%s message_id=%s",
+        task_id, sent, message_id,
+    )
+
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(
+            "deploy_approval_sent",
+            task_id=task_id,
+            task_title=title,
+            details={"chat_id": target_chat, "sent": sent, "message_id": message_id},
+        )
+    except Exception:
+        pass
+
+    return {"sent": sent, "chat_id": target_chat, "task_id": task_id, "message_id": message_id}
+
+
+def get_openclaw_report_for_task(task_id: str) -> str:
+    """Return the OpenClaw report for a task as Telegram-safe HTML.
+
+    Looks up structured sections from the in-memory cache first.  Falls
+    back to loading the ``.sections.json`` sidecar from disk. Returns a
+    human-readable fallback if neither source is available.
+    """
+    task_id = (task_id or "").strip()
+
+    # Try in-memory cache
+    with _STORE_LOCK:
+        sections = _SECTIONS_CACHE.get(task_id)
+    if sections:
+        return format_openclaw_summary_for_telegram(sections)
+
+    # Try sidecar files on disk (check all known output directories)
+    try:
+        import pathlib
+        here = pathlib.Path(__file__).resolve()
+        for ancestor in here.parents:
+            if (ancestor / ".git").is_dir() or (ancestor / "docs").is_dir():
+                repo_root = ancestor
+                break
+        else:
+            repo_root = here.parents[min(2, len(here.parents) - 1)]
+
+        search_dirs = [
+            repo_root / "docs" / "agents" / "bug-investigations",
+            repo_root / "docs" / "agents" / "generated-notes",
+            repo_root / "docs" / "runbooks" / "triage",
+        ]
+        for d in search_dirs:
+            for pattern in (f"*-{task_id}.sections.json", f"*{task_id}*.sections.json"):
+                for f in d.glob(pattern):
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    disk_sections = data.get("sections") or {}
+                    if disk_sections:
+                        with _STORE_LOCK:
+                            _SECTIONS_CACHE[task_id] = disk_sections
+                        return format_openclaw_summary_for_telegram(disk_sections)
+    except Exception as e:
+        logger.debug("get_openclaw_report_for_task: sidecar lookup failed task_id=%s: %s", task_id, e)
+
+    return f"<i>No OpenClaw report cached for task {task_id}.\nCheck the task notes in Notion or docs/agents/ for the full report.</i>"

@@ -1,0 +1,15 @@
+{
+  "task_id": "integration-test-001",
+  "title": "Test Bug Investigation",
+  "source": "openclaw",
+  "sections": {
+    "Task Summary": "The system crashes on startup",
+    "Root Cause": "Missing config file",
+    "Risk Level": "Medium",
+    "Affected Components": "Backend startup",
+    "Affected Files": "backend/app/main.py",
+    "Recommended Fix": "Add default config",
+    "Testing Plan": "Run startup test",
+    "Notes": null
+  }
+}

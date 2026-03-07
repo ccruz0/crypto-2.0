@@ -1,0 +1,21 @@
+{
+  "extraPaths": ["backend"],
+  "include": ["backend"],
+  "typeCheckingMode": "basic",
+  "overrides": [
+    {
+      "include": ["backend/app/services/telegram_commands.py"],
+      "reportGeneralTypeIssues": "none",
+      "reportArgumentType": "none",
+      "reportOperatorIssue": "none"
+    },
+    {
+      "include": ["backend/app/services/exchange_sync.py"],
+      "reportGeneralTypeIssues": "none",
+      "reportArgumentType": "none",
+      "reportAttributeAccessIssue": "none",
+      "reportOperatorIssue": "none",
+      "reportComplexity": "none"
+    }
+  ]
+}

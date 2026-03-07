@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from app.models.watchlist import WatchlistItem
 from app.models.watchlist_master import WatchlistMaster
 from app.models.trade_signal import TradeSignal, PresetEnum, RiskProfileEnum, SignalStatusEnum
@@ -13,13 +15,16 @@ from app.models.portfolio import PortfolioBalance, PortfolioSnapshot
 from app.models.order_intent import OrderIntent
 # fill_events_dedup may be absent in some deployments; avoid boot failure if missing.
 try:
-    from app.models.fill_events_dedup import FillEventDedup
+    FillEventDedup = getattr(import_module("app.models.fill_events_dedup"), "FillEventDedup")
 except ModuleNotFoundError as e:
-    if str(e) == "No module named 'app.models.fill_events_dedup'":
+    if e.name == "app.models.fill_events_dedup":
         FillEventDedup = None
     else:
         raise
+except AttributeError:
+    FillEventDedup = None
 from app.models.dedup_events_week5 import DedupEventWeek5
+from app.models.agent_approval_state import AgentApprovalState
 
 __all__ = [
     "WatchlistItem",
@@ -44,6 +49,7 @@ __all__ = [
     "OrderIntent",
     "FillEventDedup",
     "DedupEventWeek5",
+    "AgentApprovalState",
 ]
 
 

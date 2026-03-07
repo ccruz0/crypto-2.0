@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -132,6 +133,68 @@ def _extract_text_from_response(data: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Structured output format
+# ---------------------------------------------------------------------------
+
+INVESTIGATION_SECTIONS = (
+    "Task Summary",
+    "Root Cause",
+    "Risk Level",
+    "Affected Components",
+    "Affected Files",
+    "Recommended Fix",
+    "Testing Plan",
+    "Notes",
+)
+
+_STRUCTURED_OUTPUT_INSTRUCTION = (
+    "\n\nIMPORTANT — format your response using exactly these markdown sections:\n\n"
+    + "\n".join(f"## {s}" for s in INVESTIGATION_SECTIONS)
+    + "\n\n"
+    "If a section is not applicable, include the heading and write 'N/A'.\n"
+    "Do not add extra top-level sections. You may use sub-headings, lists, "
+    "and code blocks within each section."
+)
+
+_SECTION_HEADING_RE = re.compile(
+    r"^##\s+(" + "|".join(re.escape(s) for s in INVESTIGATION_SECTIONS) + r")\s*$",
+    re.MULTILINE,
+)
+
+
+def parse_investigation_sections(text: str) -> dict[str, str | None]:
+    """Extract structured sections from an OpenClaw investigation response.
+
+    Returns a dict keyed by section name.  Missing sections map to ``None``
+    so callers can distinguish "section absent" from "section present but
+    empty".  Unrecognised content before the first heading is stored under
+    the key ``"_preamble"``.
+
+    Works gracefully with older free-form reports: if *no* recognised
+    headings are found the dict will contain only ``"_preamble"`` with the
+    full text and every standard key set to ``None``.
+    """
+    result: dict[str, str | None] = {s: None for s in INVESTIGATION_SECTIONS}
+
+    matches = list(_SECTION_HEADING_RE.finditer(text))
+    if not matches:
+        result["_preamble"] = text.strip() or None
+        return result
+
+    preamble = text[: matches[0].start()].strip()
+    result["_preamble"] = preamble or None
+
+    for idx, m in enumerate(matches):
+        section_name = m.group(1)
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        result[section_name] = body if body else None
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
 
@@ -184,13 +247,15 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"2. Identify the most likely root cause.\n"
         f"3. Suggest a concrete fix (code change, config change, or operational step).\n"
         f"4. Note any risks or side effects of the fix.\n"
-        f"5. Summarize your findings in a structured report.\n"
+        f"5. Summarize your findings in the structured report format below."
+        f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
     )
     instructions = (
         "You are an expert software engineer investigating a bug in a Python/FastAPI "
         "trading platform backend with a Next.js frontend. "
         f"{_WORKSPACE_NOTE} "
-        "Be thorough but concise. Focus on actionable findings."
+        "Be thorough but concise. Focus on actionable findings. "
+        "Always use the exact section headings requested in the prompt."
     )
     return user_prompt, instructions
 
@@ -207,13 +272,15 @@ def build_documentation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"2. Identify gaps, outdated sections, or missing docs.\n"
         f"3. Suggest specific improvements or new documentation content.\n"
         f"4. Check that any referenced files/paths actually exist.\n"
-        f"5. Provide a structured summary of your findings and recommendations.\n"
+        f"5. Provide your findings in the structured report format below."
+        f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
     )
     instructions = (
         "You are a technical writer auditing documentation for a trading platform. "
         f"{_WORKSPACE_NOTE} "
         "Focus on accuracy, completeness, and clarity. "
-        "Reference specific file paths when suggesting changes."
+        "Reference specific file paths when suggesting changes. "
+        "Always use the exact section headings requested in the prompt."
     )
     return user_prompt, instructions
 
@@ -231,13 +298,15 @@ def build_monitoring_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
         f"2. Identify the most likely cause of the issue.\n"
         f"3. Provide step-by-step remediation instructions.\n"
         f"4. Suggest monitoring improvements to detect this earlier.\n"
-        f"5. Summarize your triage in a structured report.\n"
+        f"5. Summarize your triage in the structured report format below."
+        f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
     )
     instructions = (
         "You are a DevOps/SRE engineer triaging an infrastructure issue. "
         "The platform runs on AWS EC2 with Docker Compose, Nginx, PostgreSQL. "
         f"{_WORKSPACE_NOTE} "
-        "Be specific about commands, config changes, and file paths."
+        "Be specific about commands, config changes, and file paths. "
+        "Always use the exact section headings requested in the prompt."
     )
     return user_prompt, instructions
 
@@ -254,11 +323,14 @@ def build_generic_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
         f"2. Provide a thorough analysis with specific findings.\n"
         f"3. Suggest concrete next steps or solutions.\n"
         f"4. Note any risks or dependencies.\n"
+        f"5. Present your analysis in the structured report format below."
+        f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
     )
     instructions = (
         "You are a senior engineer analyzing a task for a Python/FastAPI + Next.js "
         "trading platform. "
         f"{_WORKSPACE_NOTE} "
-        "Be thorough, specific, and actionable."
+        "Be thorough, specific, and actionable. "
+        "Always use the exact section headings requested in the prompt."
     )
     return user_prompt, instructions

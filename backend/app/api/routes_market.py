@@ -929,46 +929,77 @@ def get_top_coins_with_prices(
                 )
                 
                 # Get all MarketPrice entries for price data - OPTIMIZED: only get what we need
+                # Use str keys so .get(symbol) type-checks (ORM symbol is Column[str])
+                # Only include non-empty symbols to avoid empty keys and SQL IN matching null/empty rows
+                def _norm_symbol(obj: object, attr: str = "symbol") -> str:
+                    raw = getattr(obj, attr, None)
+                    s = (raw if raw is not None else "").strip() if isinstance(raw, str) else (str(raw).strip() if raw is not None else "")
+                    return s
+
                 market_prices_all = db.query(MarketPrice).all()
-                market_price_map = {mp.symbol: mp for mp in market_prices_all}
-                
+                market_price_map: Dict[str, MarketPrice] = {}
+                for mp in market_prices_all:
+                    sym = _norm_symbol(mp)
+                    if sym:
+                        market_price_map[sym] = mp
+
                 # Get all MarketData entries for technical indicators - OPTIMIZED: batch query
-                all_symbols = [item.symbol for item in canonical_watchlist_items]
-                market_data_list = []
+                # Exclude empty symbols so SQL IN(...) does not match null/empty symbol rows
+                all_symbols = [s for item in canonical_watchlist_items for s in [_norm_symbol(item)] if s]
+                market_data_list: List[MarketData] = []
                 if all_symbols:
                     # Use single query instead of chunks for better performance
                     market_data_list = db.query(MarketData).filter(MarketData.symbol.in_(all_symbols)).all()
-                
-                data_map = {md.symbol: md for md in market_data_list}
+
+                data_map: Dict[str, MarketData] = {}
+                for md in market_data_list:
+                    sym = _norm_symbol(md)
+                    if sym:
+                        data_map[sym] = md
                 
                 # Build coins list from watchlist_items (not from MarketPrice)
                 # This ensures ALL non-deleted coins are shown
                 coins = []
                 for watchlist_item in canonical_watchlist_items:
-                    symbol = watchlist_item.symbol
-                    
+                    symbol = _norm_symbol(watchlist_item)
+                    if not symbol:
+                        # Skip items with empty/null symbol (data integrity: avoid empty keys and SQL IN matching bad rows)
+                        continue
+
                     # Get MarketPrice if available (for price and volume)
                     mp = market_price_map.get(symbol)
                     md = data_map.get(symbol)
                     
                     # Use MarketPrice data if available, otherwise use watchlist_item data or defaults
-                    current_price = (mp.price if mp and mp.price else watchlist_item.price) or 0.0
-                    volume_24h = (mp.volume_24h if mp and mp.volume_24h else 0.0) or 0.0
+                    # Explicit None checks so valid zero price/volume from MarketPrice are not skipped (or treats 0 as falsy)
+                    _mp_price = getattr(mp, "price", None) if mp else None
+                    _wp_price = getattr(watchlist_item, "price", None)
+                    current_price = float(_mp_price) if _mp_price is not None else (float(_wp_price) if _wp_price is not None else 0.0)
+                    _mp_vol = getattr(mp, "volume_24h", None) if mp else None
+                    _wp_vol = getattr(watchlist_item, "volume_24h", None)
+                    volume_24h = float(_mp_vol) if _mp_vol is not None else (float(_wp_vol) if _wp_vol is not None else 0.0)
                     
                     # Use MarketData indicators if available, otherwise fall back to watchlist_item data
-                    # OPTIMIZATION: Access watchlist_item attributes directly (already loaded, no lazy loading)
-                    rsi = md.rsi if md and md.rsi is not None else (watchlist_item.rsi if hasattr(watchlist_item, 'rsi') and watchlist_item.rsi is not None else None)
-                    ma50 = md.ma50 if md and md.ma50 is not None else (watchlist_item.ma50 if hasattr(watchlist_item, 'ma50') and watchlist_item.ma50 is not None else None)
-                    ma200 = md.ma200 if md and md.ma200 is not None else (watchlist_item.ma200 if hasattr(watchlist_item, 'ma200') and watchlist_item.ma200 is not None else None)
-                    ema10 = md.ema10 if md and md.ema10 is not None else (watchlist_item.ema10 if hasattr(watchlist_item, 'ema10') and watchlist_item.ema10 is not None else None)
-                    atr = md.atr if md and md.atr is not None else (watchlist_item.atr if hasattr(watchlist_item, 'atr') and watchlist_item.atr is not None else None)
-                    res_up = md.res_up if md and md.res_up is not None else (watchlist_item.res_up if hasattr(watchlist_item, 'res_up') and watchlist_item.res_up is not None else None)
-                    res_down = md.res_down if md and md.res_down is not None else (watchlist_item.res_down if hasattr(watchlist_item, 'res_down') and watchlist_item.res_down is not None else None)
+                    # Use getattr to avoid type checker issues with SQLAlchemy Column in conditionals
+                    def _val(m: Optional[object], w: object, name: str) -> Optional[float]:
+                        v = getattr(m, name, None) if m is not None else None
+                        if v is not None:
+                            return float(v) if isinstance(v, (int, float)) else None
+                        v = getattr(w, name, None)
+                        return float(v) if v is not None and isinstance(v, (int, float)) else None
+                    rsi = _val(md, watchlist_item, "rsi")
+                    ma50 = _val(md, watchlist_item, "ma50")
+                    ma200 = _val(md, watchlist_item, "ma200")
+                    ema10 = _val(md, watchlist_item, "ema10")
+                    atr = _val(md, watchlist_item, "atr")
+                    res_up = _val(md, watchlist_item, "res_up")
+                    res_down = _val(md, watchlist_item, "res_down")
                     
                     # Ensure MA10w has a valid value - use fallbacks if needed
                     ma10w = None
-                    if md and md.ma10w is not None and md.ma10w > 0:
-                        ma10w = md.ma10w
+                    _ma10w = getattr(md, "ma10w", None) if md else None
+                    if _ma10w is not None and (_ma10w if isinstance(_ma10w, (int, float)) else 0) > 0:
+                        ma10w = float(_ma10w) if isinstance(_ma10w, (int, float)) else None
                     elif ma200 and ma200 > 0:
                         ma10w = ma200  # Use MA200 as fallback
                     elif ma50 and ma50 > 0:
@@ -981,19 +1012,14 @@ def get_top_coins_with_prices(
                     is_custom = True  # All watchlist coins are user-tracked
                     
                     # Get updated_at from MarketPrice if available, otherwise from watchlist_item
-                    # OPTIMIZATION: Safe datetime serialization
+                    # Use getattr to avoid type checker issues with SQLAlchemy Column/datetime in conditionals
                     updated_at = None
                     try:
-                        if mp and hasattr(mp, 'updated_at') and mp.updated_at:
-                            if hasattr(mp.updated_at, 'isoformat'):
-                                updated_at = mp.updated_at.isoformat()
-                            else:
-                                updated_at = str(mp.updated_at)
-                        elif hasattr(watchlist_item, 'created_at') and watchlist_item.created_at:
-                            if hasattr(watchlist_item.created_at, 'isoformat'):
-                                updated_at = watchlist_item.created_at.isoformat()
-                            else:
-                                updated_at = str(watchlist_item.created_at)
+                        dt_val = getattr(mp, "updated_at", None) if mp else None
+                        if dt_val is None:
+                            dt_val = getattr(watchlist_item, "created_at", None)
+                        if dt_val is not None:
+                            updated_at = dt_val.isoformat() if hasattr(dt_val, "isoformat") else str(dt_val)
                     except Exception as dt_err:
                         logger.debug(f"Error serializing datetime for {symbol}: {dt_err}")
                         updated_at = None
@@ -1019,27 +1045,29 @@ def get_top_coins_with_prices(
                     try:
                         if current_price and current_price > 0:
                             
-                            # Get buy_target and last_buy_price from watchlist_item if available
-                            buy_target = watchlist_item.buy_target if watchlist_item else None
-                            last_buy_price = watchlist_item.purchase_price if watchlist_item and watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None
+                            # Get buy_target and last_buy_price from watchlist_item (getattr avoids Column in conditionals)
+                            _bt = getattr(watchlist_item, "buy_target", None)
+                            buy_target = float(_bt) if _bt is not None and isinstance(_bt, (int, float)) else None
+                            _pp = getattr(watchlist_item, "purchase_price", None)
+                            last_buy_price = float(_pp) if _pp is not None and isinstance(_pp, (int, float)) and float(_pp) > 0 else None
 
                             # CRITICAL: Use current_volume (hourly) for signal calculation, not volume_24h
-                            # This ensures consistent signal calculation across all endpoints
-                            # IMPORTANT: Keep displayed volume and signal volume consistent.
-                            # If MarketData has stale/zero current_volume, fall back to volume_24h/24 for BOTH signal + UI.
                             current_volume_for_signals = None
-                            if md and md.current_volume is not None and md.current_volume > 0:
-                                current_volume_for_signals = md.current_volume
-                            elif volume_24h and volume_24h > 0:
-                                # Fallback: approximate current_volume from volume_24h / 24
+                            _cv = getattr(md, "current_volume", None) if md is not None else None
+                            if _cv is not None and isinstance(_cv, (int, float)) and float(_cv) > 0:
+                                current_volume_for_signals = float(_cv)
+                            elif volume_24h > 0:
                                 current_volume_for_signals = volume_24h / 24.0
 
                             avg_volume_for_signals = None
-                            if md and md.avg_volume is not None and md.avg_volume > 0:
-                                avg_volume_for_signals = md.avg_volume
-                            elif volume_24h and volume_24h > 0:
-                                # Fallback: approximate avg_volume when MarketData is missing (keeps volume_ratio consistent)
+                            _av = getattr(md, "avg_volume", None) if md is not None else None
+                            if _av is not None and isinstance(_av, (int, float)) and float(_av) > 0:
+                                avg_volume_for_signals = float(_av)
+                            elif volume_24h > 0:
                                 avg_volume_for_signals = volume_24h / 24.0
+
+                            _ta = getattr(watchlist_item, "trade_amount_usd", None)
+                            position_size_usd = float(_ta) if _ta is not None and isinstance(_ta, (int, float)) else 100.0
 
                             signals = calculate_trading_signals(
                                 symbol=symbol,
@@ -1050,16 +1078,16 @@ def get_top_coins_with_prices(
                                 ma200=ma200,
                                 ema10=ema10,
                                 ma10w=ma10w,
-                                volume=current_volume_for_signals,  # CRITICAL: Use current_volume (hourly), not volume_24h
+                                volume=current_volume_for_signals,
                                 avg_volume=avg_volume_for_signals,
                                 resistance_up=res_up,
                                 buy_target=buy_target,
                                 last_buy_price=last_buy_price,
-                                position_size_usd=watchlist_item.trade_amount_usd if watchlist_item and watchlist_item.trade_amount_usd else 100.0,
+                                position_size_usd=position_size_usd,
                                 rsi_buy_threshold=40,
                                 rsi_sell_threshold=70,
-                                strategy_type=resolved_strategy_type,  # Use pre-resolved strategy
-                                risk_approach=resolved_risk_approach,  # Use pre-resolved risk approach
+                                strategy_type=resolved_strategy_type,
+                                risk_approach=resolved_risk_approach,
                             )
                             
                             if signals.get("buy_signal"):
@@ -1076,21 +1104,19 @@ def get_top_coins_with_prices(
                         signal = "WAIT"  # Default to WAIT on error
                         strategy_state = None  # FIX: Ensure strategy_state is None on error
                     
-                    # Volume data from MarketData
-                    # OPTIMIZATION: Use MarketData values directly instead of fetching OHLCV for each symbol
-                    # This avoids making 20+ external API calls per request, which was causing 5+ second timeouts
-                    # The market_updater service already updates MarketData with fresh volume data every 60 seconds
-                    # Keep volume fields consistent with signal fallbacks (prevents "0.00x volume but BUY signal").
+                    # Volume data from MarketData (getattr avoids Column in conditionals)
                     current_volume_value = None
-                    if md and md.current_volume is not None and md.current_volume > 0:
-                        current_volume_value = md.current_volume
-                    elif volume_24h and volume_24h > 0:
+                    _cv2 = getattr(md, "current_volume", None) if md is not None else None
+                    if _cv2 is not None and isinstance(_cv2, (int, float)) and float(_cv2) > 0:
+                        current_volume_value = float(_cv2)
+                    elif volume_24h > 0:
                         current_volume_value = volume_24h / 24.0
 
                     avg_volume_value = None
-                    if md and md.avg_volume is not None and md.avg_volume > 0:
-                        avg_volume_value = md.avg_volume
-                    elif volume_24h and volume_24h > 0:
+                    _av2 = getattr(md, "avg_volume", None) if md is not None else None
+                    if _av2 is not None and isinstance(_av2, (int, float)) and float(_av2) > 0:
+                        avg_volume_value = float(_av2)
+                    elif volume_24h > 0:
                         avg_volume_value = volume_24h / 24.0
                     
                     # Only fetch fresh volume if MarketData is missing or stale (>5 minutes old)
@@ -1122,14 +1148,13 @@ def get_top_coins_with_prices(
                             logger.debug(f"Could not fetch fresh volume for {symbol}: {vol_err}")
                     
                     # Calculate volume_ratio - always recalculate from current values to ensure accuracy
-                    # CRITICAL: If current_volume is 0.0, volume_ratio must be 0.0 (not None) to avoid frontend fallback calculations
                     volume_ratio_value = None
                     if current_volume_value is not None and avg_volume_value is not None and avg_volume_value > 0:
-                        # Always recalculate ratio from current values (including when current_volume is 0.0)
                         volume_ratio_value = current_volume_value / avg_volume_value if current_volume_value > 0 else 0.0
-                    elif md and md.volume_ratio is not None:
-                        # Use stored ratio only if we don't have current values
-                        volume_ratio_value = md.volume_ratio
+                    else:
+                        _vr = getattr(md, "volume_ratio", None) if md is not None else None
+                        if _vr is not None and isinstance(_vr, (int, float)):
+                            volume_ratio_value = float(_vr)
                     
                     # CRITICAL: Calculate strategy values before building coin dict
                     # Ensure we always have valid strategy values (resolve_strategy_profile has fallbacks, but defensive coding)
@@ -1137,15 +1162,14 @@ def get_top_coins_with_prices(
                     strategy_risk_value = getattr(resolved_risk_approach, "value", None) if resolved_risk_approach else "conservative"
                     strategy_key_value = f"{strategy_preset_value}-{strategy_risk_value}"
                     
-                    # CRITICAL: Calculate SL/TP prices if not already set in watchlist_item
-                    # This ensures frontend always has SL/TP values to display
-                    sl_price_value = watchlist_item.sl_price if watchlist_item and watchlist_item.sl_price else None
-                    tp_price_value = watchlist_item.tp_price if watchlist_item and watchlist_item.tp_price else None
+                    # SL/TP prices from watchlist_item (getattr avoids Column in conditionals)
+                    _sl = getattr(watchlist_item, "sl_price", None)
+                    sl_price_value = float(_sl) if _sl is not None and isinstance(_sl, (int, float)) else None
+                    _tp = getattr(watchlist_item, "tp_price", None)
+                    tp_price_value = float(_tp) if _tp is not None and isinstance(_tp, (int, float)) else None
                     
-                    # If SL/TP prices are missing, calculate them from strategy
-                    if (sl_price_value is None or tp_price_value is None) and current_price and current_price > 0:
+                    if (sl_price_value is None or tp_price_value is None) and current_price > 0:
                         try:
-                            # Import the helper function from routes_dashboard
                             from app.api.routes_dashboard import _calculate_tp_sl_from_strategy
                             calculated_sl, calculated_tp = _calculate_tp_sl_from_strategy(
                                 symbol=symbol,
@@ -1353,14 +1377,12 @@ def update_watchlist_alert(
             db.add(watchlist_item)
         else:
             # If item is deleted, reactivate it first (safe: we only select deleted when no active exists).
-            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
-                watchlist_item.is_deleted = False
+            if getattr(watchlist_item, "is_deleted", False):
+                setattr(watchlist_item, "is_deleted", False)
             # Update existing item - set both buy and sell to match legacy behavior
-            watchlist_item.alert_enabled = alert_enabled
-            if hasattr(watchlist_item, "buy_alert_enabled"):
-                watchlist_item.buy_alert_enabled = alert_enabled
-            if hasattr(watchlist_item, "sell_alert_enabled"):
-                watchlist_item.sell_alert_enabled = alert_enabled
+            setattr(watchlist_item, "alert_enabled", alert_enabled)
+            setattr(watchlist_item, "buy_alert_enabled", alert_enabled)
+            setattr(watchlist_item, "sell_alert_enabled", alert_enabled)
         
         # Commit with timeout protection
         commit_start = time.time()
@@ -1374,11 +1396,9 @@ def update_watchlist_alert(
                 logger.warning("⚠️ [ALERT UPDATE] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
                 canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
                 if canonical and not getattr(canonical, "is_deleted", False):
-                    canonical.alert_enabled = alert_enabled
-                    if hasattr(canonical, "buy_alert_enabled"):
-                        canonical.buy_alert_enabled = alert_enabled
-                    if hasattr(canonical, "sell_alert_enabled"):
-                        canonical.sell_alert_enabled = alert_enabled
+                    setattr(canonical, "alert_enabled", alert_enabled)
+                    setattr(canonical, "buy_alert_enabled", alert_enabled)
+                    setattr(canonical, "sell_alert_enabled", alert_enabled)
                     db.commit()
                     watchlist_item = canonical
                 else:
@@ -1507,30 +1527,21 @@ def update_buy_alert(
                 is_deleted=False,
                 alert_enabled=buy_alert_enabled  # Master switch follows buy alert
             )
-            # Set buy/sell alert fields (will work even if columns don't exist yet - SQLAlchemy handles it)
             try:
-                watchlist_item.buy_alert_enabled = buy_alert_enabled
+                setattr(watchlist_item, "buy_alert_enabled", buy_alert_enabled)
             except AttributeError:
                 logger.warning(f"⚠️ [BUY ALERT] buy_alert_enabled column not found for {symbol_upper}")
-                pass  # Column doesn't exist yet, will be added by migration
             try:
-                watchlist_item.sell_alert_enabled = False
+                setattr(watchlist_item, "sell_alert_enabled", False)
             except AttributeError:
-                pass  # Column doesn't exist yet, will be added by migration
+                pass
             db.add(watchlist_item)
         else:
-            # If item is deleted, reactivate it first (safe: selected only if no active exists).
-            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+            if getattr(watchlist_item, "is_deleted", False):
                 logger.info(f"♻️ [BUY ALERT] Reactivating deleted watchlist item for {symbol_upper} (no active row existed)")
-                watchlist_item.is_deleted = False
-            # Update existing item
-            if hasattr(watchlist_item, "buy_alert_enabled"):
-                watchlist_item.buy_alert_enabled = buy_alert_enabled
-            # Update master alert_enabled if either buy or sell is enabled
-            if hasattr(watchlist_item, "sell_alert_enabled"):
-                watchlist_item.alert_enabled = buy_alert_enabled or watchlist_item.sell_alert_enabled
-            else:
-                watchlist_item.alert_enabled = buy_alert_enabled
+                setattr(watchlist_item, "is_deleted", False)
+            setattr(watchlist_item, "buy_alert_enabled", buy_alert_enabled)
+            setattr(watchlist_item, "alert_enabled", buy_alert_enabled or bool(getattr(watchlist_item, "sell_alert_enabled", False)))
         
         try:
             db.commit()
@@ -1541,12 +1552,8 @@ def update_buy_alert(
                 logger.warning("⚠️ [BUY ALERT] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
                 canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
                 if canonical and not getattr(canonical, "is_deleted", False):
-                    if hasattr(canonical, "buy_alert_enabled"):
-                        canonical.buy_alert_enabled = buy_alert_enabled
-                    if hasattr(canonical, "sell_alert_enabled"):
-                        canonical.alert_enabled = buy_alert_enabled or bool(getattr(canonical, "sell_alert_enabled", False))
-                    else:
-                        canonical.alert_enabled = buy_alert_enabled
+                    setattr(canonical, "buy_alert_enabled", buy_alert_enabled)
+                    setattr(canonical, "alert_enabled", buy_alert_enabled or bool(getattr(canonical, "sell_alert_enabled", False)))
                     db.commit()
                     watchlist_item = canonical
                 else:
@@ -1668,28 +1675,20 @@ def update_sell_alert(
             )
             # Set buy/sell alert fields (will work even if columns don't exist yet - SQLAlchemy handles it)
             try:
-                watchlist_item.buy_alert_enabled = False
+                setattr(watchlist_item, "buy_alert_enabled", False)
             except AttributeError:
-                pass  # Column doesn't exist yet, will be added by migration
+                pass
             try:
-                watchlist_item.sell_alert_enabled = sell_alert_enabled
+                setattr(watchlist_item, "sell_alert_enabled", sell_alert_enabled)
             except AttributeError:
                 logger.warning(f"⚠️ [SELL ALERT] sell_alert_enabled column not found for {symbol_upper}")
-                pass  # Column doesn't exist yet, will be added by migration
             db.add(watchlist_item)
         else:
-            # If item is deleted, reactivate it first (safe: selected only if no active exists).
-            if hasattr(watchlist_item, "is_deleted") and watchlist_item.is_deleted:
+            if getattr(watchlist_item, "is_deleted", False):
                 logger.info(f"♻️ [SELL ALERT] Reactivating deleted watchlist item for {symbol_upper} (no active row existed)")
-                watchlist_item.is_deleted = False
-            # Update existing item
-            if hasattr(watchlist_item, "sell_alert_enabled"):
-                watchlist_item.sell_alert_enabled = sell_alert_enabled
-            # Update master alert_enabled if either buy or sell is enabled
-            if hasattr(watchlist_item, "buy_alert_enabled"):
-                watchlist_item.alert_enabled = watchlist_item.buy_alert_enabled or sell_alert_enabled
-            else:
-                watchlist_item.alert_enabled = sell_alert_enabled
+                setattr(watchlist_item, "is_deleted", False)
+            setattr(watchlist_item, "sell_alert_enabled", sell_alert_enabled)
+            setattr(watchlist_item, "alert_enabled", bool(getattr(watchlist_item, "buy_alert_enabled", False)) or sell_alert_enabled)
         
         try:
             db.commit()
@@ -1700,12 +1699,8 @@ def update_sell_alert(
                 logger.warning("⚠️ [SELL ALERT] Unique violation for %s, retrying on active canonical row: %s", symbol_upper, err_text)
                 canonical = _select_watchlist_item_for_toggle(db, symbol_upper)
                 if canonical and not getattr(canonical, "is_deleted", False):
-                    if hasattr(canonical, "sell_alert_enabled"):
-                        canonical.sell_alert_enabled = sell_alert_enabled
-                    if hasattr(canonical, "buy_alert_enabled"):
-                        canonical.alert_enabled = bool(getattr(canonical, "buy_alert_enabled", False)) or sell_alert_enabled
-                    else:
-                        canonical.alert_enabled = sell_alert_enabled
+                    setattr(canonical, "sell_alert_enabled", sell_alert_enabled)
+                    setattr(canonical, "alert_enabled", bool(getattr(canonical, "buy_alert_enabled", False)) or sell_alert_enabled)
                     db.commit()
                     watchlist_item = canonical
                 else:

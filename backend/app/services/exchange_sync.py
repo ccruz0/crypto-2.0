@@ -870,6 +870,16 @@ class ExchangeSyncService:
         except Exception as e:
             logger.error(f"Error syncing open orders: {e}", exc_info=True)
             db.rollback()
+            try:
+                from app.services.notion_tasks import create_bug_task
+                create_bug_task(
+                    title="Order synchronization failure",
+                    project="Crypto Trading",
+                    details=f"Error syncing open orders: {str(e)[:500]}.",
+                )
+                logger.info("Trading failure triggered Notion bug task: Order synchronization failure")
+            except Exception as notion_err:
+                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
     
     def _send_oco_cancellation_notification(self, db: Session, filled_order: 'ExchangeOrder', cancelled_sibling: 'ExchangeOrder', was_already_cancelled: bool = False):
         """Send Telegram notification for OCO sibling cancellation"""

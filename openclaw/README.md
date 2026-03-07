@@ -1,19 +1,21 @@
-# OpenClaw container
+# OpenClaw container (ATP reference)
 
-Placeholder image that listens on **port 8080** for the LAB. Replaces the need for `ghcr.io/your-org/openclaw:latest` until a full OpenClaw app image is available.
+The **OpenClaw image is not built in this repo.** It is built and published from the [ccruz0/openclaw](https://github.com/ccruz0/openclaw) repository.
+
+**Allowed-origins fix (proxy deployment):** This repo provides a **wrapper image** so the gateway starts behind a reverse proxy. Build with `docker build -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .`, set `OPENCLAW_IMAGE=openclaw-with-origins:latest`, and pass `OPENCLAW_ALLOWED_ORIGINS`. See [ALLOWED_ORIGINS_IMPLEMENTATION.md](../docs/openclaw/ALLOWED_ORIGINS_IMPLEMENTATION.md) for exact commands and verification.
 
 ## Image
 
-- **Built by CI:** On push to `main` (when `openclaw/` or this workflow changes), GitHub Actions builds and pushes:
-  - `ghcr.io/<owner>/<repo>:openclaw`  
-  Example for repo `ccruz0/crypto-2.0`: **`ghcr.io/ccruz0/crypto-2.0:openclaw`**
+- **Source repo:** `ccruz0/openclaw`
+- **Image:** `ghcr.io/ccruz0/openclaw:latest`
+- **CI:** GitHub Actions in the openclaw repo build and push on push to `main`. See [APPLY_GHCR_WORKFLOW.md](../docs/openclaw/APPLY_GHCR_WORKFLOW.md) for the workflow to add there.
 
 ## Use on LAB
 
 In `.env.lab`:
 
 ```bash
-OPENCLAW_IMAGE=ghcr.io/ccruz0/crypto-2.0:openclaw
+OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest
 ```
 
 Then:
@@ -22,14 +24,20 @@ Then:
 docker compose -f docker-compose.openclaw.yml up -d
 ```
 
-If the repo is under another org/user, replace with your `owner/repo` (e.g. `ghcr.io/MYORG/crypto-2.0:openclaw`). The package is tied to the GitHub repo; make it **Public** in Package settings if the LAB pulls without login.
+The `docker-compose.openclaw.yml` in this repo defaults to `ghcr.io/ccruz0/openclaw:latest` when `OPENCLAW_IMAGE` is not set.
 
-## Build locally
+## Redeploy on LAB (after new image in GHCR)
 
 ```bash
-docker build -t ghcr.io/ccruz0/openclaw:latest -f openclaw/Dockerfile .
+docker pull ghcr.io/ccruz0/openclaw:latest
+docker stop openclaw || true
+docker rm openclaw || true
+docker run -d --restart unless-stopped -p 8081:8081 --name openclaw ghcr.io/ccruz0/openclaw:latest
 ```
 
-## Trigger build manually
+(Adjust port if your stack uses a different host port.)
 
-In GitHub: **Actions** → **Build OpenClaw image** → **Run workflow**.
+## Docs in this repo
+
+- [APPLY_GHCR_WORKFLOW.md](../docs/openclaw/APPLY_GHCR_WORKFLOW.md) — workflow to build/publish from ccruz0/openclaw
+- [DEPLOY_REAL_OPENCLAW_APP_ON_LAB.md](../docs/runbooks/DEPLOY_REAL_OPENCLAW_APP_ON_LAB.md) — replace placeholder with real app on LAB

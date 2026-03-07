@@ -17,6 +17,7 @@ tail -n "$N" "$LOG" | jq -s '
   def to_num: if type == "number" then . else (tonumber? // 0) end;
   {
     total: length,
+    by_severity: (group_by(.severity) | map({severity: .[0].severity, n: length})),
     by_verify: (group_by(.verify_label) | map({label: .[0].verify_label, n: length})),
     by_global_status: (group_by(.global_status) | map({status: .[0].global_status, n: length})),
     by_market_data: (group_by(.market_data_status) | map({status: .[0].market_data_status, n: length})),
