@@ -256,6 +256,43 @@ def run_agent_scheduler_cycle(
     }
 
 
+def retry_approved_failed_tasks() -> list[dict[str, Any]]:
+    """
+    Find tasks that were approved but whose execution failed or never started,
+    and retry execution for each. Returns a list of per-task results.
+    """
+    try:
+        from app.services.agent_telegram_approval import (
+            get_approved_retryable_task_ids,
+            execute_prepared_task_from_telegram_decision,
+        )
+    except Exception as e:
+        logger.warning("retry_approved_failed_tasks: import failed %s", e)
+        return []
+
+    task_ids = get_approved_retryable_task_ids(max_results=3)
+    if not task_ids:
+        return []
+
+    results: list[dict[str, Any]] = []
+    for tid in task_ids:
+        logger.info("retry_approved_failed_tasks: retrying task_id=%s", tid)
+        _log_event("scheduler_retry_execution", task_id=tid, details={})
+        try:
+            result = execute_prepared_task_from_telegram_decision(tid)
+            executed = result.get("executed", False)
+            reason = result.get("reason", "")
+            logger.info(
+                "retry_approved_failed_tasks: task_id=%s executed=%s reason=%s",
+                tid, executed, reason,
+            )
+            results.append({"task_id": tid, "executed": executed, "reason": reason})
+        except Exception as e:
+            logger.error("retry_approved_failed_tasks: task_id=%s raised %s", tid, e, exc_info=True)
+            results.append({"task_id": tid, "executed": False, "reason": str(e)})
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Background loop: runs run_agent_scheduler_cycle() periodically
 # ---------------------------------------------------------------------------
@@ -305,6 +342,17 @@ async def start_agent_scheduler_loop() -> None:
             )
         except Exception as e:
             logger.error("agent_scheduler_loop: cycle raised %s", e, exc_info=True)
+
+        try:
+            retry_results = await loop.run_in_executor(None, retry_approved_failed_tasks)
+            if retry_results:
+                logger.info(
+                    "scheduler_retry_done count=%d executed=%d",
+                    len(retry_results),
+                    sum(1 for r in retry_results if r.get("executed")),
+                )
+        except Exception as e:
+            logger.error("agent_scheduler_loop: retry_approved_failed_tasks raised %s", e, exc_info=True)
 
         try:
             from app.services.agent_anomaly_detector import run_anomaly_detection_cycle

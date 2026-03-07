@@ -687,6 +687,11 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
           "selection_reason": "..."
         }
     """
+    task_obj = (prepared_task or {}).get("task") or {}
+    _task_type = str(task_obj.get("type") or "").lower()
+    _task_title = str(task_obj.get("task") or "")[:80]
+    logger.debug("select_default_callbacks_for_task: type=%r title=%r", _task_type, _task_title)
+
     if _is_documentation_eligible(prepared_task):
         return {
             "apply_change_fn": apply_documentation_task,
@@ -701,6 +706,18 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "validate_fn": validate_monitoring_triage_task,
             "deploy_fn": None,
             "selection_reason": "monitoring/infrastructure triage task (monitoring keywords or inferred monitoring-infra area)",
+        }
+
+    # Bug investigation: check early (type-based match is reliable and should not
+    # be shadowed by broad keyword-based analysis checks below that may fail imports).
+    if _is_bug_investigation_eligible(prepared_task):
+        logger.info("select_default_callbacks_for_task: matched bug_investigation type=%r title=%r", _task_type, _task_title)
+        return {
+            "apply_change_fn": apply_bug_investigation_task,
+            "validate_fn": validate_bug_investigation_task,
+            "deploy_fn": None,
+            "manual_only": True,
+            "selection_reason": "bug investigation task (documentation-only investigation note; approval-gated)",
         }
 
     if _is_profile_setting_analysis_eligible(prepared_task):
@@ -732,13 +749,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "selection_reason": "profile-setting-analysis task (analysis-only per-symbol/profile/side proposal; approval-gated)",
             }
         except Exception as e:
-            logger.warning("profile setting analysis callbacks unavailable: %s", e)
-            return {
-                "apply_change_fn": None,
-                "validate_fn": None,
-                "deploy_fn": None,
-                "selection_reason": "profile-setting-analysis eligible but callback import failed",
-            }
+            logger.warning("profile setting analysis callbacks unavailable (falling through): %s", e)
 
     # Strategy patch callback is heavily constrained and manual-only.
     # It is selected only when strict eligibility passes in agent_strategy_patch.
@@ -790,13 +801,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "selection_reason": "signal-performance-analysis task (analysis-only historical outcome proposal; approval-gated)",
             }
         except Exception as e:
-            logger.warning("signal performance analysis callbacks unavailable: %s", e)
-            return {
-                "apply_change_fn": None,
-                "validate_fn": None,
-                "deploy_fn": None,
-                "selection_reason": "signal-performance-analysis eligible but callback import failed",
-            }
+            logger.warning("signal performance analysis callbacks unavailable (falling through): %s", e)
 
     if _is_strategy_analysis_eligible(prepared_task):
         try:
@@ -812,23 +817,12 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "selection_reason": "strategy-analysis task (analysis-only proposal for alert/signal/threshold tuning; requires approval gate)",
             }
         except Exception as e:
-            logger.warning("strategy analysis callbacks unavailable: %s", e)
-            return {
-                "apply_change_fn": None,
-                "validate_fn": None,
-                "deploy_fn": None,
-                "selection_reason": "strategy-analysis eligible but callback import failed",
-            }
+            logger.warning("strategy analysis callbacks unavailable (falling through): %s", e)
 
-    if _is_bug_investigation_eligible(prepared_task):
-        return {
-            "apply_change_fn": apply_bug_investigation_task,
-            "validate_fn": validate_bug_investigation_task,
-            "deploy_fn": None,
-            "manual_only": True,
-            "selection_reason": "bug investigation task (documentation-only investigation note; approval-gated)",
-        }
-
+    logger.warning(
+        "select_default_callbacks_for_task: NO callback matched type=%r title=%r — returning None apply_change_fn",
+        _task_type, _task_title,
+    )
     return {
         "apply_change_fn": None,
         "validate_fn": None,
