@@ -21,6 +21,8 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 OPENCLAW_HOME_DIR="${OPENCLAW_HOME_DIR:-/opt/openclaw/home-data}"
 ATP_REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
 OPENCLAW_TRUSTED_PROXIES="${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}"
+OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}"
+OPENCLAW_MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-openai/gpt-4o,anthropic/claude-opus-4-6}"
 
 do_build() {
   echo "==> Building wrapper image (openclaw-with-origins:latest)"

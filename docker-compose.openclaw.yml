@@ -19,8 +19,11 @@ services:
       - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
       - OPENCLAW_CONTROL_UI_BASE_PATH=/openclaw/
       - OPENCLAW_TRUSTED_PROXIES=${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}
+      - OPENCLAW_MODEL_PRIMARY=${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}
+      - OPENCLAW_MODEL_FALLBACKS=${OPENCLAW_MODEL_FALLBACKS:-openai/gpt-4o,anthropic/claude-opus-4-6}
       - NODE_ENV=production
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       # Persistent home — keeps devices, config, sessions across restarts
       - /opt/openclaw/home-data:/home/node/.openclaw
