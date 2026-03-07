@@ -855,11 +855,14 @@ def execute_prepared_notion_task(
             msg = summarize_validation_result(False, validation_summary)
             _append_notion_page_comment(task_id, f"[{executed_at}] {msg}")
             logger.warning("execute_prepared_notion_task: validation failed task_id=%s summary=%s", task_id, validation_summary)
+            # Apply succeeded and task moved to testing — mark success=True
+            # to prevent infinite retry loops. Validation issues are soft
+            # failures that should be resolved manually, not re-executed.
             return result(
                 True, True, apply_summary,
                 testing_updated, True, False, validation_summary,
                 False, False, "",
-                "testing", False,
+                "testing", True,
             )
         logger.info("execute_prepared_notion_task: validation passed task_id=%s", task_id)
     else:
