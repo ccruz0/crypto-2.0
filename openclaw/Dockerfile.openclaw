@@ -1,0 +1,13 @@
+# Wrapper image: adds python symlink, trustedProxies, model fallback, and
+# allowedOrigins entrypoint. Uses base OpenClaw image.
+# Build from repo root: docker build -f openclaw/Dockerfile.openclaw -t openclaw:atp .
+FROM ghcr.io/ccruz0/openclaw:latest
+
+# Many ATP scripts use "python" but the base image only has python3
+RUN ln -sf python3 /usr/bin/python
+
+ENV OPENCLAW_CONFIG_HOME=/tmp/.openclaw
+
+COPY openclaw/docker-entrypoint.sh /openclaw-entrypoint.sh
+ENTRYPOINT ["/bin/sh", "/openclaw-entrypoint.sh"]
+# Base image CMD (e.g. gateway --bind lan) is passed as args to entrypoint

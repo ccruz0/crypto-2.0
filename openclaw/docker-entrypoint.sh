@@ -6,6 +6,12 @@
 
 set -e
 
+# python3 exists but many scripts expect "python"; create symlink in writable tmpfs
+if command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+  ln -sf "$(command -v python3)" /tmp/python
+  export PATH="/tmp:$PATH"
+fi
+
 # Default origins (used when env is not set)
 DEFAULT_ORIGINS='["https://dashboard.hilovivo.com","http://localhost:18789","http://127.0.0.1:18789"]'
 
