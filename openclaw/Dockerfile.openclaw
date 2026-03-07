@@ -4,7 +4,9 @@
 FROM ghcr.io/ccruz0/openclaw:latest
 
 # Many ATP scripts use "python" but the base image only has python3
+USER root
 RUN ln -sf python3 /usr/bin/python
+USER node
 
 ENV OPENCLAW_CONFIG_HOME=/tmp/.openclaw
 
