@@ -1,6 +1,4 @@
-"""
-
-Telegram Command Handler
+"""Telegram Command Handlercimage.pngo
 Handles incoming Telegram commands and responds with formatted messages
 """
 import os
@@ -10,7 +8,7 @@ import time
 import tempfile
 import sys
 import json
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, cast
 from datetime import datetime, timedelta
 from copy import deepcopy
 import pytz
@@ -25,6 +23,19 @@ from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post, requests_exceptions
 
 logger = logging.getLogger(__name__)
+
+
+def _to_float(v: Any) -> float:
+    """Convert ORM Column or value to float for type checker and runtime."""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
 
 # File locking for preventing multiple processes from polling Telegram
 try:
@@ -188,7 +199,7 @@ def _load_last_update_id(db: Session) -> int:
     try:
         state = db.query(TelegramState).filter(TelegramState.id == 1).first()
         if state:
-            LAST_UPDATE_ID = state.last_update_id
+            LAST_UPDATE_ID = int(getattr(state, "last_update_id", 0))
             logger.info(f"[TG] Loaded LAST_UPDATE_ID from DB: {LAST_UPDATE_ID}")
             return LAST_UPDATE_ID
         else:
@@ -213,8 +224,8 @@ def _save_last_update_id(db: Session, update_id: int) -> None:
     try:
         state = db.query(TelegramState).filter(TelegramState.id == 1).first()
         if state:
-            state.last_update_id = update_id
-            state.updated_at = datetime.now(pytz.UTC)
+            setattr(state, "last_update_id", update_id)
+            setattr(state, "updated_at", datetime.now(pytz.UTC))
         else:
             state = TelegramState(id=1, last_update_id=update_id)
             db.add(state)
@@ -424,21 +435,19 @@ def _calculate_portfolio_pnl(db: Session) -> Tuple[float, float]:
             buy_queue: List[Tuple[float, float]] = []  # List of (quantity, avg_price) tuples
             
             for order in symbol_orders:
-                # Skip SL/TP orders for realized PnL calculation
-                # (they're part of position management, not separate trades)
-                if order.order_role in ["STOP_LOSS", "TAKE_PROFIT"]:
+                if getattr(order, "order_role", None) in ["STOP_LOSS", "TAKE_PROFIT"]:
                     continue
                 
-                qty = float(order.cumulative_quantity or order.quantity or 0)
-                price = float(order.avg_price or order.price or 0)
+                qty = _to_float(getattr(order, "cumulative_quantity", None) or getattr(order, "quantity", None))
+                price = _to_float(getattr(order, "avg_price", None) or getattr(order, "price", None))
                 
                 if qty <= 0 or price <= 0:
                     continue
                 
-                if order.side == OrderSideEnum.BUY:
+                if getattr(order, "side", None) == OrderSideEnum.BUY:
                     # Add to buy queue
                     buy_queue.append((qty, price))
-                elif order.side == OrderSideEnum.SELL:
+                elif getattr(order, "side", None) == OrderSideEnum.SELL:
                     # Match with earliest BUY orders (FIFO)
                     remaining_sell_qty = qty
                     while remaining_sell_qty > 0 and buy_queue:
@@ -460,44 +469,43 @@ def _calculate_portfolio_pnl(db: Session) -> Tuple[float, float]:
         # Calculate unrealized PnL from open positions (remaining buy_queue per symbol)
         unrealized_pnl = 0.0
         
-        # Get current prices for all symbols
+        # Get current prices for all symbols (use Python values for type checker)
         market_prices = db.query(MarketPrice).all()
-        price_map = {mp.symbol.upper(): mp.price for mp in market_prices}
+        price_map: Dict[str, float] = {
+            str(getattr(mp, "symbol", "") or "").upper(): _to_float(getattr(mp, "price", None))
+            for mp in market_prices
+        }
         
-        # Calculate unrealized PnL for remaining positions (grouped by symbol)
         open_positions_by_symbol: Dict[str, List[Tuple[float, float]]] = {}
         
-        # Re-process to build open positions per symbol
         for symbol, symbol_orders in orders_by_symbol.items():
-            buy_queue: List[Tuple[float, float]] = []
+            symbol_buy_queue: List[Tuple[float, float]] = []
             
             for order in symbol_orders:
-                if order.order_role in ["STOP_LOSS", "TAKE_PROFIT"]:
+                if getattr(order, "order_role", None) in ["STOP_LOSS", "TAKE_PROFIT"]:
                     continue
                 
-                qty = float(order.cumulative_quantity or order.quantity or 0)
-                price = float(order.avg_price or order.price or 0)
+                qty = _to_float(getattr(order, "cumulative_quantity", None) or getattr(order, "quantity", None))
+                price = _to_float(getattr(order, "avg_price", None) or getattr(order, "price", None))
                 
                 if qty <= 0 or price <= 0:
                     continue
                 
-                if order.side == OrderSideEnum.BUY:
-                    buy_queue.append((qty, price))
-                elif order.side == OrderSideEnum.SELL:
-                    # Match with BUY orders (FIFO)
+                if getattr(order, "side", None) == OrderSideEnum.BUY:
+                    symbol_buy_queue.append((qty, price))
+                elif getattr(order, "side", None) == OrderSideEnum.SELL:
                     remaining_sell_qty = qty
-                    while remaining_sell_qty > 0 and buy_queue:
-                        buy_qty, _ = buy_queue[0]
+                    while remaining_sell_qty > 0 and symbol_buy_queue:
+                        buy_qty, _ = symbol_buy_queue[0]
                         if buy_qty <= remaining_sell_qty:
                             remaining_sell_qty -= buy_qty
-                            buy_queue.pop(0)
+                            symbol_buy_queue.pop(0)
                         else:
-                            buy_queue[0] = (buy_qty - remaining_sell_qty, buy_queue[0][1])
+                            symbol_buy_queue[0] = (buy_qty - remaining_sell_qty, symbol_buy_queue[0][1])
                             remaining_sell_qty = 0
             
-            # Store remaining open positions for this symbol
-            if buy_queue:
-                open_positions_by_symbol[symbol] = buy_queue
+            if symbol_buy_queue:
+                open_positions_by_symbol[symbol] = symbol_buy_queue
         
         # Calculate unrealized PnL for each symbol's open positions
         for symbol, positions in open_positions_by_symbol.items():
@@ -555,10 +563,10 @@ def _format_coin_summary(item: WatchlistItem) -> str:
     buy_alert = "ENABLED" if getattr(item, "buy_alert_enabled", False) else "DISABLED"
     sell_alert = "ENABLED" if getattr(item, "sell_alert_enabled", False) else "DISABLED"
     return (
-        f"🔔 Alert: <b>{'ENABLED' if item.alert_enabled else 'DISABLED'}</b>\n"
+        f"🔔 Alert: <b>{'ENABLED' if getattr(item, 'alert_enabled', False) else 'DISABLED'}</b>\n"
         f"🟢 Buy Alert: <b>{buy_alert}</b> | 🔻 Sell Alert: <b>{sell_alert}</b>\n"
-        f"🤖 Trade: <b>{'ENABLED' if item.trade_enabled else 'DISABLED'}</b>\n"
-        f"⚡ Margin: <b>{'ON' if item.trade_on_margin else 'OFF'}</b>\n"
+        f"🤖 Trade: <b>{'ENABLED' if getattr(item, 'trade_enabled', False) else 'DISABLED'}</b>\n"
+        f"⚡ Margin: <b>{'ON' if getattr(item, 'trade_on_margin', False) else 'OFF'}</b>\n"
         f"💵 Amount USD: <b>{amount_text}</b>\n"
         f"🎯 Risk Mode: <b>{sl_mode.title()}</b>\n"
         f"📉 SL%: <b>{sl_text}</b> | 📈 TP%: <b>{tp_text}</b>\n"
@@ -660,16 +668,18 @@ def _create_watchlist_symbol(db: Session, symbol: str) -> WatchlistItem:
     return item
 
 
-def _delete_watchlist_symbol(db: Session, symbol: str) -> None:
+def _delete_watchlist_symbol(db: Optional[Session], symbol: str) -> None:
     """Soft delete symbol if column exists, fallback to hard delete."""
+    if db is None:
+        raise ValueError("Database session required")
     item = _get_watchlist_item(db, symbol)
     if not item:
         raise ValueError(f"{symbol} no existe")
     if hasattr(item, "is_deleted"):
-        item.is_deleted = True
-        item.alert_enabled = False
-        item.trade_enabled = False
-        item.trade_on_margin = False
+        setattr(item, "is_deleted", True)
+        setattr(item, "alert_enabled", False)
+        setattr(item, "trade_enabled", False)
+        setattr(item, "trade_on_margin", False)
     else:
         db.delete(item)
     db.commit()
@@ -762,8 +772,8 @@ def _handle_pending_value_message(chat_id: str, text: str, db: Session) -> bool:
             show_coin_menu(chat_id, symbol, db)
         elif action == "add_symbol" and isinstance(value, str):
             new_item = _create_watchlist_symbol(db, value)
-            send_command_response(chat_id, f"✅ {new_item.symbol} agregado con Alert=NO / Trade=NO.")
-            show_coin_menu(chat_id, new_item.symbol, db)
+            send_command_response(chat_id, f"✅ {str(getattr(new_item, 'symbol', '') or '')} agregado con Alert=NO / Trade=NO.")
+            show_coin_menu(chat_id, str(getattr(new_item, "symbol", "") or ""), db)
         elif action == "set_notes" and symbol:
             _update_watchlist_fields(db, symbol, {"notes": value})
             send_command_response(chat_id, f"📝 Notas actualizadas para {symbol}")
@@ -919,7 +929,8 @@ def setup_bot_commands():
             {"command": "create_tp", "description": "Crear solo TP para una posición"},
             {"command": "skip_sl_tp_reminder", "description": "No preguntar más sobre SL/TP"},
             {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"},
-            {"command": "kill", "description": "🛑 Kill switch: on/off/status - Global trading kill switch"}
+            {"command": "kill", "description": "🛑 Kill switch: on/off/status - Global trading kill switch"},
+            {"command": "agent", "description": "Agent console: activity, approvals, failures"},
         ]
         
         payload = {
@@ -1059,12 +1070,13 @@ def send_command_response(chat_id: str, message: str) -> bool:
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to send command response: {e}")
         # Try to get more details about the error
-        if hasattr(e, 'response') and e.response is not None:
+        resp = getattr(e, "response", None)
+        if resp is not None:
             try:
-                error_data = e.response.json()
+                error_data = resp.json()
                 logger.error(f"[TG][ERROR] Error details: {error_data}")
-            except:
-                logger.error(f"[TG][ERROR] Error response: {e.response.text[:200]}")
+            except Exception:
+                logger.error(f"[TG][ERROR] Error response: {getattr(resp, 'text', '')[:200]}")
         return False
 
 
@@ -1101,7 +1113,7 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
         return False
 
 
-def send_welcome_message(chat_id: str, db: Session = None) -> bool:
+def send_welcome_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send welcome message - shows main menu (same as /start)"""
     if not TELEGRAM_ENABLED:
         return False
@@ -1115,8 +1127,11 @@ def send_welcome_message(chat_id: str, db: Session = None) -> bool:
         return False
 
 
-def send_audit_snapshot(chat_id: str, db: Session) -> bool:
+def send_audit_snapshot(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send audit snapshot with system health and status"""
+    if db is None:
+        send_command_response(chat_id, "❌ Database not available")
+        return False
     try:
         from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
         from app.models.watchlist import WatchlistItem
@@ -1254,7 +1269,7 @@ def send_help_message(chat_id: str) -> bool:
     return send_command_response(chat_id, message)
 
 
-def show_main_menu(chat_id: str, db: Session = None) -> bool:
+def show_main_menu(chat_id: str, db: Optional[Session] = None) -> bool:
     """Show main menu with buttons matching dashboard layout - Reference Specification v1.0
     
     Menu structure (exact order per specification):
@@ -1266,6 +1281,8 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
     6. Monitoring
     7. Version History
     """
+    if db is None:
+        return False
     try:
         # Authorization check - use helper function
         # Note: For menu display, we need user_id but it's not available here
@@ -1284,6 +1301,7 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
             [{"text": "✅ Executed Orders", "callback_data": "menu:executed_orders"}],
             [{"text": "🔍 Monitoring", "callback_data": "menu:monitoring"}],
             [{"text": "🛑 Kill Switch", "callback_data": "menu:kill_switch"}],
+            [{"text": "🤖 Agent Console", "callback_data": "menu:agent"}],
             [{"text": "🛡️ Check SL/TP", "callback_data": "cmd:check_sl_tp"}],
             [{"text": "📝 Version History", "callback_data": "cmd:version"}],
         ])
@@ -1299,9 +1317,9 @@ def show_main_menu(chat_id: str, db: Session = None) -> bool:
         return send_command_response(chat_id, f"❌ Error showing menu: {str(e)}")
 
 
-def show_watchlist_menu(chat_id: str, db: Session, page: int = 1, message_id: Optional[int] = None) -> bool:
+def show_watchlist_menu(chat_id: str, db: Optional[Session] = None, page: int = 1, message_id: Optional[int] = None) -> bool:
     """Show paginated watchlist with per-symbol buttons."""
-    if not db:
+    if db is None:
         return send_command_response(chat_id, "❌ Database not available")
     try:
         items = _load_watchlist_items(db)
@@ -1346,9 +1364,9 @@ def show_watchlist_menu(chat_id: str, db: Session, page: int = 1, message_id: Op
         return send_command_response(chat_id, f"❌ Error mostrando watchlist: {e}")
 
 
-def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[int] = None) -> bool:
+def show_coin_menu(chat_id: str, symbol: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show detailed controls for a specific symbol."""
-    if not db:
+    if db is None:
         return send_command_response(chat_id, "❌ Database not available")
     try:
         normalized = (symbol or "").upper()
@@ -1394,11 +1412,14 @@ def show_coin_menu(chat_id: str, symbol: str, db: Session, message_id: Optional[
 
 
 # Track recent toggles to prevent duplicate messages
-_TOGGLE_CACHE: Dict[str, float] = {}  # {(chat_id, symbol, field): timestamp}
+_TOGGLE_CACHE: Dict[str, float] = {}
 _TOGGLE_CACHE_TTL = 2.0  # 2 seconds - ignore duplicate toggles within this window
 
-def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Session, message_id: Optional[int]) -> None:
+def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Optional[Session], message_id: Optional[int]) -> None:
     """Generic toggle handler for alert/trade/margin/risk flags."""
+    if db is None:
+        send_command_response(chat_id, "❌ Database not available.")
+        return
     # DEDUPLICATION: Prevent duplicate toggles within a short time window
     cache_key = f"{chat_id}:{symbol}:{field}"
     now = time.time()
@@ -1420,9 +1441,10 @@ def _handle_watchlist_toggle(chat_id: str, symbol: str, field: str, db: Session,
         _TOGGLE_CACHE[cache_key] = now
         # Clean up old cache entries (keep only last 100)
         if len(_TOGGLE_CACHE) > 100:
-            # Remove entries older than TTL
             cutoff_time = now - _TOGGLE_CACHE_TTL
-            _TOGGLE_CACHE = {k: v for k, v in _TOGGLE_CACHE.items() if v > cutoff_time}
+            to_drop = [k for k, v in _TOGGLE_CACHE.items() if v <= cutoff_time]
+            for k in to_drop:
+                del _TOGGLE_CACHE[k]
         
         if field == "sl_tp_mode":
             current = (item.sl_tp_mode or "conservative").lower()
@@ -1504,7 +1526,7 @@ def _apply_preset_change(chat_id: str, symbol: str, preset: str) -> None:
     send_command_response(chat_id, f"🧠 {symbol} ahora usa preset <b>{preset}</b>")
 
 
-def _trigger_watchlist_test(chat_id: str, symbol: str, db: Session) -> None:
+def _trigger_watchlist_test(chat_id: str, symbol: str, db: Optional[Session]) -> None:
     """Simulate BUY/SELL alerts for the given symbol matching dashboard test button."""
     if not db:
         send_command_response(chat_id, "❌ Database not available.")
@@ -1564,7 +1586,7 @@ def _trigger_watchlist_test(chat_id: str, symbol: str, db: Session) -> None:
         message_lines.extend([f"• {err}" for err in errors])
     send_command_response(chat_id, "\n".join(message_lines))
 
-def send_status_message(chat_id: str, db: Session = None) -> bool:
+def send_status_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send bot status report"""
     try:
         # Check exchange connection (simplified - check if we can get price)
@@ -1614,7 +1636,7 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 
                 # Log all coins with Trade=YES for debugging
                 if tracked_coins_with_trade > 0:
-                    trade_yes_symbols = [coin.symbol for coin in active_trade_coins]
+                    trade_yes_symbols = [str(getattr(coin, "symbol", "N/A")) for coin in active_trade_coins]
                     logger.debug(f"[TG][STATUS] Found {tracked_coins_with_trade} coins with Trade=YES: {', '.join(trade_yes_symbols)}")
                 else:
                     logger.debug("[TG][STATUS] No coins found with Trade=YES")
@@ -1624,25 +1646,28 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                 trade_amounts_dict = {}
                 
                 # Sort by created_at descending to keep most recent entry for each symbol
-                # Handle None created_at by using a default datetime
                 min_datetime = datetime(1970, 1, 1)
+
+                def _coin_created_at(c: Any) -> datetime:
+                    ct = getattr(c, "created_at", None)
+                    return ct if isinstance(ct, datetime) else min_datetime
+
                 sorted_coins = sorted(
-                    active_trade_coins, 
-                    key=lambda c: c.created_at if c.created_at else min_datetime, 
-                    reverse=True
+                    active_trade_coins,
+                    key=_coin_created_at,
+                    reverse=True,
                 )
                 
                 for coin in sorted_coins:
-                    symbol = coin.symbol or "N/A"
-                    
+                    symbol = str(getattr(coin, "symbol", None) or "N/A")
                     # Only add if we haven't seen this symbol before (deduplication)
                     if symbol not in auto_trading_dict:
-                        margin = "✅" if coin.trade_on_margin else "❌"
+                        margin = "✅" if bool(getattr(coin, "trade_on_margin", False)) else "❌"
                         auto_trading_dict[symbol] = f"{symbol} (Margin: {margin})"
                     
                     # Only add trade amount if we haven't seen this symbol before
                     if symbol not in trade_amounts_dict:
-                        amount = coin.trade_amount_usd or 0
+                        amount = _to_float(getattr(coin, "trade_amount_usd", None))
                         if amount > 0:
                             trade_amounts_dict[symbol] = f"{symbol}: ${amount:,.2f}"
                         else:
@@ -1658,7 +1683,7 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
                         WatchlistItem.created_at.isnot(None)
                     ).order_by(WatchlistItem.created_at.desc()).first()
                     
-                    if last_item and last_item.created_at:
+                    if last_item and getattr(last_item, "created_at", None):
                         tz = pytz.timezone("Asia/Makassar")  # Bali time (UTC+8)
                         if isinstance(last_item.created_at, datetime):
                             last_update = last_item.created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
@@ -1749,7 +1774,7 @@ def send_status_message(chat_id: str, db: Session = None) -> bool:
         return send_command_response(chat_id, f"❌ Error building status: {str(e)}")
 
 
-def send_portfolio_message(chat_id: str, db: Session = None) -> bool:
+def send_portfolio_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send portfolio with PnL breakdown - Reference Specification Section 3"""
     try:
         if not db:
@@ -1912,7 +1937,7 @@ Check if exchange sync is running."""
         return _send_menu_message(chat_id, error_message, error_keyboard)
 
 
-def send_signals_message(chat_id: str, db: Session = None) -> bool:
+def send_signals_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send all trading signals with detailed information"""
     try:
         if not db:
@@ -1957,8 +1982,7 @@ No signals generated yet."""
                 symbol = signal.symbol or "N/A"
                 
                 # Get signal price (historical - when signal was CREATED)
-                # Use entry_price which is never updated
-                signal_price = signal.entry_price or signal.current_price or 0
+                signal_price = _to_float(getattr(signal, "entry_price", None) or getattr(signal, "current_price", None))
                 
                 # Get market data for this symbol (has all technical indicators)
                 market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
@@ -1967,13 +1991,15 @@ No signals generated yet."""
                 current_price = 0
                 
                 # 1. Try MarketData (most reliable source for current price)
-                if market_data and market_data.price and market_data.price > 0:
-                    current_price = market_data.price
+                md_price = _to_float(getattr(market_data, "price", None)) if market_data is not None else 0
+                if market_data is not None and md_price > 0:
+                    current_price = md_price
                 
                 # 2. Try watchlist as backup
                 watchlist_item = db.query(WatchlistItem).filter(WatchlistItem.symbol == symbol).first()
-                if current_price == 0 and watchlist_item and watchlist_item.price and watchlist_item.price > 0:
-                    current_price = watchlist_item.price
+                wl_price = _to_float(getattr(watchlist_item, "price", None)) if watchlist_item is not None else 0
+                if current_price == 0 and watchlist_item is not None and wl_price > 0:
+                    current_price = wl_price
                 
                 # 2. If not in watchlist or no price, try fetching from API
                 if current_price == 0:
@@ -1998,11 +2024,13 @@ No signals generated yet."""
                 if current_price == 0:
                     current_price = signal_price
                 
-                # Calculate percentage change
+                # Calculate percentage change (ensure scalars for comparison)
+                signal_price_f = float(signal_price) if isinstance(signal_price, (int, float)) else _to_float(signal_price)
+                current_price_f = float(current_price) if isinstance(current_price, (int, float)) else _to_float(current_price)
                 price_change_pct = 0
                 change_emoji = ""
-                if signal_price > 0 and current_price > 0:
-                    price_change_pct = ((current_price - signal_price) / signal_price) * 100
+                if signal_price_f > 0 and current_price_f > 0:
+                    price_change_pct = ((current_price_f - signal_price_f) / signal_price_f) * 100
                     if price_change_pct > 0:
                         change_emoji = "🟢"  # Green for profit
                     elif price_change_pct < 0:
@@ -2010,32 +2038,32 @@ No signals generated yet."""
                     else:
                         change_emoji = "⚪"  # Neutral
                 
-                # Format prices
-                if signal_price >= 100:
-                    signal_price_str = f"${signal_price:,.2f}"
-                elif signal_price > 0:
-                    signal_price_str = f"${signal_price:,.4f}"
+                # Format prices (use scalar values)
+                if signal_price_f >= 100:
+                    signal_price_str = f"${signal_price_f:,.2f}"
+                elif signal_price_f > 0:
+                    signal_price_str = f"${signal_price_f:,.4f}"
                 else:
                     signal_price_str = "N/A"
                 
-                if current_price >= 100:
-                    current_price_str = f"${current_price:,.2f}"
-                elif current_price > 0:
-                    current_price_str = f"${current_price:,.4f}"
+                if current_price_f >= 100:
+                    current_price_str = f"${current_price_f:,.2f}"
+                elif current_price_f > 0:
+                    current_price_str = f"${current_price_f:,.4f}"
                 else:
                     current_price_str = "N/A"
                 
                 # Get technical parameters from signal, or fallback to market_data
-                # Priority: signal > market_data > "No data"
-                rsi = signal.rsi or (market_data.rsi if market_data else None)
-                ma50 = signal.ma50 or (market_data.ma50 if market_data else None)
-                ema10 = signal.ema10 or (market_data.ema10 if market_data else None)
-                atr = signal.atr or (market_data.atr if market_data else None)
-                volume_24h = signal.volume_24h or (market_data.volume_24h if market_data else None)
-                volume_ratio = signal.volume_ratio or (market_data.volume_ratio if market_data else None)
+                rsi_val = getattr(signal, "rsi", None) or (getattr(market_data, "rsi", None) if market_data is not None else None)
+                ma50 = getattr(signal, "ma50", None) or (getattr(market_data, "ma50", None) if market_data is not None else None)
+                ema10 = getattr(signal, "ema10", None) or (getattr(market_data, "ema10", None) if market_data is not None else None)
+                atr = getattr(signal, "atr", None) or (getattr(market_data, "atr", None) if market_data is not None else None)
+                volume_24h = getattr(signal, "volume_24h", None) or (getattr(market_data, "volume_24h", None) if market_data is not None else None)
+                volume_ratio = getattr(signal, "volume_ratio", None) or (getattr(market_data, "volume_ratio", None) if market_data is not None else None)
                 
                 params = []
-                if rsi:
+                rsi = rsi_val
+                if rsi is not None:
                     params.append(f"RSI: {rsi:.1f}")
                 if ma50:
                     params.append(f"MA50: ${ma50:,.2f}" if ma50 >= 100 else f"MA50: ${ma50:,.4f}")
@@ -2048,32 +2076,39 @@ No signals generated yet."""
                 
                 # Format timestamp - use created_at to show when signal was CREATED
                 tz = pytz.timezone("Asia/Makassar")  # Bali time (UTC+8)
-                if signal.created_at:
-                    ts = signal.created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
-                elif signal.last_update_at:
-                    ts = signal.last_update_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+                created_at = getattr(signal, "created_at", None)
+                last_update_at = getattr(signal, "last_update_at", None)
+                if isinstance(created_at, datetime):
+                    ts = created_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
+                elif isinstance(last_update_at, datetime):
+                    ts = last_update_at.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S WIB")
                 else:
                     ts = "N/A"
                 
                 # Get order information
                 order_info = ""
-                if signal.exchange_order_id:
+                exchange_order_id = getattr(signal, "exchange_order_id", None)
+                if exchange_order_id:
                     # Try to find order in database
                     order = db.query(ExchangeOrder).filter(
-                        ExchangeOrder.exchange_order_id == signal.exchange_order_id
+                        ExchangeOrder.exchange_order_id == exchange_order_id
                     ).first()
                     
                     if order:
-                        order_info = f"\n📦 *Order:* {order.exchange_order_id[:12]}..."
-                        order_info += f"\n   Status: {order.status.value if hasattr(order.status, 'value') else order.status}"
-                        if order.price:
-                            order_price = f"${float(order.price):,.2f}" if float(order.price) >= 100 else f"${float(order.price):,.4f}"
+                        order_info = f"\n📦 *Order:* {str(getattr(order, 'exchange_order_id', ''))[:12]}..."
+                        _status = getattr(order, "status", None)
+                        order_info += f"\n   Status: {_status.value if _status is not None and hasattr(_status, 'value') else _status}"
+                        order_price_val = _to_float(getattr(order, "price", None))
+                        if order_price_val:
+                            order_price = f"${order_price_val:,.2f}" if order_price_val >= 100 else f"${order_price_val:,.4f}"
                             order_info += f" | Price: {order_price}"
                     else:
-                        order_info = f"\n📦 *Order:* {signal.exchange_order_id[:12]}... (Status: {signal.status.value if signal.status else 'PENDING'})"
+                        status_attr = getattr(signal, "status", None)
+                        order_info = f"\n📦 *Order:* {str(exchange_order_id)[:12]}... (Status: {status_attr.value if status_attr and hasattr(status_attr, 'value') else 'PENDING'})"
                 else:
                     # No order placed - show reason
-                    status_val = signal.status.value if signal.status else 'PENDING'
+                    status_attr = getattr(signal, "status", None)
+                    status_val = status_attr.value if status_attr and hasattr(status_attr, "value") else "PENDING"
                     if status_val == 'pending':
                         order_info = "\n⏸️ *Order not placed yet* (waiting for signal confirmation)"
                     elif status_val == 'order_placed':
@@ -2091,7 +2126,7 @@ No signals generated yet."""
 🕐 Signal Created: {ts}
 💰 Signal Price: {signal_price_str}
 💵 Current Price: {current_price_str} {change_emoji}
-{'   Change: ' + f'{price_change_pct:+.2f}%' if signal_price > 0 and current_price > 0 else ''}
+{'   Change: ' + f'{price_change_pct:+.2f}%' if signal_price_f > 0 and current_price_f > 0 else ''}
 📊 {params_str}{order_info}"""
         
         logger.info(f"[TG][CMD] /signals")
@@ -2101,11 +2136,12 @@ No signals generated yet."""
         return send_command_response(chat_id, f"❌ Error building signals: {str(e)}")
 
 
-def send_balance_message(chat_id: str, db: Session = None) -> bool:
+def send_balance_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send balance information"""
     try:
-        if not db:
-            return send_command_response(chat_id, "❌ Database not available")
+        if db is None:
+            send_command_response(chat_id, "❌ Database not available")
+            return False
         
         # Import ExchangeBalance model
         from app.models.exchange_balance import ExchangeBalance
@@ -2120,15 +2156,17 @@ def send_balance_message(chat_id: str, db: Session = None) -> bool:
 
 No balances found.
 Check if exchange sync is running and API credentials are configured."""
+            send_command_response(chat_id, message)
+            return True
         else:
             # Calculate total USD value
             total_usd = 0
             balance_items = []
             
             for bal in balances:
-                asset = bal.asset
-                total = float(bal.total)
-                usd_value = float(bal.usd_value) if bal.usd_value else 0
+                asset = str(getattr(bal, "asset", "") or "")
+                total = _to_float(getattr(bal, "total", None))
+                usd_value = _to_float(getattr(bal, "usd_value", None))
                 
                 # For USDT/USD, the total is already in USD
                 if asset == 'USDT' or asset == 'USD':
@@ -2173,13 +2211,15 @@ Check if exchange sync is running and API credentials are configured."""
                 message += f"\n\n… and {len(balances) - 10} more assets"
             
             logger.info(f"[TG][CMD] /balance")
-            return send_command_response(chat_id, message)
+            ok = send_command_response(chat_id, message)
+            return bool(ok) if ok is not None else True
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build balance: {e}", exc_info=True)
-        return send_command_response(chat_id, f"❌ Error building balance: {str(e)}")
+        send_command_response(chat_id, f"❌ Error building balance: {str(e)}")
+        return False
 
 
-def send_watchlist_message(chat_id: str, db: Session = None) -> bool:
+def send_watchlist_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send watchlist of coins with Trade=YES"""
     try:
         if not db:
@@ -2200,28 +2240,30 @@ def send_watchlist_message(chat_id: str, db: Session = None) -> bool:
         if not coins:
             return send_command_response(chat_id, "👀 <b>Watchlist</b>\n\nNo hay monedas en la cartera.")
         
-        trade_enabled_coins = [c for c in coins if c.trade_enabled]
-        disabled_coins = [c for c in coins if not c.trade_enabled]
+        trade_enabled_coins = [c for c in coins if bool(getattr(c, "trade_enabled", False))]
+        disabled_coins = [c for c in coins if not bool(getattr(c, "trade_enabled", False))]
         
         def _format_entry(coin: WatchlistItem) -> str:
-            symbol = (coin.symbol or "N/A").upper()
-            last_price = coin.price or 0
-            buy_target = coin.buy_target
+            symbol = (str(getattr(coin, "symbol", None) or "N/A")).upper()
+            last_price = _to_float(getattr(coin, "price", None))
+            buy_target = getattr(coin, "buy_target", None)
             preset = coins_config.get(symbol, {}).get("preset", "swing")
             if "-" not in preset:
-                preset = f"{preset}-{(coin.sl_tp_mode or 'conservative')}"
+                preset = f"{preset}-{(getattr(coin, 'sl_tp_mode', None) or 'conservative')}"
             price_str = (
-                f"${last_price:,.2f}" if isinstance(last_price, (int, float)) and last_price >= 1
-                else (f"${last_price:,.4f}" if isinstance(last_price, (int, float)) and last_price > 0 else "N/A")
+                f"${last_price:,.2f}" if last_price >= 1
+                else (f"${last_price:,.4f}" if last_price > 0 else "N/A")
             )
+            buy_target_f = _to_float(buy_target) if buy_target is not None else 0
             target_str = (
-                f"${buy_target:,.2f}" if isinstance(buy_target, (int, float)) and buy_target >= 1
-                else (f"${buy_target:,.4f}" if isinstance(buy_target, (int, float)) and buy_target and buy_target > 0 else "N/A")
+                f"${buy_target_f:,.2f}" if buy_target_f >= 1
+                else (f"${buy_target_f:,.4f}" if buy_target_f > 0 else "N/A")
             )
-            amount_str = f"${coin.trade_amount_usd:,.2f}" if coin.trade_amount_usd else "N/A"
-            alert_icon = "🔔" if coin.alert_enabled else "🔕"
-            trade_icon = "🤖" if coin.trade_enabled else "⛔"
-            margin_icon = "⚡" if coin.trade_on_margin else "💤"
+            amount_val = _to_float(getattr(coin, "trade_amount_usd", None))
+            amount_str = f"${amount_val:,.2f}" if amount_val else "N/A"
+            alert_icon = "🔔" if bool(getattr(coin, "alert_enabled", False)) else "🔕"
+            trade_icon = "🤖" if bool(getattr(coin, "trade_enabled", False)) else "⛔"
+            margin_icon = "⚡" if bool(getattr(coin, "trade_on_margin", False)) else "💤"
             return (
                 f"\n📊 <b>{symbol}</b>\n"
                 f"  {alert_icon} | {trade_icon} | {margin_icon}\n"
@@ -2249,10 +2291,11 @@ def send_watchlist_message(chat_id: str, db: Session = None) -> bool:
         return send_command_response(chat_id, message)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to build watchlist: {e}", exc_info=True)
-        return send_command_response(chat_id, f"❌ Error building watchlist: {str(e)}")
+        send_command_response(chat_id, f"❌ Error building watchlist: {str(e)}")
+        return False
 
 
-def send_open_orders_message(chat_id: str, db: Session = None) -> bool:
+def send_open_orders_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send open orders list"""
     try:
         if not db:
@@ -2277,12 +2320,14 @@ No open orders found."""
             message = f"""📋 <b>Open Orders ({len(open_orders)})</b>"""
             
             for order in open_orders:
-                symbol = order.symbol or "N/A"
-                side = order.side.value if order.side else "N/A"
-                status = order.status.value if order.status else "N/A"
-                quantity = float(order.quantity) if order.quantity else 0
-                price = float(order.price) if order.price else 0
-                order_type = order.order_type or "LIMIT"
+                symbol = str(getattr(order, "symbol", None) or "N/A")
+                side_attr = getattr(order, "side", None)
+                side = side_attr.value if side_attr and hasattr(side_attr, "value") else "N/A"
+                status_attr = getattr(order, "status", None)
+                status = status_attr.value if status_attr and hasattr(status_attr, "value") else "N/A"
+                quantity = _to_float(getattr(order, "quantity", None))
+                price = _to_float(getattr(order, "price", None))
+                order_type = str(getattr(order, "order_type", None) or "LIMIT")
                 
                 # Format price
                 if price > 0:
@@ -2309,9 +2354,11 @@ No open orders found."""
                     value_str = "N/A"
                 
                 # Order type indicator
-                if order_type == "STOP_LIMIT" or (order.order_role and "STOP" in str(order.order_role)):
+                order_role = getattr(order, "order_role", None)
+                order_role_str = str(order_role) if order_role is not None else ""
+                if order_type == "STOP_LIMIT" or (order_role is not None and "STOP" in order_role_str):
                     type_emoji = "🛑"
-                elif order_type == "TAKE_PROFIT_LIMIT" or (order.order_role and "TAKE_PROFIT" in str(order.order_role)):
+                elif order_type == "TAKE_PROFIT_LIMIT" or (order_role is not None and "TAKE_PROFIT" in order_role_str):
                     type_emoji = "🎯"
                 else:
                     type_emoji = "📝"
@@ -2332,7 +2379,7 @@ No open orders found."""
         return send_command_response(chat_id, f"❌ Error building open orders: {str(e)}")
 
 
-def send_check_sl_tp_message(chat_id: str, db: Session = None) -> bool:
+def send_check_sl_tp_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Check and display open orders/positions without SL/TP protection"""
     try:
         if not db:
@@ -2423,7 +2470,7 @@ All positions have both SL and TP orders."""
         return send_command_response(chat_id, f"❌ Error checking SL/TP: {str(e)}")
 
 
-def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
+def send_executed_orders_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send executed orders list"""
     try:
         if not db:
@@ -2461,9 +2508,8 @@ def send_executed_orders_message(chat_id: str, db: Session = None) -> bool:
         yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
         orders_in_24h = []
         for o in executed_orders:
-            # Get the earliest available timestamp
-            order_time = o.exchange_create_time or o.created_at or o.updated_at
-            if order_time and order_time >= yesterday:
+            order_time = getattr(o, "exchange_create_time", None) or getattr(o, "created_at", None) or getattr(o, "updated_at", None)
+            if isinstance(order_time, datetime) and order_time >= yesterday:
                 orders_in_24h.append(o)
         
         if len(orders_in_24h) >= 5:
@@ -2486,10 +2532,11 @@ No executed orders found."""
 📊 <b>Total: {len(executed_orders)} order(s)</b>"""
             
             for order in executed_orders:
-                symbol = order.symbol or "N/A"
-                side = order.side.value if order.side else "N/A"
-                quantity = float(order.quantity) if order.quantity else 0
-                price = float(order.price) if order.price else 0
+                symbol = str(getattr(order, "symbol", None) or "N/A")
+                side_attr = getattr(order, "side", None)
+                side = side_attr.value if side_attr and hasattr(side_attr, "value") else "N/A"
+                quantity = _to_float(getattr(order, "quantity", None))
+                price = _to_float(getattr(order, "price", None))
                 
                 # Format price
                 if price > 0:
@@ -2518,20 +2565,13 @@ No executed orders found."""
                 # Format timestamp - use COALESCE logic (exchange_create_time, created_at, updated_at)
                 time_str = "N/A"
                 try:
-                    # Try exchange_create_time first
-                    ts = order.exchange_create_time
-                    if not ts:
-                        # Fallback to created_at
-                        ts = order.created_at
-                    if not ts:
-                        # Fallback to updated_at
-                        ts = order.updated_at
-                    
-                    if ts:
+                    ts = getattr(order, "exchange_create_time", None) or getattr(order, "created_at", None) or getattr(order, "updated_at", None)
+                    if ts is not None:
                         if isinstance(ts, datetime):
                             ts_utc = ts
                         elif isinstance(ts, (int, float)):
-                            ts_utc = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts, tz=timezone.utc)
+                            ts_val = float(ts)
+                            ts_utc = datetime.fromtimestamp(ts_val / 1000 if ts_val > 1e10 else ts_val, tz=timezone.utc)
                         else:
                             ts_utc = ts
                         
@@ -2548,8 +2588,9 @@ No executed orders found."""
                 
                 # Determine order type
                 order_type_str = "MARKET"
-                if order.order_type:
-                    order_type_upper = order.order_type.upper()
+                order_type_attr = getattr(order, "order_type", None)
+                if order_type_attr is not None:
+                    order_type_upper = str(order_type_attr).upper()
                     if "MARKET" in order_type_upper:
                         order_type_str = "MARKET"
                     elif "LIMIT" in order_type_upper:
@@ -2560,8 +2601,9 @@ No executed orders found."""
                 # Check if it's TP/SL order
                 is_tp_sl = False
                 tp_sl_type = ""
-                if order.order_role:
-                    role_upper = str(order.order_role).upper()
+                order_role_attr = getattr(order, "order_role", None)
+                if order_role_attr is not None:
+                    role_upper = str(order_role_attr).upper()
                     if "TAKE_PROFIT" in role_upper:
                         is_tp_sl = True
                         tp_sl_type = "TP"
@@ -2577,17 +2619,17 @@ No executed orders found."""
                     try:
                         # Find entry order (parent order) - try parent_order_id first, then oco_group_id
                         entry_order = None
-                        if order.parent_order_id:
+                        parent_order_id = getattr(order, "parent_order_id", None)
+                        if parent_order_id:
                             entry_order = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.exchange_order_id == order.parent_order_id
+                                ExchangeOrder.exchange_order_id == parent_order_id
                             ).first()
                         
-                        # If no parent_order_id, try to find entry order via oco_group_id
-                        # Entry order should be PARENT role, same symbol, opposite side
-                        if not entry_order and order.oco_group_id:
+                        oco_group_id = getattr(order, "oco_group_id", None)
+                        if not entry_order and oco_group_id is not None:
                             # Find the PARENT order in the same OCO group
                             entry_order = db.query(ExchangeOrder).filter(
-                                ExchangeOrder.oco_group_id == order.oco_group_id,
+                                ExchangeOrder.oco_group_id == oco_group_id,
                                 ExchangeOrder.order_role == "PARENT",
                                 ExchangeOrder.symbol == symbol
                             ).first()
@@ -2615,17 +2657,17 @@ No executed orders found."""
                                 ).order_by(func.coalesce(ExchangeOrder.exchange_create_time, ExchangeOrder.created_at, ExchangeOrder.updated_at).desc()).first()
                         
                         if entry_order:
-                            # Use avg_price (execution price) if available, otherwise use price
-                            entry_price = float(entry_order.avg_price or entry_order.price or 0)
-                            exit_price = float(order.avg_price or order.price or 0)
+                            entry_price = _to_float(getattr(entry_order, "avg_price", None) or getattr(entry_order, "price", None))
+                            exit_price = _to_float(getattr(order, "avg_price", None) or getattr(order, "price", None))
                             
                             if entry_price > 0 and exit_price > 0 and quantity > 0:
-                                # Calculate P&L based on order side
-                                if side == "SELL" and entry_order.side == OrderSideEnum.BUY:
-                                    # TP/SL SELL order closing a BUY position (long)
+                                _entry_side = getattr(entry_order, "side", None)
+                                is_entry_buy = _entry_side is not None and _entry_side == OrderSideEnum.BUY
+                                is_entry_sell = _entry_side is not None and _entry_side == OrderSideEnum.SELL
+                                if side == "SELL" and is_entry_buy:
                                     pnl = (exit_price - entry_price) * quantity
                                     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-                                elif side == "BUY" and entry_order.side == OrderSideEnum.SELL:
+                                elif side == "BUY" and is_entry_sell:
                                     # TP/SL BUY order closing a SELL position (short)
                                     pnl = (entry_price - exit_price) * quantity
                                     pnl_pct = ((entry_price - exit_price) / entry_price) * 100
@@ -2664,7 +2706,7 @@ No executed orders found."""
         return send_command_response(chat_id, f"❌ Error building executed orders: {str(e)}")
 
 
-def send_expected_take_profit_message(chat_id: str, db: Session = None) -> bool:
+def send_expected_take_profit_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send expected take profit summary for all open positions - Reference Specification Section 6"""
     try:
         if not db:
@@ -2761,7 +2803,7 @@ No open positions with take profit orders found."""
         return send_command_response(chat_id, f"❌ Error building expected take profit: {str(e)}")
 
 
-def show_portfolio_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_portfolio_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show portfolio sub-menu with options"""
     try:
         logger.info(f"[TG][MENU] show_portfolio_menu called for chat_id={chat_id}, message_id={message_id}")
@@ -2780,7 +2822,7 @@ def show_portfolio_menu(chat_id: str, db: Session = None, message_id: Optional[i
         return send_command_response(chat_id, f"❌ Error showing portfolio menu: {str(e)}")
 
 
-def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_open_orders_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show open orders sub-menu with options"""
     try:
         text = "📋 <b>Open Orders</b>\n\nSelect an option:"
@@ -2795,7 +2837,7 @@ def show_open_orders_menu(chat_id: str, db: Session = None, message_id: Optional
         return send_command_response(chat_id, f"❌ Error showing open orders menu: {str(e)}")
 
 
-def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_expected_tp_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show expected take profit sub-menu with options"""
     try:
         # Authorization check - use helper function
@@ -2816,7 +2858,7 @@ def show_expected_tp_menu(chat_id: str, db: Session = None, message_id: Optional
         return send_command_response(chat_id, f"❌ Error showing expected TP menu: {str(e)}")
 
 
-def show_executed_orders_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_executed_orders_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show executed orders sub-menu with options"""
     try:
         text = "✅ <b>Executed Orders</b>\n\nSelect an option:"
@@ -2831,7 +2873,7 @@ def show_executed_orders_menu(chat_id: str, db: Session = None, message_id: Opti
         return send_command_response(chat_id, f"❌ Error showing executed orders menu: {str(e)}")
 
 
-def show_monitoring_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_monitoring_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show monitoring sub-menu with sections - Reference Specification Section 8"""
     try:
         text = "🔍 <b>Monitoring</b>\n\nSelect a monitoring section:"
@@ -2848,7 +2890,7 @@ def show_monitoring_menu(chat_id: str, db: Session = None, message_id: Optional[
         return send_command_response(chat_id, f"❌ Error showing monitoring menu: {str(e)}")
 
 
-def show_kill_switch_menu(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def show_kill_switch_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Show kill switch sub-menu with status and controls"""
     try:
         if not db:
@@ -2898,7 +2940,300 @@ def show_kill_switch_menu(chat_id: str, db: Session = None, message_id: Optional
         return send_command_response(chat_id, f"❌ Error showing kill switch menu: {str(e)}")
 
 
-def send_system_monitoring_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def _format_scheduler_health_for_console() -> str:
+    """Build a short scheduler health block from recent agent activity (last cycle, last auto-exec, last approval request, last failure, pending count)."""
+    try:
+        from app.services.agent_activity_log import get_recent_agent_events
+        events = get_recent_agent_events(limit=200)
+    except Exception:
+        return "📊 <b>Scheduler</b>: —"
+    last_cycle = None
+    last_auto = None
+    last_approval = None
+    last_failed = None
+    for ev in events:
+        t = str(ev.get("event_type") or "")
+        if t.startswith("scheduler_") and last_cycle is None:
+            last_cycle = ev
+        if t == "scheduler_auto_executed" and last_auto is None:
+            last_auto = ev
+        if t == "scheduler_approval_requested" and last_approval is None:
+            last_approval = ev
+        if t == "scheduler_cycle_failed" and last_failed is None:
+            last_failed = ev
+    def _ts(ev: Optional[dict]) -> str:
+        if not ev:
+            return "—"
+        ts = str(ev.get("timestamp") or "")[:19].replace("T", " ")
+        title = str(ev.get("task_title") or "").strip()[:50]
+        if title:
+            return f"{ts} ({title}…)" if len(str(ev.get("task_title") or "")) > 50 else f"{ts} ({title})"
+        return ts
+    pending_n = 0
+    try:
+        from app.services.agent_telegram_approval import get_pending_approvals
+        pending_n = len(get_pending_approvals() or [])
+    except Exception:
+        pass
+    lines = [
+        "📊 <b>Scheduler</b>",
+        f"Last cycle: {_ts(last_cycle)}",
+        f"Last auto-exec: {_ts(last_auto)}",
+        f"Last approval request: {_ts(last_approval)}",
+        f"Last failure: {_ts(last_failed)}",
+        f"Pending approvals: {pending_n}",
+    ]
+    return "\n".join(lines)
+
+
+def show_agent_console(chat_id: str, message_id: Optional[int] = None) -> bool:
+    """Show a compact agent console with scheduler health, recent activity, approvals, and failures."""
+    try:
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] show_agent_console: chat_id={chat_id} not authorized")
+            send_command_response(chat_id, "⛔ Not authorized")
+            return False
+
+        scheduler_block = _format_scheduler_health_for_console()
+        text = f"🤖 <b>Agent Console</b>\n\n{scheduler_block}\n\nSelect a view:"
+        keyboard = _build_keyboard([
+            [{"text": "🕘 Recent Activity", "callback_data": "agent:recent"}],
+            [{"text": "⏳ Pending Approvals", "callback_data": "agent:pending"}],
+            [{"text": "⚠️ Last Failures", "callback_data": "agent:failures"}],
+            [
+                {"text": "🔄 Refresh", "callback_data": "agent:main"},
+                {"text": "🏠 Main Menu", "callback_data": "menu:main"},
+            ],
+        ])
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error showing agent console: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error showing agent console: {str(e)}")
+
+
+def send_recent_agent_activity(chat_id: str, limit: int = 5) -> bool:
+    """Send a compact recent activity summary from the agent activity log."""
+    try:
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] send_recent_agent_activity: chat_id={chat_id} not authorized")
+            return send_command_response(chat_id, "⛔ Not authorized")
+
+        from app.services.agent_activity_log import get_recent_agent_events
+
+        events = get_recent_agent_events(limit=limit)
+        if not events:
+            return send_command_response(chat_id, "🤖 <b>Recent Agent Activity</b>\n\nNo recent agent activity.")
+
+        lines = ["🤖 <b>Recent Agent Activity</b>", ""]
+        for event in events[:limit]:
+            timestamp = str(event.get("timestamp") or "")[:19].replace("T", " ")
+            event_type = str(event.get("event_type") or "unknown")
+            task_title = str(event.get("task_title") or "(no title)")
+            lines.append(f"• <code>{timestamp}</code> | <b>{event_type}</b> | {task_title[:120]}")
+        return send_command_response(chat_id, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error sending recent agent activity: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error reading agent activity: {str(e)}")
+
+
+def send_pending_agent_approvals(chat_id: str, message_id: Optional[int] = None) -> bool:
+    """Send (or edit to) pending approval list with a clickable row per item (agent_detail:<task_id>)."""
+    try:
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] send_pending_agent_approvals: chat_id={chat_id} not authorized")
+            return send_command_response(chat_id, "⛔ Not authorized")
+
+        from app.services.agent_telegram_approval import get_pending_approvals
+
+        approvals = get_pending_approvals()
+        if not approvals:
+            text = "⏳ <b>Pending Agent Approvals</b>\n\nNo pending approvals."
+            keyboard = _build_keyboard([[{"text": "🔙 Back to Console", "callback_data": "agent:main"}]])
+            return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+
+        lines = ["⏳ <b>Pending Agent Approvals</b>", ""]
+        rows = []
+        for item in approvals:
+            task_id = str(item.get("task_id") or "")
+            short_id = f"{task_id[:8]}..." if len(task_id) > 8 else task_id
+            title = str(item.get("task_title") or "(no title)")
+            requested_at = str(item.get("requested_at") or "")[:19].replace("T", " ")
+            lines.append(f"• <code>{short_id}</code> | {title[:90]} | <code>{requested_at}</code>")
+            if task_id and len(f"agent_detail:{task_id}") <= 64:
+                rows.append([{"text": f"📋 View {short_id}", "callback_data": f"agent_detail:{task_id}"}])
+        rows.append([{"text": "🔙 Back to Console", "callback_data": "agent:main"}])
+        text = "\n".join(lines)
+        keyboard = _build_keyboard(rows)
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error sending pending agent approvals: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error reading pending approvals: {str(e)}")
+
+
+def send_approval_request_detail(chat_id: str, task_id: str, message_id: Optional[int] = None) -> bool:
+    """Fetch approval detail and send (or edit to) a Telegram-friendly detail view with Approve / Deny / Back to Pending."""
+    try:
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] send_approval_request_detail: chat_id={chat_id} not authorized")
+            return send_command_response(chat_id, "⛔ Not authorized")
+
+        from app.services.agent_telegram_approval import (
+            get_approval_request_detail,
+            PREFIX_APPROVE,
+            PREFIX_DENY,
+            PREFIX_EXECUTE,
+        )
+
+        detail = get_approval_request_detail(task_id)
+        if not detail:
+            text = f"❌ Approval request not found for task <code>{task_id[:20]}...</code>."
+            keyboard = _build_keyboard([[{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}]])
+            return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+
+        task_title = detail.get("task_title") or "(no title)"
+        status = detail.get("status") or "pending"
+        requested_at = str(detail.get("requested_at") or "")[:19].replace("T", " ")
+        approved_by = str(detail.get("approved_by") or "-")
+        decision_at = str(detail.get("decision_at") or "-")[:19].replace("T", " ") if detail.get("decision_at") else "-"
+        summary = (detail.get("approval_summary") or "").strip() or "-"
+        project = str(detail.get("project") or "-")
+        task_type = str(detail.get("type") or "-")
+        priority = str(detail.get("priority") or "-")
+        source = str(detail.get("source") or "-")
+        selection_reason = (detail.get("selection_reason") or "").strip() or "-"
+        repo_area = detail.get("repo_area") or {}
+        area_name = str(repo_area.get("area_name") or "").strip() or "-"
+        execution_status = (detail.get("execution_status") or "not_started").lower()
+        execution_started_at = str(detail.get("execution_started_at") or "")[:19].replace("T", " ") if detail.get("execution_started_at") else "-"
+        executed_at = str(detail.get("executed_at") or "")[:19].replace("T", " ") if detail.get("executed_at") else "-"
+
+        lines = [
+            "🔐 <b>Approval request detail</b>",
+            "",
+            f"<b>Task:</b> {task_title[:300]}",
+            f"<b>Status:</b> {status}",
+            f"<b>Execution:</b> {execution_status}",
+            f"<b>Requested:</b> {requested_at}",
+            f"<b>Project:</b> {project}",
+            f"<b>Type:</b> {task_type}",
+            f"<b>Priority:</b> {priority}",
+            f"<b>Source:</b> {source}",
+            f"<b>Area:</b> {area_name}",
+            f"<b>Callback:</b> {selection_reason[:200]}",
+            "",
+            "<b>Summary</b>",
+            "<pre>" + (summary[:1500].replace("<", "&lt;") if summary else "-") + "</pre>",
+        ]
+        if status == "pending":
+            lines.append("")
+            lines.append("Approved by: - | Decision at: -")
+        else:
+            lines.append("")
+            lines.append(f"Approved by: {approved_by} | Decision at: {decision_at}")
+        if execution_status and execution_status != "not_started":
+            lines.append("")
+            lines.append(f"Execution started: {execution_started_at} | Executed at: {executed_at}")
+
+        text = "\n".join(lines)
+        if len(text) > 4090:
+            text = text[:4087] + "..."
+
+        if (status or "").lower() == "pending":
+            keyboard = _build_keyboard([
+                [
+                    {"text": "✅ Approve", "callback_data": f"{PREFIX_APPROVE}{task_id}"},
+                    {"text": "❌ Deny", "callback_data": f"{PREFIX_DENY}{task_id}"},
+                ],
+                [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+            ])
+        elif (status or "").lower() == "approved":
+            if execution_status == "running":
+                keyboard = _build_keyboard([[{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}]])
+            elif execution_status == "completed":
+                keyboard = _build_keyboard([[{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}]])
+            elif execution_status == "failed":
+                keyboard = _build_keyboard([
+                    [{"text": "🔄 Retry Execute", "callback_data": f"{PREFIX_EXECUTE}{task_id}"}],
+                    [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+                ])
+            else:
+                keyboard = _build_keyboard([
+                    [{"text": "▶️ Execute Now", "callback_data": f"{PREFIX_EXECUTE}{task_id}"}],
+                    [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+                ])
+        else:
+            keyboard = _build_keyboard([[{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}]])
+
+        return _send_or_edit_menu(chat_id, text, keyboard, message_id)
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error sending approval request detail: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error loading approval detail: {str(e)}")
+
+
+def _format_execution_result_message(result: dict) -> str:
+    """Format execute_prepared_task_from_telegram_decision result for Telegram."""
+    if not result:
+        return "⚠️ No result returned."
+    executed = bool(result.get("executed"))
+    reason = str(result.get("reason") or "").strip()
+    exec_result = result.get("execution_result") or {}
+    task_title = str(exec_result.get("task_title") or "").strip() or "(no title)"
+    final_status = str(exec_result.get("final_status") or "").strip()
+    success = exec_result.get("success") if isinstance(exec_result.get("success"), bool) else None
+    execution_started = bool(result.get("execution_started"))
+    state_before = result.get("execution_state_before") or {}
+    state_after = result.get("execution_state_after") or {}
+    status_before = str(state_before.get("execution_status") or "—")
+    status_after = str(state_after.get("execution_status") or "—")
+
+    lines = [
+        "▶️ <b>Execution result</b>",
+        "",
+        f"<b>Task:</b> {task_title[:200]}",
+        f"<b>State before:</b> {status_before}",
+        f"<b>Execution started:</b> {'Yes' if execution_started else 'No'}",
+        f"<b>Ran:</b> {'Yes' if executed else 'No'}",
+        f"<b>State after:</b> {status_after}",
+        f"<b>Reason:</b> {reason[:300]}",
+    ]
+    if final_status:
+        lines.append(f"<b>Final status:</b> {final_status}")
+    if success is not None:
+        lines.append(f"<b>Success:</b> {'Yes' if success else 'No'}")
+    return "\n".join(lines)
+
+
+def send_recent_agent_failures(chat_id: str, limit: int = 5) -> bool:
+    """Send recent failure-like activity events for fast Telegram triage."""
+    try:
+        if not _is_authorized(chat_id, chat_id):
+            logger.warning(f"[TG][DENY] send_recent_agent_failures: chat_id={chat_id} not authorized")
+            return send_command_response(chat_id, "⛔ Not authorized")
+
+        from app.services.agent_activity_log import get_recent_agent_events
+
+        events = get_recent_agent_events(limit=max(limit * 6, 30))
+        failures = [
+            event for event in events
+            if str(event.get("event_type") or "") in {"execution_failed", "validation_failed", "execution_skipped"}
+        ][:limit]
+
+        if not failures:
+            return send_command_response(chat_id, "⚠️ <b>Recent Agent Failures</b>\n\nNo recent failures.")
+
+        lines = ["⚠️ <b>Recent Agent Failures</b>", ""]
+        for event in failures:
+            timestamp = str(event.get("timestamp") or "")[:19].replace("T", " ")
+            event_type = str(event.get("event_type") or "unknown")
+            task_title = str(event.get("task_title") or "(no title)")
+            lines.append(f"• <code>{timestamp}</code> | <b>{event_type}</b> | {task_title[:120]}")
+        return send_command_response(chat_id, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"[TG][ERROR] Error sending recent agent failures: {e}", exc_info=True)
+        return send_command_response(chat_id, f"❌ Error reading recent failures: {str(e)}")
+
+
+def send_system_monitoring_message(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Send system monitoring information - Reference Specification Section 8.1"""
     try:
         if not db:
@@ -3041,7 +3376,7 @@ def send_system_monitoring_message(chat_id: str, db: Session = None, message_id:
         return send_command_response(chat_id, f"❌ Error building system monitoring: {str(e)}")
 
 
-def send_throttle_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def send_throttle_message(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Send throttle information (recent Telegram messages) - Reference Specification Section 8.2"""
     try:
         if not db:
@@ -3090,7 +3425,7 @@ def send_throttle_message(chat_id: str, db: Session = None, message_id: Optional
         return send_command_response(chat_id, f"❌ Error building throttle: {str(e)}")
 
 
-def send_workflows_monitoring_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def send_workflows_monitoring_message(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Send workflow monitoring information - Reference Specification Section 8.3"""
     try:
         if not db:
@@ -3143,7 +3478,7 @@ def send_workflows_monitoring_message(chat_id: str, db: Session = None, message_
         return send_command_response(chat_id, f"❌ Error building workflows monitoring: {str(e)}")
 
 
-def send_blocked_messages_message(chat_id: str, db: Session = None, message_id: Optional[int] = None) -> bool:
+def send_blocked_messages_message(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
     """Send blocked Telegram messages - Reference Specification Section 8.4"""
     try:
         if not db:
@@ -3240,7 +3575,7 @@ For detailed version history, check the dashboard Version History tab."""
         return send_command_response(chat_id, f"❌ Error building version: {str(e)}")
 
 
-def send_alerts_list_message(chat_id: str, db: Session = None) -> bool:
+def send_alerts_list_message(chat_id: str, db: Optional[Session] = None) -> bool:
     """Send list of coins with Alert=YES"""
     try:
         if not db:
@@ -3262,15 +3597,17 @@ No coins with Alert=YES."""
             message = f"""🔔 *Alerts ({len(coins)} coins with Alert=YES)*"""
             
             for coin in coins:
-                symbol = coin.symbol or "N/A"
-                last_price = coin.price or 0
-                buy_target = coin.buy_target or "N/A"
+                _sym = getattr(coin, "symbol", None)
+                symbol = str(_sym) if _sym is not None else "N/A"
+                last_price = _to_float(getattr(coin, "price", None))
+                buy_target_raw = getattr(coin, "buy_target", None)
+                buy_target = _to_float(buy_target_raw) if buy_target_raw is not None else 0.0
+                _te = getattr(coin, "trade_enabled", None)
+                trade_status = "✅ Trade" if (_te is True) else "❌ Trade"
+                _tm = getattr(coin, "trade_on_margin", None)
+                margin_status = "✅ Margin" if (_tm is True) else "❌ Margin"
                 
-                # Status indicators
-                trade_status = "✅ Trade" if coin.trade_enabled else "❌ Trade"
-                margin_status = "✅ Margin" if coin.trade_on_margin else "❌ Margin"
-                
-                if isinstance(last_price, (int, float)) and last_price > 0:
+                if last_price > 0:
                     if last_price >= 100:
                         price_str = f"${last_price:,.2f}"
                     else:
@@ -3278,7 +3615,7 @@ No coins with Alert=YES."""
                 else:
                     price_str = "N/A"
                 
-                if isinstance(buy_target, (int, float)) and buy_target > 0:
+                if buy_target > 0:
                     if buy_target >= 100:
                         target_str = f"${buy_target:,.2f}"
                     else:
@@ -3286,10 +3623,10 @@ No coins with Alert=YES."""
                 else:
                     target_str = "N/A"
                 
-                # Add trade amount if available
                 amount_str = ""
-                if coin.trade_amount_usd:
-                    amount_str = f" | Amount: ${coin.trade_amount_usd:,.2f}"
+                _amt = getattr(coin, "trade_amount_usd", None)
+                if _amt is not None and _to_float(_amt) > 0:
+                    amount_str = f" | Amount: ${_to_float(_amt):,.2f}"
                 
                 message += f"""
 
@@ -3304,7 +3641,7 @@ No coins with Alert=YES."""
         return send_command_response(chat_id, f"❌ Error building alerts list: {str(e)}")
 
 
-def send_analyze_message(chat_id: str, text: str, db: Session = None) -> bool:
+def send_analyze_message(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Send analysis for a specific coin - or show menu if no symbol provided"""
     try:
         # Parse symbol from command
@@ -3327,9 +3664,10 @@ def send_analyze_message(chat_id: str, text: str, db: Session = None) -> bool:
             row = []
             for i, coin in enumerate(coins):
                 # Add button to current row
+                sym = str(getattr(coin, "symbol", "") or "")
                 row.append({
-                    "text": coin.symbol,
-                    "callback_data": f"analyze_{coin.symbol}"
+                    "text": sym,
+                    "callback_data": f"analyze_{sym}"
                 })
                 
                 # Create new row after 2 buttons
@@ -3382,61 +3720,30 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
         if not coin:
             return send_command_response(chat_id, f"⚠️ Coin {symbol} not found in watchlist.\n\nUse /watchlist to see available coins.")
         
-        # Build analysis message
-        last_price = coin.price or 0
-        buy_target = coin.buy_target or "N/A"
-        res_up = coin.res_up or "N/A"
-        res_down = coin.res_down or "N/A"
-        rsi = coin.rsi or "N/A"
+        last_price_f = _to_float(getattr(coin, "price", None))
+        buy_target_f = _to_float(getattr(coin, "buy_target", None))
+        res_up_f = _to_float(getattr(coin, "res_up", None))
+        res_down_f = _to_float(getattr(coin, "res_down", None))
+        rsi = getattr(coin, "rsi", None)
+        rsi_str = str(rsi) if rsi is not None else "N/A"
         
-        # Determine status from order_status field
-        status = coin.order_status or "PENDING"
+        status = str(getattr(coin, "order_status", None) or "PENDING")
+        _te = getattr(coin, "trade_enabled", None)
+        trade_status = "✅ Trade: YES" if _te is True else "❌ Trade: NO"
+        _ae = getattr(coin, "alert_enabled", None)
+        alert_status = "🔔 Alert: YES" if _ae is True else "❌ Alert: NO"
+        _tm = getattr(coin, "trade_on_margin", None)
+        margin_status = "✅ Margin: YES" if _tm is True else "❌ Margin: NO"
         
-        # Additional status indicators
-        trade_status = "✅ Trade: YES" if coin.trade_enabled else "❌ Trade: NO"
-        alert_status = "🔔 Alert: YES" if coin.alert_enabled else "❌ Alert: NO"
-        margin_status = "✅ Margin: YES" if coin.trade_on_margin else "❌ Margin: NO"
+        price_str = f"${last_price_f:,.2f}" if last_price_f >= 100 else (f"${last_price_f:,.4f}" if last_price_f > 0 else "N/A")
+        target_str = f"${buy_target_f:,.2f}" if buy_target_f >= 100 else (f"${buy_target_f:,.4f}" if buy_target_f > 0 else "N/A")
+        res_up_str = f"${res_up_f:,.2f}" if res_up_f >= 100 else (f"${res_up_f:,.4f}" if res_up_f > 0 else "N/A")
+        res_down_str = f"${res_down_f:,.2f}" if res_down_f >= 100 else (f"${res_down_f:,.4f}" if res_down_f > 0 else "N/A")
         
-        # Format prices
-        if isinstance(last_price, (int, float)):
-            if last_price >= 100:
-                price_str = f"${last_price:,.2f}"
-            else:
-                price_str = f"${last_price:,.4f}"
-        else:
-            price_str = "N/A"
+        amount_val = _to_float(getattr(coin, "trade_amount_usd", None))
+        amount_info = f"\n• *Trade Amount:* ${amount_val:,.2f}" if amount_val else ""
         
-        if isinstance(buy_target, (int, float)):
-            if buy_target >= 100:
-                target_str = f"${buy_target:,.2f}"
-            else:
-                target_str = f"${buy_target:,.4f}"
-        else:
-            target_str = "N/A"
-        
-        if isinstance(res_up, (int, float)):
-            if res_up >= 100:
-                res_up_str = f"${res_up:,.2f}"
-            else:
-                res_up_str = f"${res_up:,.4f}"
-        else:
-            res_up_str = "N/A"
-        
-        if isinstance(res_down, (int, float)):
-            if res_down >= 100:
-                res_down_str = f"${res_down:,.2f}"
-            else:
-                res_down_str = f"${res_down:,.4f}"
-        else:
-            res_down_str = "N/A"
-        
-        # Add trade amount if available
-        amount_info = ""
-        if coin.trade_amount_usd:
-            amount_info = f"\n• *Trade Amount:* ${coin.trade_amount_usd:,.2f}"
-        
-        # Check if coin has any market data
-        has_data = (last_price and last_price > 0) or rsi != "N/A"
+        has_data = (last_price_f > 0) or (rsi_str != "N/A" and rsi_str != "None")
         data_warning = ""
         if not has_data:
             data_warning = "\n\n⚠️ _No market data available yet. Data will be updated by background services._"
@@ -3451,7 +3758,7 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
 • *Buy Target:* {target_str}
 • *Resistance Up:* {res_up_str}
 • *Resistance Down:* {res_down_str}
-• *RSI:* {rsi}{amount_info}
+• *RSI:* {rsi_str}{amount_info}
 • *Status:* {status}{data_warning}"""
         
         logger.info(f"[TG][CMD] /analyze {symbol}")
@@ -3461,7 +3768,7 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
         return send_command_response(chat_id, f"❌ Error building analysis: {str(e)}")
 
 
-def handle_create_sl_tp_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_create_sl_tp_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /create_sl_tp command"""
     try:
         from app.services.sl_tp_checker import sl_tp_checker_service
@@ -3533,7 +3840,7 @@ def handle_create_sl_tp_command(chat_id: str, text: str, db: Session = None) -> 
         return send_command_response(chat_id, f"❌ Error creating SL/TP: {str(e)}")
 
 
-def handle_create_sl_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_create_sl_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /create_sl command - create only SL order"""
     try:
         from app.services.sl_tp_checker import sl_tp_checker_service
@@ -3577,7 +3884,7 @@ def handle_create_sl_command(chat_id: str, text: str, db: Session = None) -> boo
         return send_command_response(chat_id, f"❌ Error creating SL: {str(e)}")
 
 
-def handle_create_tp_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_create_tp_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /create_tp command - create only TP order"""
     try:
         from app.services.sl_tp_checker import sl_tp_checker_service
@@ -3621,7 +3928,7 @@ def handle_create_tp_command(chat_id: str, text: str, db: Session = None) -> boo
         return send_command_response(chat_id, f"❌ Error creating TP: {str(e)}")
 
 
-def handle_add_coin_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_add_coin_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /add command - add a coin to the watchlist"""
     try:
         # Parse symbol from command
@@ -3710,7 +4017,7 @@ def handle_add_coin_command(chat_id: str, text: str, db: Session = None) -> bool
         return send_command_response(chat_id, f"❌ Error adding coin: {str(e)}")
 
 
-def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /skip_sl_tp_reminder command"""
     try:
         from app.services.sl_tp_checker import sl_tp_checker_service
@@ -3761,7 +4068,7 @@ def handle_skip_sl_tp_reminder_command(chat_id: str, text: str, db: Session = No
         return send_command_response(chat_id, f"❌ Error skipping reminder: {str(e)}")
 
 
-def handle_panic_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_panic_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /panic command - Stop all trading by setting all trade_enabled to False"""
     try:
         if not db:
@@ -3781,7 +4088,7 @@ def handle_panic_command(chat_id: str, text: str, db: Session = None) -> bool:
             # Update all items to set trade_enabled=False
             updated_count = 0
             for item in active_items:
-                item.trade_enabled = False
+                setattr(item, "trade_enabled", False)
                 updated_count += 1
             
             db.commit()
@@ -3805,7 +4112,7 @@ def handle_panic_command(chat_id: str, text: str, db: Session = None) -> bool:
         return send_command_response(chat_id, f"❌ Error executing panic command: {str(e)}")
 
 
-def handle_kill_command(chat_id: str, text: str, db: Session = None) -> bool:
+def handle_kill_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
     """Handle /kill command - Control global trading kill switch
     
     Commands:
@@ -3835,8 +4142,8 @@ def handle_kill_command(chat_id: str, text: str, db: Session = None) -> bool:
                 ).first()
                 
                 if setting:
-                    setting.setting_value = "true"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "true")
+                    setattr(setting, "updated_at", datetime.now(pytz.UTC))
                 else:
                     setting = TradingSettings(
                         setting_key="TRADING_KILL_SWITCH",
@@ -3868,8 +4175,8 @@ def handle_kill_command(chat_id: str, text: str, db: Session = None) -> bool:
                 ).first()
                 
                 if setting:
-                    setting.setting_value = "false"
-                    setting.updated_at = func.now()
+                    setattr(setting, "setting_value", "false")
+                    setattr(setting, "updated_at", datetime.now(pytz.UTC))
                     db.commit()
                 else:
                     # Setting doesn't exist, which means kill switch is OFF (default)
@@ -3930,7 +4237,7 @@ def handle_kill_command(chat_id: str, text: str, db: Session = None) -> bool:
         return send_command_response(chat_id, f"❌ Error executing kill command: {str(e)}")
 
 
-def handle_telegram_update(update: Dict, db: Session = None) -> None:
+def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
@@ -4390,6 +4697,9 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
             # Show kill switch sub-menu
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:kill_switch' to show_kill_switch_menu, chat_id={chat_id}, message_id={message_id}")
             show_kill_switch_menu(chat_id, db, message_id)
+        elif callback_data == "menu:agent":
+            logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:agent' to show_agent_console, chat_id={chat_id}, message_id={message_id}")
+            show_agent_console(chat_id, message_id)
         elif callback_data.startswith("kill:"):
             # Handle kill switch actions
             action = callback_data.replace("kill:", "")
@@ -4405,11 +4715,60 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
                 handle_kill_command(chat_id, "/kill status", db)
                 # Refresh menu to show updated status
                 show_kill_switch_menu(chat_id, db, message_id)
+        elif callback_data == "agent:main":
+            show_agent_console(chat_id, message_id)
+        elif callback_data == "agent:recent":
+            send_recent_agent_activity(chat_id)
+        elif callback_data == "agent:pending":
+            send_pending_agent_approvals(chat_id, message_id)
+        elif callback_data.startswith("agent_detail:"):
+            _task_id = callback_data.replace("agent_detail:", "", 1).strip()
+            send_approval_request_detail(chat_id, _task_id, message_id)
+        elif callback_data == "agent_back_pending":
+            send_pending_agent_approvals(chat_id, message_id)
+        elif callback_data.startswith("agent_execute:"):
+            _task_id = callback_data.replace("agent_execute:", "", 1).strip()
+            from app.services.agent_telegram_approval import (
+                can_execute_approved_task,
+                execute_prepared_task_from_telegram_decision,
+            )
+            check = can_execute_approved_task(_task_id)
+            if not check.get("can_execute"):
+                _reason = check.get("reason") or "cannot execute"
+                _status = check.get("status") or "unknown"
+                text = f"⚠️ <b>Cannot execute</b>\n\n<b>Reason:</b> {_reason}\n<b>Status:</b> {_status}"
+                keyboard = _build_keyboard([
+                    [{"text": "🔙 Back to Detail", "callback_data": f"agent_detail:{_task_id}"}],
+                    [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+                ])
+                _send_or_edit_menu(chat_id, text, keyboard, message_id)
+            else:
+                result = execute_prepared_task_from_telegram_decision(_task_id)
+                msg = _format_execution_result_message(result)
+                keyboard = _build_keyboard([
+                    [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+                ])
+                _send_or_edit_menu(chat_id, msg, keyboard, message_id)
+        elif callback_data == "agent:failures":
+            send_recent_agent_failures(chat_id)
         elif callback_data.startswith("setting:"):
             # Handle settings menu callbacks (e.g., setting:min_price_change_pct:select_strategy)
             _handle_setting_callback(chat_id, callback_data, callback_query.get("message", {}).get("message_id"), db)
         elif callback_data.startswith("signal:"):
             _handle_signal_config_callback(chat_id, callback_data, message_id)
+        elif callback_data.startswith("agent_approve:") or callback_data.startswith("agent_deny:") or callback_data.startswith("agent_summary:"):
+            if callback_data.startswith("agent_approve:"):
+                _action = "approve"
+            elif callback_data.startswith("agent_deny:"):
+                _action = "deny"
+            else:
+                _action = "summary"
+            logger.info(f"[TG][APPROVAL] Routing callback_data='{callback_data}' action={_action} chat_id={chat_id} user_id={user_id}")
+            try:
+                _handle_agent_approval_callback(chat_id, user_id, username, callback_data, _action, message_id=message_id)
+            except Exception as approval_err:
+                logger.error(f"[TG][APPROVAL] Error handling {_action} callback: {approval_err}", exc_info=True)
+                send_command_response(chat_id, f"❌ Error processing {_action}: {str(approval_err)[:200]}")
         else:
             logger.warning(f"[TG] Unknown callback_data: {callback_data}")
             send_command_response(chat_id, f"❓ Unknown command: {callback_data}")
@@ -4550,11 +4909,13 @@ def handle_telegram_update(update: Dict, db: Session = None) -> None:
         handle_panic_command(chat_id, text, db)
     elif text.startswith("/kill"):
         handle_kill_command(chat_id, text, db)
+    elif text.startswith("/agent"):
+        show_agent_console(chat_id)
     elif text.startswith("/"):
         send_command_response(chat_id, "❓ Unknown command. Use /help")
 
 
-def process_telegram_commands(db: Session = None) -> None:
+def process_telegram_commands(db: Optional[Session] = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
     
@@ -4577,15 +4938,22 @@ def process_telegram_commands(db: Session = None) -> None:
     
     # Ensure we have a DB session
     if not db:
+        session_factory = SessionLocal
+        if session_factory is None:
+            logger.error("[TG] SessionLocal not available")
+            return
         try:
-            db = SessionLocal()
+            db = session_factory()
             db_created = True
         except Exception as e:
             logger.error(f"[TG] Cannot create DB session: {e}")
             return
     else:
         db_created = False
-    
+
+    if db is None:
+        return
+
     try:
         # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
         # If lock cannot be acquired, another poller is active - skip this cycle
@@ -4601,7 +4969,8 @@ def process_telegram_commands(db: Session = None) -> None:
             logger.info(f"[TG] process_telegram_commands called, LAST_UPDATE_ID={LAST_UPDATE_ID}")
             
             # Normal polling: use offset = LAST_UPDATE_ID + 1
-            offset = LAST_UPDATE_ID + 1 if LAST_UPDATE_ID > 0 else None
+            _last_id = int(LAST_UPDATE_ID) if LAST_UPDATE_ID else 0
+            offset = (_last_id + 1) if _last_id > 0 else None
             logger.info(f"[TG] Calling get_telegram_updates with offset={offset} (LAST_UPDATE_ID={LAST_UPDATE_ID})")
             
             # Get updates (lock is already held)
@@ -4719,7 +5088,93 @@ def process_telegram_commands(db: Session = None) -> None:
             db.close()
 
 
-def _handle_setting_callback(chat_id: str, callback_data: str, message_id: Optional[int], db: Session) -> None:
+def _edit_approval_card(chat_id: str, message_id: Optional[int], result_text: str, task_id: str) -> None:
+    """Edit the original approval card to show the decision result, replacing the Approve/Deny buttons."""
+    keyboard = _build_keyboard([
+        [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
+    ])
+    if message_id:
+        if not _edit_menu_message(chat_id, message_id, result_text, keyboard):
+            send_command_response(chat_id, result_text)
+    else:
+        send_command_response(chat_id, result_text)
+
+
+def _handle_agent_approval_callback(
+    chat_id: str,
+    user_id: str,
+    username: str,
+    callback_data: str,
+    action: str,
+    message_id: Optional[int] = None,
+) -> None:
+    """Handle agent approval flow: agent_approve:<task_id>, agent_deny:<task_id>, agent_summary:<task_id>."""
+    logger.info(f"[TG][APPROVAL] _handle_agent_approval_callback: action={action}, callback_data={callback_data[:60]}, chat_id={chat_id}, user_id={user_id}, message_id={message_id}")
+    try:
+        from app.services.agent_telegram_approval import (
+            get_approval_summary_text,
+            execute_prepared_task_from_telegram_decision,
+            record_approval,
+            record_denial,
+            PREFIX_APPROVE,
+            PREFIX_DENY,
+            PREFIX_SUMMARY,
+        )
+    except ImportError as imp_err:
+        logger.error(f"[TG][APPROVAL] Failed to import agent_telegram_approval: {imp_err}", exc_info=True)
+        send_command_response(chat_id, "❌ Approval module unavailable. Check server logs.")
+        return
+
+    task_id = ""
+    if callback_data.startswith(PREFIX_APPROVE):
+        task_id = callback_data[len(PREFIX_APPROVE):].strip()
+    elif callback_data.startswith(PREFIX_DENY):
+        task_id = callback_data[len(PREFIX_DENY):].strip()
+    elif callback_data.startswith(PREFIX_SUMMARY):
+        task_id = callback_data[len(PREFIX_SUMMARY):].strip()
+    if not task_id:
+        logger.warning(f"[TG][APPROVAL] Missing task_id in callback_data={callback_data}")
+        send_command_response(chat_id, "❌ Invalid approval callback (missing task_id).")
+        return
+
+    logger.info(f"[TG][APPROVAL] task_id={task_id}, action={action}")
+
+    if action == "summary":
+        summary_text = get_approval_summary_text(task_id)
+        send_command_response(chat_id, f"📄 <b>Approval summary</b>\n\n<pre>{summary_text[:3500]}</pre>")
+        return
+
+    who = username or user_id or "unknown"
+
+    if action == "approve":
+        if not record_approval(task_id, user_id, who):
+            logger.warning(f"[TG][APPROVAL] record_approval returned False for task_id={task_id}")
+            _edit_approval_card(chat_id, message_id, "⚠️ Already approved/denied or not found.", task_id)
+            return
+        logger.info(f"[TG][APPROVAL] Approved task_id={task_id} by {who}, starting execution...")
+        _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\nStarting execution…", task_id)
+        run_result = execute_prepared_task_from_telegram_decision(task_id)
+        if run_result.get("executed"):
+            exec_result = run_result.get("execution_result") or {}
+            status = exec_result.get("final_status", "unknown")
+            logger.info(f"[TG][APPROVAL] Execution completed for task_id={task_id}, status={status}")
+            _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\nExecution status: <b>{status}</b>", task_id)
+        else:
+            reason = run_result.get("reason", "Execution not run.")
+            logger.info(f"[TG][APPROVAL] Approved but not executed: task_id={task_id}, reason={reason}")
+            _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\n{reason}", task_id)
+        return
+
+    if action == "deny":
+        if not record_denial(task_id, user_id, who):
+            logger.warning(f"[TG][APPROVAL] record_denial returned False for task_id={task_id}")
+            _edit_approval_card(chat_id, message_id, "⚠️ Already approved/denied or not found.", task_id)
+            return
+        logger.info(f"[TG][APPROVAL] Denied task_id={task_id} by {who}")
+        _edit_approval_card(chat_id, message_id, f"❌ <b>Denied</b> by {who}\nExecution will not run.", task_id)
+
+
+def _handle_setting_callback(chat_id: str, callback_data: str, message_id: Optional[int], db: Optional[Session]) -> None:
     """Handle trading settings callbacks for min_price_change_pct by strategy"""
     try:
         if not db:
@@ -4780,11 +5235,11 @@ def _show_setting_strategy_selection(chat_id: str, setting_key: str, message_id:
         # Build strategy list from coins
         strategy_set = set()
         for item in items:
-            if not item.symbol:
+            sym = getattr(item, "symbol", None)
+            if sym is None or not str(sym).strip():
                 continue
-            
-            # Get preset from config or default to 'swing'
-            coin_config = coins_config.get(item.symbol, {})
+            symbol_str = str(sym)
+            coin_config = coins_config.get(symbol_str, {})
             preset = coin_config.get("preset", "swing")
             
             # Handle preset formats like "swing-conservative" or just "swing"
@@ -4792,8 +5247,8 @@ def _show_setting_strategy_selection(chat_id: str, setting_key: str, message_id:
                 # Already includes risk mode
                 strategy_set.add(preset)
             else:
-                # Get risk mode from watchlist item
-                risk_mode = item.sl_tp_mode or "conservative"
+                _rm = getattr(item, "sl_tp_mode", None)
+                risk_mode = str(_rm) if _rm is not None else "conservative"
                 strategy_name = f"{preset}-{risk_mode}"
                 strategy_set.add(strategy_name)
         
@@ -4861,16 +5316,18 @@ def _get_strategy_current_value(db: Session, strategy_key: str, setting_key: str
             WatchlistItem.is_deleted == False,
             WatchlistItem.symbol.isnot(None)
         ).all():
-            coin_config = coins_config.get(item.symbol, {})
+            _sym = getattr(item, "symbol", None)
+            symbol_str = str(_sym) if _sym is not None else ""
+            coin_config = coins_config.get(symbol_str, {})
             coin_preset = coin_config.get("preset", "swing")
             
-            # Handle preset formats
             if "-" in coin_preset:
                 coin_preset_base, coin_risk = coin_preset.split("-", 1)
                 if coin_preset_base == preset and coin_risk == risk_mode:
                     matching_items.append(item)
             else:
-                coin_risk = item.sl_tp_mode or "conservative"
+                _cr = getattr(item, "sl_tp_mode", None)
+                coin_risk = str(_cr) if _cr is not None else "conservative"
                 if coin_preset == preset:
                     if risk_mode is None or coin_risk == risk_mode:
                         matching_items.append(item)
@@ -4878,11 +5335,11 @@ def _get_strategy_current_value(db: Session, strategy_key: str, setting_key: str
         if not matching_items:
             return "N/A"
         
-        # Get the most common value (check if attribute exists)
         values = []
         for item in matching_items:
-            if hasattr(item, 'min_price_change_pct') and item.min_price_change_pct is not None:
-                values.append(item.min_price_change_pct)
+            pct = getattr(item, "min_price_change_pct", None)
+            if pct is not None and isinstance(pct, (int, float)):
+                values.append(float(pct))
         
         if not values:
             return "N/A (default: 1.0%)"
@@ -4965,16 +5422,18 @@ def _apply_setting_value_to_strategy(chat_id: str, setting_key: str, strategy_ke
             WatchlistItem.is_deleted == False,
             WatchlistItem.symbol.isnot(None)
         ).all():
-            coin_config = coins_config.get(item.symbol, {})
+            _sym = getattr(item, "symbol", None)
+            symbol_str = str(_sym) if _sym is not None else ""
+            coin_config = coins_config.get(symbol_str, {})
             coin_preset = coin_config.get("preset", "swing")
             
-            # Handle preset formats
             if "-" in coin_preset:
                 coin_preset_base, coin_risk = coin_preset.split("-", 1)
                 if coin_preset_base == preset and coin_risk == risk_mode:
                     matching_items.append(item)
             else:
-                coin_risk = item.sl_tp_mode or "conservative"
+                _cr = getattr(item, "sl_tp_mode", None)
+                coin_risk = str(_cr) if _cr is not None else "conservative"
                 if coin_preset == preset:
                     if risk_mode is None or coin_risk == risk_mode:
                         matching_items.append(item)
@@ -4988,9 +5447,8 @@ def _apply_setting_value_to_strategy(chat_id: str, setting_key: str, strategy_ke
         
         try:
             for item in matching_items:
-                # Check if attribute exists (for backward compatibility)
-                if hasattr(item, 'min_price_change_pct'):
-                    item.min_price_change_pct = new_value
+                if hasattr(item, "min_price_change_pct"):
+                    setattr(item, "min_price_change_pct", new_value)
                     updated_count += 1
                 else:
                     logger.warning(f"[TG] WatchlistItem {item.symbol} does not have min_price_change_pct attribute. Migration may be needed.")
