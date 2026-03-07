@@ -1,6 +1,6 @@
 # Verificación post-deploy (PROD = atp-rebuild-2026)
 
-Después de un deploy a **main** (workflow "Deploy to AWS EC2") o tras cambiar **EC2_HOST** a `dashboard.hilovivo.com`, comprueba lo siguiente.
+Después de un deploy a **main** (workflow **Deploy to AWS EC2 (Session Manager)**) o tras cambiar configuración de PROD, comprueba lo siguiente.
 
 ---
 
@@ -12,11 +12,11 @@ El workflow **Prod Health Check** (Actions → Prod Health Check) se ejecuta cad
 
 ## 1. Desde el run de GitHub Actions
 
-- **Actions** → último run de **Deploy to AWS EC2** → abrir el job.
+- **Actions** → último run de **Deploy to AWS EC2 (Session Manager)** → abrir el job.
 - En los logs:
-  - Debe aparecer **"EC2_HOST is reachable: dashboard.hilovivo.com"** (o el valor que uses).
-  - Debe aparecer **"Public API reachable (HTTP 200)"** si el secret **API_BASE_URL** está definido.
-  - No debe haber errores en el paso "Deploy to EC2" ni en "Verifying deployment health".
+  - Debe aparecer el deploy por SSM a la instancia PROD (i-087953603011543c5).
+  - No debe haber errores en el paso "Deploy to EC2 using Session Manager".
+  - Si usas el workflow Legacy SSH, busca "EC2_HOST is reachable" y "Public API reachable (HTTP 200)".
 
 ---
 
@@ -57,8 +57,8 @@ Si necesitas Session Manager en **atp-rebuild-2026** y el estado es **Connection
 ## 5. Checklist primer deploy (tras cambiar EC2_HOST)
 
 - [ ] GitHub Secrets: **EC2_HOST** = `dashboard.hilovivo.com` (o IP de atp-rebuild-2026).
-- [ ] Push a `main` o Run workflow **Deploy to AWS EC2**.
-- [ ] En el run: paso "Deploy to EC2" en verde; "EC2_HOST is reachable"; "Public API reachable (HTTP 200)" si API_BASE_URL está definido.
+- [ ] Push a `main` (dispara **Deploy to AWS EC2 (Session Manager)**) o Run workflow manualmente.
+- [ ] En el run: paso "Deploy to EC2 using Session Manager" en verde.
 - [ ] Local: `./scripts/aws/prod_status.sh` → PROD API OK.
 - [ ] Navegador: https://dashboard.hilovivo.com carga el frontend.
 
@@ -68,7 +68,7 @@ Si necesitas Session Manager en **atp-rebuild-2026** y el estado es **Connection
 
 | Síntoma | Qué hacer |
 |--------|-----------|
-| Deploy falla: "EC2_HOST is not reachable" | Comprobar que EC2_HOST en Secrets es correcto; que la instancia PROD está running; que el SG permite SSH (22) desde los IPs de GitHub Actions o que usas deploy por SSM (Deploy to AWS EC2 Session Manager). |
+| Deploy falla (SSM) | Comprobar AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY; que la instancia PROD (i-087953603011543c5) tenga SSM Online. Si SSM no está disponible, usar workflow "Deploy to AWS EC2 (Legacy SSH)" (manual) con EC2_HOST y EC2_KEY. |
 | Deploy OK pero "Public API" no 200 o timeout | Comprobar nginx y backend en PROD (si tienes SSM o SSH); que API_BASE_URL en Secrets sea la URL pública del API (p. ej. `https://dashboard.hilovivo.com/api`). |
 | Dashboard no carga en el navegador | Comprobar DNS, certificado, y que nginx en PROD sirve el frontend en / y el backend en /api/. |
 | SSM PROD = ConnectionLost | [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md): reboot instancia, luego diagnóstico si sigue perdido. |

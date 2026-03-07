@@ -30,7 +30,7 @@ Si Nginx no tiene el config nuevo aún, copia `nginx/dashboard.conf` a `/etc/ngi
 
 - **LAB Security Group:** Puerto 8080 del LAB **no** debe estar abierto a 0.0.0.0/0. Solo el IP del servidor del dashboard (o tu VPC) si el proxy está en ese servidor.
 - **CSP:** En el navegador, abre DevTools → pestaña Network → recarga https://dashboard.hilovivo.com/openclaw/ → selecciona la petición → Headers. Debe aparecer `Content-Security-Policy: frame-ancestors 'self' https://dashboard.hilovivo.com`.
-- **APIs sensibles:** Desde el servidor del dashboard: `curl -I https://dashboard.hilovivo.com/openclaw/` (debe pedir auth 401 o devolver 200 si ya autenticado). Si hubiera `/openclaw/api/` u otros paths sensibles, deben estar bajo el mismo Basic Auth.
+- **APIs sensibles:** Desde el servidor del dashboard: `curl -I https://dashboard.hilovivo.com/openclaw/` (debe pedir auth 401 o devolver 200 si ya autenticado). O ejecuta el script: `./scripts/openclaw/verify_openclaw_ui.sh` (opcional: `BASE_URL=https://dashboard.hilovivo.com`).
 
 ---
 

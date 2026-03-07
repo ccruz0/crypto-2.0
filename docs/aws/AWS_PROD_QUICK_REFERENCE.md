@@ -11,6 +11,8 @@
 | PROD  | atp-rebuild-2026   | i-087953603011543c5   | 52.220.32.147  | ConnectionLost |
 | LAB   | atp-lab-ssm-clean  | i-0d82c172235770a0d  | None           | Online         |
 
+**Note:** PROD public IP can change on instance stop/start. Prefer **dashboard.hilovivo.com** or check **EC2 Console → Instances → atp-rebuild-2026 → Public IPv4** for current value. Use that IP for SSH and Crypto.com API whitelist.
+
 ---
 
 ## GitHub (repo crypto-2.0)
@@ -38,8 +40,8 @@
 
 | Workflow | Trigger | Qué hace |
 |----------|---------|----------|
-| Deploy to AWS EC2 | push main | Deploy por SSH a EC2_HOST; health check local + verificación API pública. |
-| Deploy to AWS EC2 (Session Manager) | manual | Deploy por SSM a i-087953603011543c5 (PROD). |
+| **Deploy to AWS EC2 (Session Manager)** | push main + manual | **Deploy por defecto.** Deploy por SSM a i-087953603011543c5 (PROD). Concurrency: un solo deploy a la vez. |
+| Deploy to AWS EC2 (Legacy SSH) | solo manual | Deploy por SSH/rsync (legacy); usar solo si SSM no está disponible. |
 | Restart nginx | manual | Reinicio nginx vía SSM en PROD. |
 | **Prod Health Check** | cada 6 h + manual | Curl a dashboard.hilovivo.com/api/health; falla si no 200. |
 | AWS Runtime Guard / Sentinel | push main / diario | Verificación runtime en PROD (requiere SSM). |
@@ -59,7 +61,7 @@
 
 ## Próximos pasos (acción inmediata)
 
-1. **Verificar deploy:** Haz push a `main` y revisa en GitHub Actions que el workflow **Deploy to AWS EC2** termine en verde y que `https://dashboard.hilovivo.com` responda. Checklist detallado: [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md).
+1. **Verificar deploy:** Haz push a `main` y revisa en GitHub Actions que el workflow **Deploy to AWS EC2 (Session Manager)** termine en verde y que `https://dashboard.hilovivo.com` responda. Checklist detallado: [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md).
 2. **OpenClaw en LAB:** Cuando quieras, sigue [SIGUIENTE_PASOS_OPENCLAW.md](../openclaw/SIGUIENTE_PASOS_OPENCLAW.md).
 
 ---

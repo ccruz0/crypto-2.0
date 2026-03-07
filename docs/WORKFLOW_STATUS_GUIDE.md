@@ -4,10 +4,9 @@
 
 ### ✅ Workflows Corregidos (Recientemente)
 
-1. **Deploy to AWS EC2** (`deploy.yml`)
-   - ✅ Corregido: Permisos de git checkout
-   - ✅ Corregido: Paths de Dockerfile
-   - ✅ Estado: Funcional después de los fixes
+1. **Deploy to AWS EC2 (Session Manager)** (`deploy_session_manager.yml`) — **único deploy en push a main**
+   - Trigger: push a main + workflow_dispatch. Concurrency: deploy-main (cancel-in-progress: true).
+   - Estado: Fuente única de verdad para deploy automático.
 
 2. **Security Scan (Trivy)** (`security-scan.yml`)
    - ✅ Corregido: Paths de Dockerfile (frontend, backend, postgres)
@@ -50,19 +49,19 @@ El próximo push a `main` debería ejecutar los workflows con las correcciones a
 
 ### 3. **Si un Workflow Falla**
 
-**Para el workflow "Deploy to AWS EC2":**
+**Para el workflow "Deploy to AWS EC2 (Session Manager)" (deploy por defecto):**
+1. Verifica que los secrets `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` estén configurados
+2. Verifica que la instancia ID sea correcta: `i-087953603011543c5`
+3. Push a main dispara este workflow; también se puede ejecutar manualmente desde Actions
+
+**Para el workflow "Deploy to AWS EC2 (Legacy SSH)" (solo manual):**
 1. Verifica que los secrets `EC2_HOST` y `EC2_KEY` estén configurados
-2. Verifica que la instancia EC2 esté corriendo
-3. Revisa los logs del workflow para ver el error específico
+2. Solo se ejecuta con "Run workflow"; no se dispara en push a main
 
 **Para los workflows "Security Scan":**
 1. Verifica que los Dockerfiles existan en las ubicaciones correctas
 2. Revisa los logs para ver si hay problemas de build
 3. Los security scans pueden fallar si encuentran vulnerabilidades HIGH/CRITICAL (esto es esperado)
-
-**Para el workflow "Deploy to AWS EC2 (Session Manager)":**
-1. Verifica que los secrets `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` estén configurados
-2. Verifica que la instancia ID sea correcta: `i-08726dc37133b2454`
 
 ### 4. **Workflows que NO Debes Preocuparte**
 
@@ -101,7 +100,7 @@ gh run list --limit 10
 
 2. **Security Scans pueden fallar intencionalmente**: Si encuentran vulnerabilidades HIGH/CRITICAL, el workflow fallará para alertarte. Esto es el comportamiento esperado.
 
-3. **Deploy workflows**: Solo necesitas que uno funcione. Si `Deploy to AWS EC2` funciona, no necesitas preocuparte por `Deploy to AWS EC2 (Session Manager)` a menos que lo uses específicamente.
+3. **Deploy:** El único deploy que se ejecuta en push a main es **Deploy to AWS EC2 (Session Manager)**. El workflow "Deploy to AWS EC2 (Legacy SSH)" existe solo para ejecución manual (p. ej. si SSM no está disponible).
 
 4. **Frontend submodule**: Si ves errores relacionados con "frontend submodule", verifica que el submodule esté inicializado correctamente:
    ```bash

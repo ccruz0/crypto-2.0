@@ -22,7 +22,7 @@ El backend en AWS se conecta **directamente** a Crypto.com Exchange API usando l
          ▼
 ┌─────────────────┐
 │  AWS Elastic IP │
-│  47.130.143.159 │
+│  52.220.32.147  │
 └────────┬────────┘
          │ HTTPS
          │
@@ -90,36 +90,38 @@ backend-aws:
 
 ### 3. Whitelist de IP en Crypto.com
 
-**PASO CRÍTICO**: La IP Elástica de AWS debe estar whitelisted en Crypto.com Exchange.
+**PASO CRÍTICO**: La IP de salida de AWS debe estar whitelisted en Crypto.com Exchange.
 
-1. Obtén tu IP Elástica de AWS:
+**Producción (atp-rebuild-2026):** usa la IP **52.220.32.147**. El backend la registra en logs como `CRYPTO_COM_OUTBOUND_IP: 52.220.32.147`. Whitelist **esa IP exacta** en la API key de Crypto.com Exchange.
+
+1. Comprobar IP de salida (opcional):
    ```bash
    # Desde la instancia AWS
    curl https://api.ipify.org
-   # Debe mostrar: 47.130.143.159 (o tu IP Elástica)
+   # Producción: 52.220.32.147
    ```
 
-2. Agrega la IP en Crypto.com Exchange:
+2. En Crypto.com Exchange:
    - Ve a https://exchange.crypto.com/
-   - Settings → API Keys
+   - Settings → API Management (o API Keys)
    - Edita tu API Key
-   - Agrega la IP Elástica de AWS a la lista de IPs permitidas
+   - En IP Whitelist, agrega **52.220.32.147**
 
 ---
 
 ## 🚀 Proceso de Configuración Paso a Paso
 
-### Paso 1: Verificar IP Elástica de AWS
+### Paso 1: Verificar IP de salida (producción)
 
 ```bash
-# Conectarse a la instancia AWS
-ssh ubuntu@47.130.143.159
+# Conectarse a la instancia AWS (producción atp-rebuild-2026)
+ssh ubuntu@52.220.32.147
 
 # Verificar IP pública
 curl https://api.ipify.org
 ```
 
-**Resultado esperado**: Debe mostrar tu IP Elástica (ej: `47.130.143.159`)
+**Resultado esperado**: Debe mostrar **52.220.32.147** (o la IP que aparezca en logs como `CRYPTO_COM_OUTBOUND_IP`)
 
 ### Paso 2: Configurar Variables de Entorno
 
@@ -144,9 +146,9 @@ EXCHANGE_CUSTOM_API_SECRET=tu_api_secret_real
 ### Paso 3: Whitelist IP en Crypto.com
 
 1. Inicia sesión en https://exchange.crypto.com/
-2. Ve a **Settings** → **API Keys**
+2. Ve a **Settings** → **API Management** (o API Keys)
 3. Selecciona tu API Key
-4. En **IP Whitelist**, agrega tu IP Elástica de AWS
+4. En **IP Whitelist**, agrega **52.220.32.147** (producción AWS)
 5. Guarda los cambios
 
 ### Paso 4: Reiniciar Servicios
@@ -181,7 +183,7 @@ docker compose --profile aws logs backend-aws --tail 50 | grep -i crypto
 - [ ] `LIVE_TRADING=true` en `.env.aws`
 - [ ] `EXCHANGE_CUSTOM_BASE_URL` apunta a `https://api.crypto.com/exchange/v1`
 - [ ] Credenciales de API configuradas en `.env.aws`
-- [ ] IP Elástica de AWS whitelisted en Crypto.com Exchange
+- [ ] IP **52.220.32.147** whitelisted en Crypto.com Exchange (API key)
 - [ ] Backend reiniciado después de cambios
 - [ ] Test de conexión exitoso
 
@@ -210,7 +212,7 @@ docker compose --profile aws logs backend-aws --tail 100 | grep -i "CryptoComTra
    EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
    ```
 
-2. IP de salida: Debe mostrar tu IP Elástica de AWS
+2. IP de salida: Producción = **52.220.32.147** (CRYPTO_COM_OUTBOUND_IP en logs)
 
 3. Test de conexión: Debe mostrar éxito sin errores
 

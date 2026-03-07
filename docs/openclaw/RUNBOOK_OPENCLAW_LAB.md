@@ -128,6 +128,8 @@ sudo systemctl start openclaw
 
 | Qué | Dónde |
 |-----|--------|
+| **Instalación segura desde Mac** (PAT solo en LAB vía SSH, sin SSM) | [RUNBOOK_SECURE_INSTALL.md](RUNBOOK_SECURE_INSTALL.md) |
+| Instalar desde Mac (referencia) | [RUNBOOK_INSTALAR_DESDE_MAC.md](RUNBOOK_INSTALAR_DESDE_MAC.md) |
 | **Continuar instalación** (apt ya OK) | [INSTALL_CONTINUE.md](INSTALL_CONTINUE.md) |
 | Comandos para pegar en SSM | `./scripts/openclaw/print_lab_commands.sh` (desde el repo) |
 | Setup token + .env | [LAB_SETUP_AND_VALIDATION.md](LAB_SETUP_AND_VALIDATION.md) Phase 1 |

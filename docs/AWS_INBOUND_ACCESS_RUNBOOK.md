@@ -46,7 +46,7 @@ Or use the verification script:
    - Services → Compute → EC2 → Instances
 
 2. **Select Your Instance**
-   - Find instance ID: `i-08726dc37133b2454` (or your instance ID)
+   - Find instance ID: `i-087953603011543c5` (or your instance ID)
    - Click on the instance name
 
 3. **Open Security Tab**
@@ -79,7 +79,7 @@ Or use the verification script:
 **⚠️ Only if AWS CLI is configured: `aws sts get-caller-identity`**
 
 ```bash
-INSTANCE_ID="i-08726dc37133b2454"  # Replace with your instance ID
+INSTANCE_ID="i-087953603011543c5"  # Replace with your instance ID
 REGION="ap-southeast-1"  # Replace with your region
 MY_IP="185.250.39.133"  # Replace with your Mac's public IP
 
@@ -205,7 +205,7 @@ curl -s https://api.ipify.org
 **⚠️ Only if AWS CLI is configured**
 
 ```bash
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 MY_IP="185.250.39.133"
 

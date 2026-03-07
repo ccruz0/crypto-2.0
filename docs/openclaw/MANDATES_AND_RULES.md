@@ -2,6 +2,10 @@
 
 Use the UI at **/openclaw** (or https://dashboard.hilovivo.com/openclaw/) to run mandates. Before heavy use: run a **calibration mandate** (read-only), then apply operational rules to control cost and risk.
 
+**Trading platform repair (read-only audit):** [MANDATE_01_TRADING_PLATFORM_REPAIR_AUDIT.md](MANDATE_01_TRADING_PLATFORM_REPAIR_AUDIT.md) — paste in OpenClaw UI for a prioritized fix plan; no file edits.
+
+**First safe PR (Telegram dedupe + state):** [MANDATE_02_FIRST_SAFE_PR.md](MANDATE_02_FIRST_SAFE_PR.md) — paste after Mandate #1; one small PR with acceptance criteria, verification checklist, PR template, and stop condition if risk is elsewhere.
+
 ---
 
 ## Calibration mandate (safe, first run)

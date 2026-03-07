@@ -55,10 +55,10 @@ O solo API:
 
 No se hace por terminal; se hace en GitHub:
 
-1. **Opción A:** Haz **push a la rama `main`** (el workflow "Deploy to AWS EC2" se ejecuta solo).
-2. **Opción B:** Repo → **Actions** → **Deploy to AWS EC2** → **Run workflow** → Run.
+1. **Opción A:** Haz **push a la rama `main`** (el workflow **Deploy to AWS EC2 (Session Manager)** se ejecuta solo; es el deploy por defecto).
+2. **Opción B:** Repo → **Actions** → **Deploy to AWS EC2 (Session Manager)** → **Run workflow** → Run.
 
-Luego en el mismo run revisa que aparezca "EC2_HOST is reachable" y "Public API reachable (HTTP 200)".
+Luego en el mismo run revisa que el paso "Deploy to EC2 using Session Manager" termine en verde.
 
 ---
 

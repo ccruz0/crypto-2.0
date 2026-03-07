@@ -1,67 +1,49 @@
-# 📚 Documentación del Proyecto
+# Documentation — Single Source of Truth
 
-## 🔌 Conexión a Crypto.com Exchange
+**GitHub is the canonical source for all technical documentation** for the Automated Trading Platform. All architecture, runbooks, and system documentation live in this repository under `/docs`.
 
-### Para Producción AWS
-- **[AWS → Crypto.com Connection Guide](AWS_CRYPTO_COM_CONNECTION.md)**: Guía completa de configuración estándar para producción AWS
-  - Configuración de conexión directa
-  - Variables de entorno requeridas
-  - Proceso de verificación
-  - Troubleshooting
-
-### Para Desarrollo Local
-- **[Crypto.com Setup](../CRYPTO_COM_SETUP.md)**: Configuración para desarrollo local
-  - Opciones de conexión (directa, proxy, dry-run)
-  - Configuración paso a paso
-  - Testing y verificación
-
-## 🏗️ Infraestructura AWS
-
-- **[AWS Elastic IP Setup](AWS_ELASTIC_IP_SETUP.md)**: Configuración de IP Elástica
-- **[Configure Direct Connection](CONFIGURE_DIRECT_CONNECTION.md)**: Migración de VPN a conexión directa
-
-## 📊 Monitoreo y Diagnóstico
-
-- Ver `docs/monitoring/` para documentación de monitoreo
-- Ver `docs/debug/` para guías de debugging
-
-## 📋 Gestión de Órdenes y Notificaciones
-
-- **[Order Lifecycle Guide](ORDER_LIFECYCLE_GUIDE.md)**: Guía completa para traders sobre el ciclo de vida de órdenes
-  - Estados de órdenes (CREATED, EXECUTED, CANCELED)
-  - Interpretación de notificaciones de Telegram
-  - Guía de lectura de alertas
-  - Escenarios comunes y troubleshooting
-
-- **[Order Cancellation Notifications](ORDER_CANCELLATION_NOTIFICATIONS.md)**: Documentación completa sobre notificaciones de Telegram para órdenes canceladas
-  - 7 escenarios de cancelación cubiertos
-  - Guía de testing y troubleshooting
-  - Ejemplos de API y formato de notificaciones
-  - ⚠️ Clarificación: "Order not found in open orders" ≠ "Order canceled"
-
-- **[System Map](SYSTEM_MAP.md)**: Arquitectura técnica completa y ciclo de vida de órdenes
-  - Lógica de sincronización (sync)
-  - Semántica de eventos
-  - Flujo completo de datos
-
-- **[Lifecycle Events](LIFECYCLE_EVENTS_COMPLETE.md)**: Semántica e implementación de eventos
-  - Qué significa cada evento
-  - Cuándo se emite cada evento
-  - Qué NO significa cada evento
-
-## 🤖 Desarrollo y Uso de Agentes AI
-
-- **[AI Agent Usage Guidelines](ai-agent-usage.md)**: Reglas y mejores prácticas para el uso de agentes AI
-  - Reglas obligatorias para limitar consumo de créditos
-  - Cuándo usar Auto mode
-  - Configuración requerida antes de ejecutar agentes
-  - Mejores prácticas y justificación
+- **Notion** → projects, tasks, and decisions (references this repo when needed).
+- **Cursor** → development (reads and updates docs here).
+- **OpenClaw** → execution (reads this repo as the knowledge base).
 
 ---
 
-*Para más documentación, consulta los archivos `.md` en la raíz del proyecto.*
+## Directory Structure
 
+| Directory | Purpose |
+|-----------|---------|
+| [**architecture**](architecture/) | System design, components, data flow |
+| [**trading-strategy**](trading-strategy/) | Strategy logic, signals, risk, throttling |
+| [**infrastructure**](infrastructure/) | AWS, Docker, runtime environment |
+| [**runbooks**](runbooks/) | Deploy, restart, troubleshoot (procedures) |
+| [**integrations**](integrations/) | External APIs (Crypto.com, Telegram, etc.) |
+| [**operations**](operations/) | Monitoring, health checks, alerts |
+| [**agents**](agents/) | AI-readable context: [context.md](agents/context.md), [task-system.md](agents/task-system.md); for autonomous agents (Cursor, OpenClaw) |
+| [**decision-log**](decision-log/) | Record of significant technical decisions |
 
+Additional existing folders (audit, aws, openclaw, portfolio, monitoring, etc.) remain; the canonical entry points above link to them where relevant.
 
+---
 
+## Quick Links
 
+- [**System map**](architecture/system-map.md) — **Start here for agents**: components, APIs, data flow, dependencies.
+- [System overview](architecture/system-overview.md)
+- [AWS setup](infrastructure/aws-setup.md)
+- [Docker setup](infrastructure/docker-setup.md)
+- [Deploy runbook](runbooks/deploy.md)
+- [Restart services](runbooks/restart-services.md)
+- [Crypto.com API](integrations/crypto-api.md)
+- [Monitoring](operations/monitoring.md)
+- [Agent context](agents/context.md) — How agents should work in this repo.
+- [Task system](agents/task-system.md) — Task lifecycle and validation.
+- [Decision log](decision-log/README.md)
+
+---
+
+## For Humans and AI Agents
+
+- Documentation is written in clear Markdown.
+- Use headings, tables, and code blocks for structure.
+- Cross-link between docs with relative paths (e.g. `[Deploy](runbooks/deploy.md)`).
+- When adding new procedures or architecture, place them under the appropriate `/docs` directory and link from this index.

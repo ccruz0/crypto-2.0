@@ -8,6 +8,12 @@
 
 ## Get OpenClaw working on the dashboard
 
+**→ Acciones concretas (Paso 1 → 2 → 3, sin vueltas):** [PASOS_OPENCLAW_ACCIONES_CONCRETAS.md](PASOS_OPENCLAW_ACCIONES_CONCRETAS.md) — Clonar/open openclaw en Cursor, pegar prompt, redeploy en LAB, verificación. Si Cursor no encuentra placeholder/framework, pegar package.json + ls + dónde `new WebSocket(`.
+
+**→ Prompt build/push/deploy (pegar en openclaw):** [CURSOR_PROMPT_OPENCLAW_BUILD_PUSH_DEPLOY.md](CURSOR_PROMPT_OPENCLAW_BUILD_PUSH_DEPLOY.md) — Prompt para verificar WS, base path, .env.example, Dockerfile y obtener comandos de build/push + checklist.
+
+**→ Prompt GHCR workflow (pegar en openclaw):** [CURSOR_PROMPT_OPENCLAW_GHCR_WORKFLOW.md](CURSOR_PROMPT_OPENCLAW_GHCR_WORKFLOW.md) — Crea `.github/workflows/docker_publish.yml` para build y push automático a GHCR en push a main o manual; sin Docker local.
+
 **Validate in one command (from your machine, no SSH):**
 ```bash
 ./scripts/openclaw/run_openclaw_diagnosis_local.sh
@@ -18,6 +24,14 @@
 **Step-by-step checklist (OpenClaw host → Dashboard host → browser):** [GET_OPENCLAW_WORKING_ON_DASHBOARD.md](GET_OPENCLAW_WORKING_ON_DASHBOARD.md).
 
 Use it when you want the OpenClaw UI at **https://dashboard.hilovivo.com/openclaw** (iframe + Basic Auth). If you hit 404 or 504, that doc links to the right runbooks.
+
+### Fix "non-loopback Control UI requires gateway.controlUi.allowedOrigins"
+
+When the container runs behind a reverse proxy (e.g. `https://dashboard.hilovivo.com/openclaw`), the gateway may fail with the above error.
+
+1. **This repo (ATP):** Wrapper image writes `~/.openclaw/openclaw.json` and sets env. Build: `docker build -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .` Push: `ghcr.io/ccruz0/openclaw:with-origins`. See [ALLOWED_ORIGINS_IMPLEMENTATION.md](ALLOWED_ORIGINS_IMPLEMENTATION.md) and [VERIFY_WRAPPER_AND_FIX_APP.md](VERIFY_WRAPPER_AND_FIX_APP.md). **LAB is amd64:** build for amd64 or deploy via S3 — see **§8** in ALLOWED_ORIGINS_IMPLEMENTATION.md.
+2. **Verify on LAB:** Run the wrapper image, check logs. If you still see the error, the **base app** does not read the config.
+3. **Fix the app (OpenClaw repo):** Use the prompt in [CURSOR_PROMPT_FIX_GATEWAY_ALLOWED_ORIGINS.md](CURSOR_PROMPT_FIX_GATEWAY_ALLOWED_ORIGINS.md) in the OpenClaw repo so the gateway actually loads `gateway.controlUi.allowedOrigins` from file/env.
 
 ### Fix WebSocket (do this in the OpenClaw frontend repo, not ATP)
 
@@ -97,6 +111,7 @@ Then paste the two blocks it prints (`systemctl status openclaw` and `curl -I` f
 - **`./scripts/openclaw/insert_nginx_openclaw_block.sh [OPENCLAW_PRIVATE_IP]`**
   - Run **on the Dashboard host** (via EC2 Instance Connect or SSH) to insert the OpenClaw proxy block into the Nginx 443 config. Fixes **404** for `/openclaw` when the block is missing.
   - Example: `sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214` (IP privada del LAB/OpenClaw). Requires repo on the server: `git pull` then run the script.
+- **`sudo bash scripts/openclaw/ensure_openclaw_gateway_token.sh`** (run on LAB) — Ensures `gateway.auth.token` is persistent in `/opt/openclaw/openclaw.json`, keeps existing token by default, and restarts container only if token changed. Runbook: [TOKEN_PERSISTENCE_RUNBOOK.md](TOKEN_PERSISTENCE_RUNBOOK.md).
 
 ## Other
 
