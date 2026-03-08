@@ -38,6 +38,20 @@ def _verify_signature(payload: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+_DEPLOY_WORKFLOW_FILE = (
+    (os.environ.get("DEPLOY_WORKFLOW_FILE") or "").strip()
+    or "deploy_session_manager.yml"
+)
+
+
+def _is_deploy_workflow(workflow_path: str, workflow_name: str) -> bool:
+    """True if this workflow run is the deploy workflow we care about."""
+    path = (workflow_path or "").lower()
+    name = (workflow_name or "").lower()
+    target = _DEPLOY_WORKFLOW_FILE.lower()
+    return target in path or target.replace(".yml", "") in name
+
+
 def _resolve_task_id() -> str:
     """Find the task currently in ``deploying`` status.
 
@@ -81,22 +95,35 @@ def _handle_workflow_run(body: dict[str, Any]) -> dict[str, Any]:
     conclusion = (run.get("conclusion") or "").lower()
     action = (body.get("action") or "").lower()
     workflow_name = run.get("name", "unknown")
+    workflow_path = run.get("path", "")
     run_url = run.get("html_url", "")
 
+    logger.info(
+        "github_webhook: received workflow_run action=%s workflow=%s path=%s",
+        action, workflow_name, workflow_path,
+    )
+
     if action != "completed":
-        return {"handled": False, "reason": f"action={action} (not completed)"}
+        return {"ok": True, "ignored": True, "reason": f"action={action} (not completed)"}
+
+    if not _is_deploy_workflow(workflow_path, workflow_name):
+        logger.info(
+            "github_webhook: workflow=%r ignored (not deploy target %s)",
+            workflow_name, _DEPLOY_WORKFLOW_FILE,
+        )
+        return {"ok": True, "ignored": True, "reason": f"workflow '{workflow_name}' not deploy target"}
 
     task_id = _resolve_task_id()
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if not task_id:
+        logger.info("github_webhook: no matching deploying task, ignoring")
+        return {"ok": True, "ignored": True, "reason": "no deploying task found"}
 
     logger.info(
         "github_webhook: workflow_run completed conclusion=%s task_id=%s workflow=%s",
         conclusion, task_id, workflow_name,
     )
-
-    if not task_id:
-        logger.warning("github_webhook: no deploying task found — cannot advance lifecycle")
-        return {"handled": False, "reason": "no deploying task found"}
 
     if conclusion == "success":
         return _handle_deploy_success(task_id, ts, run_url)
@@ -207,7 +234,8 @@ async def github_actions_webhook(
     import json
     try:
         body = json.loads(payload)
-    except Exception:
+    except Exception as e:
+        logger.warning("github_webhook: invalid JSON — %s", e)
         return {"ok": False, "error": "invalid JSON"}
 
     result = _handle_workflow_run(body)
