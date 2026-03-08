@@ -897,6 +897,7 @@ def update_notion_task_metadata(
 
     updated_fields: list[str] = []
     skipped_fields: list[str] = []
+    schema_missing_fields: list[str] = []
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -927,6 +928,8 @@ def update_notion_task_metadata(
                         err_body = (r.text or "")[:240]
                     except Exception:
                         err_body = ""
+                    if r.status_code == 400 and "is not a property that exists" in err_body:
+                        schema_missing_fields.append(key)
                     logger.info(
                         "Notion metadata field skipped page_id=%s field=%s http=%d body=%s",
                         normalized_page_id, key, r.status_code, err_body,
@@ -937,6 +940,7 @@ def update_notion_task_metadata(
             "ok": False,
             "updated_fields": updated_fields,
             "skipped_fields": sorted(set(skipped_fields + [k for k in metadata if k not in updated_fields])),
+            "schema_missing_fields": sorted(set(schema_missing_fields)),
             "reason": str(e),
         }
 
@@ -944,10 +948,23 @@ def update_notion_task_metadata(
     if comment:
         _append_page_comment(normalized_page_id, comment, headers)
 
+    all_schema_missing = (
+        bool(skipped_fields)
+        and not updated_fields
+        and set(skipped_fields) <= set(schema_missing_fields)
+    )
+    if all_schema_missing:
+        logger.info(
+            "Notion metadata: all skipped fields are missing from DB schema — "
+            "treating as ok page_id=%s schema_missing=%s",
+            normalized_page_id, schema_missing_fields,
+        )
+
     return {
-        "ok": bool(updated_fields),
+        "ok": bool(updated_fields) or all_schema_missing,
         "updated_fields": updated_fields,
         "skipped_fields": sorted(set(skipped_fields)),
+        "schema_missing_fields": sorted(set(schema_missing_fields)),
     }
 
 

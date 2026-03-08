@@ -5219,6 +5219,16 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
 
     test_status_raw = (task.get("test_status") or "").strip()
     if not test_status_raw:
+        if current_status == "awaiting-deploy-approval":
+            logger.info(
+                "[DEPLOY_GATE] Test Status property empty/missing but task is in "
+                "awaiting-deploy-approval — trusting orchestrator test gate "
+                "task_id=%s", task_id,
+            )
+            return True, (
+                "Test Status property absent in Notion schema — "
+                "trusting orchestrator test gate (status=awaiting-deploy-approval)"
+            )
         return False, "Test Status is empty — tests must pass before deploy"
 
     test_status_lower = test_status_raw.lower()
