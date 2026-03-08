@@ -9,10 +9,18 @@ structured results and logs all outcomes to the agent activity log.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Scheduler state (module-level, updated each cycle)
+# ---------------------------------------------------------------------------
+
+_scheduler_running: bool = False
+_last_cycle_ts: str = ""
 
 # Keywords that disqualify auto-execution (task must not target these)
 _AUTO_EXECUTE_BLOCKED_KEYWORDS = (
@@ -337,11 +345,36 @@ def continue_ready_for_patch_tasks(*, max_tasks: int = 3) -> list[dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Scheduler state helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_automation_enabled() -> bool:
+    """Check AGENT_AUTOMATION_ENABLED env var (default true).
+
+    Re-read every cycle so it can be toggled without a restart.
+    """
+    raw = (os.environ.get("AGENT_AUTOMATION_ENABLED") or "").strip().lower()
+    if raw in ("false", "0", "no"):
+        return False
+    return True
+
+
+def get_scheduler_state() -> dict[str, Any]:
+    """Return a snapshot of the scheduler's runtime state."""
+    return {
+        "running": _scheduler_running,
+        "last_cycle": _last_cycle_ts,
+        "interval": _get_scheduler_interval(),
+        "automation_enabled": _is_automation_enabled(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Background loop: runs run_agent_scheduler_cycle() periodically
 # ---------------------------------------------------------------------------
 
 import asyncio
-import os
 
 _AGENT_SCHEDULER_DEFAULT_INTERVAL = 300  # 5 minutes
 
@@ -365,7 +398,10 @@ async def start_agent_scheduler_loop() -> None:
     Designed to be launched via ``asyncio.create_task()`` inside the FastAPI
     startup event.  Logs every cycle start/end and never raises to the caller.
     """
+    global _scheduler_running, _last_cycle_ts
+
     interval = _get_scheduler_interval()
+    _scheduler_running = True
     logger.info(
         "agent_scheduler_loop_started interval=%ds",
         interval,
@@ -374,8 +410,14 @@ async def start_agent_scheduler_loop() -> None:
     loop = asyncio.get_running_loop()
 
     while True:
+        if not _is_automation_enabled():
+            logger.warning("agent_scheduler_loop: AGENT_AUTOMATION_ENABLED=false — skipping cycle")
+            await asyncio.sleep(interval)
+            continue
+
         try:
             result = await loop.run_in_executor(None, run_agent_scheduler_cycle)
+            _last_cycle_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             logger.info(
                 "agent_scheduler_cycle_done ok=%s action=%s task=%s reason=%s",
                 result.get("ok"),

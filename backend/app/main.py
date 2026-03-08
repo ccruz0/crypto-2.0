@@ -27,6 +27,8 @@ from app.api.routes_portfolio import router as portfolio_router
 from app.api.routes_ai import router as ai_router
 from app.api.routes_risk_probe import router as risk_probe_router
 from app.api.routes_metrics import router as metrics_router
+from app.api.routes_agent import router as agent_router
+from app.api.routes_github_webhook import router as github_webhook_router
 try:
     from app.api.routes_settings import router as settings_router
     _settings_router_available = True
@@ -680,6 +682,8 @@ app.include_router(risk_probe_router, prefix="/api", tags=["risk"])
 app.include_router(metrics_router, prefix="/api", tags=["metrics"])
 if _settings_router_available and settings_router is not None:
     app.include_router(settings_router, prefix="/api", tags=["settings"])
+app.include_router(agent_router, prefix="/api", tags=["agent"])
+app.include_router(github_webhook_router, prefix="/api", tags=["github"])
 
 # Alias health under /api for reverse-proxy setups that expect /api/health
 # Defined AFTER routers so /api/health/system can be matched first

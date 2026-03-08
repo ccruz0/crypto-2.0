@@ -36,6 +36,19 @@ _DEFAULT_REPO = "ccruz0/crypto-2.0"
 _DEFAULT_WORKFLOW = "deploy_session_manager.yml"
 _DEFAULT_REF = "main"
 
+# Track recent deploys so the GitHub webhook can correlate workflow runs
+# to Notion task IDs without requiring workflow input parameters.
+_recent_deploys: list[dict[str, str]] = []
+_MAX_RECENT_DEPLOYS = 20
+
+
+def get_last_deploy_task_id() -> str:
+    """Return the task_id of the most recent successful deploy dispatch, or ''."""
+    for d in reversed(_recent_deploys):
+        if d.get("task_id"):
+            return d["task_id"]
+    return ""
+
 
 def _get_config() -> tuple[str, str, str]:
     """Return (token, repo, workflow_file).  Token may be empty."""
@@ -122,6 +135,13 @@ def trigger_deploy_workflow(
     if resp.status_code == 204:
         summary = f"Deploy workflow dispatched: {repo}@{target_ref} ({workflow})"
         logger.info("trigger_deploy_workflow: success — %s task_id=%s", summary, task_id)
+        _recent_deploys.append({
+            "task_id": task_id,
+            "triggered_at": triggered_at,
+            "triggered_by": triggered_by,
+        })
+        if len(_recent_deploys) > _MAX_RECENT_DEPLOYS:
+            _recent_deploys[:] = _recent_deploys[-_MAX_RECENT_DEPLOYS:]
         try:
             from app.services.agent_activity_log import log_agent_event
             log_agent_event(
