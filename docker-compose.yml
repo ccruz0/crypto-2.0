@@ -65,6 +65,7 @@ services:
     env_file:
       - .env
       - .env.local
+      - ./secrets/runtime.env
       # NOTE: .env.secrets.local is optional - if you need it, create it manually and it will be auto-loaded
       # NOTE: .env.aws is NOT loaded for local dev to avoid AWS config conflicts
     environment:

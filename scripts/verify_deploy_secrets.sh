@@ -14,11 +14,31 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/.."
 cd "$ROOT_DIR"
 
+# Prefer backend-aws (prod), then backend, then backend-dev (local)
 CONTAINER="$(docker ps -q --filter 'name=backend-aws' | head -1)"
+[[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps -q --filter 'name=automated-trading-platform-backend' | head -1)"
+[[ -z "$CONTAINER" ]] && CONTAINER="$(docker ps -q --filter 'name=backend-dev' | head -1)"
+
 if [[ -z "$CONTAINER" ]]; then
-  echo "ERROR: backend-aws container not running" >&2
+  echo "ERROR: No backend container running (backend-aws, backend, or backend-dev)" >&2
+  echo "" >&2
+  echo "Host file check (secrets/runtime.env):" >&2
+  if [[ -f secrets/runtime.env ]]; then
+    if grep -q '^GITHUB_TOKEN' secrets/runtime.env 2>/dev/null; then
+      echo "  GITHUB_TOKEN: present in file" >&2
+    else
+      echo "  GITHUB_TOKEN: MISSING in file" >&2
+    fi
+  else
+    echo "  secrets/runtime.env not found" >&2
+  fi
+  echo "" >&2
+  echo "Start a backend with: docker compose --profile local up -d backend-dev" >&2
   exit 1
 fi
+
+CONTAINER_NAME="$(docker ps --filter "id=$CONTAINER" --format '{{.Names}}')"
+echo "Using container: $CONTAINER_NAME"
 
 echo "== Deploy secrets (container env, presence only) =="
 docker exec "$CONTAINER" python3 - <<'PY'
