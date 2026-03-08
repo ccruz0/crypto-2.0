@@ -40,9 +40,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_HEALTH_URL = "http://127.0.0.1:8002"
 
-SMOKE_CHECK_TIMEOUT_S = 10
-SMOKE_CHECK_RETRIES = 3
-SMOKE_CHECK_RETRY_DELAY_S = 5
+SMOKE_CHECK_TIMEOUT_S = 15
+SMOKE_CHECK_RETRIES = 12
+SMOKE_CHECK_RETRY_DELAY_S = 15
+# Backend healthcheck has start_period 180s; wait before first attempt so deploy has time to restart
+SMOKE_CHECK_INITIAL_DELAY_S = 90
 
 
 def _health_base_url() -> str:
@@ -184,6 +186,7 @@ def run_smoke_check(
     retry_delay_s: float = SMOKE_CHECK_RETRY_DELAY_S,
     include_system_health: bool = True,
     timeout_s: float = SMOKE_CHECK_TIMEOUT_S,
+    initial_delay_s: float | None = None,
 ) -> dict[str, Any]:
     """Run the post-deploy smoke-check suite.
 
@@ -202,6 +205,9 @@ def run_smoke_check(
         Whether to also call ``/api/health/system`` for deep checks.
     timeout_s:
         Per-request timeout.
+    initial_delay_s:
+        Seconds to wait before first liveness attempt (for post-deploy: backend needs ~90s to become healthy).
+        Defaults to SMOKE_CHECK_INITIAL_DELAY_S if None.
 
     Returns
     -------
@@ -215,6 +221,11 @@ def run_smoke_check(
     base = (base_url or _health_base_url()).rstrip("/")
     checks: list[dict[str, Any]] = []
     t_start = time.monotonic()
+
+    delay = initial_delay_s if initial_delay_s is not None else SMOKE_CHECK_INITIAL_DELAY_S
+    if delay > 0:
+        logger.info("smoke_check: waiting %.0fs for backend to become healthy (post-deploy)", delay)
+        time.sleep(delay)
 
     # --- 1. Liveness: /api/health (with retries) ---
     liveness_url = f"{base}/api/health"
