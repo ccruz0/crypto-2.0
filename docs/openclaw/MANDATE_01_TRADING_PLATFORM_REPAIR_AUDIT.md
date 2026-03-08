@@ -38,11 +38,13 @@ Pegar este texto en la UI de OpenClaw para ejecutar el primer mandato formal.
 
 ## Start by scanning these paths
 
-- `backend/app/services`
-- `backend/app/api`
-- `backend/app/models`
-- `scripts/`
-- `docker-compose*` and `nginx/` only if they influence runtime behavior
+> **Important:** The paths below are directories, not files. List each directory first (`ls` or equivalent), then read the concrete `.py` files inside. Do NOT attempt to read a directory path directly — that causes EISDIR errors.
+
+- `backend/app/services/` — list first, then read key files: `signal_monitor.py`, `signal_order_orchestrator.py`, `exchange_sync.py`, `telegram_commands.py`, `telegram_notifier.py`, `trading_signals.py`, `strategy_profiles.py`, `signal_throttle.py`
+- `backend/app/api/` — list first, then read: `routes_orders.py`, `routes_monitoring.py`, `routes_control.py`, `routes_market.py`
+- `backend/app/models/` — list first, then read: `exchange_order.py`, `trade_signal.py`, `order_intent.py`, `watchlist.py`, `telegram_state.py`
+- `scripts/` — list first, then read relevant `.sh` files
+- `docker-compose.yml` and `nginx/dashboard.conf` only if they influence runtime behavior
 
 ---
 

@@ -1598,7 +1598,7 @@ class SignalMonitorService:
         """Monitor signals for all coins with alert_enabled = true (for alerts)
         Orders are only created if trade_enabled = true in addition to alert_enabled = true
         """
-        logger.debug("[SIGNAL_MONITOR_REFACTOR] flow=throttle_service+order_intent_service")
+        logger.debug("[SIGNAL_MONITOR_REFACTOR] flow=throttle_service+signal_order_orchestrator")
         try:
             telegram_config = self._get_telegram_runtime_config(refresh=True)
             reasons = telegram_config.get("block_reasons") or []
@@ -3571,7 +3571,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=BUY emit={should_emit_telegram} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status  # pyright: ignore[reportMissingImports]
+                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module
@@ -5607,7 +5607,7 @@ class SignalMonitorService:
                                 f"[ORCH_GATE] symbol={symbol} decision=SELL emit={should_emit_telegram_sell} action=RUN reason=TELEGRAM_SENT"
                             )
                             try:
-                                from app.services.order_intent_service import create_order_intent, update_order_intent_status  # pyright: ignore[reportMissingImports]
+                                from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
                                 from app.api.routes_monitoring import update_telegram_message_decision_trace
                                 from app.utils.decision_reason import make_skip, make_fail, make_execute, ReasonCode
                                 import uuid as uuid_module

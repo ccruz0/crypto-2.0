@@ -201,7 +201,9 @@ def parse_investigation_sections(text: str) -> dict[str, str | None]:
 _WORKSPACE_NOTE = (
     "You have read-only access to the project workspace at "
     "/home/node/.openclaw/workspace/atp/. "
-    "Use it to read source code, configs, docs, and scripts when investigating."
+    "Use it to read source code, configs, docs, and scripts when investigating. "
+    "IMPORTANT: Never read a directory path directly (causes EISDIR error). "
+    "Always list a directory first, then read the specific files inside it."
 )
 
 
