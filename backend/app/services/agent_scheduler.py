@@ -304,11 +304,14 @@ def continue_ready_for_patch_tasks(*, max_tasks: int = 3) -> list[dict[str, Any]
         logger.warning("continue_ready_for_patch_tasks: import failed %s", e)
         return []
 
-    tasks = get_tasks_by_status(["ready-for-patch", "Ready for Patch"], max_results=max_tasks)
+    tasks = get_tasks_by_status(
+        ["ready-for-patch", "Ready for Patch", "patching", "Patching"],
+        max_results=max_tasks,
+    )
     if not tasks:
         return []
 
-    logger.info("continue_ready_for_patch_tasks: found %d task(s) in ready-for-patch", len(tasks))
+    logger.info("continue_ready_for_patch_tasks: found %d task(s) in ready-for-patch/patching", len(tasks))
 
     results: list[dict[str, Any]] = []
     for task in tasks:

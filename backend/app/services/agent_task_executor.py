@@ -1304,24 +1304,28 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     task_title = str(task.get("task") or "").strip()
     current_status = str(task.get("status") or "").strip().lower()
 
-    if current_status != "ready-for-patch":
+    _resumable_statuses = ("ready-for-patch", "patching")
+    if current_status not in _resumable_statuses:
         logger.info(
-            "advance_ready_for_patch_task: skipping task_id=%s status=%s (expected ready-for-patch)",
-            task_id, current_status,
+            "advance_ready_for_patch_task: skipping task_id=%s status=%s (expected one of %s)",
+            task_id, current_status, _resumable_statuses,
         )
-        return _result(False, "status_check", f"status is {current_status}, not ready-for-patch")
+        return _result(False, "status_check", f"status is {current_status}, not in {_resumable_statuses}")
 
     logger.info(
-        "advance_ready_for_patch_task: starting continuation task_id=%s title=%r",
-        task_id, task_title,
+        "advance_ready_for_patch_task: starting continuation task_id=%s title=%r status=%s",
+        task_id, task_title, current_status,
     )
 
-    # --- 2. Move to patching ---
-    patching_ok = update_notion_task_status(task_id, "patching")
-    if not patching_ok:
-        logger.warning("advance_ready_for_patch_task: failed to move to patching task_id=%s", task_id)
-        return _result(False, "patching", "Notion status update to patching failed")
-    logger.info("advance_ready_for_patch_task: moved to patching task_id=%s", task_id)
+    # --- 2. Move to patching (skip if already there) ---
+    if current_status == "patching":
+        logger.info("advance_ready_for_patch_task: already in patching, skipping status move task_id=%s", task_id)
+    else:
+        patching_ok = update_notion_task_status(task_id, "patching")
+        if not patching_ok:
+            logger.warning("advance_ready_for_patch_task: failed to move to patching task_id=%s", task_id)
+            return _result(False, "patching", "Notion status update to patching failed")
+        logger.info("advance_ready_for_patch_task: moved to patching task_id=%s", task_id)
 
     # --- 3. Reconstruct a minimal prepared_task for callback selection ---
     repo_area = infer_repo_area_for_task(task)
