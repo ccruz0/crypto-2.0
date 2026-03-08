@@ -58,7 +58,27 @@ jobs:
         
         echo "🔍 Deploying to instance: $INSTANCE_ID"
         
-        # First, update code on EC2 using git pull
+        # Inject GITHUB_TOKEN into .env.aws (EC2 fetches from SSM; token never in workflow)
+        echo "🔑 Injecting GITHUB_TOKEN into .env.aws (EC2 fetches from SSM)..."
+        INJECT_ID=$(aws ssm send-command \
+          --instance-ids $INSTANCE_ID \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=[
+            "cd /home/ubuntu/automated-trading-platform || cd ~/automated-trading-platform || true",
+            "GHTOKEN=$(aws ssm get-parameter --name /automated-trading-platform/prod/github_token --with-decryption --query Parameter.Value --output text 2>/dev/null || aws ssm get-parameter --name /openclaw/github-token --with-decryption --query Parameter.Value --output text 2>/dev/null || true)",
+            "if [ -n \"$GHTOKEN\" ]; then grep -q \"^GITHUB_TOKEN=\" .env.aws 2>/dev/null && sed -i \"s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$GHTOKEN|\" .env.aws || echo \"GITHUB_TOKEN=$GHTOKEN\" >> .env.aws; echo GITHUB_TOKEN injected; else echo No token in SSM; fi"
+          ]' \
+          --region ap-southeast-1 \
+          --output text \
+          --query "Command.CommandId" 2>/dev/null || true)
+        if [ -n "$INJECT_ID" ]; then
+          aws ssm wait command-executed --command-id "$INJECT_ID" --instance-id $INSTANCE_ID --region ap-southeast-1 2>/dev/null || true
+          echo "✅ GITHUB_TOKEN inject command sent"
+        else
+          echo "⚠️ Could not send GITHUB_TOKEN inject (SSM may be unreachable)"
+        fi
+        
+        # Update code on EC2 using git pull
         echo "📥 Pulling latest code from git on EC2..."
         PULL_COMMAND_ID=$(aws ssm send-command \
           --instance-ids $INSTANCE_ID \

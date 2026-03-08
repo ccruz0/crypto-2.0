@@ -30,12 +30,16 @@ SSM_BOT_TOKEN="/automated-trading-platform/prod/telegram/bot_token"
 SSM_CHAT_ID="/automated-trading-platform/prod/telegram/chat_id"
 SSM_ADMIN_KEY="/automated-trading-platform/prod/admin_actions_key"
 SSM_DIAG_KEY="/automated-trading-platform/prod/diagnostics_api_key"
+SSM_ATP_API_KEY="/automated-trading-platform/prod/atp_api_key"
+SSM_GITHUB_TOKEN="/automated-trading-platform/prod/github_token"
 
 SOURCE="none"
 BOT_TOKEN=""
 CHAT_ID=""
 ADMIN_KEY=""
 DIAG_KEY=""
+ATP_API_KEY=""
+GITHUB_TOKEN=""
 
 fetch_ssm() {
   local name="$1"
@@ -49,11 +53,15 @@ if command -v aws >/dev/null 2>&1; then
     CI="$(fetch_ssm "$SSM_CHAT_ID" || true)"
     AK="$(fetch_ssm "$SSM_ADMIN_KEY" || true)"
     DK="$(fetch_ssm "$SSM_DIAG_KEY" || true)"
+    ATP="$(fetch_ssm "$SSM_ATP_API_KEY" || true)"
+    GH="$(fetch_ssm "$SSM_GITHUB_TOKEN" || true)"
     if [[ -n "$BT" && -n "$CI" && -n "$AK" ]]; then
       BOT_TOKEN="$BT"
       CHAT_ID="$CI"
       ADMIN_KEY="$AK"
       DIAG_KEY="${DK:-$AK}"
+      ATP_API_KEY="$ATP"
+      GITHUB_TOKEN="$GH"
       SOURCE="primary"
       use_ssm=true
     fi
@@ -76,6 +84,8 @@ if [[ "$use_ssm" != "true" ]]; then
   CHAT_ID="${TELEGRAM_CHAT_ID_AWS:-${TELEGRAM_CHAT_ID:-}}"
   ADMIN_KEY="${ADMIN_ACTIONS_KEY:-${DIAGNOSTICS_API_KEY:-}}"
   DIAG_KEY="${DIAGNOSTICS_API_KEY:-$ADMIN_KEY}"
+  ATP_API_KEY="${ATP_API_KEY:-}"
+  GITHUB_TOKEN="${GITHUB_TOKEN:-}"
   SOURCE="fallback"
 fi
 
@@ -90,15 +100,24 @@ if (( ${#missing[@]} > 0 )); then
   exit 1
 fi
 
+# ATP_API_KEY: from SSM/fallback or generate if missing (for x-api-key header)
+if [[ -z "$ATP_API_KEY" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    ATP_API_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")"
+  fi
+fi
+
 umask 077
 {
   printf "TELEGRAM_BOT_TOKEN=%s\n" "$BOT_TOKEN"
   printf "TELEGRAM_CHAT_ID=%s\n" "$CHAT_ID"
   printf "ADMIN_ACTIONS_KEY=%s\n" "$ADMIN_KEY"
   printf "DIAGNOSTICS_API_KEY=%s\n" "$DIAG_KEY"
+  printf "ATP_API_KEY=%s\n" "${ATP_API_KEY:-}"
   printf "ENVIRONMENT=aws\n"
   printf "RUN_TELEGRAM=true\n"
+  [[ -n "$GITHUB_TOKEN" ]] && printf "GITHUB_TOKEN=%s\n" "$GITHUB_TOKEN"
 } > "$RUNTIME_ENV"
 
 echo "Rendered (source=$SOURCE)"
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO)"
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO)"
