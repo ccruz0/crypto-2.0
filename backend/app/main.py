@@ -273,6 +273,23 @@ async def startup_event():
         logger.warning("PERF: Startup event DISABLED for performance testing")
         return
     
+    # Deploy secrets diagnostics: log presence (never values) for operator visibility
+    _gh = bool((os.getenv("GITHUB_TOKEN") or "").strip())
+    _gh_ws = bool((os.getenv("GITHUB_WEBHOOK_SECRET") or "").strip())
+    _oc = bool((os.getenv("OPENCLAW_API_TOKEN") or "").strip())
+    logger.info(
+        "Deploy secrets: GITHUB_TOKEN=%s GITHUB_WEBHOOK_SECRET=%s OPENCLAW_API_TOKEN=%s",
+        "present" if _gh else "MISSING",
+        "present" if _gh_ws else "missing",
+        "present" if _oc else "missing",
+    )
+    # Deploy system: fail fast if GITHUB_TOKEN missing in AWS (prevents deploy approvals from silently failing)
+    if is_aws() and not _gh:
+        raise RuntimeError(
+            "Deploy system misconfigured: GITHUB_TOKEN missing. "
+            "Add GITHUB_TOKEN to secrets/runtime.env and run: docker compose --profile aws up -d --force-recreate backend-aws"
+        )
+    
     import asyncio
     t0 = time.perf_counter()
     logger.info("PERF: Startup event started")

@@ -1,5 +1,13 @@
 #!/bin/sh
 # Entrypoint script to set build fingerprint env vars from detected values if ARG was "unknown"
+# Also sources secrets/runtime.env so the Python process reliably gets GITHUB_TOKEN and other
+# deploy secrets (Docker env_file can have ordering/override issues; explicit source is authoritative).
+
+if [ -f /app/secrets/runtime.env ]; then
+  set -a
+  . /app/secrets/runtime.env
+  set +a
+fi
 
 # If ATP_GIT_SHA is "unknown" and we have a detected value in file, use it
 if [ "$ATP_GIT_SHA" = "unknown" ] && [ -f /app/.git_sha ]; then
