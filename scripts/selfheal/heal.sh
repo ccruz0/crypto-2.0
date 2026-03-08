@@ -3,6 +3,7 @@ set -euo pipefail
 
 LOCK="/var/lock/atp-selfheal.lock"
 BASE="http://127.0.0.1:8002"
+REPO_DIR="${REPO_DIR:-$HOME/automated-trading-platform}"
 
 with_lock() {
   exec 9>"$LOCK"
@@ -16,43 +17,87 @@ disk_pct() {
   df -P / | awk 'NR==2 {gsub("%","",$5); print $5}'
 }
 
-truncate_docker_logs() {
-  sudo find /var/lib/docker/containers/ -name "*-json.log" -type f -exec truncate -s 0 {} \; || true
+# ---------------------------------------------------------------------------
+# Disk cleanup: free space WITHOUT removing images used by running containers
+# and WITHOUT restarting the stack (which would trigger expensive rebuilds).
+# ---------------------------------------------------------------------------
+heal_disk() {
+  local d="${1:-0}"
+  echo "Disk at ${d}% — running targeted cleanup (no restart)."
+
+  echo "  Truncating Docker container logs..."
+  sudo find /var/lib/docker/containers/ -name "*-json.log" -type f \
+    -exec truncate -s 0 {} \; 2>/dev/null || true
+
+  echo "  Pruning Docker build cache (>24h)..."
+  docker builder prune -af --filter "until=24h" 2>/dev/null || true
+
+  echo "  Removing dangling images..."
+  docker image prune -f 2>/dev/null || true
+
+  echo "  Removing unused images older than 48h (keeps current stack)..."
+  docker image prune -af --filter "until=48h" 2>/dev/null || true
+
+  echo "  Vacuuming journal logs (keep 3 days)..."
+  sudo journalctl --vacuum-time=3d 2>/dev/null || true
+
+  echo "  Cleaning /tmp and /var/tmp (>3 days)..."
+  sudo find /tmp -type f -atime +3 -delete 2>/dev/null || true
+  sudo find /var/tmp -type f -atime +3 -delete 2>/dev/null || true
+
+  echo "  Cleaning apt cache..."
+  sudo apt-get clean 2>/dev/null || true
+
+  echo "  Removing old app log files (>5MB or >3 days)..."
+  find "$REPO_DIR" -maxdepth 3 -type f -name "*.log" -size +5M -delete 2>/dev/null || true
+  find "$REPO_DIR" -maxdepth 3 -type f -name "*.log" -mtime +3 -delete 2>/dev/null || true
+
+  local after
+  after="$(disk_pct || echo '?')"
+  echo "  Disk after cleanup: ${after}%"
+
+  # If still critically high (>=95%), escalate to full prune of unused volumes
+  after="${after//[^0-9]/}"
+  if [[ -n "$after" ]] && [ "$after" -ge 95 ]; then
+    echo "  Still critical (${after}%). Pruning unused Docker volumes..."
+    docker volume prune -f 2>/dev/null || true
+    docker system prune -f 2>/dev/null || true
+    after="$(disk_pct || echo '?')"
+    echo "  Disk after aggressive cleanup: ${after}%"
+  fi
 }
 
-docker_prune() {
-  docker system prune -af || true
-  docker builder prune -af || true
-}
+# ---------------------------------------------------------------------------
+# Service healing: restart unhealthy containers / the full stack.
+# ---------------------------------------------------------------------------
+heal_services() {
+  echo "Service issue detected — restarting stack."
 
-restart_stack() {
-  local repo_dir="${1:-$HOME/automated-trading-platform}"
-  local env_file="$repo_dir/.env"
+  local env_file="$REPO_DIR/.env"
   if [ ! -f "$env_file" ]; then
-    echo ".env missing at $env_file. Copy .env.example to .env and set DATABASE_URL/POSTGRES_PASSWORD. Skipping compose."
+    echo ".env missing at $env_file. Skipping compose restart."
     return 0
   fi
-  cd "$repo_dir"
+
+  cd "$REPO_DIR"
   if [ -x scripts/aws/ensure_env_aws.sh ]; then
-    REPO_DIR="$repo_dir" ./scripts/aws/ensure_env_aws.sh || true
+    REPO_DIR="$REPO_DIR" ./scripts/aws/ensure_env_aws.sh || true
   fi
   if [ ! -f .env.aws ]; then
     echo ".env.aws still missing after ensure_env_aws; skipping compose restart."
     return 0
   fi
+
+  sudo systemctl restart docker || true
+  sleep 5
   docker compose --profile aws up -d --remove-orphans
   docker compose --profile aws restart || true
-}
 
-nginx_safe_reload() {
-  if sudo nginx -t; then
+  curl -sS -X POST --max-time 10 "$BASE/api/health/fix" >/dev/null 2>&1 || true
+
+  if sudo nginx -t 2>/dev/null; then
     sudo systemctl reload nginx
   fi
-}
-
-call_unprotected_health_fix() {
-  # POST only. Ignore 404/405/timeouts.
-  curl -sS -X POST --max-time 10 "$BASE/api/health/fix" >/dev/null 2>&1 || true
 }
 
 main() {
@@ -63,25 +108,21 @@ main() {
   d="$(disk_pct || echo 100)"
   d="${d//[^0-9]/}"
   [[ -z "$d" ]] && d=100
+
+  local reason="${1:-}"
+
   if [ "$d" -ge 90 ]; then
-    echo "Disk high (${d}%). Truncating docker logs + pruning."
-    truncate_docker_logs
-    docker_prune
+    heal_disk "$d"
+    # Disk-only issue: don't restart the stack (avoids rebuild cycle).
+    # If other services are also broken, the next 2-minute tick will
+    # detect them and run heal_services.
+    echo "Self-heal end (disk): $(date -Is)"
+    exit 0
   fi
 
-  echo "Restarting docker"
-  sudo systemctl restart docker || true
+  heal_services
 
-  echo "Restarting stack"
-  restart_stack "$HOME/automated-trading-platform"
-
-  echo "Calling unprotected /api/health/fix"
-  call_unprotected_health_fix
-
-  echo "Nginx safe reload"
-  nginx_safe_reload
-
-  echo "Self-heal end: $(date -Is)"
+  echo "Self-heal end (services): $(date -Is)"
 }
 
 main "$@"
