@@ -51,14 +51,17 @@ def _get_config() -> tuple[str, str]:
 
 
 def _extract_plain_text(prop_value: Any) -> str:
-    """Extract plain text from a Notion title or rich_text property value."""
+    """Extract plain text from a Notion property value.
+
+    Handles select, multi_select, status, rich_text, title, and formula
+    property types.  Returns empty string for unsupported or empty values.
+    """
     if not prop_value:
         return ""
     if isinstance(prop_value, list):
         parts = []
         for item in prop_value:
             if isinstance(item, dict):
-                # Notion items: { "plain_text": "...", "text": { "content": "..." } }
                 plain = item.get("plain_text")
                 if plain is not None:
                     parts.append(str(plain))
@@ -70,6 +73,23 @@ def _extract_plain_text(prop_value: Any) -> str:
         select_obj = prop_value.get("select")
         if isinstance(select_obj, dict):
             return str(select_obj.get("name") or "").strip()
+
+        status_obj = prop_value.get("status")
+        if isinstance(status_obj, dict):
+            return str(status_obj.get("name") or "").strip()
+
+        multi = prop_value.get("multi_select")
+        if isinstance(multi, list) and multi:
+            names = [str(item.get("name") or "") for item in multi if isinstance(item, dict)]
+            return ", ".join(n for n in names if n).strip()
+
+        formula_obj = prop_value.get("formula")
+        if isinstance(formula_obj, dict):
+            for ftype in ("string", "number", "boolean"):
+                fval = formula_obj.get(ftype)
+                if fval is not None:
+                    return str(fval).strip()
+
         rich = prop_value.get("rich_text") or prop_value.get("title")
         if isinstance(rich, list):
             return _extract_plain_text(rich)
@@ -95,11 +115,23 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
                     return value
         return ""
 
+    raw_type_prop = props.get("Type")
+    parsed_type = _extract_plain_text(raw_type_prop)
+    notion_prop_type = raw_type_prop.get("type") if isinstance(raw_type_prop, dict) else type(raw_type_prop).__name__
+    if raw_type_prop is not None:
+        logger.info(
+            "_parse_page: Type field — notion_prop_type=%s parsed=%r raw_keys=%s page_id=%s",
+            notion_prop_type,
+            parsed_type,
+            list(raw_type_prop.keys()) if isinstance(raw_type_prop, dict) else "n/a",
+            page.get("id", "")[:12],
+        )
+
     task = {
         "id": page.get("id", ""),
         "task": _extract_plain_text(props.get("Task") or props.get("Name")),
         "project": _extract_plain_text(props.get("Project")),
-        "type": _extract_plain_text(props.get("Type")),
+        "type": parsed_type,
         "status": _extract_plain_text(props.get("Status")),
         "priority": _extract_plain_text(props.get("Priority")),
         "source": _extract_plain_text(props.get("Source")),

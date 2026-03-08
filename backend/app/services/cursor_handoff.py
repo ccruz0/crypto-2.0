@@ -34,15 +34,8 @@ _CURSOR_CONSTRAINTS = (
 
 
 def _repo_root() -> Path:
-    """Resolve the repository root (same heuristic as agent_callbacks)."""
-    here = Path(__file__).resolve()
-    for ancestor in here.parents:
-        if (ancestor / ".git").is_dir():
-            return ancestor
-    for idx in (3, 2):
-        if idx < len(here.parents) and (here.parents[idx] / "docs").is_dir():
-            return here.parents[idx]
-    return here.parents[min(2, len(here.parents) - 1)]
+    from app.services._paths import workspace_root
+    return workspace_root()
 
 
 def _section_text(sections: dict[str, Any], key: str, fallback: str = "") -> str:

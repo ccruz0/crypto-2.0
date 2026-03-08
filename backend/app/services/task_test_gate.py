@@ -145,41 +145,50 @@ def record_test_result(
     # --- 2. Advance status if passed ---
     advanced = False
     advanced_to = ""
+    metadata_ok = bool(metadata_result.get("ok"))
 
     if normalized == TEST_PASSED and advance_on_pass:
-        norm_current = (current_status or "").strip().lower()
-        should_advance = norm_current in _ADVANCEABLE_STATUSES or not norm_current
-        if should_advance:
-            try:
-                from app.services.notion_tasks import (
-                    TASK_STATUS_AWAITING_DEPLOY_APPROVAL,
-                    update_notion_task_status,
-                )
-                target = TASK_STATUS_AWAITING_DEPLOY_APPROVAL
-                ok = update_notion_task_status(
-                    task_id,
-                    target,
-                    append_comment=f"[{timestamp}] Tests passed — task advanced to {target}.",
-                )
-                if ok:
-                    advanced = True
-                    advanced_to = target
-                    logger.info(
-                        "record_test_result: advanced task_id=%s to=%s",
-                        task_id, target,
-                    )
-                else:
-                    logger.warning(
-                        "record_test_result: status advance failed task_id=%s target=%s",
-                        task_id, target,
-                    )
-            except Exception as e:
-                logger.warning("record_test_result: advance failed task_id=%s: %s", task_id, e)
-        else:
-            logger.info(
-                "record_test_result: not advancing task_id=%s current_status=%r (not in advanceable set)",
-                task_id, norm_current,
+        if not metadata_ok:
+            logger.warning(
+                "record_test_result: BLOCKING advancement — metadata write for Test Status "
+                "did not succeed task_id=%s metadata_result=%s",
+                task_id, metadata_result,
             )
+        else:
+            norm_current = (current_status or "").strip().lower()
+            should_advance = norm_current in _ADVANCEABLE_STATUSES or not norm_current
+            if should_advance:
+                try:
+                    from app.services.notion_tasks import (
+                        TASK_STATUS_AWAITING_DEPLOY_APPROVAL,
+                        update_notion_task_status,
+                    )
+                    target = TASK_STATUS_AWAITING_DEPLOY_APPROVAL
+                    ok = update_notion_task_status(
+                        task_id,
+                        target,
+                        append_comment=f"[{timestamp}] Tests passed — task advanced to {target}.",
+                    )
+                    if ok:
+                        advanced = True
+                        advanced_to = target
+                        logger.info(
+                            "record_test_result: advanced task_id=%s to=%s "
+                            "(Test Status metadata confirmed written)",
+                            task_id, target,
+                        )
+                    else:
+                        logger.warning(
+                            "record_test_result: status advance failed task_id=%s target=%s",
+                            task_id, target,
+                        )
+                except Exception as e:
+                    logger.warning("record_test_result: advance failed task_id=%s: %s", task_id, e)
+            else:
+                logger.info(
+                    "record_test_result: not advancing task_id=%s current_status=%r (not in advanceable set)",
+                    task_id, norm_current,
+                )
 
     if normalized == TEST_FAILED:
         logger.info(
@@ -217,10 +226,11 @@ def record_test_result(
         pass
 
     return {
-        "ok": bool(metadata_result.get("ok") or advanced),
+        "ok": metadata_ok,
         "outcome": normalized,
         "advanced": advanced,
         "advanced_to": advanced_to,
+        "metadata_ok": metadata_ok,
         "metadata_result": metadata_result,
         "comment_appended": True,
     }

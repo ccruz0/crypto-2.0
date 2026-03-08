@@ -134,6 +134,10 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
     """
     Reconstruct a full prepared_bundle from stored JSON. Callbacks are re-selected via
     select_default_callbacks_for_task(prepared_task) since they cannot be serialized.
+
+    Before re-selecting, the task's ``type`` field is refreshed from Notion to
+    ensure callback selection uses the current property value — not a stale
+    value that may have been parsed by an older version of _extract_plain_text.
     """
     if not (json_str or "").strip():
         return None
@@ -145,17 +149,65 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
     prepared_task = data.get("prepared_task")
     if not prepared_task:
         return None
+
+    # --- Refresh task type from Notion before callback re-selection --------
+    # The stored prepared_task may contain a stale or empty ``type`` if it was
+    # serialized before a parser fix.  A single Notion page read ensures the
+    # callback selector sees the authoritative Type value.
+    task_obj = prepared_task.get("task") or {}
+    stored_type = (task_obj.get("type") or "").strip()
+    task_id = (task_obj.get("id") or "").strip()
+
+    if task_id:
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+            fresh_task = get_notion_task_by_id(task_id)
+            if fresh_task:
+                fresh_type = (fresh_task.get("type") or "").strip()
+                if fresh_type and fresh_type != stored_type:
+                    task_obj["type"] = fresh_type
+                    logger.info(
+                        "_deserialize_prepared_bundle: refreshed task type from Notion "
+                        "task_id=%s stored_type=%r fresh_type=%r",
+                        task_id[:12], stored_type, fresh_type,
+                    )
+                elif not fresh_type and stored_type:
+                    logger.info(
+                        "_deserialize_prepared_bundle: Notion type is empty, keeping stored "
+                        "task_id=%s stored_type=%r",
+                        task_id[:12], stored_type,
+                    )
+                else:
+                    logger.info(
+                        "_deserialize_prepared_bundle: task type unchanged "
+                        "task_id=%s type=%r",
+                        task_id[:12], stored_type or fresh_type,
+                    )
+        except Exception as e:
+            logger.warning(
+                "_deserialize_prepared_bundle: Notion type refresh failed "
+                "task_id=%s stored_type=%r — proceeding with stored value: %s",
+                task_id[:12], stored_type, e,
+            )
+
+    effective_type = (task_obj.get("type") or "").strip()
+
     try:
         from app.services.agent_callbacks import select_default_callbacks_for_task
         callback_selection = select_default_callbacks_for_task(prepared_task)
         logger.info(
-            "agent_telegram_approval: callback re-selection result: apply=%s reason=%r task_type=%r",
-            "yes" if callback_selection.get("apply_change_fn") else "NO",
+            "_deserialize_prepared_bundle: CALLBACK RE-SELECTION task_id=%s "
+            "stored_type=%r effective_type=%r manual_only=%s "
+            "selection_reason=%r apply=%s",
+            task_id[:12],
+            stored_type,
+            effective_type,
+            bool(callback_selection.get("manual_only")),
             callback_selection.get("selection_reason", ""),
-            ((prepared_task.get("task") or {}).get("type") or ""),
+            "yes" if callback_selection.get("apply_change_fn") else "NO",
         )
     except Exception as e:
-        logger.error("agent_telegram_approval: callback re-selection FAILED %s", e, exc_info=True)
+        logger.error("_deserialize_prepared_bundle: callback re-selection FAILED %s", e, exc_info=True)
         callback_selection = {"apply_change_fn": None, "validate_fn": None, "deploy_fn": None, "selection_reason": data.get("selection_reason", "")}
     return {
         "prepared_task": prepared_task,

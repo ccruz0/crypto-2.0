@@ -32,7 +32,8 @@ def _utc_date() -> str:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from app.services._paths import workspace_root
+    return workspace_root()
 
 
 def _looks_like_semver(value: str) -> bool:

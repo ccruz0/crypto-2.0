@@ -25,25 +25,8 @@ CallbackFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def _repo_root() -> Path:
-    """Return the repository / project root directory.
-
-    Local layout:  <repo>/backend/app/services/agent_callbacks.py  -> parents[3]
-    Docker layout: /app/app/services/agent_callbacks.py            -> parents[2]
-
-    Uses .git as the definitive marker locally. In Docker (.git absent),
-    falls back to the shallowest ancestor that contains a ``docs/`` dir.
-    """
-    here = Path(__file__).resolve()
-    # .git is the definitive repo root marker (available locally, not in Docker)
-    for ancestor in here.parents:
-        if (ancestor / ".git").is_dir():
-            return ancestor
-    # Docker: no .git — try parents[3] first, then parents[2] (typical Docker /app)
-    for idx in (3, 2):
-        if idx < len(here.parents) and (here.parents[idx] / "docs").is_dir():
-            return here.parents[idx]
-    # Final fallback
-    return here.parents[min(2, len(here.parents) - 1)]
+    from app.services._paths import workspace_root
+    return workspace_root()
 
 
 def _safe_task_id(prepared_task: dict[str, Any]) -> str:
@@ -834,9 +817,38 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         }
     """
     task_obj = (prepared_task or {}).get("task") or {}
-    _task_type = str(task_obj.get("type") or "").lower()
+    _task_type_raw = str(task_obj.get("type") or "")
+    _task_type = _task_type_raw.strip().lower()
     _task_title = str(task_obj.get("task") or "")[:80]
-    logger.debug("select_default_callbacks_for_task: type=%r title=%r", _task_type, _task_title)
+    logger.info(
+        "select_default_callbacks_for_task: task_type_raw=%r task_type_normalized=%r title=%r",
+        _task_type_raw, _task_type, _task_title,
+    )
+
+    # ── Explicit Type field override (highest priority) ──────────────
+    # Notion Type="bug" always maps to the bug investigation pack with
+    # manual_only=True, regardless of keyword heuristics.  This ensures
+    # bug tasks are never misclassified as documentation, monitoring, or
+    # generic OpenClaw and always enter the extended lifecycle.
+    if _task_type in ("bug", "bugfix", "bug fix"):
+        logger.info(
+            "select_default_callbacks_for_task: explicit bug type detected — "
+            "selecting bug_investigation pack (extended lifecycle) "
+            "task_type_raw=%r task_type_normalized=%r title=%r",
+            _task_type_raw, _task_type, _task_title,
+        )
+        from app.services.openclaw_client import build_investigation_prompt
+        return {
+            "apply_change_fn": _make_openclaw_callback(
+                build_investigation_prompt,
+                "docs/agents/bug-investigations", "notion-bug",
+                fallback_fn=apply_bug_investigation_task,
+            ),
+            "validate_fn": _make_openclaw_validator("docs/agents/bug-investigations", "notion-bug"),
+            "deploy_fn": None,
+            "manual_only": True,
+            "selection_reason": f"bug investigation task (Notion Type raw={_task_type_raw!r} normalized={_task_type!r} — explicit match; approval-gated)",
+        }
 
     if _is_documentation_eligible(prepared_task):
         from app.services.openclaw_client import build_documentation_prompt
@@ -865,7 +877,11 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         }
 
     if _is_bug_investigation_eligible(prepared_task):
-        logger.info("select_default_callbacks_for_task: matched bug_investigation type=%r title=%r", _task_type, _task_title)
+        logger.info(
+            "select_default_callbacks_for_task: matched bug_investigation via keyword heuristics "
+            "(extended lifecycle) task_type_raw=%r task_type_normalized=%r title=%r",
+            _task_type_raw, _task_type, _task_title,
+        )
         from app.services.openclaw_client import build_investigation_prompt
         return {
             "apply_change_fn": _make_openclaw_callback(
@@ -876,7 +892,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "validate_fn": _make_openclaw_validator("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
-            "selection_reason": "bug investigation task (OpenClaw AI analysis with template fallback; approval-gated)",
+            "selection_reason": "bug investigation task (keyword heuristic match; approval-gated)",
         }
 
     if _is_profile_setting_analysis_eligible(prepared_task):
@@ -983,8 +999,9 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         from app.services.openclaw_client import build_generic_prompt, is_openclaw_configured
         if is_openclaw_configured():
             logger.info(
-                "select_default_callbacks_for_task: no specific match, using generic OpenClaw for type=%r title=%r",
-                _task_type, _task_title,
+                "select_default_callbacks_for_task: no specific match, using generic OpenClaw "
+                "task_type_raw=%r task_type_normalized=%r title=%r",
+                _task_type_raw, _task_type, _task_title,
             )
             return {
                 "apply_change_fn": _make_openclaw_callback(
@@ -999,8 +1016,9 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         logger.debug("openclaw generic fallback unavailable: %s", e)
 
     logger.warning(
-        "select_default_callbacks_for_task: NO callback matched type=%r title=%r — returning None apply_change_fn",
-        _task_type, _task_title,
+        "select_default_callbacks_for_task: NO callback matched — returning None apply_change_fn "
+        "task_type_raw=%r task_type_normalized=%r title=%r",
+        _task_type_raw, _task_type, _task_title,
     )
     return {
         "apply_change_fn": None,

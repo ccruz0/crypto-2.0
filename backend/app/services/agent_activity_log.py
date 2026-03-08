@@ -24,7 +24,8 @@ _WRITE_LOCK = threading.Lock()
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    from app.services._paths import workspace_root
+    return workspace_root()
 
 
 def _log_path() -> Path:

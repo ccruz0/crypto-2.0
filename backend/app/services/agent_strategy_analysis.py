@@ -56,8 +56,8 @@ _REQUIRED_SECTIONS = (
 
 
 def _repo_root() -> Path:
-    # backend/app/services/agent_strategy_analysis.py -> repo root
-    return Path(__file__).resolve().parents[3]
+    from app.services._paths import workspace_root
+    return workspace_root()
 
 
 def _safe_task_id(prepared_task: dict[str, Any]) -> str:
