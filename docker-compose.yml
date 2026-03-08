@@ -277,6 +277,8 @@ services:
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ./backend/ai_runs:/app/backend/ai_runs
+      - ./docs:/app/docs
+      - ./logs:/app/logs
       - aws_trading_config_data:/data
       # Telegram decrypt: key for TELEGRAM_BOT_TOKEN_ENCRYPTED (secrets/runtime.env)
       - ./secrets/telegram_key:/app/secrets/telegram_key:ro
