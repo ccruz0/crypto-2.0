@@ -44,7 +44,7 @@ SMOKE_CHECK_TIMEOUT_S = 15
 SMOKE_CHECK_RETRIES = 12
 SMOKE_CHECK_RETRY_DELAY_S = 15
 # Backend healthcheck has start_period 180s; wait before first attempt so deploy has time to restart
-SMOKE_CHECK_INITIAL_DELAY_S = 90
+SMOKE_CHECK_INITIAL_DELAY_S = 120
 
 
 def _health_base_url() -> str:
@@ -227,8 +227,8 @@ def run_smoke_check(
         logger.info("smoke_check: waiting %.0fs for backend to become healthy (post-deploy)", delay)
         time.sleep(delay)
 
-    # --- 1. Liveness: /api/health (with retries) ---
-    liveness_url = f"{base}/api/health"
+    # --- 1. Liveness: /ping_fast (lightweight, same as Docker healthcheck) ---
+    liveness_url = f"{base}/ping_fast"
     liveness_ok = False
     liveness_result: dict[str, Any] = {}
     for attempt in range(1, retries + 1):
