@@ -291,8 +291,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
-    # Use >1 worker so /ping_fast stays responsive even during slow endpoints.
-    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
+    # Use 2 workers so webhook-triggered smoke check can hit /ping_fast without deadlock (single worker blocks on self-request).
+    command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
     restart: always
     # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)
     healthcheck:
