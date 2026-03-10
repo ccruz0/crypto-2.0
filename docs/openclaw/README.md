@@ -19,7 +19,25 @@
 ./scripts/openclaw/run_openclaw_diagnosis_local.sh
 ```
 - **401** on `/openclaw/` and `/openclaw/ws` = proxy and upstream OK; open **https://dashboard.hilovivo.com/openclaw/** in the browser and use Basic auth.
-- **404** / **504** = script prints the exact **NEXT ACTION**. Full path: [OPENCLAW_AT_DASHBOARD_QUICK.md](OPENCLAW_AT_DASHBOARD_QUICK.md).
+- **404** / **504** / **502** = script prints the exact **NEXT ACTION**. **502** is usually nginx pointing at the wrong LAB port (compose uses **8080**; if nginx uses **8081** while only **8080** listens → Bad Gateway). Full path: [OPENCLAW_AT_DASHBOARD_QUICK.md](OPENCLAW_AT_DASHBOARD_QUICK.md).
+
+**How to connect to PROD/LAB:** [HOW_TO_CONNECT.md](../aws/HOW_TO_CONNECT.md) — Console (EC2 Instance Connect), SSM, SSH, EICE scripts. **To fix 504:** LAB has port 22 open; use **AWS Console → EC2 → atp-lab-ssm-clean → Connect → EC2 Instance Connect** and run the one-liner in [START_OPENCLAW_ON_LAB_CONSOLE.md](../runbooks/START_OPENCLAW_ON_LAB_CONSOLE.md).
+
+**502 with PROD→LAB curl 200:** The active nginx config is often **`dashboard.conf`**, not `default`. Run on PROD (Instance Connect):
+`sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh`  
+Or one-liner after push:  
+`curl -sSL https://raw.githubusercontent.com/ccruz0/automated-trading-platform/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash`  
+(No git pull required on PROD if you use raw URL.)
+
+**Where scripts run:** `fix_openclaw_proxy_prod.sh` edits `/etc/nginx/...` **on the EC2 host only**. If you run it on your Mac you get “nginx site file not found” — use **Instance Connect to PROD** or **`./scripts/openclaw/fix_504_via_eice.sh`** from your Mac (that script SSHs into PROD).
+
+**Fix 504 automatically (no SSM):** Run from your machine (**repo root on your Mac**, not `/home/ubuntu/...`) or trigger from GitHub Actions:
+```bash
+cd ~/automated-trading-platform
+./scripts/openclaw/fix_504_via_eice.sh
+```
+(Use **one** command per line — `cd path # comment` can trigger `cd: too many arguments` in some shells.)
+Uses EC2 Instance Connect to SSH to PROD, start nginx if needed, point `/openclaw/` to LAB **:8080** (same as `docker-compose.openclaw.yml`), and optionally start OpenClaw on LAB from PROD. Override with `OPENCLAW_PORT=8081` if LAB publishes 8081 only. GitHub Actions: **Actions → Fix OpenClaw 504 (EICE)** (manual or scheduled 06:00/18:00 UTC). Requires AWS credentials with `ec2-instance-connect:SendSSHPublicKey` and `ec2:DescribeInstances`.
 
 **Step-by-step checklist (OpenClaw host → Dashboard host → browser):** [GET_OPENCLAW_WORKING_ON_DASHBOARD.md](GET_OPENCLAW_WORKING_ON_DASHBOARD.md).
 
@@ -112,6 +130,11 @@ Then paste the two blocks it prints (`systemctl status openclaw` and `curl -I` f
   - Run **on the Dashboard host** (via EC2 Instance Connect or SSH) to insert the OpenClaw proxy block into the Nginx 443 config. Fixes **404** for `/openclaw` when the block is missing.
   - Example: `sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214` (IP privada del LAB/OpenClaw). Requires repo on the server: `git pull` then run the script.
 - **`sudo bash scripts/openclaw/ensure_openclaw_gateway_token.sh`** (run on LAB) — Ensures `gateway.auth.token` is persistent in `/opt/openclaw/openclaw.json`, keeps existing token by default, and restarts container only if token changed. Runbook: [TOKEN_PERSISTENCE_RUNBOOK.md](TOKEN_PERSISTENCE_RUNBOOK.md).
+
+## Tavily web search
+
+To enable web search in OpenClaw via Tavily (key is prompted securely, never committed): **[TAVILY_WEB_SEARCH_SETUP.md](TAVILY_WEB_SEARCH_SETUP.md)** — run `bash scripts/setup_tavily_key.sh`, restart openclaw, verify with `printenv \| grep TAVILY`.  
+**If the agent doesn’t see a Tavily tool:** run on LAB `sudo bash scripts/openclaw/enable_tavily_plugin.sh`. See **[TAVILY_PLUGIN_FIX.md](TAVILY_PLUGIN_FIX.md)**.
 
 ## Other
 
