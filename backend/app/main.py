@@ -29,6 +29,7 @@ from app.api.routes_risk_probe import router as risk_probe_router
 from app.api.routes_metrics import router as metrics_router
 from app.api.routes_agent import router as agent_router
 from app.api.routes_github_webhook import router as github_webhook_router
+from app.api.routes_ws_prices import router as ws_prices_router
 try:
     from app.api.routes_settings import router as settings_router
     _settings_router_available = True
@@ -617,7 +618,14 @@ async def startup_event():
         await asyncio.sleep(10)  # Wait 10 seconds for DB and services to be ready
         await _ensure_watchlist_not_empty()
     asyncio.create_task(_delayed_watchlist_init())
-    
+
+    # Start real-time price stream for dashboard WebSocket (/api/ws/prices); controlled by ENABLE_WS_PRICES
+    try:
+        from app.services.price_stream import start_price_stream
+        start_price_stream()
+    except Exception as e:
+        logger.warning("Price stream not started: %s", e)
+
     t1 = time.perf_counter()
     elapsed_ms = (t1 - t0) * 1000
     logger.info(f"PERF: Startup event completed - server ready for requests - {elapsed_ms:.2f}ms")
@@ -631,6 +639,11 @@ async def shutdown_event():
         logger.info("WebSocket stopped on shutdown")
     except Exception as e:
         logger.error(f"Error stopping WebSocket: {e}")
+    try:
+        from app.services.price_stream import stop_price_stream
+        stop_price_stream()
+    except Exception as e:
+        logger.warning("Price stream stop: %s", e)
 
 # Define simple endpoints BEFORE routers to ensure they're accessible
 @app.get("/__ping")
@@ -701,6 +714,7 @@ if _settings_router_available and settings_router is not None:
     app.include_router(settings_router, prefix="/api", tags=["settings"])
 app.include_router(agent_router, prefix="/api", tags=["agent"])
 app.include_router(github_webhook_router, prefix="/api", tags=["github"])
+app.include_router(ws_prices_router, prefix="/api", tags=["ws-prices"])
 
 # Alias health under /api for reverse-proxy setups that expect /api/health
 # Defined AFTER routers so /api/health/system can be matched first
