@@ -10,6 +10,7 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 |-----|-------------|
 | [COMANDOS_PARA_EJECUTAR.md](COMANDOS_PARA_EJECUTAR.md) | Copy-paste: reboot PROD (SSM), prod_status, deploy trigger, OpenClaw on LAB. |
 | [AWS_PROD_QUICK_REFERENCE.md](AWS_PROD_QUICK_REFERENCE.md) | Instance IDs, secrets, scripts, workflows; first place to look. |
+| [HOW_TO_CONNECT.md](HOW_TO_CONNECT.md) | **How to connect** to PROD and LAB: Console (EC2 Instance Connect), SSM, SSH, EICE; fix 504 from Console. |
 | [CURSOR_SSH_AWS.md](CURSOR_SSH_AWS.md) | Cómo Cursor (terminal en tu Mac) se conecta por SSH a EC2 para ejecutar código en AWS; ~/.ssh/config, alias, clave .pem. |
 | [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md) | After a deploy or EC2_HOST change; first-deploy checklist; troubleshooting. |
 | [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md) | PROD SSM PingStatus = ConnectionLost: reboot + diagnose. |
@@ -28,6 +29,8 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [../audit/AWS_STATE_AUDIT.md](../audit/AWS_STATE_AUDIT.md) | Full AWS state audit (repo vs live); CLI commands; decision log. |
 | [../audit/EC2_OPENCLAW_INSTANCE_AND_CONSISTENCY_AUDIT.md](../audit/EC2_OPENCLAW_INSTANCE_AND_CONSISTENCY_AUDIT.md) | Instance mapping (PROD vs LAB/OpenClaw), docs/code/nginx consistency, verification commands. |
 | [../audit/INSTANCE_ARCHITECTURE_CONSISTENCY_AUDIT.md](../audit/INSTANCE_ARCHITECTURE_CONSISTENCY_AUDIT.md) | Full instance + architecture audit; old IP refs (file:line); nginx/docker/secrets; P0/P1/P2 remediation. |
+| [../runbooks/DASHBOARD_AND_OPENCLAW_RECOVERY_ORDER.md](../runbooks/DASHBOARD_AND_OPENCLAW_RECOVERY_ORDER.md) | **Start here** when dashboard times out and/or /openclaw/ 502: bringup script → force proxy → LAB. |
+| [../runbooks/DASHBOARD_UNREACHABLE_RUNBOOK.md](../runbooks/DASHBOARD_UNREACHABLE_RUNBOOK.md) | ERR_TIMED_OUT deep dive: SG, DNS, Elastic IP, reboot, hotspot. |
 | [../runbooks/INSTANCE_SOURCE_OF_TRUTH.md](../runbooks/INSTANCE_SOURCE_OF_TRUTH.md) | Definitive PROD/LAB table (IPs, IDs, access, verification). |
 | [../audit/RUNBOOK_ARCH_B_PROD_LAB.md](../audit/RUNBOOK_ARCH_B_PROD_LAB.md) | Create atp-prod-sg / atp-lab-sg; IAM; harden PROD/LAB separation. |
 | [../audit/SSM_SESSION_MANAGER_CONNECTIVITY_AUDIT.md](../audit/SSM_SESSION_MANAGER_CONNECTIVITY_AUDIT.md) | Deep SSM/Session Manager diagnosis when runbook reboot didn’t fix it. |
@@ -41,7 +44,12 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [../runbooks/EC2_DASHBOARD_LIVE_DATA_FIX.md](../runbooks/EC2_DASHBOARD_LIVE_DATA_FIX.md) | Dashboard visible but health FAIL / no live data / "Invalid API key": ATP_API_KEY, market-updater, order_intents repair. |
 | [../runbooks/EC2_SELFHEAL_DEPLOY.md](../runbooks/EC2_SELFHEAL_DEPLOY.md) | Deploy self-heal on EC2: git pull, systemd timer, .env fallback, 203/EXEC fix. |
 | [../runbooks/EC2_FIX_MARKET_DATA_NOW.md](../runbooks/EC2_FIX_MARKET_DATA_NOW.md) | Fix market_data/market_updater FAIL now: restore verify.sh (emitter), .env, restart stack, update-cache, diagnose updater. |
+| [../runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md](../runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md) | When Telegram shows "ATP Health Alert" streak_fail_3: interpret verify_label, market_data, market_updater; quick diagnostics and link to EC2_FIX_MARKET_DATA_NOW. |
+| [../runbooks/OPENCLAW_AND_SYSTEM_HEALTH_DOWN.md](../runbooks/OPENCLAW_AND_SYSTEM_HEALTH_DOWN.md) | OpenClaw tab blank + System Health FAIL (Market, Updater, Monitor, Telegram): diagnosis script, fix health components, fix OpenClaw iframe (auth / proxy). |
+| [../runbooks/TELEGRAM_ALERTS_NOT_SENT.md](../runbooks/TELEGRAM_ALERTS_NOT_SENT.md) | Notion task "Investigate Telegram alerts not being sent": run diagnose script, check block reasons (RUN_TELEGRAM, kill switch, token/chat_id, origin), fix and resolve task. |
 | [../runbooks/EC2_DB_BOOTSTRAP.md](../runbooks/EC2_DB_BOOTSTRAP.md) | Create watchlist_items (and related tables): bootstrap schema before enabling self-heal timer; .env.aws fix. |
+| [../runbooks/PROD_DISK_RESIZE.md](../runbooks/PROD_DISK_RESIZE.md) | **Increase PROD disk size:** EBS modify volume in Console, then growpart + resize2fs on instance (FAIL:DISK / no space left). |
+| [../runbooks/LAB_DISK_RESIZE_OPENCLAW_REDEPLOY.md](../runbooks/LAB_DISK_RESIZE_OPENCLAW_REDEPLOY.md) | LAB disk full (no space for docker pull): EBS resize + growpart/resize2fs, then redeploy OpenClaw. |
 
 ---
 
