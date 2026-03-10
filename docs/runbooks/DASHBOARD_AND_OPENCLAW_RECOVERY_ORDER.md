@@ -15,6 +15,17 @@ Use this when **dashboard.hilovivo.com** times out **and/or** **/openclaw/** ret
 3. Reload **https://dashboard.hilovivo.com**. If only your Wi‑Fi fails, try **mobile hotspot** (network path).
 4. If DNS still points to an old IP after stop/start → update **A record** to current public IP or attach **Elastic IP** (see `DASHBOARD_UNREACHABLE_RUNBOOK.md`).
 
+### A2 — ERR_CONNECTION_CLOSED on /openclaw/ (pending, 0 B)
+
+Connection dropped immediately — often wedged nginx worker or bad proxy state.
+
+**From your Mac (no SSM):**
+```bash
+cd ~/automated-trading-platform
+./scripts/aws/heal_nginx_connection_closed_eice.sh
+```
+This SSHs to PROD via Instance Connect, **restarts nginx**, and **re-syncs** all openclaw `proxy_pass` lines to LAB:8080.
+
 ### B — Dashboard loads but /openclaw/ is 502
 
 1. **On PROD** (EC2 Instance Connect to atp-rebuild-2026):
