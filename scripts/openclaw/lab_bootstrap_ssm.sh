@@ -55,6 +55,10 @@ docker compose -f "$COMPOSE" down 2>/dev/null || true
 docker compose -f "$COMPOSE" pull || { LOG "pull failed — may need: echo PAT | docker login ghcr.io -u ccruz0 --password-stdin"; exit 1; }
 docker compose -f "$COMPOSE" up -d
 
+# App needs ~15–30s after start before accepting HTTP (else connection reset)
+LOG "Waiting 25s for gateway to listen..."
+sleep 25
+
 LOG "=== 7) Verify ==="
 docker ps -a --filter name=openclaw --format '{{.Names}} {{.Status}}'
 ss -lntp 2>/dev/null | grep 8080 || true
