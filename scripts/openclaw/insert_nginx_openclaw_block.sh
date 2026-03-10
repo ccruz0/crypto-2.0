@@ -37,7 +37,9 @@ else
   exit 0
 fi
 
-BACKUP="${CONFIG}.bak.$(date +%s)"
+BACKUP_DIR="/etc/nginx/backups"
+sudo mkdir -p "$BACKUP_DIR"
+BACKUP="${BACKUP_DIR}/$(basename "$CONFIG").bak.$(date +%s)"
 sudo cp -a "$CONFIG" "$BACKUP"
 echo "Backup: $BACKUP"
 

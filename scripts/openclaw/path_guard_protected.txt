@@ -1,0 +1,17 @@
+# Protected paths for path-guard CI (one path per line; prefix match for dirs)
+# See: docs/openclaw/ARCHITECTURE.md §8, docs/openclaw/DEPLOYMENT.md §7
+backend/app/api/routes_control.py
+backend/app/api/routes_manual_trade.py
+backend/app/api/routes_orders.py
+backend/app/services/brokers/crypto_com_trade.py
+backend/app/core/runtime.py
+backend/app/utils/trading_guardrails.py
+backend/app/core/telegram_secrets.py
+secrets/
+.env.aws
+.env.prod.example
+secrets/runtime.env.example
+nginx/dashboard.conf
+docker-compose.yml
+backend/Dockerfile.aws
+.github/workflows/deploy.yml

@@ -1,0 +1,29 @@
+# /etc/systemd/system/openclaw.service
+# Lab instance only. Starts OpenClaw stack via Docker Compose.
+# Install: sudo cp scripts/openclaw/openclaw.service /etc/systemd/system/
+#         sudo systemctl daemon-reload && sudo systemctl enable openclaw && sudo systemctl start openclaw
+# See: docs/openclaw/DEPLOYMENT.md, docs/openclaw/FINAL_SECURITY_CHECKLIST.md
+
+[Unit]
+Description=OpenClaw Lab Stack
+Documentation=file:///home/ubuntu/automated-trading-platform/docs/openclaw/DEPLOYMENT.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+ExecStartPre=/usr/bin/docker compose -f docker-compose.openclaw.yml pull --quiet
+ExecStart=/usr/bin/docker compose -f docker-compose.openclaw.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.openclaw.yml down
+TimeoutStartSec=120
+TimeoutStopSec=60
+Restart=always
+RestartSec=5
+User=ubuntu
+Group=ubuntu
+
+[Install]
+WantedBy=multi-user.target
