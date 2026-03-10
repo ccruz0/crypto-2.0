@@ -2,6 +2,35 @@
 
 When **dashboard.hilovivo.com** times out (ERR_TIMED_OUT) and **EC2 Instance Connect** fails with "Error establishing SSH connection", use this runbook.
 
+## Diagnosis from this machine (automated)
+
+**One-shot bring-up (start instance if stopped, DNS check, optional reboot):**
+
+```bash
+cd /path/to/repo
+AUTO_START=1 ./scripts/aws/bringup_dashboard_prod.sh
+# If still timing out but instance is Running:
+AUTO_REBOOT=1 ./scripts/aws/bringup_dashboard_prod.sh
+```
+
+From the repo you can also run:
+
+```bash
+# Check PROD API reachability
+./scripts/aws/verify_prod_public.sh
+
+# Full status (API + SSM)
+./scripts/aws/prod_status.sh
+
+# Instance state and IP (requires AWS CLI)
+aws ec2 describe-instances --region ap-southeast-1 --instance-ids i-087953603011543c5 \
+  --query 'Reservations[0].Instances[0].{State:State.Name,PublicIp:PublicIpAddress}' --output table
+```
+
+If the instance is **Running** and the security group allows 22/80/443 but the dashboard still times out from your network, the cause is likely **network path** (your ISP or firewall blocking/rejecting traffic to the instance). Try from another network (e.g. mobile hotspot).
+
+**SSH config:** If you use alias `hilovivo-aws`, ensure `HostName` in `~/.ssh/config` matches the **current** PROD IP (see EC2 Console or `dig +short dashboard.hilovivo.com A`). If it points to an old IP (e.g. 47.130.143.159), SSH will time out. Either update `HostName` to the current IP or run the diagnostic with `REMOTE_HOST=ubuntu@$(dig +short dashboard.hilovivo.com A) bash scripts/debug_dashboard_remote.sh` (and have `~/.ssh/atp-rebuild-2026.pem` for that host).
+
 ## Quick checks (AWS Console)
 
 1. **EC2 → Instances**  
