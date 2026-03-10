@@ -26,7 +26,7 @@
 **502 with PROD→LAB curl 200:** The active nginx config is often **`dashboard.conf`**, not `default`. Run on PROD (Instance Connect):
 `sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh`  
 Or one-liner after push:  
-`curl -sSL https://raw.githubusercontent.com/ccruz0/automated-trading-platform/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash`  
+`curl -sSL https://raw.githubusercontent.com/ccruz0/crypto-2.0/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash`  
 (No git pull required on PROD if you use raw URL.)
 
 **Where scripts run:** `fix_openclaw_proxy_prod.sh` edits `/etc/nginx/...` **on the EC2 host only**. If you run it on your Mac you get “nginx site file not found” — use **Instance Connect to PROD** or **`./scripts/openclaw/fix_504_via_eice.sh`** from your Mac (that script SSHs into PROD).

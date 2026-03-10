@@ -4,9 +4,9 @@
 # Use when fix_504_via_eice still leaves https://dashboard.hilovivo.com/openclaw/ at 502
 # but curl from PROD to http://172.31.3.214:8080/ returns 200.
 #
-# Usage on PROD:
-#   curl -sSL https://raw.githubusercontent.com/ccruz0/automated-trading-platform/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash
-# Or after git pull:
+# Usage on PROD (raw — repo origin is crypto-2.0):
+#   curl -sSL https://raw.githubusercontent.com/ccruz0/crypto-2.0/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash
+# Or after git pull in repo dir on PROD:
 #   cd /home/ubuntu/automated-trading-platform && sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh
 #
 # Env (optional):

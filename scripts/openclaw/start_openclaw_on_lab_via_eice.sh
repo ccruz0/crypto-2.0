@@ -51,7 +51,7 @@ if [[ "$SSH_EXIT" -ne 0 ]]; then
   echo "LAB SG must allow inbound TCP 22 from YOUR IP (or use Session Manager when Online)."
   echo "Alternative — AWS Console → EC2 → atp-lab-ssm-clean → Connect → EC2 Instance Connect, then:"
   echo "  cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh"
-  echo "Or clone repo on LAB if missing: git clone https://github.com/ccruz0/automated-trading-platform.git"
+  echo "Or clone on LAB: git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform"
   exit "$SSH_EXIT"
 fi
 

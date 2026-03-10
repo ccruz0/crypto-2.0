@@ -26,7 +26,7 @@ cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts
 
 ```bash
 cd /home/ubuntu
-git clone https://github.com/ccruz0/automated-trading-platform.git 2>/dev/null || (cd automated-trading-platform && git pull)
+git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform 2>/dev/null || (cd automated-trading-platform && git pull)
 cd automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```
 
