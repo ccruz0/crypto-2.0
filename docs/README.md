@@ -33,10 +33,12 @@ Additional existing folders (audit, aws, openclaw, portfolio, monitoring, etc.) 
 - [Docker setup](infrastructure/docker-setup.md)
 - [Deploy runbook](runbooks/deploy.md)
 - [Restart services](runbooks/restart-services.md)
+- [Orchestration debugging](runbooks/PRODUCTION_ORCHESTRATION_DEBUGGING_GUIDE.md) — Log sources, keywords, and commands for debugging the agent orchestration pipeline in production.
 - [Crypto.com API](integrations/crypto-api.md)
 - [Monitoring](operations/monitoring.md)
 - [Agent context](agents/context.md) — How agents should work in this repo.
 - [Task system](agents/task-system.md) — Task lifecycle and validation.
+- [Notion AI Task System schema & prompts](agents/notion-ai-task-system-schema.md) — Properties the backend uses; [field mapping](agents/notion-task-fields-mapping.md); [ChatGPT prompt structure](agents/CHATGPT_NOTION_PROMPT_STRUCTURE.md) for generating Notion setup prompts.
 - [Decision log](decision-log/README.md)
 
 ---

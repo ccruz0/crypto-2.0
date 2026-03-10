@@ -21,13 +21,20 @@ COMMAND_ID=$(aws ssm send-command \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd /home/ubuntu/automated-trading-platform",
-        "ls -la secrets/runtime.env",
-        "sudo chown ubuntu:ubuntu secrets/runtime.env",
-        "chmod 600 secrets/runtime.env",
+        "set -e",
+        "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || { echo ERR: repo not found; exit 1; }",
+        "REPO=$(pwd)",
+        "echo Repo: $REPO",
+        "if [ -f secrets/runtime.env ]; then sudo chown ubuntu:ubuntu secrets/runtime.env; chmod 600 secrets/runtime.env; fi",
         "docker compose --profile aws up -d",
-        "echo Done.",
-        "docker compose --profile aws ps"
+        "echo Waiting 25s for services...",
+        "sleep 25",
+        "sudo systemctl restart nginx 2>/dev/null || true",
+        "echo --- docker compose ps ---",
+        "docker compose --profile aws ps",
+        "echo --- health ---",
+        "curl -sS -o /dev/null -w \"backend /api/health: %{http_code}\n\" http://127.0.0.1:8002/api/health || echo backend FAIL",
+        "curl -sS -o /dev/null -w \"frontend :3000: %{http_code}\n\" http://127.0.0.1:3000/ || echo frontend FAIL"
     ]' \
     --query 'Command.CommandId' \
     --output text)

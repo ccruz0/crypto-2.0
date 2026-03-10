@@ -17,7 +17,7 @@ This guide explains how to deploy the application to AWS staging and production 
 
 ## Current AWS Setup
 
-- **Instance**: EC2 (i-08726dc37133b2454, ap-southeast-1)
+- **Instance**: EC2 (i-087953603011543c5, ap-southeast-1)
 - **Domain**: dashboard.hilovivo.com
 - **Nginx**: Reverse proxy (systemd service, not in Docker)
 - **Docker Compose**: Services run with `--profile aws`
@@ -26,11 +26,27 @@ This guide explains how to deploy the application to AWS staging and production 
 
 ### Option 1: Manual Deployment (SSH)
 
+**From your machine:**
+
+```bash
+# Option A — EC2 Instance Connect (no SSH key on server needed; works when SSM is down)
+./deploy_via_eice.sh
+
+# Option B — Direct SSH + rsync (requires your key on server; run add script once)
+# One-time: add your key so deploy_aws.sh and ssh work:
+./scripts/aws/add_ssh_key_via_eice.sh
+# Then:
+HOST=ubuntu@dashboard.hilovivo.com ./deploy_aws.sh
+# Or: HOST=ubuntu@52.220.32.147 ./deploy_aws.sh
+```
+
+**Or SSH in and deploy from main:**
+
 ```bash
 # 1. SSH into AWS instance
 ssh ubuntu@YOUR_AWS_IP
 # Or use AWS SSM Session Manager
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 
 # 2. Navigate to project directory
 cd ~/automated-trading-platform
@@ -95,7 +111,7 @@ Use deployment scripts like `deploy_lifecycle_events_fix.sh`:
 
 # Or use AWS SSM directly
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[

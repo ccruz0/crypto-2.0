@@ -16,7 +16,7 @@ This deployment updates the ActiveAlerts logic to be state-based from Watchlist 
    ```bash
    ssh ubuntu@<server-ip>
    # Or use AWS Session Manager
-   aws ssm start-session --target i-08726dc37133b2454 --region ap-southeast-1
+   aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
    ```
 
 2. **Navigate to project directory:**
@@ -68,7 +68,7 @@ Run this command from your local machine:
 
 ```bash
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
     "cd /home/ubuntu/automated-trading-platform",
@@ -88,7 +88,7 @@ Then check the result:
 # Get the command ID from the output above, then:
 aws ssm get-command-invocation \
   --command-id <COMMAND_ID> \
-  --instance-id i-08726dc37133b2454 \
+  --instance-id i-087953603011543c5 \
   --region ap-southeast-1
 ```
 

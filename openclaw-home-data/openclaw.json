@@ -1,0 +1,18 @@
+{
+  "plugins": {
+    "entries": {
+      "openclaw-tavily": {
+        "enabled": true
+      }
+    }
+  },
+  "tools": {
+    "allow": [
+      "tavily_search",
+      "tavily_extract",
+      "tavily_crawl",
+      "tavily_map",
+      "tavily_research"
+    ]
+  }
+}

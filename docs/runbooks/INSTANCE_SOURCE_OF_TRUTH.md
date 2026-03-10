@@ -20,10 +20,11 @@ When in doubt, prefer dashboard.hilovivo.com or the EC2 console for current publ
 
 | What | How |
 |------|-----|
+| **How to connect (full guide)** | **[docs/aws/HOW_TO_CONNECT.md](../aws/HOW_TO_CONNECT.md)** — Console, SSM, SSH, EICE. |
 | Dashboard | https://dashboard.hilovivo.com |
 | OpenClaw UI | https://dashboard.hilovivo.com/openclaw/ (Basic Auth) |
 | SSH to PROD | `ssh -i ~/.ssh/atp-rebuild-2026.pem ubuntu@52.220.32.147` (or use EC2 Instance Connect; confirm public IP in console) |
-| LAB (SSM) | `aws ssm start-session --target i-0d82c172235770a0d --region ap-southeast-1` |
+| LAB (SSM) | `aws ssm start-session --target i-0d82c172235770a0d --region ap-southeast-1` (when Online). Else: **Console → LAB → Connect → EC2 Instance Connect**. |
 
 ---
 

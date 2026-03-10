@@ -1,0 +1,11 @@
+--- PASTE INTO NOTION TASK "Investigate Telegram alerts not being sent" ---
+
+Resolved 2026-03-09.
+
+- Runbook: docs/runbooks/TELEGRAM_ALERTS_NOT_SENT.md
+- Diagnostic run on PROD: env and Settings are correct (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, RUNTIME_ORIGIN=AWS, RUN_TELEGRAM=true). Notifier state in the one-off diagnostic was stale (script now calls refresh_config() so future runs are accurate).
+- Conclusion: PROD config is correct; alerts should send when backend emits. If issues persist, check backend logs for [TG BLOCKED] and run ./scripts/diag/run_telegram_diagnostic_prod.sh after deploy.
+
+Set task Status to Done.
+
+--- Full resolution details: docs/runbooks/TASK_RESOLUTION_TELEGRAM_ALERTS_NOT_SENT.md ---

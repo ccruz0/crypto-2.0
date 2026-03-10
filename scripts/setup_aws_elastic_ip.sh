@@ -30,9 +30,13 @@ fi
 echo -e "${GREEN}✅ AWS CLI configured${NC}"
 echo ""
 
-# Step 1: Get current instance ID (if running on EC2)
+# Step 1: Get current instance ID (if running on EC2) — IMDSv2
 echo "Step 1: Getting EC2 instance information..."
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+_imds_token=$(curl -sS -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+INSTANCE_ID=""
+if [ -n "$_imds_token" ]; then
+  INSTANCE_ID=$(curl -sS -m 2 "http://169.254.169.254/latest/meta-data/instance-id" -H "X-aws-ec2-metadata-token: $_imds_token" 2>/dev/null || echo "")
+fi
 
 if [ -z "$INSTANCE_ID" ]; then
     echo -e "${YELLOW}⚠️  Not running on EC2, or metadata service unavailable${NC}"

@@ -313,6 +313,86 @@ def build_monitoring_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
     return user_prompt, instructions
 
 
+# ---------------------------------------------------------------------------
+# Solution verification (does output address the task requirements?)
+# ---------------------------------------------------------------------------
+
+_VERIFY_INSTRUCTIONS = (
+    "You are a strict reviewer. Your job is to determine if the generated output "
+    "actually addresses the problem stated in the task. "
+    "Answer ONLY with one of these two lines:\n"
+    "VERDICT: PASS\n"
+    "REASON: <brief reason>\n\n"
+    "OR\n\n"
+    "VERDICT: FAIL\n"
+    "REASON: <brief reason explaining what is missing or wrong>\n\n"
+    "Be strict: PASS only if the output clearly addresses the task requirements. "
+    "FAIL if the output is generic, off-topic, or does not solve the stated problem."
+)
+
+
+def verify_solution_against_task(
+    task_title: str,
+    task_details: str,
+    generated_output: str,
+    *,
+    task_id: str = "",
+    previous_feedback: str | None = None,
+) -> tuple[bool, str]:
+    """Ask OpenClaw if the generated output addresses the task requirements.
+
+    Returns (passed: bool, reason: str).
+    On API failure, returns (False, "verification unavailable: <error>").
+    """
+    if not is_openclaw_configured():
+        return False, "verification unavailable: OpenClaw not configured"
+
+    feedback_block = ""
+    if previous_feedback:
+        feedback_block = (
+            f"\n\nPrevious verification feedback (the output failed this check):\n"
+            f"{previous_feedback}\n\n"
+            "The author has been asked to improve. Re-evaluate the new output."
+        )
+
+    prompt = (
+        f"TASK:\n"
+        f"Title: {task_title}\n"
+        f"Details: {task_details}\n\n"
+        f"GENERATED OUTPUT:\n"
+        f"---\n{generated_output[:8000]}\n---\n\n"
+        f"Does this output address the problem stated in the task?{feedback_block}"
+    )
+
+    result = send_to_openclaw(
+        prompt,
+        task_id=task_id or "verify",
+        instructions=_VERIFY_INSTRUCTIONS,
+    )
+
+    if not result.get("success"):
+        return False, f"verification unavailable: {result.get('error', 'unknown')}"
+
+    content = (result.get("content") or "").strip().upper()
+    if "VERDICT: PASS" in content:
+        reason = ""
+        for line in content.split("\n"):
+            if line.startswith("REASON:"):
+                reason = line[7:].strip()
+                break
+        return True, reason or "verified"
+    if "VERDICT: FAIL" in content:
+        reason = ""
+        for line in content.split("\n"):
+            if line.startswith("REASON:"):
+                reason = line[7:].strip()
+                break
+        return False, reason or "output does not address task requirements"
+
+    # Unclear response - treat as fail to be safe
+    return False, f"verification unclear: {content[:200]}"
+
+
 def build_generic_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
     """Build prompt for tasks that don't match specific categories."""
     meta = _task_metadata_block(prepared_task)

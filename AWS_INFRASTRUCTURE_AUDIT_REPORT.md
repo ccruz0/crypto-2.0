@@ -18,7 +18,7 @@ This audit confirms that the current architecture uses a **minimal, cost-effecti
 ### Infrastructure Components
 
 1. **EC2 Instance**
-   - Single instance (instance ID: `i-08726dc37133b2454`)
+   - Single instance (instance ID: `i-087953603011543c5`)
    - Public Elastic IP: `54.254.150.31` (primary) or `175.41.189.249` (alternative)
    - Region: `ap-southeast-1`
    - Direct internet access via Elastic IP
@@ -107,7 +107,7 @@ This audit confirms that the current architecture uses a **minimal, cost-effecti
 2. **Single Instance Deployment**
    - All deployment scripts (`deploy_to_aws.sh`, `sync_to_aws.sh`) target single EC2 instance
    - No multi-instance or auto-scaling references found
-   - GitHub Actions workflow targets single instance ID: `i-08726dc37133b2454`
+   - GitHub Actions workflow targets single instance ID: `i-087953603011543c5`
 
 3. **Nginx on EC2 (Not Load Balancer)**
    - `nginx/dashboard.conf`: Reverse proxy configuration running on EC2

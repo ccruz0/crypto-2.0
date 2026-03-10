@@ -56,7 +56,7 @@ ssh-keygen -l -f ~/.ssh/id_rsa
 ```bash
 # Check if instances are running (via AWS CLI if available)
 aws ec2 describe-instances \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --query 'Reservations[0].Instances[0].[State.Name,PublicIpAddress]' \
   --output table
 ```
@@ -81,7 +81,7 @@ If direct SSH is not available, you can use AWS Session Manager:
 brew install session-manager-plugin
 
 # Then connect:
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 ```
 
 However, Session Manager is interactive only and won't work with automated deployment scripts.

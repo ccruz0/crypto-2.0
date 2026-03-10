@@ -24,7 +24,7 @@ Check if it's complete:
 ```bash
 aws ssm get-command-invocation \
   --command-id 84f4ed33-57a0-4b04-a46a-b992bdd7bdd9 \
-  --instance-id i-08726dc37133b2454 \
+  --instance-id i-087953603011543c5 \
   --region ap-southeast-1 \
   --query 'Status' \
   --output text

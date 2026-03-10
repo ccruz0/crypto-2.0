@@ -3,7 +3,7 @@
 
 set -e
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 
 echo "🚀 Desplegando Fix de Error Handling para SELL/BUY Orders"

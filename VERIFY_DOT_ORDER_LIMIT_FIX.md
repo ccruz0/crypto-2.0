@@ -13,7 +13,7 @@ Check if the fix is actively blocking orders when limit is reached:
 ```bash
 # Check AWS logs for blocked order messages
 aws ssm send-command \
-  --instance-ids "i-08726dc37133b2454" \
+  --instance-ids "i-087953603011543c5" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["docker logs automated-trading-platform-backend-aws-1 2>&1 | grep -i \"BLOCKED.*DOT\\|BLOCKED.*final check\" | tail -20"]' \
   --region "ap-southeast-1"
@@ -33,7 +33,7 @@ Watch for new DOT orders and verify they stop at 3:
 ```bash
 # Real-time log monitoring
 aws ssm send-command \
-  --instance-ids "i-08726dc37133b2454" \
+  --instance-ids "i-087953603011543c5" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["docker logs -f automated-trading-platform-backend-aws-1 2>&1 | grep -i \"DOT.*order\\|DOT.*BLOCKED\""]' \
   --region "ap-southeast-1"
@@ -45,7 +45,7 @@ Check if `count_open_positions_for_symbol` is working correctly for DOT:
 ```bash
 # Check logs for position counting
 aws ssm send-command \
-  --instance-ids "i-08726dc37133b2454" \
+  --instance-ids "i-087953603011543c5" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["docker logs automated-trading-platform-backend-aws-1 2>&1 | grep -i \"OPEN_POSITION_COUNT.*DOT\\|count_open_positions.*DOT\" | tail -10"]' \
   --region "ap-southeast-1"

@@ -41,7 +41,24 @@ Si pasa a **Online**, ya puedes usar Session Manager. Si sigue **ConnectionLost*
 
 ---
 
-## 3. Diagnóstico detallado
+## 3. VPC endpoints (causa frecuente si usas PrivateLink)
+
+Si la VPC tiene **interface endpoints** para SSM (`com.amazonaws.ap-southeast-1.ssm`, `ec2messages`, `ssmmessages`), el tráfico va a IPs privadas. Los **security groups de los endpoints** deben permitir **inbound TCP 443** desde el **security group de la instancia PROD** (`sg-07f5b0221b7e69efe`). Si solo permiten el SG de LAB, PROD no puede alcanzar SSM y el agente falla con "Retrieve credentials produced error" / "send request failed".
+
+**Arreglo desde AWS CLI:**
+
+```bash
+# Añadir PROD SG a los SGs de los endpoints SSM en la VPC de PROD
+PROD_SG=sg-07f5b0221b7e69efe
+VPC_ID=$(aws ec2 describe-instances --instance-ids i-087953603011543c5 --region ap-southeast-1 --query 'Reservations[0].Instances[0].VpcId' --output text)
+for ep in $(aws ec2 describe-vpc-endpoints --region ap-southeast-1 --filters "Name=vpc-id,Values=$VPC_ID" "Name=service-name,Values=*ssm*,*ec2messages*" --query 'VpcEndpoints[*].Groups[*].GroupId' --output text | tr '\t' '\n' | sort -u); do
+  aws ec2 authorize-security-group-ingress --region ap-southeast-1 --group-id "$ep" --protocol tcp --port 443 --source-group "$PROD_SG"
+done
+```
+
+Espera 1–2 minutos y comprueba de nuevo el PingStatus. El script **scripts/aws/restore_ssm_prod.sh** hace reboot, EIC + restart del agente, este paso de endpoints y (opcional) IAM replace; si sigue ConnectionLost, recoge logs del agente.
+
+## 4. Diagnóstico detallado
 
 Si tienes otra forma de entrar a la instancia (p. ej. SSH porque el SG permite 22 desde tu IP):
 
@@ -56,15 +73,18 @@ Si **no** tienes SSH ni Session Manager:
 
 ---
 
-## 4. Acceso cuando SSM no funciona (recomendado mientras PROD siga Connection lost)
+## 5. Acceso cuando SSM no funciona
 
-1. **Security group** **sg-07f5b0221b7e69efe**: añadir regla **inbound** SSH (22), origen **My IP**.
-2. **EC2** → **Instances** → **atp-rebuild-2026** → **Connect** → pestaña **EC2 Instance Connect** → **Connect**.
-3. Se abre una terminal en el navegador; no hace falta .pem. Para cerrar el acceso cuando termines, quita la regla SSH del SG.
+**Si EC2 Instance Connect funciona** (terminal en el navegador):
+1. **Security group** **sg-07f5b0221b7e69efe**: debe permitir SSH (22); si no, añade **My IP** o ejecuta `./scripts/aws/open_prod_access.sh`.
+2. **EC2** → **Instances** → **atp-rebuild-2026** → **Connect** → **EC2 Instance Connect** → **Connect**.
+
+**Si Instance Connect también falla** ("Error establishing SSH connection"): sshd o el agente SSM pueden estar parados. Usa **EC2 Serial Console** (no depende de red):
+- **docs/aws/PROD_ACCESS_WHEN_SSM_AND_SSH_FAIL.md** — habilitar Serial Console, conectar, ejecutar `sudo systemctl start ssh` y `sudo systemctl start amazon-ssm-agent`, luego volver a intentar Session Manager o Instance Connect.
 
 ---
 
-## 5. Tras recuperar SSM
+## 6. Tras recuperar SSM
 
 Cuando **PingStatus** sea **Online**:
 

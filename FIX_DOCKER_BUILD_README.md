@@ -52,7 +52,7 @@ The script:
 ## Requirements
 
 - AWS CLI installed and configured
-- SSM access to instance `i-08726dc37133b2454`
+- SSM access to instance `i-087953603011543c5`
 - Proper AWS credentials with SSM permissions
 
 ## Output

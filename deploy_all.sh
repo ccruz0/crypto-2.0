@@ -98,6 +98,7 @@ BUILD_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
     "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true",
     "bash scripts/aws/render_runtime_env.sh || true",
     "docker compose --profile aws down || true",
     "docker compose --profile aws build --no-cache",

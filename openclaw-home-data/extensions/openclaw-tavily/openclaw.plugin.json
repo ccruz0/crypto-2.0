@@ -1,0 +1,82 @@
+{
+  "id": "openclaw-tavily",
+  "kind": "tools",
+  "skills": ["./skills"],
+  "name": "Tavily Search",
+  "description": "Web tools via Tavily API. Provides tavily_search, tavily_extract, tavily_crawl, tavily_map, and tavily_research tools for search, content extraction, website crawling, site mapping, and deep research.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "Tavily API key (defaults to TAVILY_API_KEY env var)"
+      },
+      "searchDepth": {
+        "type": "string",
+        "enum": ["ultra-fast", "fast", "basic", "advanced"],
+        "description": "Search depth: ultra-fast, fast, basic, or advanced (thorough). Default: advanced"
+      },
+      "maxResults": {
+        "type": "number",
+        "description": "Default number of results (1-20). Default: 5"
+      },
+      "includeAnswer": {
+        "oneOf": [
+          { "type": "boolean" },
+          { "type": "string", "enum": ["basic", "advanced"] }
+        ],
+        "description": "Include an AI-generated short answer. Boolean or 'basic'/'advanced'. Default: true"
+      },
+      "includeRawContent": {
+        "oneOf": [
+          { "type": "boolean" },
+          { "type": "string", "enum": ["markdown", "text"] }
+        ],
+        "description": "Include raw page content. Boolean or 'markdown'/'text'. Default: false"
+      },
+      "timeoutSeconds": {
+        "type": "number",
+        "description": "Timeout in seconds for search requests. Default: 30"
+      },
+      "cacheTtlMinutes": {
+        "type": "number",
+        "description": "Cache TTL in minutes. Default: 15"
+      }
+    }
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "Tavily API Key",
+      "sensitive": true,
+      "placeholder": "tvly-..."
+    },
+    "searchDepth": {
+      "label": "Search Depth",
+      "help": "ultra-fast and fast are cheapest; advanced is slowest but most thorough."
+    },
+    "maxResults": {
+      "label": "Max Results",
+      "help": "Number of results per search (1-20)."
+    },
+    "includeAnswer": {
+      "label": "Include AI Answer",
+      "help": "true/false, or 'basic'/'advanced' for answer quality tier."
+    },
+    "includeRawContent": {
+      "label": "Include Raw Content",
+      "help": "true/false, or 'markdown'/'text' for format. Increases token usage.",
+      "advanced": true
+    },
+    "timeoutSeconds": {
+      "label": "Timeout (seconds)",
+      "advanced": true
+    },
+    "cacheTtlMinutes": {
+      "label": "Cache TTL (minutes)",
+      "help": "How long to cache results. Set 0 to disable.",
+      "advanced": true
+    }
+  }
+}

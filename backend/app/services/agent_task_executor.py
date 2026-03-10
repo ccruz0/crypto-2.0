@@ -277,7 +277,7 @@ def _run_post_deploy_smoke_check(task_id: str, prepared_task: dict[str, Any]) ->
             record_smoke_check_result,
         )
         logger.info("execute_prepared_notion_task: running post-deploy smoke check task_id=%s", task_id)
-        smoke = run_smoke_check()
+        smoke = run_smoke_check(task_id=task_id)
         record_smoke_check_result(
             task_id,
             smoke,
@@ -1015,7 +1015,10 @@ def execute_prepared_notion_task(
         sections = (prepared_task or {}).get("_openclaw_sections") or {}
         try:
             from app.services.agent_telegram_approval import send_investigation_complete_approval
-            tg = send_investigation_complete_approval(task_id, task_title, sections=sections)
+            tg = send_investigation_complete_approval(
+                task_id, task_title, sections=sections,
+                task=task, repo_area=(prepared_task or {}).get("repo_area"),
+            )
             logger.info(
                 "execute_prepared_notion_task: send_investigation_complete_approval "
                 "task_id=%s sent=%s message_id=%s",
@@ -1140,6 +1143,7 @@ def execute_prepared_notion_task(
                     task_id, task_title,
                     test_summary=validation_summary,
                     sections=sections,
+                    task=task, repo_area=(prepared_task or {}).get("repo_area"),
                 )
                 logger.info(
                     "execute_prepared_notion_task: send_patch_deploy_approval "
@@ -1186,6 +1190,11 @@ def execute_prepared_notion_task(
     deployment_ok = True
     deployment_summary = "not run"
     if deploy_fn is not None:
+        try:
+            from app.services.notion_tasks import update_notion_deploy_progress
+            update_notion_deploy_progress(task_id, 0)
+        except Exception:
+            pass
         deployment_ok, deployment_summary = _run_callback(prepared_task, deploy_fn, "deploy")
         if not deployment_ok:
             try:
@@ -1203,6 +1212,11 @@ def execute_prepared_notion_task(
                 "testing", False,
             )
         logger.info("execute_prepared_notion_task: deployment succeeded task_id=%s", task_id)
+        try:
+            from app.services.notion_tasks import update_notion_deploy_progress
+            update_notion_deploy_progress(task_id, 20)
+        except Exception:
+            pass
 
     # ----- Step 5b: post-deploy smoke check (extended lifecycle only)
     smoke_outcome = _run_post_deploy_smoke_check(task_id, prepared_task)
@@ -1327,6 +1341,60 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             return _result(False, "patching", "Notion status update to patching failed")
         logger.info("advance_ready_for_patch_task: moved to patching task_id=%s", task_id)
 
+    # --- 2b. Cursor bridge: when handoff exists and auto-invoke enabled, run bridge first ---
+    _bridge_auto = (os.environ.get("CURSOR_BRIDGE_AUTO_IN_ADVANCE") or "").strip().lower() in ("1", "true", "yes")
+    if _bridge_auto:
+        try:
+            from app.services.cursor_execution_bridge import (
+                is_bridge_enabled,
+                run_bridge_phase2,
+            )
+            from app.services._paths import workspace_root
+            handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
+            if handoff_path.exists() and is_bridge_enabled():
+                logger.info("advance_ready_for_patch_task: cursor handoff found, running bridge task_id=%s", task_id)
+                bridge_result = run_bridge_phase2(
+                    task_id=task_id,
+                    ingest=True,
+                    create_pr=False,
+                    current_status="patching",
+                )
+                if bridge_result.get("ok") and bridge_result.get("tests_ok"):
+                    ingest_res = bridge_result.get("ingest") or {}
+                    if ingest_res.get("gate_result", {}).get("advanced"):
+                        _append_notion_page_comment(
+                            task_id,
+                            f"[{ts}] Cursor bridge: apply + tests passed — waiting for deploy approval.",
+                        )
+                        try:
+                            from app.services.agent_telegram_approval import send_patch_deploy_approval
+                            _repo_area = infer_repo_area_for_task(task)
+                            tg = send_patch_deploy_approval(
+                                task_id, task_title,
+                                test_summary=bridge_result.get("ingest", {}).get("gate_result", {}).get("outcome", "passed"),
+                                sections={},
+                                task=task, repo_area=_repo_area,
+                            )
+                            logger.info("advance_ready_for_patch_task: bridge success, deploy approval sent task_id=%s", task_id)
+                        except Exception as exc:
+                            logger.warning("advance_ready_for_patch_task: send_patch_deploy_approval after bridge failed: %s", exc)
+                        try:
+                            from app.services.agent_activity_log import log_agent_event
+                            log_agent_event("cursor_bridge_auto_success", task_id=task_id, task_title=task_title, details={"bridge_ok": True})
+                        except Exception:
+                            pass
+                        return _result(True, "cursor_bridge", "bridge apply + tests passed", "awaiting-deploy-approval")
+                else:
+                    err = bridge_result.get("error") or "bridge failed"
+                    logger.warning("advance_ready_for_patch_task: cursor bridge failed task_id=%s: %s", task_id, err)
+                    _append_notion_page_comment(
+                        task_id,
+                        f"[{ts}] Cursor bridge ran but did not pass: {err[:200]}. Task stays in patching.",
+                    )
+                    return _result(False, "cursor_bridge", err, "patching")
+        except Exception as exc:
+            logger.warning("advance_ready_for_patch_task: cursor bridge branch raised task_id=%s: %s", task_id, exc)
+
     # --- 3. Reconstruct a minimal prepared_task for callback selection ---
     repo_area = infer_repo_area_for_task(task)
     prepared_task: dict[str, Any] = {
@@ -1388,6 +1456,63 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
 
     logger.info("advance_ready_for_patch_task: validation passed task_id=%s", task_id)
 
+    # --- 5b. Solution verification: does output address the task requirements? ---
+    # Default: enabled. Set ATP_SOLUTION_VERIFICATION_ENABLED=false to disable.
+    _verify_raw = (os.environ.get("ATP_SOLUTION_VERIFICATION_ENABLED") or "").strip().lower()
+    verify_enabled = _verify_raw not in ("0", "false", "no")
+    verify_fn = callback_selection.get("verify_solution_fn")
+    if verify_enabled and verify_fn is not None:
+        verify_ok, verify_summary = _run_callback(prepared_task, verify_fn, "verify_solution")
+        if not verify_ok:
+            logger.warning(
+                "advance_ready_for_patch_task: solution verification failed task_id=%s summary=%s",
+                task_id, verify_summary,
+            )
+            try:
+                from app.services.notion_tasks import TASK_STATUS_NEEDS_REVISION, update_notion_task_status
+                update_notion_task_status(
+                    task_id,
+                    TASK_STATUS_NEEDS_REVISION,
+                    append_comment=(
+                        f"[{ts}] Solution verification FAILED — output does not address task requirements.\n"
+                        f"Feedback: {verify_summary}\n\n"
+                        "Use the Re-investigate button in Telegram to iterate with this feedback."
+                    ),
+                )
+                try:
+                    from app.services.agent_telegram_approval import clear_task_approval_record
+                    clear_task_approval_record(task_id)
+                except Exception as clr_exc:
+                    logger.warning(
+                        "advance_ready_for_patch_task: clear_task_approval_record failed task_id=%s: %s",
+                        task_id, clr_exc,
+                    )
+                try:
+                    from app.services.agent_telegram_approval import send_needs_revision_reinvestigate
+                    send_needs_revision_reinvestigate(
+                        task_id, task_title,
+                        feedback=verify_summary,
+                    )
+                except Exception as tg_exc:
+                    logger.warning(
+                        "advance_ready_for_patch_task: send_needs_revision_reinvestigate failed task_id=%s: %s",
+                        task_id, tg_exc,
+                    )
+                try:
+                    from app.services.agent_activity_log import log_agent_event
+                    log_agent_event(
+                        "solution_verification_failed",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={"summary": verify_summary},
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.warning("advance_ready_for_patch_task: failed to move to needs-revision task_id=%s: %s", task_id, exc)
+            return _result(False, "solution_verification", verify_summary, "needs-revision")
+        logger.info("advance_ready_for_patch_task: solution verification passed task_id=%s", task_id)
+
     # --- 6. Record test gate and advance to awaiting-deploy-approval ---
     gate_ok = False
     gate_advanced = False
@@ -1447,6 +1572,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             task_id, task_title,
             test_summary=val_summary,
             sections=sections,
+            task=task, repo_area=repo_area,
         )
         logger.info(
             "advance_ready_for_patch_task: send_patch_deploy_approval task_id=%s sent=%s",

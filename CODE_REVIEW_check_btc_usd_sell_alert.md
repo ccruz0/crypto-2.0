@@ -29,7 +29,7 @@ Use the same pattern as `enable_sell_alerts_ultra_simple.sh` which successfully 
 
 ```bash
 #!/bin/bash
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 echo "Checking BTC_USD sell alert configuration..."
 CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name "AWS-RunShellScript" --parameters 'commands=["CONTAINER=$(docker ps --format \"{{.Names}}\" | grep -i backend | head -1); docker exec -i $CONTAINER python3 -c \"import sys; sys.path.insert(0, '\''/app'\''); from sqlalchemy.orm import Session; from app.database import SessionLocal; from app.models.watchlist import WatchlistItem; db = SessionLocal(); item = db.query(WatchlistItem).filter(WatchlistItem.symbol == '\''BTC_USD'\'').first(); print('Symbol:', item.symbol if item else 'NOT FOUND'); print('alert_enabled:', item.alert_enabled if item else None); print('sell_alert_enabled:', getattr(item, '\''sell_alert_enabled'\'', False) if item else None); print('buy_alert_enabled:', getattr(item, '\''buy_alert_enabled'\'', False) if item else None); db.close()\""]' --region "$REGION" --output text --query 'Command.CommandId')

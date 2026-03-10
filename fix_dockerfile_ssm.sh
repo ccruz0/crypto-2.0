@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script to update Dockerfile on AWS server via SSM
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 PROJECT_DIR="/home/ubuntu/automated-trading-platform"
 

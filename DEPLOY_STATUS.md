@@ -33,7 +33,7 @@ Si el deploy automático no funcionó, ejecuta estos comandos en el servidor AWS
 
 ```bash
 # 1. Conectarse al servidor (SSM Session Manager recomendado)
-aws ssm start-session --target i-08726dc37133b2454 --region ap-southeast-1
+aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # 2. Una vez conectado al servidor
 cd /home/ubuntu/automated-trading-platform

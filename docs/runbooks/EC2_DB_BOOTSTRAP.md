@@ -110,7 +110,7 @@ sudo systemctl status atp-selfheal.timer --no-pager
 
 - **ensure_env_aws:** Before compose, self-heal runs `scripts/aws/ensure_env_aws.sh` when present and executable; it creates `.env.aws` from `.env` or `.env.example` if missing.
 
-- **Hourly health snapshot:** Logs one JSON line per run to `/var/log/atp/health_snapshots.log` (ts, disk_pct, unhealthy_count, full `/api/health/system`). Install once:  
+- **Health snapshot (every 5 min):** Logs one JSON line per run to `/var/log/atp/health_snapshots.log` (ts, disk_pct, unhealthy_count, full `/api/health/system`). Install once:  
   `sudo cp scripts/selfheal/systemd/atp-health-snapshot.service scripts/selfheal/systemd/atp-health-snapshot.timer /etc/systemd/system/`  
   then `sudo systemctl daemon-reload` and `sudo systemctl enable --now atp-health-snapshot.timer`.
 
@@ -132,6 +132,8 @@ Health snapshot failures can trigger a single Telegram message with cooldown. Th
    ```
 
 **Optional env (defaults):** `ATP_HEALTH_SNAPSHOT_LOG` (/var/log/atp/health_snapshots.log), `ATP_ALERT_LINES` (5000), `ATP_ALERT_COOLDOWN_MINUTES` (30), `ATP_ALERT_RULE` (streak_fail_3). Supported rules: `streak_fail_3`, `fail_count_5_in_30m`, `updater_age_gt5_3runs`. State/cooldown: `/var/lib/atp/health_alert_state.json`.
+
+**When you receive the alert:** See [ATP_HEALTH_ALERT_STREAK_FAIL.md](ATP_HEALTH_ALERT_STREAK_FAIL.md) for what each field means and quick diagnostics.
 
 **Test:**
 

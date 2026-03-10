@@ -17,7 +17,7 @@ print_warning() { echo -e "${YELLOW}[⚠]${NC} $1"; }
 print_error() { echo -e "${RED}[✗]${NC} $1"; }
 
 # AWS Configuration
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 PROJECT_DIR="automated-trading-platform"
 BACKEND_PORT="8002"

@@ -3,7 +3,7 @@
 
 set -e
 
-INSTANCE_ID="i-08726dc37133b2454"  # ID de la instancia EC2 de AWS
+INSTANCE_ID="i-087953603011543c5"  # ID de la instancia EC2 de AWS
 
 echo "🚫 Desactivando todas las alertas en AWS..."
 echo "📋 Ejecutando script en instancia: $INSTANCE_ID"

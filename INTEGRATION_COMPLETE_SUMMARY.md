@@ -141,7 +141,7 @@ cd frontend && npm run build
 ./verify_swing_conservative_deployment.sh
 
 # Check backend logs (via SSM)
-aws ssm send-command --instance-ids i-08726dc37133b2454 --document-name "AWS-RunShellScript" --parameters "commands=['docker logs backend-container']"
+aws ssm send-command --instance-ids i-087953603011543c5 --document-name "AWS-RunShellScript" --parameters "commands=['docker logs backend-container']"
 ```
 
 ## ✨ Key Features Implemented

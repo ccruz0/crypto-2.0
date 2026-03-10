@@ -1,6 +1,6 @@
 """Monitoring endpoint - returns system KPIs and alerts"""
 # pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, cast, String, text
@@ -125,6 +125,91 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
             },
             headers=_NO_CACHE_HEADERS
         )
+
+
+RUNBOOK_ATP_HEALTH_ALERT = (
+    "https://github.com/ccruz0/automated-trading-platform/blob/main/docs/runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md"
+)
+
+
+@router.post("/monitoring/health-alert", name="create_health_alert_notion_task")
+async def create_health_alert_notion_task(payload: Dict[str, Any] = Body(default={})):
+    """
+    Create a Notion task when an ATP health alert is sent (e.g. streak_fail_3).
+    Called by the health snapshot Telegram alert script so ops get a trackable task to resolve the issue.
+    No auth required when called from same host (cron); optional X-API-Key for remote callers.
+    """
+    try:
+        from app.services.notion_tasks import create_incident_task
+    except Exception as imp_err:
+        log.debug("Notion tasks not available for health alert: %s", imp_err)
+        return {"ok": False, "reason": "notion_unavailable"}
+
+    rule = (payload.get("rule") or "").strip() or "health_alert"
+    reason = (payload.get("reason") or "").strip() or rule
+    streak = payload.get("streak")
+    last_ts = payload.get("last_ts") or payload.get("last_snapshot_ts") or "n/a"
+    verify_label = payload.get("verify_label") or "n/a"
+    market_data_status = payload.get("market_data_status") or "n/a"
+    market_updater_status = payload.get("market_updater_status") or "n/a"
+    market_updater_age_min = payload.get("market_updater_age_min")
+    global_status = payload.get("global_status") or "n/a"
+
+    title = f"ATP Health Alert: resolve {rule}"
+    details_lines = [
+        f"Rule: {reason}",
+        f"FAIL streak: {streak}",
+        f"Last snapshot: {last_ts}",
+        f"verify_label: {verify_label}",
+        f"market_data: {market_data_status} | market_updater: {market_updater_status}",
+        f"market_updater_age_min: {market_updater_age_min} | global_status: {global_status}",
+        "",
+        "Runbook: " + RUNBOOK_ATP_HEALTH_ALERT,
+    ]
+    details = "\n".join(details_lines)
+
+    result = create_incident_task(
+        title=title,
+        details=details,
+        source="atp-health-alert",
+    )
+    if result and result.get("id"):
+        log.info("Notion task created for ATP health alert rule=%s id=%s", rule, result.get("id"))
+        return {"ok": True, "notion_task_id": result.get("id")}
+    return {"ok": False, "reason": "skipped_or_failed"}
+
+
+@router.post("/monitoring/notion-set-telegram-alerts-task-done", name="notion_set_telegram_alerts_task_done")
+async def notion_set_telegram_alerts_task_done():
+    """
+    Find Notion tasks with Status in-progress and title containing "Telegram",
+    set their Status to done. Used to close the "Investigate Telegram alerts not being sent" task.
+    No auth (intended for same-host or internal trigger). Requires NOTION_API_KEY and NOTION_TASK_DB.
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+        from app.services.notion_tasks import update_notion_task_status
+    except Exception as imp_err:
+        log.debug("Notion modules not available: %s", imp_err)
+        return {"ok": False, "reason": "notion_unavailable", "updated": 0}
+
+    statuses = ["in-progress", "In-Progress", "In Progress"]
+    tasks = get_tasks_by_status(statuses, max_results=50)
+    keyword = "telegram"
+    matches = [t for t in tasks if keyword in (t.get("task") or "").lower()]
+    if not matches:
+        return {"ok": True, "updated": 0, "message": "no matching in-progress tasks"}
+
+    comment = "Resolved via automation: runbook applied; PROD config correct; status set to done."
+    updated = 0
+    for t in matches:
+        page_id = (t.get("id") or "").strip()
+        if not page_id:
+            continue
+        if update_notion_task_status(page_id, "done", append_comment=comment):
+            updated += 1
+            log.info("Notion task set to done page_id=%s title=%s", page_id[:8], (t.get("task") or "")[:50])
+    return {"ok": True, "updated": updated, "message": f"Updated {updated} task(s) to done."}
 
 
 @router.post("/health/repair", name="health_repair")

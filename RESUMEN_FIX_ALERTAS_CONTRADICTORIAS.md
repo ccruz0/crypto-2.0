@@ -52,7 +52,7 @@ Si necesitas verificar manualmente que el fix está desplegado:
 
 ```bash
 # 1. Conectarse al servidor AWS
-aws ssm start-session --target i-08726dc37133b2454 --region ap-southeast-1
+aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # 2. Verificar que el código actualizado está presente
 cd /home/ubuntu/automated-trading-platform

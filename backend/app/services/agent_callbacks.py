@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -27,6 +28,14 @@ CallbackFn = Callable[[dict[str, Any]], dict[str, Any]]
 def _repo_root() -> Path:
     from app.services._paths import workspace_root
     return workspace_root()
+
+
+def _note_dir_for_subdir(save_subdir: str) -> Path:
+    """Return writable directory for notes; use bug-investigations fallback when repo path not writable."""
+    if save_subdir == "docs/agents/bug-investigations":
+        from app.services._paths import get_writable_bug_investigations_dir
+        return get_writable_bug_investigations_dir()
+    return _repo_root() / save_subdir
 
 
 def _safe_task_id(prepared_task: dict[str, Any]) -> str:
@@ -465,6 +474,38 @@ def apply_monitoring_triage_task(prepared_task: dict[str, Any]) -> dict[str, Any
         idx_line = f"- [Notion triage {task_id}: {title}](notion-triage-{task_id}.md)"
         _append_line_if_missing(idx_path, idx_line)
 
+        # Notion → Cursor: create handoff file and write instruction on the Notion task so the task "tells" Cursor what to do
+        triage_note = f"docs/runbooks/triage/notion-triage-{task_id}.md"
+        cursor_instruction = (
+            f"Cursor: Para ejecutar los cambios, abre Cursor en el repo y di: \"Ejecuta los pasos del triage\" o \"pick the triage and run the changes\". "
+            f"Archivo: {triage_note} (sección \"Cursor: run these steps\"). "
+            "O usa el Cursor Bridge: POST /api/agent/cursor-bridge/run con task_id."
+        )
+        try:
+            from app.services.cursor_handoff import save_cursor_handoff
+            handoff_prompt = (
+                f"# Tarea: {title}\n\n"
+                f"Notion task id: `{task_id}`\n\n"
+                "**Instrucción:** Ejecuta los pasos del triage para esta tarea.\n\n"
+                f"1. Lee el archivo **{triage_note}** en este repo.\n"
+                "2. Sigue la sección **\"Cursor: run these steps (actionable fix)\"** en orden (diagnóstico, aplicar fixes del runbook, reiniciar backend si aplica, re-ejecutar diagnóstico).\n"
+                "3. No cambies lógica de trading/órdenes; solo config de Telegram, env y pasos del runbook.\n"
+            )
+            save_cursor_handoff(task_id, handoff_prompt, title=title)
+        except Exception as handoff_err:
+            logger.debug("cursor handoff for triage task_id=%s skipped: %s", task_id, handoff_err)
+
+        try:
+            from app.services.notion_tasks import update_notion_task_metadata
+            # Set OpenClaw Report URL to triage path so Cursor/humans can open it; append_comment adds the instruction to the page
+            update_notion_task_metadata(
+                task_id,
+                {"openclaw_report_url": triage_note},
+                append_comment=cursor_instruction,
+            )
+        except Exception as meta_err:
+            logger.debug("Notion metadata/comment for Cursor instruction skipped task_id=%s: %s", task_id, meta_err)
+
         return {"success": True, "summary": f"monitoring triage note prepared at docs/runbooks/triage/notion-triage-{task_id}.md"}
     except Exception as e:
         logger.exception("apply_monitoring_triage_task failed: %s", e)
@@ -535,7 +576,7 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
         if not task_id:
             return {"success": False, "summary": "missing task.id"}
 
-        inv_dir = root / "docs" / "agents" / "bug-investigations"
+        inv_dir = _note_dir_for_subdir("docs/agents/bug-investigations")
         _ensure_dir(inv_dir)
 
         note_path = inv_dir / f"notion-bug-{task_id}.md"
@@ -607,9 +648,10 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
         idx_line = f"- [Notion bug {task_id}: {title}](notion-bug-{task_id}.md)"
         _append_line_if_missing(idx_path, idx_line)
 
+        summary_path = (inv_dir / f"notion-bug-{task_id}.md").as_posix()
         return {
             "success": True,
-            "summary": f"bug investigation note prepared at docs/agents/bug-investigations/notion-bug-{task_id}.md",
+            "summary": f"bug investigation note prepared at {summary_path}",
         }
     except Exception as e:
         logger.exception("apply_bug_investigation_task failed: %s", e)
@@ -630,8 +672,8 @@ def validate_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, 
         if not task_id:
             return {"success": False, "summary": "missing task.id"}
 
-        root = _repo_root()
-        note_path = root / "docs" / "agents" / "bug-investigations" / f"notion-bug-{task_id}.md"
+        inv_dir = _writable_bug_investigations_dir()
+        note_path = inv_dir / f"notion-bug-{task_id}.md"
 
         ok, msg = _validate_nonempty_markdown(note_path)
         if not ok:
@@ -662,6 +704,57 @@ def validate_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, 
         return {"success": False, "summary": str(e)}
 
 
+_OPENCLAW_FALLBACK_MARKERS = (
+    "no response from openclaw",
+    "openclaw not configured",
+    "template fallback",
+    "openclaw error",
+    "openclaw returned empty",
+    "connection failed",
+    "timeout after",
+)
+
+_MIN_INVESTIGATION_CONTENT_CHARS = 200
+
+_OPENCLAW_MAX_RETRIES = 1
+_OPENCLAW_RETRY_DELAY_S = 5
+
+
+def _call_openclaw_once(
+    send_to_openclaw: Callable,
+    user_prompt: str,
+    instructions: str,
+    task_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """Single OpenClaw call + quality gate.  Returns (result_or_None, error_reason)."""
+    try:
+        result = send_to_openclaw(user_prompt, task_id=task_id, instructions=instructions)
+    except Exception as e:
+        return None, f"OpenClaw error: {e}"
+
+    if not result.get("success"):
+        return None, f"OpenClaw error: {result.get('error', 'unknown')}"
+
+    content = result.get("content") or ""
+    if not content.strip():
+        return None, "OpenClaw returned empty response"
+
+    content_lower = content.lower()
+    for marker in _OPENCLAW_FALLBACK_MARKERS:
+        if marker in content_lower:
+            return None, f"OpenClaw returned fallback/error content: '{marker}'"
+
+    from app.services.openclaw_client import INVESTIGATION_SECTIONS
+    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
+    if not found_sections and len(content.strip()) < _MIN_INVESTIGATION_CONTENT_CHARS:
+        return None, (
+            f"OpenClaw response lacks structured sections and is too short "
+            f"({len(content.strip())} chars)"
+        )
+
+    return result, ""
+
+
 def _apply_via_openclaw(
     prepared_task: dict[str, Any],
     prompt_builder_fn: Callable,
@@ -689,26 +782,61 @@ def _apply_via_openclaw(
 
     try:
         user_prompt, instructions = prompt_builder_fn(prepared_task)
-        result = send_to_openclaw(user_prompt, task_id=task_id, instructions=instructions)
     except Exception as e:
-        logger.warning("OpenClaw call failed for task %s: %s — using fallback", task_id, e)
+        logger.warning("OpenClaw prompt build failed for task %s: %s", task_id, e)
         if fallback_fn:
             return fallback_fn(prepared_task)
-        return {"success": False, "summary": f"OpenClaw error: {e}"}
+        return {"success": False, "summary": f"prompt build error: {e}"}
 
-    if not result.get("success"):
-        error = result.get("error", "unknown")
-        logger.warning("OpenClaw returned error for task %s: %s — using fallback", task_id, error)
+    # Append verification feedback if this is a re-investigation after failed verification
+    root = _repo_root()
+    feedback_path = root / "docs" / "agents" / "verification-feedback" / f"{task_id}.txt"
+    if feedback_path.exists():
+        try:
+            prev_feedback = feedback_path.read_text(encoding="utf-8").strip()
+            if prev_feedback:
+                user_prompt += (
+                    f"\n\n---\n\n"
+                    f"**Previous attempt failed solution verification.**\n"
+                    f"Feedback: {prev_feedback}\n\n"
+                    f"Please improve your analysis to address this feedback."
+                )
+                logger.info("OpenClaw apply: including verification feedback for task %s", task_id)
+        except Exception as e:
+            logger.warning("Could not read verification feedback for task %s: %s", task_id, e)
+        try:
+            feedback_path.unlink()
+        except Exception:
+            pass
+
+    last_error = ""
+    result: dict[str, Any] | None = None
+    max_attempts = 1 + _OPENCLAW_MAX_RETRIES
+
+    for attempt in range(1, max_attempts + 1):
+        result, last_error = _call_openclaw_once(
+            send_to_openclaw, user_prompt, instructions, task_id,
+        )
+        if result is not None:
+            break
+        if attempt < max_attempts:
+            logger.warning(
+                "OpenClaw attempt %d/%d failed for task %s: %s — retrying in %ds",
+                attempt, max_attempts, task_id, last_error, _OPENCLAW_RETRY_DELAY_S,
+            )
+            time.sleep(_OPENCLAW_RETRY_DELAY_S)
+        else:
+            logger.warning(
+                "OpenClaw attempt %d/%d failed for task %s: %s — no retries left",
+                attempt, max_attempts, task_id, last_error,
+            )
+
+    if result is None:
         if fallback_fn:
             return fallback_fn(prepared_task)
-        return {"success": False, "summary": f"OpenClaw error: {error}"}
+        return {"success": False, "summary": last_error}
 
     content = result.get("content") or ""
-    if not content.strip():
-        logger.warning("OpenClaw returned empty content for task %s — using fallback", task_id)
-        if fallback_fn:
-            return fallback_fn(prepared_task)
-        return {"success": False, "summary": "OpenClaw returned empty response"}
 
     # Parse structured sections (gracefully returns None values for missing ones)
     try:
@@ -721,7 +849,6 @@ def _apply_via_openclaw(
     if sections:
         prepared_task["_openclaw_sections"] = sections
 
-    root = _repo_root()
     out_dir = root / save_subdir
     _ensure_dir(out_dir)
 
@@ -762,7 +889,9 @@ def _apply_via_openclaw(
         _append_line_if_missing(idx_path, idx_line)
 
     summary = content.strip()[:200]
-    logger.info("OpenClaw analysis saved for task %s at %s (%d chars)", task_id, note_path, len(content))
+    from app.services.openclaw_client import INVESTIGATION_SECTIONS
+    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
+    logger.info("OpenClaw analysis saved for task %s at %s (%d chars, sections=%d)", task_id, note_path, len(content), len(found_sections))
     return {"success": True, "summary": f"[OpenClaw] {summary}", "sections": sections}
 
 
@@ -771,16 +900,81 @@ def _validate_openclaw_note(
     save_subdir: str,
     file_prefix: str,
 ) -> dict[str, Any]:
-    """Validate that an OpenClaw-generated note exists and has content."""
+    """Validate that an OpenClaw-generated note has real investigation content.
+
+    Checks:
+    1. File exists and is non-empty
+    2. No fallback/error markers in the content
+    3. At least one structured investigation section heading present
+    4. Minimum content length (excluding metadata header)
+    """
     task_id = _safe_task_id(prepared_task)
     if not task_id:
         return {"success": False, "summary": "missing task.id"}
-    root = _repo_root()
-    note_path = root / save_subdir / f"{file_prefix}-{task_id}.md"
+    note_dir = _note_dir_for_subdir(save_subdir)
+    note_path = note_dir / f"{file_prefix}-{task_id}.md"
     ok, msg = _validate_nonempty_markdown(note_path)
     if not ok:
         return {"success": False, "summary": msg}
-    return {"success": True, "summary": "OpenClaw note validated (non-empty)"}
+
+    content = note_path.read_text(encoding="utf-8")
+    content_lower = content.lower()
+
+    for marker in _OPENCLAW_FALLBACK_MARKERS:
+        if marker in content_lower:
+            logger.warning(
+                "openclaw_note_validation: FAILED — fallback marker detected "
+                "task_id=%s marker=%r path=%s",
+                task_id, marker, note_path,
+            )
+            return {
+                "success": False,
+                "summary": f"investigation contains fallback/error marker: '{marker}'",
+            }
+
+    from app.services.openclaw_client import INVESTIGATION_SECTIONS
+    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
+    if not found_sections:
+        logger.warning(
+            "openclaw_note_validation: FAILED — no structured sections found "
+            "task_id=%s path=%s",
+            task_id, note_path,
+        )
+        return {
+            "success": False,
+            "summary": (
+                "investigation missing structured sections — expected at least one of: "
+                + ", ".join(INVESTIGATION_SECTIONS[:4])
+            ),
+        }
+
+    body_start = content.find("---")
+    body = content[body_start + 3:].strip() if body_start != -1 else content.strip()
+    if len(body) < _MIN_INVESTIGATION_CONTENT_CHARS:
+        logger.warning(
+            "openclaw_note_validation: FAILED — content too short "
+            "task_id=%s body_len=%d min=%d path=%s",
+            task_id, len(body), _MIN_INVESTIGATION_CONTENT_CHARS, note_path,
+        )
+        return {
+            "success": False,
+            "summary": (
+                f"investigation content too short ({len(body)} chars, "
+                f"minimum {_MIN_INVESTIGATION_CONTENT_CHARS})"
+            ),
+        }
+
+    logger.info(
+        "openclaw_note_validation: PASSED task_id=%s sections=%d body_len=%d path=%s",
+        task_id, len(found_sections), len(body), note_path,
+    )
+    return {
+        "success": True,
+        "summary": (
+            f"OpenClaw investigation validated "
+            f"({len(found_sections)} sections, {len(body)} chars)"
+        ),
+    }
 
 
 def _make_openclaw_callback(
@@ -802,6 +996,74 @@ def _make_openclaw_validator(save_subdir: str, file_prefix: str) -> CallbackFn:
     def _validate(prepared_task: dict[str, Any]) -> dict[str, Any]:
         return _validate_openclaw_note(prepared_task, save_subdir, file_prefix)
     return _validate
+
+
+def _verify_openclaw_solution(
+    prepared_task: dict[str, Any],
+    save_subdir: str,
+    file_prefix: str,
+) -> dict[str, Any]:
+    """Verify that the OpenClaw output actually addresses the task requirements.
+
+    Uses OpenClaw to evaluate. On FAIL, writes feedback to
+    docs/agents/verification-feedback/<task_id>.txt for the next iteration.
+    """
+    task_id = _safe_task_id(prepared_task)
+    if not task_id:
+        return {"success": False, "summary": "missing task.id"}
+
+    task = (prepared_task or {}).get("task") or {}
+    title = str(task.get("task") or "").strip() or "Untitled"
+    details = str(task.get("details") or "").strip()
+
+    note_dir = _note_dir_for_subdir(save_subdir)
+    note_path = note_dir / f"{file_prefix}-{task_id}.md"
+    if not note_path.exists():
+        return {"success": False, "summary": f"note not found: {note_path}"}
+
+    content = note_path.read_text(encoding="utf-8")
+    # Skip metadata header for verification
+    body_start = content.find("---")
+    body = content[body_start + 3:].strip() if body_start != -1 else content.strip()
+
+    # Check for stored feedback (from previous failed verification)
+    feedback_dir = root / "docs" / "agents" / "verification-feedback"
+    feedback_dir.mkdir(parents=True, exist_ok=True)
+    prev_feedback_path = feedback_dir / f"{task_id}.txt"
+    prev_feedback = prev_feedback_path.read_text(encoding="utf-8").strip() if prev_feedback_path.exists() else None
+
+    try:
+        from app.services.openclaw_client import verify_solution_against_task
+        passed, reason = verify_solution_against_task(
+            title, details, body,
+            task_id=task_id,
+            previous_feedback=prev_feedback,
+        )
+    except Exception as e:
+        logger.warning("verify_solution_against_task failed task_id=%s: %s", task_id, e)
+        return {"success": False, "summary": f"verification error: {e}"}
+
+    if passed:
+        return {"success": True, "summary": f"Solution verified: {reason or 'addresses task requirements'}"}
+
+    # FAIL: write feedback for next iteration
+    try:
+        (feedback_dir / f"{task_id}.txt").write_text(reason or "Output does not address task requirements", encoding="utf-8")
+    except Exception as e:
+        logger.warning("Could not write verification feedback for task %s: %s", task_id, e)
+
+    return {
+        "success": False,
+        "summary": f"Solution does not address requirements: {reason}",
+        "verification_feedback": reason,
+    }
+
+
+def _make_openclaw_verifier(save_subdir: str, file_prefix: str) -> CallbackFn:
+    """Factory: return a verify_solution callback for OpenClaw-generated notes."""
+    def _verify(prepared_task: dict[str, Any]) -> dict[str, Any]:
+        return _verify_openclaw_solution(prepared_task, save_subdir, file_prefix)
+    return _verify
 
 
 def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
@@ -845,6 +1107,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 fallback_fn=apply_bug_investigation_task,
             ),
             "validate_fn": _make_openclaw_validator("docs/agents/bug-investigations", "notion-bug"),
+            "verify_solution_fn": _make_openclaw_verifier("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
             "selection_reason": f"bug investigation task (Notion Type raw={_task_type_raw!r} normalized={_task_type!r} — explicit match; approval-gated)",
@@ -859,6 +1122,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 fallback_fn=apply_documentation_task,
             ),
             "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
+            "verify_solution_fn": _make_openclaw_verifier("docs/agents/generated-notes", "notion-task"),
             "deploy_fn": None,
             "selection_reason": "documentation task (OpenClaw AI analysis with template fallback)",
         }
@@ -872,6 +1136,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 fallback_fn=apply_monitoring_triage_task,
             ),
             "validate_fn": _make_openclaw_validator("docs/runbooks/triage", "notion-triage"),
+            "verify_solution_fn": _make_openclaw_verifier("docs/runbooks/triage", "notion-triage"),
             "deploy_fn": None,
             "selection_reason": "monitoring triage task (OpenClaw AI analysis with template fallback)",
         }
@@ -890,6 +1155,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 fallback_fn=apply_bug_investigation_task,
             ),
             "validate_fn": _make_openclaw_validator("docs/agents/bug-investigations", "notion-bug"),
+            "verify_solution_fn": _make_openclaw_verifier("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
             "selection_reason": "bug investigation task (keyword heuristic match; approval-gated)",

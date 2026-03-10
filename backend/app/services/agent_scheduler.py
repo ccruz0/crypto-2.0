@@ -180,6 +180,50 @@ def run_agent_scheduler_cycle(
 
     approval = (prepared_bundle.get("approval") or {})
     approval_required = bool(approval.get("required"))
+    callback_selection = (prepared_bundle.get("callback_selection") or {})
+    manual_only = bool(callback_selection.get("manual_only"))
+
+    # Extended lifecycle (manual_only): skip legacy pre-execution approval.
+    # The first human approval comes after investigation completes via
+    # send_investigation_complete_approval; the second before deploy via
+    # send_patch_deploy_approval. This reduces approval fatigue.
+    if manual_only and approval_required:
+        logger.info(
+            "agent_scheduler: manual_only task — running execution directly "
+            "(first approval at investigation-complete) task_id=%s",
+            task_id,
+        )
+        try:
+            from app.services.agent_task_executor import execute_prepared_task_if_approved
+            result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+            _log_event(
+                "scheduler_extended_execution_started",
+                task_id=task_id,
+                task_title=task_title,
+                details={
+                    "execution_result_success": result.get("execution_result", {}).get("success"),
+                    "final_status": result.get("execution_result", {}).get("final_status"),
+                },
+            )
+            return {
+                "ok": True,
+                "action": "extended_execution_started",
+                "task_id": task_id,
+                "task_title": task_title,
+                "execution_result": result.get("execution_result"),
+                "reason": "manual_only: first approval at investigation-complete",
+            }
+        except Exception as e:
+            logger.exception("agent_scheduler: execute_prepared_task_if_approved failed (manual_only)")
+            _log_event("scheduler_cycle_failed", task_id=task_id, task_title=task_title, details={"reason": "extended execution failed", "error": str(e)})
+            return {
+                "ok": False,
+                "action": "extended_execution_started",
+                "task_id": task_id,
+                "task_title": task_title,
+                "reason": "extended execution failed",
+                "error": str(e),
+            }
 
     if approval_required:
         try:
@@ -449,6 +493,19 @@ async def start_agent_scheduler_loop() -> None:
                 )
         except Exception as e:
             logger.error("agent_scheduler_loop: continue_ready_for_patch_tasks raised %s", e, exc_info=True)
+
+        try:
+            from app.services.agent_recovery import run_recovery_cycle
+            recovery_results = await loop.run_in_executor(None, run_recovery_cycle)
+            if recovery_results:
+                logger.info(
+                    "recovery_cycle_done count=%d advanced=%d blocked=%d",
+                    len(recovery_results),
+                    sum(1 for r in recovery_results if r.get("advanced")),
+                    sum(1 for r in recovery_results if r.get("blocked")),
+                )
+        except Exception as e:
+            logger.error("agent_scheduler_loop: run_recovery_cycle raised %s", e, exc_info=True)
 
         try:
             from app.services.agent_anomaly_detector import run_anomaly_detection_cycle

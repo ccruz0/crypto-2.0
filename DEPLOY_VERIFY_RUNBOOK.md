@@ -3,7 +3,7 @@
 ## Section 0 — What you're doing
 
 - **Purpose**: Deploy defensive fixes to AWS backend-aws and verify `/api/dashboard/state` returns real Crypto.com portfolio data with reconcile debug enabled
-- **Instance**: `i-08726dc37133b2454` (AWS EC2 via SSM port-forward)
+- **Instance**: `i-087953603011543c5` (AWS EC2 via SSM port-forward)
 - **Key endpoints**: `/api/health`, `/api/dashboard/state`
 - **Success criteria**: Endpoint returns 200, `portfolio_value_source` starts with `"exchange:"`, `portfolio.reconcile.chosen` exists
 
@@ -29,7 +29,7 @@ lsof -nP -iTCP:8002 -sTCP:LISTEN || echo "Port 8002 is free"
 ```bash
 cd ~/automated-trading-platform
 aws ssm start-session \
-  --target i-08726dc37133b2454 \
+  --target i-087953603011543c5 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters '{"host":["127.0.0.1"],"portNumber":["8002"],"localPortNumber":["8002"]}'
 ```
@@ -54,7 +54,7 @@ curl -sS http://localhost:8002/api/dashboard/state | head -120
 
 ```bash
 cd ~/automated-trading-platform
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 ```
 
 ### B) Inside the SSM shell
@@ -160,7 +160,7 @@ aws --version
 which session-manager-plugin || echo "Plugin not found"
 session-manager-plugin || echo "Plugin not installed"
 # If missing, install: curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac_arm64/session-manager-plugin.pkg" -o "/tmp/session-manager-plugin.pkg" && sudo installer -pkg /tmp/session-manager-plugin.pkg -target /
-# Verify IAM permissions: SSM Session Manager access for instance i-08726dc37133b2454
+# Verify IAM permissions: SSM Session Manager access for instance i-087953603011543c5
 ```
 
 ### 3) AWS backend-aws not updating / still old image

@@ -181,6 +181,8 @@ ssh_cmd "$HOST" << 'ENDSSH'
     
     export COMPOSE_PROFILES=aws
     
+    mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true
+    
     echo "Stopping existing services..."
     docker compose --profile aws down || true
     

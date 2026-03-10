@@ -15,8 +15,12 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
+
+_CORRELATION_RETRY_ATTEMPTS = 5
+_CORRELATION_RETRY_DELAY_SEC = 3
 
 from fastapi import APIRouter, Header, Request, Response
 
@@ -114,10 +118,23 @@ def _handle_workflow_run(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "ignored": True, "reason": f"workflow '{workflow_name}' not deploy target"}
 
     task_id = _resolve_task_id()
+    attempt = 0
+    while not task_id and attempt < _CORRELATION_RETRY_ATTEMPTS:
+        attempt += 1
+        logger.info(
+            "github_webhook: no deploying task found, retrying correlation attempt %d/%d",
+            attempt, _CORRELATION_RETRY_ATTEMPTS,
+        )
+        time.sleep(_CORRELATION_RETRY_DELAY_SEC)
+        task_id = _resolve_task_id()
+        if task_id:
+            logger.info("github_webhook: matched deploying task on retry attempt %d", attempt)
+            break
+
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if not task_id:
-        logger.info("github_webhook: no matching deploying task, ignoring")
+        logger.info("github_webhook: correlation failed after %d attempts, ignoring", _CORRELATION_RETRY_ATTEMPTS)
         return {"ok": True, "ignored": True, "reason": "no deploying task found"}
 
     logger.info(

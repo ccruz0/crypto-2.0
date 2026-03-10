@@ -34,8 +34,19 @@ This directory exists so agents can understand the system, know what not to brea
 | [**agent-activity-log.md**](agent-activity-log.md) | Structured agent activity log (JSONL); event types, schema, and how to read it. |
 | [**versioning-flow.md**](versioning-flow.md) | Version proposal → approval → release traceability across Notion, Telegram, activity logs, and changelog. |
 | [**agent-scheduler.md**](agent-scheduler.md) | Scheduler cycle: one task per run; approval request or low-risk auto-execution; in-flight skip; recommended cron. |
+| [**cursor-bridge/README.md**](cursor-bridge/README.md) | Cursor Execution Bridge: staging workspace, Cursor CLI invocation, diff capture, tests, Notion ingestion, PR creation. |
 | [**notion-connection-check.md**](notion-connection-check.md) | Operational script to verify Notion connectivity (env, database metadata read, database query). |
 | **README.md** (this file) | Overview of the agents directory and pointer to the rest of `/docs`. |
+
+### Notion AI Task System — schema and prompts
+
+| Document | Use |
+|----------|-----|
+| [**notion-ai-task-system-schema.md**](notion-ai-task-system-schema.md) | All properties the backend reads/writes on the AI Task System database; names, types, status values. |
+| [**notion-task-fields-mapping.md**](notion-task-fields-mapping.md) | Mapping from form fields (Task Title, Description, Objective, etc.) to Notion properties and backend keys. |
+| [**notion-test-status-property.md**](notion-test-status-property.md) | Test Status property: why it matters, setup, and deploy gate fallback. |
+| [**notion-deploy-progress.md**](notion-deploy-progress.md) | Deploy Progress (0–100) for progress bar in Notion during deploy and smoke check. |
+| [**CHATGPT_NOTION_PROMPT_STRUCTURE.md**](CHATGPT_NOTION_PROMPT_STRUCTURE.md) | **Estructura de prompts para Notion:** instrucciones para ChatGPT (u otro LLM) para generar prompts que creen propiedades en la base AI Task System con nombres exactos y tipos correctos. Incluye formato, tipos de Notion, lista de propiedades del backend y ejemplo listo para copiar. |
 
 **Recommended first read for any agent:** [System map](../architecture/system-map.md) (components, APIs, data flow, dependencies), then [context.md](context.md).
 

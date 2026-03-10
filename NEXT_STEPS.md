@@ -14,7 +14,7 @@
 **Action**: Allow SSH access to your EC2 instance
 
 1. Go to **AWS Console** → **EC2** → **Security Groups**
-2. Find the security group attached to instance `i-08726dc37133b2454`
+2. Find the security group attached to instance `i-087953603011543c5`
 3. Click **Edit Inbound Rules**
 4. Add/Edit SSH rule:
    - **Type**: SSH
@@ -37,7 +37,7 @@ curl ifconfig.me
 **Action**: Check AWS Console
 
 1. Go to **AWS Console** → **EC2** → **Instances**
-2. Find instance `i-08726dc37133b2454`
+2. Find instance `i-087953603011543c5`
 3. Verify status is **"Running"**
 4. Note the **Public IPv4 address** (should be `47.130.143.159` or similar)
 

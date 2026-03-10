@@ -25,7 +25,7 @@ This runbook guides you through connecting to your EC2 instance via AWS Systems 
    - Click "Instances" in the left sidebar
 
 3. **Find Your Instance**
-   - Look for instance ID: `i-08726dc37133b2454` (or your instance ID)
+   - Look for instance ID: `i-087953603011543c5` (or your instance ID)
    - Verify instance state is "Running"
 
 4. **Connect via Session Manager**
@@ -417,7 +417,7 @@ Inbound timeouts can be caused by:
 
 ```bash
 # Set variables
-INSTANCE_ID="i-08726dc37133b2454"  # Replace with your instance ID
+INSTANCE_ID="i-087953603011543c5"  # Replace with your instance ID
 REGION="ap-southeast-1"  # Replace with your region
 MY_IP="185.250.39.133"  # Replace with your Mac's public IP
 

@@ -12,7 +12,7 @@ Make Portfolio "Total Value" match Crypto.com Exchange UI "Wallet Balance (after
 ```bash
 cd ~/automated-trading-platform
 aws ssm start-session \
-  --target i-08726dc37133b2454 \
+  --target i-087953603011543c5 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters '{"host":["127.0.0.1"],"portNumber":["8002"],"localPortNumber":["8002"]}'
 ```
@@ -65,7 +65,7 @@ Look at `summary.txt` or `reconcile_diagnostics.json` for fields that likely mat
 
 ```bash
 cd ~/automated-trading-platform
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 ```
 
 **Inside SSM shell:**

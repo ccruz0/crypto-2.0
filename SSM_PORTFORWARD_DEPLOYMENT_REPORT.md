@@ -6,13 +6,13 @@
 ## Phase 1: Port-Forward Target Verification
 
 ### Instance and Port Configuration
-- **EC2 Instance ID:** `i-08726dc37133b2454`
+- **EC2 Instance ID:** `i-087953603011543c5`
 - **Region:** `ap-southeast-1`
 - **Port-Forward:** `localhost:8002` → EC2 instance port `8002`
 - **SSM Command:**
   ```bash
   aws ssm start-session \
-    --target i-08726dc37133b2454 \
+    --target i-087953603011543c5 \
     --document-name AWS-StartPortForwardingSessionToRemoteHost \
     --parameters '{"host":["127.0.0.1"],"portNumber":["8002"],"localPortNumber":["8002"]}'
   ```
@@ -75,7 +75,7 @@ curl -sS "http://localhost:8002/api/portfolio/snapshot?exchange=CRYPTO_COM" | py
 
 # Check backend logs (via SSM)
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["docker compose --profile aws logs --tail=50 backend-aws"]' \
   --query 'Command.CommandId' --output text

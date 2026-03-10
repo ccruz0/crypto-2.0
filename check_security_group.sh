@@ -4,7 +4,7 @@
 
 set -e
 
-INSTANCE_ID="${1:-i-08726dc37133b2454}"  # Default from deploy workflow
+INSTANCE_ID="${1:-i-087953603011543c5}"  # Default from deploy workflow
 MY_IP="${2:-$(curl -s https://api.ipify.org)}"  # Auto-detect if not provided
 
 echo "========================================="

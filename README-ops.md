@@ -698,7 +698,7 @@ cd /Users/carloscruz/automated-trading-platform
 
 # Check backend status via SSM
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=20 backend-aws"]' \

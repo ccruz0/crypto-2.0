@@ -1,0 +1,28 @@
+---
+description: When the user wants Cursor to run fixes from a triage note, read the triage and execute the action steps.
+globs:
+  - "docs/runbooks/triage/**"
+  - "docs/runbooks/*.md"
+---
+
+# Run fixes from triage notes
+
+When the user asks to **pick the triage and run the changes** (or similar: "run the triage", "execute the triage", "apply the fix from triage"):
+
+1. **Find the triage note(s)**  
+   List or read `docs/runbooks/triage/notion-triage-*.md` (and `docs/runbooks/triage/README.md` for the index). Prefer the most recent or the one the user referred to (e.g. "Investigate Telegram failure").
+
+2. **Read the "Cursor: run these steps" section**  
+   Each triage note can contain an **actionable fix** block (e.g. "## Cursor: run these steps (actionable fix)"). Follow those steps in order. If the note only has placeholders (symptoms, impact), use the **Relevant runbooks** links and run the primary runbook’s diagnostic and fix steps.
+
+3. **Execute the steps**  
+   - Run the suggested scripts from repo root (e.g. `./scripts/diag/run_telegram_diagnostic_prod.sh`).  
+   - Apply config/env fixes as specified (env vars, permissions, DB settings).  
+   - Restart services only when the triage or runbook says to (e.g. backend after changing `secrets/runtime.env`).  
+   - Re-run the diagnostic after fixes and report the result.
+
+4. **Do not**  
+   - Change trading/order lifecycle logic when the triage is monitoring/Telegram-only.  
+   - Skip the diagnostic; always run it (or the runbook equivalent) to confirm the cause before applying fixes.
+
+Reference: `docs/runbooks/TELEGRAM_ALERTS_NOT_SENT.md` for Telegram; other runbooks in `docs/runbooks/` for different incident types.

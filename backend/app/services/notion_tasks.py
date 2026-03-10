@@ -53,6 +53,7 @@ TASK_STATUS_DEPLOYING = "deploying"
 TASK_STATUS_DONE = "done"
 TASK_STATUS_REJECTED = "rejected"
 TASK_STATUS_BLOCKED = "blocked"
+TASK_STATUS_NEEDS_REVISION = "needs-revision"
 
 # Legacy statuses kept for backward compatibility
 TASK_STATUS_PLANNED = "planned"
@@ -73,6 +74,7 @@ ALLOWED_TASK_STATUSES = (
     TASK_STATUS_DONE,
     TASK_STATUS_REJECTED,
     TASK_STATUS_BLOCKED,
+    TASK_STATUS_NEEDS_REVISION,
     # Legacy
     TASK_STATUS_PLANNED,
     TASK_STATUS_IN_PROGRESS,
@@ -83,6 +85,8 @@ ALLOWED_TASK_STATUSES = (
 TERMINAL_STATUSES = (TASK_STATUS_DONE, TASK_STATUS_DEPLOYED, TASK_STATUS_REJECTED)
 
 # Extended lifecycle: ordered forward transitions
+# needs-revision is a back-loop: patching -> needs-revision (when verify fails)
+# needs-revision -> investigating (when user approves re-investigate)
 EXTENDED_LIFECYCLE_TRANSITIONS: dict[str, str] = {
     "backlog": "ready-for-investigation",
     "ready-for-investigation": "investigating",
@@ -90,6 +94,7 @@ EXTENDED_LIFECYCLE_TRANSITIONS: dict[str, str] = {
     "investigation-complete": "ready-for-patch",
     "ready-for-patch": "patching",
     "patching": "testing",
+    "needs-revision": "investigating",
     "testing": "awaiting-deploy-approval",
     "awaiting-deploy-approval": "deploying",
     "deploying": "done",
@@ -123,6 +128,10 @@ TASK_METADATA_PROPERTY_MAP: dict[str, str] = {
     "deploy_approval": "Deploy Approval",
     "final_result": "Final Result",
 }
+
+# Deploy progress: Number property (0-100) shown as progress bar in Notion.
+# Add a "Number" property named exactly this in your task database; set display to "Progress" for a bar.
+DEPLOY_PROGRESS_PROPERTY = "Deploy Progress"
 
 # Versioning metadata fields (best-effort; optional in Notion DB schema)
 VERSION_STATUS_VALUES = ("proposed", "approved", "released", "rejected")
@@ -754,6 +763,52 @@ def update_notion_task_status(
         )
 
     return True
+
+
+def update_notion_deploy_progress(page_id: str, percent: int | float) -> bool:
+    """
+    Set the "Deploy Progress" number property (0-100) on a Notion task page.
+
+    Use this while a task is in "deploying" to show a completion bar in Notion.
+    Add a Number property named "Deploy Progress" (0-100) to your task database;
+    in Notion you can set its display to "Progress" for a bar.
+
+    Best-effort: if the property does not exist or the API fails, returns False
+    and never raises.
+    """
+    normalized_page_id = (page_id or "").strip()
+    if not normalized_page_id:
+        return False
+    value = max(0, min(100, int(percent) if isinstance(percent, (int, float)) else 0))
+    api_key, _ = _get_config()
+    if not api_key:
+        return False
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    payload: dict[str, Any] = {
+        "properties": {DEPLOY_PROGRESS_PROPERTY: {"number": value}},
+    }
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.patch(
+                f"{NOTION_API_BASE}/pages/{normalized_page_id}",
+                json=payload,
+                headers=headers,
+            )
+        if r.status_code == 200:
+            logger.debug("Notion deploy progress updated page_id=%s percent=%s", normalized_page_id, value)
+            return True
+        logger.info(
+            "Notion deploy progress skipped page_id=%s percent=%s http=%d (add %s Number 0-100 to DB for progress bar)",
+            normalized_page_id, value, r.status_code, DEPLOY_PROGRESS_PROPERTY,
+        )
+        return False
+    except Exception as e:
+        logger.debug("Notion deploy progress failed page_id=%s err=%s", normalized_page_id, e)
+        return False
 
 
 def update_notion_task_version_metadata(

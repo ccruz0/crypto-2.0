@@ -21,7 +21,7 @@ cd ~/automated-trading-platform
 
 1. **SSH/SSM into AWS instance**:
    ```bash
-   aws ssm start-session --target i-08726dc37133b2454
+   aws ssm start-session --target i-087953603011543c5
    ```
 
 2. **On AWS instance**:
@@ -42,7 +42,7 @@ cd ~/automated-trading-platform
 ### 1. Start SSM Port-Forward (if not active)
 ```bash
 aws ssm start-session \
-  --target i-08726dc37133b2454 \
+  --target i-087953603011543c5 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
   --parameters '{"host":["127.0.0.1"],"portNumber":["8002"],"localPortNumber":["8002"]}'
 ```

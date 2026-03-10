@@ -20,6 +20,12 @@ Health checks reuse existing infrastructure:
 
 No side effects on trading, exchange, or deployment systems beyond
 Notion status updates and activity logging.
+
+Env vars:
+    SMOKE_CHECK_SYSTEM_HEALTH_RETRIES — retries for system_health when FAIL (default 3).
+    SMOKE_CHECK_SYSTEM_HEALTH_RETRY_DELAY_S — delay between retries (default 30).
+    When system_health fails (e.g. signal_monitor not running yet), retries allow
+    subsystems to become ready after deploy restart.
 """
 
 from __future__ import annotations
@@ -45,6 +51,9 @@ SMOKE_CHECK_RETRIES = 12
 SMOKE_CHECK_RETRY_DELAY_S = 15
 # Backend healthcheck has start_period 180s; wait before first attempt so deploy has time to restart
 SMOKE_CHECK_INITIAL_DELAY_S = 120
+# Retries for system_health when FAIL (handles signal_monitor/market_updater startup timing)
+SMOKE_CHECK_SYSTEM_HEALTH_RETRIES = 3
+SMOKE_CHECK_SYSTEM_HEALTH_RETRY_DELAY_S = 30
 
 
 def _health_base_url() -> str:
@@ -109,6 +118,45 @@ def check_endpoint(
         }
 
 
+def _component_reason(key: str, val: dict[str, Any]) -> str:
+    """Build a human-readable reason for a failed health component."""
+    status = str(val.get("status", "")).lower()
+    if key == "signal_monitor":
+        is_running = val.get("is_running")
+        age = val.get("last_cycle_age_minutes")
+        if not is_running:
+            return "not running"
+        if age is None:
+            return "no cycle yet (startup)"
+        if isinstance(age, (int, float)) and age > 30:
+            return f"last cycle {age:.0f}min ago (stale)"
+        return f"status={status}"
+    if key == "market_updater":
+        is_running = val.get("is_running")
+        age = val.get("last_heartbeat_age_minutes")
+        if not is_running:
+            return f"not running (data age {age}min)" if age is not None else "not running"
+        return f"status={status}"
+    if key == "market_data":
+        fresh = val.get("fresh_symbols", 0)
+        stale = val.get("stale_symbols", 0)
+        return f"fresh={fresh} stale={stale}"
+    if key == "telegram":
+        enabled = val.get("enabled")
+        run_env = val.get("run_telegram_env")
+        if not run_env:
+            return "disabled by env"
+        if not enabled:
+            return "config missing or kill switch"
+        return f"status={status}"
+    if key == "trade_system":
+        table = val.get("order_intents_table_exists")
+        if table is False:
+            return "order_intents table missing"
+        return f"status={status}"
+    return f"status={status}"
+
+
 def check_system_health(
     base_url: str | None = None,
     *,
@@ -117,7 +165,8 @@ def check_system_health(
     """Call ``/api/health/system`` and verify global_status is not FAIL.
 
     Returns ``{"ok": bool, "label": str, "global_status": str,
-    "failed_components": list[str], "detail": str}``.
+    "failed_components": list[str], "component_reasons": dict[str, str], "detail": str}``.
+    Excludes global_status from failed_components (it is the aggregate).
     """
     base = (base_url or _health_base_url()).rstrip("/")
     url = f"{base}/api/health/system"
@@ -131,25 +180,36 @@ def check_system_health(
                 "label": "system_health",
                 "global_status": "HTTP_ERROR",
                 "failed_components": [],
+                "component_reasons": {},
                 "detail": f"system_health: HTTP {resp.status_code} ({latency_ms:.0f}ms)",
             }
         body = resp.json() if resp.status_code < 400 else {}
         global_status = str(body.get("global_status", "UNKNOWN")).upper()
-        failed = []
+        failed: list[str] = []
+        reasons: dict[str, str] = {}
+        skip_keys = {"global_status", "timestamp", "db_status"}
         for key, val in body.items():
-            if isinstance(val, dict) and str(val.get("status", "")).lower() in ("down", "fail", "error"):
-                failed.append(key)
+            if key in skip_keys:
+                continue
+            if isinstance(val, dict):
+                comp_status = str(val.get("status", "")).lower()
+                if comp_status in ("down", "fail", "error"):
+                    failed.append(key)
+                    reasons[key] = _component_reason(key, val)
             elif isinstance(val, str) and val.lower() in ("down", "fail"):
                 failed.append(key)
+                reasons[key] = val
         ok = global_status != "FAIL" and resp.status_code < 400
         detail = f"system_health: {global_status} ({latency_ms:.0f}ms)"
         if failed:
-            detail += f" — degraded: {', '.join(failed)}"
+            parts = [f"{k}: {reasons.get(k, 'fail')}" for k in failed]
+            detail += f"\n  " + "\n  ".join(parts)
         return {
             "ok": ok,
             "label": "system_health",
             "global_status": global_status,
             "failed_components": failed,
+            "component_reasons": reasons,
             "detail": detail,
         }
     except httpx.TimeoutException:
@@ -158,6 +218,7 @@ def check_system_health(
             "label": "system_health",
             "global_status": "TIMEOUT",
             "failed_components": [],
+            "component_reasons": {},
             "detail": f"system_health: timeout after {timeout_s}s",
         }
     except Exception as exc:
@@ -166,6 +227,7 @@ def check_system_health(
             "label": "system_health",
             "global_status": "ERROR",
             "failed_components": [],
+            "component_reasons": {},
             "detail": f"system_health: {type(exc).__name__}: {exc}",
         }
 
@@ -178,6 +240,17 @@ SMOKE_PASSED = "passed"
 SMOKE_FAILED = "failed"
 
 
+def _notion_deploy_progress(task_id: str | None, percent: int) -> None:
+    """Update Notion Deploy Progress (0-100) for task_id if provided. No-op on failure."""
+    if not (task_id or "").strip():
+        return
+    try:
+        from app.services.notion_tasks import update_notion_deploy_progress
+        update_notion_deploy_progress(task_id.strip(), percent)
+    except Exception:
+        pass
+
+
 def run_smoke_check(
     *,
     base_url: str | None = None,
@@ -187,6 +260,7 @@ def run_smoke_check(
     include_system_health: bool = True,
     timeout_s: float = SMOKE_CHECK_TIMEOUT_S,
     initial_delay_s: float | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Run the post-deploy smoke-check suite.
 
@@ -208,6 +282,8 @@ def run_smoke_check(
     initial_delay_s:
         Seconds to wait before first liveness attempt (for post-deploy: backend needs ~90s to become healthy).
         Defaults to SMOKE_CHECK_INITIAL_DELAY_S if None.
+    task_id:
+        Optional Notion task ID; when set, Deploy Progress (0-100) is updated at each milestone for a progress bar in Notion.
 
     Returns
     -------
@@ -222,10 +298,13 @@ def run_smoke_check(
     checks: list[dict[str, Any]] = []
     t_start = time.monotonic()
 
+    _notion_deploy_progress(task_id, 30)
+
     delay = initial_delay_s if initial_delay_s is not None else SMOKE_CHECK_INITIAL_DELAY_S
     if delay > 0:
         logger.info("smoke_check: waiting %.0fs for backend to become healthy (post-deploy)", delay)
         time.sleep(delay)
+    _notion_deploy_progress(task_id, 35)
 
     # --- 1. Liveness: /ping_fast (lightweight, same as Docker healthcheck) ---
     liveness_url = f"{base}/ping_fast"
@@ -244,8 +323,11 @@ def run_smoke_check(
             time.sleep(retry_delay_s)
     liveness_result["attempts"] = attempt
     checks.append(liveness_result)
+    if liveness_ok:
+        _notion_deploy_progress(task_id, 55)
 
     if not liveness_ok:
+        _notion_deploy_progress(task_id, 100)
         duration_ms = (time.monotonic() - t_start) * 1000
         summary = f"Smoke check FAILED: liveness check failed after {retries} attempts — {liveness_result['detail']}"
         logger.warning("smoke_check: %s", summary)
@@ -257,11 +339,24 @@ def run_smoke_check(
             "duration_ms": round(duration_ms, 1),
         }
 
-    # --- 2. System health (optional deep check) ---
+    # --- 2. System health (optional deep check, with retries for startup timing) ---
     if include_system_health:
-        sys_result = check_system_health(base, timeout_s=timeout_s)
+        sys_retries = int(os.environ.get("SMOKE_CHECK_SYSTEM_HEALTH_RETRIES", str(SMOKE_CHECK_SYSTEM_HEALTH_RETRIES)))
+        sys_retry_delay = float(os.environ.get("SMOKE_CHECK_SYSTEM_HEALTH_RETRY_DELAY_S", str(SMOKE_CHECK_SYSTEM_HEALTH_RETRY_DELAY_S)))
+        sys_result: dict[str, Any] = {}
+        for sys_attempt in range(1, sys_retries + 1):
+            sys_result = check_system_health(base, timeout_s=timeout_s)
+            if sys_result["ok"]:
+                break
+            if sys_attempt < sys_retries:
+                logger.info(
+                    "smoke_check: system_health attempt %d/%d failed (may be startup timing), retrying in %.0fs — %s",
+                    sys_attempt, sys_retries, sys_retry_delay, sys_result.get("detail", "")[:120],
+                )
+                time.sleep(sys_retry_delay)
         checks.append(sys_result)
         if not sys_result["ok"]:
+            _notion_deploy_progress(task_id, 100)
             duration_ms = (time.monotonic() - t_start) * 1000
             summary = f"Smoke check FAILED: {sys_result['detail']}"
             logger.warning("smoke_check: %s", summary)
@@ -272,6 +367,7 @@ def run_smoke_check(
                 "summary": summary,
                 "duration_ms": round(duration_ms, 1),
             }
+        _notion_deploy_progress(task_id, 85)
 
     # --- 3. Extra endpoints ---
     for ep in extra_endpoints or []:
@@ -282,6 +378,7 @@ def run_smoke_check(
         ep_result = check_endpoint(ep_url, label=ep_label, timeout_s=timeout_s)
         checks.append(ep_result)
         if not ep_result["ok"]:
+            _notion_deploy_progress(task_id, 100)
             duration_ms = (time.monotonic() - t_start) * 1000
             summary = f"Smoke check FAILED: {ep_result['detail']}"
             logger.warning("smoke_check: %s", summary)
@@ -294,6 +391,7 @@ def run_smoke_check(
             }
 
     # --- All passed ---
+    _notion_deploy_progress(task_id, 100)
     duration_ms = (time.monotonic() - t_start) * 1000
     n = len(checks)
     summary = f"Smoke check PASSED: {n} check{'s' if n != 1 else ''} OK ({duration_ms:.0f}ms)"
@@ -461,6 +559,7 @@ def run_and_record_smoke_check(
         retries=retries,
         retry_delay_s=retry_delay_s,
         include_system_health=include_system_health,
+        task_id=task_id or None,
     )
     recorded = record_smoke_check_result(
         task_id,

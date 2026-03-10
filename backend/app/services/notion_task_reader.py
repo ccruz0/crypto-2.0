@@ -127,15 +127,27 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
             page.get("id", "")[:12],
         )
 
+    # Task title: accept Task, Name, or Task Title (form-style)
+    task_title = (
+        _extract_plain_text(props.get("Task"))
+        or _extract_plain_text(props.get("Name"))
+        or _extract_plain_text(props.get("Task Title"))
+    )
+    # Main description: accept Details or Description (form-style)
+    task_details = (
+        _extract_plain_text(props.get("Details"))
+        or _extract_plain_text(props.get("Description"))
+    )
+
     task = {
         "id": page.get("id", ""),
-        "task": _extract_plain_text(props.get("Task") or props.get("Name")),
+        "task": task_title,
         "project": _extract_plain_text(props.get("Project")),
         "type": parsed_type,
         "status": _extract_plain_text(props.get("Status")),
         "priority": _extract_plain_text(props.get("Priority")),
         "source": _extract_plain_text(props.get("Source")),
-        "details": _extract_plain_text(props.get("Details")),
+        "details": task_details,
         "github_link": _extract_url(props.get("GitHub Link")),
         # Versioning metadata
         "current_version": _prop_text("Current Version", "current_version"),
@@ -153,6 +165,8 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
         "test_status": _prop_text("Test Status", "test_status"),
         "deploy_approval": _prop_text("Deploy Approval", "deploy_approval"),
         "final_result": _prop_text("Final Result", "final_result"),
+        # Notion page metadata (for recovery / staleness checks)
+        "last_edited_time": page.get("last_edited_time") or "",
     }
     return task
 

@@ -2,7 +2,7 @@
 # Check BTC_USD sell alert configuration via AWS SSM
 # Fixed version with better container handling
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 
 echo "Checking BTC_USD sell alert configuration..."

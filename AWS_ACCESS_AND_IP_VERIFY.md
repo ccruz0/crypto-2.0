@@ -40,7 +40,7 @@ cd ~/automated-trading-platform
 ### Access EC2 via AWS SSM Session Manager
 
 1. Go to AWS Console → EC2 → Instances
-2. Find your instance (e.g., `i-08726dc37133b2454`)
+2. Find your instance (e.g., `i-087953603011543c5`)
 3. Click "Connect" → "Session Manager" → "Connect"
 
 ### Run Verification Script on EC2
@@ -111,7 +111,7 @@ Or check the output from `./scripts/verify_local_vs_ec2.sh`
 #### Step 2: Open AWS Console
 
 1. Go to AWS Console → EC2 → Instances
-2. Find your instance (e.g., `i-08726dc37133b2454`)
+2. Find your instance (e.g., `i-087953603011543c5`)
 3. Click on the instance name
 4. Open the "Security" tab
 5. Click on the Security Group link (opens in new tab)
@@ -166,7 +166,7 @@ echo "Your Mac IP: $MY_IP"
 #### Step 2: Get Security Group ID
 
 ```bash
-INSTANCE_ID="i-08726dc37133b2454"  # Replace with your instance ID
+INSTANCE_ID="i-087953603011543c5"  # Replace with your instance ID
 REGION="ap-southeast-1"  # Replace with your region if different
 
 SG_ID=$(aws ec2 describe-instances \
@@ -428,7 +428,7 @@ curl -m 5 -v http://localhost:8002/api/health
 ```
 
 ### AWS Resources
-- EC2 Instance ID: `i-08726dc37133b2454` (example - verify yours)
+- EC2 Instance ID: `i-087953603011543c5` (example - verify yours)
 - Region: `ap-southeast-1` (example - verify yours)
 - Security Group: Check in AWS Console → EC2 → Instances → Your Instance → Security tab
 

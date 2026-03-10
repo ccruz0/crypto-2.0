@@ -71,7 +71,7 @@
 ### Security Group Details:
 - **Security Group ID**: `<FILL_IN>`
 - **Region**: `ap-southeast-1`
-- **Instance ID**: `i-08726dc37133b2454`
+- **Instance ID**: `i-087953603011543c5`
 
 ---
 
@@ -127,7 +127,7 @@ curl -s https://api.ipify.org
 curl -m 5 -v http://<EC2_PUBLIC_IP>:8002/api/health
 
 # Check Security Group (requires AWS CLI)
-./check_security_group.sh i-08726dc37133b2454 <MY_IP>
+./check_security_group.sh i-087953603011543c5 <MY_IP>
 ```
 
 

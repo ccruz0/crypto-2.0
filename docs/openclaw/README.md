@@ -66,6 +66,10 @@ When the container runs behind a reverse proxy (e.g. `https://dashboard.hilovivo
 
 ---
 
+## Research → ATP improvements
+
+**[ATP_IMPROVEMENTS_FROM_RESEARCH.md](ATP_IMPROVEMENTS_FROM_RESEARCH.md)** — Maps OpenClaw’s web-search research (FastAPI, WebSockets, Notion, deployment) to the current codebase: what’s already done, what’s next (e.g. optional `/ws/prices` for the dashboard, resource limits, Notion AI agents later).
+
 ## Architecture
 
 | Doc | Purpose |

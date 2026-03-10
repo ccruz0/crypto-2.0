@@ -60,7 +60,7 @@ Once SSH works:
 If you can't configure SSH:
 ```bash
 # Connect via Session Manager (interactive only)
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 
 # Then manually deploy files (see DEPLOYMENT_SUMMARY.md)
 ```

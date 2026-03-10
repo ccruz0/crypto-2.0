@@ -20,7 +20,7 @@
 - **Output Format:** Clear status messages
 
 ### 4. Configuration
-- **Instance ID:** `i-08726dc37133b2454` ✅
+- **Instance ID:** `i-087953603011543c5` ✅
 - **Region:** `ap-southeast-1` ✅
 - **Query:** Checks BTC_USD watchlist item configuration ✅
 

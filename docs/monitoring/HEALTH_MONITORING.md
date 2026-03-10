@@ -240,6 +240,14 @@ jobs:
 
 ---
 
+## When you receive an ATP Health Alert (Telegram)
+
+If you get a message like **"🔄 ATP Health Alert"** with `Rule: streak_fail_3` and snapshot lines (`verify_label`, `market_data`, `market_updater`, `global_status`), see the dedicated runbook:
+
+- **[ATP_HEALTH_ALERT_STREAK_FAIL.md](../runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md)** — What each field means, quick diagnostics (backend reachable? market-updater running?), and full fix via [EC2_FIX_MARKET_DATA_NOW.md](../runbooks/EC2_FIX_MARKET_DATA_NOW.md).
+
+---
+
 ## Integration with Telegram
 
 If Telegram is enabled, you can send alerts to the configured channel:

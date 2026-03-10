@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Optional pre-commit hook: fail if any staged file contains plaintext token assignment.
+# Deprecated: TELEGRAM_BOT_TOKEN= (plaintext) must not be committed; use TELEGRAM_BOT_TOKEN_ENCRYPTED.
+#
+# Install from repo root:
+#   cp scripts/git-hooks/pre-commit-telegram-guard .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# Or append to existing .git/hooks/pre-commit:
+#   bash scripts/git-hooks/pre-commit-telegram-guard || exit 1
+
+set -e
+# Pattern for plaintext token assignment (do not commit)
+_P="TELEGRAM_"; _P="${_P}BOT_TOKEN="
+if git diff --cached -U0 | grep -qE "^\+.*${_P}"; then
+  echo "pre-commit: plaintext token assignment detected in staged changes. Use TELEGRAM_BOT_TOKEN_ENCRYPTED only." >&2
+  exit 1
+fi
+exit 0

@@ -2,7 +2,7 @@
 # Fetch AWS backend logs via SSM
 # Usage: ./fetch_aws_logs.sh
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 OUTPUT_DIR="$(dirname "$0")"
 
 echo "Fetching backend logs from AWS instance $INSTANCE_ID..."

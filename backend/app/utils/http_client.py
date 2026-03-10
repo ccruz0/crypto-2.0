@@ -65,12 +65,22 @@ except ImportError:
 def is_aws_metadata_reachable(timeout: float = 1.0) -> bool:
     """
     Check if AWS instance metadata (169.254.169.254) is reachable.
-    Uses urllib only inside this module (single allowed place for urllib.request).
+    Uses IMDSv2 (token then GET) so it works when instance has IMDSv2 required.
     """
     try:
         import urllib.request
-        req = urllib.request.Request("http://169.254.169.254/latest/meta-data/", method="GET")
-        urllib.request.urlopen(req, timeout=timeout)
+        token_req = urllib.request.Request(
+            "http://169.254.169.254/latest/api/token",
+            method="PUT",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+        )
+        with urllib.request.urlopen(token_req, timeout=timeout) as r:
+            token = r.read().decode().strip()
+        meta_req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/",
+            headers={"X-aws-ec2-metadata-token": token},
+        )
+        urllib.request.urlopen(meta_req, timeout=timeout)
         return True
     except Exception:
         return False

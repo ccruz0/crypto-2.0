@@ -26,7 +26,7 @@ Si el backend no se reinició automáticamente, ejecuta estos comandos en el ser
 
 ```bash
 # Opción 1: Usar SSM Session Manager
-aws ssm start-session --target i-08726dc37133b2454 --region ap-southeast-1
+aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # Una vez conectado:
 cd /home/ubuntu/automated-trading-platform

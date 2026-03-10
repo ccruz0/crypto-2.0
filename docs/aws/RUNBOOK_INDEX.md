@@ -14,11 +14,13 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [CURSOR_SSH_AWS.md](CURSOR_SSH_AWS.md) | Cómo Cursor (terminal en tu Mac) se conecta por SSH a EC2 para ejecutar código en AWS; ~/.ssh/config, alias, clave .pem. |
 | [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md) | After a deploy or EC2_HOST change; first-deploy checklist; troubleshooting. |
 | [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md) | PROD SSM PingStatus = ConnectionLost: reboot + diagnose. |
+| [PROD_ACCESS_WHEN_SSM_AND_SSH_FAIL.md](PROD_ACCESS_WHEN_SSM_AND_SSH_FAIL.md) | SSM Offline and Instance Connect fails: use **EC2 Serial Console** to start sshd + SSM agent. |
 | [RUNBOOK_SSM_FIX_AND_INJECT_SSH_KEY.md](RUNBOOK_SSM_FIX_AND_INJECT_SSH_KEY.md) | Need SSH to PROD when key is lost; inject key via SSM. |
 | [AWS_BRINGUP_RUNBOOK.md](AWS_BRINGUP_RUNBOOK.md) | Bring-up, verification, and troubleshooting on the instance (copy-paste). |
 | [TELEGRAM_KEY_ROTATION_RUNBOOK.md](TELEGRAM_KEY_ROTATION_RUNBOOK.md) | Rotate Telegram encryption key / token (quarterly or post-compromise). |
 | [AWS_ARCHITECTURE.md](AWS_ARCHITECTURE.md) | Target architecture, roles, SSM, VPC. |
 | [AWS_LIVE_AUDIT.md](AWS_LIVE_AUDIT.md) | Last live audit snapshot; commands to re-run on instances. |
+| [IMDSV2_REQUIRED_RUNBOOK.md](IMDSV2_REQUIRED_RUNBOOK.md) | Clear EC2 “IMDSv2 recommended” warning: enable required + code already uses IMDSv2. |
 
 ---
 

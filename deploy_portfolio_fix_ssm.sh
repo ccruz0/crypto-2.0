@@ -2,7 +2,7 @@
 # Deploy portfolio_cache defensive fix to AWS via SSM
 set -e
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 AWS_REGION="ap-southeast-1"
 
 echo "🚀 Deploying portfolio_cache defensive fix to AWS..."

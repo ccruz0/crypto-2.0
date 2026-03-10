@@ -50,6 +50,11 @@ def get_last_deploy_task_id() -> str:
     return ""
 
 
+def get_recent_deploys(limit: int = 10) -> list[dict[str, str]]:
+    """Return recent deploy dispatches for visibility (task_id, triggered_at, triggered_by)."""
+    return list(_recent_deploys[-limit:]) if limit > 0 else []
+
+
 def _get_config() -> tuple[str, str, str]:
     """Return (token, repo, workflow_file).  Token may be empty."""
     token = (os.environ.get("GITHUB_TOKEN") or "").strip()
@@ -102,6 +107,11 @@ def trigger_deploy_workflow(
         "triggered_at": triggered_at,
     }
 
+    logger.info(
+        "trigger_deploy_workflow: preparing dispatch task_id=%s workflow=%s branch=%s repo=%s token_present=%s",
+        task_id, workflow, target_ref, repo, bool(token),
+    )
+
     if not token:
         msg = (
             "GITHUB_TOKEN is not set — cannot trigger deploy. "
@@ -112,14 +122,14 @@ def trigger_deploy_workflow(
 
     url = f"{_GITHUB_API}/repos/{repo}/actions/workflows/{workflow}/dispatches"
     headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
     }
     payload = {"ref": target_ref}
 
     logger.info(
-        "trigger_deploy_workflow: dispatching repo=%s workflow=%s ref=%s task_id=%s triggered_by=%s",
-        repo, workflow, target_ref, task_id, triggered_by,
+        "trigger_deploy_workflow: POST url=%s payload=%s",
+        url, payload,
     )
 
     try:
@@ -131,6 +141,18 @@ def trigger_deploy_workflow(
         return {**base, "summary": msg, "error": msg}
 
     base["status_code"] = resp.status_code
+    resp_body = (resp.text or "")[:1000]
+
+    logger.info(
+        "trigger_deploy_workflow: github_status=%s response_len=%s response_preview=%s",
+        resp.status_code, len(resp.text or ""), repr(resp_body[:200]) if resp_body else "(empty)",
+    )
+
+    if resp.status_code != 204 and resp_body:
+        logger.error(
+            "trigger_deploy_workflow: dispatch failed status=%s body=%s task_id=%s",
+            resp.status_code, resp_body, task_id,
+        )
 
     if resp.status_code == 204:
         summary = f"Deploy workflow dispatched: {repo}@{target_ref} ({workflow})"
@@ -158,12 +180,7 @@ def trigger_deploy_workflow(
             pass
         return {**base, "ok": True, "summary": summary}
 
-    # Non-204 response
-    body = ""
-    try:
-        body = resp.text[:500]
-    except Exception:
-        pass
-    msg = f"GitHub API returned HTTP {resp.status_code}: {body}"
+    # Non-204 response: log full body for diagnosis
+    msg = f"GitHub API returned HTTP {resp.status_code}: {resp_body}"
     logger.error("trigger_deploy_workflow: %s task_id=%s", msg, task_id)
     return {**base, "summary": msg, "error": msg}

@@ -55,7 +55,7 @@ TELEGRAM_AUTH_USER_ID=839853931" "$ENV_FILE"
 elif command -v aws &> /dev/null; then
     echo "📤 Aplicando fix en AWS via SSM..."
     
-    INSTANCE_ID="i-08726dc37133b2454"
+    INSTANCE_ID="i-087953603011543c5"
     REGION="ap-southeast-1"
     
     aws ssm send-command \

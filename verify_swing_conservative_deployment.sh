@@ -7,7 +7,7 @@ echo "🔍 Verifying Swing Conservative Strategy Update Deployment"
 echo "=========================================================="
 echo ""
 
-INSTANCE_ID="${AWS_INSTANCE_ID:-i-08726dc37133b2454}"
+INSTANCE_ID="${AWS_INSTANCE_ID:-i-087953603011543c5}"
 REGION="${AWS_REGION:-ap-southeast-1}"
 
 # Colors for output

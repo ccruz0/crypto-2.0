@@ -16,8 +16,23 @@
 
 set -euo pipefail
 
-REMOTE_HOST="hilovivo-aws"
 REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+SSH_OPTS=""
+
+# REMOTE_HOST: use env, or SSH alias hilovivo-aws, or ubuntu@<dashboard DNS IP> with atp-rebuild key.
+if [ -n "${REMOTE_HOST:-}" ]; then
+  : # use REMOTE_HOST from env
+elif command -v ssh >/dev/null 2>&1 && ssh -G hilovivo-aws 2>/dev/null | grep -q "^hostname "; then
+  REMOTE_HOST="hilovivo-aws"
+else
+  PROD_IP="$(dig +short dashboard.hilovivo.com A 2>/dev/null | head -1)"
+  if [ -n "$PROD_IP" ]; then
+    REMOTE_HOST="ubuntu@${PROD_IP}"
+    [ -f "$HOME/.ssh/atp-rebuild-2026.pem" ] && SSH_OPTS="-i $HOME/.ssh/atp-rebuild-2026.pem"
+  else
+    REMOTE_HOST="hilovivo-aws"
+  fi
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,7 +55,7 @@ ERRORS=0
 WARNINGS=0
 
 # Run diagnostics on remote server
-ssh "$REMOTE_HOST" "cd $REMOTE_PATH && bash -s" << 'REMOTE_SCRIPT'
+ssh $SSH_OPTS "$REMOTE_HOST" "cd $REMOTE_PATH && bash -s" << 'REMOTE_SCRIPT'
 set -euo pipefail
 
 # Colors (redefined for remote execution)

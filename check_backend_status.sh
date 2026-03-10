@@ -12,7 +12,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # AWS Configuration
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 PROJECT_DIR="/home/ubuntu/automated-trading-platform"
 

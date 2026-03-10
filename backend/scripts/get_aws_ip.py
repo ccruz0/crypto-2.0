@@ -5,26 +5,43 @@ This helps identify which IP needs to be whitelisted in Crypto.com Exchange.
 """
 import requests
 import sys
+from typing import Optional
+
+def _get_metadata_imdsv2(path: str) -> Optional[str]:
+    """IMDSv2: PUT token, then GET path with token (works when IMDSv2 is required)."""
+    try:
+        token_resp = requests.put(
+            "http://169.254.169.254/latest/api/token",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+            timeout=2,
+        )
+        if token_resp.status_code != 200:
+            return None
+        token = token_resp.text.strip()
+        meta_resp = requests.get(
+            f"http://169.254.169.254/latest/meta-data/{path}",
+            headers={"X-aws-ec2-metadata-token": token},
+            timeout=2,
+        )
+        if meta_resp.status_code == 200:
+            return meta_resp.text.strip()
+    except Exception:
+        pass
+    return None
+
 
 def get_public_ip():
     """Get the public IP address of the current instance"""
     try:
-        # Try AWS metadata service first (if running on AWS)
-        try:
-            response = requests.get(
-                'http://169.254.169.254/latest/meta-data/public-ipv4',
-                timeout=2
-            )
-            if response.status_code == 200:
-                aws_ip = response.text.strip()
-                print(f"🌐 AWS Instance Public IP: {aws_ip}")
-                print(f"\n⚠️  IMPORTANT: This IP must be whitelisted in Crypto.com Exchange")
-                print(f"   Go to: https://exchange.crypto.com/ → Settings → API Keys → Edit")
-                print(f"   Add this IP to the whitelist: {aws_ip}")
-                return aws_ip
-        except Exception:
-            pass
-        
+        # Try AWS metadata service (IMDSv2) first if running on EC2
+        aws_ip = _get_metadata_imdsv2("public-ipv4")
+        if aws_ip:
+            print(f"🌐 AWS Instance Public IP: {aws_ip}")
+            print(f"\n⚠️  IMPORTANT: This IP must be whitelisted in Crypto.com Exchange")
+            print(f"   Go to: https://exchange.crypto.com/ → Settings → API Keys → Edit")
+            print(f"   Add this IP to the whitelist: {aws_ip}")
+            return aws_ip
+
         # Fallback to public IP service
         response = requests.get('https://api.ipify.org', timeout=5)
         public_ip = response.text.strip()

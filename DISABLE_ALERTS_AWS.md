@@ -76,7 +76,7 @@ O manualmente:
 
 ```bash
 aws ssm send-command \
-    --instance-ids i-08726dc37133b2454 \
+    --instance-ids i-087953603011543c5 \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
         "cd /home/ubuntu/automated-trading-platform",

@@ -43,12 +43,17 @@ print_info() {
     echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
-# Function to check if we're running on AWS server or locally
+# Function to check if we're running on AWS server or locally (uses IMDSv2 when available)
 is_on_aws_server() {
-    # Check if we're on the AWS server by hostname or IP
-    if [ -f "/etc/cloud/cloud.cfg" ] || hostname | grep -q "ip-" || [ "$(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)" != "" ]; then
+    if [ -f "/etc/cloud/cloud.cfg" ] || hostname | grep -q "ip-"; then
         return 0
     fi
+    local token
+    token=$(curl -sS -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+    [ -z "$token" ] && return 1
+    local iid
+    iid=$(curl -sS -m 2 "http://169.254.169.254/latest/meta-data/instance-id" -H "X-aws-ec2-metadata-token: $token" 2>/dev/null)
+    [ -n "$iid" ] && return 0
     return 1
 }
 

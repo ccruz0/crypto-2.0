@@ -22,7 +22,7 @@ git -C frontend rev-parse --verify 39e2e3d
 
 # 2. Deploy backend file
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters commands="[
     'cd /home/ubuntu/automated-trading-platform',
@@ -51,7 +51,7 @@ Run the verification script:
 Or manually via SSM:
 ```bash
 aws ssm send-command \
-  --instance-ids i-08726dc37133b2454 \
+  --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters commands="[
     'cd /home/ubuntu/automated-trading-platform',

@@ -64,7 +64,7 @@ docker compose exec -T db psql -U trader -d atp -c "\d signal_throttle_states"
 
 ### Option 1: AWS Session Manager (If Configured)
 ```bash
-aws ssm start-session --target i-08726dc37133b2454
+aws ssm start-session --target i-087953603011543c5
 ```
 
 ### Option 2: Check AWS Console

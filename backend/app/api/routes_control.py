@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 from pydantic import BaseModel
 
+from app.core.config import Settings
 from app.database import get_db
 from app.services.exchange_sync import exchange_sync_service
 from app.services.signal_monitor import signal_monitor_service

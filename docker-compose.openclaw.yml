@@ -1,6 +1,9 @@
 # docker-compose.openclaw.yml
 # Lab only. Do NOT use on Production. No production secrets.
 #
+# Before first up: create secrets/runtime.env (run bash scripts/setup_tavily_key.sh
+# or: mkdir -p secrets && touch secrets/runtime.env). See docs/openclaw/TAVILY_WEB_SEARCH_SETUP.md.
+#
 # Hardening: non-root user, read_only, cap_drop ALL, no-new-privileges,
 # mem/cpu limits, token only via read-only file mount (never in env).
 # Token on host: ~/secrets/openclaw_token (chmod 600). No docker socket.
@@ -14,6 +17,8 @@ services:
     container_name: openclaw
     env_file:
       - .env.lab
+      # Optional: for Tavily web search. Create via: bash scripts/setup_tavily_key.sh
+      - secrets/runtime.env
     environment:
       - OPENCLAW_ALLOWED_ORIGINS=${OPENCLAW_ALLOWED_ORIGINS:-https://dashboard.hilovivo.com,http://localhost:8080,http://127.0.0.1:8080}
       - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
@@ -22,6 +27,8 @@ services:
       - OPENCLAW_MODEL_PRIMARY=${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}
       - OPENCLAW_MODEL_FALLBACKS=${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3-5-haiku-20241022}
       - NODE_ENV=production
+      # Tavily web search (set in secrets/runtime.env via scripts/setup_tavily_key.sh)
+      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-tavily}
     volumes:
       # Persistent home — keeps devices, config, sessions across restarts
       - /opt/openclaw/home-data:/home/node/.openclaw

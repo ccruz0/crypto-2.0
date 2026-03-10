@@ -3057,8 +3057,9 @@ def send_pending_agent_approvals(chat_id: str, message_id: Optional[int] = None)
             task_id = str(item.get("task_id") or "")
             short_id = f"{task_id[:8]}..." if len(task_id) > 8 else task_id
             title = str(item.get("task_title") or "(no title)")
+            type_label = str(item.get("task_type_label") or "Task")
             requested_at = str(item.get("requested_at") or "")[:19].replace("T", " ")
-            lines.append(f"• <code>{short_id}</code> | {title[:90]} | <code>{requested_at}</code>")
+            lines.append(f"• <b>{type_label}</b> · {title[:70]}{'…' if len(title) > 70 else ''}\n  <code>{short_id}</code> {requested_at}")
             if task_id and len(f"agent_detail:{task_id}") <= 64:
                 rows.append([{"text": f"📋 View {short_id}", "callback_data": f"agent_detail:{task_id}"}])
         rows.append([{"text": "🔙 Back to Console", "callback_data": "agent:main"}])
@@ -3101,6 +3102,8 @@ def send_approval_request_detail(chat_id: str, task_id: str, message_id: Optiona
         priority = str(detail.get("priority") or "-")
         source = str(detail.get("source") or "-")
         selection_reason = (detail.get("selection_reason") or "").strip() or "-"
+        what_will_happen = (detail.get("what_will_happen") or "").strip() or "The agent will run the selected callback for this task."
+        task_type_label = (detail.get("task_type_label") or "").strip() or "Agent task"
         repo_area = detail.get("repo_area") or {}
         area_name = str(repo_area.get("area_name") or "").strip() or "-"
         execution_status = (detail.get("execution_status") or "not_started").lower()
@@ -3110,18 +3113,17 @@ def send_approval_request_detail(chat_id: str, task_id: str, message_id: Optiona
         lines = [
             "🔐 <b>Approval request detail</b>",
             "",
+            f"<b>📌 If you approve</b>\n{what_will_happen}",
+            "",
             f"<b>Task:</b> {task_title[:300]}",
+            f"<b>Type:</b> {task_type_label}",
             f"<b>Status:</b> {status}",
             f"<b>Execution:</b> {execution_status}",
             f"<b>Requested:</b> {requested_at}",
-            f"<b>Project:</b> {project}",
-            f"<b>Type:</b> {task_type}",
-            f"<b>Priority:</b> {priority}",
-            f"<b>Source:</b> {source}",
+            f"<b>Project:</b> {project} · <b>Priority:</b> {priority}",
             f"<b>Area:</b> {area_name}",
-            f"<b>Callback:</b> {selection_reason[:200]}",
             "",
-            "<b>Summary</b>",
+            "<b>Full summary</b>",
             "<pre>" + (summary[:1500].replace("<", "&lt;") if summary else "-") + "</pre>",
         ]
         if status == "pending":
@@ -4769,15 +4771,19 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             except Exception as approval_err:
                 logger.error(f"[TG][APPROVAL] Error handling {_action} callback: {approval_err}", exc_info=True)
                 send_command_response(chat_id, f"❌ Error processing {_action}: {str(approval_err)[:200]}")
-        elif callback_data.startswith("patch_approve:") or callback_data.startswith("deploy_approve:") or callback_data.startswith("task_reject:") or callback_data.startswith("view_report:") or callback_data.startswith("smoke_check:"):
+        elif callback_data.startswith("patch_approve:") or callback_data.startswith("deploy_approve:") or callback_data.startswith("task_reject:") or callback_data.startswith("view_report:") or callback_data.startswith("smoke_check:") or callback_data.startswith("reinvestigate:") or callback_data.startswith("run_cursor_bridge:"):
             if callback_data.startswith("patch_approve:"):
                 _action = "approve_patch"
+            elif callback_data.startswith("run_cursor_bridge:"):
+                _action = "run_cursor_bridge"
             elif callback_data.startswith("deploy_approve:"):
                 _action = "approve_deploy"
             elif callback_data.startswith("task_reject:"):
                 _action = "reject"
             elif callback_data.startswith("smoke_check:"):
                 _action = "smoke_check"
+            elif callback_data.startswith("reinvestigate:"):
+                _action = "reinvestigate"
             else:
                 _action = "view_report"
             logger.info(f"[TG][EXT_APPROVAL] Routing callback_data='{callback_data}' action={_action} chat_id={chat_id} user_id={user_id}")
@@ -5105,11 +5111,12 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
             db.close()
 
 
-def _edit_approval_card(chat_id: str, message_id: Optional[int], result_text: str, task_id: str) -> None:
+def _edit_approval_card(chat_id: str, message_id: Optional[int], result_text: str, task_id: str, *, extra_rows: Optional[list] = None) -> None:
     """Edit the original approval card to show the decision result, replacing the Approve/Deny buttons."""
-    keyboard = _build_keyboard([
-        [{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}],
-    ])
+    rows = [[{"text": "🔙 Back to Pending", "callback_data": "agent_back_pending"}]]
+    if extra_rows:
+        rows = extra_rows + rows
+    keyboard = _build_keyboard(rows)
     if message_id:
         if not _edit_menu_message(chat_id, message_id, result_text, keyboard):
             send_command_response(chat_id, result_text)
@@ -5226,8 +5233,8 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
                 "task_id=%s", task_id,
             )
             return True, (
-                "Test Status property absent in Notion schema — "
-                "trusting orchestrator test gate (status=awaiting-deploy-approval)"
+                "Test gate: task status (awaiting-deploy-approval). "
+                "Add a 'Test Status' property to the AI Task System DB to persist test results."
             )
         return False, "Test Status is empty — tests must pass before deploy"
 
@@ -5271,6 +5278,8 @@ def _handle_extended_approval_callback(
             PREFIX_REJECT,
             PREFIX_VIEW_REPORT,
             PREFIX_SMOKE_CHECK,
+            PREFIX_REINVESTIGATE,
+            PREFIX_RUN_CURSOR_BRIDGE,
             get_openclaw_report_for_task,
         )
     except ImportError as imp_err:
@@ -5280,7 +5289,7 @@ def _handle_extended_approval_callback(
 
     # Extract task_id from callback_data
     task_id = ""
-    for prefix in (PREFIX_APPROVE_PATCH, PREFIX_APPROVE_DEPLOY, PREFIX_REJECT, PREFIX_VIEW_REPORT, PREFIX_SMOKE_CHECK):
+    for prefix in (PREFIX_APPROVE_PATCH, PREFIX_APPROVE_DEPLOY, PREFIX_REJECT, PREFIX_VIEW_REPORT, PREFIX_SMOKE_CHECK, PREFIX_REINVESTIGATE, PREFIX_RUN_CURSOR_BRIDGE):
         if callback_data.startswith(prefix):
             task_id = callback_data[len(prefix):].strip()
             break
@@ -5314,8 +5323,18 @@ def _handle_extended_approval_callback(
                                        append_comment=f"Patch approved by {who} via Telegram.")
         if ok:
             logger.info("[TG][EXT_APPROVAL] task %s → ready-for-patch by %s", task_id, who)
+            extra_rows = []
+            try:
+                from app.services.agent_telegram_approval import PREFIX_RUN_CURSOR_BRIDGE
+                from app.services._paths import workspace_root
+                handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
+                if handoff_path.exists():
+                    extra_rows = [[{"text": "🛠️ Run Cursor Bridge", "callback_data": f"{PREFIX_RUN_CURSOR_BRIDGE}{task_id}"}]]
+            except Exception:
+                pass
             _edit_approval_card(chat_id, message_id,
-                                f"✅ <b>Patch approved</b> by {who}\nTask moved to <b>ready-for-patch</b>.", task_id)
+                                f"✅ <b>Patch approved</b> by {who}\nTask moved to <b>ready-for-patch</b>.", task_id,
+                                extra_rows=extra_rows)
         else:
             logger.warning("[TG][EXT_APPROVAL] Notion status update failed task_id=%s", task_id)
             _edit_approval_card(chat_id, message_id,
@@ -5364,6 +5383,11 @@ def _handle_extended_approval_callback(
         ok = update_notion_task_status(task_id, TASK_STATUS_DEPLOYING,
                                        append_comment=f"Deploy approved by {who} via Telegram. (Test gate: {gate_reason})")
         if ok:
+            try:
+                from app.services.notion_tasks import update_notion_deploy_progress
+                update_notion_deploy_progress(task_id, 0)
+            except Exception:
+                pass
             logger.info("[TG][EXT_APPROVAL] task %s → deploying by %s", task_id, who)
             _edit_approval_card(chat_id, message_id,
                                 f"🚀 <b>Deploy approved</b> by {who}\nTask moved to <b>deploying</b>.", task_id)
@@ -5378,6 +5402,11 @@ def _handle_extended_approval_callback(
             from app.services.deploy_trigger import trigger_deploy_workflow
             deploy_result = trigger_deploy_workflow(task_id=task_id, triggered_by=who)
             if deploy_result.get("ok"):
+                try:
+                    from app.services.notion_tasks import update_notion_deploy_progress
+                    update_notion_deploy_progress(task_id, 20)
+                except Exception:
+                    pass
                 logger.info(
                     "[TG][EXT_APPROVAL] deploy workflow triggered task_id=%s summary=%s",
                     task_id, deploy_result.get("summary"),
@@ -5449,6 +5478,34 @@ def _handle_extended_approval_callback(
             pass
         return
 
+    if action == "reinvestigate":
+        from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION, update_notion_task_status
+        ok = update_notion_task_status(
+            task_id,
+            TASK_STATUS_READY_FOR_INVESTIGATION,
+            append_comment=f"Re-investigate approved by {who} via Telegram. Scheduler will re-run with verification feedback.",
+        )
+        if ok:
+            logger.info("[TG][EXT_APPROVAL] task %s → ready-for-investigation (reinvestigate) by %s", task_id, who)
+            _edit_approval_card(chat_id, message_id,
+                                f"🔄 <b>Re-investigate</b> by {who}\nTask moved to <b>ready-for-investigation</b>. "
+                                "Scheduler will re-run with feedback.", task_id)
+            send_command_response(
+                chat_id,
+                f"🔄 Task <code>{task_id[:12]}</code> moved to <b>ready-for-investigation</b>.\n\n"
+                "The scheduler will re-run the investigation with the verification feedback "
+                "(next cycle, typically within 5 min).",
+            )
+        else:
+            _edit_approval_card(chat_id, message_id,
+                                f"⚠️ Re-investigate by {who} but Notion status update failed.", task_id)
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("reinvestigate_approved", task_id=task_id, details={"approved_by": who, "notion_updated": ok})
+        except Exception:
+            pass
+        return
+
     if action == "reject":
         ok = update_notion_task_status(task_id, TASK_STATUS_REJECTED,
                                        append_comment=f"Task rejected by {who} via Telegram.")
@@ -5464,6 +5521,43 @@ def _handle_extended_approval_callback(
         try:
             from app.services.agent_activity_log import log_agent_event
             log_agent_event("task_rejected", task_id=task_id, details={"rejected_by": who, "notion_updated": ok})
+        except Exception:
+            pass
+        return
+
+    if action == "run_cursor_bridge":
+        _edit_approval_card(chat_id, message_id,
+                            f"🛠️ <b>Running Cursor Bridge</b> for task {task_id[:12]}…", task_id)
+        try:
+            from app.services.cursor_execution_bridge import is_bridge_enabled, run_bridge_phase2
+            from app.services.notion_tasks import update_notion_task_status
+            update_notion_task_status(task_id, "patching", append_comment=f"Cursor bridge triggered by {who} via Telegram.")
+            if not is_bridge_enabled():
+                send_command_response(chat_id, "❌ Cursor bridge disabled. Set CURSOR_BRIDGE_ENABLED=true.")
+                _edit_approval_card(chat_id, message_id,
+                                    f"✅ <b>Patch approved</b> by {who}\nTask in <b>ready-for-patch</b>.\n\n"
+                                    "Bridge disabled.", task_id)
+                return
+            result = run_bridge_phase2(task_id=task_id, ingest=True, create_pr=False, current_status="patching")
+            if result.get("ok") and result.get("tests_ok"):
+                send_command_response(chat_id,
+                    f"✅ <b>Cursor Bridge OK</b>\n\nTask {task_id[:12]}…: apply + tests passed.\n"
+                    "Task advanced to awaiting-deploy-approval.")
+                _edit_approval_card(chat_id, message_id,
+                                    f"✅ <b>Cursor Bridge</b> by {who}\nApply + tests passed.", task_id)
+            else:
+                err = result.get("error") or "bridge failed"
+                send_command_response(chat_id, f"⚠️ <b>Cursor Bridge</b>\n\n{err[:300]}")
+                _edit_approval_card(chat_id, message_id,
+                                    f"⚠️ <b>Cursor Bridge</b> by {who}\n{err[:100]}", task_id)
+        except Exception as exc:
+            logger.exception("[TG][EXT_APPROVAL] run_cursor_bridge failed task_id=%s", task_id)
+            send_command_response(chat_id, f"❌ Bridge error: {str(exc)[:200]}")
+            _edit_approval_card(chat_id, message_id,
+                                f"❌ <b>Cursor Bridge</b> error.", task_id)
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("cursor_bridge_telegram_triggered", task_id=task_id, details={"triggered_by": who})
         except Exception:
             pass
         return

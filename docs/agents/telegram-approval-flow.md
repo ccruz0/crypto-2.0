@@ -6,22 +6,30 @@ Implementation: `backend/app/services/agent_telegram_approval.py` and callback h
 
 ---
 
-## How it works
+## Two approval flows
 
-1. **Send approval request**  
-   Call `send_task_approval_request(prepared_bundle, chat_id=None)`. The module builds a Telegram message from the approval summary (task title, priority, area, callback reason, risk level) and sends it to the given `chat_id` (or `TELEGRAM_CHAT_ID` if omitted). The message includes inline buttons: **Approve**, **Deny**, **View Summary**.
+### Extended lifecycle (bug, strategy-patch, etc.) — 2 approvals
 
-2. **User taps a button**  
-   Only **authorized** Telegram users (same rules as other bot commands: `TELEGRAM_CHAT_ID` / `TELEGRAM_AUTH_USER_ID`) can use these buttons. Unauthorized users get "Not authorized".
+Tasks with `manual_only=True` (e.g. bug investigation, strategy-patch) use the **extended lifecycle**. The scheduler runs execution directly; no pre-execution approval is sent. The operator receives **two** approval messages:
 
-3. **Approve**  
-   When an authorized user taps **Approve**: the approval state is set to `approved`, execution runs via `execute_prepared_task_if_approved(bundle, approved=True)`, and a confirmation is sent (e.g. "Approved and execution ran. Status: testing/deployed.").
+1. **Investigation approval** — After OpenClaw analysis completes. Message includes: TASK, ROOT CAUSE, PROPOSED CHANGE, FILES AFFECTED, BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED. Buttons: **Approve**, **Reject**, **View Report**.
+2. **Deploy approval** — After patch validation passes. Message includes: TASK, CHANGE SUMMARY, FILES CHANGED, TEST STATUS, BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED. Buttons: **Approve Deploy**, **Reject**, **Smoke Check**, **View Report**.
 
-4. **Deny**  
-   When an authorized user taps **Deny**: the state is set to `denied`. No execution runs. A confirmation is sent ("Denied. Execution will not run for this task.").
+See [TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md](TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md) for details and examples.
 
-5. **View Summary**  
-   Tapping **View Summary** resends the approval summary text (task, area, risk, reason). No state change.
+### Legacy flow (non–manual_only) — 1 approval
+
+Tasks that are not `manual_only` (e.g. documentation, monitoring triage that require approval) use the **legacy flow**:
+
+1. **Send approval request** — Call `send_task_approval_request(prepared_bundle, chat_id=None)`. The module builds a Telegram message with TASK, PROPOSED CHANGE, FILES AFFECTED, BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED and sends it with **Approve**, **Deny**, **View Summary** buttons.
+
+2. **User taps a button** — Only **authorized** Telegram users can use these buttons. Unauthorized users get "Not authorized".
+
+3. **Approve** — When an authorized user taps **Approve**: the approval state is set to `approved`, execution runs via `execute_prepared_task_if_approved(bundle, approved=True)`, and a confirmation is sent.
+
+4. **Deny** — When an authorized user taps **Deny**: the state is set to `denied`. No execution runs.
+
+5. **View Summary** — Tapping **View Summary** resends the approval summary text. No state change.
 
 6. **Inspecting a pending approval (detail view)**  
    From the **/agent** console, tap **Pending Approvals** to see the list. Each item has a **View** button. Tapping it opens a **detail view** for that request: task title, status, requested_at, project, type, priority, source, inferred repo area, callback reason, and full approval summary. From the detail view you can **Approve**, **Deny**, or **Back to Pending**. Approve/Deny use the same callback format as the original request message; behavior is unchanged.
@@ -32,12 +40,23 @@ Implementation: `backend/app/services/agent_telegram_approval.py` and callback h
 
 Stable, short strings (Telegram `callback_data` is limited to 64 bytes):
 
+### Legacy flow
+
 - **Approve:** `agent_approve:<task_id>`
 - **Deny:** `agent_deny:<task_id>`
 - **View Summary:** `agent_summary:<task_id>`
 - **Open detail (from pending list):** `agent_detail:<task_id>`
 - **Back to pending list:** `agent_back_pending`
 - **Execute approved task (from detail view):** `agent_execute:<task_id>`
+
+### Extended lifecycle (investigation / deploy)
+
+- **Approve patch:** `patch_approve:<task_id>`
+- **Approve deploy:** `deploy_approve:<task_id>`
+- **Reject:** `task_reject:<task_id>`
+- **View report:** `view_report:<task_id>`
+- **Smoke check:** `smoke_check:<task_id>`
+- **Re-investigate:** `reinvestigate:<task_id>`
 
 `task_id` is the Notion page ID (UUID) for the task.
 

@@ -333,6 +333,31 @@ def strategy_consistency_diagnostic(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Diagnostic error: {str(e)}")
 
 
+@router.get("/diagnostics/telegram-notifier")
+def telegram_notifier_diagnostic():
+    """
+    Return the live TelegramNotifier state from refresh_config() in this worker.
+    Use this to see why notifications are blocked (block_reasons) without running a script.
+    No auth required; returns only enabled/block_reasons (no token/chat_id).
+    """
+    try:
+        from app.services.telegram_notifier import telegram_notifier
+        cfg = telegram_notifier.refresh_config()
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "enabled": cfg.get("enabled", False),
+            "block_reasons": cfg.get("block_reasons") or [],
+            "runtime_env": cfg.get("runtime_env"),
+            "run_telegram": cfg.get("run_telegram"),
+            "kill_switch_enabled": cfg.get("kill_switch_enabled"),
+            "token_set": cfg.get("token_set"),
+            "chat_id_set": cfg.get("chat_id_set"),
+        }
+    except Exception as e:
+        logger.error("telegram_notifier diagnostic failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/diagnostics/alerts_audit")
 def alerts_audit_endpoint(
     db: Session = Depends(get_db),

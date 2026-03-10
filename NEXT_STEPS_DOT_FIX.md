@@ -21,7 +21,7 @@ The container needs to be rebuilt with the latest code:
 
 # Option B: Manual rebuild via SSM
 aws ssm send-command \
-  --instance-ids "i-08726dc37133b2454" \
+  --instance-ids "i-087953603011543c5" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
     "cd ~/automated-trading-platform",

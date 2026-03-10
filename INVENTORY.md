@@ -145,7 +145,7 @@
   - Commands: `git pull`, `docker compose --profile aws build`, `docker compose --profile aws up -d`
 - `deploy_lifecycle_events_fix.sh`: Example deployment script
   - Uses AWS SSM
-  - Instance ID: `i-08726dc37133b2454`
+  - Instance ID: `i-087953603011543c5`
   - Region: `ap-southeast-1`
 - Multiple `deploy_*.sh` scripts: Various deployment scripts
 
@@ -159,7 +159,7 @@
 - **Docker Compose**: Runs with `--profile aws`
 - **Nginx**: Systemd service (not in Docker)
 - **Crypto Proxy**: Optional systemd service (`crypto-proxy.service`)
-- **Instance**: EC2 (i-08726dc37133b2454, ap-southeast-1)
+- **Instance**: EC2 (i-087953603011543c5, ap-southeast-1)
 - **Domain**: dashboard.hilovivo.com
 
 **Startup**:

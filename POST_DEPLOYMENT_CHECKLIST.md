@@ -11,7 +11,7 @@
 # Or manually check
 aws ssm get-command-invocation \
   --command-id aa64b511-3d0f-4a9f-ae3b-e47efcaf1df5 \
-  --instance-id i-08726dc37133b2454 \
+  --instance-id i-087953603011543c5 \
   --region ap-southeast-1
 ```
 

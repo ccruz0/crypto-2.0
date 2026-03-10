@@ -80,9 +80,25 @@ When version metadata is present in the prepared bundle:
 
 ---
 
+## Extended lifecycle (manual_only tasks)
+
+Tasks with `manual_only=True` (e.g. bug investigation, strategy-patch) use an **extended lifecycle** with **two** human approval points:
+
+1. **Investigation approval** — After OpenClaw analysis completes. The scheduler runs execution directly (no pre-execution approval); the first human touchpoint is this message.
+2. **Deploy approval** — After patch validation passes, before deployment.
+
+This reduces approval fatigue: the operator approves only when there is concrete analysis to review (investigation) and again before deploy. See [TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md](TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md).
+
+---
+
 ## Telegram approval
 
-Humans can approve or deny execution from Telegram. After preparing a task with `prepare_task_with_approval_check()`, call `send_task_approval_request(prepared_bundle, chat_id)` to send a message with **Approve** / **Deny** / **View Summary** buttons. Only authorized Telegram users may approve or deny; approval state is **persisted in the database** (`agent_approval_states`) and (on Approve) execution runs via the same executor. Pending approvals survive process restart. **Durable execution state** (execution_status, execution_started_at, executed_at) is stored in the same table to prevent duplicate execution from Telegram; retries are allowed when execution has failed. See [telegram-approval-flow.md](telegram-approval-flow.md).
+Humans can approve or deny execution from Telegram.
+
+- **Legacy flow:** After preparing a task with `prepare_task_with_approval_check()`, call `send_task_approval_request(prepared_bundle, chat_id)` to send a message with **Approve** / **Deny** / **View Summary** buttons. (This is skipped for `manual_only` tasks; they use the extended flow instead.)
+- **Extended flow:** Approval messages are sent automatically at investigation-complete and before deploy.
+
+Only authorized Telegram users may approve or deny; approval state is **persisted in the database** (`agent_approval_states`) and (on Approve) execution runs via the same executor. Pending approvals survive process restart. **Durable execution state** (execution_status, execution_started_at, executed_at) is stored in the same table to prevent duplicate execution from Telegram; retries are allowed when execution has failed. See [telegram-approval-flow.md](telegram-approval-flow.md).
 
 For read-only visibility, authorized users can also open `/agent` in Telegram to inspect recent activity, pending approvals, and recent failure events without triggering new execution. See [telegram-agent-console.md](telegram-agent-console.md).
 

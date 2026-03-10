@@ -2,7 +2,7 @@
 # Enable sell alerts for all symbols with alert_enabled=True
 # Simple one-command execution via AWS SSM
 
-INSTANCE_ID="i-08726dc37133b2454"
+INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
 
 echo "🔧 Enabling Sell Alerts"

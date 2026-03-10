@@ -7,13 +7,13 @@ This report documents the deployment and verification of the portfolio snapshot 
 ## Phase 1: Port-Forward Target Verification
 
 ### Port-Forward Configuration
-- **Instance ID**: `i-08726dc37133b2454`
+- **Instance ID**: `i-087953603011543c5`
 - **Region**: `ap-southeast-1`
 - **Local Port**: `8002`
 - **Remote Port**: `8002`
 - **SSM Command**: 
   ```bash
-  aws ssm start-session --target i-08726dc37133b2454 \
+  aws ssm start-session --target i-087953603011543c5 \
     --document-name AWS-StartPortForwardingSessionToRemoteHost \
     --parameters '{"host":["127.0.0.1"],"portNumber":["8002"],"localPortNumber":["8002"]}'
   ```
@@ -80,25 +80,25 @@ This report documents the deployment and verification of the portfolio snapshot 
 
 ```bash
 # Copy credential_resolver.py
-aws ssm send-command --instance-ids i-08726dc37133b2454 \
+aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/utils","echo \"<base64_content>\" | base64 -d > backend/app/utils/credential_resolver.py"]'
 
 # Copy routes_portfolio.py
-aws ssm send-command --instance-ids i-08726dc37133b2454 \
+aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/api","echo \"<base64_content>\" | base64 -d > backend/app/api/routes_portfolio.py"]'
 
 # Copy portfolio_snapshot.py
-aws ssm send-command --instance-ids i-08726dc37133b2454 \
+aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/services","echo \"<base64_content>\" | base64 -d > backend/app/services/portfolio_snapshot.py"]'
 
 # Rebuild and restart
-aws ssm send-command --instance-ids i-08726dc37133b2454 \
+aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws build backend-aws","docker compose --profile aws up -d backend-aws"]'

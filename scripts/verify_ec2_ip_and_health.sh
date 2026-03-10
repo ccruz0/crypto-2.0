@@ -87,12 +87,26 @@ docker compose --profile aws ps 2>/dev/null || echo "   ⚠️  Could not get co
 echo ""
 
 echo "7. EC2 Public IP (for external access):"
+# IMDSv2 (works when instance has IMDSv2 required)
+_get_metadata() {
+  local path="$1"
+  local token
+  token=$(curl -sS -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+  [[ -z "$token" ]] && return 1
+  curl -sS -m 2 "http://169.254.169.254/latest/meta-data/$path" -H "X-aws-ec2-metadata-token: $token" 2>/dev/null
+}
 if command -v curl >/dev/null 2>&1; then
-    EC2_PUBLIC_IP=$(curl -s --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || \
-      echo "ERROR: Could not get from metadata")
+    EC2_PUBLIC_IP=$(_get_metadata public-ipv4) || EC2_PUBLIC_IP="ERROR: Could not get from metadata"
 else
-    EC2_PUBLIC_IP=$(python3 -c "import urllib.request; print(urllib.request.urlopen('http://169.254.169.254/latest/meta-data/public-ipv4', timeout=2).read().decode().strip())" 2>/dev/null || \
-      echo "ERROR: Could not get from metadata")
+    EC2_PUBLIC_IP=$(python3 -c "
+import urllib.request
+try:
+    req = urllib.request.Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'})
+    with urllib.request.urlopen(req, timeout=2) as r: token = r.read().decode().strip()
+    req2 = urllib.request.Request('http://169.254.169.254/latest/meta-data/public-ipv4', headers={'X-aws-ec2-metadata-token': token})
+    with urllib.request.urlopen(req2, timeout=2) as r: print(r.read().decode().strip())
+except Exception: print('ERROR: Could not get from metadata')
+" 2>/dev/null)
 fi
 echo "   EC2 Public IP: $EC2_PUBLIC_IP"
 echo ""

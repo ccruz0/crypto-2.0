@@ -12,6 +12,9 @@ Resolution order:
    in the standard Docker layout ``/app/app/services/_paths.py``
 
 The resolved path is cached after first call.
+
+Bug investigations: ``get_writable_bug_investigations_dir()`` returns a path
+that is writable (repo docs/ or ``AGENT_BUG_INVESTIGATIONS_DIR`` / ``/tmp/agent-bug-investigations``).
 """
 
 from __future__ import annotations
@@ -20,8 +23,11 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_bug_investigations_dir: Optional[Path] = None
 
 
 @lru_cache(maxsize=1)
@@ -53,3 +59,28 @@ def workspace_root() -> Path:
     fallback = here.parents[min(2, len(here.parents) - 1)]
     logger.info("workspace_root: using fallback parents[2]=%s", fallback)
     return fallback
+
+
+def get_writable_bug_investigations_dir() -> Path:
+    """Return a writable directory for bug-investigation notes (repo or fallback)."""
+    global _bug_investigations_dir
+    if _bug_investigations_dir is not None:
+        return _bug_investigations_dir
+    root = workspace_root()
+    candidate = root / "docs" / "agents" / "bug-investigations"
+    fallback = Path(os.environ.get("AGENT_BUG_INVESTIGATIONS_DIR", "/tmp/agent-bug-investigations"))
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        _bug_investigations_dir = candidate
+        return _bug_investigations_dir
+    except (OSError, PermissionError) as e:
+        logger.warning(
+            "bug-investigations: repo path %s not writable (%s), using fallback %s",
+            candidate, e, fallback,
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        _bug_investigations_dir = fallback
+        return _bug_investigations_dir

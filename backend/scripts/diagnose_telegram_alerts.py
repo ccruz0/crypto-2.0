@@ -109,11 +109,16 @@ def check_telegram_notifier():
     print("="*60)
     
     notifier = telegram_notifier
-    
+    # Refresh config so we see the same state send_message() would use (env/Settings → enabled, token, chat_id)
+    cfg = notifier.refresh_config()
+    block_reasons = cfg.get("block_reasons") or []
+
     print(f"Enabled: {notifier.enabled}")
     print(f"Bot Token Present: {bool(notifier.bot_token)}")
     print(f"Chat ID Present: {bool(notifier.chat_id)}")
-    
+    if block_reasons:
+        print(f"Block reasons: {block_reasons}")
+
     if notifier.enabled:
         print("✅ Telegram notifier is enabled and ready")
     else:
@@ -122,6 +127,11 @@ def check_telegram_notifier():
             print("   Reason: Missing TELEGRAM_BOT_TOKEN")
         if not notifier.chat_id:
             print("   Reason: Missing TELEGRAM_CHAT_ID")
+        for r in block_reasons:
+            if r == "kill_switch_disabled":
+                print("   Reason: Kill switch off — enable Telegram in dashboard/settings (tg_enabled_aws=true)")
+            elif r not in ("token_missing", "chat_id_missing"):
+                print(f"   Reason: {r}")
     
     return notifier
 
