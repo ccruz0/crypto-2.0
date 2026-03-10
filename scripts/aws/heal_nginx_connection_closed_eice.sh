@@ -34,8 +34,10 @@ aws ec2-instance-connect send-ssh-public-key \
   --region "$REGION" >/dev/null
 
 echo "Restarting nginx + syncing openclaw proxy on PROD..."
-# Remote script: force all openclaw proxy_pass to LAB:PORT, then restart nginx
-if ! ssh -o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+# Remote script runs only if SSH from this machine works. Many home networks block outbound 22 —
+# then use AWS Console → EC2 → PROD → Connect → EC2 Instance Connect and paste PASTE_BLOCK below.
+set +e
+ssh -o ConnectTimeout=25 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -i "$KEY_DIR/key" "ubuntu@$PUBLIC_IP" "bash -s" << REMOTE
 set -e
 LAB="$LAB_IP"
@@ -59,17 +61,22 @@ sudo nginx -t
 echo "=== systemctl restart nginx ==="
 sudo systemctl restart nginx
 sleep 2
-echo "=== curl local 443 /openclaw/ (expect 401 or 502 text, not connection closed) ==="
+echo "=== curl local 443 /openclaw/ ==="
 curl -sS -m 10 -I -k https://127.0.0.1/openclaw/ 2>&1 | head -12 || true
 echo "=== tail error.log ==="
 sudo tail -n 30 /var/log/nginx/error.log 2>/dev/null || true
 REMOTE
-then
-  :
-else
+SSH_EXIT=$?
+set -e
+
+if [ "$SSH_EXIT" -ne 0 ]; then
   echo ""
-  echo "SSH to port 22 timed out. Run this block in EC2 Console → PROD → Instance Connect:"
-  echo "--- paste from next line ---"
+  echo "SSH to $PUBLIC_IP:22 failed (exit $SSH_EXIT). Your network or SG may block port 22."
+  echo "Use the browser terminal instead (no SSH from your IP needed):"
+  echo "  AWS Console → EC2 → atp-rebuild-2026 → Connect → EC2 Instance Connect → Connect"
+  echo ""
+  echo "Paste this entire block into that terminal:"
+  echo "----------8<----------"
   cat << 'PASTE'
 LAB=172.31.3.214
 PORT=8080
@@ -86,7 +93,9 @@ done
 sudo nginx -t && sudo systemctl restart nginx
 curl -sS -m 10 -I -k https://127.0.0.1/openclaw/ | head -12
 PASTE
-  echo "--- end paste ---"
+  echo "---------->8----------"
+  echo ""
+  echo "Optional: open SG inbound TCP 22 from YOUR IP so ./scripts/aws/heal_nginx_connection_closed_eice.sh works from this Mac."
   exit 1
 fi
 
