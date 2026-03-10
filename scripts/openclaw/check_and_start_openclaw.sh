@@ -40,7 +40,19 @@ if [[ "$OPENCLAW_ACTIVE" -eq 0 ]]; then
     echo "  cd $REPO_ROOT && sudo docker compose -f docker-compose.openclaw.yml up -d"
     echo "Or install the unit: sudo cp $REPO_ROOT/scripts/openclaw/openclaw.service /etc/systemd/system/"
     echo "  sudo systemctl daemon-reload && sudo systemctl enable openclaw && sudo systemctl start openclaw"
-    if [[ -f "$REPO_ROOT/docker-compose.openclaw.yml" ]] && [[ -t 0 ]] && [[ -z "${NONINTERACTIVE:-}${RUN_VIA_SSM:-}" ]]; then
+    # NONINTERACTIVE or RUN_VIA_SSM: start compose without prompt (SSM has no TTY)
+    if [[ -f "$REPO_ROOT/docker-compose.openclaw.yml" ]] && [[ -n "${NONINTERACTIVE:-}${RUN_VIA_SSM:-}" ]]; then
+      echo "=== Starting docker compose (non-interactive) ==="
+      mkdir -p "$REPO_ROOT/secrets"
+      touch "$REPO_ROOT/secrets/runtime.env"
+      if [[ ! -f /home/ubuntu/secrets/openclaw_token ]]; then
+        echo "WARNING: /home/ubuntu/secrets/openclaw_token missing — compose may fail. Create: mkdir -p ~/secrets && touch ~/secrets/openclaw_token && chmod 600 ~/secrets/openclaw_token"
+      fi
+      cd "$REPO_ROOT"
+      sudo docker compose -f "$REPO_ROOT/docker-compose.openclaw.yml" up -d 2>&1 || true
+      sudo docker ps -a --filter name=openclaw --no-trunc 2>/dev/null || true
+      sudo docker logs openclaw --tail 40 2>/dev/null || true
+    elif [[ -f "$REPO_ROOT/docker-compose.openclaw.yml" ]] && [[ -t 0 ]]; then
       read -p "Start with docker compose now? [y/N] " -n 1 -r
       echo
       if [[ $REPLY =~ ^[Yy]$ ]]; then
