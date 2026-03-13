@@ -21,8 +21,8 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 OPENCLAW_HOME_DIR="${OPENCLAW_HOME_DIR:-/opt/openclaw/home-data}"
 ATP_REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
 OPENCLAW_TRUSTED_PROXIES="${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}"
-OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}"
-OPENCLAW_MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-openai/gpt-4o,anthropic/claude-opus-4-6}"
+OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-4o-mini}"
+OPENCLAW_MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-haiku-20241022,anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o,anthropic/claude-sonnet-4-20250514}"
 
 do_build() {
   echo "==> Building wrapper image (openclaw-with-origins:latest)"
@@ -59,8 +59,8 @@ do_deploy() {
   fi
   write_provider_env="${write_provider_env}env_path.write_text(chr(10).join(lines.values())+chr(10)); print(\"Provider keys written to \"+str(env_path))'"
 
-  # Keep existing gateway auth token across redeploys; update allowedOrigins + trustedProxies.
-  build_cfg="OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH python3 -c 'import json, os, pathlib, secrets; origins=[s.strip() for s in os.environ.get(\"OPENCLAW_ALLOWED_ORIGINS\", \"\").split(\",\") if s.strip()]; proxies=[s.strip() for s in os.environ.get(\"OPENCLAW_TRUSTED_PROXIES\", \"\").split(\",\") if s.strip()]; p=pathlib.Path(os.environ[\"OPENCLAW_CONFIG_PATH\"]); p.parent.mkdir(parents=True, exist_ok=True); cfg={}; \
+  # Keep existing gateway auth token across redeploys; update allowedOrigins + trustedProxies + agents.defaults.model (cheap-first).
+  build_cfg="OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES OPENCLAW_MODEL_PRIMARY=$OPENCLAW_MODEL_PRIMARY OPENCLAW_MODEL_FALLBACKS=$OPENCLAW_MODEL_FALLBACKS OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH python3 -c 'import json, os, pathlib, secrets; origins=[s.strip() for s in os.environ.get(\"OPENCLAW_ALLOWED_ORIGINS\", \"\").split(\",\") if s.strip()]; proxies=[s.strip() for s in os.environ.get(\"OPENCLAW_TRUSTED_PROXIES\", \"\").split(\",\") if s.strip()]; primary=os.environ.get(\"OPENCLAW_MODEL_PRIMARY\", \"openai/gpt-4o-mini\").strip(); fallbacks=[f.strip() for f in os.environ.get(\"OPENCLAW_MODEL_FALLBACKS\", \"\").split(\",\") if f.strip()]; p=pathlib.Path(os.environ[\"OPENCLAW_CONFIG_PATH\"]); p.parent.mkdir(parents=True, exist_ok=True); cfg={}; \
 exists=p.exists(); \
 cfg=(json.loads(p.read_text()) if exists else {}); \
 gateway=cfg.setdefault(\"gateway\", {}); \
@@ -71,6 +71,9 @@ auth=gateway.setdefault(\"auth\", {}); \
 token=(auth.get(\"token\") or \"\").strip(); \
 token=(token or os.environ.get(\"OPENCLAW_GATEWAY_TOKEN\", \"\").strip() or secrets.token_hex(24)); \
 auth[\"token\"]=token; \
+agents=cfg.setdefault(\"agents\", {}); \
+defaults=agents.setdefault(\"defaults\", {}); \
+defaults[\"model\"]={\"primary\": primary, \"fallbacks\": fallbacks}; \
 p.write_text(json.dumps(cfg), encoding=\"utf-8\"); \
 print(\"OPENCLAW_GATEWAY_TOKEN=\"+token)'"
   # Host port must match PROD nginx proxy_pass (default 8080 — same as docker-compose.openclaw.yml).

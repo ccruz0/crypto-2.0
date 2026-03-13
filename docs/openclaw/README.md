@@ -45,6 +45,20 @@ Uses EC2 Instance Connect to SSH to PROD, start nginx if needed, point `/opencla
 
 Use it when you want the OpenClaw UI at **https://dashboard.hilovivo.com/openclaw** (iframe + Basic Auth). If you hit 404 or 504, that doc links to the right runbooks.
 
+### "Update available" banner — OpenClaw runs in Docker
+
+When the dashboard shows "Update available: vX.Y.Z (running vX.Y.W)" but the update is skipped, it's because OpenClaw is deployed via **Docker** (not npm/git). The built-in update UI only works for npm/pnpm installs.
+
+**To update:** pull the new image and restart the container. From your Mac:
+```bash
+./scripts/openclaw/deploy_openclaw_lab_from_mac.sh deploy
+```
+This pulls `ghcr.io/ccruz0/openclaw:latest` on LAB and restarts the container. To use a specific version tag (e.g. v2026.3.8), set `OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:v2026.3.8` before running.
+
+**Cheap-first model config:** The deploy script writes `agents.defaults.model.primary` and `fallbacks` into `openclaw.json` so the Chat UI uses `openai/gpt-4o-mini` first and falls back to other models. Override with `OPENCLAW_MODEL_PRIMARY` and `OPENCLAW_MODEL_FALLBACKS` before running deploy.
+
+**OPENCLAW_LOG_LEVEL warning:** Use lowercase values (`info`, `debug`, `warn`, etc.). `INFO` is invalid and will be ignored.
+
 ### Fix "non-loopback Control UI requires gateway.controlUi.allowedOrigins"
 
 When the container runs behind a reverse proxy (e.g. `https://dashboard.hilovivo.com/openclaw`), the gateway may fail with the above error.
@@ -67,6 +81,10 @@ When the container runs behind a reverse proxy (e.g. `https://dashboard.hilovivo
 ---
 
 ## Research → ATP improvements
+
+**[OPENCLAW_LOW_COST_MODEL_FALLBACK_STRATEGY.md](../OPENCLAW_LOW_COST_MODEL_FALLBACK_STRATEGY.md)** — Low-cost model routing, failover (rate limit/credit/5xx), cheap-first config, and validation hardening for ATP's OpenClaw integration.
+
+**[GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md](../GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md)** — Gateway contract: accept request-body `model`, route correctly, return failover-friendly errors (429/402/503). Implement in the OpenClaw repo.
 
 **[ATP_IMPROVEMENTS_FROM_RESEARCH.md](ATP_IMPROVEMENTS_FROM_RESEARCH.md)** — Maps OpenClaw’s web-search research (FastAPI, WebSockets, Notion, deployment) to the current codebase: what’s already done, what’s next (e.g. optional `/ws/prices` for the dashboard, resource limits, Notion AI agents later).
 
