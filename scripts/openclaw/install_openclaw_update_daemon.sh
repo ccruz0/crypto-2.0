@@ -10,7 +10,11 @@
 # when the OpenClaw app is modified to call the daemon (see OPENCLAW_UPDATE_FROM_UI.md).
 set -e
 
+# Use current dir if we're in the repo, else default
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+if [[ -f "$(pwd)/scripts/openclaw/install_openclaw_update_daemon.sh" ]]; then
+  REPO_ROOT="$(pwd)"
+fi
 cd "$REPO_ROOT"
 
 echo "=== Installing OpenClaw update daemon ==="

@@ -11,8 +11,15 @@ REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/automated-trading-platform}"
 
 echo "=== Installing OpenClaw update daemon on LAB ($LAB_INSTANCE_ID) ==="
 
-REPO_ESC=$(echo "$REPO_ON_LAB" | sed 's/"/\\"/g')
-params="{\"commands\":[\"set -e\",\"cd $REPO_ESC\",\"git -c safe.directory=$REPO_ESC pull origin main 2>/dev/null || true\",\"sudo bash scripts/openclaw/install_openclaw_update_daemon.sh\",\"cd $REPO_ESC && sudo docker compose -f docker-compose.openclaw.yml up -d --force-recreate\",\"sleep 5\",\"sudo systemctl status openclaw-update-daemon --no-pager\",\"curl -s http://127.0.0.1:19999/health || echo health_check_failed\"]}"
+# Find repo and run (LAB may have automated-trading-platform or crypto-2.0)
+cmd1='REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f "$d/scripts/openclaw/install_openclaw_update_daemon.sh" ] && REPO=$d && break; done; [ -d "$REPO" ] || { echo "Repo not found"; exit 1; }; cd "$REPO"'
+cmd2='git -c safe.directory=$(pwd) pull origin main 2>/dev/null || true'
+cmd3='sudo bash scripts/openclaw/install_openclaw_update_daemon.sh'
+cmd4='sudo docker compose -f docker-compose.openclaw.yml up -d --force-recreate'
+cmd5='sleep 5; sudo systemctl status openclaw-update-daemon --no-pager'
+cmd6='curl -s http://127.0.0.1:19999/health || echo health_check_failed'
+# Escape for JSON: backslash and double-quote
+params="{\"commands\":[\"set -e\",\"$(echo "$cmd1" | sed 's/\\/\\\\/g; s/"/\\"/g')\",\"$(echo "$cmd2" | sed 's/\\/\\\\/g; s/"/\\"/g')\",\"$(echo "$cmd3" | sed 's/\\/\\\\/g; s/"/\\"/g')\",\"$(echo "$cmd4" | sed 's/\\/\\\\/g; s/"/\\"/g')\",\"$(echo "$cmd5" | sed 's/\\/\\\\/g; s/"/\\"/g')\",\"$(echo "$cmd6" | sed 's/\\/\\\\/g; s/"/\\"/g')\"]}"
 
 cmd_id=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \
