@@ -239,7 +239,16 @@ def get_pending_notion_tasks(
         return []
 
     # Status in Notion is a Select property: use only select filter with display names.
-    from app.services.notion_tasks import notion_status_to_display
+    try:
+        from app.services.notion_tasks import notion_status_to_display
+    except (ImportError, AttributeError):
+        _FALLBACK_DISPLAY = {
+            "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
+            "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
+            "patching": "Patching", "testing": "Testing", "deploying": "Deploying", "done": "Done",
+        }
+        def notion_status_to_display(s: str) -> str:
+            return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())
     _INTERNAL_PICKABLE = ("planned", "backlog", "ready-for-investigation")
     _STATUS_VARIANTS = [
         notion_status_to_display(s) for s in _INTERNAL_PICKABLE
@@ -436,7 +445,16 @@ def get_tasks_by_status(
         logger.warning("get_tasks_by_status skipped: missing Notion config")
         return []
 
-    from app.services.notion_tasks import notion_status_to_display
+    try:
+        from app.services.notion_tasks import notion_status_to_display
+    except (ImportError, AttributeError):
+        _FALLBACK_DISPLAY = {
+            "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
+            "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
+            "patching": "Patching", "testing": "Testing", "deploying": "Deploying", "done": "Done",
+        }
+        def notion_status_to_display(s: str) -> str:
+            return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())
 
     headers = {
         "Authorization": f"Bearer {api_key}",
