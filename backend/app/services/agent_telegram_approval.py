@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -41,8 +42,26 @@ _STORE_LOCK = threading.Lock()
 # Populated when investigation-complete or patch-deploy approval messages are sent.
 _SECTIONS_CACHE: dict[str, dict[str, Any]] = {}
 
+# Deduplication: task_id -> timestamp of last deploy approval sent. Prevents re-sending
+# the same approval request when advance_ready_for_patch_task runs every scheduler cycle.
+_DEPLOY_APPROVAL_SENT: dict[str, float] = {}
+_DEPLOY_APPROVAL_DEDUP_HOURS = 24
+
 # Telegram message length limit
 TELEGRAM_TEXT_LIMIT = 4096
+
+# Message type prefixes for clarity (INFO = informational, APPROVAL REQUIRED = human gate)
+MSG_PREFIX_INFO = "ℹ️ INFO"
+MSG_PREFIX_ACTION = "⚡ ACTION NEEDED"
+MSG_PREFIX_APPROVAL = "🔐 APPROVAL REQUIRED"
+
+
+def _get_notification_mode() -> str:
+    """Read TELEGRAM_NOTIFICATION_MODE env. minimal (default) = fewer messages; verbose = more status updates."""
+    raw = (os.environ.get("TELEGRAM_NOTIFICATION_MODE") or "").strip().lower()
+    if raw in ("verbose", "1", "true", "yes"):
+        return "verbose"
+    return "minimal"
 
 
 def _utc_now_iso() -> str:
@@ -1406,6 +1425,57 @@ def _preamble_fallback(sections: dict[str, Any], max_len: int = 300) -> str:
     return "(not available)"
 
 
+def build_investigation_info_message(
+    task_id: str,
+    title: str,
+    sections: dict[str, Any],
+    *,
+    task: dict[str, Any] | None = None,
+    repo_area: dict[str, Any] | None = None,
+) -> str:
+    """Build an informational investigation-complete message (no approval requested)."""
+    task = task or {}
+    repo_area = repo_area or {}
+
+    risk = infer_risk_classification(sections=sections, task=task, repo_area=repo_area)
+    root_cause = _section_text(sections, "Root Cause", max_len=180)
+    if root_cause == "(not available)":
+        root_cause = _preamble_fallback(sections, max_len=180)
+    proposed = _section_text(sections, "Recommended Fix", max_len=200)
+    if proposed == "(not available)":
+        proposed = _preamble_fallback(sections, max_len=200)
+    files = _files_from_sections(sections)
+    files_block = "\n".join(f"• {f}" for f in files) if files else "(not available)"
+    scope = _scope_summary(sections, files)
+
+    # Benefits: infer from Recommended Fix or Task Summary
+    benefits_raw = _section_text(sections, "Task Summary", max_len=120)
+    if benefits_raw == "(not available)":
+        benefits_raw = _preamble_fallback(sections, max_len=120)
+    if benefits_raw == "(not available)":
+        benefits_raw = "(see proposed change)"
+    benefits = benefits_raw
+
+    lines = [
+        f"<b>{MSG_PREFIX_INFO}</b> — Investigation complete",
+        "",
+        f"<b>TASK</b>\n{title[:200]}",
+        "",
+        f"<b>ROOT CAUSE</b>\n{root_cause}",
+        "",
+        f"<b>PROPOSED CHANGE</b>\n{proposed}",
+        "",
+        f"<b>FILES AFFECTED</b>\n{files_block}",
+        "",
+        f"<b>BENEFITS</b>\n{benefits}",
+        "",
+        f"<b>SCOPE</b> {scope} · <b>RISK</b> {risk}",
+        "",
+        "<i>Patch implementation will proceed automatically. Approval required only when patch is ready to deploy.</i>",
+    ]
+    return "\n".join(lines)
+
+
 def build_investigation_approval_message(
     task_id: str,
     title: str,
@@ -1414,7 +1484,7 @@ def build_investigation_approval_message(
     task: dict[str, Any] | None = None,
     repo_area: dict[str, Any] | None = None,
 ) -> str:
-    """Build a concise investigation approval message with all required fields."""
+    """Build a concise investigation approval message with all required fields (legacy)."""
     task = task or {}
     repo_area = repo_area or {}
 
@@ -1494,6 +1564,77 @@ def _load_sections_from_disk(task_id: str) -> dict[str, Any]:
     return {}
 
 
+def send_investigation_complete_info(
+    task_id: str,
+    title: str,
+    sections: dict[str, Any] | None = None,
+    chat_id: str | None = None,
+    *,
+    task: dict[str, Any] | None = None,
+    repo_area: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Send an informational Telegram message after OpenClaw investigation completes.
+
+    No approval requested — informational only. Patch implementation proceeds
+    automatically; approval is required only when patch is ready to deploy.
+
+    Returns ``{"sent": bool, "chat_id": str, "task_id": str, "message_id": int | None}``.
+    """
+    task_id = (task_id or "").strip()
+    title = (title or "(no title)")[:200]
+    target_chat = (chat_id or "").strip() or _get_default_chat_id()
+
+    if not task_id:
+        return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
+    if not target_chat:
+        return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    sections = sections or {}
+    if not sections or not any(
+        sections.get(k) and str(sections.get(k)).strip().lower() not in ("", "n/a")
+        for k in ("Task Summary", "Root Cause", "Recommended Fix", "_preamble")
+    ):
+        disk_sections = _load_sections_from_disk(task_id)
+        if disk_sections:
+            sections = disk_sections
+    with _STORE_LOCK:
+        _SECTIONS_CACHE[task_id] = sections
+
+    text = build_investigation_info_message(
+        task_id, title, sections, task=task, repo_area=repo_area,
+    )
+    if len(text) > TELEGRAM_TEXT_LIMIT:
+        text = text[: TELEGRAM_TEXT_LIMIT - 3] + "..."
+
+    # Informational only — no approval buttons. Optional View Report in verbose mode.
+    reply_markup = None
+    if _get_notification_mode() == "verbose":
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "📋 View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"}],
+            ]
+        }
+
+    sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
+    logger.info(
+        "send_investigation_complete_info task_id=%s sent=%s message_id=%s",
+        task_id, sent, message_id,
+    )
+
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(
+            "investigation_info_sent",
+            task_id=task_id,
+            task_title=title,
+            details={"chat_id": target_chat, "sent": sent, "message_id": message_id},
+        )
+    except Exception:
+        pass
+
+    return {"sent": sent, "chat_id": target_chat, "task_id": task_id, "message_id": message_id}
+
+
 def send_investigation_complete_approval(
     task_id: str,
     title: str,
@@ -1503,15 +1644,7 @@ def send_investigation_complete_approval(
     task: dict[str, Any] | None = None,
     repo_area: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Send a Telegram message after OpenClaw investigation completes.
-
-    Message includes: TASK, ROOT CAUSE, PROPOSED CHANGE, FILES AFFECTED,
-    BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED.
-
-    Buttons: [Approve] [Reject] [View Report]
-
-    Returns ``{"sent": bool, "chat_id": str, "task_id": str, "message_id": int | None}``.
-    """
+    """Legacy: Send approval request after investigation. Prefer send_investigation_complete_info."""
     task_id = (task_id or "").strip()
     title = (title or "(no title)")[:200]
     target_chat = (chat_id or "").strip() or _get_default_chat_id()
@@ -1606,7 +1739,7 @@ def build_deploy_approval_message(
         risks = f"Standard deploy risk ({risk} classification)"
 
     lines = [
-        "<b>🚀 Deploy approval</b>",
+        f"<b>{MSG_PREFIX_APPROVAL}</b> — Patch ready to deploy",
         "",
         f"<b>TASK</b>\n{title[:200]}",
         "",
@@ -1620,13 +1753,26 @@ def build_deploy_approval_message(
         "",
         f"<b>RISKS</b>\n{risks}",
         "",
-        f"<b>SCOPE</b> {scope}",
+        f"<b>SCOPE</b> {scope} · <b>RISK</b> {risk}",
         "",
-        f"<b>RISK CLASSIFICATION</b> {risk}",
-        "",
-        "<b>ACTION REQUESTED</b>\nApprove Deploy to trigger deployment, or Smoke Check first.",
+        "<b>ACTION REQUIRED</b>\nApprove Deploy to trigger deployment, or Smoke Check first.",
     ]
     return "\n".join(lines)
+
+
+def _should_skip_deploy_approval_dedup(task_id: str) -> bool:
+    """Return True if we already sent deploy approval for this task recently (deduplication)."""
+    now = time.time()
+    cutoff = now - (_DEPLOY_APPROVAL_DEDUP_HOURS * 3600)
+    with _STORE_LOCK:
+        last_sent = _DEPLOY_APPROVAL_SENT.get(task_id)
+        if last_sent and last_sent > cutoff:
+            logger.info(
+                "send_patch_deploy_approval: skipping duplicate task_id=%s last_sent=%.0fs ago",
+                task_id, now - last_sent,
+            )
+            return True
+    return False
 
 
 def send_patch_deploy_approval(
@@ -1640,6 +1786,9 @@ def send_patch_deploy_approval(
     repo_area: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a Telegram message after patch + tests complete.
+
+    Deduplication: does not re-send if already sent for this task in the last 24h.
+    If artifact/report is missing: sends concise info message instead of approval request.
 
     Message includes: TASK, CHANGE SUMMARY, FILES CHANGED, TEST STATUS,
     BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED.
@@ -1657,10 +1806,47 @@ def send_patch_deploy_approval(
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
 
+    # Deduplication: skip if we already sent for this task recently
+    if _should_skip_deploy_approval_dedup(task_id):
+        return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None, "skipped": "dedup"}
+
     sections = sections or {}
     if sections:
         with _STORE_LOCK:
             _SECTIONS_CACHE[task_id] = sections
+
+    # Load sections from disk if not provided
+    if not sections or not any(
+        sections.get(k) and str(sections.get(k)).strip().lower() not in ("", "n/a")
+        for k in ("Task Summary", "Root Cause", "Recommended Fix", "_preamble")
+    ):
+        disk_sections = _load_sections_from_disk(task_id)
+        if disk_sections:
+            sections = disk_sections
+
+    # If no valid artifact/report: send concise info instead of approval request
+    has_artifact = bool(sections and any(
+        sections.get(k) and str(sections.get(k)).strip().lower() not in ("", "n/a")
+        for k in ("Task Summary", "Root Cause", "Recommended Fix", "_preamble")
+    ))
+
+    if not has_artifact:
+        # Send concise info — no approval buttons; approval deferred until artifact available
+        msg = (
+            f"<b>{MSG_PREFIX_INFO}</b> — Patch validation complete\n\n"
+            f"<b>TASK</b>\n{title[:200]}\n\n"
+            "<i>No OpenClaw report/artifact cached. Check task notes or docs/agents/bug-investigations.</i>\n\n"
+            f"<b>Test status:</b> {str(test_summary or 'passed')[:200]}\n\n"
+            "<i>Approval deferred until valid report/artifact is available.</i>"
+        )
+        if len(msg) > TELEGRAM_TEXT_LIMIT:
+            msg = msg[: TELEGRAM_TEXT_LIMIT - 3] + "..."
+        sent, message_id = _send_telegram_message(target_chat, msg, None)
+        logger.info(
+            "send_patch_deploy_approval: sent info (no artifact/test) task_id=%s sent=%s",
+            task_id, sent,
+        )
+        return {"sent": sent, "chat_id": target_chat, "task_id": task_id, "message_id": message_id, "approval_skipped": True}
 
     text = build_deploy_approval_message(
         task_id, title, (test_summary or "").strip()[:500] or "(no test output)",
@@ -1683,6 +1869,10 @@ def send_patch_deploy_approval(
     }
 
     sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
+    if sent:
+        with _STORE_LOCK:
+            _DEPLOY_APPROVAL_SENT[task_id] = time.time()
+
     logger.info(
         "send_patch_deploy_approval task_id=%s sent=%s message_id=%s",
         task_id, sent, message_id,
@@ -1812,11 +2002,15 @@ def get_openclaw_report_for_task(task_id: str) -> str:
                             body = raw.split("---", 2)[-1].strip()
                         else:
                             body = raw.strip()
-                        if body and len(body) > 50:
+                        if body and len(body) > 30:
                             return f"<b>Investigation:</b>\n{body[:1200]}{'…' if len(body) > 1200 else ''}"
                     except Exception as e:
                         logger.debug("get_openclaw_report_for_task: md read failed %s: %s", md_path, e)
     except Exception as e:
         logger.debug("get_openclaw_report_for_task: sidecar lookup failed task_id=%s: %s", task_id, e)
 
-    return f"<i>No OpenClaw report cached for task {task_id}.\nCheck the task notes in Notion or docs/agents/ for the full report.</i>"
+    doc_path = f"docs/agents/bug-investigations/notion-bug-{task_id}.md"
+    return (
+        f"<i>No OpenClaw report cached for task {task_id}.</i>\n"
+        f"Check: Notion task notes or <code>{doc_path}</code> in the repo."
+    )

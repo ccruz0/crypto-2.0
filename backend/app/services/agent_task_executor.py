@@ -1010,24 +1010,40 @@ def execute_prepared_notion_task(
         _append_notion_page_comment(
             task_id,
             f"[{executed_at}] {exec_msg}\n"
-            "Investigation complete — waiting for human patch approval via Telegram.",
+            "Investigation complete — advancing to ready-for-patch (approval only when patch ready).",
         )
         sections = (prepared_task or {}).get("_openclaw_sections") or {}
         try:
-            from app.services.agent_telegram_approval import send_investigation_complete_approval
-            tg = send_investigation_complete_approval(
+            from app.services.agent_telegram_approval import send_investigation_complete_info
+            tg = send_investigation_complete_info(
                 task_id, task_title, sections=sections,
                 task=task, repo_area=(prepared_task or {}).get("repo_area"),
             )
             logger.info(
-                "execute_prepared_notion_task: send_investigation_complete_approval "
+                "execute_prepared_notion_task: send_investigation_complete_info "
                 "task_id=%s sent=%s message_id=%s",
                 task_id, tg.get("sent"), tg.get("message_id"),
             )
         except Exception as exc:
             logger.warning(
-                "execute_prepared_notion_task: send_investigation_complete_approval "
+                "execute_prepared_notion_task: send_investigation_complete_info "
                 "failed task_id=%s: %s",
+                task_id, exc,
+            )
+        # Auto-advance to ready-for-patch — approval required only when patch is ready to deploy
+        try:
+            from app.services.notion_tasks import TASK_STATUS_READY_FOR_PATCH
+            patch_ok = update_notion_task_status(
+                task_id, TASK_STATUS_READY_FOR_PATCH,
+                append_comment=f"[{executed_at}] Auto-advanced to ready-for-patch. Scheduler will run validation.",
+            )
+            logger.info(
+                "execute_prepared_notion_task: auto-advanced to ready-for-patch task_id=%s ok=%s",
+                task_id, patch_ok,
+            )
+        except Exception as exc:
+            logger.warning(
+                "execute_prepared_notion_task: auto-advance to ready-for-patch failed task_id=%s: %s",
                 task_id, exc,
             )
         try:
@@ -1036,7 +1052,7 @@ def execute_prepared_notion_task(
                 "extended_investigation_complete",
                 task_id=task_id,
                 task_title=task_title,
-                details={"status": "investigation-complete"},
+                details={"status": "ready-for-patch", "auto_advanced": True},
             )
         except Exception:
             pass
@@ -1044,7 +1060,7 @@ def execute_prepared_notion_task(
             True, True, apply_summary,
             False, False, False, "",
             False, False, "",
-            "investigation-complete", True,
+            "ready-for-patch", True,
         )
 
     # ----- Step 2 & 3: move to testing and append execution summary
