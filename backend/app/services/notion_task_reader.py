@@ -104,6 +104,12 @@ def _extract_url(prop_value: Any) -> str:
     return (prop_value.get("url") or "").strip()
 
 
+def _normalize_status_from_notion(raw_status: str) -> str:
+    """Map Notion Status (display or internal) to backend internal value (lowercase, hyphenated)."""
+    from app.services.notion_tasks import notion_status_from_display
+    return notion_status_from_display(raw_status or "")
+
+
 def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
     """Parse a Notion page object into a normalized task dict."""
     props = page.get("properties") or {}
@@ -139,12 +145,15 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
         or _extract_plain_text(props.get("Description"))
     )
 
+    raw_status = _extract_plain_text(props.get("Status"))
+    normalized_status = _normalize_status_from_notion(raw_status) if raw_status else ""
+
     task = {
         "id": page.get("id", ""),
         "task": task_title,
         "project": _extract_plain_text(props.get("Project")),
         "type": parsed_type,
-        "status": _extract_plain_text(props.get("Status")),
+        "status": normalized_status or raw_status,
         "priority": _extract_plain_text(props.get("Priority")),
         "source": _extract_plain_text(props.get("Source")),
         "details": task_details,
@@ -229,15 +238,13 @@ def get_pending_notion_tasks(
         logger.warning("Notion task reader skipped: NOTION_TASK_DB not set")
         return []
 
-    # Notion's equals filter is case-sensitive.  The writer uses "planned" but the
-    # UI may store it as "Planned".  We query for the canonical lowercase value first;
-    # if that returns zero results we retry with the capitalised variant so manually-
-    # created tasks are not missed.
+    # Status in Notion is a Select property: use only select filter with display names.
+    from app.services.notion_tasks import notion_status_to_display
+    _INTERNAL_PICKABLE = ("planned", "backlog", "ready-for-investigation")
     _STATUS_VARIANTS = [
-        "planned", "Planned",
-        "backlog", "Backlog",
-        "ready-for-investigation", "Ready for Investigation",
-    ]
+        notion_status_to_display(s) for s in _INTERNAL_PICKABLE
+    ] + ["Planned", "Backlog", "Ready for Investigation"]  # fallback display names
+    _STATUS_VARIANTS = list(dict.fromkeys(_STATUS_VARIANTS))  # dedupe
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -252,38 +259,69 @@ def get_pending_notion_tasks(
         type_filter,
     )
 
-    def _query_pages(payload: dict[str, Any], client: httpx.Client) -> list[dict[str, Any]] | None:
-        """Run a paginated Notion query.  Returns list of parsed pages, or None on HTTP error."""
-        pages: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
-        while True:
-            if cursor:
-                payload["start_cursor"] = cursor
-            else:
-                payload.pop("start_cursor", None)
-            response = client.post(
-                f"{NOTION_API_BASE}/databases/{database_id}/query",
-                json=payload,
-                headers=headers,
-            )
-            if response.status_code != 200:
-                try:
-                    err_body = response.text[:500]
-                except Exception:
-                    err_body = ""
-                logger.warning(
-                    "Notion query returned status=%d body=%s",
-                    response.status_code,
-                    err_body,
+    def _query_pages(
+        payload: dict[str, Any],
+        client: httpx.Client,
+        *,
+        status_filter_keys: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]] | None:
+        """Run a paginated Notion query.  Returns list of parsed pages, or None on HTTP error.
+
+        If status_filter_keys is provided (e.g. ["status", "select"]), on 400 validation_error
+        we try the next key (for Status property: Notion uses "status" type or "select" type).
+        """
+        filter_keys = status_filter_keys or [None]
+        equals_val = ""
+        if "filter" in payload:
+            flt = payload["filter"]
+            if isinstance(flt, dict) and flt.get("property") == "Status":
+                equals_val = (flt.get("status") or flt.get("select") or {}).get("equals", "")
+
+        for key_idx, filter_key in enumerate(filter_keys):
+            work_payload = dict(payload)
+            if filter_key and equals_val and "filter" in work_payload:
+                work_payload["filter"] = {
+                    "property": "Status",
+                    filter_key: {"equals": equals_val},
+                }
+
+            pages = []
+            cursor = None
+            while True:
+                if cursor:
+                    work_payload["start_cursor"] = cursor
+                else:
+                    work_payload.pop("start_cursor", None)
+                response = client.post(
+                    f"{NOTION_API_BASE}/databases/{database_id}/query",
+                    json=work_payload,
+                    headers=headers,
                 )
-                return None
-            data = response.json()
-            for page in data.get("results") or []:
-                pages.append(page)
-            cursor = data.get("next_cursor")
-            if not cursor or not data.get("has_more"):
-                break
-        return pages
+                if response.status_code != 200:
+                    try:
+                        err_body = response.text[:500]
+                    except Exception:
+                        err_body = ""
+                    is_validation = "validation_error" in (err_body or "").lower()
+                    if is_validation and key_idx + 1 < len(filter_keys):
+                        logger.debug(
+                            "Notion query 400 with filter key %r, trying next: %s",
+                            filter_key, err_body[:200],
+                        )
+                        break
+                    logger.warning(
+                        "Notion query returned status=%d body=%s",
+                        response.status_code,
+                        err_body,
+                    )
+                    return None
+
+                data = response.json()
+                for page in data.get("results") or []:
+                    pages.append(page)
+                cursor = data.get("next_cursor")
+                if not cursor or not data.get("has_more"):
+                    return pages
 
     all_tasks: list[dict[str, Any]] = []
 
@@ -292,28 +330,27 @@ def get_pending_notion_tasks(
             raw_pages: list[dict[str, Any]] | None = None
 
             for status_variant in _STATUS_VARIANTS:
-                # Try rich_text filter first, then select fallback
-                for filter_type, filter_payload in [
-                    ("rich_text", {"filter": {"property": "Status", "rich_text": {"equals": status_variant}}, "page_size": 100}),
-                    ("select", {"filter": {"property": "Status", "select": {"equals": status_variant}}, "page_size": 100}),
-                ]:
-                    raw_pages = _query_pages(filter_payload, client)
-                    if raw_pages is not None:
-                        logger.info(
-                            "Notion query succeeded filter_type=%s status_variant=%r raw_pages=%d",
-                            filter_type,
-                            status_variant,
-                            len(raw_pages),
-                        )
-                        break
-                    logger.debug(
-                        "Notion query failed for filter_type=%s status_variant=%r, trying next",
-                        filter_type,
+                # Status in Notion can be "status" type (native) or "select" type (legacy).
+                # Try "status" first, fall back to "select" on 400 validation_error.
+                filter_payload = {
+                    "filter": {"property": "Status", "select": {"equals": status_variant}},
+                    "page_size": 100,
+                }
+                raw_pages = _query_pages(
+                    filter_payload, client,
+                    status_filter_keys=["status", "select"],
+                )
+                if raw_pages is not None:
+                    logger.info(
+                        "Notion query succeeded status_variant=%r raw_pages=%d",
                         status_variant,
+                        len(raw_pages),
                     )
-
-                if raw_pages:
                     break
+                logger.debug(
+                    "Notion query failed for status_variant=%r, trying next",
+                    status_variant,
+                )
 
             if raw_pages is None:
                 logger.error(
@@ -399,6 +436,8 @@ def get_tasks_by_status(
         logger.warning("get_tasks_by_status skipped: missing Notion config")
         return []
 
+    from app.services.notion_tasks import notion_status_to_display
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -407,38 +446,49 @@ def get_tasks_by_status(
 
     all_tasks: list[dict[str, Any]] = []
 
+    def _query_by_status_filter(display_status: str, page_size: int) -> list[dict[str, Any]]:
+        """Query by Status; try status filter first (Notion native), then select (legacy)."""
+        for filter_key in ("status", "select"):
+            payload = {
+                "filter": {"property": "Status", filter_key: {"equals": display_status}},
+                "page_size": page_size,
+            }
+            try:
+                resp = client.post(
+                    f"{NOTION_API_BASE}/databases/{database_id}/query",
+                    json=payload,
+                    headers=headers,
+                )
+            except Exception as req_err:
+                logger.debug("get_tasks_by_status: request failed filter_key=%r: %s", filter_key, req_err)
+                continue
+            if resp.status_code == 200:
+                return [page for page in (resp.json().get("results") or [])]
+            if resp.status_code == 400 and "validation_error" in (resp.text or "").lower():
+                logger.debug("get_tasks_by_status: 400 with filter_key=%r, trying next", filter_key)
+                continue
+            logger.debug(
+                "get_tasks_by_status: HTTP %d for status=%r filter_key=%r",
+                resp.status_code, display_status, filter_key,
+            )
+        return []
+
     try:
         with httpx.Client(timeout=15.0) as client:
             for status in statuses:
                 if len(all_tasks) >= max_results:
                     break
-                for filter_type in ("rich_text", "select"):
-                    prop_filter = {filter_type: {"equals": status}}
-                    payload = {
-                        "filter": {"property": "Status", **prop_filter},
-                        "page_size": min(max_results - len(all_tasks), 100),
-                    }
-                    try:
-                        resp = client.post(
-                            f"{NOTION_API_BASE}/databases/{database_id}/query",
-                            json=payload,
-                            headers=headers,
-                        )
-                    except Exception as req_err:
-                        logger.debug("get_tasks_by_status: request failed status=%r: %s", status, req_err)
-                        continue
-                    if resp.status_code != 200:
-                        logger.debug(
-                            "get_tasks_by_status: HTTP %d for status=%r filter_type=%s",
-                            resp.status_code, status, filter_type,
-                        )
-                        continue
-                    for page in (resp.json().get("results") or []):
-                        all_tasks.append(_parse_page(page))
-                        if len(all_tasks) >= max_results:
-                            break
-                    if all_tasks:
+                display_status = notion_status_to_display(status) or status
+                pages = _query_by_status_filter(
+                    display_status,
+                    min(max_results - len(all_tasks), 100),
+                )
+                for page in pages:
+                    all_tasks.append(_parse_page(page))
+                    if len(all_tasks) >= max_results:
                         break
+                if all_tasks:
+                    break
     except Exception as exc:
         logger.warning("get_tasks_by_status failed: %s", exc)
 
