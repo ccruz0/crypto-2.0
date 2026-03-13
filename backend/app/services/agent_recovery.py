@@ -279,14 +279,22 @@ def _investigation_artifacts_exist(task_id: str) -> bool:
     """
     True if required investigation artifacts exist for this task.
     Checks known paths for bug-investigation, generated-notes, and triage artifacts.
+    Uses get_writable_bug_investigations_dir() for bug-investigations (same as apply/validate).
     """
     task_id = (task_id or "").strip()
     if not task_id:
         return False
     try:
-        from app.services._paths import workspace_root
+        from app.services._paths import workspace_root, get_writable_bug_investigations_dir
         root = workspace_root()
-        for tmpl in _INVESTIGATION_ARTIFACT_PATHS:
+        # Bug-investigations: check writable dir (repo or fallback)
+        bug_dir = get_writable_bug_investigations_dir()
+        bug_path = bug_dir / f"notion-bug-{task_id}.md"
+        if bug_path.is_file() and bug_path.stat().st_size > 0:
+            return True
+        # Generated-notes and triage: check repo paths
+        for tmpl in ("docs/agents/generated-notes/notion-task-{task_id}.md",
+                     "docs/runbooks/triage/notion-triage-{task_id}.md"):
             path = root / tmpl.format(task_id=task_id)
             if path.is_file() and path.stat().st_size > 0:
                 return True
@@ -478,17 +486,25 @@ _MIN_CONTENT_CHARS = 200  # Minimum body length for valid investigation note
 
 
 def _get_artifact_paths(task_id: str) -> list[tuple[Path, Path]]:
-    """Return list of (md_path, sidecar_path) for each artifact config."""
+    """Return list of (md_path, sidecar_path) for each artifact config.
+
+    Uses get_writable_bug_investigations_dir() for bug-investigations so recovery
+    looks in the same path as apply/validate (repo or fallback when docs/ not writable).
+    """
     task_id = (task_id or "").strip()
     if not task_id:
         return []
     try:
-        from app.services._paths import workspace_root
+        from app.services._paths import workspace_root, get_writable_bug_investigations_dir
         root = workspace_root()
         out: list[tuple[Path, Path]] = []
         for subdir, prefix in _ARTIFACT_CONFIGS:
-            md_path = root / subdir / f"{prefix}-{task_id}.md"
-            sidecar_path = root / subdir / f"{prefix}-{task_id}.sections.json"
+            if subdir == "docs/agents/bug-investigations":
+                base = get_writable_bug_investigations_dir()
+            else:
+                base = root / subdir
+            md_path = base / f"{prefix}-{task_id}.md"
+            sidecar_path = base / f"{prefix}-{task_id}.sections.json"
             out.append((md_path, sidecar_path))
         return out
     except Exception as e:

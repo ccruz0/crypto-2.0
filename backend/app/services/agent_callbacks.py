@@ -712,6 +712,10 @@ _OPENCLAW_FALLBACK_MARKERS = (
     "openclaw returned empty",
     "connection failed",
     "timeout after",
+    "insufficient credit",
+    "rate limit",
+    "payment required",
+    "quota exceeded",
 )
 
 _MIN_INVESTIGATION_CONTENT_CHARS = 200
@@ -725,10 +729,14 @@ def _call_openclaw_once(
     user_prompt: str,
     instructions: str,
     task_id: str,
+    model_chain_override: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Single OpenClaw call + quality gate.  Returns (result_or_None, error_reason)."""
     try:
-        result = send_to_openclaw(user_prompt, task_id=task_id, instructions=instructions)
+        kwargs: dict[str, Any] = {"task_id": task_id, "instructions": instructions}
+        if model_chain_override is not None:
+            kwargs["model_chain_override"] = model_chain_override
+        result = send_to_openclaw(user_prompt, **kwargs)
     except Exception as e:
         return None, f"OpenClaw error: {e}"
 
@@ -809,6 +817,16 @@ def _apply_via_openclaw(
         except Exception:
             pass
 
+    # Task-type routing: use cheap chain for doc/monitoring when configured
+    try:
+        from app.services.openclaw_client import get_apply_model_chain_override
+        chain_override = get_apply_model_chain_override(prepared_task, save_subdir)
+    except Exception as e:
+        logger.debug("get_apply_model_chain_override failed: %s — using main chain", e)
+        chain_override = None
+    if chain_override:
+        logger.info("OpenClaw apply: using cheap chain for task %s save_subdir=%s", task_id, save_subdir)
+
     last_error = ""
     result: dict[str, Any] | None = None
     max_attempts = 1 + _OPENCLAW_MAX_RETRIES
@@ -816,6 +834,7 @@ def _apply_via_openclaw(
     for attempt in range(1, max_attempts + 1):
         result, last_error = _call_openclaw_once(
             send_to_openclaw, user_prompt, instructions, task_id,
+            model_chain_override=chain_override,
         )
         if result is not None:
             break
@@ -849,7 +868,7 @@ def _apply_via_openclaw(
     if sections:
         prepared_task["_openclaw_sections"] = sections
 
-    out_dir = root / save_subdir
+    out_dir = _note_dir_for_subdir(save_subdir)
     _ensure_dir(out_dir)
 
     note_path = out_dir / f"{file_prefix}-{task_id}.md"
@@ -892,6 +911,14 @@ def _apply_via_openclaw(
     from app.services.openclaw_client import INVESTIGATION_SECTIONS
     found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
     logger.info("OpenClaw analysis saved for task %s at %s (%d chars, sections=%d)", task_id, note_path, len(content), len(found_sections))
+    # Cost telemetry: log model and token usage per task when gateway provides it (for cost/optimization visibility)
+    usage = result.get("usage")
+    model_used = result.get("model_used")
+    if usage or model_used:
+        logger.info(
+            "openclaw_apply_cost task_id=%s model_used=%s usage=%s",
+            task_id, model_used or "unknown", usage,
+        )
     return {"success": True, "summary": f"[OpenClaw] {summary}", "sections": sections}
 
 
