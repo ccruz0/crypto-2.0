@@ -23,6 +23,7 @@ ATP_REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
 OPENCLAW_TRUSTED_PROXIES="${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}"
 OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-4o-mini}"
 OPENCLAW_MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-haiku-20241022,anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o,anthropic/claude-sonnet-4-20250514}"
+OPENCLAW_ACP_DEFAULT_AGENT="${OPENCLAW_ACP_DEFAULT_AGENT:-codex}"
 
 do_build() {
   echo "==> Building wrapper image (openclaw-with-origins:latest)"
@@ -59,8 +60,9 @@ do_deploy() {
   fi
   write_provider_env="${write_provider_env}env_path.write_text(chr(10).join(lines.values())+chr(10)); print(\"Provider keys written to \"+str(env_path))'"
 
-  # Keep existing gateway auth token across redeploys; update allowedOrigins + trustedProxies + agents.defaults.model (cheap-first).
-  build_cfg="OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES OPENCLAW_MODEL_PRIMARY=$OPENCLAW_MODEL_PRIMARY OPENCLAW_MODEL_FALLBACKS=$OPENCLAW_MODEL_FALLBACKS OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH python3 -c 'import json, os, pathlib, secrets; origins=[s.strip() for s in os.environ.get(\"OPENCLAW_ALLOWED_ORIGINS\", \"\").split(\",\") if s.strip()]; proxies=[s.strip() for s in os.environ.get(\"OPENCLAW_TRUSTED_PROXIES\", \"\").split(\",\") if s.strip()]; primary=os.environ.get(\"OPENCLAW_MODEL_PRIMARY\", \"openai/gpt-4o-mini\").strip(); fallbacks=[f.strip() for f in os.environ.get(\"OPENCLAW_MODEL_FALLBACKS\", \"\").split(\",\") if f.strip()]; p=pathlib.Path(os.environ[\"OPENCLAW_CONFIG_PATH\"]); p.parent.mkdir(parents=True, exist_ok=True); cfg={}; \
+  # Write config to home-data (gateway reads ~/.openclaw/openclaw.json = OPENCLAW_HOME_DIR). Match docker-compose path.
+  OPENCLAW_CONFIG_IN_CONTAINER="/home/node/.openclaw/openclaw.json"
+  build_cfg="OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES OPENCLAW_MODEL_PRIMARY=$OPENCLAW_MODEL_PRIMARY OPENCLAW_MODEL_FALLBACKS=$OPENCLAW_MODEL_FALLBACKS OPENCLAW_ACP_DEFAULT_AGENT=$OPENCLAW_ACP_DEFAULT_AGENT OPENCLAW_HOME_DIR=$OPENCLAW_HOME_DIR python3 -c 'import json, os, pathlib, secrets; origins=[s.strip() for s in os.environ.get(\"OPENCLAW_ALLOWED_ORIGINS\", \"\").split(\",\") if s.strip()]; proxies=[s.strip() for s in os.environ.get(\"OPENCLAW_TRUSTED_PROXIES\", \"\").split(\",\") if s.strip()]; primary=os.environ.get(\"OPENCLAW_MODEL_PRIMARY\", \"openai/gpt-4o-mini\").strip(); fallbacks=[f.strip() for f in os.environ.get(\"OPENCLAW_MODEL_FALLBACKS\", \"\").split(\",\") if f.strip()]; acp_agent=os.environ.get(\"OPENCLAW_ACP_DEFAULT_AGENT\", \"codex\").strip(); p=pathlib.Path(os.environ[\"OPENCLAW_HOME_DIR\"])/\"openclaw.json\"; p.parent.mkdir(parents=True, exist_ok=True); cfg={}; \
 exists=p.exists(); \
 cfg=(json.loads(p.read_text()) if exists else {}); \
 gateway=cfg.setdefault(\"gateway\", {}); \
@@ -74,11 +76,12 @@ auth[\"token\"]=token; \
 agents=cfg.setdefault(\"agents\", {}); \
 defaults=agents.setdefault(\"defaults\", {}); \
 defaults[\"model\"]={\"primary\": primary, \"fallbacks\": fallbacks}; \
+acp=cfg.setdefault(\"acp\", {}); acp[\"defaultAgent\"]=acp_agent; \
 p.write_text(json.dumps(cfg), encoding=\"utf-8\"); \
 print(\"OPENCLAW_GATEWAY_TOKEN=\"+token)'"
-  # Host port must match PROD nginx proxy_pass (default 8080 — same as docker-compose.openclaw.yml).
-  run1="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH$model_env_flags -v $OPENCLAW_CONFIG_DIR:$OPENCLAW_CONFIG_DIR -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE"
-  run2="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH$model_env_flags -v $OPENCLAW_CONFIG_DIR:$OPENCLAW_CONFIG_DIR -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE_FALLBACK"
+  # Host port must match PROD nginx proxy_pass (default 8080). Config path matches docker-compose: /home/node/.openclaw/openclaw.json
+  run1="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE"
+  run2="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE_FALLBACK"
   write_env_esc=$(echo "$write_provider_env" | sed 's/\\/\\\\/g; s/"/\\"/g')
   build_cfg_esc=$(echo "$build_cfg" | sed 's/\\/\\\\/g; s/"/\\"/g')
   run1_esc=$(echo "$run1" | sed 's/\\/\\\\/g; s/"/\\"/g')
