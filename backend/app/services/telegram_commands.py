@@ -5197,6 +5197,35 @@ def _handle_agent_approval_callback(
             return
         logger.info(f"[TG][APPROVAL] Approved task_id={task_id} by {who}, starting execution...")
         _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\nStarting execution…", task_id)
+
+        # If task is already in investigation-complete, advancing to ready-for-patch and running
+        # the patch continuation avoids re-running the full executor (which would send approval again).
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+            from app.services.notion_tasks import update_notion_task_status, TASK_STATUS_INVESTIGATION_COMPLETE
+            from app.services.agent_task_executor import advance_ready_for_patch_task
+            task = get_notion_task_by_id(task_id)
+            current_status = (task or {}).get("status") or ""
+            is_inv_complete = (
+                isinstance(current_status, str)
+                and (
+                    current_status.strip().lower() == TASK_STATUS_INVESTIGATION_COMPLETE.lower()
+                    or ("investigation" in current_status.lower() and "complete" in current_status.lower())
+                )
+            )
+            if is_inv_complete:
+                ok = update_notion_task_status(task_id, "ready-for-patch")
+                if ok:
+                    r = advance_ready_for_patch_task(task_id)
+                    status = r.get("final_status") or r.get("stage") or "ready-for-patch"
+                    logger.info(f"[TG][APPROVAL] Advanced from investigation-complete task_id={task_id}, result={r.get('ok')}, status={status}")
+                    _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\nAdvanced to patch. Status: <b>{status}</b>", task_id)
+                else:
+                    _edit_approval_card(chat_id, message_id, f"✅ <b>Approved</b> by {who}\nNotion status update failed.", task_id)
+                return
+        except Exception as adv_err:
+            logger.debug(f"[TG][APPROVAL] advance from investigation-complete failed, falling back to full execution: {adv_err}")
+
         run_result = execute_prepared_task_from_telegram_decision(task_id)
         if run_result.get("executed"):
             exec_result = run_result.get("execution_result") or {}
