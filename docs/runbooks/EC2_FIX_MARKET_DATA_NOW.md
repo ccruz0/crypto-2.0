@@ -2,6 +2,8 @@
 
 **Goal:** Dashboard receives market data; `/api/health/system` shows market_data PASS + market_updater PASS. Restore verify.sh without fragile heredoc pastes. If the blocker is **missing `watchlist_items` table**, use [EC2_DB_BOOTSTRAP.md](EC2_DB_BOOTSTRAP.md) (run `scripts/db/bootstrap.sh` and ensure .env/.env.aws).
 
+**Automatic run:** When the health alert hits max remediation attempts for a market_data/market_updater failure, it runs **`scripts/selfheal/full_fix_market_data.sh`** in the background, which performs the same steps as this runbook (restore verify.sh, ensure .env, restart Docker and stack, health/fix, update-cache, bring up market-updater, second round of fix/cache). Use this runbook if the automatic fix did not resolve the issue or you need to run the steps manually (e.g. after changing config or bootstrap).
+
 **Repo path on EC2:** `/home/ubuntu/automated-trading-platform`
 
 ---

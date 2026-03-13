@@ -1,5 +1,16 @@
 # ATP Health Alert: streak_fail_3
 
+## Purpose of these messages
+
+- **ATP Health Alert** — Tells you the platform has failed health checks several times in a row. The snapshot shows *what* failed (e.g. `market_data: FAIL`, `market_updater_age_min: 3799` = data is ~63 hours old). **Value:** you know something is wrong and which runbook to use; without it you might not notice until you check the dashboard.
+- **ATP full self-heal starting** — Auto-fix (restart market-updater, update-cache) was tried 3 times and didn’t fix it, so the system is now running a heavier recovery (full stack restart). **Value:** you know automated recovery has been tried and may need a manual fix.
+
+You get them **repeatedly** when the underlying issue isn’t fixed: escalation alerts are re-sent every **2 hours** (`ATP_HEALTH_ESCALATION_COOLDOWN_MINUTES`) so you’re reminded until the incident is resolved. To reduce noise you can:
+- **Silence remediation-only messages** (keep the main Health Alert): set `ATP_HEALTH_REMEDIATION_TELEGRAM=0` where the alert runs — you won’t get “remediation starting”, “remediation finished still FAIL”, or “full self-heal starting”, but you will still get the main Health Alert and the “✅ recovered” when it’s fixed.
+- **Fewer escalation pings**: increase `ATP_HEALTH_ESCALATION_COOLDOWN_MINUTES` (e.g. 240 = every 4 hours). See “Alert rule reference” below for env vars.
+
+---
+
 **When you see:** Telegram message "🔄 ATP Health Alert" with `Rule: streak_fail_3 (streak=3)` and snapshot lines like:
 
 ```
@@ -83,4 +94,5 @@ Follow **[EC2_FIX_MARKET_DATA_NOW.md](EC2_FIX_MARKET_DATA_NOW.md)**:
 - Remediation: `ATP_HEALTH_REMEDIATION_ENABLED` (default 1), `ATP_HEALTH_REMEDIATION_GRACE_SECONDS` (default **300**)
 - `remediate_market_data.sh`: skips `POST /api/health/fix` before `update-cache` by default (`ATP_REMEDIATE_SKIP_HEALTH_FIX=1`) so the backend is not restarted while `update-cache` runs; `ATP_REMEDIATE_UPDATE_CACHE_TIMEOUT_SEC` default **300**; one retry after 30s if empty reply. Set `ATP_REMEDIATE_RUN_HEALTH_FIX=1` to run health/fix **after** update-cache., `ATP_HEALTH_REMEDIATION_MAX_ATTEMPTS` (default 3), `ATP_HEALTH_ESCALATION_COOLDOWN_MINUTES` (default 120). State file: `ATP_HEALTH_ALERT_STATE_FILE` (default `/var/lib/atp/health_alert_state.json`).
 - **Telegram during remediation:** `ATP_HEALTH_REMEDIATION_TELEGRAM` (default 1) sends TG when remediation **starts** (what will run), when it **finishes still FAIL** (so you know to fix manually or wait), when **full heal** starts after max attempts, and when **recovered** (including after your manual fix). Set to `0` to disable those extra messages (escalation alert still sent per cooldown).
+- **Manual “Run full fix now” button:** Escalation and “full fix/heal” messages include a **▶ Run full fix now** button. If the automatic run did not start, tap it; the backend writes a trigger file and the next health snapshot run (within ~5 min) will run `full_fix_market_data.sh`. You get a confirmation: “✅ Full fix triggered. It will run on the next health check (within ~5 min). You'll get ✅ recovered when health returns.” Trigger file: `ATP_TRIGGER_FULL_FIX_PATH` (default `$REPO_ROOT/logs/trigger_full_fix`).
 - Health snapshot timer: every **5 minutes** (so recovery is reflected in the log soon after self-heal). Heal-on-alert log: `/var/log/atp/health_alert_heal.log`.

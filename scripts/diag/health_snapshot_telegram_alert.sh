@@ -72,6 +72,26 @@ send_tg() {
     --data-urlencode "text=$text" 2>/dev/null || true
 }
 
+# Send Telegram message with "Run full fix now" button (callback_data atp_run_full_fix).
+# Backend handles the click and writes a trigger file; next health run will run full_fix_market_data.sh.
+send_tg_with_button() {
+  local text="$1"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "ATP health alert (dry run): would send with button: $text"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    send_tg "$text"
+    return 0
+  fi
+  local payload
+  payload="$(jq -n --arg chat_id "${TELEGRAM_CHAT_ID}" --arg text "$text" \
+    '{chat_id:$chat_id,text:$text,reply_markup:{inline_keyboard:[[{text:"▶ Run full fix now",callback_data:"atp_run_full_fix"}]]}}')"
+  curl -sS -X POST --max-time 10 -H "Content-Type: application/json" \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d "$payload" 2>/dev/null || true
+}
+
 log_heal() {
   echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $*" >> /var/log/atp/health_alert_heal.log 2>/dev/null || true
 }
@@ -111,9 +131,26 @@ state_merge() {
   jq --arg ts "$now_ts" "$2" "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null && mv "${STATE_FILE}.tmp" "$STATE_FILE" 2>/dev/null || true
 }
 
+# If manual trigger was requested from Telegram button, run full fix once and clear trigger.
+TRIGGER_FULL_FIX_FILE="${ATP_TRIGGER_FULL_FIX_FILE:-$REPO_ROOT/logs/trigger_full_fix}"
+run_triggered_full_fix() {
+  if [ -f "$TRIGGER_FULL_FIX_FILE" ]; then
+    log_heal "event=manual_trigger_run trigger_file=$TRIGGER_FULL_FIX_FILE"
+    rm -f "$TRIGGER_FULL_FIX_FILE"
+    if [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
+      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
+    fi
+    return 0
+  fi
+  return 1
+}
+
 main() {
   cd "$REPO_ROOT" || true
   load_telegram_env
+
+  # Manual "Run full fix now" from Telegram: run once and continue with normal health check
+  run_triggered_full_fix || true
 
   if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
     resolve_telegram_token || true
@@ -338,13 +375,24 @@ FAIL count (${TIME_WINDOW_MINS}m): ${fail_count:-0}"
 Remediation attempts so far: ${attempts}/${MAX_REMEDIATION_ATTEMPTS}
 You should have received TG for each remediation start/finish; see /var/log/atp/health_alert_heal.log"
   fi
+  # One-line "what this means / what to do" so the alert has clear purpose
+  if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+    msg="$msg
+
+→ Market data is failing (data may be hours old). Action: runbook EC2_FIX_MARKET_DATA_NOW — SSH to prod, restart stack + market-updater, POST update-cache."
+  fi
   msg="$msg
 
 Last snapshot: ${last_ts:-n/a}
 verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_updater: ${last_mu:-n/a}
 market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
 
-  send_tg "$msg"
+  # If market incident, add button to manually start full fix (in case automatic did not start)
+  if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+    send_tg_with_button "$msg"
+  else
+    send_tg "$msg"
+  fi
 
   if command -v jq >/dev/null 2>&1; then
     health_alert_payload="$(jq -n \
@@ -386,15 +434,25 @@ market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
 
   log_heal "event=escalation_alert_sent reason=$reason attempts=${attempts:-0}"
 
-  # Optional: background full heal only if remediation script not enough (heavy)
-  if [ "$DRY_RUN" != "1" ] && [ -x "$REPO_ROOT/scripts/selfheal/heal.sh" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
-    if [ "$REMEDIATION_TG" = "1" ]; then
-      send_tg "🔁 ATP full self-heal starting in background ($now_ts)
+  # After max remediation attempts: run runbook steps automatically (market incidents) or heal.sh (other/disk)
+  if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
+    if is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
+      if [ "$REMEDIATION_TG" = "1" ]; then
+        send_tg_with_button "🔁 ATP full fix (runbook) running in background ($now_ts)
+Targeted remediation reached max attempts ($MAX_REMEDIATION_ATTEMPTS). Running full_fix_market_data.sh (restore verify.sh, env, restart stack + update-cache).
+
+→ If it did not start, tap the button below to run it on the next health check. You will get ✅ recovered when health returns OK. Log: /var/log/atp/health_alert_heal.log"
+      fi
+      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="$BASE" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
+    elif [ -x "$REPO_ROOT/scripts/selfheal/heal.sh" ]; then
+      if [ "$REMEDIATION_TG" = "1" ]; then
+        send_tg_with_button "🔁 ATP full self-heal starting in background ($now_ts)
 Targeted remediation reached max attempts ($MAX_REMEDIATION_ATTEMPTS). Running heal.sh (stack restart / disk cleanup as needed).
 
-You will get ✅ recovered when health returns OK. Log: /var/log/atp/health_alert_heal.log"
+→ If it did not start, tap the button below to run full fix on the next health check. You will get ✅ recovered when health returns OK. Log: /var/log/atp/health_alert_heal.log"
+      fi
+      ( cd "$REPO_ROOT" && nohup ./scripts/selfheal/heal.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     fi
-    ( cd "$REPO_ROOT" && nohup ./scripts/selfheal/heal.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
   fi
 
   exit 0

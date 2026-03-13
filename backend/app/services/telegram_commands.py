@@ -4480,6 +4480,25 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         if callback_data == "noop":
             return
+        elif callback_data == "atp_run_full_fix":
+            # Manual "Run full fix now" from ATP health alert: write trigger file; health script runs full_fix_market_data.sh on next run
+            trigger_path = os.environ.get("ATP_TRIGGER_FULL_FIX_PATH", "/app/logs/trigger_full_fix")
+            try:
+                os.makedirs(os.path.dirname(trigger_path), exist_ok=True)
+                with open(trigger_path, "w") as f:
+                    f.write(f"{time.time()}\n")
+                send_command_response(
+                    chat_id,
+                    "✅ Full fix triggered. It will run on the next health check (within ~5 min). You'll get ✅ recovered when health returns.",
+                )
+                logger.info(f"[TG][ATP] Wrote trigger file for full fix: {trigger_path}")
+            except OSError as e:
+                send_command_response(
+                    chat_id,
+                    f"⚠️ Could not write trigger file (run full fix manually on the server). Error: {e}",
+                )
+                logger.warning(f"[TG][ATP] Failed to write trigger file {trigger_path}: {e}")
+            return
         elif callback_data == "menu:watchlist":
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:watchlist' to show_watchlist_menu, chat_id={chat_id}, message_id={message_id}")
             show_watchlist_menu(chat_id, db, page=1, message_id=message_id)
