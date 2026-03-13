@@ -4480,8 +4480,9 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         if callback_data == "noop":
             return
-        elif callback_data == "atp_run_full_fix":
+        elif callback_data == "atp_run_full_fix" or (callback_data or "").strip().startswith("atp_run_full_fix"):
             # Manual "Run full fix now" from ATP health alert: write trigger file; health script runs full_fix_market_data.sh on next run
+            # Accept "atp_run_full_fix" even with trailing space/timestamp (e.g. "atp_run_full_fix 10:35")
             trigger_path = os.environ.get("ATP_TRIGGER_FULL_FIX_PATH", "/app/logs/trigger_full_fix")
             try:
                 os.makedirs(os.path.dirname(trigger_path), exist_ok=True)
