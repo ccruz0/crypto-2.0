@@ -97,6 +97,8 @@ async function performUpdate(): Promise<void> {
 
 Search for where the "Update now" button triggers the update (e.g. `npm i -g openclaw`, `npm install`, or version check logic). Replace or branch that path with the daemon call when `OPENCLAW_UPDATE_DAEMON_URL` is set.
 
+**Cursor prompt:** [CURSOR_PROMPT_OPENCLAW_UPDATE_FROM_UI.md](CURSOR_PROMPT_OPENCLAW_UPDATE_FROM_UI.md) — paste into Cursor with the OpenClaw repo open.
+
 ## Security
 
 - The daemon listens on `0.0.0.0:19999`. LAB typically has no public inbound on that port; access is from within the VPC or container.

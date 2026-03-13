@@ -12,10 +12,11 @@ REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/automated-trading-platform}"
 echo "=== Installing OpenClaw update daemon on LAB ($LAB_INSTANCE_ID) ==="
 
 # Find repo and run (LAB may have automated-trading-platform or crypto-2.0)
-cmd1='REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f "$d/scripts/openclaw/install_openclaw_update_daemon.sh" ] && REPO=$d && break; done; [ -d "$REPO" ] || { echo "Repo not found"; exit 1; }; cd "$REPO"'
-cmd2='git -c safe.directory=$(pwd) pull origin main 2>/dev/null || true'
+# SSM runs as root; git needs safe.directory. Use ubuntu for git pull.
+cmd1='REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f "$d/docker-compose.openclaw.yml" ] && REPO=$d && break; done; [ -d "$REPO" ] || { echo "Repo not found"; exit 1; }; cd "$REPO"'
+cmd2='git config --global --add safe.directory "$(pwd)" 2>/dev/null || true; sudo -u ubuntu git -c safe.directory="$(pwd)" pull origin main 2>/dev/null || true'
 cmd3='sudo bash scripts/openclaw/install_openclaw_update_daemon.sh'
-cmd4='sudo docker compose -f docker-compose.openclaw.yml up -d --force-recreate'
+cmd4='sudo docker stop openclaw 2>/dev/null || true; sudo docker rm openclaw 2>/dev/null || true; sudo docker compose -f docker-compose.openclaw.yml up -d'
 cmd5='sleep 5; sudo systemctl status openclaw-update-daemon --no-pager'
 cmd6='curl -s http://127.0.0.1:19999/health || echo health_check_failed'
 # Escape for JSON: backslash and double-quote
