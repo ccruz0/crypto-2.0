@@ -47,15 +47,28 @@ Use it when you want the OpenClaw UI at **https://dashboard.hilovivo.com/opencla
 
 ### "Update available" banner — OpenClaw runs in Docker
 
-When the dashboard shows "Update available: vX.Y.Z (running vX.Y.W)" but the update is skipped, it's because OpenClaw is deployed via **Docker** (not npm/git). The built-in update UI only works for npm/pnpm installs.
+When the dashboard shows "Update available: vX.Y.Z (running vX.Y.W)", the built-in **"Update now"** button will fail because OpenClaw runs in a **Docker container**, not as a local npm install. The button tries `npm i -g openclaw@latest`, which fails because:
 
-**To update:** pull the new image and restart the container. From your Mac:
+1. The container filesystem is read-only
+2. The process runs as a non-root user
+3. `/usr/local/lib/node_modules` is not writable
+
+**Ignore the "Update now" button** for Docker deployments — unless you install the host-side update daemon (see below).
+
+**To update:** From your Mac:
 ```bash
 ./scripts/openclaw/deploy_openclaw_lab_from_mac.sh deploy
 ```
-This pulls `ghcr.io/ccruz0/openclaw:latest` on LAB and restarts the container. To use a specific version tag (e.g. v2026.3.8), set `OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:v2026.3.8` before running.
+This pulls `ghcr.io/ccruz0/openclaw:latest` on LAB and restarts the container. To target a specific version (e.g. v2026.3.12):
+```bash
+OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:v2026.3.12 ./scripts/openclaw/deploy_openclaw_lab_from_mac.sh deploy
+```
+
+**Update from the UI:** To make the "Update now" button work in Docker, install the host-side daemon on LAB and update the OpenClaw app to call it. See [OPENCLAW_UPDATE_FROM_UI.md](OPENCLAW_UPDATE_FROM_UI.md).
 
 **Cheap-first model config:** The deploy script writes `agents.defaults.model.primary` and `fallbacks` into `openclaw.json` so the Chat UI uses `openai/gpt-4o-mini` first and falls back to other models. Override with `OPENCLAW_MODEL_PRIMARY` and `OPENCLAW_MODEL_FALLBACKS` before running deploy.
+
+**ACP / Cursor integration:** The deploy script and wrapper also set `acp.defaultAgent` (default: `codex`) so OpenClaw can connect to Cursor for updates and sessions. If you see "ACP target agent is not configured", see [OPENCLAW_ACP_CURSOR_FIX.md](OPENCLAW_ACP_CURSOR_FIX.md). Override with `OPENCLAW_ACP_DEFAULT_AGENT` (e.g. `claude`, `codex`).
 
 **OPENCLAW_LOG_LEVEL warning:** Use lowercase values (`info`, `debug`, `warn`, etc.). `INFO` is invalid and will be ignored.
 
@@ -154,6 +167,7 @@ Then paste the two blocks it prints (`systemctl status openclaw` and `curl -I` f
   - Run **on the Dashboard host** (via EC2 Instance Connect or SSH) to insert the OpenClaw proxy block into the Nginx 443 config. Fixes **404** for `/openclaw` when the block is missing.
   - Example: `sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214` (IP privada del LAB/OpenClaw). Requires repo on the server: `git pull` then run the script.
 - **`sudo bash scripts/openclaw/ensure_openclaw_gateway_token.sh`** (run on LAB) — Ensures `gateway.auth.token` is persistent in `/opt/openclaw/openclaw.json`, keeps existing token by default, and restarts container only if token changed. Runbook: [TOKEN_PERSISTENCE_RUNBOOK.md](TOKEN_PERSISTENCE_RUNBOOK.md).
+- **`sudo bash scripts/openclaw/install_openclaw_update_daemon.sh`** (run on LAB) — Installs host-side update daemon so "Update now" in the OpenClaw UI can trigger `docker compose pull + up -d`. See [OPENCLAW_UPDATE_FROM_UI.md](OPENCLAW_UPDATE_FROM_UI.md).
 
 ## Tavily web search
 

@@ -1,0 +1,26 @@
+# /etc/systemd/system/openclaw-update-daemon.service
+# Lab instance only. Listens for update requests from OpenClaw container.
+# Install: sudo cp scripts/openclaw/openclaw-update-daemon.service /etc/systemd/system/
+#         sudo systemctl daemon-reload && sudo systemctl enable openclaw-update-daemon && sudo systemctl start openclaw-update-daemon
+# See: docs/openclaw/OPENCLAW_UPDATE_FROM_UI.md
+
+[Unit]
+Description=OpenClaw Update Daemon (host-side)
+Documentation=file:///home/ubuntu/automated-trading-platform/docs/openclaw/OPENCLAW_UPDATE_FROM_UI.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/automated-trading-platform
+Environment=OPENCLAW_CONFIG_PATH=/opt/openclaw/home-data/openclaw.json
+Environment=ATP_REPO_PATH=/home/ubuntu/automated-trading-platform
+Environment=OPENCLAW_UPDATE_PORT=19999
+ExecStart=/usr/bin/python3 /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw_update_daemon.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
