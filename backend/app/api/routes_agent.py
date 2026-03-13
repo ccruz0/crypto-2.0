@@ -7,13 +7,25 @@ lifecycle, recovery actions, and smoke checks for operational dashboards.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _verify_agent_token(authorization: str | None = Header(None)) -> None:
+    """Verify Bearer token matches OPENCLAW_API_TOKEN. Raises HTTPException if invalid."""
+    token = (os.environ.get("OPENCLAW_API_TOKEN") or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="Agent API not configured (OPENCLAW_API_TOKEN)")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization: Bearer <token> required")
+    if authorization[7:].strip() != token:
+        raise HTTPException(status_code=403, detail="Invalid token")
 
 # Event types for ops visibility
 _RECOVERY_EVENT_TYPES = frozenset({
@@ -309,6 +321,53 @@ def agent_cursor_bridge_diagnostics() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("agent_cursor_bridge_diagnostics failed: %s", exc)
         return {"ok": False, "error": str(exc)}
+
+
+@router.post("/agent/run-atp-command")
+def agent_run_atp_command(
+    body: dict[str, Any] = Body(default={}),
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """
+    Run a safe command on the ATP instance via AWS SSM.
+
+    Requires: Authorization: Bearer <OPENCLAW_API_TOKEN> (same as OpenClaw gateway).
+    Body: { "command": "docker compose --profile aws ps", "timeout_seconds": 60 }
+
+    Allowed commands: docker compose ps, docker compose logs --tail=N, docker ps,
+    curl http://127.0.0.1:8002/ping_fast, curl http://127.0.0.1:8002/api/health,
+    df -h /, free -h. Deny: sudo, rm -rf, git push, deploy, etc.
+    """
+    _verify_agent_token(authorization)
+    try:
+        from app.services.atp_ssm_runner import run_atp_command
+    except ImportError as e:
+        return {"ok": False, "error": str(e), "stdout": "", "stderr": ""}
+
+    payload = body or {}
+    command = (payload.get("command") or "").strip()
+    timeout = int(payload.get("timeout_seconds") or 60)
+    if not command:
+        raise HTTPException(status_code=400, detail="command required")
+
+    result = run_atp_command(command, timeout_seconds=min(timeout, 120))
+    return {
+        "ok": result.get("ok", False),
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "status": result.get("status", ""),
+        "error": result.get("error"),
+    }
+
+
+@router.get("/agent/atp-instance-info")
+def agent_atp_instance_info() -> dict[str, Any]:
+    """Return ATP instance metadata and allowed commands (for prompts). No auth required."""
+    try:
+        from app.services.atp_ssm_runner import get_atp_instance_info
+        return {"ok": True, **get_atp_instance_info()}
+    except ImportError as e:
+        return {"ok": False, "error": str(e)}
 
 
 @router.post("/agent/cursor-bridge/run")

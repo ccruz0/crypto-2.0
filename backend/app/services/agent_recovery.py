@@ -538,7 +538,7 @@ def _extract_body_from_markdown(md_path: Path) -> str:
 def _try_regenerate_from_raw_content(md_path: Path, task_id: str, title: str) -> bool:
     """
     If the .md file has enough raw body content, parse it and rebuild.
-    Returns True on success.
+    Returns True on success. Uses _preamble when structured sections are missing.
     """
     body = _extract_body_from_markdown(md_path)
     if len(body) < _MIN_CONTENT_CHARS:
@@ -546,7 +546,14 @@ def _try_regenerate_from_raw_content(md_path: Path, task_id: str, title: str) ->
     try:
         from app.services.openclaw_client import parse_investigation_sections
         sections = parse_investigation_sections(body)
-        if not sections or all(v is None for k, v in sections.items() if k != "_preamble"):
+        if not sections:
+            return False
+        # Allow regeneration when _preamble has content even if no ## sections
+        has_content = any(
+            v and str(v).strip().lower() not in ("", "n/a")
+            for k, v in sections.items()
+        )
+        if not has_content:
             return False
         content = _rebuild_markdown_from_sections(task_id, title, sections)
         md_path.write_text(content, encoding="utf-8")
@@ -817,13 +824,24 @@ def run_missing_artifact_playbook(*, max_tasks: int = 5) -> list[dict[str, Any]]
                         summary = f"Regenerated {md_path.name} from raw content"
                         break
 
-            # Third pass: reset to planned if recovery impossible
+            # Third pass: reset to planned only when recovery truly impossible
             if not recovered:
                 for md_path, sidecar_path in _get_artifact_paths(task_id):
                     if not _artifact_missing_or_empty(md_path):
                         continue
                     if sidecar_path.exists():
                         continue
+                    # Log what exists before reset for debugging
+                    md_exists = md_path.exists()
+                    try:
+                        md_size = md_path.stat().st_size if md_exists else 0
+                    except OSError:
+                        md_size = -1
+                    logger.info(
+                        "agent_recovery: missing_artifact task_id=%s md_exists=%s md_size=%d "
+                        "sidecar_exists=%s — resetting to planned",
+                        task_id, md_exists, md_size, sidecar_path.exists(),
+                    )
                     reset_done = _reset_task_to_planned(
                         task_id,
                         task_title,

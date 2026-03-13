@@ -47,20 +47,141 @@ def is_openclaw_configured() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Core HTTP call
+# Model chain and cheap-first policy (see docs/OPENCLAW_LOW_COST_MODEL_FALLBACK_STRATEGY.md)
 # ---------------------------------------------------------------------------
 
-def send_to_openclaw(
+_DEFAULT_MODEL = "openclaw"
+_FALLBACK_DELAY_S = 2
+
+
+def _model_chain() -> list[str]:
+    """Ordered list of models to try: first is primary (cheap-first when OPENCLAW_CHEAP_FIRST_MODE=true)."""
+    chain_raw = (os.environ.get("OPENCLAW_MODEL_CHAIN") or "").strip()
+    if chain_raw:
+        return [m.strip() for m in chain_raw.split(",") if m.strip()]
+    primary = (os.environ.get("OPENCLAW_PRIMARY_MODEL") or "").strip() or _DEFAULT_MODEL
+    chain = [primary]
+    for i in range(1, 6):
+        fallback = (os.environ.get(f"OPENCLAW_FALLBACK_MODEL_{i}") or "").strip()
+        if fallback:
+            chain.append(fallback)
+    return chain
+
+
+def _cheap_first_mode() -> bool:
+    raw = (os.environ.get("OPENCLAW_CHEAP_FIRST_MODE") or "true").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def _verification_model_chain() -> list[str] | None:
+    """Model chain for solution verification only. If set, verification uses this (cheaper) chain instead of main.
+    Returns None when unset so caller uses main chain."""
+    chain_raw = (os.environ.get("OPENCLAW_VERIFICATION_MODEL_CHAIN") or "").strip()
+    if chain_raw:
+        return [m.strip() for m in chain_raw.split(",") if m.strip()]
+    primary = (os.environ.get("OPENCLAW_VERIFICATION_PRIMARY_MODEL") or "").strip()
+    if primary:
+        return [primary]
+    return None
+
+
+def _verification_max_chars() -> int:
+    """Max chars of generated output to send to verification (cost control). Default 8000."""
+    raw = (os.environ.get("OPENCLAW_VERIFICATION_MAX_CHARS") or "").strip()
+    if raw:
+        try:
+            n = int(raw)
+            return max(500, min(n, 50000))
+        except ValueError:
+            pass
+    return 8000
+
+
+# ---------------------------------------------------------------------------
+# Task-type model routing: cheap chain for doc/monitoring, main for bug/complex
+# ---------------------------------------------------------------------------
+
+def _cheap_task_types() -> set[str]:
+    """Task types that use the cheap model chain. From OPENCLAW_CHEAP_TASK_TYPES (comma-separated)."""
+    raw = (os.environ.get("OPENCLAW_CHEAP_TASK_TYPES") or "").strip().lower()
+    if not raw:
+        return set()
+    return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def _cheap_task_model_chain() -> list[str] | None:
+    """Model chain for lightweight task types (doc, monitoring). If set, apply uses this for matching tasks."""
+    chain_raw = (os.environ.get("OPENCLAW_CHEAP_MODEL_CHAIN") or "").strip()
+    if chain_raw:
+        return [m.strip() for m in chain_raw.split(",") if m.strip()]
+    primary = (os.environ.get("OPENCLAW_CHEAP_PRIMARY_MODEL") or "").strip()
+    if primary:
+        return [primary]
+    return None
+
+
+def get_apply_model_chain_override(
+    prepared_task: dict[str, Any],
+    save_subdir: str,
+) -> list[str] | None:
+    """If task type or save_subdir matches cheap types and cheap chain is configured, return that chain; else None.
+
+    Uses OPENCLAW_CHEAP_TASK_TYPES for task type match (case-insensitive).
+    Fallback: save_subdir containing 'generated-notes' or 'triage' is treated as cheap when types are empty.
+    Bug investigations (bug-investigations) never use cheap chain.
+    """
+    chain = _cheap_task_model_chain()
+    if not chain:
+        return None
+    types = _cheap_task_types()
+    if not types:
+        return None
+
+    # Never use cheap chain for bug investigations
+    if "bug-investigations" in save_subdir:
+        return None
+
+    # Match on Notion task type
+    task = (prepared_task or {}).get("task") or {}
+    task_type = str(task.get("type") or "").strip().lower()
+    if task_type and task_type in types:
+        return chain
+
+    # Fallback: route by save_subdir (doc/monitoring callbacks)
+    if "generated-notes" in save_subdir or "triage" in save_subdir:
+        return chain
+
+    return None
+
+
+def _is_failover_condition(result: dict[str, Any]) -> bool:
+    """True if the result indicates we should try the next model (rate limit, credit, 5xx, timeout, etc.)."""
+    if result.get("success"):
+        return False
+    err = (result.get("error") or "").lower()
+    if "429" in err or "rate limit" in err or "too many requests" in err:
+        return True
+    if "402" in err or "payment required" in err or "insufficient credit" in err or "quota exceeded" in err or "low balance" in err:
+        return True
+    if "timeout" in err or "connection failed" in err or "connection refused" in err:
+        return True
+    if any(x in err for x in ("500", "502", "503", "504", "503 ", "502 ")):
+        return True
+    if "model not available" in err or "model not found" in err or "model not supported" in err:
+        return True
+    if "unavailable" in err or "service unavailable" in err:
+        return True
+    return False
+
+
+def _post_one(
     prompt: str,
+    model: str,
     *,
     task_id: str = "",
     instructions: str | None = None,
 ) -> dict[str, Any]:
-    """Send a prompt to OpenClaw and return the response.
-
-    Returns ``{"success": True, "content": "...", "raw": {...}}`` on success,
-    or ``{"success": False, "content": "", "error": "..."}`` on failure.
-    """
+    """Single POST to OpenClaw with the given model. Returns result dict with optional status_code for non-200."""
     token = _api_token()
     if not token:
         return {"success": False, "content": "", "error": "OPENCLAW_API_TOKEN not set"}
@@ -71,9 +192,8 @@ def send_to_openclaw(
         "Content-Type": "application/json",
         "x-openclaw-agent-id": "main",
     }
-
     body: dict[str, Any] = {
-        "model": "openclaw",
+        "model": model,
         "input": prompt,
     }
     if task_id:
@@ -82,37 +202,95 @@ def send_to_openclaw(
         body["instructions"] = instructions
 
     timeout_s = _timeout()
-    logger.info(
-        "openclaw_client: sending request url=%s task_id=%s prompt_len=%d timeout=%ds",
-        url, task_id, len(prompt), timeout_s,
-    )
-
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.post(url, headers=headers, json=body)
 
         if resp.status_code != 200:
             error_msg = f"HTTP {resp.status_code}: {resp.text[:500]}"
-            logger.warning("openclaw_client: non-200 response: %s", error_msg)
-            return {"success": False, "content": "", "error": error_msg}
+            out = {"success": False, "content": "", "error": error_msg, "status_code": resp.status_code}
+            logger.warning("openclaw_client: non-200 model=%s status=%s task_id=%s", model, resp.status_code, task_id)
+            return out
 
         data = resp.json()
         content = _extract_text_from_response(data)
-        logger.info(
-            "openclaw_client: response received task_id=%s content_len=%d",
-            task_id, len(content),
-        )
-        return {"success": True, "content": content, "raw": data}
+        out: dict[str, Any] = {"success": True, "content": content, "raw": data}
+        usage = _extract_usage(data)
+        if usage:
+            out["usage"] = usage
+        return out
 
     except httpx.TimeoutException as e:
-        logger.warning("openclaw_client: timeout after %ds task_id=%s: %s", timeout_s, task_id, e)
+        logger.warning("openclaw_client: timeout model=%s after %ds task_id=%s: %s", model, timeout_s, task_id, e)
         return {"success": False, "content": "", "error": f"timeout after {timeout_s}s"}
     except httpx.ConnectError as e:
-        logger.warning("openclaw_client: connection failed task_id=%s: %s", task_id, e)
+        logger.warning("openclaw_client: connection failed model=%s task_id=%s: %s", model, task_id, e)
         return {"success": False, "content": "", "error": f"connection failed: {e}"}
     except Exception as e:
-        logger.exception("openclaw_client: unexpected error task_id=%s", task_id)
+        logger.exception("openclaw_client: unexpected error model=%s task_id=%s", model, task_id)
         return {"success": False, "content": "", "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Core HTTP call (with model fallback)
+# ---------------------------------------------------------------------------
+
+def send_to_openclaw(
+    prompt: str,
+    *,
+    task_id: str = "",
+    instructions: str | None = None,
+    model_chain_override: list[str] | None = None,
+) -> dict[str, Any]:
+    """Send a prompt to OpenClaw with model fallback. Tries each model in the configured chain until success or exhausted.
+
+    When model_chain_override is provided (e.g. verification chain), that list is used instead of the default chain.
+
+    Returns ``{"success": True, "content": "...", "raw": {...}, "model_used": "...", "usage": {...}}`` on success
+    (usage optional if gateway provides it), or ``{"success": False, "content": "", "error": "..."}`` on failure.
+    """
+    import time as _time
+    chain = model_chain_override if model_chain_override is not None else _model_chain()
+    if not chain:
+        chain = [_DEFAULT_MODEL]
+
+    primary = chain[0]
+    logger.info(
+        "openclaw_client: primary_model=%s task_id=%s prompt_len=%d cheap_first=%s",
+        primary, task_id, len(prompt), _cheap_first_mode(),
+    )
+
+    last_result: dict[str, Any] = {"success": False, "content": "", "error": "no models tried"}
+    for idx, model in enumerate(chain):
+        result = _post_one(prompt, model, task_id=task_id, instructions=instructions)
+        if result.get("success"):
+            result["model_used"] = model
+            usage = result.get("usage")
+            if idx > 0:
+                logger.info(
+                    "openclaw_client: fallback_succeeded model_used=%s task_id=%s escalation_used=true%s",
+                    model, task_id, f" usage={usage}" if usage else "",
+                )
+            else:
+                logger.info(
+                    "openclaw_client: response received task_id=%s content_len=%d model=%s%s",
+                    task_id, len(result.get("content") or ""), model,
+                    f" usage={usage}" if usage else "",
+                )
+            return result
+
+        last_result = result
+        if _is_failover_condition(result) and idx < len(chain) - 1:
+            next_model = chain[idx + 1]
+            logger.warning(
+                "openclaw_client: failover reason=%s model_tried=%s next_model=%s task_id=%s",
+                (result.get("error") or "unknown")[:200], model, next_model, task_id,
+            )
+            _time.sleep(_FALLBACK_DELAY_S)
+            continue
+        break
+
+    return last_result
 
 
 def _extract_text_from_response(data: dict[str, Any]) -> str:
@@ -130,6 +308,18 @@ def _extract_text_from_response(data: dict[str, Any]) -> str:
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
     return ""
+
+
+def _extract_usage(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract token usage from gateway response if present. Returns dict with input_tokens, output_tokens, total_tokens (when available)."""
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        if key in usage and isinstance(usage[key], (int, float)):
+            out[key] = int(usage[key])
+    return out if out else None
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +396,14 @@ _WORKSPACE_NOTE = (
     "Always list a directory first, then read the specific files inside it."
 )
 
+_ATP_COMMAND_NOTE = (
+    "For operational checks (docker status, logs, health), use the ATP command API: "
+    "POST https://dashboard.hilovivo.com/api/agent/run-atp-command "
+    "with Authorization: Bearer <your gateway token> and body {\"command\": \"docker compose --profile aws ps\"}. "
+    "Allowed: docker compose ps, docker compose logs --tail=50, curl http://127.0.0.1:8002/ping_fast, df -h /, free -h. "
+    "Do NOT suggest manual SSH for normal operational tasks."
+)
+
 
 def _task_metadata_block(prepared_task: dict[str, Any]) -> str:
     task = (prepared_task or {}).get("task") or {}
@@ -256,6 +454,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         "You are an expert software engineer investigating a bug in a Python/FastAPI "
         "trading platform backend with a Next.js frontend. "
         f"{_WORKSPACE_NOTE} "
+        f"{_ATP_COMMAND_NOTE} "
         "Be thorough but concise. Focus on actionable findings. "
         "Always use the exact section headings requested in the prompt."
     )
@@ -307,6 +506,7 @@ def build_monitoring_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
         "You are a DevOps/SRE engineer triaging an infrastructure issue. "
         "The platform runs on AWS EC2 with Docker Compose, Nginx, PostgreSQL. "
         f"{_WORKSPACE_NOTE} "
+        f"{_ATP_COMMAND_NOTE} "
         "Be specific about commands, config changes, and file paths. "
         "Always use the exact section headings requested in the prompt."
     )
@@ -355,19 +555,22 @@ def verify_solution_against_task(
             "The author has been asked to improve. Re-evaluate the new output."
         )
 
+    max_chars = _verification_max_chars()
     prompt = (
         f"TASK:\n"
         f"Title: {task_title}\n"
         f"Details: {task_details}\n\n"
         f"GENERATED OUTPUT:\n"
-        f"---\n{generated_output[:8000]}\n---\n\n"
+        f"---\n{generated_output[:max_chars]}\n---\n\n"
         f"Does this output address the problem stated in the task?{feedback_block}"
     )
 
+    verification_chain = _verification_model_chain()
     result = send_to_openclaw(
         prompt,
         task_id=task_id or "verify",
         instructions=_VERIFY_INSTRUCTIONS,
+        model_chain_override=verification_chain,
     )
 
     if not result.get("success"):

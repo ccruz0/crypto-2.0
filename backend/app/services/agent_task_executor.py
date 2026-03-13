@@ -1000,6 +1000,28 @@ def execute_prepared_notion_task(
         "no" if use_extended_lifecycle else "YES",
     )
     if use_extended_lifecycle:
+        # Validate artifact exists before advancing — prevents approval flow with missing artifact
+        from app.services._paths import get_writable_bug_investigations_dir
+        _bug_dir = get_writable_bug_investigations_dir()
+        _md_path = _bug_dir / f"notion-bug-{task_id}.md"
+        _sidecar_path = _bug_dir / f"notion-bug-{task_id}.sections.json"
+        _artifact_ok = _md_path.exists() and _md_path.stat().st_size >= 200
+        if not _artifact_ok:
+            logger.warning(
+                "execute_prepared_notion_task: artifact missing or too small task_id=%s "
+                "path=%s exists=%s size=%s — not advancing to investigation-complete",
+                task_id, _md_path, _md_path.exists(), _md_path.stat().st_size if _md_path.exists() else 0,
+            )
+            _append_notion_page_comment(
+                task_id,
+                f"[{executed_at}] Investigation artifact missing or incomplete — staying in-progress. Retry next cycle.",
+            )
+            return result(
+                True, True, apply_summary,
+                False, False, False, "",
+                False, False, "",
+                "in-progress", False,
+            )
         inv_ok = update_notion_task_status(task_id, "investigation-complete")
         logger.info(
             "execute_prepared_notion_task: extended lifecycle → investigation-complete "

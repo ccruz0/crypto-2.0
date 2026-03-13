@@ -47,6 +47,11 @@ _SECTIONS_CACHE: dict[str, dict[str, Any]] = {}
 _DEPLOY_APPROVAL_SENT: dict[str, float] = {}
 _DEPLOY_APPROVAL_DEDUP_HOURS = 24
 
+# Deduplication: task_id -> timestamp of last investigation info sent. Prevents spam
+# when the same task is retried or re-processed.
+_INVESTIGATION_INFO_SENT: dict[str, float] = {}
+_INVESTIGATION_INFO_DEDUP_HOURS = 24
+
 # Telegram message length limit
 TELEGRAM_TEXT_LIMIT = 4096
 
@@ -1564,6 +1569,21 @@ def _load_sections_from_disk(task_id: str) -> dict[str, Any]:
     return {}
 
 
+def _should_skip_investigation_info_dedup(task_id: str) -> bool:
+    """Return True if we already sent investigation info for this task recently."""
+    now = time.time()
+    cutoff = now - (_INVESTIGATION_INFO_DEDUP_HOURS * 3600)
+    with _STORE_LOCK:
+        last_sent = _INVESTIGATION_INFO_SENT.get(task_id)
+        if last_sent and last_sent > cutoff:
+            logger.info(
+                "send_investigation_complete_info: skipping duplicate task_id=%s last_sent=%.0fs ago",
+                task_id, now - last_sent,
+            )
+            return True
+    return False
+
+
 def send_investigation_complete_info(
     task_id: str,
     title: str,
@@ -1588,6 +1608,9 @@ def send_investigation_complete_info(
         return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    if _should_skip_investigation_info_dedup(task_id):
+        return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None, "skipped": "dedup"}
 
     sections = sections or {}
     if not sections or not any(
@@ -1616,6 +1639,9 @@ def send_investigation_complete_info(
         }
 
     sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
+    if sent:
+        with _STORE_LOCK:
+            _INVESTIGATION_INFO_SENT[task_id] = time.time()
     logger.info(
         "send_investigation_complete_info task_id=%s sent=%s message_id=%s",
         task_id, sent, message_id,

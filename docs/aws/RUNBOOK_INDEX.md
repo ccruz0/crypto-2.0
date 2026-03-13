@@ -49,9 +49,12 @@ One-line index: when to use each doc. PROD = atp-rebuild-2026 (i-087953603011543
 | [../runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md](../runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md) | When Telegram shows "ATP Health Alert" streak_fail_3: interpret verify_label, market_data, market_updater; quick diagnostics and link to EC2_FIX_MARKET_DATA_NOW. |
 | [../runbooks/OPENCLAW_AND_SYSTEM_HEALTH_DOWN.md](../runbooks/OPENCLAW_AND_SYSTEM_HEALTH_DOWN.md) | OpenClaw tab blank + System Health FAIL (Market, Updater, Monitor, Telegram): diagnosis script, fix health components, fix OpenClaw iframe (auth / proxy). |
 | [../runbooks/TELEGRAM_ALERTS_NOT_SENT.md](../runbooks/TELEGRAM_ALERTS_NOT_SENT.md) | Notion task "Investigate Telegram alerts not being sent": run diagnose script, check block reasons (RUN_TELEGRAM, kill switch, token/chat_id, origin), fix and resolve task. |
+| [../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) | **Full flow:** Any Notion task → Cursor handoff → Run Cursor Bridge → deploy approval → deploy → smoke check → done. Use for end-to-end from task to new code deployment. |
+| [../runbooks/OPENCLAW_COST_VERIFICATION_RUNBOOK.md](../runbooks/OPENCLAW_COST_VERIFICATION_RUNBOOK.md) | After enabling OpenClaw cost levers: run one Notion task, check logs for `openclaw_apply_cost` and usage; verify gateway returns token counts. |
 | [../runbooks/EC2_DB_BOOTSTRAP.md](../runbooks/EC2_DB_BOOTSTRAP.md) | Create watchlist_items (and related tables): bootstrap schema before enabling self-heal timer; .env.aws fix. |
 | [../runbooks/PROD_DISK_RESIZE.md](../runbooks/PROD_DISK_RESIZE.md) | **Increase PROD disk size:** EBS modify volume in Console, then growpart + resize2fs on instance (FAIL:DISK / no space left). |
 | [../runbooks/LAB_DISK_RESIZE_OPENCLAW_REDEPLOY.md](../runbooks/LAB_DISK_RESIZE_OPENCLAW_REDEPLOY.md) | LAB disk full (no space for docker pull): EBS resize + growpart/resize2fs, then redeploy OpenClaw. |
+| [../runbooks/OPENCLAW_ATP_ACCESS_AND_APPROVAL_FIX.md](../runbooks/OPENCLAW_ATP_ACCESS_AND_APPROVAL_FIX.md) | ATP connectivity via SSM API, Telegram approval dedup, investigation artifact persistence; root cause and validation. |
 
 ---
 

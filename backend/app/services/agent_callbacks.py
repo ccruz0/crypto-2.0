@@ -882,23 +882,24 @@ def _apply_via_openclaw(
 
     note_path.write_text(note_contents, encoding="utf-8")
 
-    # Save parsed sections as JSON sidecar for downstream consumption
-    if sections:
-        sidecar_path = out_dir / f"{file_prefix}-{task_id}.sections.json"
-        sidecar_data = {
-            "task_id": task_id,
-            "title": title,
-            "source": "openclaw",
-            "sections": sections,
-        }
-        try:
-            sidecar_path.write_text(
-                json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            logger.info("Structured sections sidecar saved at %s", sidecar_path)
-        except Exception as e:
-            logger.warning("Failed to write sections sidecar for task %s: %s", task_id, e)
+    # Save parsed sections as JSON sidecar for downstream consumption and recovery.
+    # Always write when we have content so recovery can regenerate if md is lost.
+    sidecar_sections = sections if sections else {"_preamble": content.strip()[:5000] if content else ""}
+    sidecar_path = out_dir / f"{file_prefix}-{task_id}.sections.json"
+    sidecar_data = {
+        "task_id": task_id,
+        "title": title,
+        "source": "openclaw",
+        "sections": sidecar_sections,
+    }
+    try:
+        sidecar_path.write_text(
+            json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("Structured sections sidecar saved at %s", sidecar_path)
+    except Exception as e:
+        logger.warning("Failed to write sections sidecar for task %s: %s", task_id, e)
 
     idx_path = out_dir / "README.md"
     idx_line = f"- [{file_prefix} {task_id}: {title}]({file_prefix}-{task_id}.md)"
