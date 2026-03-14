@@ -19,6 +19,9 @@ from app.utils.http_client import http_get, http_post, requests_exceptions
 
 logger = logging.getLogger(__name__)
 
+# Cooldown timestamp after Telegram 429 rate limit; None = no cooldown active
+_TELEGRAM_COOLDOWN_UNTIL_TS: Optional[float] = None
+
 
 class AppEnv(str, Enum):
     """Application environment identifiers for alert routing"""

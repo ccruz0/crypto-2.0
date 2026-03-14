@@ -47,6 +47,8 @@ All sends go through `TelegramNotifier.send_message()` in `backend/app/services/
 
 Blocked sends are logged with `[TG BLOCKED]` and the `reasons=` list. Search backend logs for that string to see the exact reason.
 
+**Known bug (fixed 2026-03-14):** If diagnostic reports `NameError: name '_TELEGRAM_COOLDOWN_UNTIL_TS' is not defined`, ensure `telegram_notifier.py` has the module-level `_TELEGRAM_COOLDOWN_UNTIL_TS: Optional[float] = None` declaration. Without it, all sends crash before reaching the Telegram API.
+
 ---
 
 ## 3. Alerts that use “origin” (e.g. signal monitor)
