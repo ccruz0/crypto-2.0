@@ -24,14 +24,21 @@ trap "rm -rf '$KEY_DIR'" EXIT
 ssh-keygen -t rsa -b 2048 -f "$KEY_DIR/key" -N "" -q
 
 echo "   Pushing temporary SSH key..."
-aws ec2-instance-connect send-ssh-public-key \
+if ! aws ec2-instance-connect send-ssh-public-key \
   --instance-id "$INSTANCE_ID" \
   --instance-os-user ubuntu \
   --ssh-public-key "$(cat "$KEY_DIR/key.pub")" \
-  --region "$REGION" >/dev/null
+  --region "$REGION" 2>/dev/null; then
+  echo "   ❌ send-ssh-public-key failed. Ensure:"
+  echo "      - Security group allows port 22 from your IP (run: ./fix_security_group.sh)"
+  echo "      - IAM allows ec2-instance-connect:SendSSHPublicKey"
+  exit 1
+fi
+sleep 3
 
 echo "   Connecting and running deploy (key valid 60s)..."
-ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+ssh -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostKeyAlgorithms=+ssh-rsa \
   -i "$KEY_DIR/key" "ubuntu@$PUBLIC_IP" \
   "cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/automated-trading-platform || exit 1
    git pull origin main || true

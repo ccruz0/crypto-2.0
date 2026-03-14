@@ -133,4 +133,5 @@ Reminder: **Do not set `deployed`** if deployment hasn’t happened yet or check
 - [Agent context](context.md)
 - [Task system](task-system.md)
 - [System map](../architecture/system-map.md)
+- **Full flow (Notion → Cursor → deploy):** [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) — run any Notion task through Cursor Bridge and deployment to done.
 - Backend reader: `backend/app/services/notion_task_reader.py` (`get_pending_notion_tasks`, `get_high_priority_pending_tasks`)

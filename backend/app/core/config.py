@@ -69,8 +69,10 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN_AWS: Optional[str] = None  # AWS production bot token
     TELEGRAM_BOT_TOKEN_LOCAL: Optional[str] = None  # Local development bot token (not used for sending)
     TELEGRAM_CHAT_ID: Optional[str] = None  # Deprecated: use TELEGRAM_CHAT_ID_AWS or TELEGRAM_CHAT_ID_LOCAL
-    TELEGRAM_CHAT_ID_AWS: Optional[str] = None  # AWS production channel
+    TELEGRAM_CHAT_ID_AWS: Optional[str] = None  # AWS production channel (trading)
     TELEGRAM_CHAT_ID_LOCAL: Optional[str] = None  # Local development channel (not used for sending)
+    TELEGRAM_CHAT_ID_TRADING: Optional[str] = None  # HILOVIVO3.0: signals, orders, reports
+    TELEGRAM_CHAT_ID_OPS: Optional[str] = None  # AWS_alerts: health, anomalies, scheduler
     
     class Config:
         env_file = (".env", "backend/.env", "secrets/runtime.env")

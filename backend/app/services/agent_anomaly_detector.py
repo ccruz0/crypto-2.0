@@ -46,7 +46,7 @@ def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> Non
 def _notify_telegram(message: str) -> bool:
     try:
         from app.services.telegram_notifier import telegram_notifier
-        return telegram_notifier.send_message(message)
+        return telegram_notifier.send_message(message, chat_destination="ops")
     except Exception as e:
         logger.debug("agent_anomaly_detector: telegram notification failed (non-fatal) %s", e)
         return False

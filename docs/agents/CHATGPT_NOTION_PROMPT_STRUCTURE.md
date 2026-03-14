@@ -72,6 +72,12 @@ Si el backend escribe la propiedad, preferir **Text/Rich text** o **Select** seg
 
 ---
 
+## Select options (Notion human-readable)
+
+Notion exige que las opciones de **Select** sean "legibles" y empiecen por mayúscula. El backend **mapea** entre valores internos (minúsculas, con guiones) y los nombres mostrados en Notion. Si usas **Select** para Status, Type o Priority, usa los nombres exactos del documento **[NOTION_SELECT_OPTIONS.md](NOTION_SELECT_OPTIONS.md)** (incluye prompt listo para Notion AI).
+
+---
+
 ## Propiedades que el backend usa (referencia)
 
 Para no inventar nombres, al generar prompts de "todas las propiedades" o "esquema completo", incluir al menos estas (nombres exactos):

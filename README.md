@@ -73,7 +73,7 @@ automated-trading-platform/
 - **[docs/README.md](docs/README.md)** — Index of all documentation and directory structure.
 - **architecture** — [System map](docs/architecture/system-map.md) (start here for agents), [System overview](docs/architecture/system-overview.md), components, data flow.
 - **infrastructure** — [AWS setup](docs/infrastructure/aws-setup.md), [Docker setup](docs/infrastructure/docker-setup.md).
-- **runbooks** — [Deploy](docs/runbooks/deploy.md), [Restart services](docs/runbooks/restart-services.md), and [runbook index](docs/aws/RUNBOOK_INDEX.md).
+- **runbooks** — [Deploy](docs/runbooks/deploy.md), [Restart services](docs/runbooks/restart-services.md), and [runbook index](docs/aws/RUNBOOK_INDEX.md). Full Notion → Cursor → deploy flow: [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](docs/runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md).
 - **integrations** — [Crypto.com API](docs/integrations/crypto-api.md) and related.
 - **operations** — [Monitoring](docs/operations/monitoring.md) and health checks.
 - **agents** — [Agent context](docs/agents/context.md), [Task system](docs/agents/task-system.md), [README](docs/agents/README.md) — for Cursor, OpenClaw, and autonomous agents.

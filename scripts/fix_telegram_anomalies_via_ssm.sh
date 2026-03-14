@@ -33,12 +33,13 @@ if [[ "$STATUS" != "Online" ]]; then
   exit 1
 fi
 
-# Run fix script on PROD (git pull first to get latest scripts)
+# Run fix on PROD: git pull, set BTC_USD amount, run scheduler cycle
+# run_agent_scheduler_cycle.py is in the image; run_notion_task_pickup.sh may not exist on server
 COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","git pull origin main 2>/dev/null || true","BTC_AMOUNT_USD='"$BTC_AMOUNT_USD"' ./scripts/fix_telegram_anomalies.sh"]' \
+  --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","git pull origin main 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/set_watchlist_trade_amount.py BTC_USD 50 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/run_agent_scheduler_cycle.py 2>&1 || true"]' \
   --timeout-seconds 180 \
   --query 'Command.CommandId' --output text 2>&1)
 

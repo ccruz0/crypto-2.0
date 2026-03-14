@@ -37,7 +37,12 @@ docker run -d --restart unless-stopped -p 8081:8081 --name openclaw ghcr.io/ccru
 
 (Adjust port if your stack uses a different host port.)
 
+## Model routing and gateway compatibility
+
+The wrapper writes `agents.defaults.model.primary` and `fallbacks` into `openclaw.json` (cheap-first by default). For ATP’s fallback chain to work, the **gateway** (in ccruz0/openclaw) must accept the `model` field from each request and return failover-friendly errors. See **[GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md](../docs/GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md)**.
+
 ## Docs in this repo
 
+- [GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md](../docs/GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md) — gateway contract for request-body model and failover-friendly errors
 - [APPLY_GHCR_WORKFLOW.md](../docs/openclaw/APPLY_GHCR_WORKFLOW.md) — workflow to build/publish from ccruz0/openclaw
 - [DEPLOY_REAL_OPENCLAW_APP_ON_LAB.md](../docs/runbooks/DEPLOY_REAL_OPENCLAW_APP_ON_LAB.md) — replace placeholder with real app on LAB

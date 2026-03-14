@@ -91,7 +91,47 @@ If the **Notion task** for the health alert is not created, the backend may be d
 
 ---
 
-## 6. Resolving the Notion task
+## 6. Alerts going to the wrong chat
+
+**Symptom:** Alerts send successfully but arrive in a private chat instead of the target channel (e.g. "Hilovivo-alerts").
+
+**Cause:** `TELEGRAM_CHAT_ID` is set to a private chat ID (positive, e.g. `839853931`) instead of the channel ID (negative, e.g. `-1001234567890`).
+
+**Routing:** Separate channels for trading vs ops:
+- **HILOVIVO3.0** (trading): `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_TRADING` — signals, orders, reports
+- **AWS_alerts** (ops): `TELEGRAM_CHAT_ID_OPS` — health, anomalies, scheduler
+See [TELEGRAM_CHANNEL_ROUTING.md](TELEGRAM_CHANNEL_ROUTING.md).
+
+**Fix:**
+
+1. **Get the correct channel chat ID** (negative number):
+   - **Option A (recommended):** Post a message in the target channel, then run:
+     ```bash
+     ./scripts/diag/run_get_channel_id_prod.sh
+     ```
+     This uses the PROD bot token and prints all channel/group IDs from recent updates.
+   - **Option B:** Forward a message from the channel to @getidsbot (not @userinfobot — that shows the *sender*, not the chat).
+   - **Option C:** `curl "https://api.telegram.org/bot${TOKEN}/getUpdates" | jq '.result[] | .channel_post.chat // .message.chat | select(.id < 0)'`
+
+2. **Update and apply** (from your machine, with AWS CLI):
+   ```bash
+   # Trading channel (HILOVIVO3.0)
+   TELEGRAM_CHAT_ID=-1001234567890 ./scripts/aws/update_telegram_chat_id.sh
+   # Ops channel (AWS_alerts)
+   TELEGRAM_CHAT_ID_OPS=-1009876543210 ./scripts/aws/update_telegram_chat_id_ops.sh
+   ```
+   This updates SSM parameters, re-renders `secrets/runtime.env` on PROD, and restarts the backend.
+
+3. **Manual alternative** (if no AWS CLI or SSM):
+   - Edit `.env.aws` on the server: set `TELEGRAM_CHAT_ID_AWS` or `TELEGRAM_CHAT_ID` to the channel ID.
+   - Run `scripts/aws/render_runtime_env.sh` on the server.
+   - Restart: `docker compose --profile aws restart backend-aws`.
+
+See also: [docs/monitoring/telegram_channel_id_fix.md](../monitoring/telegram_channel_id_fix.md).
+
+---
+
+## 7. Resolving the Notion task
 
 - **If you fixed config:** Re-run `diagnose_telegram_alerts.py` (and optionally trigger a test alert); then set the Notion task status to **Testing** or **Done** and add a short comment (e.g. “Fixed: RUN_TELEGRAM was unset on backend-aws”).
 - **If you identified a non-config cause** (e.g. bug, network, or product decision): Document the finding in the task, update this runbook if needed, and set status to **Done** or **Won’t fix** with the reason.

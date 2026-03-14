@@ -5,6 +5,22 @@ When **atp-rebuild-2026** (i-087953603011543c5) has SSM **Offline**, reboot didn
 - **Disk full** — the root filesystem has no free space, so the SSM agent and/or sshd can’t write logs or start properly.
 - **sshd or SSM agent not running** — services stopped or failed to start after reboot.
 
+### Why does this keep happening?
+
+SSM **Offline** / **ConnectionLost** and **instance reachability check failed** often recur for the same reasons:
+
+| Cause | What happens | How to prevent / fix |
+|-------|------------------------|----------------------|
+| **Disk full** | Root volume fills (Docker, logs, journal). SSM agent and/or sshd can't write logs and crash. After reboot they fail again. | Free space from Serial Console (§3a). Add log rotation, periodic `docker system prune`, or **increase EBS** and grow FS. See [PROD_DISK_RESIZE.md](../runbooks/PROD_DISK_RESIZE.md). |
+| **No outbound HTTPS** | SSM agent must reach AWS endpoints on 443. Blocked egress → agent never registers. | Ensure SG/NACL allow 443 to SSM endpoints (or use VPC endpoints). |
+| **SSM agent not running** | Agent crashed or was stopped and doesn't restart. | From Serial Console: `sudo systemctl start amazon-ssm-agent` and `enable` it. |
+| **Instance role** | Instance has no role or role lacks SSM permissions. | Attach `EC2_SSM_Role` (or role with `AmazonSSMManagedInstanceCore`). |
+| **Reachability check** | EC2 status check fails (hypervisor/OS). SSM can still work if agent + network are OK. | Reboot; if it persists, use Serial Console to check disk and services. |
+
+**Most common recurring cause:** **disk full**. Logs and Docker fill the root volume; after reboot the agent starts then crashes again. Fix by freeing space (and resizing EBS if needed) and reducing log growth.
+
+---
+
 The only way in without SSH/SSM is the **EC2 Serial Console**. Once in, check disk first; if it’s full, free space (or resize EBS) before starting services.
 
 ---

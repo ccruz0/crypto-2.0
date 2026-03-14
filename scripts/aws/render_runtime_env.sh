@@ -28,18 +28,24 @@ mkdir -p "$SECRETS_DIR"
 
 SSM_BOT_TOKEN="/automated-trading-platform/prod/telegram/bot_token"
 SSM_CHAT_ID="/automated-trading-platform/prod/telegram/chat_id"
+SSM_CHAT_ID_OPS="/automated-trading-platform/prod/telegram/chat_id_ops"
 SSM_ADMIN_KEY="/automated-trading-platform/prod/admin_actions_key"
 SSM_DIAG_KEY="/automated-trading-platform/prod/diagnostics_api_key"
 SSM_ATP_API_KEY="/automated-trading-platform/prod/atp_api_key"
 SSM_GITHUB_TOKEN="/automated-trading-platform/prod/github_token"
+SSM_AWS_ACCESS_KEY="/automated-trading-platform/prod/aws_access_key_id"
+SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
 
 SOURCE="none"
 BOT_TOKEN=""
 CHAT_ID=""
+CHAT_ID_OPS=""
 ADMIN_KEY=""
 DIAG_KEY=""
 ATP_API_KEY=""
 GITHUB_TOKEN=""
+AWS_ACCESS_KEY_ID_VAL=""
+AWS_SECRET_ACCESS_KEY_VAL=""
 
 fetch_ssm() {
   local name="$1"
@@ -51,13 +57,17 @@ if command -v aws >/dev/null 2>&1; then
   if aws sts get-caller-identity >/dev/null 2>&1; then
     BT="$(fetch_ssm "$SSM_BOT_TOKEN" || true)"
     CI="$(fetch_ssm "$SSM_CHAT_ID" || true)"
+    CIO="$(fetch_ssm "$SSM_CHAT_ID_OPS" || true)"
     AK="$(fetch_ssm "$SSM_ADMIN_KEY" || true)"
     DK="$(fetch_ssm "$SSM_DIAG_KEY" || true)"
     ATP="$(fetch_ssm "$SSM_ATP_API_KEY" || true)"
     GH="$(fetch_ssm "$SSM_GITHUB_TOKEN" || true)"
+    AWS_ACCESS_KEY_ID_VAL="$(fetch_ssm "$SSM_AWS_ACCESS_KEY" || true)"
+    AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
     if [[ -n "$BT" && -n "$CI" && -n "$AK" ]]; then
       BOT_TOKEN="$BT"
       CHAT_ID="$CI"
+      CHAT_ID_OPS="${CIO:-}"
       ADMIN_KEY="$AK"
       DIAG_KEY="${DK:-$AK}"
       ATP_API_KEY="$ATP"
@@ -82,10 +92,13 @@ if [[ "$use_ssm" != "true" ]]; then
 
   BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN_AWS:-}}"
   CHAT_ID="${TELEGRAM_CHAT_ID_AWS:-${TELEGRAM_CHAT_ID:-}}"
+  CHAT_ID_OPS="${TELEGRAM_CHAT_ID_OPS:-}"
   ADMIN_KEY="${ADMIN_ACTIONS_KEY:-${DIAGNOSTICS_API_KEY:-}}"
   DIAG_KEY="${DIAGNOSTICS_API_KEY:-$ADMIN_KEY}"
   ATP_API_KEY="${ATP_API_KEY:-}"
   GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+  AWS_ACCESS_KEY_ID_VAL="${AWS_ACCESS_KEY_ID:-}"
+  AWS_SECRET_ACCESS_KEY_VAL="${AWS_SECRET_ACCESS_KEY:-}"
   SOURCE="fallback"
 fi
 
@@ -111,6 +124,8 @@ umask 077
 {
   printf "TELEGRAM_BOT_TOKEN=%s\n" "$BOT_TOKEN"
   printf "TELEGRAM_CHAT_ID=%s\n" "$CHAT_ID"
+  printf "TELEGRAM_CHAT_ID_AWS=%s\n" "$CHAT_ID"
+  [[ -n "$CHAT_ID_OPS" ]] && printf "TELEGRAM_CHAT_ID_OPS=%s\n" "$CHAT_ID_OPS"
   printf "ADMIN_ACTIONS_KEY=%s\n" "$ADMIN_KEY"
   printf "DIAGNOSTICS_API_KEY=%s\n" "$DIAG_KEY"
   printf "ATP_API_KEY=%s\n" "${ATP_API_KEY:-}"
@@ -118,6 +133,22 @@ umask 077
   printf "RUN_TELEGRAM=true\n"
   [[ -n "$GITHUB_TOKEN" ]] && printf "GITHUB_TOKEN=%s\n" "$GITHUB_TOKEN"
 } > "$RUNTIME_ENV"
+
+# Optional health config: market data staleness threshold (minutes). See docs/MARKET_UPDATER_HARDENING_PLAN.md.
+echo "HEALTH_STALE_MARKET_MINUTES=15" >> "$RUNTIME_ENV"
+
+# ATP SSM runner: explicit AWS credentials for run-atp-command (if instance metadata unavailable in container)
+[[ -n "$AWS_ACCESS_KEY_ID_VAL" && -n "$AWS_SECRET_ACCESS_KEY_VAL" ]] && {
+  printf "AWS_ACCESS_KEY_ID=%s\n" "$AWS_ACCESS_KEY_ID_VAL" >> "$RUNTIME_ENV"
+  printf "AWS_SECRET_ACCESS_KEY=%s\n" "$AWS_SECRET_ACCESS_KEY_VAL" >> "$RUNTIME_ENV"
+  echo "AWS_DEFAULT_REGION=ap-southeast-1" >> "$RUNTIME_ENV"
+}
+
+# OpenClaw cost optimization: verification uses cheap model (add OPENCLAW_API_TOKEN, OPENCLAW_API_URL manually if using OpenClaw)
+echo "OPENCLAW_VERIFICATION_PRIMARY_MODEL=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
+# Task-type routing: doc/monitoring use cheap chain; bug tasks use main chain
+echo "OPENCLAW_CHEAP_TASK_TYPES=doc,documentation,monitoring,triage" >> "$RUNTIME_ENV"
+echo "OPENCLAW_CHEAP_MODEL_CHAIN=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
 
 echo "Rendered (source=$SOURCE)"
 echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO)"

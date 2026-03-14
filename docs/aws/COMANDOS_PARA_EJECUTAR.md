@@ -92,7 +92,27 @@ Sustituye `TU_FINE_GRAINED_PAT_AQUI` por tu Personal Access Token de GitHub (fin
 
 ---
 
-## 6. Auditoría AWS (instancias + SSM)
+## 6. Notion: hacer que el scheduler recoja una tarea (PROD)
+
+`NOTION_API_KEY` está en **secrets/runtime.env** en el servidor. Para que una tarea **Planned** se recoja sin esperar al ciclo del scheduler:
+
+1. Conéctate a PROD (SSM o EC2 Instance Connect).
+2. Añade `NOTION_TASK_DB` si aún no está (sustituye por el ID de tu base Notion si es otra):
+   ```bash
+   cd /home/ubuntu/automated-trading-platform
+   grep -q NOTION_TASK_DB secrets/runtime.env || echo 'NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a' >> secrets/runtime.env
+   docker compose --profile aws restart backend-aws
+   ```
+3. Ejecuta un ciclo del scheduler:
+   ```bash
+   ./scripts/run_notion_task_pickup.sh
+   ```
+
+Detalle: [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
+
+---
+
+## 7. Auditoría AWS (instancias + SSM)
 
 ```bash
 cd /ruta/a/automated-trading-platform
@@ -101,4 +121,4 @@ cd /ruta/a/automated-trading-platform
 
 ---
 
-**Referencias:** [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md), [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md), [../openclaw/SIGUIENTE_PASOS_OPENCLAW.md](../openclaw/SIGUIENTE_PASOS_OPENCLAW.md).
+**Referencias:** [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md), [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md), [../openclaw/SIGUIENTE_PASOS_OPENCLAW.md](../openclaw/SIGUIENTE_PASOS_OPENCLAW.md), [../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](../runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md).

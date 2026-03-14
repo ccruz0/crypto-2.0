@@ -81,7 +81,7 @@ OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest
 # OPENCLAW_IMAGE=openclaw:local
 
 OPENCLAW_BASE_BRANCH=main
-OPENCLAW_LOG_LEVEL=INFO
+OPENCLAW_LOG_LEVEL=info
 ```
 
 **Importante:** no pongas el token en `.env.lab`, solo `OPENCLAW_TOKEN_PATH`. Comprobar:

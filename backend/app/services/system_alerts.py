@@ -57,7 +57,7 @@ def check_and_alert_stale_market_data():
                 
                 if telegram_notifier.enabled:
                     try:
-                        telegram_notifier.send_message(message)
+                        telegram_notifier.send_message(message, chat_destination="ops")
                         logger.warning(f"[SYSTEM_ALERT] Sent stale market data alert to Telegram")
                         _record_alert_sent("stale_market_data")
                     except Exception as send_err:
@@ -90,7 +90,7 @@ def check_and_alert_stalled_scheduler():
         
         if telegram_notifier.enabled:
             try:
-                telegram_notifier.send_message(message)
+                telegram_notifier.send_message(message, chat_destination="ops")
                 record_telegram_send_result(True)
                 logger.warning(f"[SYSTEM_ALERT] Sent stalled scheduler alert to Telegram")
                 _record_alert_sent("stalled_scheduler")
@@ -186,9 +186,9 @@ def evaluate_and_maybe_send_system_alert(health: Optional[Dict] = None, db: Opti
 
 def _send_system_alert(alert_type: str, message: str):
     """Send a system alert via Telegram (if enabled)"""
-    if telegram_notifier.enabled:
-        try:
-            telegram_notifier.send_message(message, origin="AWS")
+        if telegram_notifier.enabled:
+            try:
+                telegram_notifier.send_message(message, origin="AWS", chat_destination="ops")
             record_telegram_send_result(True)
             logger.warning(f"[SYSTEM_ALERT] Sent {alert_type} alert to Telegram")
             _record_alert_sent(alert_type)

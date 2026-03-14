@@ -26,6 +26,7 @@ _ATP_PROJECT_PATH = "/home/ubuntu/automated-trading-platform"
 # Allowed subcommand patterns (regex). Applied after stripping "cd ... && " prefix.
 _ALLOWED_SUBCOMMANDS = (
     r"^docker\s+compose\s+--profile\s+aws\s+ps\s*$",
+    r"^docker\s+compose\s+--profile\s+aws\s+restart\s+\w+(-\w+)*\s*$",
     r"^docker\s+compose\s+--profile\s+aws\s+logs\s+--tail=\d+(\s+\w+)?\s*$",
     r"^docker\s+ps\s*$",
     r"^curl\s+-sS(\s+--connect-timeout\s+\d+)?\s+http://127\.0\.0\.1:8002/(ping_fast|api/health)\s*$",

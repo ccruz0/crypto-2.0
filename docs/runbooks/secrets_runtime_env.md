@@ -19,7 +19,25 @@ Rendered by `render_runtime_env.sh`:
 - ENVIRONMENT
 - RUN_TELEGRAM
 
-**Source:** AWS SSM (primary) or `.env.aws` (fallback). Do not change secret sources unless necessary.
+**Rendered by `render_runtime_env.sh` (cost optimization):**
+
+- OPENCLAW_VERIFICATION_PRIMARY_MODEL — Uses cheap model for verification (PASS/FAIL). Set to `openai/gpt-4o-mini` by default. Add OPENCLAW_API_TOKEN and OPENCLAW_API_URL manually if using OpenClaw.
+
+**Optional (add manually on the server for agent scheduler / Notion):**
+
+- NOTION_API_KEY — Notion integration token (AI Task System). Required for the agent scheduler to read and update tasks. Stored only in `secrets/runtime.env` on the server; never committed.
+- NOTION_TASK_DB — Notion database ID (the AI Task System database, not a page ID). Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
+
+**Source:** AWS SSM (primary) or `.env.aws` (fallback) for the rendered vars. Do not change secret sources unless necessary.
+
+## Where the Notion secret and database ID are stored
+
+| What | Local (e.g. your Mac) | Server (e.g. EC2 PROD) |
+|------|------------------------|--------------------------|
+| **NOTION_API_KEY** (integration token / secret) | `backend/.env` — used when you run `./scripts/run_notion_task_pickup.sh` or the backend locally. Add it via the popup (`./scripts/notion_secret_popup.sh`) or the HTML helper (`scripts/notion_secret_prompt.html`), or paste the line into `backend/.env`. **Do not commit** `backend/.env`. | `secrets/runtime.env` — add manually (e.g. `NOTION_API_KEY=ntn_...`). The backend container and pickup script read it from here. **Do not commit** `secrets/runtime.env`. |
+| **NOTION_TASK_DB** (database ID, not a secret) | Passed as env when running the pickup script, e.g. `NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a ./scripts/run_notion_task_pickup.sh`, or set in `backend/.env` or `secrets/runtime.env` so the scheduler uses the correct database. | `secrets/runtime.env` — e.g. `NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a`. Optional: can be passed per run via `-e NOTION_TASK_DB=...` when using `docker compose exec`. |
+
+**Summary:** The Notion **secret** (API key) is in `backend/.env` locally and in `secrets/runtime.env` on the server. The Notion **database ID** (`NOTION_TASK_DB`) can be in the same files or set in the environment when running the pickup script. Neither file should be committed to git.
 
 ## Other secrets (not in runtime.env)
 

@@ -115,6 +115,49 @@ LEGACY_STATUS_ALIASES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Notion Select display names (human-readable, capitalised)
+# Notion requires Select options to be "human readable" and start with a capital.
+# Backend uses internal values (lowercase, hyphenated); we map when reading/writing.
+# ---------------------------------------------------------------------------
+
+NOTION_STATUS_INTERNAL_TO_DISPLAY: dict[str, str] = {
+    "backlog": "Backlog",
+    "ready-for-investigation": "Ready for Investigation",
+    "investigating": "Investigating",
+    "investigation-complete": "Investigation Complete",
+    "ready-for-patch": "Ready for Patch",
+    "patching": "Patching",
+    "testing": "Testing",
+    "awaiting-deploy-approval": "Awaiting Deploy Approval",
+    "deploying": "Deploying",
+    "done": "Done",
+    "blocked": "Blocked",
+    "rejected": "Rejected",
+    "needs-revision": "Needs Revision",
+    "planned": "Planned",
+    "in-progress": "In Progress",
+    "deployed": "Deployed",
+}
+
+NOTION_STATUS_DISPLAY_TO_INTERNAL: dict[str, str] = {
+    display: internal for internal, display in NOTION_STATUS_INTERNAL_TO_DISPLAY.items()
+}
+
+
+def notion_status_to_display(internal_status: str) -> str:
+    """Return the Notion Select display name for an internal status, or the value as-is."""
+    s = (internal_status or "").strip()
+    return NOTION_STATUS_INTERNAL_TO_DISPLAY.get(s, s)
+
+
+def notion_status_from_display(display_or_internal: str) -> str:
+    """Return the internal status from a Notion value (display or already internal)."""
+    s = (display_or_internal or "").strip()
+    if s in ALLOWED_TASK_STATUSES:
+        return s
+    return NOTION_STATUS_DISPLAY_TO_INTERNAL.get(s, s.lower())
+
+# ---------------------------------------------------------------------------
 # Task metadata fields (extended — best-effort; optional in Notion DB schema)
 # ---------------------------------------------------------------------------
 
@@ -683,9 +726,11 @@ def update_notion_task_status(
             "Status": {"rich_text": _rich_text(normalized_status)},
         }
     }
+    # Notion Select options are human-readable (e.g. "Ready for Patch"); map internal → display
+    status_display = notion_status_to_display(normalized_status)
     payload_select: dict[str, Any] = {
         "properties": {
-            "Status": {"select": {"name": normalized_status}},
+            "Status": {"select": {"name": status_display}},
         }
     }
 

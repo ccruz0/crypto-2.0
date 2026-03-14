@@ -43,8 +43,10 @@ set -e
 LAB="$LAB_IP"
 PORT="$PORT"
 PP="proxy_pass http://\${LAB}:\${PORT}/;"
-echo "=== nginx -t (before) ==="
-sudo nginx -t 2>&1 || true
+echo "=== Remove duplicate default server backups from sites-enabled ==="
+for f in /etc/nginx/sites-enabled/*.bak* /etc/nginx/sites-enabled/*.backup*; do
+  [[ -f "\$f" ]] && sudo rm -f "\$f" && echo "Removed \$f"
+done
 echo "=== Sync openclaw proxy_pass in sites-enabled ==="
 for f in /etc/nginx/sites-enabled/*; do
   [ -f "\$f" ] || continue
@@ -78,6 +80,10 @@ if [ "$SSH_EXIT" -ne 0 ]; then
   echo "Paste this entire block into that terminal:"
   echo "----------8<----------"
   cat << 'PASTE'
+# Remove duplicate default server (backup files in sites-enabled)
+for f in /etc/nginx/sites-enabled/*.bak* /etc/nginx/sites-enabled/*.backup*; do
+  [[ -f "$f" ]] && sudo rm -f "$f" && echo "Removed $f"
+done
 LAB=172.31.3.214
 PORT=8080
 PP="proxy_pass http://${LAB}:${PORT}/;"

@@ -14,7 +14,7 @@ cmd_id=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \
   --region "$AWS_REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters "commands=[\"cd $REPO_ON_LAB 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || { echo 'Repo not found'; exit 1; }; git pull origin main 2>/dev/null || true; sudo bash scripts/openclaw/enable_openclaw_telegram.sh\"]" \
+  --parameters "commands=[\"export HOME=/root; git config --global --add safe.directory $REPO_ON_LAB; cd $REPO_ON_LAB && git stash -u 2>/dev/null || true && git pull origin main; sudo bash $REPO_ON_LAB/scripts/openclaw/enable_openclaw_telegram.sh\"]" \
   --output text --query 'Command.CommandId')
 
 echo "CommandId: $cmd_id"

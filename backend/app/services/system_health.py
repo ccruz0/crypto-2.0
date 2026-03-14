@@ -35,6 +35,23 @@ def record_telegram_send_result(success: bool):
 # DB connectivity timeout (ms) for /api/health/system so it never hangs on DB down
 _HEALTH_DB_TIMEOUT_MS = 2000
 
+# Default and bounds for market staleness threshold (minutes); invalid env falls back to default
+_DEFAULT_STALE_MARKET_MINUTES = 30.0
+_MIN_STALE_MARKET_MINUTES = 1.0
+_MAX_STALE_MARKET_MINUTES = 1440.0  # 24h
+
+
+def _parse_stale_market_minutes() -> float:
+    """Parse HEALTH_STALE_MARKET_MINUTES from env; invalid or missing returns default 30."""
+    raw = os.getenv("HEALTH_STALE_MARKET_MINUTES", "").strip() or "30"
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        return _DEFAULT_STALE_MARKET_MINUTES
+    if val < _MIN_STALE_MARKET_MINUTES or val > _MAX_STALE_MARKET_MINUTES:
+        return _DEFAULT_STALE_MARKET_MINUTES
+    return val
+
 
 def get_system_health(db: Session) -> Dict:
     """
@@ -70,8 +87,8 @@ def get_system_health(db: Session) -> Dict:
             "trade_system": {"status": "FAIL", "open_orders": 0, "max_open_orders": None, "order_intents_table_exists": False, "last_check_ok": False},
         }
     
-    # Get thresholds from env (defaults)
-    stale_market_minutes = float(os.getenv("HEALTH_STALE_MARKET_MINUTES", "30"))
+    # Get thresholds from env (defaults); market staleness is configurable and safely parsed
+    stale_market_minutes = _parse_stale_market_minutes()
     monitor_stale_minutes = float(os.getenv("HEALTH_MONITOR_STALE_MINUTES", "30"))
     
     # Compute component health

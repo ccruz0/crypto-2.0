@@ -23,6 +23,9 @@ if [[ ! -d /etc/nginx/sites-enabled ]]; then
   exit 2
 fi
 
+BAK_DIR="/etc/nginx/backups"
+sudo mkdir -p "$BAK_DIR"
+
 echo "=== Forcing openclaw proxy_pass -> ${LAB}:${PORT} in all sites-enabled files that mention openclaw ==="
 TS=$(date +%s)
 for f in /etc/nginx/sites-enabled/*; do
@@ -31,7 +34,7 @@ for f in /etc/nginx/sites-enabled/*; do
     continue
   fi
   echo "--- $f ---"
-  sudo cp -a "$f" "${f}.bak.force-openclaw.${TS}"
+  sudo cp -a "$f" "${BAK_DIR}/$(basename "$f").bak.force-openclaw.${TS}"
   # Normalize common broken upstreams to NEW (idempotent if already NEW)
   sudo sed -i \
     -e "s|proxy_pass http://52.77.216.100:8080/;|$NEW|g" \
@@ -52,4 +55,4 @@ echo "=== curl public (expect 401, not 502) ==="
 curl -sS -m 10 -I "https://dashboard.hilovivo.com/openclaw/" | head -15 || true
 
 echo ""
-echo "Rollback per file: sudo cp -a <file>.bak.force-openclaw.${TS} <file> && sudo nginx -t && sudo systemctl reload nginx"
+echo "Rollback (example for default): sudo cp -a ${BAK_DIR}/default.bak.force-openclaw.${TS} /etc/nginx/sites-enabled/default && sudo nginx -t && sudo systemctl reload nginx"

@@ -39,6 +39,8 @@ load_telegram_env() {
   done
   [ -z "${TELEGRAM_CHAT_ID:-}" ] && [ -n "${TELEGRAM_CHAT_ID_AWS:-}" ] && TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID_AWS}"
   [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_BOT_TOKEN_AWS:-}" ] && TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN_AWS}"
+  # Ops channel (AWS_alerts): health alerts use TELEGRAM_CHAT_ID_OPS when set; else TELEGRAM_CHAT_ID
+  [ -z "${TELEGRAM_CHAT_ID_OPS:-}" ] && TELEGRAM_CHAT_ID_OPS="${TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID_AWS:-}}"
 }
 
 resolve_telegram_token() {
@@ -66,9 +68,11 @@ send_tg() {
     echo "ATP health alert (dry run): would send: $text"
     return 0
   fi
+  local chat="${TELEGRAM_CHAT_ID_OPS:-$TELEGRAM_CHAT_ID}"
+  [ -z "$chat" ] && return 1
   curl -sS -X POST --max-time 10 \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID}" \
+    -d "chat_id=${chat}" \
     --data-urlencode "text=$text" 2>/dev/null || true
 }
 
@@ -84,8 +88,10 @@ send_tg_with_button() {
     send_tg "$text"
     return 0
   fi
+  local chat="${TELEGRAM_CHAT_ID_OPS:-$TELEGRAM_CHAT_ID}"
+  [ -z "$chat" ] && send_tg "$text" && return 0
   local payload
-  payload="$(jq -n --arg chat_id "${TELEGRAM_CHAT_ID}" --arg text "$text" \
+  payload="$(jq -n --arg chat_id "${chat}" --arg text "$text" \
     '{chat_id:$chat_id,text:$text,reply_markup:{inline_keyboard:[[{text:"▶ Run full fix now",callback_data:"atp_run_full_fix"}]]}}')"
   curl -sS -X POST --max-time 10 -H "Content-Type: application/json" \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
@@ -155,7 +161,7 @@ main() {
   if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
     resolve_telegram_token || true
   fi
-  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || { [ -z "${TELEGRAM_CHAT_ID_OPS:-}" ] && [ -z "${TELEGRAM_CHAT_ID:-}" ]; }; then
     if [ -n "${TELEGRAM_BOT_TOKEN_ENCRYPTED:-}" ]; then
       enc_len="${#TELEGRAM_BOT_TOKEN_ENCRYPTED}"
       if [ "$enc_len" -lt 80 ] 2>/dev/null; then

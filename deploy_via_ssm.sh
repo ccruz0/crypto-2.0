@@ -50,12 +50,12 @@ if [ "$MODE" = "fast" ]; then
         --query 'Command.CommandId' 2>&1)
     WAIT_SECONDS=120
 else
-    echo "📤 Sending FULL deployment command (git pull + full backend rebuild)..."
-    # Full deploy: pull, rebuild backend image, up, health check, nginx restart
+    echo "📤 Sending FULL deployment command (git pull + render runtime.env + full backend rebuild)..."
+    # Full deploy: pull, render runtime.env (fetches secrets from SSM), rebuild backend image, up, health check, nginx restart
     COMMAND_ID=$(aws ssm send-command \
         --instance-ids $INSTANCE_ID \
         --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","sudo -u ubuntu git -C /home/ubuntu/automated-trading-platform pull origin main || sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull origin main || true","mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d","sleep 25","curl -sf --connect-timeout 5 http://127.0.0.1:8002/ping_fast && echo Backend OK || echo Backend not ready","sudo systemctl restart nginx 2>/dev/null || true","docker compose --profile aws ps"]' \
+        --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","sudo -u ubuntu git -C /home/ubuntu/automated-trading-platform pull origin main || sudo -u ubuntu git -C /home/ubuntu/crypto-2.0 pull origin main || true","mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true","bash scripts/aws/render_runtime_env.sh 2>/dev/null || true","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d","sleep 25","curl -sf --connect-timeout 5 http://127.0.0.1:8002/ping_fast && echo Backend OK || echo Backend not ready","sudo systemctl restart nginx 2>/dev/null || true","docker compose --profile aws ps"]' \
         --region $REGION \
         --timeout-seconds 600 \
         --output text \

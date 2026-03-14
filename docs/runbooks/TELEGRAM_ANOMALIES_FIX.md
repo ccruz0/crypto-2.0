@@ -2,6 +2,8 @@
 
 When you receive Telegram alerts for these anomalies, use this runbook.
 
+**Important:** The fix scripts need the backend container + PostgreSQL. From your **Mac**, use the SSM script. Do **not** run `fix_telegram_anomalies.sh` locally — it will fail (no watchlist_items table in local SQLite).
+
 ## 1. AUTOMATIC ORDER CREATION FAILED (Amount USD not configured)
 
 **Symptom:** `El campo 'Amount USD' no está configurado para BTC_USD`

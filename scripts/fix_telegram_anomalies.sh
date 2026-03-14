@@ -18,25 +18,22 @@ BTC_AMOUNT_USD="${BTC_AMOUNT_USD:-50}"
 echo "=== Fix Telegram Anomalies ==="
 echo ""
 
-# 1. Set Amount USD for BTC_USD
+# 1. Set Amount USD for BTC_USD (only when backend-aws is running — needs PostgreSQL)
 echo "1. Setting trade_amount_usd=\$${BTC_AMOUNT_USD} for BTC_USD..."
 if command -v docker >/dev/null 2>&1 && docker compose --profile aws ps backend-aws 2>/dev/null | grep -q Up; then
   docker compose --profile aws exec backend-aws python scripts/set_watchlist_trade_amount.py BTC_USD "$BTC_AMOUNT_USD" || true
 else
-  cd "$REPO_ROOT/backend"
-  if [ -f "$REPO_ROOT/secrets/runtime.env" ]; then set -a; source "$REPO_ROOT/secrets/runtime.env" 2>/dev/null; set +a; fi
-  if [ -f ".env" ]; then set -a; source .env 2>/dev/null; set +a; fi
-  if [ -x ".venv/bin/python" ]; then
-    .venv/bin/python scripts/set_watchlist_trade_amount.py BTC_USD "$BTC_AMOUNT_USD" || true
-  else
-    python scripts/set_watchlist_trade_amount.py BTC_USD "$BTC_AMOUNT_USD" || true
-  fi
+  echo "   (Skipped: backend-aws not running. Run on PROD via: ./scripts/fix_telegram_anomalies_via_ssm.sh)"
 fi
 echo ""
 
 # 2. Run one agent scheduler cycle (seeds activity log, clears scheduler_inactivity)
 echo "2. Running one agent scheduler cycle (seeds activity log)..."
-"$REPO_ROOT/scripts/run_notion_task_pickup.sh" 2>/dev/null || true
+if command -v docker >/dev/null 2>&1 && docker compose --profile aws ps backend-aws 2>/dev/null | grep -q Up; then
+  docker compose --profile aws exec -T backend-aws python scripts/run_agent_scheduler_cycle.py 2>/dev/null || true
+else
+  echo "   (Skipped: backend-aws not running. Run on PROD via: ./scripts/fix_telegram_anomalies_via_ssm.sh)"
+fi
 echo ""
 
 echo "Done. Check Telegram for new alerts."

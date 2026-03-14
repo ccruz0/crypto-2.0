@@ -413,7 +413,7 @@ def alerts_audit_endpoint(
         results = []
         
         for item in items:
-            symbol = item.symbol
+            symbol = str(item.symbol)
             
             # Use centralized resolver
             alert_config = signal_monitor._resolve_alert_config(db, symbol)
@@ -429,7 +429,7 @@ def alerts_audit_endpoint(
             ).order_by(WatchlistSignalState.last_alert_at_utc.desc()).first()
             
             last_alert_at = None
-            if signal_state and signal_state.last_alert_at_utc:
+            if signal_state is not None and signal_state.last_alert_at_utc is not None:
                 last_alert_at = signal_state.last_alert_at_utc.isoformat()
             
             # Get cooldown from watchlist item

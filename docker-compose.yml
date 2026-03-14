@@ -209,8 +209,7 @@ services:
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
       - EXECUTION_CONTEXT=AWS
       - TRADING_ENABLED=${TRADING_ENABLED:-true}
-      # Health monitoring thresholds
-      - HEALTH_STALE_MARKET_MINUTES=${HEALTH_STALE_MARKET_MINUTES:-30}
+      # Health monitoring thresholds (HEALTH_STALE_MARKET_MINUTES from env_file only; default 30 in code)
       - HEALTH_MONITOR_STALE_MINUTES=${HEALTH_MONITOR_STALE_MINUTES:-30}
       - SYSTEM_ALERT_COOLDOWN_HOURS=${SYSTEM_ALERT_COOLDOWN_HOURS:-24}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1

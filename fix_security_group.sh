@@ -100,12 +100,31 @@ else
     echo "   ✅ Port 3000 already allows $MY_IP/32"
 fi
 
+# SSH (port 22) for EC2 Instance Connect and deploy_via_eice.sh
+PORT_22_MY_IP=$(aws ec2 describe-security-groups \
+  --group-ids "$SG_ID" \
+  --region "$REGION" \
+  --query "SecurityGroups[0].IpPermissions[?FromPort==\`22\` && ToPort==\`22\` && IpProtocol==\`tcp\` && IpRanges[?CidrIp==\`$MY_IP/32\`]]" \
+  --output json 2>/dev/null | jq -r 'length')
+if [ "${PORT_22_MY_IP:-0}" -eq 0 ]; then
+    echo "   Adding rule for port 22 (SSH) from $MY_IP/32..."
+    aws ec2 authorize-security-group-ingress \
+      --group-id "$SG_ID" \
+      --protocol tcp \
+      --port 22 \
+      --cidr "$MY_IP/32" \
+      --region "$REGION" \
+      --description "SSH / EC2 Instance Connect from my IP" 2>&1 | grep -E "(Ingress|error|Error)" || echo "   ✅ SSH rule added"
+else
+    echo "   ✅ Port 22 (SSH) already allows $MY_IP/32"
+fi
+
 echo ""
 echo "4. Verifying rules..."
 aws ec2 describe-security-groups \
   --group-ids "$SG_ID" \
   --region "$REGION" \
-  --query 'SecurityGroups[0].IpPermissions[?FromPort==`8002` || FromPort==`3000`].[IpProtocol,FromPort,ToPort,IpRanges[*].CidrIp]' \
+  --query 'SecurityGroups[0].IpPermissions[?FromPort==`8002` || FromPort==`3000` || FromPort==`22`].[IpProtocol,FromPort,ToPort,IpRanges[*].CidrIp]' \
   --output table 2>/dev/null || echo "   ⚠️  Could not verify rules"
 
 echo ""

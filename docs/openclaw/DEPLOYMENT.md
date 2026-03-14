@@ -183,8 +183,8 @@ OPENCLAW_IMAGE=ghcr.io/your-org/openclaw:latest
 # Optional: branch to base work on
 OPENCLAW_BASE_BRANCH=main
 
-# Optional: log level
-OPENCLAW_LOG_LEVEL=INFO
+# Optional: log level (lowercase: silent|fatal|error|warn|info|debug|trace)
+OPENCLAW_LOG_LEVEL=info
 ```
 
 **On Lab host:** `cp .env.lab.example .env.lab` and set at least `GIT_REPO_URL` and `OPENCLAW_GITHUB_TOKEN`.

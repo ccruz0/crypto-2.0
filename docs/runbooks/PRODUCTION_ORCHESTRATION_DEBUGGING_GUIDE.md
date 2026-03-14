@@ -261,7 +261,28 @@ docker compose --profile aws logs --tail=300 backend-aws 2>&1 \
 
 ---
 
-### 11. Workspace Root Resolution
+### 11. Missing Artifact Recovery
+
+When a task is in `investigation-complete`, `ready-for-patch`, or `patching` but the investigation artifact (.md) is missing or empty, the recovery playbook attempts to regenerate from the sections sidecar or raw content, or resets the task to planned.
+
+```bash
+docker compose --profile aws logs --tail=500 backend-aws 2>&1 \
+  | grep -E "agent_recovery:|missing_artifact|regenerated|reset to planned"
+```
+
+| Signal | Keyword |
+|---|---|
+| Playbook found tasks | `missing_artifact_playbook found` |
+| Artifact valid (skip) | `artifact valid at` |
+| Regenerated from sidecar | `regenerated artifact from sections` |
+| Regenerated from raw | `regenerated artifact from raw content` |
+| Task reset | `reset to planned` / `Investigation artifact was missing or empty` |
+
+**Path consistency:** Recovery uses `get_writable_bug_investigations_dir()` for bug-investigations (same as apply/validate), so artifacts in the fallback path (e.g. when `docs/` is not writable) are found. If you see "No sections sidecar found" but the .md file exists, check that `AGENT_BUG_INVESTIGATIONS_DIR` or repo `docs/agents/bug-investigations` is writable and that apply and recovery use the same path.
+
+---
+
+### 12. Workspace Root Resolution
 
 First log emitted on startup — confirms the writable root used for all file writes.
 
@@ -281,7 +302,7 @@ Expected in Docker: either `found docs/` or `using fallback parents[2]=/app`. If
 
 ---
 
-### 12. JSONL Activity Log
+### 13. JSONL Activity Log
 
 Structured event log persisted inside the container at `/app/logs/agent_activity.jsonl`.
 

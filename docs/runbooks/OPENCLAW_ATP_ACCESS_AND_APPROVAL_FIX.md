@@ -105,7 +105,56 @@ curl https://dashboard.hilovivo.com/api/agent/atp-instance-info
 
 ---
 
-## 6. OpenClaw Integration
+## 6. AWS Credentials for run-atp-command
+
+The backend runs in Docker and may not have access to the EC2 instance metadata service. If you see `"error":"Unable to locate credentials"` from `run-atp-command`, add explicit AWS credentials:
+
+1. **Create IAM user** (or use existing deploy user) with minimal SSM permissions. Example inline policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommands"],
+       "Resource": [
+         "arn:aws:ec2:ap-southeast-1:YOUR_ACCOUNT:instance/i-087953603011543c5",
+         "arn:aws:ssm:ap-southeast-1::document/AWS-RunShellScript"
+       ]
+     }]
+   }
+   ```
+   Replace `YOUR_ACCOUNT` with your AWS account ID.
+
+2. **Store credentials in SSM Parameter Store** (encrypted). From a machine with AWS CLI configured (same creds as deploy):
+   ```bash
+   ./scripts/aws/store_aws_creds_for_atp_ssm.sh
+   ```
+   Or manually:
+   ```bash
+   aws ssm put-parameter --name /automated-trading-platform/prod/aws_access_key_id \
+     --value "AKIA..." --type SecureString --overwrite --region ap-southeast-1
+   aws ssm put-parameter --name /automated-trading-platform/prod/aws_secret_access_key \
+     --value "..." --type SecureString --overwrite --region ap-southeast-1
+   ```
+
+3. **Re-render and deploy**:
+   ```bash
+   # On instance (or locally with AWS creds):
+   bash scripts/aws/render_runtime_env.sh
+   docker compose --profile aws restart backend-aws
+   ```
+
+4. **Verify**:
+   ```bash
+   curl -X POST https://dashboard.hilovivo.com/api/agent/run-atp-command \
+     -H "Authorization: Bearer $OPENCLAW_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"command": "docker compose --profile aws ps"}'
+   ```
+
+---
+
+## 7. OpenClaw Integration
 
 For OpenClaw to use the ATP command API, it needs an HTTP client. Options:
 

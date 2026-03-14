@@ -128,6 +128,8 @@ class TelegramNotifier:
         self.chat_id = None
         self.auth_user_id = None
         self.enabled = False  # Will be determined by send_message() guard
+        self._chat_id_trading: Optional[str] = None
+        self._chat_id_ops: Optional[str] = None
         
         # Duplicate detection: track recently sent messages to prevent duplicates
         # Format: {message_hash: (timestamp, symbol, price, side)}
@@ -274,12 +276,22 @@ class TelegramNotifier:
             token_generic = (os.getenv("TELEGRAM_BOT_TOKEN") or settings.TELEGRAM_BOT_TOKEN or "").strip()
             chat_aws = (os.getenv("TELEGRAM_CHAT_ID_AWS") or settings.TELEGRAM_CHAT_ID_AWS or "").strip()
             chat_generic = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+            chat_trading = (os.getenv("TELEGRAM_CHAT_ID_TRADING") or getattr(settings, "TELEGRAM_CHAT_ID_TRADING", None) or "").strip()
+            chat_ops = (os.getenv("TELEGRAM_CHAT_ID_OPS") or getattr(settings, "TELEGRAM_CHAT_ID_OPS", None) or "").strip()
 
             required_token = token_aws or token_generic
-            required_chat_id = chat_aws or chat_generic
+            # Trading: TELEGRAM_CHAT_ID_TRADING > TELEGRAM_CHAT_ID_AWS > TELEGRAM_CHAT_ID
+            chat_id_trading = chat_trading or chat_aws or chat_generic
+            # Ops: TELEGRAM_CHAT_ID_OPS > fallback to trading (backward compat: single chat for all)
+            chat_id_ops = chat_ops or chat_id_trading
+            required_chat_id = chat_id_trading  # enabled check uses trading as primary
 
             token_source = "aws" if token_aws else ("generic" if token_generic else "missing")
             chat_id_source = "aws" if chat_aws else ("generic" if chat_generic else "missing")
+
+            # Store both chat IDs for routing (trading=HILOVIVO3.0, ops=AWS_alerts)
+            self._chat_id_trading = chat_id_trading or None
+            self._chat_id_ops = chat_id_ops or None
 
             local_token_present = bool((os.getenv("TELEGRAM_BOT_TOKEN_LOCAL") or settings.TELEGRAM_BOT_TOKEN_LOCAL or "").strip())
             local_chat_id_present = bool((os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip())
@@ -293,6 +305,10 @@ class TelegramNotifier:
             required_chat_id = (os.getenv("TELEGRAM_CHAT_ID_LOCAL") or settings.TELEGRAM_CHAT_ID_LOCAL or "").strip()
             if not required_chat_id:
                 required_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or settings.TELEGRAM_CHAT_ID or "").strip()
+
+            # Local: same chat for both (no separate ops channel in dev)
+            self._chat_id_trading = required_chat_id or None
+            self._chat_id_ops = required_chat_id or None
 
             local_token_present = False
             local_chat_id_present = False
@@ -370,7 +386,14 @@ class TelegramNotifier:
             logger.error(f"Failed to set bot commands: {e}")
             return False
     
-    def send_message(self, message: str, reply_markup: Optional[dict] = None, origin: Optional[str] = None, symbol: Optional[str] = None) -> bool:
+    def send_message(
+        self,
+        message: str,
+        reply_markup: Optional[dict] = None,
+        origin: Optional[str] = None,
+        symbol: Optional[str] = None,
+        chat_destination: Literal["trading", "ops"] = "trading",
+    ) -> bool:
         """
         Send a message to Telegram with optional inline keyboard.
         
@@ -378,8 +401,9 @@ class TelegramNotifier:
         It automatically:
         - Blocks Telegram sends for non-AWS origins (logs instead)
         - Adds environment prefix [AWS] or [LOCAL] based on origin
-        - Uses TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment
-        - Routes to the Telegram channel configured via TELEGRAM_CHAT_ID environment variable
+        - Routes to the appropriate channel based on chat_destination:
+          - "trading" -> TELEGRAM_CHAT_ID_TRADING (HILOVIVO3.0: signals, orders, reports)
+          - "ops" -> TELEGRAM_CHAT_ID_OPS (AWS_alerts: health, anomalies, scheduler)
         
         Args:
             message: Message text (HTML format supported)
@@ -387,6 +411,7 @@ class TelegramNotifier:
             origin: Origin identifier ("AWS" or "LOCAL"). If None, defaults to runtime origin.
                     Only "AWS" origin will actually send to Telegram.
             symbol: Optional trading symbol (e.g., "BTC_USDT"). If not provided, will be extracted from message.
+            chat_destination: "trading" for HILOVIVO3.0 (signals, orders), "ops" for AWS_alerts (health, anomalies).
             
         Returns:
             True if message sent successfully, False otherwise
@@ -454,7 +479,12 @@ class TelegramNotifier:
                 pass  # Don't fail if health module not available
             return False
         # From here on, refresh_config() has already updated instance fields:
-        # self.bot_token, self.chat_id, self.auth_user_id, self.enabled
+        # self.bot_token, self.chat_id, self._chat_id_trading, self._chat_id_ops, self.enabled
+        effective_chat_id = (
+            self._chat_id_ops if chat_destination == "ops" else (self._chat_id_trading or self.chat_id)
+        )
+        if not effective_chat_id:
+            effective_chat_id = self.chat_id
         
         # If we reach here, all guard checks passed - proceed to send
         # Get origin for message prefix (AWS/LOCAL/TEST)
@@ -484,10 +514,11 @@ class TelegramNotifier:
             
             # Log Telegram send attempt with full context
             logger.info(
-                "[TELEGRAM_SEND] type=ALERT symbol=%s side=%s chat_id=%s origin=%s message_len=%d message_preview=%s",
+                "[TELEGRAM_SEND] type=ALERT symbol=%s side=%s chat_id=%s dest=%s origin=%s message_len=%d message_preview=%s",
                 log_symbol,
                 log_side,
-                self.chat_id,
+                effective_chat_id,
+                chat_destination,
                 origin_upper,
                 len(full_message),
                 full_message[:100] if len(full_message) > 100 else full_message,
@@ -497,7 +528,7 @@ class TelegramNotifier:
             # Log URL without token for security
             url_safe = f"https://api.telegram.org/bot***/sendMessage"
             payload: Dict[str, Any] = {
-                "chat_id": self.chat_id,
+                "chat_id": effective_chat_id,
                 "text": full_message,
                 "parse_mode": "HTML"
             }
@@ -507,10 +538,11 @@ class TelegramNotifier:
             
             # Log immediately before Telegram API call
             logger.info(
-                "[TELEGRAM_API_CALL] symbol=%s side=%s chat_id=%s url=%s",
+                "[TELEGRAM_API_CALL] symbol=%s side=%s chat_id=%s dest=%s url=%s",
                 log_symbol,
                 log_side,
-                self.chat_id,
+                effective_chat_id,
+                chat_destination,
                 url_safe
             )
             try:
@@ -669,12 +701,13 @@ class TelegramNotifier:
             
             # Success logging
             logger.info(
-                "[TELEGRAM_SUCCESS] type=ALERT symbol=%s side=%s origin=%s message_id=%s chat_id=%s",
+                "[TELEGRAM_SUCCESS] type=ALERT symbol=%s side=%s origin=%s message_id=%s chat_id=%s dest=%s",
                 log_symbol,
                 log_side,
                 origin_upper,
                 message_id,
-                self.chat_id,
+                effective_chat_id,
+                chat_destination,
             )
             
             # Register sent message in dashboard

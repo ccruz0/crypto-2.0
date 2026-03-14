@@ -60,8 +60,12 @@ fi
 
 ENABLE_HTTP_RESPONSES="${OPENCLAW_HTTP_RESPONSES:-true}"
 
-MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-anthropic/claude-sonnet-4-20250514}"
-MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini,openai/gpt-4o,anthropic/claude-3-5-haiku-20241022}"
+# ACP default agent for Cursor/Codex integration (sessions_spawn needs agentId or acp.defaultAgent)
+ACP_DEFAULT_AGENT="${OPENCLAW_ACP_DEFAULT_AGENT:-codex}"
+
+# Cheap-first during stabilization. Gateway must honor request-body "model"; see docs/GATEWAY_MODEL_ROUTING_AND_FAILOVER_COMPATIBILITY.md
+MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-4o-mini}"
+MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-haiku-20241022,anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o,anthropic/claude-sonnet-4-20250514}"
 FALLBACKS_JSON="["
 FF=1
 OLDIFS="$IFS"; IFS=','
@@ -84,6 +88,7 @@ if [ -f "$CONFIG_FILE" ]; then
       const primary = process.argv[4];
       const fallbacks = JSON.parse(process.argv[5]);
       const enableHttpResponses = process.argv[6] === 'true';
+      const acpDefaultAgent = process.argv[7];
       const orig = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
       const origins = JSON.parse(fs.readFileSync(originsPath, 'utf8'));
       if (!orig.gateway) orig.gateway = {};
@@ -99,20 +104,24 @@ if [ -f "$CONFIG_FILE" ]; then
       if (!orig.agents) orig.agents = {};
       if (!orig.agents.defaults) orig.agents.defaults = {};
       orig.agents.defaults.model = { primary, fallbacks };
+      if (acpDefaultAgent) {
+        if (!orig.acp) orig.acp = {};
+        orig.acp.defaultAgent = acpDefaultAgent;
+      }
       fs.writeFileSync(cfgPath, JSON.stringify(orig, null, 2));
-    " "$CONFIG_FILE" "$ORIGINS_FILE" "$PROXIES_JSON" "$MODEL_PRIMARY" "$FALLBACKS_JSON" "$ENABLE_HTTP_RESPONSES"
+    " "$CONFIG_FILE" "$ORIGINS_FILE" "$PROXIES_JSON" "$MODEL_PRIMARY" "$FALLBACKS_JSON" "$ENABLE_HTTP_RESPONSES" "$ACP_DEFAULT_AGENT"
   else
     if [ "$ENABLE_HTTP_RESPONSES" = "true" ]; then
-      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}},\"acp\":{\"defaultAgent\":\"$ACP_DEFAULT_AGENT\"}}" > "$CONFIG_FILE"
     else
-      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+      printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}},\"acp\":{\"defaultAgent\":\"$ACP_DEFAULT_AGENT\"}}" > "$CONFIG_FILE"
     fi
   fi
 else
   if [ "$ENABLE_HTTP_RESPONSES" = "true" ]; then
-    printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+    printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON,\"http\":{\"endpoints\":{\"responses\":{\"enabled\":true}}}},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}},\"acp\":{\"defaultAgent\":\"$ACP_DEFAULT_AGENT\"}}" > "$CONFIG_FILE"
   else
-    printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}}}" > "$CONFIG_FILE"
+    printf '%s\n' "{\"gateway\":{\"controlUi\":{\"allowedOrigins\":$ORIGINS_JSON},\"trustedProxies\":$PROXIES_JSON},\"agents\":{\"defaults\":{\"model\":{\"primary\":\"$MODEL_PRIMARY\",\"fallbacks\":$FALLBACKS_JSON}}},\"acp\":{\"defaultAgent\":\"$ACP_DEFAULT_AGENT\"}}" > "$CONFIG_FILE"
   fi
 fi
 rm -f "$ORIGINS_FILE"
@@ -124,5 +133,6 @@ else
   COUNT="?"
 fi
 echo "[openclaw-entrypoint] gateway.controlUi.allowedOrigins loaded ($COUNT origins)" 1>&2
+echo "[openclaw-entrypoint] acp.defaultAgent=$ACP_DEFAULT_AGENT (Cursor/ACP integration)" 1>&2
 
 exec "$@"
