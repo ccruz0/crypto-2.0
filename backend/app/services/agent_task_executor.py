@@ -829,12 +829,15 @@ def execute_prepared_task_if_approved(
     apply_fn = callback_selection.get("apply_change_fn")
     validate_fn = callback_selection.get("validate_fn")
     deploy_fn = callback_selection.get("deploy_fn")
+    selection_reason = str(callback_selection.get("selection_reason") or "")
+    expect_bug_artifact = "bug investigation" in selection_reason.lower() or "bug_investigation" in selection_reason.lower()
 
     execution_result = execute_prepared_notion_task(
         prepared_task,
         apply_change_fn=apply_fn,
         validate_fn=validate_fn,
         deploy_fn=deploy_fn,
+        expect_bug_artifact=expect_bug_artifact,
     )
 
     return {
@@ -855,6 +858,7 @@ def execute_prepared_notion_task(
     apply_change_fn: PreparedTaskCallback = None,
     validate_fn: PreparedTaskCallback = None,
     deploy_fn: PreparedTaskCallback = None,
+    expect_bug_artifact: bool = False,
 ) -> dict[str, Any]:
     """
     Execute a prepared Notion task in a controlled way: apply → testing → validate → deploy → deployed.
@@ -1000,12 +1004,16 @@ def execute_prepared_notion_task(
         "no" if use_extended_lifecycle else "YES",
     )
     if use_extended_lifecycle:
-        # Validate artifact exists before advancing — prevents approval flow with missing artifact
-        from app.services._paths import get_writable_bug_investigations_dir
-        _bug_dir = get_writable_bug_investigations_dir()
-        _md_path = _bug_dir / f"notion-bug-{task_id}.md"
-        _sidecar_path = _bug_dir / f"notion-bug-{task_id}.sections.json"
-        _artifact_ok = _md_path.exists() and _md_path.stat().st_size >= 200
+        # Validate artifact exists before advancing — only for bug-investigation callbacks.
+        # Other manual_only callbacks (strategy_analysis, profile_setting, etc.) write to
+        # different paths; skip this check to avoid false "artifact missing" errors.
+        if expect_bug_artifact:
+            from app.services._paths import get_writable_bug_investigations_dir
+            _bug_dir = get_writable_bug_investigations_dir()
+            _md_path = _bug_dir / f"notion-bug-{task_id}.md"
+            _artifact_ok = _md_path.exists() and _md_path.stat().st_size >= 200
+        else:
+            _artifact_ok = True
         if not _artifact_ok:
             logger.warning(
                 "execute_prepared_notion_task: artifact missing or too small task_id=%s "

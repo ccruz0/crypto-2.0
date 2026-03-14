@@ -165,7 +165,7 @@ def _is_bug_investigation_eligible(prepared_task: dict[str, Any]) -> bool:
     area_name = str(repo_area.get("area_name") or "").lower()
     blob = f"{title} {details} {task_type} {area_name}"
 
-    if task_type in ("bug", "bugfix", "bug fix"):
+    if task_type in ("bug", "bugfix", "bug fix", "architecture investigation"):
         return True
 
     keywords = (
@@ -186,6 +186,8 @@ def _is_bug_investigation_eligible(prepared_task: dict[str, Any]) -> bool:
         "stale data",
         "wrong data",
         "incorrect data",
+        "alert spam",
+        "alert rules",
     )
     return any(k in blob for k in keywords)
 
@@ -1116,11 +1118,11 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
     )
 
     # ── Explicit Type field override (highest priority) ──────────────
-    # Notion Type="bug" always maps to the bug investigation pack with
-    # manual_only=True, regardless of keyword heuristics.  This ensures
-    # bug tasks are never misclassified as documentation, monitoring, or
-    # generic OpenClaw and always enter the extended lifecycle.
-    if _task_type in ("bug", "bugfix", "bug fix"):
+    # Notion Type="bug" or "architecture investigation" maps to the bug investigation pack
+    # with manual_only=True, regardless of keyword heuristics.  This ensures
+    # investigation tasks are never misclassified and always produce the expected
+    # artifact at docs/agents/bug-investigations/notion-bug-{id}.md.
+    if _task_type in ("bug", "bugfix", "bug fix", "architecture investigation"):
         logger.info(
             "select_default_callbacks_for_task: explicit bug type detected — "
             "selecting bug_investigation pack (extended lifecycle) "
