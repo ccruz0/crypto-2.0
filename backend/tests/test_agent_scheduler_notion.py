@@ -102,7 +102,8 @@ class TestNotionTaskReader:
 
             rt = status_filter.get("rich_text") or {}
             sel = status_filter.get("select") or {}
-            equals_value = rt.get("equals") or sel.get("equals") or ""
+            st = status_filter.get("status") or {}
+            equals_value = rt.get("equals") or sel.get("equals") or st.get("equals") or ""
 
             if equals_value == "Planned":
                 return capitalized_response
@@ -118,9 +119,8 @@ class TestNotionTaskReader:
 
         assert len(tasks) == 1
         assert tasks[0]["task"] == "Audit project documentation"
-        # planned/rich_text returns [] (success, 0 results) → skip to "Planned" variant
-        # Planned/rich_text returns 1 result → done.  Select fallback only on HTTP errors.
-        assert call_count >= 2
+        # Reader queries each pickable status; "Planned" returns 1 result.
+        assert call_count >= 1
 
     @patch.dict("os.environ", {"NOTION_API_KEY": "secret_test", "NOTION_TASK_DB": "db_test_id_1234"})
     def test_falls_back_to_select_filter(self):
@@ -128,7 +128,7 @@ class TestNotionTaskReader:
         from app.services.notion_task_reader import get_pending_notion_tasks
 
         page = _notion_page("id-3", "Strategy review", "planned")
-        error_response = FakeResponse(400, body='{"message": "validation error"}')
+        error_response = FakeResponse(400, body='{"message": "validation_error"}')
         ok_response = FakeResponse(200, _notion_query_response([page]))
 
         call_count = 0

@@ -59,7 +59,11 @@ def agent_status() -> dict[str, Any]:
 
     state = get_scheduler_state()
 
-    pending = _count_tasks_by_statuses(["planned", "Planned", "backlog", "Backlog"])
+    pending = _count_tasks_by_statuses([
+        "planned", "Planned", "backlog", "Backlog",
+        "ready-for-investigation", "Ready for Investigation",
+        "blocked", "Blocked",
+    ])
     investigation = _count_tasks_by_statuses([
         "investigation", "Investigation",
         "investigation-complete", "Investigation Complete",

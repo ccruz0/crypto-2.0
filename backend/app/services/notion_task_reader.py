@@ -216,7 +216,8 @@ def get_pending_notion_tasks(
     type_filter: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
-    Fetch tasks from the Notion "AI Task System" database where Status = "planned".
+    Fetch tasks from the Notion "AI Task System" database where Status is one of:
+    Planned, Backlog, Ready for Investigation, or Blocked.
 
     Uses NOTION_API_KEY and NOTION_TASK_DB from environment. On missing config,
     network failure, or API error, returns an empty list and logs; does not raise.
@@ -244,15 +245,16 @@ def get_pending_notion_tasks(
     except (ImportError, AttributeError):
         _FALLBACK_DISPLAY = {
             "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
+            "blocked": "Blocked",
             "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
             "patching": "Patching", "testing": "Testing", "deploying": "Deploying", "done": "Done",
         }
         def notion_status_to_display(s: str) -> str:
             return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())
-    _INTERNAL_PICKABLE = ("planned", "backlog", "ready-for-investigation")
+    _INTERNAL_PICKABLE = ("planned", "backlog", "ready-for-investigation", "blocked")
     _STATUS_VARIANTS = [
         notion_status_to_display(s) for s in _INTERNAL_PICKABLE
-    ] + ["Planned", "Backlog", "Ready for Investigation"]  # fallback display names
+    ] + ["Planned", "Backlog", "Ready for Investigation", "Blocked"]  # fallback display names
     _STATUS_VARIANTS = list(dict.fromkeys(_STATUS_VARIANTS))  # dedupe
 
     headers = {
@@ -333,10 +335,11 @@ def get_pending_notion_tasks(
                     return pages
 
     all_tasks: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
 
     try:
         with httpx.Client(timeout=15.0) as client:
-            raw_pages: list[dict[str, Any]] | None = None
+            raw_pages: list[dict[str, Any]] = []
 
             for status_variant in _STATUS_VARIANTS:
                 # Status in Notion can be "status" type (native) or "select" type (legacy).
@@ -345,25 +348,31 @@ def get_pending_notion_tasks(
                     "filter": {"property": "Status", "select": {"equals": status_variant}},
                     "page_size": 100,
                 }
-                raw_pages = _query_pages(
+                pages = _query_pages(
                     filter_payload, client,
                     status_filter_keys=["status", "select"],
                 )
-                if raw_pages is not None:
+                if pages is not None:
+                    for p in pages:
+                        pid = (p.get("id") or "").strip()
+                        if pid and pid not in seen_ids:
+                            seen_ids.add(pid)
+                            raw_pages.append(p)
                     logger.info(
-                        "Notion query succeeded status_variant=%r raw_pages=%d",
+                        "Notion query succeeded status_variant=%r pages=%d (total unique=%d)",
                         status_variant,
+                        len(pages),
                         len(raw_pages),
                     )
-                    break
-                logger.debug(
-                    "Notion query failed for status_variant=%r, trying next",
-                    status_variant,
-                )
+                else:
+                    logger.debug(
+                        "Notion query failed for status_variant=%r, trying next",
+                        status_variant,
+                    )
 
-            if raw_pages is None:
-                logger.error(
-                    "Notion task read failed: all filter combinations returned errors "
+            if not raw_pages:
+                logger.warning(
+                    "Notion task read: no tasks found for any pickable status "
                     "database_id=%s",
                     database_id[:8] + "…" if len(database_id) > 8 else database_id,
                 )
