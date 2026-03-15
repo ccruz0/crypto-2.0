@@ -17,15 +17,45 @@ build:
 
 If `context: ./backend` is used, the Dockerfile cannot access `backend/scripts/` because the build context would only include files within the `./backend` directory. The Dockerfile expects the build context to be the repo root, so it can copy `backend/scripts/`, `backend/requirements.txt`, etc.
 
+## Rebuild Procedure (dependency drift)
+
+When `backend/requirements.txt` changes or you see `ModuleNotFoundError` (e.g. `pydantic_settings`) in the container:
+
+```bash
+cd ~/automated-trading-platform
+docker compose build --no-cache backend-aws
+docker compose up -d backend-aws
+```
+
+For AWS profile:
+
+```bash
+docker compose --profile aws build --no-cache backend-aws
+docker compose --profile aws up -d backend-aws
+```
+
 ## Verification
 
-After building the backend image, verify scripts are included:
+After building the backend image, verify scripts and dependencies:
 
 ```bash
 cd /home/ubuntu/automated-trading-platform
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws up -d backend-aws
 ./backend/scripts/verify_image_scripts.sh
+```
+
+Verify critical dependencies inside the container:
+
+```bash
+docker compose --profile aws exec backend-aws python scripts/diag/check_container_dependencies.py
+```
+
+Expected output:
+```
+pydantic: OK
+pydantic_settings: OK
+requests: OK
 ```
 
 Or manually:

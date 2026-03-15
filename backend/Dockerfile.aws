@@ -123,6 +123,8 @@ RUN python3 -c "import app.services.exchange_sync as m; print('OK: exchange_sync
   || (echo 'ERROR: exchange_sync import failed' >&2 && exit 1)
 # Boot-path import check: app.main must import cleanly
 RUN python3 -c "import app.main; print('OK: app.main imports')" || (echo "ERROR: app.main import failed - boot path broken" >&2 && exit 1)
+# Verify critical dependencies (pydantic, pydantic_settings, requests) for agent/Telegram commands
+RUN python3 /app/scripts/diag/check_container_dependencies.py || (echo "ERROR: Container dependency check failed" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time

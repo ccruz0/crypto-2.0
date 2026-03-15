@@ -81,6 +81,8 @@ COPY scripts/ /app/scripts/
 # This ensures the build fails immediately rather than silently missing files at runtime
 RUN test -d /app/scripts || (echo "ERROR: /app/scripts directory is missing in image" >&2 && echo "DEBUG: Contents of /app:" >&2 && ls -la /app >&2 || true && exit 1)
 RUN test -f /app/scripts/print_api_fingerprints.py || (echo "ERROR: /app/scripts/print_api_fingerprints.py is missing in image" >&2 && echo "DEBUG: Contents of /app/scripts:" >&2 && (ls -la /app/scripts >&2 || echo "/app/scripts does not exist" >&2) && exit 1)
+# Verify critical dependencies (pydantic, pydantic_settings, requests) for agent/Telegram commands
+RUN python3 /app/scripts/diag/check_container_dependencies.py || (echo "ERROR: Container dependency check failed" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time

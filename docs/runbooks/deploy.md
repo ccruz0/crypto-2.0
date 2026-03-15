@@ -43,6 +43,13 @@ When you need to deploy manually (e.g. SSM unavailable, or one-off fix):
    docker compose --profile aws up -d --remove-orphans
    ```
 
+   **If `backend/requirements.txt` changed** (or you see `ModuleNotFoundError` like `pydantic_settings`), rebuild the image:
+   ```bash
+   docker compose --profile aws build --no-cache backend-aws
+   docker compose --profile aws up -d backend-aws
+   ```
+   See [backend/DOCKER_BUILD_CONTEXT.md](../../backend/DOCKER_BUILD_CONTEXT.md) for verification commands.
+
 3. **Verify**:
    ```bash
    docker compose --profile aws ps
