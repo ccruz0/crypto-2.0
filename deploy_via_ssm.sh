@@ -55,7 +55,7 @@ else
     COMMAND_ID=$(aws ssm send-command \
         --instance-ids $INSTANCE_ID \
         --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0; git fetch origin && git reset --hard origin/main' || true","mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true","bash scripts/aws/render_runtime_env.sh 2>/dev/null || true","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d","sleep 25","curl -sf --connect-timeout 5 http://127.0.0.1:8002/ping_fast && echo Backend OK || echo Backend not ready","sudo systemctl restart nginx 2>/dev/null || true","docker compose --profile aws ps"]' \
+        --parameters 'commands=["set -e","REPO=/home/ubuntu/automated-trading-platform","[ -d $REPO ] || REPO=/home/ubuntu/crypto-2.0","cd $REPO || exit 1","sudo chown -R ubuntu:ubuntu $REPO || true","sudo -u ubuntu bash -c \"cd $REPO; git fetch origin && git reset --hard origin/main\" || true","mkdir -p docs/agents/bug-investigations && sudo chown -R 10001:10001 docs/agents/bug-investigations || true","bash scripts/aws/render_runtime_env.sh 2>/dev/null || true","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d","sleep 25","curl -sf --connect-timeout 5 http://127.0.0.1:8002/ping_fast && echo Backend OK || echo Backend not ready","sudo systemctl restart nginx 2>/dev/null || true","docker compose --profile aws ps"]' \
         --region $REGION \
         --timeout-seconds 600 \
         --output text \
