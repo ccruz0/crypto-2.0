@@ -628,3 +628,4 @@ async def fix_backend_health():
             "message": "Failed to fix backend health"
         }
 
+# path-guard test
