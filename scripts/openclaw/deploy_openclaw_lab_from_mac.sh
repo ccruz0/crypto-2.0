@@ -26,9 +26,9 @@ OPENCLAW_MODEL_FALLBACKS="${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-haiku
 OPENCLAW_ACP_DEFAULT_AGENT="${OPENCLAW_ACP_DEFAULT_AGENT:-codex}"
 
 do_build() {
-  echo "==> Building wrapper image (openclaw-with-origins:latest)"
+  echo "==> Building wrapper image (openclaw-with-origins:latest) for linux/amd64"
   cd "$REPO_ROOT"
-  docker build -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .
+  docker build --platform linux/amd64 -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .
   docker tag openclaw-with-origins:latest "$OPENCLAW_IMAGE"
 }
 

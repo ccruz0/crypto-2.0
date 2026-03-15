@@ -2,6 +2,26 @@
 
 When OpenClaw stops replying on Telegram, follow these steps.
 
+## /investigate pydantic_settings error
+
+If `/investigate repeated BTC alerts` (or similar) fails with `ModuleNotFoundError: pydantic_settings`, OpenClaw is receiving the command and running ATP Python code from the mounted workspace. The OpenClaw container needs `pydantic-settings` installed.
+
+**Fix:** Use the ATP wrapper image (which adds pydantic/pydantic-settings) and redeploy:
+
+```bash
+# From your Mac (builds for linux/amd64, pushes to GHCR, deploys on LAB):
+./scripts/openclaw/deploy_openclaw_lab_from_mac.sh
+```
+
+Or build and push manually:
+
+```bash
+docker build --platform linux/amd64 -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .
+docker tag openclaw-with-origins:latest ghcr.io/ccruz0/openclaw:latest
+docker push ghcr.io/ccruz0/openclaw:latest
+# Then on LAB: docker pull ghcr.io/ccruz0/openclaw:latest && restart openclaw
+```
+
 ## What was done (2026-03-13)
 
 1. **Cheap-first model** — Set `primary` to `openai/gpt-4o-mini` (uses OpenAI credits first), Anthropic as fallback.
