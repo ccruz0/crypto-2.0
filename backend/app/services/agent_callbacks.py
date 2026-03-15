@@ -674,7 +674,7 @@ def validate_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, 
         if not task_id:
             return {"success": False, "summary": "missing task.id"}
 
-        inv_dir = _writable_bug_investigations_dir()
+        inv_dir = _note_dir_for_subdir("docs/agents/bug-investigations")
         note_path = inv_dir / f"notion-bug-{task_id}.md"
 
         ok, msg = _validate_nonempty_markdown(note_path)
@@ -721,6 +721,10 @@ _OPENCLAW_FALLBACK_MARKERS = (
 )
 
 _MIN_INVESTIGATION_CONTENT_CHARS = 200
+# Agent output: require all 9 sections and longer body
+_MIN_AGENT_BODY_CHARS = 500
+_AGENT_CRITICAL_SECTIONS = ("Root Cause", "Proposed Minimal Fix", "Risk Level", "Cursor Patch Prompt")
+_AGENT_CRITICAL_MIN_CHARS = 15  # Excluding "N/A"
 
 _OPENCLAW_MAX_RETRIES = 1
 _OPENCLAW_RETRY_DELAY_S = 5
@@ -732,6 +736,8 @@ def _call_openclaw_once(
     instructions: str,
     task_id: str,
     model_chain_override: list[str] | None = None,
+    *,
+    sections: Optional[tuple[str, ...]] = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Single OpenClaw call + quality gate.  Returns (result_or_None, error_reason)."""
     try:
@@ -755,7 +761,8 @@ def _call_openclaw_once(
             return None, f"OpenClaw returned fallback/error content: '{marker}'"
 
     from app.services.openclaw_client import INVESTIGATION_SECTIONS
-    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
+    use_sections = sections if sections is not None else INVESTIGATION_SECTIONS
+    found_sections = [s for s in use_sections if f"## {s}" in content]
     if not found_sections and len(content.strip()) < _MIN_INVESTIGATION_CONTENT_CHARS:
         return None, (
             f"OpenClaw response lacks structured sections and is too short "
@@ -771,6 +778,8 @@ def _apply_via_openclaw(
     save_subdir: str,
     file_prefix: str,
     fallback_fn: Optional[CallbackFn] = None,
+    *,
+    use_agent_schema: bool = False,
 ) -> dict[str, Any]:
     """Send a task to OpenClaw for AI analysis, save the result, fall back to template on failure."""
     task_id = _safe_task_id(prepared_task)
@@ -779,14 +788,22 @@ def _apply_via_openclaw(
     try:
         from app.services.openclaw_client import is_openclaw_configured, send_to_openclaw
     except Exception as e:
-        logger.warning("openclaw_client import failed: %s — using fallback", e)
+        logger.warning(
+            "openclaw_fallback reason=import_failed error=%s task_id=%s use_agent_schema=%s",
+            e, task_id, use_agent_schema,
+        )
         if fallback_fn:
+            logger.info("openclaw_fallback using template fallback task_id=%s", task_id)
             return fallback_fn(prepared_task)
         return {"success": False, "summary": f"openclaw_client unavailable: {e}"}
 
     if not is_openclaw_configured():
-        logger.info("OpenClaw not configured — using template fallback for task %s", task_id)
+        logger.warning(
+            "openclaw_fallback reason=not_configured task_id=%s use_agent_schema=%s",
+            task_id, use_agent_schema,
+        )
         if fallback_fn:
+            logger.info("openclaw_fallback using template fallback task_id=%s", task_id)
             return fallback_fn(prepared_task)
         return {"success": False, "summary": "OPENCLAW_API_TOKEN not configured"}
 
@@ -833,10 +850,14 @@ def _apply_via_openclaw(
     result: dict[str, Any] | None = None
     max_attempts = 1 + _OPENCLAW_MAX_RETRIES
 
+    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS
+    call_sections = AGENT_OUTPUT_SECTIONS if use_agent_schema else None
+
     for attempt in range(1, max_attempts + 1):
         result, last_error = _call_openclaw_once(
             send_to_openclaw, user_prompt, instructions, task_id,
             model_chain_override=chain_override,
+            sections=call_sections,
         )
         if result is not None:
             break
@@ -853,7 +874,12 @@ def _apply_via_openclaw(
             )
 
     if result is None:
+        logger.warning(
+            "openclaw_fallback reason=openclaw_error error=%s task_id=%s use_agent_schema=%s",
+            last_error, task_id, use_agent_schema,
+        )
         if fallback_fn:
+            logger.info("openclaw_fallback using template fallback task_id=%s", task_id)
             return fallback_fn(prepared_task)
         return {"success": False, "summary": last_error}
 
@@ -861,8 +887,14 @@ def _apply_via_openclaw(
 
     # Parse structured sections (gracefully returns None values for missing ones)
     try:
-        from app.services.openclaw_client import parse_investigation_sections
-        sections = parse_investigation_sections(content)
+        from app.services.openclaw_client import (
+            parse_agent_output_sections,
+            parse_investigation_sections,
+        )
+        if use_agent_schema:
+            sections = parse_agent_output_sections(content)
+        else:
+            sections = parse_investigation_sections(content)
     except Exception:
         sections = {}
 
@@ -911,9 +943,13 @@ def _apply_via_openclaw(
         _append_line_if_missing(idx_path, idx_line)
 
     summary = content.strip()[:200]
-    from app.services.openclaw_client import INVESTIGATION_SECTIONS
-    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
-    logger.info("OpenClaw analysis saved for task %s at %s (%d chars, sections=%d)", task_id, note_path, len(content), len(found_sections))
+    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
+    _check_sections = AGENT_OUTPUT_SECTIONS if use_agent_schema else INVESTIGATION_SECTIONS
+    found_sections = [s for s in _check_sections if f"## {s}" in content]
+    logger.info(
+        "openclaw_apply_success task_id=%s path=%s chars=%d sections=%d use_agent_schema=%s",
+        task_id, note_path, len(content), len(found_sections), use_agent_schema,
+    )
     # Cost telemetry: log model and token usage per task when gateway provides it (for cost/optimization visibility)
     usage = result.get("usage")
     model_used = result.get("model_used")
@@ -929,6 +965,8 @@ def _validate_openclaw_note(
     prepared_task: dict[str, Any],
     save_subdir: str,
     file_prefix: str,
+    *,
+    sections: Optional[tuple[str, ...]] = None,
 ) -> dict[str, Any]:
     """Validate that an OpenClaw-generated note has real investigation content.
 
@@ -962,9 +1000,28 @@ def _validate_openclaw_note(
                 "summary": f"investigation contains fallback/error marker: '{marker}'",
             }
 
-    from app.services.openclaw_client import INVESTIGATION_SECTIONS
-    found_sections = [s for s in INVESTIGATION_SECTIONS if f"## {s}" in content]
-    if not found_sections:
+    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
+    use_sections = sections if sections is not None else INVESTIGATION_SECTIONS
+    is_agent_schema = sections is not None and set(sections) == set(AGENT_OUTPUT_SECTIONS)
+    found_sections = [s for s in use_sections if f"## {s}" in content]
+    missing_sections = [s for s in use_sections if s not in found_sections]
+
+    if is_agent_schema:
+        # Agent output: require ALL 9 sections
+        if missing_sections:
+            logger.warning(
+                "agent_output_validation: FAILED — missing required sections "
+                "task_id=%s missing=%s path=%s",
+                task_id, missing_sections, note_path,
+            )
+            return {
+                "success": False,
+                "summary": (
+                    f"Agent output missing required sections: {', '.join(missing_sections)}. "
+                    f"Add each as '## {missing_sections[0]}' (etc.) with content or N/A."
+                ),
+            }
+    elif not found_sections:
         logger.warning(
             "openclaw_note_validation: FAILED — no structured sections found "
             "task_id=%s path=%s",
@@ -974,35 +1031,71 @@ def _validate_openclaw_note(
             "success": False,
             "summary": (
                 "investigation missing structured sections — expected at least one of: "
-                + ", ".join(INVESTIGATION_SECTIONS[:4])
+                + ", ".join(use_sections[:4])
             ),
         }
 
     body_start = content.find("---")
     body = content[body_start + 3:].strip() if body_start != -1 else content.strip()
-    if len(body) < _MIN_INVESTIGATION_CONTENT_CHARS:
+    min_body = _MIN_AGENT_BODY_CHARS if is_agent_schema else _MIN_INVESTIGATION_CONTENT_CHARS
+    if len(body) < min_body:
         logger.warning(
             "openclaw_note_validation: FAILED — content too short "
             "task_id=%s body_len=%d min=%d path=%s",
-            task_id, len(body), _MIN_INVESTIGATION_CONTENT_CHARS, note_path,
+            task_id, len(body), min_body, note_path,
         )
         return {
             "success": False,
             "summary": (
-                f"investigation content too short ({len(body)} chars, "
-                f"minimum {_MIN_INVESTIGATION_CONTENT_CHARS})"
+                f"Output too short ({len(body)} chars, minimum {min_body}). "
+                "Expand each section with concrete findings and actionable fixes."
             ),
         }
 
+    # Agent schema: require critical sections have meaningful content
+    if is_agent_schema:
+        try:
+            from app.services.openclaw_client import parse_agent_output_sections
+            parsed = parse_agent_output_sections(body)
+            weak = []
+            for sec in _AGENT_CRITICAL_SECTIONS:
+                val = (parsed.get(sec) or "").strip()
+                if not val:
+                    weak.append(sec)
+                elif sec == "Risk Level":
+                    if len(val) < 3 or ("low" not in val.lower() and "medium" not in val.lower() and "high" not in val.lower() and "n/a" not in val.lower()):
+                        weak.append(sec)
+                elif val.upper() == "N/A" or len(val) < _AGENT_CRITICAL_MIN_CHARS:
+                    weak.append(sec)
+            if weak:
+                logger.warning(
+                    "agent_output_validation: FAILED — critical sections empty or trivial "
+                    "task_id=%s weak=%s path=%s",
+                    task_id, weak, note_path,
+                )
+                return {
+                    "success": False,
+                    "summary": (
+                        f"Critical sections need more content: {', '.join(weak)}. "
+                        "Each must have concrete findings (not just N/A). "
+                        "Root Cause: cite evidence. Proposed Minimal Fix: exact steps. "
+                        "Risk Level: LOW/MEDIUM/HIGH + justification. Cursor Patch Prompt: copy-pasteable instruction."
+                    ),
+                }
+        except Exception as e:
+            logger.warning("agent_output_validation: section parse failed task_id=%s: %s", task_id, e)
+
+    log_event = "agent_output_validation" if is_agent_schema else "openclaw_note_validation"
     logger.info(
-        "openclaw_note_validation: PASSED task_id=%s sections=%d body_len=%d path=%s",
-        task_id, len(found_sections), len(body), note_path,
+        "%s: PASSED task_id=%s sections=%d body_len=%d path=%s",
+        log_event, task_id, len(found_sections), len(body), note_path,
     )
     return {
         "success": True,
         "summary": (
-            f"OpenClaw investigation validated "
-            f"({len(found_sections)} sections, {len(body)} chars)"
+            f"Agent output validated ({len(found_sections)} sections, {len(body)} chars)"
+            if is_agent_schema
+            else f"OpenClaw investigation validated ({len(found_sections)} sections, {len(body)} chars)"
         ),
     }
 
@@ -1012,19 +1105,32 @@ def _make_openclaw_callback(
     save_subdir: str,
     file_prefix: str,
     fallback_fn: Optional[CallbackFn] = None,
+    *,
+    use_agent_schema: bool = False,
 ) -> CallbackFn:
     """Factory: return an apply callback that delegates to OpenClaw with a template fallback."""
     def _apply(prepared_task: dict[str, Any]) -> dict[str, Any]:
         return _apply_via_openclaw(
             prepared_task, prompt_builder_fn, save_subdir, file_prefix, fallback_fn,
+            use_agent_schema=use_agent_schema,
         )
     return _apply
 
 
-def _make_openclaw_validator(save_subdir: str, file_prefix: str) -> CallbackFn:
-    """Factory: return a validate callback for OpenClaw-generated notes."""
+def _make_openclaw_validator(
+    save_subdir: str,
+    file_prefix: str,
+    *,
+    sections: Optional[tuple[str, ...]] = None,
+) -> CallbackFn:
+    """Factory: return a validate callback for OpenClaw-generated notes.
+
+    Use sections=AGENT_OUTPUT_SECTIONS for multi-agent operator output.
+    """
     def _validate(prepared_task: dict[str, Any]) -> dict[str, Any]:
-        return _validate_openclaw_note(prepared_task, save_subdir, file_prefix)
+        return _validate_openclaw_note(
+            prepared_task, save_subdir, file_prefix, sections=sections
+        )
     return _validate
 
 
@@ -1057,6 +1163,7 @@ def _verify_openclaw_solution(
     body = content[body_start + 3:].strip() if body_start != -1 else content.strip()
 
     # Check for stored feedback (from previous failed verification)
+    root = _repo_root()
     feedback_dir = root / "docs" / "agents" / "verification-feedback"
     feedback_dir.mkdir(parents=True, exist_ok=True)
     prev_feedback_path = feedback_dir / f"{task_id}.txt"
@@ -1142,6 +1249,77 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "manual_only": True,
             "selection_reason": f"bug investigation task (Notion Type raw={_task_type_raw!r} normalized={_task_type!r} — explicit match; approval-gated)",
         }
+
+    # ── Multi-agent routing (Telegram, Execution) ───────────────────
+    # Specialized agents for analysis/diagnosis; use shared output schema.
+    try:
+        from app.services.agent_routing import (
+            AGENT_EXECUTION_STATE,
+            AGENT_TELEGRAM_ALERTS,
+            get_file_prefix,
+            get_save_subdir,
+            route_task_with_reason,
+        )
+        from app.services.openclaw_client import (
+            AGENT_OUTPUT_SECTIONS,
+            build_execution_state_prompt,
+            build_telegram_alerts_prompt,
+        )
+        agent_id, route_reason = route_task_with_reason(prepared_task)
+        if agent_id == AGENT_TELEGRAM_ALERTS:
+            save_subdir = get_save_subdir(agent_id)
+            file_prefix = get_file_prefix(agent_id)
+            logger.info(
+                "agent_selected agent=telegram_alerts route_reason=%s task_id=%s title=%r",
+                route_reason, task_obj.get("id", ""), _task_title,
+            )
+            return {
+                "apply_change_fn": _make_openclaw_callback(
+                    build_telegram_alerts_prompt,
+                    save_subdir, file_prefix,
+                    use_agent_schema=True,
+                ),
+                "validate_fn": _make_openclaw_validator(
+                    save_subdir, file_prefix, sections=AGENT_OUTPUT_SECTIONS
+                ),
+                "verify_solution_fn": _make_openclaw_verifier(save_subdir, file_prefix),
+                "deploy_fn": None,
+                "manual_only": True,
+                "selection_reason": "Telegram and Alerts agent (multi-agent operator; approval-gated)",
+            }
+        if agent_id == AGENT_EXECUTION_STATE:
+            save_subdir = get_save_subdir(agent_id)
+            file_prefix = get_file_prefix(agent_id)
+            logger.info(
+                "agent_selected agent=execution_state route_reason=%s task_id=%s title=%r",
+                route_reason, task_obj.get("id", ""), _task_title,
+            )
+            return {
+                "apply_change_fn": _make_openclaw_callback(
+                    build_execution_state_prompt,
+                    save_subdir, file_prefix,
+                    use_agent_schema=True,
+                ),
+                "validate_fn": _make_openclaw_validator(
+                    save_subdir, file_prefix, sections=AGENT_OUTPUT_SECTIONS
+                ),
+                "verify_solution_fn": _make_openclaw_verifier(save_subdir, file_prefix),
+                "deploy_fn": None,
+                "manual_only": True,
+                "selection_reason": "Execution and State agent (multi-agent operator; approval-gated)",
+            }
+        if agent_id is not None:
+            logger.info(
+                "agent_routing_fallback agent=%s route_reason=%s — no handler (scaffolded), falling through",
+                agent_id, route_reason,
+            )
+    except Exception as e:
+        logger.warning(
+            "agent_routing_init_failed error=%s — falling through to next callback. "
+            "Diagnostic: ensure agent_routing and openclaw_client import (httpx, etc.).",
+            e,
+            exc_info=True,
+        )
 
     if _is_documentation_eligible(prepared_task):
         from app.services.openclaw_client import build_documentation_prompt

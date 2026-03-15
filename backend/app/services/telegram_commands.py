@@ -51,9 +51,13 @@ _env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
 _env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 # TELEGRAM_BOT_TOKEN_DEV: Separate bot token for local development (avoids 409 conflicts with AWS)
 _env_bot_token_dev = (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip()
-# TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs
+# TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs and/or channel IDs
 # If not set, falls back to TELEGRAM_CHAT_ID (for backward compatibility)
+# For multiple channels (e.g. HILOVIVO3.0 + Hilovivo-alerts): "CHANNEL_ID_1,CHANNEL_ID_2"
 _env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
+# TELEGRAM_CHAT_ID_TRADING: HILOVIVO3.0 — must be authorized for commands if used for alerts
+_env_chat_id_trading = (os.getenv("TELEGRAM_CHAT_ID_TRADING") or "").strip()
+# TELEGRAM_CHAT_ID: Primary channel ID; also used as single authorized chat when TELEGRAM_AUTH_USER_ID unset
 AUTH_CHAT_ID = _env_chat_id or None
 BOT_TOKEN = _env_bot_token or None
 BOT_TOKEN_DEV = _env_bot_token_dev or None
@@ -68,10 +72,18 @@ if _env_auth_user_ids:
             AUTHORIZED_USER_IDS.add(user_id)
             logger.info(f"[TG][AUTH] Added authorized user ID: {user_id}")
 elif AUTH_CHAT_ID:
-    # Fallback: if no TELEGRAM_AUTH_USER_ID is set, use TELEGRAM_CHAT_ID as authorized user ID
+    # Fallback: if no TELEGRAM_AUTH_USER_ID is set, use TELEGRAM_CHAT_ID as authorized chat
     # This allows backward compatibility but note: TELEGRAM_CHAT_ID is typically a channel ID
     AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-    logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized user ID (backward compatibility): {AUTH_CHAT_ID}")
+    logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized chat (backward compatibility): {AUTH_CHAT_ID}")
+if AUTH_CHAT_ID and str(AUTH_CHAT_ID) not in AUTHORIZED_USER_IDS:
+    # Always allow AUTH_CHAT_ID (TELEGRAM_CHAT_ID) even when TELEGRAM_AUTH_USER_ID is set
+    # Enables both primary channel and additional channels in TELEGRAM_AUTH_USER_ID
+    AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
+# HILOVIVO3.0: TELEGRAM_CHAT_ID_TRADING must be authorized for commands (alerts already go there)
+if _env_chat_id_trading and str(_env_chat_id_trading) not in AUTHORIZED_USER_IDS:
+    AUTHORIZED_USER_IDS.add(str(_env_chat_id_trading))
+    logger.info(f"[TG][AUTH] Added TELEGRAM_CHAT_ID_TRADING (HILOVIVO3.0) as authorized: {_env_chat_id_trading}")
 
 TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
 # Set to True when startup diagnostics get 401 (token invalid); disables polling/commands without crashing
@@ -104,6 +116,13 @@ PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
 
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
+
+
+def _get_effective_bot_token() -> Optional[str]:
+    """Return the bot token to use for sending. Matches polling token (DEV on local, PROD on AWS)."""
+    if not is_aws_runtime() and BOT_TOKEN_DEV:
+        return BOT_TOKEN_DEV
+    return BOT_TOKEN
 
 
 def _is_authorized(chat_id: str, user_id: str) -> bool:
@@ -748,6 +767,9 @@ def _parse_pending_value(state: Dict[str, Any], raw_value: str) -> Tuple[Optiona
 
 def _handle_pending_value_message(chat_id: str, text: str, db: Session) -> bool:
     """If chat has a pending input request, process it and return True."""
+    # Never consume commands — let them reach the command router
+    if text.strip().startswith("/"):
+        return False
     state = PENDING_VALUE_INPUTS.get(chat_id)
     if not state:
         return False
@@ -916,6 +938,9 @@ def setup_bot_commands():
         commands = [
             {"command": "start", "description": "Mostrar mensaje de bienvenida"},
             {"command": "help", "description": "Mostrar ayuda con todos los comandos"},
+            {"command": "investigate", "description": "Investigar problema (auto-ruta a agente)"},
+            {"command": "agent", "description": "Forzar agente: /agent sentinel|ledger <problema>"},
+            {"command": "runtime-check", "description": "Verificar dependencias de runtime (pydantic, etc.)"},
             {"command": "status", "description": "Estado del bot y trading"},
             {"command": "portfolio", "description": "Órdenes abiertas y posiciones activas"},
             {"command": "signals", "description": "Últimas 5 señales BUY/SELL"},
@@ -994,9 +1019,14 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         params = {}
         if offset is not None:
             params["offset"] = offset
-        # Include message and my_chat_member updates to ensure /start works in both private and group chats
-        # my_chat_member is needed for bot being added to groups
-        params["allowed_updates"] = ["message", "my_chat_member", "edited_message", "callback_query"]
+        # Include message, channel_post, and my_chat_member updates
+        # channel_post: required for commands in channels (e.g. HILOVIVO3.0) — channel posts use channel_post, not message
+        # my_chat_member: needed for bot being added to groups
+        params["allowed_updates"] = [
+            "message", "edited_message",
+            "channel_post", "edited_channel_post",
+            "my_chat_member", "callback_query",
+        ]
         
         # Use long polling: Telegram will wait up to 30 seconds for new messages
         # This allows real-time command processing
@@ -1039,8 +1069,12 @@ def send_command_response(chat_id: str, message: str) -> bool:
     if not TELEGRAM_ENABLED:
         logger.debug("Telegram disabled: skipping command response")
         return False
+    token = _get_effective_bot_token()
+    if not token:
+        logger.warning("[TG] No bot token available for send_command_response")
+        return False
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": message,
@@ -1247,6 +1281,11 @@ def send_audit_snapshot(chat_id: str, db: Optional[Session] = None) -> bool:
 
 def send_help_message(chat_id: str) -> bool:
     """Send help message with command descriptions"""
+    try:
+        from app.services.agent_telegram_commands import get_agent_help_content
+        agent_section = get_agent_help_content()
+    except Exception:
+        agent_section = ""
     message = """📚 <b>Command Help</b>
 
 /start - Show welcome message and command list
@@ -1264,7 +1303,7 @@ def send_help_message(chat_id: str) -> bool:
 /create_sl [symbol] - Create only SL order for a position
 /create_tp [symbol] - Create only TP order for a position
 /skip_sl_tp_reminder [symbol] - Don't ask about SL/TP for these positions anymore
-
+""" + (agent_section if agent_section else "") + """
 <b>Note:</b> Only authorized users can use these commands."""
     return send_command_response(chat_id, message)
 
@@ -2997,6 +3036,7 @@ def show_agent_console(chat_id: str, message_id: Optional[int] = None) -> bool:
         scheduler_block = _format_scheduler_health_for_console()
         text = f"🤖 <b>Agent Console</b>\n\n{scheduler_block}\n\nSelect a view:"
         keyboard = _build_keyboard([
+            [{"text": "🔍 Investigate", "callback_data": "cmd:investigate"}, {"text": "🔧 Runtime Check", "callback_data": "cmd:runtime-check"}],
             [{"text": "🕘 Recent Activity", "callback_data": "agent:recent"}],
             [{"text": "⏳ Pending Approvals", "callback_data": "agent:pending"}],
             [{"text": "⚠️ Last Failures", "callback_data": "agent:failures"}],
@@ -4247,7 +4287,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # Determine update type and extract key info for logging
     update_type = "unknown"
     callback_query = update.get("callback_query")
-    message = update.get("message") or update.get("edited_message")
+    message = (
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+    )
     
     if callback_query:
         update_type = "callback_query"
@@ -4260,15 +4305,17 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         chat_id = str(chat.get("id", ""))
         logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, callback_data='{callback_data}', username={username}, user_id={user_id}, chat_id={chat_id}")
     elif message:
-        update_type = "message"
+        update_type = "channel_post" if (update.get("channel_post") or update.get("edited_channel_post")) else "message"
         text = message.get("text", "")
-        chat_id = str(message.get("chat", {}).get("id", ""))
-        from_user = message.get("from", {})
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id", ""))
+        chat_type = chat.get("type", "unknown")
+        from_user = message.get("from", {}) or {}
         username = from_user.get("username", "N/A") if from_user else "N/A"
         user_id = str(from_user.get("id", "")) if from_user else ""
-        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, text='{text[:50]}', username={username}, user_id={user_id}, chat_id={chat_id}")
+        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, chat_type={chat_type}, text='{text[:50]}', username={username}, user_id={user_id}, chat_id={chat_id}")
     else:
-        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type} (no message or callback_query)")
+        logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type} (no message, channel_post, or callback_query)")
     
     # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
     # Use database for cross-instance deduplication (works between local and AWS)
@@ -4681,6 +4728,31 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 send_help_message(chat_id)
             elif cmd == "check_sl_tp":
                 send_check_sl_tp_message(chat_id, db)
+            elif cmd == "investigate":
+                # Prompt for problem text; user can reply with /investigate <problem>
+                send_command_response(
+                    chat_id,
+                    "🔍 <b>Investigate</b>\n\nType: <code>/investigate &lt;problem&gt;</code>\n\nExample: /investigate repeated BTC alerts"
+                )
+            elif cmd == "runtime-check":
+                try:
+                    import importlib.util
+                    script_path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "diag", "check_runtime_dependencies.py")
+                    script_path = os.path.abspath(script_path)
+                    if os.path.isfile(script_path):
+                        spec = importlib.util.spec_from_file_location("check_runtime_dependencies", script_path)
+                        if spec is not None and spec.loader is not None:
+                            mod = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(mod)
+                            out = mod.run_check()
+                        else:
+                            out = "Runtime dependency check\n\nFailed to load module spec"
+                    else:
+                        out = "Runtime dependency check\n\nScript not found"
+                    send_command_response(chat_id, f"<pre>{out}</pre>")
+                except Exception as e:
+                    logger.exception("[TG][CMD] /runtime-check failed: %s", e)
+                    send_command_response(chat_id, f"❌ Error: {e}")
             else:
                 logger.warning(f"[TG][CMD] ⚠️ Unknown cmd='{cmd}' in callback_data='{callback_data}'")
         elif callback_data == "menu:portfolio":
@@ -4818,23 +4890,46 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         return
     
-    # Handle regular message
-    message = update.get("message") or update.get("edited_message")
+    # Handle regular message (groups/supergroups) or channel_post (channels like HILOVIVO3.0)
+    # Channels use channel_post, not message — without this, commands in channels are never received
+    message = (
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+    )
     if not message:
         return
-    
-    chat_id = str(message["chat"]["id"])
+
+    chat = message.get("chat", {})
+    chat_id = str(chat.get("id", ""))
+    chat_type = chat.get("type", "unknown")  # private, group, supergroup, channel
     text = message.get("text", "")
-    from_user = message.get("from", {})
+    from_user = message.get("from", {}) or {}
     user_id = str(from_user.get("id", "")) if from_user else ""
-    
-    # Only authorized user - use helper function
+    update_source = (
+        "channel_post" if update.get("channel_post") or update.get("edited_channel_post") else "message"
+    )
+
+    logger.info(
+        "[TG][INTAKE] update_source=%s chat_id=%s chat_type=%s user_id=%s text=%s",
+        update_source, chat_id, chat_type, user_id or "N/A", (text or "")[:60],
+    )
+
+    # Only authorized user/chat - use helper function
     if not _is_authorized(chat_id, user_id):
-        logger.warning(f"[TG][DENY] chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS}, command={text[:50]}")
+        logger.warning(
+            "[TG][DENY] chat_id=%s chat_type=%s user_id=%s AUTH_CHAT_ID=%s authorized_ids=%s command=%s",
+            chat_id, chat_type, user_id or "N/A", AUTH_CHAT_ID,
+            ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+            (text or "")[:50],
+        )
         send_command_response(chat_id, "⛔ Not authorized")
         return
-    else:
-        logger.info(f"[TG][AUTH] ✅ Authorized chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS} for command={text[:50]}")
+    logger.info(
+        "[TG][AUTH] ✅ Authorized chat_id=%s chat_type=%s user_id=%s for command=%s",
+        chat_id, chat_type, user_id or "N/A", (text or "")[:50],
+    )
     
     # Parse command
     text = text.strip()
@@ -4918,6 +5013,48 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
     elif text.startswith("/menu"):
         show_main_menu(chat_id, db)
+    elif text.startswith("/investigate"):
+        logger.info("[TG][CMD] Routing /investigate to agent handler chat_id=%s text=%s", chat_id, text[:80])
+        try:
+            from app.core.runtime_identity import get_runtime_identity, format_runtime_identity_short
+            identity = get_runtime_identity()
+            logger.info(
+                "telegram_command_received command=investigate chat_id=%s handler=agent_telegram_commands runtime=%s",
+                chat_id,
+                format_runtime_identity_short(identity),
+            )
+            from app.services.agent_telegram_commands import handle_investigate_command
+            handle_investigate_command(chat_id, text, send_command_response)
+        except Exception as e:
+            logger.exception("[TG][CMD] /investigate failed: %s", e)
+            send_command_response(chat_id, f"❌ Error: {e}")
+    elif text.startswith("/runtime-check"):
+        try:
+            import importlib.util
+            script_path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "diag", "check_runtime_dependencies.py")
+            script_path = os.path.abspath(script_path)
+            if os.path.isfile(script_path):
+                spec = importlib.util.spec_from_file_location("check_runtime_dependencies", script_path)
+                if spec is not None and spec.loader is not None:
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    out = mod.run_check()
+                else:
+                    out = "Runtime dependency check\n\nFailed to load module spec"
+            else:
+                out = "Runtime dependency check\n\nScript not found (path: %s)" % script_path
+            send_command_response(chat_id, f"<pre>{out}</pre>")
+        except Exception as e:
+            logger.exception("[TG][CMD] /runtime-check failed: %s", e)
+            send_command_response(chat_id, f"❌ Error: {e}")
+    elif text.startswith("/agent "):
+        logger.info("[TG][CMD] Routing /agent to agent handler chat_id=%s text=%s", chat_id, text[:80])
+        try:
+            from app.services.agent_telegram_commands import handle_agent_command
+            handle_agent_command(chat_id, text, send_command_response)
+        except Exception as e:
+            logger.exception("[TG][CMD] /agent failed: %s", e)
+            send_command_response(chat_id, f"❌ Error: {e}")
     elif text.startswith("/help"):
         send_help_message(chat_id)
     elif text.startswith("/status"):
@@ -5060,7 +5197,12 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
             
             for update in updates:
                 update_id = update.get("update_id", 0)
-                message = update.get("message") or update.get("edited_message")
+                message = (
+                    update.get("message")
+                    or update.get("edited_message")
+                    or update.get("channel_post")
+                    or update.get("edited_channel_post")
+                )
                 callback_query = update.get("callback_query")
                 my_chat_member = update.get("my_chat_member")
                 
@@ -5076,8 +5218,14 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
                     logger.info(f"[TG] ⚡ Processing callback_query: callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, username={username}, update_id={update_id}")
                 elif message:
                     text = message.get("text", "")
-                    chat_id = message.get("chat", {}).get("id", "")
-                    logger.info(f"[TG] ⚡ Processing command: '{text}' from chat_id={chat_id}, update_id={update_id}")
+                    chat = message.get("chat", {})
+                    chat_id = chat.get("id", "")
+                    chat_type = chat.get("type", "unknown")
+                    update_src = "channel_post" if (update.get("channel_post") or update.get("edited_channel_post")) else "message"
+                    logger.info(
+                        "[TG] ⚡ Processing %s: '%s' from chat_id=%s chat_type=%s update_id=%s",
+                        update_src, (text or "")[:60], chat_id, chat_type, update_id,
+                    )
                 elif my_chat_member:
                     # Handle bot being added/removed from groups
                     chat = my_chat_member.get("chat", {})
