@@ -1,4 +1,4 @@
-"""Telegram Command Handlercimage.pngo
+"""Telegram Command Handler
 Handles incoming Telegram commands and responds with formatted messages
 """
 import os
@@ -91,6 +91,17 @@ _telegram_startup_401: bool = False
 
 if not TELEGRAM_ENABLED:
     logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
+
+# Startup: log command-intake config for operator visibility (no secrets)
+logger.info(
+    "[TG][CONFIG] command_intake: bot_token=%s telegram_enabled=%s auth_chat_id=%s "
+    "chat_id_trading=%s authorized_count=%s",
+    "SET" if BOT_TOKEN else "MISSING",
+    TELEGRAM_ENABLED,
+    AUTH_CHAT_ID or "none",
+    _env_chat_id_trading or "none",
+    len(AUTHORIZED_USER_IDS),
+)
 
 API_BASE_URL = (
     os.getenv("API_BASE_URL")
@@ -1100,9 +1111,10 @@ def send_command_response(chat_id: str, message: str) -> bool:
                 return False
         
         response.raise_for_status()
+        logger.debug("[TG][REPLY] chat_id=%s success=True", chat_id)
         return True
     except Exception as e:
-        logger.error(f"[TG][ERROR] Failed to send command response: {e}")
+        logger.error("[TG][REPLY] chat_id=%s success=False error=%s", chat_id, e)
         # Try to get more details about the error
         resp = getattr(e, "response", None)
         if resp is not None:
@@ -4904,32 +4916,33 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     chat = message.get("chat", {})
     chat_id = str(chat.get("id", ""))
     chat_type = chat.get("type", "unknown")  # private, group, supergroup, channel
+    chat_title = chat.get("title", "") or ""
     text = message.get("text", "")
     from_user = message.get("from", {}) or {}
     user_id = str(from_user.get("id", "")) if from_user else ""
+    update_id = update.get("update_id", 0)
     update_source = (
         "channel_post" if update.get("channel_post") or update.get("edited_channel_post") else "message"
     )
 
     logger.info(
-        "[TG][INTAKE] update_source=%s chat_id=%s chat_type=%s user_id=%s text=%s",
-        update_source, chat_id, chat_type, user_id or "N/A", (text or "")[:60],
+        "[TG][INTAKE] update_id=%s update_source=%s chat_id=%s chat_type=%s chat_title=%s "
+        "sender_user_id=%s text=%s",
+        update_id, update_source, chat_id, chat_type, chat_title[:30] or "N/A",
+        user_id or "N/A", (text or "")[:80],
     )
 
     # Only authorized user/chat - use helper function
-    if not _is_authorized(chat_id, user_id):
-        logger.warning(
-            "[TG][DENY] chat_id=%s chat_type=%s user_id=%s AUTH_CHAT_ID=%s authorized_ids=%s command=%s",
-            chat_id, chat_type, user_id or "N/A", AUTH_CHAT_ID,
-            ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
-            (text or "")[:50],
-        )
-        send_command_response(chat_id, "⛔ Not authorized")
-        return
+    auth_ok = _is_authorized(chat_id, user_id)
     logger.info(
-        "[TG][AUTH] ✅ Authorized chat_id=%s chat_type=%s user_id=%s for command=%s",
-        chat_id, chat_type, user_id or "N/A", (text or "")[:50],
+        "[TG][AUTH] update_id=%s chat_id=%s chat_type=%s decision=%s authorized_ids=%s",
+        update_id, chat_id, chat_type, "ALLOW" if auth_ok else "DENY",
+        ",".join(sorted(AUTHORIZED_USER_IDS))[:80] if AUTHORIZED_USER_IDS else "none",
     )
+    if not auth_ok:
+        reply_ok = send_command_response(chat_id, "⛔ Not authorized")
+        logger.info("[TG][REPLY] update_id=%s chat_id=%s handler=deny reply_success=%s", update_id, chat_id, reply_ok)
+        return
     
     # Parse command
     text = text.strip()
@@ -4993,106 +5006,108 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     except ValueError:
         pass  # Not a number, continue with normal command parsing
     
-    if text.startswith("/start"):
-        logger.info(f"[TG][CMD] Processing /start command from chat_id={chat_id}, user_id={user_id}")
-        try:
-            # CRITICAL: /start should ALWAYS show main menu, not any other menu
-            # Clear any pending callback queries to prevent interference
-            logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
-            menu_result = show_main_menu(chat_id, db)
-            logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
-            
-            if menu_result:
-                logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
-            else:
-                logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
-                # Try to send a simple message as fallback
-                send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
-        except Exception as e:
-            logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
-            send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
-    elif text.startswith("/menu"):
-        show_main_menu(chat_id, db)
-    elif text.startswith("/investigate"):
-        logger.info("[TG][CMD] Routing /investigate to agent handler chat_id=%s text=%s", chat_id, text[:80])
-        try:
-            from app.core.runtime_identity import get_runtime_identity, format_runtime_identity_short
-            identity = get_runtime_identity()
-            logger.info(
-                "telegram_command_received command=investigate chat_id=%s handler=agent_telegram_commands runtime=%s",
-                chat_id,
-                format_runtime_identity_short(identity),
-            )
-            from app.services.agent_telegram_commands import handle_investigate_command
-            handle_investigate_command(chat_id, text, send_command_response)
-        except Exception as e:
-            logger.exception("[TG][CMD] /investigate failed: %s", e)
-            send_command_response(chat_id, f"❌ Error: {e}")
-    elif text.startswith("/runtime-check"):
-        try:
-            import importlib.util
-            script_path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "diag", "check_runtime_dependencies.py")
-            script_path = os.path.abspath(script_path)
-            if os.path.isfile(script_path):
-                spec = importlib.util.spec_from_file_location("check_runtime_dependencies", script_path)
-                if spec is not None and spec.loader is not None:
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                    out = mod.run_check()
+    # Command dispatch — always send a reply (handler or fallback on exception)
+    try:
+        if text.startswith("/start"):
+            logger.info("[TG][CMD] handler=start update_id=%s chat_id=%s", update_id, chat_id)
+            try:
+                # CRITICAL: /start should ALWAYS show main menu, not any other menu
+                logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
+                menu_result = show_main_menu(chat_id, db)
+                logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
+                if menu_result:
+                    logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
                 else:
-                    out = "Runtime dependency check\n\nFailed to load module spec"
-            else:
-                out = "Runtime dependency check\n\nScript not found (path: %s)" % script_path
-            send_command_response(chat_id, f"<pre>{out}</pre>")
-        except Exception as e:
-            logger.exception("[TG][CMD] /runtime-check failed: %s", e)
-            send_command_response(chat_id, f"❌ Error: {e}")
-    elif text.startswith("/agent "):
-        logger.info("[TG][CMD] Routing /agent to agent handler chat_id=%s text=%s", chat_id, text[:80])
-        try:
-            from app.services.agent_telegram_commands import handle_agent_command
-            handle_agent_command(chat_id, text, send_command_response)
-        except Exception as e:
-            logger.exception("[TG][CMD] /agent failed: %s", e)
-            send_command_response(chat_id, f"❌ Error: {e}")
-    elif text.startswith("/help"):
-        send_help_message(chat_id)
-    elif text.startswith("/status"):
-        send_status_message(chat_id, db)
-    elif text.startswith("/portfolio"):
-        send_portfolio_message(chat_id, db)
-    elif text.startswith("/signals"):
-        send_signals_message(chat_id, db)
-    elif text.startswith("/balance"):
-        send_balance_message(chat_id)
-    elif text.startswith("/watchlist"):
-        send_watchlist_message(chat_id, db)
-    elif text.startswith("/alerts"):
-        send_alerts_list_message(chat_id, db)
-    elif text.startswith("/analyze"):
-        send_analyze_message(chat_id, text, db)
-    elif text.startswith("/audit") or text.startswith("/snapshot"):
-        send_audit_snapshot(chat_id, db)
-    elif text.startswith("/add"):
-        handle_add_coin_command(chat_id, text, db)
-    elif text.startswith("/create_sl_tp"):
-        handle_create_sl_tp_command(chat_id, text, db)
-    elif text.startswith("/create_sl"):
-        logger.info(f"[TG][CMD] Processing /create_sl command: {text}")
-        handle_create_sl_command(chat_id, text, db)
-    elif text.startswith("/create_tp"):
-        logger.info(f"[TG][CMD] Processing /create_tp command: {text}")
-        handle_create_tp_command(chat_id, text, db)
-    elif text.startswith("/skip_sl_tp_reminder"):
-        handle_skip_sl_tp_reminder_command(chat_id, text, db)
-    elif text.startswith("/panic"):
-        handle_panic_command(chat_id, text, db)
-    elif text.startswith("/kill"):
-        handle_kill_command(chat_id, text, db)
-    elif text.startswith("/agent"):
-        show_agent_console(chat_id)
-    elif text.startswith("/"):
-        send_command_response(chat_id, "❓ Unknown command. Use /help")
+                    logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
+                    send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
+            except Exception as e:
+                logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
+                send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
+        elif text.startswith("/menu"):
+            show_main_menu(chat_id, db)
+        elif text.startswith("/investigate"):
+            logger.info("[TG][CMD] handler=investigate update_id=%s chat_id=%s", update_id, chat_id)
+            try:
+                from app.core.runtime_identity import get_runtime_identity, format_runtime_identity_short
+                identity = get_runtime_identity()
+                logger.info(
+                    "telegram_command_received command=investigate chat_id=%s handler=agent_telegram_commands runtime=%s",
+                    chat_id,
+                    format_runtime_identity_short(identity),
+                )
+                from app.services.agent_telegram_commands import handle_investigate_command
+                handle_investigate_command(chat_id, text, send_command_response)
+            except Exception as e:
+                logger.exception("[TG][CMD] /investigate failed: %s", e)
+                send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+        elif text.startswith("/runtime-check"):
+            logger.info("[TG][CMD] handler=runtime-check update_id=%s chat_id=%s", update_id, chat_id)
+            try:
+                import importlib.util
+                script_path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "diag", "check_runtime_dependencies.py")
+                script_path = os.path.abspath(script_path)
+                if os.path.isfile(script_path):
+                    spec = importlib.util.spec_from_file_location("check_runtime_dependencies", script_path)
+                    if spec is not None and spec.loader is not None:
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        out = mod.run_check()
+                    else:
+                        out = "Runtime dependency check\n\nFailed to load module spec"
+                else:
+                    out = "Runtime dependency check\n\nScript not found (path: %s)" % script_path
+                send_command_response(chat_id, f"<pre>{out}</pre>")
+            except Exception as e:
+                logger.exception("[TG][CMD] /runtime-check failed: %s", e)
+                send_command_response(chat_id, f"❌ Error: {e}")
+        elif text.startswith("/agent "):
+            logger.info("[TG][CMD] handler=agent update_id=%s chat_id=%s", update_id, chat_id)
+            try:
+                from app.services.agent_telegram_commands import handle_agent_command
+                handle_agent_command(chat_id, text, send_command_response)
+            except Exception as e:
+                logger.exception("[TG][CMD] /agent failed: %s", e)
+                send_command_response(chat_id, f"❌ Error: {e}")
+        elif text.startswith("/help"):
+            logger.info("[TG][CMD] handler=help update_id=%s chat_id=%s", update_id, chat_id)
+            send_help_message(chat_id)
+        elif text.startswith("/status"):
+            send_status_message(chat_id, db)
+        elif text.startswith("/portfolio"):
+            send_portfolio_message(chat_id, db)
+        elif text.startswith("/signals"):
+            send_signals_message(chat_id, db)
+        elif text.startswith("/balance"):
+            send_balance_message(chat_id)
+        elif text.startswith("/watchlist"):
+            send_watchlist_message(chat_id, db)
+        elif text.startswith("/alerts"):
+            send_alerts_list_message(chat_id, db)
+        elif text.startswith("/analyze"):
+            send_analyze_message(chat_id, text, db)
+        elif text.startswith("/audit") or text.startswith("/snapshot"):
+            send_audit_snapshot(chat_id, db)
+        elif text.startswith("/add"):
+            handle_add_coin_command(chat_id, text, db)
+        elif text.startswith("/create_sl_tp"):
+            handle_create_sl_tp_command(chat_id, text, db)
+        elif text.startswith("/create_sl"):
+            handle_create_sl_command(chat_id, text, db)
+        elif text.startswith("/create_tp"):
+            handle_create_tp_command(chat_id, text, db)
+        elif text.startswith("/skip_sl_tp_reminder"):
+            handle_skip_sl_tp_reminder_command(chat_id, text, db)
+        elif text.startswith("/panic"):
+            handle_panic_command(chat_id, text, db)
+        elif text.startswith("/kill"):
+            handle_kill_command(chat_id, text, db)
+        elif text.startswith("/agent"):
+            show_agent_console(chat_id)
+        elif text.startswith("/"):
+            send_command_response(chat_id, "❓ Unknown command. Use /help")
+    except Exception as e:
+        logger.exception("[TG][CMD] Unhandled exception update_id=%s chat_id=%s: %s", update_id, chat_id, e)
+        send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
 
 
 def process_telegram_commands(db: Optional[Session] = None) -> None:
