@@ -14,7 +14,7 @@ cmd_id=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \
   --region "$AWS_REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f \"$d/openclaw/Dockerfile.openclaw\" ] && REPO=$d && break; done; [ -z \"$REPO\" ] && { echo Repo not found; exit 1; }; cd \"$REPO\" && git fetch origin main && git reset --hard origin/main\",\"REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f \"$d/openclaw/Dockerfile.openclaw\" ] && REPO=$d && break; done; cd \"$REPO\" && sudo bash scripts/openclaw/do_wrapper_build_on_lab.sh"]' \
+  --parameters 'commands=["export HOME=/root; REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f \"$d/openclaw/Dockerfile.openclaw\" ] && REPO=$d && break; done; [ -z \"$REPO\" ] && { echo Repo not found; exit 1; }; git config --global --add safe.directory \"$REPO\" 2>/dev/null || true; cd \"$REPO\" && git fetch origin main && git reset --hard origin/main\",\"REPO=; for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f \"$d/openclaw/Dockerfile.openclaw\" ] && REPO=$d && break; done; cd \"$REPO\" && sudo bash scripts/openclaw/do_wrapper_build_on_lab.sh"]' \
   --timeout-seconds 900 \
   --output text --query 'Command.CommandId')
 
