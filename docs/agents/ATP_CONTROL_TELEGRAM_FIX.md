@@ -13,6 +13,16 @@ The previous normalization used `text.split("@")[0]`, which:
 
 Handlers like `handle_investigate_command` expect the full text with args. Without args, parsing fails or routes incorrectly.
 
+### Emergency fix (2026-03-15): /start stopped working
+
+**Hypothesis:** `message.get("text", "")` can return `None` when key exists with null value; `text.strip()` then throws. Or normalization edge case produced empty string.
+
+**Fix:** 
+- `text = (text or "").strip()` to handle None
+- Wrap normalization in try/except with fallback to `split("@")[0]`
+- If regex produces empty, fallback to old split logic
+- Add [TG][TEXT], [TG][ROUTER], [TG][HANDLER], [TG][ERROR] logging
+
 ## Previous Hypotheses (superseded)
 
 1. **Message length / HTML parse errors** — Possible but secondary

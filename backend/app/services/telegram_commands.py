@@ -4986,15 +4986,27 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         )
         return
     
-    # Parse command
-    text = text.strip()
+    # Parse command — ensure text is never None (message.get can return None)
+    text = (text or "").strip()
+    logger.info("[TG][TEXT] update_id=%s chat_id=%s raw_text=%s", update_id, chat_id, (text or "")[:80])
+
     raw_command = text
 
     # Normalize commands with @botname (e.g. "/help@ATP_control_bot" or "/investigate@ATP_control_bot repeated BTC alerts")
     # Remove @botname but preserve arguments; split("@")[0] would drop args for "/investigate@bot args"
-    if "@" in text and text.startswith("/"):
-        text = re.sub(r"@\S+", "", text).strip()
-        logger.info("[TG][CMD] raw_command=%s normalized=%s", raw_command[:80], text[:80])
+    if text and "@" in text and text.startswith("/"):
+        try:
+            normalized = re.sub(r"@\S+", "", text).strip()
+            if normalized:
+                text = normalized
+                logger.info("[TG][CMD] raw_command=%s normalized=%s", (raw_command or "")[:80], text[:80])
+            else:
+                # Fallback: regex produced empty; use old split logic to avoid breaking /start
+                text = text.split("@")[0].strip() or text
+                logger.warning("[TG][CMD] normalization produced empty, fallback to split: %s", (raw_command or "")[:80])
+        except Exception as norm_err:
+            logger.exception("[TG][ERROR] normalization failed: %s", norm_err)
+            text = text.split("@")[0].strip() if "@" in text else text
     
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
     # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)
@@ -5055,17 +5067,18 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # Command dispatch — always send a reply (handler or fallback on exception)
     # Guard: empty or non-command text
     if not text or not text.strip():
-        logger.info("[TG][CMD] handler=empty_text update_id=%s chat_id=%s — no text, sending ack", update_id, chat_id)
+        logger.info("[TG][ROUTER] handler=empty_text update_id=%s chat_id=%s — no text, sending ack", update_id, chat_id)
         send_command_response(chat_id, "📋 Send a command (e.g. /help)")
         return
     if not text.startswith("/"):
-        logger.info("[TG][CMD] handler=non_command update_id=%s chat_id=%s text=%s", update_id, chat_id, text[:30])
+        logger.info("[TG][ROUTER] handler=non_command update_id=%s chat_id=%s text=%s", update_id, chat_id, (text or "")[:30])
         send_command_response(chat_id, "❓ Send a command (e.g. /help)")
         return
 
+    logger.info("[TG][ROUTER] update_id=%s chat_id=%s dispatching text=%s", update_id, chat_id, (text or "")[:80])
     try:
         if text.startswith("/start"):
-            logger.info("[TG][CMD] handler=start update_id=%s chat_id=%s", update_id, chat_id)
+            logger.info("[TG][HANDLER] handler=start update_id=%s chat_id=%s", update_id, chat_id)
             try:
                 # CRITICAL: /start should ALWAYS show main menu, not any other menu
                 logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
@@ -5077,7 +5090,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
                     send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
             except Exception as e:
-                logger.error(f"[TG][ERROR][START] ❌ Error processing /start command: {e}", exc_info=True)
+                logger.error("[TG][ERROR] handler=start error=%s", e, exc_info=True)
                 send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
         elif text.startswith("/menu"):
             show_main_menu(chat_id, db)
@@ -5174,7 +5187,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             logger.info("[TG][CMD] handler=fallback update_id=%s chat_id=%s text=%s", update_id, chat_id, (text or "")[:50])
             send_command_response(chat_id, "❓ No response. Use /help for commands.")
     except Exception as e:
-        logger.exception("[TG][CMD] Unhandled exception update_id=%s chat_id=%s: %s", update_id, chat_id, e)
+        logger.exception("[TG][ERROR] Unhandled exception update_id=%s chat_id=%s: %s", update_id, chat_id, e)
         send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
 
 
