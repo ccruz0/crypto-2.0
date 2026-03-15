@@ -21,6 +21,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post, requests_exceptions
+from app.utils.telegram_token_loader import get_telegram_token, get_telegram_token_dev, mask_token
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,14 @@ except ImportError:
 # Constants
 # Use environment variables only (no repo defaults)
 _env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
-_env_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-# TELEGRAM_BOT_TOKEN_DEV: Separate bot token for local development (avoids 409 conflicts with AWS)
-_env_bot_token_dev = (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip()
+# Token loading: TELEGRAM_BOT_TOKEN → TELEGRAM_BOT_TOKEN_DEV → interactive popup (never logged or persisted)
+_env_bot_token = get_telegram_token() or ""
+_env_bot_token_dev = get_telegram_token_dev()
 # TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs and/or channel IDs
 # If not set, falls back to TELEGRAM_CHAT_ID (for backward compatibility)
 # For multiple channels (e.g. HILOVIVO3.0 + Hilovivo-alerts): "CHANNEL_ID_1,CHANNEL_ID_2"
 _env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
-# TELEGRAM_CHAT_ID_TRADING: HILOVIVO3.0 — must be authorized for commands if used for alerts
+# TELEGRAM_CHAT_ID_TRADING: HILOVIVO3.0 — alerts-only (signals, orders, reports). NOT used for commands.
 _env_chat_id_trading = (os.getenv("TELEGRAM_CHAT_ID_TRADING") or "").strip()
 # TELEGRAM_CHAT_ID: Primary channel ID; also used as single authorized chat when TELEGRAM_AUTH_USER_ID unset
 AUTH_CHAT_ID = _env_chat_id or None
@@ -80,10 +81,8 @@ if AUTH_CHAT_ID and str(AUTH_CHAT_ID) not in AUTHORIZED_USER_IDS:
     # Always allow AUTH_CHAT_ID (TELEGRAM_CHAT_ID) even when TELEGRAM_AUTH_USER_ID is set
     # Enables both primary channel and additional channels in TELEGRAM_AUTH_USER_ID
     AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-# HILOVIVO3.0: TELEGRAM_CHAT_ID_TRADING must be authorized for commands (alerts already go there)
-if _env_chat_id_trading and str(_env_chat_id_trading) not in AUTHORIZED_USER_IDS:
-    AUTHORIZED_USER_IDS.add(str(_env_chat_id_trading))
-    logger.info(f"[TG][AUTH] Added TELEGRAM_CHAT_ID_TRADING (HILOVIVO3.0) as authorized: {_env_chat_id_trading}")
+# HILOVIVO3.0 (TELEGRAM_CHAT_ID_TRADING) is alerts-only — do NOT add to command auth.
+# Commands must go to ATP Control (TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID).
 
 TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
 # Set to True when startup diagnostics get 401 (token invalid); disables polling/commands without crashing
@@ -93,10 +92,12 @@ if not TELEGRAM_ENABLED:
     logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
 
 # Startup: log command-intake config for operator visibility (no secrets)
+# ATP Control = TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID (private group / direct chat). HILOVIVO3.0 = alerts-only.
+# Token is never logged in full; only masked.
 logger.info(
-    "[TG][CONFIG] command_intake: bot_token=%s telegram_enabled=%s auth_chat_id=%s "
-    "chat_id_trading=%s authorized_count=%s",
-    "SET" if BOT_TOKEN else "MISSING",
+    "[TG][CONFIG] command_intake: bot_token=%s telegram_enabled=%s control_chat_id=%s "
+    "alerts_chat_id=%s authorized_count=%s",
+    mask_token(BOT_TOKEN) if BOT_TOKEN else "MISSING",
     TELEGRAM_ENABLED,
     AUTH_CHAT_ID or "none",
     _env_chat_id_trading or "none",
@@ -847,22 +848,23 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
                 "text": " ",  # Minimal text required by Telegram API
                 "reply_markup": {"remove_keyboard": True}
             }
-            remove_response = http_post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=remove_payload, timeout=5
-            , calling_module="telegram_commands")
-            if remove_response.status_code == 200:
-                remove_result = remove_response.json()
-                if remove_result.get("ok"):
-                    # Delete the removal message immediately to keep chat clean
-                    delete_msg_id = remove_result.get('result', {}).get('message_id')
-                    try:
-                        http_post(
-                            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage",
-                            json={"chat_id": chat_id, "message_id": delete_msg_id},
-                            timeout=5
-                        , calling_module="services_telegram_commands")
-                    except:
-                        pass  # Ignore delete errors
+            token = _get_effective_bot_token()
+            if token:
+                remove_response = http_post(
+                    f"https://api.telegram.org/bot{token}/sendMessage", json=remove_payload, timeout=5,
+                    calling_module="telegram_commands")
+                if remove_response.status_code == 200:
+                    remove_result = remove_response.json()
+                    if remove_result.get("ok"):
+                        # Delete the removal message immediately to keep chat clean
+                        delete_msg_id = remove_result.get('result', {}).get('message_id')
+                        try:
+                            http_post(
+                                f"https://api.telegram.org/bot{token}/deleteMessage",
+                                json={"chat_id": chat_id, "message_id": delete_msg_id},
+                                timeout=5, calling_module="telegram_commands")
+                        except Exception:
+                            pass  # Ignore delete errors
         except Exception as e:
             # Ignore errors - persistent keyboard might not exist, which is fine
             logger.debug(f"[TG] Could not remove persistent keyboard (may not exist): {e}")
@@ -871,7 +873,11 @@ def _send_menu_message(chat_id: str, text: str, keyboard: Dict) -> bool:
         time.sleep(0.1)
         
         # Now send the message with inline keyboard
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        token = _get_effective_bot_token()
+        if not token:
+            logger.warning("[TG] No bot token for _send_menu_message")
+            return False
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": text,
@@ -904,8 +910,11 @@ def _edit_menu_message(chat_id: str, message_id: int, text: str, keyboard: Dict)
     """Edit an existing message to display another menu."""
     if not TELEGRAM_ENABLED:
         return False
+    token = _get_effective_bot_token()
+    if not token:
+        return False
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        url = f"https://api.telegram.org/bot{token}/editMessageText"
         payload = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -1111,7 +1120,7 @@ def send_command_response(chat_id: str, message: str) -> bool:
                 return False
         
         response.raise_for_status()
-        logger.debug("[TG][REPLY] chat_id=%s success=True", chat_id)
+        logger.info("[TG][REPLY] chat_id=%s success=True", chat_id)
         return True
     except Exception as e:
         logger.error("[TG][REPLY] chat_id=%s success=False error=%s", chat_id, e)
@@ -1299,6 +1308,9 @@ def send_help_message(chat_id: str) -> bool:
     except Exception:
         agent_section = ""
     message = """📚 <b>Command Help</b>
+
+<b>ATP Control</b> — You are in the ATP command console. Commands work here.
+HILOVIVO3.0 = alerts-only. Claw = OpenClaw-native only.
 
 /start - Show welcome message and command list
 /help - Show this help message
@@ -4931,6 +4943,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         update_id, update_source, chat_id, chat_type, chat_title[:30] or "N/A",
         user_id or "N/A", (text or "")[:80],
     )
+    logger.info("[TG][CHAT] chat_id=%s chat_type=%s chat_title=%s — incoming command source", chat_id, chat_type, chat_title[:40] or "N/A")
 
     # Only authorized user/chat - use helper function
     auth_ok = _is_authorized(chat_id, user_id)
@@ -4940,8 +4953,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         ",".join(sorted(AUTHORIZED_USER_IDS))[:80] if AUTHORIZED_USER_IDS else "none",
     )
     if not auth_ok:
-        reply_ok = send_command_response(chat_id, "⛔ Not authorized")
-        logger.info("[TG][REPLY] update_id=%s chat_id=%s handler=deny reply_success=%s", update_id, chat_id, reply_ok)
+        if _env_chat_id_trading and chat_id == str(_env_chat_id_trading):
+            deny_msg = "HILOVIVO3.0 is alerts-only. Use ATP Control (private group or direct chat) for commands."
+        else:
+            deny_msg = "⛔ Not authorized"
+        reply_ok = send_command_response(chat_id, deny_msg)
+        logger.info(
+            "[TG][REPLY] update_id=%s chat_id=%s chat_type=%s handler=deny reply_success=%s",
+            update_id, chat_id, chat_type, reply_ok,
+        )
         return
     
     # Parse command
@@ -4965,7 +4985,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         if command_key in PROCESSED_TEXT_COMMANDS:
             last_processed = PROCESSED_TEXT_COMMANDS[command_key]
             if now - last_processed < TEXT_COMMAND_TTL:
-                logger.debug(f"[TG] Skipping duplicate text command {text} for chat {chat_id} (processed {now - last_processed:.2f}s ago)")
+                logger.info(
+                    "[TG][CMD] handler=dedup_skip update_id=%s chat_id=%s command=%s age_sec=%.2f — sending ack anyway",
+                    update_id, chat_id, text[:40], now - last_processed,
+                )
+                send_command_response(chat_id, "⏳ Command already processed. Wait a moment and try again.")
                 return
         # Mark this command as processed
         PROCESSED_TEXT_COMMANDS[command_key] = now
@@ -5007,6 +5031,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         pass  # Not a number, continue with normal command parsing
     
     # Command dispatch — always send a reply (handler or fallback on exception)
+    # Guard: empty or non-command text
+    if not text or not text.strip():
+        logger.info("[TG][CMD] handler=empty_text update_id=%s chat_id=%s — no text, sending ack", update_id, chat_id)
+        send_command_response(chat_id, "📋 Send a command (e.g. /help)")
+        return
+    if not text.startswith("/"):
+        logger.info("[TG][CMD] handler=non_command update_id=%s chat_id=%s text=%s", update_id, chat_id, text[:30])
+        return  # Not a command, skip (e.g. pending value input was handled earlier)
+
     try:
         if text.startswith("/start"):
             logger.info("[TG][CMD] handler=start update_id=%s chat_id=%s", update_id, chat_id)
@@ -5056,10 +5089,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         out = "Runtime dependency check\n\nFailed to load module spec"
                 else:
                     out = "Runtime dependency check\n\nScript not found (path: %s)" % script_path
-                send_command_response(chat_id, f"<pre>{out}</pre>")
+                ok = send_command_response(chat_id, f"<pre>{out}</pre>")
+                logger.info("[TG][REPLY] handler=runtime-check update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
             except Exception as e:
                 logger.exception("[TG][CMD] /runtime-check failed: %s", e)
-                send_command_response(chat_id, f"❌ Error: {e}")
+                ok = send_command_response(chat_id, f"❌ Error: {e}")
+                logger.info("[TG][REPLY] handler=runtime-check update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
         elif text.startswith("/agent "):
             logger.info("[TG][CMD] handler=agent update_id=%s chat_id=%s", update_id, chat_id)
             try:
@@ -5070,7 +5105,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 send_command_response(chat_id, f"❌ Error: {e}")
         elif text.startswith("/help"):
             logger.info("[TG][CMD] handler=help update_id=%s chat_id=%s", update_id, chat_id)
-            send_help_message(chat_id)
+            ok = send_help_message(chat_id)
+            logger.info("[TG][REPLY] handler=help update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
         elif text.startswith("/status"):
             send_status_message(chat_id, db)
         elif text.startswith("/portfolio"):
@@ -5104,7 +5140,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/agent"):
             show_agent_console(chat_id)
         elif text.startswith("/"):
-            send_command_response(chat_id, "❓ Unknown command. Use /help")
+            logger.info("[TG][CMD] handler=unknown update_id=%s chat_id=%s command=%s", update_id, chat_id, text[:50])
+            ok = send_command_response(chat_id, "❓ Unknown command. Use /help")
+            logger.info("[TG][REPLY] handler=unknown update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
+        else:
+            logger.info("[TG][CMD] handler=fallback update_id=%s chat_id=%s text=%s", update_id, chat_id, (text or "")[:50])
+            send_command_response(chat_id, "❓ No response. Use /help for commands.")
     except Exception as e:
         logger.exception("[TG][CMD] Unhandled exception update_id=%s chat_id=%s: %s", update_id, chat_id, e)
         send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
