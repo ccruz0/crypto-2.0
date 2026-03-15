@@ -15,8 +15,9 @@ The `telegram_update_dedup` table prevents duplicate processing of Telegram upda
 
    **Via Docker (recommended):**
    ```bash
-   docker compose --profile aws exec -T db psql -U trader -d atp < backend/migrations/add_telegram_update_dedup.sql
+   docker compose --profile aws exec -T db sh -c 'PGPASSWORD=$POSTGRES_PASSWORD psql -U trader -d atp' < backend/migrations/add_telegram_update_dedup.sql
    ```
+   The container has `POSTGRES_PASSWORD` in its env; `PGPASSWORD` tells psql to use it.
 
    **Or with PGPASSWORD if needed:**
    ```bash
