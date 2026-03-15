@@ -25,9 +25,22 @@ logger = logging.getLogger(__name__)
 
 _DEPLOYING_STALE_MINUTES = 10
 _PATCHING_STALE_MINUTES = 15
+def _get_stale_in_progress_minutes() -> int:
+    """Read AGENT_STALE_IN_PROGRESS_MINUTES env var (default 30)."""
+    raw = (os.environ.get("AGENT_STALE_IN_PROGRESS_MINUTES") or "").strip()
+    if raw:
+        try:
+            return max(5, min(1440, int(raw)))  # 5 min to 24h
+        except ValueError:
+            pass
+    return 30
+
+
+_IN_PROGRESS_STALE_MINUTES = 30  # fallback when env not used
 _RECOVERY_EVENT_TYPE = "recovery_orphan_smoke_attempt"
 _RECOVERY_REVALIDATE_EVENT_TYPE = "recovery_revalidate_patching_attempt"
 _RECOVERY_MISSING_ARTIFACT_EVENT_TYPE = "recovery_missing_artifact_attempt"
+_RECOVERY_STALE_IN_PROGRESS_EVENT_TYPE = "recovery_stale_in_progress_attempt"
 
 # (save_subdir, file_prefix) for OpenClaw investigation artifacts
 _ARTIFACT_CONFIGS = (
@@ -265,7 +278,190 @@ def run_orphan_smoke_check_playbook(
 
 
 # ---------------------------------------------------------------------------
-# Playbook 2: Re-validate stuck patching tasks
+# Playbook 2: Recover stale in-progress / investigating tasks
+# ---------------------------------------------------------------------------
+
+
+def _is_stale_in_progress_task(
+    task: dict[str, Any],
+    stale_minutes: int = _IN_PROGRESS_STALE_MINUTES,
+) -> bool:
+    """
+    True if task has been in in-progress or investigating for more than stale_minutes.
+    Uses last_edited_time as proxy for when status was set.
+    """
+    ts = _parse_last_edited(task.get("last_edited_time"))
+    if ts is None:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+    return ts <= cutoff
+
+
+def _get_stale_in_progress_tasks(
+    *,
+    max_results: int = 5,
+    stale_minutes: int = _IN_PROGRESS_STALE_MINUTES,
+) -> list[dict[str, Any]]:
+    """
+    Find tasks in in-progress or investigating that have been stuck for > stale_minutes,
+    have no investigation artifact, and have not yet received a recovery attempt.
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+    except Exception as e:
+        logger.warning("agent_recovery: import get_tasks_by_status failed: %s", e)
+        return []
+
+    tasks = get_tasks_by_status(
+        ["in-progress", "In Progress", "investigating", "Investigating"],
+        max_results=max_results * 3,
+    )
+    if not tasks:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for t in tasks:
+        if not _is_stale_in_progress_task(t, stale_minutes):
+            continue
+        tid = str(t.get("id") or "").strip()
+        if not tid:
+            continue
+        if _investigation_artifacts_exist(tid):
+            logger.debug(
+                "agent_recovery: task_id=%s skipped (investigation artifact exists)",
+                tid,
+            )
+            continue
+        if _has_recovery_attempt_for_task(tid, _RECOVERY_STALE_IN_PROGRESS_EVENT_TYPE):
+            logger.debug(
+                "agent_recovery: task_id=%s skipped (prior stale in-progress attempt)",
+                tid,
+            )
+            continue
+        candidates.append(t)
+        if len(candidates) >= max_results:
+            break
+
+    return candidates
+
+
+def run_stale_in_progress_playbook(
+    *,
+    max_tasks: int = 5,
+    stale_minutes: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Playbook: Recover tasks stuck in in-progress or investigating.
+
+    Detection rule:
+      - Task status is "in-progress" or "investigating"
+      - Task last_edited_time > stale_minutes ago (default 30)
+      - No investigation artifact exists (agent crashed before producing one)
+      - No prior recovery_stale_in_progress_attempt for this task
+
+    Action: Reset task to planned, clear approval state, append Notion comment.
+    Allows the next intake cycle to pick the task for a clean re-run.
+
+    Retry rule: Max 1 recovery attempt per task (enforced via activity log).
+
+    Returns list of per-task result dicts.
+    """
+    if stale_minutes is None:
+        stale_minutes = _get_stale_in_progress_minutes()
+    if not _is_recovery_enabled():
+        logger.debug(
+            "agent_recovery: AGENT_RECOVERY_ENABLED=false — skipping stale in-progress playbook"
+        )
+        return []
+
+    tasks = _get_stale_in_progress_tasks(max_results=max_tasks, stale_minutes=stale_minutes)
+    if not tasks:
+        return []
+
+    logger.info(
+        "agent_recovery: stale_in_progress_playbook found %d stale task(s)",
+        len(tasks),
+    )
+
+    results: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task.get("id") or "").strip()
+        task_title = str(task.get("task") or "").strip()
+        current_status = str(task.get("status") or "").strip().lower()
+        if not task_id:
+            continue
+
+        logger.info(
+            "agent_recovery: running stale in-progress recovery task_id=%s title=%r status=%s",
+            task_id,
+            task_title[:50] if task_title else "",
+            current_status,
+        )
+
+        try:
+            reset_ok = _reset_task_to_planned(
+                task_id,
+                task_title,
+                reason=(
+                    f"Task was in {current_status} for >{stale_minutes} minutes with no "
+                    "investigation artifact (agent may have crashed). Reset for clean re-run."
+                ),
+            )
+
+            _log_recovery_event(
+                _RECOVERY_STALE_IN_PROGRESS_EVENT_TYPE,
+                task_id,
+                task_title,
+                "reset" if reset_ok else "failed",
+                {
+                    "reset_ok": reset_ok,
+                    "previous_status": current_status,
+                    "stale_minutes": stale_minutes,
+                },
+            )
+
+            logger.info(
+                "agent_recovery: stale_in_progress task_id=%s reset_ok=%s",
+                task_id,
+                reset_ok,
+            )
+
+            results.append({
+                "task_id": task_id,
+                "task_title": task_title,
+                "outcome": "reset" if reset_ok else "failed",
+                "reset_ok": reset_ok,
+                "previous_status": current_status,
+            })
+        except Exception as exc:
+            logger.error(
+                "agent_recovery: stale_in_progress task_id=%s raised %s",
+                task_id,
+                exc,
+                exc_info=True,
+            )
+            _log_recovery_event(
+                _RECOVERY_STALE_IN_PROGRESS_EVENT_TYPE,
+                task_id,
+                task_title,
+                "error",
+                {"error": str(exc)[:200]},
+            )
+            results.append({
+                "task_id": task_id,
+                "task_title": task_title,
+                "outcome": "error",
+                "reset_ok": False,
+                "error": str(exc),
+            })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Playbook 3: Re-validate stuck patching tasks
 # ---------------------------------------------------------------------------
 
 _INVESTIGATION_ARTIFACT_PATHS = (
@@ -913,14 +1109,15 @@ def run_recovery_cycle(*, max_actions: int = 5) -> list[dict[str, Any]]:
     """
     Run one recovery cycle. Invoked at the end of each scheduler cycle.
 
-    Runs all three playbooks: orphan smoke check, revalidate patching, missing artifact.
-    Returns combined list of recovery actions taken (for logging).
+    Runs all four playbooks: orphan smoke check, stale in-progress, revalidate patching,
+    missing artifact. Returns combined list of recovery actions taken (for logging).
     """
     if not _is_recovery_enabled():
         return []
 
     results: list[dict[str, Any]] = []
     results.extend(run_orphan_smoke_check_playbook(max_tasks=max_actions))
+    results.extend(run_stale_in_progress_playbook(max_tasks=max_actions))
     results.extend(run_revalidate_patching_playbook(max_tasks=max_actions))
     results.extend(run_missing_artifact_playbook(max_tasks=max_actions))
     return results

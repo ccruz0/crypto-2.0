@@ -499,10 +499,11 @@ async def start_agent_scheduler_loop() -> None:
             recovery_results = await loop.run_in_executor(None, run_recovery_cycle)
             if recovery_results:
                 logger.info(
-                    "recovery_cycle_done count=%d advanced=%d blocked=%d",
+                    "recovery_cycle_done count=%d advanced=%d blocked=%d reset=%d",
                     len(recovery_results),
                     sum(1 for r in recovery_results if r.get("advanced")),
                     sum(1 for r in recovery_results if r.get("blocked")),
+                    sum(1 for r in recovery_results if r.get("reset_ok")),
                 )
         except Exception as e:
             logger.error("agent_scheduler_loop: run_recovery_cycle raised %s", e, exc_info=True)

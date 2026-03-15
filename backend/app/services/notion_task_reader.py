@@ -472,6 +472,7 @@ def get_tasks_by_status(
     }
 
     all_tasks: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
 
     def _query_by_status_filter(display_status: str, page_size: int) -> list[dict[str, Any]]:
         """Query by Status; try status filter first (Notion native), then select (legacy)."""
@@ -511,11 +512,12 @@ def get_tasks_by_status(
                     min(max_results - len(all_tasks), 100),
                 )
                 for page in pages:
-                    all_tasks.append(_parse_page(page))
+                    pid = (page.get("id") or "").strip()
+                    if pid and pid not in seen_ids:
+                        seen_ids.add(pid)
+                        all_tasks.append(_parse_page(page))
                     if len(all_tasks) >= max_results:
                         break
-                if all_tasks:
-                    break
     except Exception as exc:
         logger.warning("get_tasks_by_status failed: %s", exc)
 

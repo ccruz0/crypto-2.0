@@ -268,3 +268,27 @@ class TestSchedulerWiring:
         assert "start_agent_scheduler_loop" in content
         assert "NOTION_API_KEY" in content
         assert "NOTION_TASK_DB" in content
+
+
+# ---------------------------------------------------------------------------
+# Tests: agent recovery (stale in-progress playbook)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRecoveryStaleInProgress:
+    """Verify stale in-progress recovery playbook behavior."""
+
+    def test_run_stale_in_progress_playbook_returns_list(self):
+        """run_stale_in_progress_playbook returns a list (never None)."""
+        from app.services.agent_recovery import run_stale_in_progress_playbook
+
+        result = run_stale_in_progress_playbook(max_tasks=1)
+        assert isinstance(result, list)
+
+    @patch.dict("os.environ", {"AGENT_RECOVERY_ENABLED": "false"})
+    def test_stale_in_progress_skipped_when_recovery_disabled(self):
+        """When AGENT_RECOVERY_ENABLED=false, playbook returns empty list."""
+        from app.services.agent_recovery import run_stale_in_progress_playbook
+
+        result = run_stale_in_progress_playbook(max_tasks=5)
+        assert result == []
