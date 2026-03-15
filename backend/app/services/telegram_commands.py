@@ -2,6 +2,7 @@
 Handles incoming Telegram commands and responds with formatted messages
 """
 import os
+import re
 import logging
 import math
 import time
@@ -4987,13 +4988,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     
     # Parse command
     text = text.strip()
-    
-    # Handle commands with @botname in groups (e.g., "/start@Hilovivolocal_bot")
-    # Strip the @botname part to get the actual command
+    raw_command = text
+
+    # Normalize commands with @botname (e.g. "/help@ATP_control_bot" or "/investigate@ATP_control_bot repeated BTC alerts")
+    # Remove @botname but preserve arguments; split("@")[0] would drop args for "/investigate@bot args"
     if "@" in text and text.startswith("/"):
-        # Extract command part before @
-        text = text.split("@")[0].strip()
-        logger.debug(f"[TG] Stripped @botname from command, new text: {text}")
+        text = re.sub(r"@\S+", "", text).strip()
+        logger.info("[TG][CMD] raw_command=%s normalized=%s", raw_command[:80], text[:80])
     
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
     # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)

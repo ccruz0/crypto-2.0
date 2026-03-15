@@ -3,13 +3,21 @@
 **Date:** 2026-03-15  
 **Issue:** /start and test message work; /help, /runtime-check, /investigate, /agent produce no visible reply.
 
-## Root Cause (Hypothesis)
+## Root Cause (Confirmed)
 
-The exact root cause was not definitively identified from code inspection. Possible contributors:
+**Telegram sends commands with @botname in groups:** `/help@ATP_control_bot`, `/investigate@ATP_control_bot repeated BTC alerts`.
 
-1. **Message length / HTML parse errors** — Telegram 4096-char limit or malformed HTML causing send failure
-2. **Silent early returns** — Non-command path returned without sending any reply
-3. **Token consistency** — `answerCallbackQuery` used `BOT_TOKEN` directly instead of `_get_effective_bot_token()`
+The previous normalization used `text.split("@")[0]`, which:
+- For `/help@ATP_control_bot` → `/help` ✓
+- For `/investigate@ATP_control_bot repeated BTC alerts` → `/investigate` ✗ (arguments lost)
+
+Handlers like `handle_investigate_command` expect the full text with args. Without args, parsing fails or routes incorrectly.
+
+## Previous Hypotheses (superseded)
+
+1. **Message length / HTML parse errors** — Possible but secondary
+2. **Silent early returns** — Fixed in prior commit
+3. **Token consistency** — Fixed in prior commit
 
 ## Fix Summary
 
