@@ -1084,8 +1084,11 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         return []
 
 
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096  # Telegram API limit
+
+
 def send_command_response(chat_id: str, message: str) -> bool:
-    """Send response message to Telegram"""
+    """Send response message to Telegram. Truncates to 4096 chars. Always tries fallback on HTML error."""
     if not TELEGRAM_ENABLED:
         logger.debug("Telegram disabled: skipping command response")
         return False
@@ -1093,8 +1096,12 @@ def send_command_response(chat_id: str, message: str) -> bool:
     if not token:
         logger.warning("[TG] No bot token available for send_command_response")
         return False
+    # Telegram limit 4096; truncate with note if over
+    if len(message) > TELEGRAM_MAX_MESSAGE_LENGTH:
+        message = message[: TELEGRAM_MAX_MESSAGE_LENGTH - 50] + "\n\n… [truncated]"
+        logger.warning("[TG][REPLY] Message truncated to %s chars", TELEGRAM_MAX_MESSAGE_LENGTH)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": message,
@@ -1104,19 +1111,22 @@ def send_command_response(chat_id: str, message: str) -> bool:
         
         if response.status_code != 200:
             error_data = response.json() if response.content else {}
-            logger.error(f"[TG][ERROR] Failed to send message: {response.status_code} - {error_data}")
-            # Try without parse_mode as fallback
+            logger.error(
+                "[TG][ERROR] sendMessage failed: status=%s chat_id=%s error=%s",
+                response.status_code, chat_id, error_data,
+            )
+            # Try without parse_mode (HTML parse errors often return 400)
             try:
                 payload_no_parse = {
                     "chat_id": chat_id,
-                    "text": message
+                    "text": message[:TELEGRAM_MAX_MESSAGE_LENGTH],
                 }
                 response2 = http_post(url, json=payload_no_parse, timeout=10, calling_module="telegram_commands")
                 response2.raise_for_status()
-                logger.info(f"[TG] Sent message without parse_mode")
+                logger.info("[TG][REPLY] chat_id=%s success=True (fallback, no parse_mode)", chat_id)
                 return True
             except Exception as e2:
-                logger.error(f"[TG][ERROR] Failed to send message without parse_mode: {e2}")
+                logger.error("[TG][ERROR] Fallback send failed: %s", e2)
                 return False
         
         response.raise_for_status()
@@ -1124,15 +1134,22 @@ def send_command_response(chat_id: str, message: str) -> bool:
         return True
     except Exception as e:
         logger.error("[TG][REPLY] chat_id=%s success=False error=%s", chat_id, e)
-        # Try to get more details about the error
         resp = getattr(e, "response", None)
         if resp is not None:
             try:
                 error_data = resp.json()
-                logger.error(f"[TG][ERROR] Error details: {error_data}")
+                logger.error("[TG][ERROR] Error details: %s", error_data)
             except Exception:
-                logger.error(f"[TG][ERROR] Error response: {getattr(resp, 'text', '')[:200]}")
-        return False
+                logger.error("[TG][ERROR] Error response: %s", getattr(resp, "text", "")[:200])
+        # Last resort: try plain text
+        try:
+            payload_plain = {"chat_id": chat_id, "text": message[:TELEGRAM_MAX_MESSAGE_LENGTH]}
+            http_post(url, json=payload_plain, timeout=10, calling_module="telegram_commands")
+            logger.info("[TG][REPLY] chat_id=%s success=True (exception fallback)", chat_id)
+            return True
+        except Exception as e3:
+            logger.error("[TG][ERROR] Exception fallback also failed: %s", e3)
+            return False
 
 
 def _setup_custom_keyboard(chat_id: str) -> bool:
@@ -4451,8 +4468,10 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     # Still answer the callback to remove loading state
                     if callback_query_id:
                         try:
-                            url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-                            http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
+                            token = _get_effective_bot_token()
+                            if token:
+                                url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+                                http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
                         except:
                             pass
                     return
@@ -4497,16 +4516,18 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             
             # Answer callback query to remove loading state (CRITICAL: Must happen immediately)
             try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-                ack_response = http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
-                if ack_response.status_code == 200:
-                    ack_result = ack_response.json()
-                    if ack_result.get("ok"):
-                        logger.info(f"[TG][CALLBACK] ✅ ACK sent successfully for callback_query_id={callback_query_id}, callback_data='{callback_data}'")
+                token = _get_effective_bot_token()
+                if token:
+                    url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+                    ack_response = http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
+                    if ack_response.status_code == 200:
+                        ack_result = ack_response.json()
+                        if ack_result.get("ok"):
+                            logger.info(f"[TG][CALLBACK] ✅ ACK sent successfully for callback_query_id={callback_query_id}, callback_data='{callback_data}'")
+                        else:
+                            logger.warning(f"[TG][CALLBACK] ⚠️ ACK response not OK: {ack_result}")
                     else:
-                        logger.warning(f"[TG][CALLBACK] ⚠️ ACK response not OK: {ack_result}")
-                else:
-                    logger.warning(f"[TG][CALLBACK] ⚠️ ACK HTTP error: status={ack_response.status_code}")
+                        logger.warning(f"[TG][CALLBACK] ⚠️ ACK HTTP error: status={ack_response.status_code}")
             except Exception as ack_err:
                 logger.error(f"[TG][CALLBACK] ❌ Failed to ACK callback_query_id={callback_query_id}: {ack_err}", exc_info=True)
         
@@ -5038,7 +5059,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         return
     if not text.startswith("/"):
         logger.info("[TG][CMD] handler=non_command update_id=%s chat_id=%s text=%s", update_id, chat_id, text[:30])
-        return  # Not a command, skip (e.g. pending value input was handled earlier)
+        send_command_response(chat_id, "❓ Send a command (e.g. /help)")
+        return
 
     try:
         if text.startswith("/start"):
@@ -5069,10 +5091,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     format_runtime_identity_short(identity),
                 )
                 from app.services.agent_telegram_commands import handle_investigate_command
-                handle_investigate_command(chat_id, text, send_command_response)
+                ok = handle_investigate_command(chat_id, text, send_command_response)
+                logger.info("[TG][REPLY] handler=investigate update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
             except Exception as e:
                 logger.exception("[TG][CMD] /investigate failed: %s", e)
-                send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                logger.info("[TG][REPLY] handler=investigate update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
         elif text.startswith("/runtime-check"):
             logger.info("[TG][CMD] handler=runtime-check update_id=%s chat_id=%s", update_id, chat_id)
             try:
@@ -5099,10 +5123,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             logger.info("[TG][CMD] handler=agent update_id=%s chat_id=%s", update_id, chat_id)
             try:
                 from app.services.agent_telegram_commands import handle_agent_command
-                handle_agent_command(chat_id, text, send_command_response)
+                ok = handle_agent_command(chat_id, text, send_command_response)
+                logger.info("[TG][REPLY] handler=agent update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
             except Exception as e:
                 logger.exception("[TG][CMD] /agent failed: %s", e)
-                send_command_response(chat_id, f"❌ Error: {e}")
+                ok = send_command_response(chat_id, f"❌ Error: {e}")
+                logger.info("[TG][REPLY] handler=agent update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
         elif text.startswith("/help"):
             logger.info("[TG][CMD] handler=help update_id=%s chat_id=%s", update_id, chat_id)
             ok = send_help_message(chat_id)
