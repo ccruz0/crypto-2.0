@@ -16,7 +16,7 @@ import pytz
 from app.services.telegram_notifier import telegram_notifier
 from app.core.runtime import is_aws_runtime
 from sqlalchemy.orm import Session
-from sqlalchemy import text, and_, not_, or_
+from sqlalchemy import text as sql_text, and_, not_, or_
 from sqlalchemy.sql import func
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
@@ -194,7 +194,7 @@ def _acquire_poller_lock(db: Session) -> bool:
     
     try:
         # Try to acquire advisory lock (non-blocking)
-        result = db.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
+        result = db.execute(sql_text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
         acquired = result.scalar()
         if acquired:
             _POLLER_LOCK_ACQUIRED = True
@@ -215,7 +215,7 @@ def _release_poller_lock(db: Session) -> None:
         return
     
     try:
-        db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
+        db.execute(sql_text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
         _POLLER_LOCK_ACQUIRED = False
         logger.debug("[TG] Poller lock released")
     except Exception as e:
@@ -1170,7 +1170,10 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
             "one_time_keyboard": False  # Keep keyboard persistent
         }
         
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        token = _get_effective_bot_token()
+        if not token:
+            return False
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             "chat_id": chat_id,
             "text": "🎉 <b>Welcome! Use the buttons below to interact with the bot.</b>",
@@ -3771,7 +3774,10 @@ Choose a coin from your watchlist ({len(coins)} coins):"""
             reply_markup = {"inline_keyboard": buttons}
             
             try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                token = _get_effective_bot_token()
+                if not token:
+                    return send_command_response(chat_id, "❌ Bot token not available")
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
                 payload = {
                     "chat_id": chat_id,
                     "text": message,
@@ -4325,7 +4331,16 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
-    
+    try:
+        raw_json = json.dumps(update, default=str)[:2000]
+        logger.info("[TG][RAW_UPDATE] %s", raw_json)
+    except Exception as e:
+        logger.warning("[TG][RAW_UPDATE] failed to serialize: %s", e)
+
+    msg_obj = update.get("message") or update.get("edited_message")
+    channel_obj = update.get("channel_post") or update.get("edited_channel_post")
+    obj = msg_obj or channel_obj
+
     # Determine update type and extract key info for logging
     update_type = "unknown"
     callback_query = update.get("callback_query")
@@ -4348,7 +4363,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, callback_data='{callback_data}', username={username}, user_id={user_id}, chat_id={chat_id}")
     elif message:
         update_type = "channel_post" if (update.get("channel_post") or update.get("edited_channel_post")) else "message"
-        text = message.get("text", "")
+        text = (message.get("text") or message.get("caption") or "").strip()
         chat = message.get("chat", {})
         chat_id = str(chat.get("id", ""))
         chat_type = chat.get("type", "unknown")
@@ -4359,88 +4374,80 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     else:
         logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type} (no message, channel_post, or callback_query)")
     
-    # DEDUPLICATION LEVEL 0: Check if this update_id was already processed
-    # Use database for cross-instance deduplication (works between local and AWS)
-    # CRITICAL: This prevents the same update from being processed by both local and AWS instances
+    # DEDUPLICATION: telegram_update_dedup table — must happen before any command routing
     if db and update_id > 0:
         try:
-            from app.models.telegram_message import TelegramMessage
-            update_marker = f"UPDATE_{update_id}"
-            
-            # Check if this update was already processed by another instance
-            existing = db.query(TelegramMessage).filter(
-                TelegramMessage.symbol == update_marker,
-                TelegramMessage.message == "update_deduplication"
-            ).first()
-            
-            if existing:
-                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (already processed by another instance)")
-                return
-            
-            # Mark as processed in database - this instance will process it
-            # Use symbol field to store update_id marker
-            processed_marker = TelegramMessage(
-                symbol=update_marker,
-                message="update_deduplication",
-                blocked=False,
-                order_skipped=False
+            result = db.execute(
+                sql_text(
+                    "INSERT INTO telegram_update_dedup(update_id) VALUES (:uid) "
+                    "ON CONFLICT (update_id) DO NOTHING RETURNING update_id"
+                ),
+                {"uid": update_id},
             )
-            db.add(processed_marker)
+            row = result.fetchone()
             db.commit()
-            
-            # CRITICAL: Double-check after commit to handle race conditions
-            # If another instance inserted between our check and commit, we should skip
-            db.refresh(processed_marker)
-            # Verify we're the first by checking if there are multiple entries
-            # (should only be 1 if we were first)
-            count = db.query(TelegramMessage).filter(
-                TelegramMessage.symbol == update_marker,
-                TelegramMessage.message == "update_deduplication"
-            ).count()
-            
-            if count > 1:
-                # Another instance also inserted - we're not the first, skip processing
-                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (race condition detected, {count} instances processed)")
+            if row is None:
+                logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
+                obj = msg_obj or channel_obj
+                if obj:
+                    cid = (obj or {}).get("chat", {}).get("id")
+                    if cid:
+                        send_command_response(str(cid), "⏳ Already processed. Try again in a moment.")
                 return
-            
-            logger.debug(f"[TG] Marked update_id={update_id} as processed in DB (this instance will process)")
-            
-            # Clean up old markers periodically (keep only last 1000)
-            # Only do this occasionally to avoid overhead
+            logger.info("[TG][DEDUP] update_id=%s action=process", update_id)
             import random
-            if random.random() < 0.1:  # 10% chance to cleanup
+            if random.random() < 0.05:
                 try:
-                    old_markers = db.query(TelegramMessage).filter(
-                        TelegramMessage.message == "update_deduplication"
-                    ).order_by(TelegramMessage.id.desc()).offset(1000).all()
-                    for marker in old_markers:
-                        db.delete(marker)
+                    db.execute(sql_text("DELETE FROM telegram_update_dedup WHERE received_at < NOW() - INTERVAL '7 days'"))
                     db.commit()
                 except Exception as cleanup_err:
-                    logger.debug(f"[TG] Cleanup of old update markers failed: {cleanup_err}")
+                    logger.debug("[TG] Cleanup of old dedup rows failed: %s", cleanup_err)
                     db.rollback()
         except Exception as db_err:
-            # If database check fails, fall back to in-memory deduplication
-            logger.debug(f"[TG] Database deduplication failed, using in-memory: {db_err}")
+            logger.info("[TG][DEDUP] telegram_update_dedup failed (%s), trying legacy", db_err)
+            try:
+                from app.models.telegram_message import TelegramMessage
+                update_marker = f"UPDATE_{update_id}"
+                existing = db.query(TelegramMessage).filter(
+                    TelegramMessage.symbol == update_marker,
+                    TelegramMessage.message == "update_deduplication",
+                ).first()
+                if existing:
+                    logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
+                    obj = msg_obj or channel_obj
+                    if obj:
+                        cid = (obj or {}).get("chat", {}).get("id")
+                        if cid:
+                            send_command_response(str(cid), "⏳ Already processed.")
+                    return
+                db.add(TelegramMessage(symbol=update_marker, message="update_deduplication", blocked=False, order_skipped=False))
+                db.commit()
+            except Exception as legacy_err:
+                logger.debug("[TG] Legacy deduplication failed: %s", legacy_err)
             if not hasattr(handle_telegram_update, 'processed_update_ids'):
                 handle_telegram_update.processed_update_ids = set()
-            
             if update_id in handle_telegram_update.processed_update_ids:
-                logger.debug(f"[TG] Skipping duplicate update_id={update_id} (in-memory)")
+                logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
+                obj = msg_obj or channel_obj
+                if obj:
+                    cid = (obj or {}).get("chat", {}).get("id")
+                    if cid:
+                        send_command_response(str(cid), "⏳ Already processed.")
                 return
-            
             handle_telegram_update.processed_update_ids.add(update_id)
             if len(handle_telegram_update.processed_update_ids) > 1000:
                 handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
     else:
-        # No database available, use in-memory deduplication
         if not hasattr(handle_telegram_update, 'processed_update_ids'):
             handle_telegram_update.processed_update_ids = set()
-        
         if update_id in handle_telegram_update.processed_update_ids:
-            logger.debug(f"[TG] Skipping duplicate update_id={update_id} (in-memory, no DB)")
+            logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
+            obj = msg_obj or channel_obj
+            if obj:
+                cid = (obj or {}).get("chat", {}).get("id")
+                if cid:
+                    send_command_response(str(cid), "⏳ Already processed.")
             return
-        
         handle_telegram_update.processed_update_ids.add(update_id)
         if len(handle_telegram_update.processed_update_ids) > 1000:
             handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
@@ -4937,7 +4944,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         return
     
     # Handle regular message (groups/supergroups) or channel_post (channels like HILOVIVO3.0)
-    # Channels use channel_post, not message — without this, commands in channels are never received
     message = (
         update.get("message")
         or update.get("edited_message")
@@ -4949,30 +4955,37 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
 
     chat = message.get("chat", {})
     chat_id = str(chat.get("id", ""))
-    chat_type = chat.get("type", "unknown")  # private, group, supergroup, channel
+    chat_type = chat.get("type", "unknown")
     chat_title = chat.get("title", "") or ""
-    text = message.get("text", "")
     from_user = message.get("from", {}) or {}
     user_id = str(from_user.get("id", "")) if from_user else ""
-    update_id = update.get("update_id", 0)
-    update_source = (
-        "channel_post" if update.get("channel_post") or update.get("edited_channel_post") else "message"
-    )
+    sender_id = user_id or chat_id
 
+    # Defensive text extraction: message.text, message.caption, edited_message.text
+    edited_msg = update.get("edited_message") or {}
+    raw_text = (
+        message.get("text")
+        or message.get("caption")
+        or edited_msg.get("text")
+        or edited_msg.get("caption")
+        or ""
+    )
+    text = (raw_text or "").strip()
     logger.info(
-        "[TG][INTAKE] update_id=%s update_source=%s chat_id=%s chat_type=%s chat_title=%s "
-        "sender_user_id=%s text=%s",
-        update_id, update_source, chat_id, chat_type, chat_title[:30] or "N/A",
-        user_id or "N/A", (text or "")[:80],
+        "[TG][TEXT] raw_text=%s extracted_text=%s",
+        (raw_text or "")[:100], (text or "")[:100],
     )
-    logger.info("[TG][CHAT] chat_id=%s chat_type=%s chat_title=%s — incoming command source", chat_id, chat_type, chat_title[:40] or "N/A")
+    logger.info(
+        "[TG][CHAT] update_id=%s chat_id=%s chat_type=%s sender_id=%s text_preview=%s",
+        update_id, chat_id, chat_type, sender_id, (text or "")[:60],
+    )
 
-    # Only authorized user/chat - use helper function
+    # Auth
     auth_ok = _is_authorized(chat_id, user_id)
+    auth_reason = "chat_id or user_id authorized" if auth_ok else "not in AUTHORIZED_USER_IDS"
     logger.info(
-        "[TG][AUTH] update_id=%s chat_id=%s chat_type=%s decision=%s authorized_ids=%s",
-        update_id, chat_id, chat_type, "ALLOW" if auth_ok else "DENY",
-        ",".join(sorted(AUTHORIZED_USER_IDS))[:80] if AUTHORIZED_USER_IDS else "none",
+        "[TG][AUTH] decision=%s reason=%s",
+        "ALLOW" if auth_ok else "DENY", auth_reason,
     )
     if not auth_ok:
         if _env_chat_id_trading and chat_id == str(_env_chat_id_trading):
@@ -4980,33 +4993,35 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         else:
             deny_msg = "⛔ Not authorized"
         reply_ok = send_command_response(chat_id, deny_msg)
-        logger.info(
-            "[TG][REPLY] update_id=%s chat_id=%s chat_type=%s handler=deny reply_success=%s",
-            update_id, chat_id, chat_type, reply_ok,
-        )
+        logger.info("[TG][REPLY] success=%s handler=deny", reply_ok)
         return
-    
-    # Parse command — ensure text is never None (message.get can return None)
-    text = (text or "").strip()
-    logger.info("[TG][TEXT] update_id=%s chat_id=%s raw_text=%s", update_id, chat_id, (text or "")[:80])
 
     raw_command = text
 
-    # Normalize commands with @botname (e.g. "/help@ATP_control_bot" or "/investigate@ATP_control_bot repeated BTC alerts")
-    # Remove @botname but preserve arguments; split("@")[0] would drop args for "/investigate@bot args"
+    # Normalize @botname only; preserve full args. e.g. "/investigate@ATP_control_bot repeated BTC alerts" -> "/investigate repeated BTC alerts"
     if text and "@" in text and text.startswith("/"):
         try:
             normalized = re.sub(r"@\S+", "", text).strip()
             if normalized:
                 text = normalized
-                logger.info("[TG][CMD] raw_command=%s normalized=%s", (raw_command or "")[:80], text[:80])
             else:
-                # Fallback: regex produced empty; use old split logic to avoid breaking /start
                 text = text.split("@")[0].strip() or text
-                logger.warning("[TG][CMD] normalization produced empty, fallback to split: %s", (raw_command or "")[:80])
         except Exception as norm_err:
             logger.exception("[TG][ERROR] normalization failed: %s", norm_err)
             text = text.split("@")[0].strip() if "@" in text else text
+
+    # Extract cmd token and args for logging; do NOT drop args
+    parts = (text or "").split(None, 1)
+    cmd_token = (parts[0] or "").strip()
+    args = (parts[1] or "").strip() if len(parts) > 1 else ""
+    logger.info(
+        "[TG][CMD] raw_command=%s normalized_command=%s args=%s",
+        (raw_command or "")[:80], (cmd_token or "")[:40], (args or "")[:60],
+    )
+
+    if not text and raw_command and str(raw_command).strip().startswith("/"):
+        text = str(raw_command).strip()
+        logger.warning("[TG][CMD] Restored text from raw_command: %s", text[:50])
     
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
     # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)
@@ -5064,21 +5079,37 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     except ValueError:
         pass  # Not a number, continue with normal command parsing
     
-    # Command dispatch — always send a reply (handler or fallback on exception)
-    # Guard: empty or non-command text
+    # Command dispatch — reply guarantee: every accepted command produces visible reply or error
     if not text or not text.strip():
-        logger.info("[TG][ROUTER] handler=empty_text update_id=%s chat_id=%s — no text, sending ack", update_id, chat_id)
-        send_command_response(chat_id, "📋 Send a command (e.g. /help)")
+        logger.info("[TG][ROUTER] selected_handler=empty_text")
+        ok = send_command_response(chat_id, "📋 Send a command (e.g. /help)")
+        logger.info("[TG][REPLY] success=%s handler=empty_text", ok)
         return
     if not text.startswith("/"):
-        logger.info("[TG][ROUTER] handler=non_command update_id=%s chat_id=%s text=%s", update_id, chat_id, (text or "")[:30])
-        send_command_response(chat_id, "❓ Send a command (e.g. /help)")
+        logger.info("[TG][ROUTER] selected_handler=non_command")
+        ok = send_command_response(chat_id, "❓ Send a command (e.g. /help)")
+        logger.info("[TG][REPLY] success=%s handler=non_command", ok)
         return
 
-    logger.info("[TG][ROUTER] update_id=%s chat_id=%s dispatching text=%s", update_id, chat_id, (text or "")[:80])
+    # Explicit router: /start, /help, /runtime-check, /investigate, /agent, else unknown
+    handler_name = "unknown"
+    if text.startswith("/start"):
+        handler_name = "start"
+    elif text.startswith("/help"):
+        handler_name = "help"
+    elif text.startswith("/runtime-check"):
+        handler_name = "runtime-check"
+    elif text.startswith("/investigate"):
+        handler_name = "investigate"
+    elif text.startswith("/agent "):
+        handler_name = "agent"
+    elif text.startswith("/agent"):
+        handler_name = "agent"  # /agent without args -> show_agent_console
+    logger.info("[TG][ROUTER] selected_handler=%s", handler_name)
+
     try:
         if text.startswith("/start"):
-            logger.info("[TG][HANDLER] handler=start update_id=%s chat_id=%s", update_id, chat_id)
+            logger.info("[TG][HANDLER] handler=start executing")
             try:
                 # CRITICAL: /start should ALWAYS show main menu, not any other menu
                 logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
@@ -5090,12 +5121,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     logger.error(f"[TG][CMD][START] ❌ Failed to send main menu to chat_id={chat_id}")
                     send_command_response(chat_id, "📋 <b>Main Menu</b>\n\nUse /menu to see the full menu with all sections.")
             except Exception as e:
-                logger.error("[TG][ERROR] handler=start error=%s", e, exc_info=True)
-                send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
+                logger.exception("[TG][ERROR] handler=start: %s", e)
+                ok = send_command_response(chat_id, f"❌ Error processing /start: {str(e)}")
+                logger.info("[TG][REPLY] success=%s handler=start", ok)
         elif text.startswith("/menu"):
-            show_main_menu(chat_id, db)
+            logger.info("[TG][HANDLER] handler=menu executing")
+            ok = show_main_menu(chat_id, db)
+            logger.info("[TG][REPLY] success=%s handler=menu", ok)
         elif text.startswith("/investigate"):
-            logger.info("[TG][CMD] handler=investigate update_id=%s chat_id=%s", update_id, chat_id)
+            logger.info("[TG][HANDLER] handler=investigate executing")
             try:
                 from app.core.runtime_identity import get_runtime_identity, format_runtime_identity_short
                 identity = get_runtime_identity()
@@ -5180,15 +5214,17 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/agent"):
             show_agent_console(chat_id)
         elif text.startswith("/"):
-            logger.info("[TG][CMD] handler=unknown update_id=%s chat_id=%s command=%s", update_id, chat_id, text[:50])
-            ok = send_command_response(chat_id, "❓ Unknown command. Use /help")
-            logger.info("[TG][REPLY] handler=unknown update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
+            logger.info("[TG][HANDLER] handler=unknown executing")
+            ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
+            logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
-            logger.info("[TG][CMD] handler=fallback update_id=%s chat_id=%s text=%s", update_id, chat_id, (text or "")[:50])
-            send_command_response(chat_id, "❓ No response. Use /help for commands.")
+            logger.info("[TG][HANDLER] handler=fallback executing")
+            ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
+            logger.info("[TG][REPLY] success=%s handler=fallback", ok)
     except Exception as e:
-        logger.exception("[TG][ERROR] Unhandled exception update_id=%s chat_id=%s: %s", update_id, chat_id, e)
-        send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+        logger.exception("[TG][ERROR] %s", e)
+        ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+        logger.info("[TG][REPLY] success=%s handler=exception_fallback", ok)
 
 
 def process_telegram_commands(db: Optional[Session] = None) -> None:
@@ -6375,7 +6411,7 @@ def show_signal_config_menu(chat_id: str, message_id: Optional[int] = None) -> b
         return send_command_response(chat_id, f"❌ Error mostrando Signal Config: {exc}")
 
 
-def _format_signal_detail_text(preset_label: str, risk_label: str, rules: Dict[str, Any]) -> str:
+def _format_signal_detail_sql_text(preset_label: str, risk_label: str, rules: Dict[str, Any]) -> str:
     rsi = rules.get("rsi", {})
     ma_checks = rules.get("maChecks", {})
     sl_cfg = rules.get("sl", {})
@@ -6409,7 +6445,7 @@ def show_signal_config_detail(chat_id: str, preset: str, risk_mode: str, message
         rules, _, risk_label = _get_signal_rules(cfg, preset, risk_mode)
         preset_key = _resolve_preset_key(cfg, preset)
         preset_label = preset_key.replace("_", " ").title()
-        text = _format_signal_detail_text(preset_label, risk_label, rules)
+        text = _format_signal_detail_sql_text(preset_label, risk_label, rules)
         sl_cfg = rules.get("sl", {})
         tp_cfg = rules.get("tp", {})
         sl_method = "ATR" if "atrMult" in sl_cfg else "Percent"
