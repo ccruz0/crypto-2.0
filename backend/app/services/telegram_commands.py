@@ -5230,7 +5230,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
 def process_telegram_commands(db: Optional[Session] = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
-    
+
+    # CANARY GUARD: Only one instance should poll (backend-aws). Canary skips to avoid lock contention.
+    run_poller = (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in ("1", "true", "yes", "on")
+    if not run_poller:
+        logger.debug("[TG] RUN_TELEGRAM_POLLER=false, skipping (canary/standby instance)")
+        return
+
     # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
     if not is_aws_runtime():
         # LOCAL runtime: Only allow processing if DEV token is set
@@ -5270,7 +5276,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
         # If lock cannot be acquired, another poller is active - skip this cycle
         if not _acquire_poller_lock(db):
-            logger.debug("[TG] Another poller is active, skipping this cycle")
+            logger.warning("[TG] Another poller is active, cannot acquire lock")
             return
         
         try:
