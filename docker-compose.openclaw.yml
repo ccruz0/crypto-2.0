@@ -6,14 +6,18 @@
 #
 # Hardening: non-root user, read_only, cap_drop ALL, no-new-privileges,
 # mem/cpu limits, token only via read-only file mount (never in env).
-# Token on host: ~/secrets/openclaw_token (chmod 600). No docker socket.
-# See: docs/openclaw/RUNBOOK_SECURE_INSTALL.md, FINAL_SECURITY_CHECKLIST.md
+# Docker socket: mounted for tool execution (docker ps, docker logs). Requires group_add
+# with host docker GID (getent group docker). LAB default: 988.
+# See: docs/openclaw/RUNBOOK_SECURE_INSTALL.md, OPENCLAW_DOCKER_SOCKET.md
 
 name: openclaw-lab
 
 services:
   openclaw:
-    image: ${OPENCLAW_IMAGE:-ghcr.io/ccruz0/openclaw:latest}
+    build:
+      context: .
+      dockerfile: openclaw/Dockerfile.openclaw
+    image: ${OPENCLAW_IMAGE:-openclaw-with-origins:latest}
     container_name: openclaw
     env_file:
       - .env.lab
@@ -41,6 +45,8 @@ services:
       - openclaw_workspace:/workspace
       - openclaw_logs:/var/log/openclaw
       - /home/ubuntu/secrets/openclaw_token:/run/secrets/openclaw_token:ro
+      # Docker socket: tools can run docker ps/logs without sudo. Requires group_add below.
+      - /var/run/docker.sock:/var/run/docker.sock
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -49,6 +55,8 @@ services:
     tmpfs:
       - /tmp:size=128M,mode=1777
     user: "1000:1000"
+    group_add:
+      - "${DOCKER_GROUP_GID:-988}"
     restart: unless-stopped
     deploy:
       resources:
