@@ -12,15 +12,61 @@ Reuses:
 - telegram_notifier.telegram_notifier.send_message  (safe Telegram notifier)
 - database / ORM models  (ExchangeOrder, TradeSignal)
 - agent_activity_log.get_recent_agent_events  (scheduler inactivity check)
+
+Alert suppression: Telegram alerts for the same anomaly type are throttled
+(ANOMALY_ALERT_COOLDOWN_HOURS) to prevent spam when an incident remains
+unresolved. Cooldown resets when the anomaly clears (detector returns None).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Throttle Telegram alerts for same anomaly type (prevents spam on unresolved incidents)
+_ANOMALY_ALERT_LAST_SENT: dict[str, datetime] = {}
+_DEFAULT_COOLDOWN_HOURS = 24
+
+
+def _get_anomaly_cooldown_hours() -> int:
+    """Read ANOMALY_ALERT_COOLDOWN_HOURS from env (default 24)."""
+    raw = (os.environ.get("ANOMALY_ALERT_COOLDOWN_HOURS") or "").strip()
+    if raw:
+        try:
+            return max(1, min(168, int(raw)))  # 1h to 7 days
+        except ValueError:
+            pass
+    return _DEFAULT_COOLDOWN_HOURS
+
+
+def _should_send_anomaly_telegram(anomaly_type: str) -> bool:
+    """
+    True if we should send a Telegram alert for this anomaly type.
+    Throttles repeated alerts for the same unresolved incident.
+    Cooldown resets when anomaly clears (call _clear_anomaly_incident when detector returns None).
+    """
+    now = _utc_now()
+    last_sent = _ANOMALY_ALERT_LAST_SENT.get(anomaly_type)
+    cooldown_hours = _get_anomaly_cooldown_hours()
+    if last_sent is None:
+        return True
+    if now - last_sent >= timedelta(hours=cooldown_hours):
+        return True
+    return False
+
+
+def _record_anomaly_alert_sent(anomaly_type: str) -> None:
+    """Record that we sent a Telegram alert for this anomaly type."""
+    _ANOMALY_ALERT_LAST_SENT[anomaly_type] = _utc_now()
+
+
+def _clear_anomaly_incident(anomaly_type: str) -> None:
+    """Call when anomaly clears (detector returns None). Resets so next detection alerts immediately."""
+    _ANOMALY_ALERT_LAST_SENT.pop(anomaly_type, None)
 
 ANOMALY_SOURCE = "monitoring"
 ANOMALY_STATUS = "planned"
@@ -357,33 +403,44 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
     for detector_name, detector_fn in _DETECTOR_REGISTRY:
         try:
             result = detector_fn()
-            if result is not None:
-                anomalies_found.append(result)
-                _log_event("anomaly_detected", details={
-                    "detector": detector_name,
-                    "anomaly": result.get("anomaly", detector_name),
+            if result is None:
+                _clear_anomaly_incident(detector_name)
+                continue
+
+            anomaly_type = result.get("anomaly", detector_name)
+            anomalies_found.append(result)
+            _log_event("anomaly_detected", details={
+                "detector": detector_name,
+                "anomaly": anomaly_type,
+            })
+
+            title = _build_task_title(result)
+            details = _build_task_details(result)
+            notion_type = _anomaly_type_to_notion_type(anomaly_type)
+
+            task = _create_anomaly_task(
+                title=title,
+                anomaly_type=notion_type,
+                details=details,
+            )
+            if task:
+                tasks_created.append({
+                    "notion_page_id": task.get("id", ""),
+                    "title": title,
+                    "anomaly": anomaly_type,
                 })
 
-                title = _build_task_title(result)
-                details = _build_task_details(result)
-                notion_type = _anomaly_type_to_notion_type(result.get("anomaly", ""))
-
-                task = _create_anomaly_task(
-                    title=title,
-                    anomaly_type=notion_type,
-                    details=details,
-                )
-                if task:
-                    tasks_created.append({
-                        "notion_page_id": task.get("id", ""),
-                        "title": title,
-                        "anomaly": result.get("anomaly", detector_name),
-                    })
-
+            if _should_send_anomaly_telegram(anomaly_type):
                 _notify_telegram(
                     f"🔍 <b>Anomaly detected</b>: {title}\n"
-                    f"Type: {result.get('anomaly', 'unknown')}\n"
+                    f"Type: {anomaly_type}\n"
                     f"Details: {details[:300]}"
+                )
+                _record_anomaly_alert_sent(anomaly_type)
+            else:
+                logger.debug(
+                    "anomaly_detection: throttled Telegram for %s (cooldown active)",
+                    anomaly_type,
                 )
         except Exception as e:
             logger.warning("anomaly_detection: detector %s failed: %s", detector_name, e)
