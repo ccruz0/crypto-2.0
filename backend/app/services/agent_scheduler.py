@@ -120,18 +120,22 @@ def run_agent_scheduler_cycle(
     *,
     project: str | None = None,
     type_filter: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Run one scheduler cycle: prepare at most one task, then either request approval
     or auto-execute if low-risk. Process at most one task per cycle. Never raises.
+
+    If task_id is provided, runs that specific Notion task (must be planned/backlog/ready-for-investigation/blocked).
     """
     logger.info(
-        "scheduler_cycle_start project=%r type_filter=%r ts=%s",
+        "scheduler_cycle_start project=%r type_filter=%r task_id=%r ts=%s",
         project,
         type_filter,
+        task_id[:12] + "…" if task_id and len(task_id) > 12 else task_id,
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
-    _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter})
+    _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter, "task_id": task_id})
     try:
         from app.services.agent_task_executor import prepare_task_with_approval_check
     except Exception as e:
@@ -145,7 +149,7 @@ def run_agent_scheduler_cycle(
         }
 
     try:
-        prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter)
+        prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=task_id)
     except Exception as e:
         logger.exception("agent_scheduler: prepare_task_with_approval_check failed")
         _log_event("scheduler_cycle_failed", details={"reason": "prepare failed", "error": str(e)})

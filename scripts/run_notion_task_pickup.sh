@@ -24,12 +24,15 @@ echo ""
 # If we're in a context where docker compose is available and backend-aws is running, run inside container
 if command -v docker >/dev/null 2>&1 && docker compose --profile aws ps backend-aws 2>/dev/null | grep -q Up; then
   echo "Running Notion check inside backend-aws container..."
-  docker compose --profile aws exec -e NOTION_TASK_DB="$NOTION_TASK_DB" backend-aws python -c "
+  [[ -n "${TASK_ID:-}" ]] && echo "Target task: $TASK_ID"
+  docker compose --profile aws exec -e NOTION_TASK_DB="$NOTION_TASK_DB" -e TASK_ID="${TASK_ID:-}" backend-aws python -c "
 import os
 os.environ.setdefault('NOTION_TASK_DB', os.environ.get('NOTION_TASK_DB', ''))
 from app.services.agent_scheduler import run_agent_scheduler_cycle
 import json
-result = run_agent_scheduler_cycle()
+import os
+task_id = (os.environ.get('TASK_ID') or '').strip() or None
+result = run_agent_scheduler_cycle(task_id=task_id)
 print(json.dumps(result, default=str, indent=2))
 " 2>&1
   echo ""
@@ -40,6 +43,7 @@ fi
 # Otherwise run locally (requires NOTION_API_KEY and NOTION_TASK_DB in env or backend/.env)
 echo "Docker backend-aws not detected. Running scheduler cycle locally (backend/ must have NOTION_API_KEY and NOTION_TASK_DB)..."
 export NOTION_TASK_DB
+export TASK_ID="${TASK_ID:-}"
 cd "$REPO_ROOT/backend"
 # Load env files so NOTION_API_KEY and Telegram (encrypted token + chat_id) are available.
 # Order: root .env, then runtime.env, then backend/.env so local backend/.env overrides (e.g. TELEGRAM_BOT_TOKEN_ENCRYPTED from setup_telegram_token.py).

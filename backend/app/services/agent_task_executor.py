@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
-from app.services.notion_task_reader import get_high_priority_pending_tasks
+from app.services.notion_task_reader import get_high_priority_pending_tasks, get_notion_task_by_id
 from app.services.notion_tasks import (
     NOTION_API_BASE,
     NOTION_VERSION,
@@ -615,13 +615,63 @@ def prepare_next_notion_task(
     return result
 
 
+def prepare_task_by_id(task_id: str) -> dict[str, Any] | None:
+    """
+    Prepare a specific Notion task by ID (for targeted runs).
+
+    The task must be in a pickable status (planned, backlog, ready-for-investigation, blocked).
+    Returns the same structure as prepare_next_notion_task, or None if task not found/not pickable.
+    """
+    task_id = (task_id or "").strip()
+    if not task_id:
+        return None
+    task = get_notion_task_by_id(task_id)
+    if not task:
+        logger.warning("prepare_task_by_id: task not found task_id=%s", task_id)
+        return None
+    status = (task.get("status") or "").strip().lower()
+    pickable = status in ("planned", "backlog", "ready-for-investigation", "blocked")
+    if not pickable:
+        logger.warning("prepare_task_by_id: task not pickable task_id=%s status=%r", task_id, status)
+        return None
+    page_id = str(task.get("id") or "").strip()
+    repo_area = infer_repo_area_for_task(task)
+    plan = build_task_execution_plan(task, repo_area)
+    plan_text = "OpenClaw preparation plan\n\n" + "\n".join(f"- {s}" for s in plan)
+    result: dict[str, Any] = {
+        "prepared_at": _utc_now_iso(),
+        "task": task,
+        "repo_area": repo_area,
+        "execution_plan": plan,
+        "claim": {"attempted": True, "target_status": "in-progress", "status_updated": False, "plan_appended": False},
+    }
+    status_ok = update_notion_task_status(page_id=page_id, status="in-progress")
+    result["claim"]["status_updated"] = bool(status_ok)
+    if not status_ok:
+        logger.warning("prepare_task_by_id: failed to claim task_id=%s", page_id)
+        result["claim"]["error"] = "status_update_failed"
+        return result
+    appended = _append_notion_page_comment(page_id, plan_text)
+    result["claim"]["plan_appended"] = bool(appended)
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event("task_prepared", task_id=page_id, task_title=str(task.get("task") or "").strip(), details={"repo_area": repo_area.get("area_name"), "priority": (task.get("priority") or "").strip()})
+    except Exception as e:
+        logger.debug("log_agent_event(task_prepared) failed: %s", e)
+    return result
+
+
 def prepare_task_with_approval_check(
     *,
     project: str | None = None,
     type_filter: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Prepare the next Notion task and attach callback selection + approval decision.
+
+    If task_id is provided, prepares that specific task (must be in planned/backlog/ready-for-investigation/blocked).
+    Otherwise fetches the next highest-priority pending task.
 
     Does not block intake; the approval gate applies to execution only.
     Returns None if there are no pending tasks; otherwise a bundle with:
@@ -630,7 +680,10 @@ def prepare_task_with_approval_check(
     - approval: output of requires_human_approval()
     - approval_summary: human-readable summary from build_approval_summary()
     """
-    prepared = prepare_next_notion_task(project=project, type_filter=type_filter)
+    if task_id:
+        prepared = prepare_task_by_id(task_id)
+    else:
+        prepared = prepare_next_notion_task(project=project, type_filter=type_filter)
     if prepared is None:
         return None
 
@@ -829,15 +882,12 @@ def execute_prepared_task_if_approved(
     apply_fn = callback_selection.get("apply_change_fn")
     validate_fn = callback_selection.get("validate_fn")
     deploy_fn = callback_selection.get("deploy_fn")
-    selection_reason = str(callback_selection.get("selection_reason") or "")
-    expect_bug_artifact = "bug investigation" in selection_reason.lower() or "bug_investigation" in selection_reason.lower()
 
     execution_result = execute_prepared_notion_task(
         prepared_task,
         apply_change_fn=apply_fn,
         validate_fn=validate_fn,
         deploy_fn=deploy_fn,
-        expect_bug_artifact=expect_bug_artifact,
     )
 
     return {
@@ -858,7 +908,6 @@ def execute_prepared_notion_task(
     apply_change_fn: PreparedTaskCallback = None,
     validate_fn: PreparedTaskCallback = None,
     deploy_fn: PreparedTaskCallback = None,
-    expect_bug_artifact: bool = False,
 ) -> dict[str, Any]:
     """
     Execute a prepared Notion task in a controlled way: apply → testing → validate → deploy → deployed.
@@ -1004,21 +1053,20 @@ def execute_prepared_notion_task(
         "no" if use_extended_lifecycle else "YES",
     )
     if use_extended_lifecycle:
-        # Validate artifact exists before advancing — only for bug-investigation callbacks.
-        # Other manual_only callbacks (strategy_analysis, profile_setting, etc.) write to
-        # different paths; skip this check to avoid false "artifact missing" errors.
-        if expect_bug_artifact:
-            from app.services._paths import get_writable_bug_investigations_dir
-            _bug_dir = get_writable_bug_investigations_dir()
-            _md_path = _bug_dir / f"notion-bug-{task_id}.md"
-            _artifact_ok = _md_path.exists() and _md_path.stat().st_size >= 200
-        else:
-            _artifact_ok = True
+        # Validate artifact exists before advancing. Check all known artifact paths
+        # (bug-investigations, telegram-alerts, execution-state, etc.) so we don't
+        # advance when artifact is missing regardless of which callback wrote it.
+        try:
+            from app.services.agent_recovery import artifact_exists_for_task
+            _artifact_ok = artifact_exists_for_task(task_id, min_size=200)
+        except Exception as e:
+            logger.debug("execute_prepared_notion_task: artifact check failed task_id=%s: %s", task_id, e)
+            _artifact_ok = False
         if not _artifact_ok:
             logger.warning(
                 "execute_prepared_notion_task: artifact missing or too small task_id=%s "
-                "path=%s exists=%s size=%s — not advancing to investigation-complete",
-                task_id, _md_path, _md_path.exists(), _md_path.stat().st_size if _md_path.exists() else 0,
+                "— not advancing to investigation-complete",
+                task_id,
             )
             _append_notion_page_comment(
                 task_id,
