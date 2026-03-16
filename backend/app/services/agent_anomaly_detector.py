@@ -15,7 +15,8 @@ Reuses:
 
 Alert suppression: Telegram alerts for the same anomaly type are throttled
 (ANOMALY_ALERT_COOLDOWN_HOURS) to prevent spam when an incident remains
-unresolved. Cooldown resets when the anomaly clears (detector returns None).
+unresolved. Uses DB (TradingSettings) so all backend instances share cooldown
+state. Cooldown resets when the anomaly clears (detector returns None).
 """
 
 from __future__ import annotations
@@ -27,9 +28,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Throttle Telegram alerts for same anomaly type (prevents spam on unresolved incidents)
-_ANOMALY_ALERT_LAST_SENT: dict[str, datetime] = {}
+# Throttle Telegram alerts for same anomaly type (prevents spam on unresolved incidents).
+# Uses DB (TradingSettings) so all backend instances share cooldown state.
 _DEFAULT_COOLDOWN_HOURS = 24
+_ANOMALY_ALERT_KEY_PREFIX = "anomaly_alert_last_sent_"
 
 
 def _get_anomaly_cooldown_hours() -> int:
@@ -43,14 +45,85 @@ def _get_anomaly_cooldown_hours() -> int:
     return _DEFAULT_COOLDOWN_HOURS
 
 
+def _anomaly_alert_key(anomaly_type: str) -> str:
+    return f"{_ANOMALY_ALERT_KEY_PREFIX}{anomaly_type}"
+
+
+def _get_anomaly_alert_last_sent_db(anomaly_type: str) -> datetime | None:
+    """Read last-sent timestamp from DB. Returns None if not found or on error."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return None
+    db = SessionLocal()
+    try:
+        key = _anomaly_alert_key(anomaly_type)
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if not row or not row.setting_value:
+            return None
+        return datetime.fromisoformat(row.setting_value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: _get_anomaly_alert_last_sent_db failed: %s", e)
+        return None
+    finally:
+        db.close()
+
+
+def _set_anomaly_alert_last_sent_db(anomaly_type: str, ts: datetime) -> None:
+    """Write last-sent timestamp to DB."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = _anomaly_alert_key(anomaly_type)
+        value = ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            row.setting_value = value
+        else:
+            db.add(TradingSettings(setting_key=key, setting_value=value))
+        db.commit()
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: _set_anomaly_alert_last_sent_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _clear_anomaly_alert_sent_db(anomaly_type: str) -> None:
+    """Remove last-sent record from DB (when anomaly clears)."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = _anomaly_alert_key(anomaly_type)
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            db.delete(row)
+            db.commit()
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: _clear_anomaly_alert_sent_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _should_send_anomaly_telegram(anomaly_type: str) -> bool:
     """
     True if we should send a Telegram alert for this anomaly type.
-    Throttles repeated alerts for the same unresolved incident.
-    Cooldown resets when anomaly clears (call _clear_anomaly_incident when detector returns None).
+    Uses DB so all backend instances share cooldown state.
     """
     now = _utc_now()
-    last_sent = _ANOMALY_ALERT_LAST_SENT.get(anomaly_type)
+    last_sent = _get_anomaly_alert_last_sent_db(anomaly_type)
     cooldown_hours = _get_anomaly_cooldown_hours()
     if last_sent is None:
         return True
@@ -60,13 +133,13 @@ def _should_send_anomaly_telegram(anomaly_type: str) -> bool:
 
 
 def _record_anomaly_alert_sent(anomaly_type: str) -> None:
-    """Record that we sent a Telegram alert for this anomaly type."""
-    _ANOMALY_ALERT_LAST_SENT[anomaly_type] = _utc_now()
+    """Record that we sent a Telegram alert for this anomaly type (persists to DB)."""
+    _set_anomaly_alert_last_sent_db(anomaly_type, _utc_now())
 
 
 def _clear_anomaly_incident(anomaly_type: str) -> None:
     """Call when anomaly clears (detector returns None). Resets so next detection alerts immediately."""
-    _ANOMALY_ALERT_LAST_SENT.pop(anomaly_type, None)
+    _clear_anomaly_alert_sent_db(anomaly_type)
 
 ANOMALY_SOURCE = "monitoring"
 ANOMALY_STATUS = "planned"
