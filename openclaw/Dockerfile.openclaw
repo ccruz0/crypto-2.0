@@ -5,14 +5,16 @@ FROM ghcr.io/ccruz0/openclaw:latest
 
 # Many ATP scripts use "python" but the base image only has python3
 # Install pydantic/pydantic-settings so ATP Python tools (e.g. /investigate agent)
-# can run when OpenClaw invokes them from the mounted workspace
+# can run when OpenClaw invokes them from the mounted workspace.
+# Install docker CLI so tools can run docker ps/logs when socket is mounted (group_add in compose).
 USER root
 RUN ln -sf python3 /usr/bin/python
 RUN if command -v apt-get >/dev/null 2>&1; then \
-      apt-get update -qq && apt-get install -y -qq python3-pip && \
+      apt-get update -qq && apt-get install -y -qq python3-pip docker.io && \
       pip3 install --break-system-packages pydantic pydantic-settings requests; \
     elif command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache py3-pip && pip3 install pydantic pydantic-settings requests; \
+      apk add --no-cache py3-pip docker-cli && \
+      pip3 install pydantic pydantic-settings requests; \
     else \
       python3 -m ensurepip && python3 -m pip install --break-system-packages pydantic pydantic-settings requests; \
     fi
