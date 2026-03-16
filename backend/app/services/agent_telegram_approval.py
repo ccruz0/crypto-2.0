@@ -1551,13 +1551,15 @@ def _load_sections_from_disk(task_id: str) -> dict[str, Any]:
         repo_root = workspace_root()
         for d in (
             get_writable_bug_investigations_dir(),
+            repo_root / "docs" / "agents" / "telegram-alerts",
+            repo_root / "docs" / "agents" / "execution-state",
             repo_root / "docs" / "agents" / "generated-notes",
             repo_root / "docs" / "runbooks" / "triage",
         ):
             for f in d.glob(f"*-{task_id}.sections.json"):
                 data = json.loads(f.read_text(encoding="utf-8"))
                 return data.get("sections") or {}
-            for prefix in ("notion-bug", "notion-task"):
+            for prefix in ("notion-bug", "notion-telegram", "notion-execution", "notion-task"):
                 md_path = d / f"{prefix}-{task_id}.md"
                 if md_path.exists():
                     raw = md_path.read_text(encoding="utf-8")
@@ -1570,17 +1572,52 @@ def _load_sections_from_disk(task_id: str) -> dict[str, Any]:
 
 
 def _should_skip_investigation_info_dedup(task_id: str) -> bool:
-    """Return True if we already sent investigation info for this task recently."""
+    """Return True if we already sent investigation info for this task recently.
+
+    Uses both in-memory cache (fast path) and activity log (persistent across workers/restarts).
+    """
     now = time.time()
     cutoff = now - (_INVESTIGATION_INFO_DEDUP_HOURS * 3600)
     with _STORE_LOCK:
         last_sent = _INVESTIGATION_INFO_SENT.get(task_id)
         if last_sent and last_sent > cutoff:
             logger.info(
-                "send_investigation_complete_info: skipping duplicate task_id=%s last_sent=%.0fs ago",
+                "send_investigation_complete_info: skipping duplicate task_id=%s last_sent=%.0fs ago (memory)",
                 task_id, now - last_sent,
             )
             return True
+
+    # Persistent check: activity log is shared across Gunicorn workers and survives restarts
+    try:
+        from datetime import datetime as dt
+        from app.services.agent_activity_log import get_recent_agent_events
+        events = get_recent_agent_events(limit=500)
+        for ev in events:
+            if ev.get("event_type") != "investigation_info_sent" or ev.get("task_id") != task_id:
+                continue
+            if not ev.get("details", {}).get("sent", True):
+                continue  # Only dedup on successful sends
+            ts_str = ev.get("timestamp")
+            if not ts_str:
+                continue
+            try:
+                # Parse ISO timestamp
+                ts = ts_str.replace("Z", "+00:00")
+                ev_dt = dt.fromisoformat(ts)
+                if ev_dt.tzinfo is None:
+                    ev_dt = ev_dt.replace(tzinfo=timezone.utc)
+                ev_ts = ev_dt.timestamp()
+                if ev_ts > cutoff:
+                    logger.info(
+                        "send_investigation_complete_info: skipping duplicate task_id=%s (activity log, %.0fs ago)",
+                        task_id, now - ev_ts,
+                    )
+                    return True
+            except (ValueError, TypeError):
+                continue
+    except Exception as e:
+        logger.debug("investigation_info dedup activity_log check failed: %s", e)
+
     return False
 
 
