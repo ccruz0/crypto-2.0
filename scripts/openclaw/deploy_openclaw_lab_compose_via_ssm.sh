@@ -19,6 +19,7 @@ params=$(cat <<EOF
     "set -e",
     "sudo mkdir -p /opt/openclaw/home-data",
     "sudo chown -R ubuntu:ubuntu /opt/openclaw 2>/dev/null || true",
+    "sudo chown -R ubuntu:ubuntu $REPO_PATH 2>/dev/null || true",
     "sudo -u ubuntu bash -c 'cd $REPO_PATH && git fetch origin main && git checkout main && git pull origin main'",
     "sudo -u ubuntu bash -c 'cd $REPO_PATH && grep -q DOCKER_GROUP_GID .env.lab && sed -i.bak s/DOCKER_GROUP_GID=.*/DOCKER_GROUP_GID=$DOCKER_GROUP_GID/ .env.lab || echo DOCKER_GROUP_GID=$DOCKER_GROUP_GID >> .env.lab'",
     "echo === Stopping existing container ===",
