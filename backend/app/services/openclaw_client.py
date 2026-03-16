@@ -351,6 +351,32 @@ _SECTION_HEADING_RE = re.compile(
     re.MULTILINE,
 )
 
+# Multi-agent shared output schema (docs/agents/multi-agent/SHARED_OUTPUT_SCHEMA.md)
+AGENT_OUTPUT_SECTIONS = (
+    "Issue Summary",
+    "Scope Reviewed",
+    "Confirmed Facts",
+    "Mismatches",
+    "Root Cause",
+    "Proposed Minimal Fix",
+    "Risk Level",
+    "Validation Plan",
+    "Cursor Patch Prompt",
+)
+
+_AGENT_STRUCTURED_OUTPUT_INSTRUCTION = (
+    "\n\nIMPORTANT — format your response using exactly these markdown sections:\n\n"
+    + "\n".join(f"## {s}" for s in AGENT_OUTPUT_SECTIONS)
+    + "\n\n"
+    "If a section is not applicable, include the heading and write 'N/A'.\n"
+    "Do not add extra top-level sections. Be precise and cite file paths."
+)
+
+_AGENT_SECTION_HEADING_RE = re.compile(
+    r"^##\s+(" + "|".join(re.escape(s) for s in AGENT_OUTPUT_SECTIONS) + r")\s*$",
+    re.MULTILINE,
+)
+
 
 def parse_investigation_sections(text: str) -> dict[str, str | None]:
     """Extract structured sections from an OpenClaw investigation response.
@@ -384,6 +410,32 @@ def parse_investigation_sections(text: str) -> dict[str, str | None]:
     return result
 
 
+def parse_agent_output_sections(text: str) -> dict[str, str | None]:
+    """Extract structured sections from a multi-agent operator response.
+
+    Returns dict keyed by AGENT_OUTPUT_SECTIONS. Missing sections map to None.
+    Unrecognised content before first heading stored under "_preamble".
+    """
+    result: dict[str, str | None] = {s: None for s in AGENT_OUTPUT_SECTIONS}
+
+    matches = list(_AGENT_SECTION_HEADING_RE.finditer(text))
+    if not matches:
+        result["_preamble"] = text.strip() or None
+        return result
+
+    preamble = text[: matches[0].start()].strip()
+    result["_preamble"] = preamble or None
+
+    for idx, m in enumerate(matches):
+        section_name = m.group(1)
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        result[section_name] = body if body else None
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
@@ -397,12 +449,43 @@ _WORKSPACE_NOTE = (
 )
 
 _ATP_COMMAND_NOTE = (
-    "For operational checks (docker status, logs, health), use the ATP command API: "
-    "POST https://dashboard.hilovivo.com/api/agent/run-atp-command "
-    "with Authorization: Bearer <your gateway token> and body {\"command\": \"docker compose --profile aws ps\"}. "
-    "Allowed: docker compose ps, docker compose logs --tail=50, curl http://127.0.0.1:8002/ping_fast, df -h /, free -h. "
-    "Do NOT suggest manual SSH for normal operational tasks."
+    "CRITICAL: Runtime context (docker ps, logs) is PRE-FETCHED and included in the prompt below. "
+    "NEVER run docker, sudo, or shell commands locally — you have no such capability and it will fail. "
+    "Use ONLY the pre-fetched context and workspace file reads. Do NOT suggest manual SSH or local commands."
 )
+
+
+def _fetch_atp_runtime_context() -> str:
+    """Fetch PROD and LAB runtime context via safe SSM APIs. Injected into prompts so OpenClaw
+    never needs to run docker/sudo locally. Returns a markdown block or empty string on failure."""
+    blocks: list[str] = []
+    try:
+        from app.services.atp_ssm_runner import run_atp_command
+        r = run_atp_command("docker compose --profile aws ps")
+        if r.get("ok"):
+            out = (r.get("stdout") or "").strip()[:2500]
+            blocks.append("### ATP PROD (docker compose --profile aws ps)\n```\n" + out + "\n```")
+        else:
+            err = (r.get("error") or "unknown")[:200]
+            blocks.append("### ATP PROD: unavailable (" + err + ")")
+    except Exception as e:
+        logger.debug("atp_runtime_context: atp fetch failed: %s", e)
+        blocks.append("### ATP PROD: fetch failed")
+    try:
+        from app.services.lab_ssm_runner import run_lab_command
+        r = run_lab_command("docker ps")
+        if r.get("ok"):
+            out = (r.get("stdout") or "").strip()[:1500]
+            blocks.append("### LAB (docker ps)\n```\n" + out + "\n```")
+        else:
+            err = (r.get("error") or "unknown")[:200]
+            blocks.append("### LAB: unavailable (" + err + ")")
+    except Exception as e:
+        logger.debug("atp_runtime_context: lab fetch failed: %s", e)
+        blocks.append("### LAB: fetch failed")
+    if not blocks:
+        return ""
+    return "## Pre-fetched runtime context (do NOT run docker/sudo — use this)\n\n" + "\n\n".join(blocks)
 
 
 def _task_metadata_block(prepared_task: dict[str, Any]) -> str:
@@ -437,8 +520,12 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     meta = _task_metadata_block(prepared_task)
     task = (prepared_task or {}).get("task") or {}
     symptom = (task.get("details") or task.get("task") or "").strip()
+    runtime = _fetch_atp_runtime_context()
 
-    user_prompt = (
+    user_prompt = ""
+    if runtime:
+        user_prompt = f"{runtime}\n\n---\n\n"
+    user_prompt += (
         f"Investigate the following bug report for the Automated Trading Platform.\n\n"
         f"{meta}\n\n"
         f"Reported symptom: {symptom}\n\n"
@@ -489,8 +576,12 @@ def build_documentation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
 def build_monitoring_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
     """Build prompt for monitoring/ops triage tasks."""
     meta = _task_metadata_block(prepared_task)
+    runtime = _fetch_atp_runtime_context()
 
-    user_prompt = (
+    user_prompt = ""
+    if runtime:
+        user_prompt = f"{runtime}\n\n---\n\n"
+    user_prompt += (
         f"Triage the following monitoring/infrastructure issue for the "
         f"Automated Trading Platform.\n\n"
         f"{meta}\n\n"
@@ -509,6 +600,93 @@ def build_monitoring_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
         f"{_ATP_COMMAND_NOTE} "
         "Be specific about commands, config changes, and file paths. "
         "Always use the exact section headings requested in the prompt."
+    )
+    return user_prompt, instructions
+
+
+def build_telegram_alerts_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
+    """Build prompt for Telegram and Alerts agent (multi-agent operator)."""
+    meta = _task_metadata_block(prepared_task)
+    task = (prepared_task or {}).get("task") or {}
+    symptom = (task.get("details") or task.get("task") or "").strip()
+    runtime = _fetch_atp_runtime_context()
+
+    user_prompt = ""
+    if runtime:
+        user_prompt = f"{runtime}\n\n---\n\n"
+    user_prompt += (
+        f"Investigate the following Telegram/alert issue for the Automated Trading Platform.\n\n"
+        f"{meta}\n\n"
+        f"Reported symptom: {symptom}\n\n"
+        f"Scope (read these files):\n"
+        f"- backend/app/services/telegram_notifier.py\n"
+        f"- backend/app/services/telegram_commands.py\n"
+        f"- backend/app/services/alert_emitter.py\n"
+        f"- backend/app/services/signal_throttle.py\n"
+        f"- docs/runbooks/TELEGRAM_ALERTS_NOT_SENT.md\n\n"
+        f"Check for:\n"
+        f"1. RUN_TELEGRAM, ENVIRONMENT, TELEGRAM_CHAT_ID resolution (never log values)\n"
+        f"2. Kill switch blocking sends\n"
+        f"3. Throttle/dedup: repeated alerts, missing alerts, approval noise\n"
+        f"4. Docs vs code mismatches (runbook outdated?)\n"
+        f"5. Wrong channel (trading vs ops chat_id)\n\n"
+        f"Typical issues: alerts not sent, duplicate alerts, throttle too aggressive, "
+        f"TELEGRAM_CHAT_ID misconfiguration.\n\n"
+        f"Propose the smallest safe fix. Use the exact section headings below."
+        f"{_AGENT_STRUCTURED_OUTPUT_INSTRUCTION}"
+    )
+    instructions = (
+        "You are the Telegram and Alerts agent. You analyze alert delivery, throttle, dedup, kill switch, and channel config. "
+        "You do NOT change production send logic without explicit approval. "
+        "Never log or expose tokens. "
+        f"{_WORKSPACE_NOTE} "
+        f"{_ATP_COMMAND_NOTE} "
+        "Cite exact file paths and env var names (not values). "
+        "Cursor Patch Prompt must be safe (no credential changes). "
+        "All 9 sections are mandatory; use N/A only when truly not applicable."
+    )
+    return user_prompt, instructions
+
+
+def build_execution_state_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
+    """Build prompt for Execution and State agent (multi-agent operator)."""
+    meta = _task_metadata_block(prepared_task)
+    task = (prepared_task or {}).get("task") or {}
+    symptom = (task.get("details") or task.get("task") or "").strip()
+    runtime = _fetch_atp_runtime_context()
+
+    user_prompt = ""
+    if runtime:
+        user_prompt = f"{runtime}\n\n---\n\n"
+    user_prompt += (
+        f"Investigate the following order/execution/state issue for the Automated Trading Platform.\n\n"
+        f"{meta}\n\n"
+        f"Reported symptom: {symptom}\n\n"
+        f"Scope (read these files):\n"
+        f"- backend/app/services/exchange_sync.py\n"
+        f"- backend/app/services/signal_monitor.py (order creation, lifecycle)\n"
+        f"- backend/app/services/brokers/crypto_com_trade.py\n"
+        f"- backend/app/models/exchange_order.py\n"
+        f"- docs/ORDER_LIFECYCLE_GUIDE.md, docs/SYSTEM_MAP.md, docs/LIFECYCLE_EVENTS_COMPLETE.md\n\n"
+        f"Check for:\n"
+        f"1. CRITICAL: 'Order not in open orders' does NOT mean canceled. Resolve via exchange order_history/trade_history only.\n"
+        f"2. Exchange vs DB vs dashboard mismatches (state reconciliation)\n"
+        f"3. Lifecycle state issues: EXECUTED vs CANCELED confusion, SL/TP order lifecycle\n"
+        f"4. Sync messages misleading or stale\n"
+        f"5. Rendering/state reconciliation in dashboard\n\n"
+        f"Typical issues: order not found, missing from open orders, DB vs exchange mismatch, "
+        f"dashboard showing wrong state, lifecycle event ordering.\n\n"
+        f"Propose minimal fix. Do NOT change order placement logic. Use the exact section headings below."
+        f"{_AGENT_STRUCTURED_OUTPUT_INSTRUCTION}"
+    )
+    instructions = (
+        "You are the Execution and State agent. You analyze order lifecycle, sync, state consistency, and exchange/DB/dashboard reconciliation. "
+        "You do NOT place or cancel orders. Never assume missing from open orders = canceled; use exchange history only. "
+        f"{_WORKSPACE_NOTE} "
+        f"{_ATP_COMMAND_NOTE} "
+        "Cite exchange API behavior and code paths. "
+        "Cursor Patch Prompt must not change order execution. "
+        "All 9 sections are mandatory; use N/A only when truly not applicable."
     )
     return user_prompt, instructions
 

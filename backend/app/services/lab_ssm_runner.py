@@ -1,11 +1,11 @@
 """
-ATP instance command execution via AWS SSM.
+LAB instance command execution via AWS SSM.
 
-Allows OpenClaw and agent workflows to run safe, read-only or low-risk
-commands on the ATP PROD instance without manual SSH. Uses AWS SSM
-send-command; requires AWS credentials and SSM permissions.
+Allows OpenClaw (running on LAB) to run safe commands on the LAB host
+for self-diagnostics: docker ps, docker logs openclaw, etc.
+Uses AWS SSM send-command; requires AWS credentials and SSM permissions.
 
-Instance: i-087953603011543c5 (atp-rebuild-2026)
+Instance: i-0d82c172235770a0d (atp-lab-ssm-clean)
 Project path: /home/ubuntu/automated-trading-platform
 """
 
@@ -19,22 +19,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_ATP_INSTANCE_ID = "i-087953603011543c5"
-_ATP_REGION = "ap-southeast-1"
-_ATP_PROJECT_PATH = "/home/ubuntu/automated-trading-platform"
+_LAB_INSTANCE_ID = "i-0d82c172235770a0d"
+_LAB_REGION = "ap-southeast-1"
+_LAB_PROJECT_PATH = "/home/ubuntu/automated-trading-platform"
 
-# Allowed subcommand patterns (regex). Applied after stripping "cd ... && " prefix.
+# Allowed subcommand patterns for LAB (OpenClaw self-diagnostics).
 _ALLOWED_SUBCOMMANDS = (
-    r"^docker\s+compose\s+--profile\s+aws\s+ps\s*$",
-    r"^docker\s+compose\s+--profile\s+aws\s+restart\s+\w+(-\w+)*\s*$",
-    r"^docker\s+compose\s+--profile\s+aws\s+logs\s+--tail=\d+(\s+\w+)?\s*$",
     r"^docker\s+ps\s*$",
-    r"^docker\s+logs\s+--tail=\d+(\s+\w+(-\w+)*)?\s*$",
-    r"^docker\s+logs\s+\w+(-\w+)*\s+--tail=\d+\s*$",
-    r"^docker\s+inspect\s+\w+(-\w+)*\s*$",
-    r"^curl\s+-sS(\s+--connect-timeout\s+\d+)?\s+http://127\.0\.0\.1:8002/(ping_fast|api/health)\s*$",
-    r"^df\s+-h\s+/\s*$",
-    r"^free\s+-h\s*$",
+    r"^docker\s+logs\s+openclaw\s+--tail=\d+\s*$",
+    r"^docker\s+inspect\s+openclaw\s*$",
+    r"^docker\s+compose\s+-f\s+docker-compose\.openclaw\.yml\s+ps\s*$",
+    r"^docker\s+compose\s+-f\s+docker-compose\.openclaw\.yml\s+logs\s+--tail=\d+(\s+\w+)?\s*$",
+    r"^whoami\s*$",
+    r"^id\s*$",
+    r"^ls\s+-la\s+/var/log/openclaw(\s+.*)?\s*$",
+    r"^cat\s+/var/log/openclaw/\S+\s*$",
+    r"^tail\s+-\d+\s+/var/log/openclaw/\S+\s*$",
+    r"^test\s+-r\s+/var/log/openclaw\s*$",
 )
 _DENY_PATTERNS = (
     r"rm\s+-rf",
@@ -50,22 +51,19 @@ _DENY_PATTERNS = (
 
 
 def _instance_id() -> str:
-    return (os.environ.get("ATP_SSM_INSTANCE_ID") or "").strip() or _ATP_INSTANCE_ID
+    return (os.environ.get("LAB_SSM_INSTANCE_ID") or "").strip() or _LAB_INSTANCE_ID
 
 
 def _region() -> str:
-    return (os.environ.get("ATP_SSM_REGION") or "").strip() or _ATP_REGION
+    return (os.environ.get("LAB_SSM_REGION") or "").strip() or _LAB_REGION
 
 
 def _project_path() -> str:
-    return (os.environ.get("ATP_PROJECT_PATH") or "").strip() or _ATP_PROJECT_PATH
+    return (os.environ.get("LAB_PROJECT_PATH") or "").strip() or _LAB_PROJECT_PATH
 
 
 def is_command_allowed(raw_command: str) -> tuple[bool, str]:
-    """
-    Check if a command is allowed. Returns (allowed, reason).
-    Strips "cd /path && " prefix before matching subcommand.
-    """
+    """Check if a command is allowed. Returns (allowed, reason)."""
     cmd = (raw_command or "").strip()
     if not cmd:
         return False, "empty command"
@@ -74,7 +72,6 @@ def is_command_allowed(raw_command: str) -> tuple[bool, str]:
         if re.search(pat, cmd, re.IGNORECASE):
             return False, f"denied pattern: {pat}"
 
-    # Extract subcommand (after "cd ... && " if present)
     subcmd = cmd
     if " && " in cmd:
         parts = cmd.split(" && ", 1)
@@ -88,20 +85,20 @@ def is_command_allowed(raw_command: str) -> tuple[bool, str]:
     return False, "command not in allowlist"
 
 
-def run_atp_command(
+def run_lab_command(
     command: str,
     *,
     timeout_seconds: int = 60,
 ) -> dict[str, Any]:
     """
-    Run a command on the ATP instance via AWS SSM.
+    Run a command on the LAB instance via AWS SSM.
 
     Returns:
         {"ok": bool, "stdout": str, "stderr": str, "status": str, "error": str | None}
     """
     allowed, reason = is_command_allowed(command)
     if not allowed:
-        logger.warning("atp_ssm_runner: command denied: %s", reason)
+        logger.warning("lab_ssm_runner: command denied: %s", reason)
         return {
             "ok": False,
             "stdout": "",
@@ -125,10 +122,9 @@ def run_atp_command(
     region = _region()
     proj = _project_path()
 
-    # Prepend cd to project if not present
     full_cmd = command
-    if "cd " not in command and ("docker" in command or "curl" in command):
-        full_cmd = f"cd {proj} && {command}"
+    if "cd " not in command and ("docker" in command or "ls" in command or "cat" in command):
+        full_cmd = f"cd {proj} 2>/dev/null || true && {command}"
 
     commands = ["set -e", full_cmd]
 
@@ -150,7 +146,6 @@ def run_atp_command(
                 "error": "No CommandId in SSM response",
             }
 
-        # Poll for completion
         for _ in range(max(1, timeout_seconds // 2)):
             time.sleep(2)
             inv = client.get_command_invocation(
@@ -175,7 +170,7 @@ def run_atp_command(
             "error": f"Command {cmd_id} did not complete within {timeout_seconds}s",
         }
     except Exception as e:
-        logger.warning("atp_ssm_runner: SSM failed: %s", e)
+        logger.warning("lab_ssm_runner: SSM failed: %s", e)
         return {
             "ok": False,
             "stdout": "",
@@ -185,20 +180,20 @@ def run_atp_command(
         }
 
 
-def get_atp_instance_info() -> dict[str, Any]:
-    """Return ATP instance metadata for prompts and docs."""
+def get_lab_instance_info() -> dict[str, Any]:
+    """Return LAB instance metadata for prompts and docs."""
     return {
         "instance_id": _instance_id(),
         "region": _region(),
         "project_path": _project_path(),
         "allowed_commands": [
-            "docker compose --profile aws ps",
-            "docker compose --profile aws logs --tail=50 [service]",
-            "docker logs --tail=100 [container]",
-            "docker inspect [container]",
-            "curl -sS http://127.0.0.1:8002/ping_fast",
-            "curl -sS http://127.0.0.1:8002/api/health",
-            "df -h /",
-            "free -h",
+            "docker ps",
+            "docker logs openclaw --tail=100",
+            "docker inspect openclaw",
+            "docker compose -f docker-compose.openclaw.yml ps",
+            "docker compose -f docker-compose.openclaw.yml logs --tail=50 openclaw",
+            "whoami",
+            "ls -la /var/log/openclaw",
         ],
+        "log_path_note": "OpenClaw logs: use 'docker logs openclaw --tail=N' via run-lab-command. Inside container: /var/log/openclaw/ (directory, not /var/log/openclaw.log).",
     }
