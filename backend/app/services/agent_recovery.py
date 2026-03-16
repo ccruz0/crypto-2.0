@@ -43,8 +43,12 @@ _RECOVERY_MISSING_ARTIFACT_EVENT_TYPE = "recovery_missing_artifact_attempt"
 _RECOVERY_STALE_IN_PROGRESS_EVENT_TYPE = "recovery_stale_in_progress_attempt"
 
 # (save_subdir, file_prefix) for OpenClaw investigation artifacts
+# Must include all agent save paths so recovery finds artifacts written by
+# telegram_alerts, execution_state, and other multi-agent operators.
 _ARTIFACT_CONFIGS = (
     ("docs/agents/bug-investigations", "notion-bug"),
+    ("docs/agents/telegram-alerts", "notion-telegram"),
+    ("docs/agents/execution-state", "notion-execution"),
     ("docs/agents/generated-notes", "notion-task"),
     ("docs/runbooks/triage", "notion-triage"),
 )
@@ -474,30 +478,10 @@ _INVESTIGATION_ARTIFACT_PATHS = (
 def _investigation_artifacts_exist(task_id: str) -> bool:
     """
     True if required investigation artifacts exist for this task.
-    Checks known paths for bug-investigation, generated-notes, and triage artifacts.
-    Uses get_writable_bug_investigations_dir() for bug-investigations (same as apply/validate).
+    Uses artifact_exists_for_task (checks all artifact configs including
+    telegram-alerts, execution-state).
     """
-    task_id = (task_id or "").strip()
-    if not task_id:
-        return False
-    try:
-        from app.services._paths import workspace_root, get_writable_bug_investigations_dir
-        root = workspace_root()
-        # Bug-investigations: check writable dir (repo or fallback)
-        bug_dir = get_writable_bug_investigations_dir()
-        bug_path = bug_dir / f"notion-bug-{task_id}.md"
-        if bug_path.is_file() and bug_path.stat().st_size > 0:
-            return True
-        # Generated-notes and triage: check repo paths
-        for tmpl in ("docs/agents/generated-notes/notion-task-{task_id}.md",
-                     "docs/runbooks/triage/notion-triage-{task_id}.md"):
-            path = root / tmpl.format(task_id=task_id)
-            if path.is_file() and path.stat().st_size > 0:
-                return True
-        return False
-    except Exception as e:
-        logger.debug("agent_recovery: _investigation_artifacts_exist failed task_id=%s: %s", task_id, e)
-        return False
+    return artifact_exists_for_task(task_id, min_size=1)
 
 
 def _is_stale_patching_task(task: dict[str, Any], stale_minutes: int = _PATCHING_STALE_MINUTES) -> bool:
@@ -681,6 +665,22 @@ def run_revalidate_patching_playbook(
 _MIN_CONTENT_CHARS = 200  # Minimum body length for valid investigation note
 
 
+def artifact_exists_for_task(task_id: str, min_size: int = 200) -> bool:
+    """True if any investigation artifact exists for this task with at least min_size bytes.
+
+    Used by executor to validate before advancing to investigation-complete.
+    Checks all artifact configs (bug-investigations, telegram-alerts, execution-state, etc.).
+    """
+    for md_path, _ in _get_artifact_paths(task_id):
+        if md_path.exists():
+            try:
+                if md_path.stat().st_size >= min_size:
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def _get_artifact_paths(task_id: str) -> list[tuple[Path, Path]]:
     """Return list of (md_path, sidecar_path) for each artifact config.
 
@@ -784,13 +784,25 @@ def _rebuild_markdown_from_sections(
     title: str,
     sections: dict[str, Any],
 ) -> str:
-    """Rebuild investigation markdown body from parsed sections."""
+    """Rebuild investigation markdown body from parsed sections.
+
+    Supports both INVESTIGATION_SECTIONS (bug-investigations) and
+    AGENT_OUTPUT_SECTIONS (telegram-alerts, execution-state) schemas.
+    """
     try:
-        from app.services.openclaw_client import INVESTIGATION_SECTIONS
+        from app.services.openclaw_client import (
+            AGENT_OUTPUT_SECTIONS,
+            INVESTIGATION_SECTIONS,
+        )
     except ImportError:
         INVESTIGATION_SECTIONS = (
             "Task Summary", "Root Cause", "Risk Level", "Affected Components",
             "Affected Files", "Recommended Fix", "Testing Plan", "Notes",
+        )
+        AGENT_OUTPUT_SECTIONS = (
+            "Issue Summary", "Scope Reviewed", "Confirmed Facts", "Mismatches",
+            "Root Cause", "Proposed Minimal Fix", "Risk Level", "Validation Plan",
+            "Cursor Patch Prompt",
         )
 
     lines: list[str] = []
@@ -799,7 +811,23 @@ def _rebuild_markdown_from_sections(
         lines.append(preamble)
         lines.append("")
 
-    for name in INVESTIGATION_SECTIONS:
+    # Use section keys present in sections; fallback to known schema order
+    known_sections = set(INVESTIGATION_SECTIONS) | set(AGENT_OUTPUT_SECTIONS)
+    section_order = list(AGENT_OUTPUT_SECTIONS) + [
+        s for s in INVESTIGATION_SECTIONS if s not in AGENT_OUTPUT_SECTIONS
+    ]
+    for name in section_order:
+        if name not in sections:
+            continue
+        val = sections.get(name)
+        if val and str(val).strip().lower() not in ("", "n/a"):
+            lines.append(f"## {name}\n")
+            lines.append(str(val).strip())
+            lines.append("")
+    # Emit any extra keys not in known schemas (e.g. from future schema changes)
+    for name in sorted(sections.keys()):
+        if name.startswith("_") or name in known_sections:
+            continue
         val = sections.get(name)
         if val and str(val).strip().lower() not in ("", "n/a"):
             lines.append(f"## {name}\n")

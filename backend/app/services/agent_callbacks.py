@@ -650,6 +650,23 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
         idx_line = f"- [Notion bug {task_id}: {title}](notion-bug-{task_id}.md)"
         _append_line_if_missing(idx_path, idx_line)
 
+        # Write sections sidecar so recovery can regenerate if md is lost/corrupted
+        sidecar_path = inv_dir / f"notion-bug-{task_id}.sections.json"
+        sidecar_data = {
+            "task_id": task_id,
+            "title": title,
+            "source": "fallback",
+            "sections": {"_preamble": note_contents},
+        }
+        try:
+            sidecar_path.write_text(
+                json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            logger.debug("Bug investigation sidecar saved at %s", sidecar_path)
+        except Exception as e:
+            logger.warning("Failed to write bug investigation sidecar task_id=%s: %s", task_id, e)
+
         summary_path = (inv_dir / f"notion-bug-{task_id}.md").as_posix()
         return {
             "success": True,
@@ -850,8 +867,20 @@ def _apply_via_openclaw(
     result: dict[str, Any] | None = None
     max_attempts = 1 + _OPENCLAW_MAX_RETRIES
 
-    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS
-    call_sections = AGENT_OUTPUT_SECTIONS if use_agent_schema else None
+    call_sections: Optional[tuple[str, ...]] = None
+    if use_agent_schema:
+        try:
+            from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS
+            call_sections = AGENT_OUTPUT_SECTIONS
+        except ImportError as e:
+            logger.error(
+                "AGENT_OUTPUT_SECTIONS import failed (deterministic) task_id=%s: %s — using fallback",
+                task_id, e,
+            )
+            if fallback_fn:
+                logger.info("openclaw_fallback reason=agent_schema_unavailable task_id=%s", task_id)
+                return fallback_fn(prepared_task)
+            return {"success": False, "summary": f"agent schema unavailable: {e}"}
 
     for attempt in range(1, max_attempts + 1):
         result, last_error = _call_openclaw_once(
@@ -943,8 +972,14 @@ def _apply_via_openclaw(
         _append_line_if_missing(idx_path, idx_line)
 
     summary = content.strip()[:200]
-    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
-    _check_sections = AGENT_OUTPUT_SECTIONS if use_agent_schema else INVESTIGATION_SECTIONS
+    try:
+        from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
+        _check_sections = AGENT_OUTPUT_SECTIONS if use_agent_schema else INVESTIGATION_SECTIONS
+    except ImportError:
+        _check_sections = (
+            "Task Summary", "Root Cause", "Risk Level", "Affected Components",
+            "Affected Files", "Recommended Fix", "Testing Plan", "Notes",
+        )
     found_sections = [s for s in _check_sections if f"## {s}" in content]
     logger.info(
         "openclaw_apply_success task_id=%s path=%s chars=%d sections=%d use_agent_schema=%s",
@@ -1000,9 +1035,22 @@ def _validate_openclaw_note(
                 "summary": f"investigation contains fallback/error marker: '{marker}'",
             }
 
-    from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
-    use_sections = sections if sections is not None else INVESTIGATION_SECTIONS
-    is_agent_schema = sections is not None and set(sections) == set(AGENT_OUTPUT_SECTIONS)
+    try:
+        from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS
+        _agent_sections = AGENT_OUTPUT_SECTIONS
+        _inv_sections = INVESTIGATION_SECTIONS
+    except ImportError:
+        _agent_sections = (
+            "Issue Summary", "Scope Reviewed", "Confirmed Facts", "Mismatches",
+            "Root Cause", "Proposed Minimal Fix", "Risk Level", "Validation Plan",
+            "Cursor Patch Prompt",
+        )
+        _inv_sections = (
+            "Task Summary", "Root Cause", "Risk Level", "Affected Components",
+            "Affected Files", "Recommended Fix", "Testing Plan", "Notes",
+        )
+    use_sections = sections if sections is not None else _inv_sections
+    is_agent_schema = sections is not None and set(sections) == set(_agent_sections)
     found_sections = [s for s in use_sections if f"## {s}" in content]
     missing_sections = [s for s in use_sections if s not in found_sections]
 
@@ -1278,6 +1326,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                     build_telegram_alerts_prompt,
                     save_subdir, file_prefix,
                     use_agent_schema=True,
+                    fallback_fn=apply_bug_investigation_task,
                 ),
                 "validate_fn": _make_openclaw_validator(
                     save_subdir, file_prefix, sections=AGENT_OUTPUT_SECTIONS
@@ -1299,6 +1348,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                     build_execution_state_prompt,
                     save_subdir, file_prefix,
                     use_agent_schema=True,
+                    fallback_fn=apply_bug_investigation_task,
                 ),
                 "validate_fn": _make_openclaw_validator(
                     save_subdir, file_prefix, sections=AGENT_OUTPUT_SECTIONS
