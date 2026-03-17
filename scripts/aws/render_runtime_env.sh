@@ -35,6 +35,8 @@ SSM_ATP_API_KEY="/automated-trading-platform/prod/atp_api_key"
 SSM_GITHUB_TOKEN="/automated-trading-platform/prod/github_token"
 SSM_AWS_ACCESS_KEY="/automated-trading-platform/prod/aws_access_key_id"
 SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
+SSM_NOTION_API_KEY="/automated-trading-platform/prod/notion/api_key"
+SSM_NOTION_TASK_DB="/automated-trading-platform/prod/notion/task_db"
 
 SOURCE="none"
 BOT_TOKEN=""
@@ -46,10 +48,13 @@ ATP_API_KEY=""
 GITHUB_TOKEN=""
 AWS_ACCESS_KEY_ID_VAL=""
 AWS_SECRET_ACCESS_KEY_VAL=""
+NOTION_API_KEY_VAL=""
+NOTION_TASK_DB_VAL=""
 
+SSM_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-southeast-1}}"
 fetch_ssm() {
   local name="$1"
-  aws ssm get-parameter --name "$name" --with-decryption --query "Parameter.Value" --output text 2>/dev/null
+  aws ssm get-parameter --name "$name" --with-decryption --query "Parameter.Value" --output text --region "$SSM_REGION" 2>/dev/null
 }
 
 use_ssm=false
@@ -64,6 +69,8 @@ if command -v aws >/dev/null 2>&1; then
     GH="$(fetch_ssm "$SSM_GITHUB_TOKEN" || true)"
     AWS_ACCESS_KEY_ID_VAL="$(fetch_ssm "$SSM_AWS_ACCESS_KEY" || true)"
     AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
+    NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY" || true)"
+    NOTION_TASK_DB_VAL="$(fetch_ssm "$SSM_NOTION_TASK_DB" || true)"
     if [[ -n "$BT" && -n "$CI" && -n "$AK" ]]; then
       BOT_TOKEN="$BT"
       CHAT_ID="$CI"
@@ -99,6 +106,8 @@ if [[ "$use_ssm" != "true" ]]; then
   GITHUB_TOKEN="${GITHUB_TOKEN:-}"
   AWS_ACCESS_KEY_ID_VAL="${AWS_ACCESS_KEY_ID:-}"
   AWS_SECRET_ACCESS_KEY_VAL="${AWS_SECRET_ACCESS_KEY:-}"
+  NOTION_API_KEY_VAL="${NOTION_API_KEY:-}"
+  NOTION_TASK_DB_VAL="${NOTION_TASK_DB:-}"
   SOURCE="fallback"
 fi
 
@@ -150,5 +159,19 @@ echo "OPENCLAW_VERIFICATION_PRIMARY_MODEL=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
 echo "OPENCLAW_CHEAP_TASK_TYPES=doc,documentation,monitoring,triage" >> "$RUNTIME_ENV"
 echo "OPENCLAW_CHEAP_MODEL_CHAIN=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
 
+# Notion (AI Task System): from SSM or fallback; if primary but Notion not in SSM (e.g. LAB), append from .env.aws when present
+if [[ -n "$NOTION_API_KEY_VAL" ]]; then
+  printf "NOTION_API_KEY=%s\n" "$NOTION_API_KEY_VAL" >> "$RUNTIME_ENV"
+fi
+if [[ -n "$NOTION_TASK_DB_VAL" ]]; then
+  printf "NOTION_TASK_DB=%s\n" "$NOTION_TASK_DB_VAL" >> "$RUNTIME_ENV"
+fi
+if [[ "$SOURCE" == "primary" && ( -z "$NOTION_API_KEY_VAL" || -z "$NOTION_TASK_DB_VAL" ) ]] && [[ -f "$ROOT_DIR/.env.aws" ]]; then
+  ( set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a
+    [[ -n "${NOTION_API_KEY:-}" ]] && grep -q '^NOTION_API_KEY=' "$RUNTIME_ENV" || printf "NOTION_API_KEY=%s\n" "$NOTION_API_KEY" >> "$RUNTIME_ENV"
+    [[ -n "${NOTION_TASK_DB:-}" ]] && grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" || printf "NOTION_TASK_DB=%s\n" "$NOTION_TASK_DB" >> "$RUNTIME_ENV"
+  )
+fi
+
 echo "Rendered (source=$SOURCE)"
-echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO)"
+echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"

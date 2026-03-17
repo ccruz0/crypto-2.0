@@ -23,10 +23,10 @@ Rendered by `render_runtime_env.sh`:
 
 - OPENCLAW_VERIFICATION_PRIMARY_MODEL — Uses cheap model for verification (PASS/FAIL). Set to `openai/gpt-4o-mini` by default. Add OPENCLAW_API_TOKEN and OPENCLAW_API_URL manually if using OpenClaw.
 
-**Optional (add manually on the server for agent scheduler / Notion):**
+**Rendered by `render_runtime_env.sh` (Notion / AI Task System):**
 
-- NOTION_API_KEY — Notion integration token (AI Task System). Required for the agent scheduler to read and update tasks. Stored only in `secrets/runtime.env` on the server; never committed.
-- NOTION_TASK_DB — Notion database ID (the AI Task System database, not a page ID). Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
+- NOTION_API_KEY — Notion integration token. Fetched from SSM `/automated-trading-platform/prod/notion/api_key` when available, or from `.env.aws` (fallback or when using primary but Notion not in SSM, e.g. LAB).
+- NOTION_TASK_DB — Notion database ID. SSM `/automated-trading-platform/prod/notion/task_db` or `.env.aws`. Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
 
 **Source:** AWS SSM (primary) or `.env.aws` (fallback) for the rendered vars. Do not change secret sources unless necessary.
 
@@ -37,7 +37,20 @@ Rendered by `render_runtime_env.sh`:
 | **NOTION_API_KEY** (integration token / secret) | `backend/.env` — used when you run `./scripts/run_notion_task_pickup.sh` or the backend locally. Add it via the popup (`./scripts/notion_secret_popup.sh`) or the HTML helper (`scripts/notion_secret_prompt.html`), or paste the line into `backend/.env`. **Do not commit** `backend/.env`. | `secrets/runtime.env` — add manually (e.g. `NOTION_API_KEY=ntn_...`). The backend container and pickup script read it from here. **Do not commit** `secrets/runtime.env`. |
 | **NOTION_TASK_DB** (database ID, not a secret) | Passed as env when running the pickup script, e.g. `NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a ./scripts/run_notion_task_pickup.sh`, or set in `backend/.env` or `secrets/runtime.env` so the scheduler uses the correct database. | `secrets/runtime.env` — e.g. `NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a`. Optional: can be passed per run via `-e NOTION_TASK_DB=...` when using `docker compose exec`. |
 
-**Summary:** The Notion **secret** (API key) is in `backend/.env` locally and in `secrets/runtime.env` on the server. The Notion **database ID** (`NOTION_TASK_DB`) can be in the same files or set in the environment when running the pickup script. Neither file should be committed to git.
+**Summary:** The Notion **secret** (API key) is in `backend/.env` locally and in `secrets/runtime.env` on the server (rendered by `render_runtime_env.sh` from SSM or `.env.aws`). The Notion **database ID** (`NOTION_TASK_DB`) is rendered the same way. Neither file should be committed to git.
+
+### Verify Notion in backend-aws (LAB or EC2)
+
+After rendering runtime env and restarting backend-aws:
+
+1. **Render:** `bash scripts/aws/render_runtime_env.sh` — check output for `NOTION_API_KEY=YES/NO` and `NOTION_TASK_DB=YES/NO`.
+2. **Restart:** `docker compose --profile aws up -d backend-aws` (or your deploy path).
+3. **Presence (no secret printed):**
+   - `docker compose --profile aws exec backend-aws sh -c 'if [ -n "$NOTION_API_KEY" ]; then echo NOTION_API_KEY=present; else echo NOTION_API_KEY=not present; fi'`
+   - `docker compose --profile aws exec backend-aws sh -c 'if [ -n "$NOTION_TASK_DB" ]; then echo NOTION_TASK_DB=present; else echo NOTION_TASK_DB=not present; fi'`
+4. **Value of NOTION_TASK_DB only (safe to print):**  
+   `docker compose --profile aws exec backend-aws printenv NOTION_TASK_DB`  
+   (Do not print NOTION_API_KEY.)
 
 ## Other secrets (not in runtime.env)
 
