@@ -27,13 +27,16 @@ CMD_ID=$(aws ssm send-command \
     --parameters 'commands=[
         "set -e",
         "cd /home/ubuntu/automated-trading-platform || cd ~/automated-trading-platform || { echo ERR: repo not found; exit 1; }",
+        "git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true",
         "echo Pulling latest code...",
         "git pull origin main || true",
         "echo Rendering secrets...",
         "bash scripts/aws/render_runtime_env.sh 2>/dev/null || true",
         "echo Rebuilding backend-aws...",
         "docker compose --profile aws build backend-aws --no-cache",
-        "echo Restarting backend-aws...",
+        "echo Restarting backend-aws with new image...",
+        "docker compose --profile aws stop backend-aws || true",
+        "docker compose --profile aws rm -f backend-aws 2>/dev/null || true",
         "docker compose --profile aws up -d backend-aws",
         "echo Waiting 45s for startup...",
         "sleep 45",
@@ -48,8 +51,14 @@ if [ -z "$CMD_ID" ]; then
     exit 1
 fi
 
-echo "Command ID: $CMD_ID — waiting..."
-aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --region "$REGION" || true
+echo "Command ID: $CMD_ID — waiting (build can take 8–12 min)..."
+for i in $(seq 1 90); do
+  STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --region "$REGION" --query "Status" --output text 2>/dev/null || echo "InProgress")
+  [ "$STATUS" = "Success" ] && echo "Done." && break
+  [ "$STATUS" = "Failed" ] && echo "Deploy failed." && break
+  [ $((i % 6)) -eq 0 ] && echo "  ... $((i*10))s"
+  sleep 10
+done
 
 echo ""
 echo "=== Deploy output ==="
