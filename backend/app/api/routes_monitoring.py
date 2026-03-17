@@ -127,6 +127,31 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
         )
 
 
+@router.get("/health/notion", name="get_notion_health")
+async def get_notion_health_endpoint():
+    """
+    Notion integration health: env_ok, last_pickup_status, last_error.
+    No auth. Used by ops to confirm self-healing and pickup status.
+    """
+    try:
+        from app.services.notion_env import get_notion_health
+        health = get_notion_health()
+        return JSONResponse(content=health, status_code=200, headers=_NO_CACHE_HEADERS)
+    except Exception as e:
+        log.debug("Notion health failed: %s", e)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "env_ok": False,
+                "env_source": "unknown",
+                "degraded": True,
+                "last_pickup_status": "",
+                "last_error": str(e)[:500] if str(e) else None,
+            },
+            headers=_NO_CACHE_HEADERS,
+        )
+
+
 RUNBOOK_ATP_HEALTH_ALERT = (
     "https://github.com/ccruz0/automated-trading-platform/blob/main/docs/runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md"
 )
@@ -147,6 +172,7 @@ async def create_health_alert_notion_task(payload: Dict[str, Any] = Body(default
 
     rule = (payload.get("rule") or "").strip() or "health_alert"
     reason = (payload.get("reason") or "").strip() or rule
+    severity = (payload.get("severity") or "").strip() or "n/a"
     streak = payload.get("streak")
     last_ts = payload.get("last_ts") or payload.get("last_snapshot_ts") or "n/a"
     verify_label = payload.get("verify_label") or "n/a"
@@ -158,6 +184,7 @@ async def create_health_alert_notion_task(payload: Dict[str, Any] = Body(default
     title = f"ATP Health Alert: resolve {rule}"
     details_lines = [
         f"Rule: {reason}",
+        f"Severity: {severity}",
         f"FAIL streak: {streak}",
         f"Last snapshot: {last_ts}",
         f"verify_label: {verify_label}",

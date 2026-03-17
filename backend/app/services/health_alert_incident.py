@@ -144,15 +144,14 @@ def evaluate_after_snapshot(
         out.log_event = "escalation_non_market"
         return out
 
-    # Market incident: dedupe aggressively
+    # Market incident: one alert per incident (action_alert_sent)
     if incident_open and state_fp == fp:
-        mins_since_escalation = _epoch_minutes_ago(now_epoch, last_escalation_ts)
-        if mins_since_escalation < escalation_cooldown_mins and attempts >= max_remediation_attempts:
-            out.suppress_reason = "escalation_cooldown_after_max_attempts"
+        if state.get("action_alert_sent"):
+            out.suppress_reason = "action_alert_already_sent"
             out.remediation_allowed = attempts < max_remediation_attempts
             out.log_event = "dedupe_suppression_hit"
             return out
-        # Same incident, within cooldown, streak increased -> suppress
+        # Same incident, within cooldown, streak increased -> suppress (no escalation resend)
         mins_since_sent = _epoch_minutes_ago(now_epoch, state.get("last_sent_ts") or "")
         if mins_since_sent < cooldown_mins:
             out.suppress_reason = "incident_open_cooldown_no_streak_bypass"
@@ -182,6 +181,8 @@ def merge_state(
     last_sent_ts: Optional[str] = None,
     last_reason: Optional[str] = None,
     last_streak: Optional[int] = None,
+    first_fail_ts: Optional[str] = None,
+    action_alert_sent: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Return updated state dict (copy)."""
     s = dict(state)
@@ -201,6 +202,10 @@ def merge_state(
         s["last_reason"] = last_reason
     if last_streak is not None:
         s["last_streak"] = last_streak
+    if first_fail_ts is not None:
+        s["first_fail_ts"] = first_fail_ts
+    if action_alert_sent is not None:
+        s["action_alert_sent"] = action_alert_sent
     return s
 
 
@@ -214,4 +219,6 @@ def default_state() -> Dict[str, Any]:
         "remediation_attempts": 0,
         "last_remediation_ts": "",
         "last_escalation_ts": "",
+        "first_fail_ts": "",
+        "action_alert_sent": False,
     }

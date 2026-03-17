@@ -139,3 +139,33 @@ def test_grace_after_remediation_suppresses():
     )
     assert d.send_fail_alert is False
     assert d.suppress_reason == "grace_after_remediation"
+
+
+def test_action_alert_sent_suppresses_resend():
+    """Once action-required alert sent for an incident, do not resend until recovered."""
+    fp = incident_fingerprint("FAIL:MARKET_DATA:FAIL", "FAIL", "FAIL")
+    state = merge_state(
+        default_state(),
+        incident_open=True,
+        incident_fingerprint=fp,
+        remediation_attempts=3,
+        action_alert_sent=True,
+        last_escalation_ts="2026-03-10T12:00:00Z",
+    )
+    d = evaluate_after_snapshot(
+        state,
+        triggered=True,
+        severity_ok=False,
+        verify_label="FAIL:MARKET_DATA:FAIL",
+        market_data_status="FAIL",
+        market_updater_status="FAIL",
+        streak=22,
+        reason="streak_fail_3 (streak=22)",
+        now_epoch=parse_epoch("2026-03-10T14:00:00Z"),  # 2h later
+        cooldown_mins=30,
+        grace_mins_after_remediation=0,
+        max_remediation_attempts=3,
+        escalation_cooldown_mins=60,
+    )
+    assert d.send_fail_alert is False
+    assert d.suppress_reason == "action_alert_already_sent"

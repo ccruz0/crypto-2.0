@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Production-safe Telegram alert for health snapshot failures.
-# Flow (MARKET_DATA / market_updater):
-#   1) On FAIL streak: run targeted remediation first (restart market-updater-aws, then POST update-cache; health/fix not before cache).
-#   2) Grace wait + re-verify; if PASS -> one Telegram "resolved" and clear incident.
-#   3) If still FAIL -> one escalation Telegram + incident state; repeated cycles deduped (no spam).
-# Reads last N lines from health_snapshots.log; uses STATE_FILE for cooldown + incident dedupe.
-# Exit 0 always. No hardcoded secrets; token/chat_id from env files.
+# Production-safe Telegram health alert: ACTION REQUIRED and RECOVERED only.
+# Flow:
+#   1) On FAIL streak: run targeted remediation silently (no Telegram). Log to /var/log/atp/health_alert_heal.log.
+#   2) If remediation leads to PASS -> one "recovered" Telegram and clear incident.
+#   3) Only when max remediation attempts reached and still FAIL -> send ONE "action required" Telegram per incident.
+#   4) When system goes FAIL -> OK (e.g. after manual fix) -> one "recovered" Telegram.
+# No alerts for: first failure, retries, ongoing streak, background healing. One alert per incident; no escalation resend.
 # Runbook: docs/runbooks/ATP_HEALTH_ALERT_STREAK_FAIL.md
 set -uo pipefail
 
@@ -23,9 +23,8 @@ BASE="${ATP_HEALTH_BASE:-http://127.0.0.1:8002}"
 REMEDIATION_ENABLED="${ATP_HEALTH_REMEDIATION_ENABLED:-1}"
 REMEDIATION_GRACE_SEC="${ATP_HEALTH_REMEDIATION_GRACE_SECONDS:-300}"
 MAX_REMEDIATION_ATTEMPTS="${ATP_HEALTH_REMEDIATION_MAX_ATTEMPTS:-3}"
-ESCALATION_COOLDOWN_MINS="${ATP_HEALTH_ESCALATION_COOLDOWN_MINUTES:-120}"
-# Telegram updates about remediation (start/finish). Set 0 to disable extra TG during remediation.
-REMEDIATION_TG="${ATP_HEALTH_REMEDIATION_TELEGRAM:-1}"
+# Severity: only send "action required" when severity == critical (e.g. market_data stale > N min)
+CRITICAL_UPDATER_AGE_MINUTES="${ATP_HEALTH_CRITICAL_UPDATER_AGE_MINUTES:-30}"
 
 load_telegram_env() {
   local f
@@ -109,6 +108,34 @@ is_market_incident() {
   esac
   [ "$md" = "FAIL" ] && [ "$mu" = "FAIL" ] && return 0
   return 1
+}
+
+# Classify incident severity: critical (alert) | warning | info (no Telegram for non-critical)
+# critical: market_data stale > CRITICAL_UPDATER_AGE_MINUTES, or backend/API unreachable
+# warning:  market_data stale but <= threshold, or other FAIL
+# info:     minor / degraded
+classify_severity() {
+  local verify="$1" md="$2" mu="$3" age_min="$4"
+  if is_market_incident "$verify" "$md" "$mu"; then
+    # Numeric comparison: age > threshold -> critical
+    if [ -n "$age_min" ] && [ "${age_min}" = "${age_min#*[!0-9.]*}" ] 2>/dev/null; then
+      local age_int="${age_min%.*}"
+      [ -z "$age_int" ] && age_int=0
+      if [ "${age_int:-0}" -gt "${CRITICAL_UPDATER_AGE_MINUTES:-30}" ] 2>/dev/null; then
+        echo "critical"
+        return
+      fi
+      echo "warning"
+      return
+    fi
+    echo "warning"
+    return
+  fi
+  # Non-market: API/backend down is critical
+  case "$verify" in
+    *API_HEALTH*missing*|*API_HEALTH*timeout*|*connection*refused*) echo "critical" ;;
+    *) echo "warning" ;;
+  esac
 }
 
 state_get() {
@@ -232,7 +259,7 @@ main() {
     [ -z "$streak" ] && streak=0
   fi
 
-  # --- Recovery path: last snapshot OK and we had an open incident -> one resolved message ---
+  # --- Recovery path: last snapshot OK and we had an open incident -> one recovered message ---
   if [ "$last_severity" = "OK" ] && command -v jq >/dev/null 2>&1 && [ -r "$STATE_FILE" ]; then
     local was_open
     was_open="$(jq -r '.incident_open // false' "$STATE_FILE" 2>/dev/null)"
@@ -243,7 +270,7 @@ Previous incident cleared. Last snapshot OK.
 (If you applied a manual fix, this confirms it took effect.)
 verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_updater: ${last_mu:-n/a}"
       jq -n --arg ts "$now_ts" \
-        '{last_sent_ts:$ts,last_reason:"resolved",last_streak:0,incident_open:false,incident_fingerprint:"",remediation_attempts:0,last_remediation_ts:"",last_escalation_ts:""}' > "$STATE_FILE" 2>/dev/null || true
+        '{last_sent_ts:$ts,last_reason:"resolved",last_streak:0,incident_open:false,incident_fingerprint:"",remediation_attempts:0,last_remediation_ts:"",last_escalation_ts:"",first_fail_ts:"",action_alert_sent:false}' > "$STATE_FILE" 2>/dev/null || true
       exit 0
     fi
   fi
@@ -258,33 +285,28 @@ verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_update
 
   [ "${triggered:-0}" -eq 0 ] && exit 0
 
-  # --- MARKET_DATA incident: remediate before alerting ---
-  local attempts=0
+  # --- Incident fingerprint and state (one alert per incident) ---
+  local fp="${last_verify}|${last_md}|${last_mu}"
+  local stored_fp="" attempts=0 action_alert_sent="" first_fail_ts=""
+  stored_fp="$(state_get incident_fingerprint)"
+  attempts="$(state_get remediation_attempts)"
+  [ -z "$attempts" ] && attempts=0
+  action_alert_sent="$(state_get action_alert_sent)"
+  first_fail_ts="$(state_get first_fail_ts)"
+
+  # New incident: reset attempts and alert-sent flag
+  if [ "$stored_fp" != "$fp" ]; then
+    attempts=0
+    action_alert_sent=""
+    first_fail_ts="$now_ts"
+  fi
+
+  # --- MARKET_DATA incident: run remediation silently (no Telegram) ---
   if [ "$REMEDIATION_ENABLED" = "1" ] && is_market_incident "$last_verify" "$last_md" "$last_mu"; then
-    attempts="$(state_get remediation_attempts)"
-    [ -z "$attempts" ] && attempts=0
-    # Cap attempts per incident fingerprint
-    local fp="${last_verify}|${last_md}|${last_mu}"
-    local stored_fp
-    stored_fp="$(state_get incident_fingerprint)"
-    if [ "$stored_fp" != "$fp" ]; then
-      attempts=0
-    fi
     if [ "${attempts:-0}" -lt "$MAX_REMEDIATION_ATTEMPTS" ] && [ -x "$REPO_ROOT/scripts/selfheal/remediate_market_data.sh" ]; then
-      log_heal "event=remediation_started attempt=$((attempts + 1)) max=$MAX_REMEDIATION_ATTEMPTS verify_label=${last_verify:-n/a}"
-      if [ "$REMEDIATION_TG" = "1" ]; then
-        send_tg "🔧 ATP remediation starting ($now_ts)
-Attempt $((attempts + 1))/${MAX_REMEDIATION_ATTEMPTS} for market_data/market_updater failure.
-
-Actions: restart market-updater-aws → POST /api/market/update-cache (timeout 300s, retry on empty reply). health/fix is NOT called before cache (avoids empty reply). Optional after: ATP_REMEDIATE_RUN_HEALTH_FIX=1
-Then ${REMEDIATION_GRACE_SEC}s grace + re-verify.
-
-verify_label: ${last_verify:-n/a} | market_updater_age_min: ${last_age:-n/a}
-Log: /var/log/atp/health_alert_heal.log"
-      fi
+      log_heal "event=remediation_started attempt=$((attempts + 1)) max=$MAX_REMEDIATION_ATTEMPTS verify_label=${last_verify:-n/a} (no TG)"
       REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="$BASE" ATP_REMEDIATE_DRY_RUN="$DRY_RUN" \
         bash "$REPO_ROOT/scripts/selfheal/remediate_market_data.sh" 2>/dev/null | while read -r line; do log_heal "$line"; done || true
-      # Grace then re-verify
       if [ "$DRY_RUN" != "1" ] && [ "$REMEDIATION_GRACE_SEC" -gt 0 ] 2>/dev/null; then
         sleep "$REMEDIATION_GRACE_SEC"
       fi
@@ -293,110 +315,93 @@ Log: /var/log/atp/health_alert_heal.log"
           log_heal "event=post_remediation_verification result=PASS"
           send_tg "✅ ATP Health recovered ($now_ts)
 Remediation succeeded after restart/update-cache.
-(No manual step needed unless you changed something else.)
 verify_label: PASS (was ${last_verify:-n/a})"
           jq -n --arg ts "$now_ts" \
-            '{last_sent_ts:$ts,last_reason:"recovered_after_remediation",last_streak:0,incident_open:false,incident_fingerprint:"",remediation_attempts:0,last_remediation_ts:"",last_escalation_ts:""}' > "$STATE_FILE" 2>/dev/null || true
+            '{last_sent_ts:$ts,last_reason:"recovered_after_remediation",last_streak:0,incident_open:false,incident_fingerprint:"",remediation_attempts:0,last_remediation_ts:"",last_escalation_ts:"",first_fail_ts:"",action_alert_sent:false}' > "$STATE_FILE" 2>/dev/null || true
           exit 0
         fi
         log_heal "event=post_remediation_verification result=FAIL"
-        if [ "$REMEDIATION_TG" = "1" ]; then
-          # Template v2: no health/fix before update-cache (see remediate_market_data.sh).
-          _remedy_line="Attempt $((attempts + 1))/$MAX_REMEDIATION_ATTEMPTS ran: restart market-updater-aws → POST /api/market/update-cache only (300s timeout + retry). Then ${REMEDIATION_GRACE_SEC}s grace + verify."
-          if [ "$((attempts + 1))" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
-            _next_line="Max attempts reached — escalation Telegram + background heal.sh (full stack) run next per runbook."
-          else
-            _next_line="Next timer run will try again ($((${attempts} + 2))/$MAX_REMEDIATION_ATTEMPTS)."
-          fi
-          send_tg "⚠️ ATP remediation finished — still FAIL ($now_ts)
-$_remedy_line
-$_next_line
-
-Manual fix: next OK snapshot sends ✅ recovered.
-verify_label still: ${last_verify:-n/a}
-Runbook: ATP_HEALTH_ALERT_STREAK_FAIL.md | Log: /var/log/atp/health_alert_heal.log"
-        fi
       fi
       attempts=$((attempts + 1))
-      # Persist remediation attempt + grace anchor
+      # Persist: incident open, first_fail_ts (use existing or now for new incident)
       if command -v jq >/dev/null 2>&1; then
         prev="{}"
         [ -r "$STATE_FILE" ] && prev="$(cat "$STATE_FILE" 2>/dev/null || echo '{}')"
         echo "$prev" | jq \
           --arg ts "$now_ts" \
           --arg fp "$fp" \
+          --arg fft "${first_fail_ts:-$now_ts}" \
           --argjson att "$attempts" \
           --argjson streak "$streak" \
           --arg reason "$reason" \
-          '. + {last_remediation_ts:$ts,incident_open:true,incident_fingerprint:$fp,remediation_attempts:$att,last_streak:$streak,last_reason:$reason}' \
+          '. + {last_remediation_ts:$ts,incident_open:true,incident_fingerprint:$fp,first_fail_ts:$fft,remediation_attempts:$att,last_streak:$streak,last_reason:$reason}' \
           2>/dev/null > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE" 2>/dev/null || true
       fi
+      exit 0
     fi
   fi
 
-  # --- Dedupe: do not resend on streak growth alone (cooldown for same incident) ---
-  local send=1
-  local last_sent_ts="" last_reason="" last_streak=0 incident_open=""
-  if [ -r "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
-    last_sent_ts="$(jq -r '.last_sent_ts // ""' "$STATE_FILE" 2>/dev/null)" || true
-    last_reason="$(jq -r '.last_reason // ""' "$STATE_FILE" 2>/dev/null)" || true
-    last_streak="$(jq -r '.last_streak // 0' "$STATE_FILE" 2>/dev/null)" || true
-    incident_open="$(jq -r '.incident_open // false' "$STATE_FILE" 2>/dev/null)" || true
-  fi
-
-  if [ -n "$last_sent_ts" ]; then
-    local last_epoch diff_mins
-    last_epoch="$(date -u -d "$last_sent_ts" +%s 2>/dev/null)" || last_epoch=0
-    diff_mins="$(( (now_epoch - last_epoch) / 60 ))"
-    if [ "${diff_mins:-999}" -lt "$COOLDOWN_MINS" ]; then
-      send=0
-      # Removed: streak bypass that caused spam when streak 3->4->5
-      # Escalation only after escalation cooldown if incident still open and market incident
-      if [ "$incident_open" = "true" ] && is_market_incident "$last_verify" "$last_md" "$last_mu"; then
-        local last_esc
-        last_esc="$(state_get last_escalation_ts)"
-        if [ -n "$last_esc" ]; then
-          local esc_epoch esc_diff
-          esc_epoch="$(date -u -d "$last_esc" +%s 2>/dev/null)" || esc_epoch=0
-          esc_diff="$(( (now_epoch - esc_epoch) / 60 ))"
-          if [ "${esc_diff:-0}" -ge "$ESCALATION_COOLDOWN_MINS" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
-            send=1
-            log_heal "event=escalation_alert_send reason=escalation_cooldown_elapsed attempts=$attempts"
-          fi
-        fi
-      fi
+  # --- Do not resend: one alert per incident (action_alert_sent) ---
+  if [ "$action_alert_sent" = "true" ]; then
+    log_heal "event=action_alert_already_sent fingerprint=$fp (no resend)"
+    if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
+      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     fi
+    exit 0
   fi
 
-  [ "${send:-0}" -eq 0 ] && exit 0
+  # Send only when: remediation_failed (market and max attempts reached, or non-market) AND severity == critical
+  local should_send=0
+  if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+    [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ] && should_send=1
+  else
+    should_send=1
+  fi
+  [ "$should_send" -eq 0 ] && exit 0
+
+  # --- Severity: only send "action required" for critical ---
+  local incident_severity
+  incident_severity="$(classify_severity "$last_verify" "$last_md" "$last_mu" "$last_age")"
+  if [ "$incident_severity" != "critical" ]; then
+    log_heal "event=action_required_skipped severity=$incident_severity (only critical triggers Telegram) reason=$reason attempts=${attempts:-0}"
+    exit 0
+  fi
+
+  # --- Time since failure (minutes) ---
+  local mins_since_fail=""
+  if [ -n "$first_fail_ts" ]; then
+    local first_epoch
+    first_epoch="$(date -u -d "$first_fail_ts" +%s 2>/dev/null)" || first_epoch=0
+    mins_since_fail="$(( (now_epoch - first_epoch) / 60 ))"
+  fi
+  [ -z "$mins_since_fail" ] && mins_since_fail="n/a"
+
+  # --- Root cause and single "action required" message (include severity) ---
+  local root_cause=""
+  if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+    root_cause="Market data stale (market_updater not updating). market_updater_age_min: ${last_age:-n/a} | verify_label: ${last_verify:-n/a}"
+  else
+    root_cause="Health check failing. verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_updater: ${last_mu:-n/a}"
+  fi
 
   local msg
-  msg="🔄 ATP Health Alert ($now_ts)
-Rule: $reason
-FAIL streak: ${streak:-0}"
-  [ "$RULE" = "fail_count_5_in_30m" ] && msg="$msg
-FAIL count (${TIME_WINDOW_MINS}m): ${fail_count:-0}"
-  if [ "${attempts:-0}" -gt 0 ]; then
-    msg="$msg
-Remediation attempts so far: ${attempts}/${MAX_REMEDIATION_ATTEMPTS}
-You should have received TG for each remediation start/finish; see /var/log/atp/health_alert_heal.log"
-  fi
-  # One-line "what this means / what to do" so the alert has clear purpose
+  msg="🚨 ATP Health — action required ($now_ts)
+Severity: $incident_severity
+
+Root cause: $root_cause
+Failing since: ${mins_since_fail} min ago
+Last snapshot: ${last_ts:-n/a} | global_status: ${last_global:-n/a}"
+
   if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
     msg="$msg
 
-→ Market data is failing (data may be hours old). Action: runbook EC2_FIX_MARKET_DATA_NOW — SSH to prod, restart stack + market-updater, POST update-cache."
-  fi
-  msg="$msg
-
-Last snapshot: ${last_ts:-n/a}
-verify_label: ${last_verify:-n/a} | market_data: ${last_md:-n/a} | market_updater: ${last_mu:-n/a}
-market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
-
-  # If market incident, add button to manually start full fix (in case automatic did not start)
-  if is_market_incident "$last_verify" "$last_md" "$last_mu"; then
+Action: Runbook EC2_FIX_MARKET_DATA_NOW — SSH to prod, restart stack + market-updater, POST /api/market/update-cache. Or tap the button below to trigger full fix on next health check.
+Log: /var/log/atp/health_alert_heal.log"
     send_tg_with_button "$msg"
   else
+    msg="$msg
+
+Action: Check backend and runbook ATP_HEALTH_ALERT_STREAK_FAIL.md. Log: /var/log/atp/health_alert_heal.log"
     send_tg "$msg"
   fi
 
@@ -404,6 +409,7 @@ market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
     health_alert_payload="$(jq -n \
       --arg rule "${RULE}" \
       --arg reason "${reason}" \
+      --arg severity "${incident_severity}" \
       --argjson streak "${streak:-0}" \
       --arg ts "${last_ts:-n/a}" \
       --arg verify "${last_verify:-n/a}" \
@@ -411,20 +417,20 @@ market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
       --arg mu "${last_mu:-n/a}" \
       --arg age "${last_age:-n/a}" \
       --arg global "${last_global:-n/a}" \
-      '{rule:$rule, reason:$reason, streak:$streak, last_ts:$ts, verify_label:$verify, market_data_status:$md, market_updater_status:$mu, market_updater_age_min:$age, global_status:$global}')"
+      '{rule:$rule, reason:$reason, severity:$severity, streak:$streak, last_ts:$ts, verify_label:$verify, market_data_status:$md, market_updater_status:$mu, market_updater_age_min:$age, global_status:$global}')"
     curl -sS -X POST --max-time 15 -H "Content-Type: application/json" \
       -d "$health_alert_payload" "$BASE/api/monitoring/health-alert" 2>/dev/null || true
   fi
 
-  # Persist state: incident open, escalation timestamp for cooldown
+  # Persist: mark action_alert_sent so we never resend for this incident
   if command -v jq >/dev/null 2>&1; then
-    local fp2="${last_verify}|${last_md}|${last_mu}"
     jq -n \
       --arg ts "$now_ts" \
       --arg reason "$reason" \
       --argjson streak "${streak:-0}" \
-      --arg fp "$fp2" \
+      --arg fp "$fp" \
       --argjson att "${attempts:-0}" \
+      --arg fft "${first_fail_ts:-$now_ts}" \
       '{
         last_sent_ts:$ts,
         last_reason:$reason,
@@ -432,31 +438,19 @@ market_updater_age_min: ${last_age:-n/a} | global_status: ${last_global:-n/a}"
         incident_open:true,
         incident_fingerprint:$fp,
         remediation_attempts:$att,
-        last_escalation_ts:$ts
+        last_escalation_ts:$ts,
+        first_fail_ts:$fft,
+        action_alert_sent:true
       }' > "$STATE_FILE" 2>/dev/null || true
-  else
-    printf '{"last_sent_ts":"%s","last_reason":"%s","last_streak":%s}\n' "$now_ts" "$reason" "${streak:-0}" > "$STATE_FILE" 2>/dev/null || true
   fi
 
-  log_heal "event=escalation_alert_sent reason=$reason attempts=${attempts:-0}"
+  log_heal "event=action_required_alert_sent reason=$reason attempts=${attempts:-0} fingerprint=$fp"
 
-  # After max remediation attempts: run runbook steps automatically (market incidents) or heal.sh (other/disk)
+  # Run full fix in background (no separate Telegram)
   if [ "$DRY_RUN" != "1" ] && [ "${attempts:-0}" -ge "$MAX_REMEDIATION_ATTEMPTS" ]; then
     if is_market_incident "$last_verify" "$last_md" "$last_mu" && [ -x "$REPO_ROOT/scripts/selfheal/full_fix_market_data.sh" ]; then
-      if [ "$REMEDIATION_TG" = "1" ]; then
-        send_tg_with_button "🔁 ATP full fix (runbook) running in background ($now_ts)
-Targeted remediation reached max attempts ($MAX_REMEDIATION_ATTEMPTS). Running full_fix_market_data.sh (restore verify.sh, env, restart stack + update-cache).
-
-→ If it did not start, tap the button below to run it on the next health check. You will get ✅ recovered when health returns OK. Log: /var/log/atp/health_alert_heal.log"
-      fi
-      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="$BASE" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
+      ( cd "$REPO_ROOT" && REPO_DIR="$REPO_ROOT" ATP_HEALTH_BASE="${BASE}" nohup ./scripts/selfheal/full_fix_market_data.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     elif [ -x "$REPO_ROOT/scripts/selfheal/heal.sh" ]; then
-      if [ "$REMEDIATION_TG" = "1" ]; then
-        send_tg_with_button "🔁 ATP full self-heal starting in background ($now_ts)
-Targeted remediation reached max attempts ($MAX_REMEDIATION_ATTEMPTS). Running heal.sh (stack restart / disk cleanup as needed).
-
-→ If it did not start, tap the button below to run full fix on the next health check. You will get ✅ recovered when health returns OK. Log: /var/log/atp/health_alert_heal.log"
-      fi
       ( cd "$REPO_ROOT" && nohup ./scripts/selfheal/heal.sh >> /var/log/atp/health_alert_heal.log 2>&1 ) &
     fi
   fi
