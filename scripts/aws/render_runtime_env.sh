@@ -167,9 +167,9 @@ if [[ -n "$NOTION_TASK_DB_VAL" ]]; then
   printf "NOTION_TASK_DB=%s\n" "$NOTION_TASK_DB_VAL" >> "$RUNTIME_ENV"
 fi
 if [[ "$SOURCE" == "primary" && ( -z "$NOTION_API_KEY_VAL" || -z "$NOTION_TASK_DB_VAL" ) ]] && [[ -f "$ROOT_DIR/.env.aws" ]]; then
-  ( set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a
-    [[ -n "${NOTION_API_KEY:-}" ]] && grep -q '^NOTION_API_KEY=' "$RUNTIME_ENV" || printf "NOTION_API_KEY=%s\n" "$NOTION_API_KEY" >> "$RUNTIME_ENV"
-    [[ -n "${NOTION_TASK_DB:-}" ]] && grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" || printf "NOTION_TASK_DB=%s\n" "$NOTION_TASK_DB" >> "$RUNTIME_ENV"
+  ( set +u; set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a; set -u
+    [[ -n "${NOTION_API_KEY:-}" ]] && { grep -q '^NOTION_API_KEY=' "$RUNTIME_ENV" || printf "NOTION_API_KEY=%s\n" "${NOTION_API_KEY:-}" >> "$RUNTIME_ENV"; }
+    [[ -n "${NOTION_TASK_DB:-}" ]] && { grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" || printf "NOTION_TASK_DB=%s\n" "${NOTION_TASK_DB:-}" >> "$RUNTIME_ENV"; }
   )
 fi
 
