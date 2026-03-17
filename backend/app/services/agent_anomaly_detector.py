@@ -121,9 +121,14 @@ def _should_send_anomaly_telegram(anomaly_type: str) -> bool:
     """
     True if we should send a Telegram alert for this anomaly type.
     Uses DB so all backend instances share cooldown state.
+
+    For scheduler_inactivity: one alert per incident (send only if never sent for this
+    incident; cooldown resets when anomaly clears, not by time).
     """
-    now = _utc_now()
     last_sent = _get_anomaly_alert_last_sent_db(anomaly_type)
+    if anomaly_type == "scheduler_inactivity":
+        return last_sent is None
+    now = _utc_now()
     cooldown_hours = _get_anomaly_cooldown_hours()
     if last_sent is None:
         return True
@@ -384,13 +389,17 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
             "detected_at": _utc_now().isoformat(),
         }
 
+    # Any of these count as "scheduler ran recently" (heartbeat)
+    _SCHEDULER_HEARTBEAT_EVENTS = (
+        "scheduler_cycle_started",
+        "scheduler_cycle_completed",
+        "scheduler_heartbeat_updated",
+        "scheduler_auto_executed",
+        "scheduler_approval_requested",
+    )
     scheduler_events = [
         e for e in events
-        if (e.get("event_type") or "") in (
-            "scheduler_cycle_started",
-            "scheduler_auto_executed",
-            "scheduler_approval_requested",
-        )
+        if (e.get("event_type") or "") in _SCHEDULER_HEARTBEAT_EVENTS
     ]
 
     if not scheduler_events:
@@ -477,7 +486,17 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
         try:
             result = detector_fn()
             if result is None:
-                _clear_anomaly_incident(detector_name)
+                if detector_name == "scheduler_inactivity":
+                    last_sent = _get_anomaly_alert_last_sent_db("scheduler_inactivity")
+                    if last_sent is not None:
+                        _notify_telegram(
+                            "✅ <b>Scheduler recovered</b>\n"
+                            "Scheduler inactivity anomaly cleared; cycles are running again."
+                        )
+                        _log_event("scheduler_recovered", details={})
+                    _clear_anomaly_incident(detector_name)
+                else:
+                    _clear_anomaly_incident(detector_name)
                 continue
 
             anomaly_type = result.get("anomaly", detector_name)
@@ -503,7 +522,21 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                     "anomaly": anomaly_type,
                 })
 
-            if _should_send_anomaly_telegram(anomaly_type):
+            # Scheduler inactivity: one alert per incident; no resend until recovered
+            if anomaly_type == "scheduler_inactivity":
+                if _should_send_anomaly_telegram(anomaly_type):
+                    _notify_telegram(
+                        f"🔍 <b>Anomaly detected</b>: {title}\n"
+                        f"Type: {anomaly_type}\n"
+                        f"Details: {details[:300]}"
+                    )
+                    _record_anomaly_alert_sent(anomaly_type)
+                else:
+                    logger.info(
+                        "scheduler_inactivity_alert_suppressed (already sent for this incident; will alert again when scheduler recovers)"
+                    )
+                    _log_event("scheduler_inactivity_alert_suppressed", details={"anomaly": anomaly_type})
+            elif _should_send_anomaly_telegram(anomaly_type):
                 _notify_telegram(
                     f"🔍 <b>Anomaly detected</b>: {title}\n"
                     f"Type: {anomaly_type}\n"

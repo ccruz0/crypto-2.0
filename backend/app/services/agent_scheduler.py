@@ -116,6 +116,43 @@ def _log_event(event_type: str, task_id: str = "", task_title: str = "", details
         logger.debug("agent_scheduler: log_agent_event failed (non-fatal) %s", e)
 
 
+def _ensure_notion_env_preflight() -> bool:
+    """
+    Pre-flight: ensure NOTION_API_KEY and NOTION_TASK_DB are set.
+    If missing, try inline repair from SSM; set last_pickup_error on failure.
+    Returns True if env is ok to run pickup.
+    """
+    try:
+        from app.services.notion_env import (
+            check_notion_env,
+            try_repair_notion_env_from_ssm,
+            set_last_pickup_status as _set_status,
+        )
+    except Exception as e:
+        logger.warning("agent_scheduler: notion_env import failed %s", e)
+        _set_status = None
+        def check_notion_env() -> tuple[bool, str]:
+            return False, "unknown"
+        def try_repair_notion_env_from_ssm() -> bool:
+            return False
+    ok, source = check_notion_env()
+    if ok:
+        if _set_status:
+            _set_status("ok", "")
+        return True
+    logger.info("notion_preflight NOTION_env=missing attempting auto_repair")
+    repaired = try_repair_notion_env_from_ssm()
+    if repaired:
+        ok2, _ = check_notion_env()
+        if ok2:
+            if _set_status:
+                _set_status("ok_after_repair", "")
+            return True
+    if _set_status:
+        _set_status("env_missing", "NOTION_API_KEY or NOTION_TASK_DB missing; auto-repair failed or unavailable")
+    return False
+
+
 def run_agent_scheduler_cycle(
     *,
     project: str | None = None,
@@ -136,6 +173,21 @@ def run_agent_scheduler_cycle(
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter, "task_id": task_id})
+
+    # Pre-flight: NOTION_* present or auto-repair from SSM
+    if not _ensure_notion_env_preflight():
+        try:
+            from app.services.notion_env import set_last_pickup_status
+            set_last_pickup_status("skipped", "NOTION env missing")
+        except Exception:
+            pass
+        logger.warning("agent_scheduler: skipping cycle NOTION_env=missing")
+        return {
+            "ok": True,
+            "action": "none",
+            "reason": "notion_env_missing",
+        }
+
     try:
         from app.services.agent_task_executor import prepare_task_with_approval_check
     except Exception as e:
@@ -148,17 +200,37 @@ def run_agent_scheduler_cycle(
             "error": str(e),
         }
 
-    try:
-        prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=task_id)
-    except Exception as e:
-        logger.exception("agent_scheduler: prepare_task_with_approval_check failed")
-        _log_event("scheduler_cycle_failed", details={"reason": "prepare failed", "error": str(e)})
-        return {
-            "ok": False,
-            "action": "none",
-            "reason": "prepare failed",
-            "error": str(e),
-        }
+    prepared_bundle = None
+    last_error = None
+    for attempt in range(2):  # initial + one retry after repair
+        try:
+            prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=task_id)
+            break
+        except Exception as e:
+            last_error = e
+            logger.warning("agent_scheduler: prepare_task_with_approval_check attempt=%d failed %s", attempt + 1, e)
+            if attempt == 0:
+                # Retry once after attempting repair
+                try:
+                    from app.services.notion_env import try_repair_notion_env_from_ssm
+                    if try_repair_notion_env_from_ssm():
+                        logger.info("agent_scheduler: auto_repair_triggered retrying prepare")
+                        continue
+                except Exception:
+                    pass
+            logger.exception("agent_scheduler: prepare_task_with_approval_check failed")
+            _log_event("scheduler_cycle_failed", details={"reason": "prepare failed", "error": str(e)})
+            try:
+                from app.services.notion_env import set_last_pickup_status
+                set_last_pickup_status("prepare_failed", str(e))
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "action": "none",
+                "reason": "prepare failed",
+                "error": str(e),
+            }
 
     if not prepared_bundle:
         logger.info("scheduler_no_task: prepare_task_with_approval_check returned None (no pending tasks in Notion)")
@@ -454,6 +526,7 @@ async def start_agent_scheduler_loop() -> None:
         "agent_scheduler_loop_started interval=%ds",
         interval,
     )
+    _log_event("scheduler_loop_started", details={"interval_seconds": interval})
 
     loop = asyncio.get_running_loop()
 
@@ -466,6 +539,24 @@ async def start_agent_scheduler_loop() -> None:
         try:
             result = await loop.run_in_executor(None, run_agent_scheduler_cycle)
             _last_cycle_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _log_event(
+                "scheduler_cycle_completed",
+                details={
+                    "ok": result.get("ok"),
+                    "action": result.get("action"),
+                    "reason": result.get("reason"),
+                },
+            )
+            _log_event("scheduler_heartbeat_updated", details={})
+            try:
+                from app.services.notion_env import set_last_pickup_status, check_notion_health_transition_and_alert
+                set_last_pickup_status(
+                    result.get("action") or result.get("reason") or "done",
+                    result.get("error") or "",
+                )
+                check_notion_health_transition_and_alert()
+            except Exception:
+                pass
             logger.info(
                 "agent_scheduler_cycle_done ok=%s action=%s task=%s reason=%s",
                 result.get("ok"),
@@ -475,6 +566,12 @@ async def start_agent_scheduler_loop() -> None:
             )
         except Exception as e:
             logger.error("agent_scheduler_loop: cycle raised %s", e, exc_info=True)
+            _log_event("scheduler_cycle_failed", details={"reason": "cycle raised", "error": str(e)})
+            try:
+                from app.services.notion_env import set_last_pickup_status
+                set_last_pickup_status("error", str(e))
+            except Exception:
+                pass
 
         try:
             retry_results = await loop.run_in_executor(None, retry_approved_failed_tasks)
