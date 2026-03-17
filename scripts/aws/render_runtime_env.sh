@@ -93,8 +93,10 @@ if [[ "$use_ssm" != "true" ]]; then
     exit 1
   fi
   set -a
+  set +u
   # shellcheck disable=SC1090
   source "$ENV_FILE"
+  set -u
   set +a
 
   BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN_AWS:-}}"
