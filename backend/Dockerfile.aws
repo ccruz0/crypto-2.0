@@ -48,7 +48,7 @@ RUN useradd -m -u 10001 appuser
 # Docker CLI + compose plugin for tail_logs (docker compose ...) inside container.
 # docker-compose-plugin is not in Debian bookworm default repos; add Docker's repo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg \
+      ca-certificates curl gnupg gosu \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && chmod a+r /etc/apt/keyrings/docker.gpg \
@@ -125,6 +125,7 @@ RUN python3 -c "import app.services.exchange_sync as m; print('OK: exchange_sync
 RUN python3 -c "import app.main; print('OK: app.main imports')" || (echo "ERROR: app.main import failed - boot path broken" >&2 && exit 1)
 # Verify critical dependencies (pydantic, pydantic_settings, requests) for agent/Telegram commands
 RUN python3 /app/scripts/diag/check_container_dependencies.py || (echo "ERROR: Container dependency check failed" >&2 && exit 1)
+RUN python3 /app/scripts/diag/check_runtime_dependencies.py || (echo "ERROR: Runtime dependency check failed" >&2 && exit 1)
 
 # Auto-detect build fingerprint if not provided via build args
 # After COPY . ., we can check .git directory and get current time
@@ -161,8 +162,7 @@ EXPOSE 8002
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import socket; s=socket.socket(); \
   s.settimeout(3); s.connect(('127.0.0.1',8002)); print('ok')" || exit 1
 
-USER appuser
-
+# Run entrypoint as root so it can create docs/agents/generated-notes and chown before exec to appuser
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
 
