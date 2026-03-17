@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# When DEBUG_RENDER=1, do not exit on first failure (for diagnosing LAB/SSM runs).
+[[ "${DEBUG_RENDER:-0}" != "1" ]] && set -euo pipefail
 set +x 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
