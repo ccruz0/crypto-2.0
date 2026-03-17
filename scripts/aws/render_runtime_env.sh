@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# When DEBUG_RENDER=1, do not exit on first failure (for diagnosing LAB/SSM runs).
-[[ "${DEBUG_RENDER:-0}" != "1" ]] && set -euo pipefail
+set -euo pipefail
 set +x 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -171,8 +170,8 @@ if [[ -n "$NOTION_TASK_DB_VAL" ]]; then
 fi
 if [[ "$SOURCE" == "primary" && ( -z "$NOTION_API_KEY_VAL" || -z "$NOTION_TASK_DB_VAL" ) ]] && [[ -f "$ROOT_DIR/.env.aws" ]]; then
   ( set +u; set -a; source "$ROOT_DIR/.env.aws" 2>/dev/null; set +a; set -u
-    [[ -n "${NOTION_API_KEY:-}" ]] && { grep -q '^NOTION_API_KEY=' "$RUNTIME_ENV" || printf "NOTION_API_KEY=%s\n" "${NOTION_API_KEY:-}" >> "$RUNTIME_ENV"; }
-    [[ -n "${NOTION_TASK_DB:-}" ]] && { grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" || printf "NOTION_TASK_DB=%s\n" "${NOTION_TASK_DB:-}" >> "$RUNTIME_ENV"; }
+    if [[ -n "${NOTION_API_KEY:-}" ]] && ! grep -q '^NOTION_API_KEY=' "$RUNTIME_ENV" 2>/dev/null; then printf "NOTION_API_KEY=%s\n" "${NOTION_API_KEY:-}" >> "$RUNTIME_ENV"; fi
+    if [[ -n "${NOTION_TASK_DB:-}" ]] && ! grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" 2>/dev/null; then printf "NOTION_TASK_DB=%s\n" "${NOTION_TASK_DB:-}" >> "$RUNTIME_ENV"; fi
   )
 fi
 
