@@ -168,6 +168,14 @@ def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> Non
 
 
 def _notify_telegram(message: str) -> bool:
+    """Send ops alert. Suppressed in quiet mode (only deploy and critical go to Telegram)."""
+    try:
+        from app.services.agent_telegram_policy import is_quiet_mode
+        if is_quiet_mode():
+            logger.debug("agent_anomaly_detector: telegram notification suppressed (quiet mode)")
+            return False
+    except Exception:
+        pass
     try:
         from app.services.telegram_notifier import telegram_notifier
         return telegram_notifier.send_message(message, chat_destination="ops")

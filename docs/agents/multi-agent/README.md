@@ -41,11 +41,12 @@ The agent structure is **host-agnostic**. When OpenClaw moves from LAB to Mac Mi
 
 ### Telegram channel separation
 
-- **HILOVIVO3.0** — main operator channel for ATP agent commands (`/investigate`, `/agent`, `/runtime-check`)
-- **Claw** — OpenClaw native bot (`/new`, `/reset`, `/status`, `/context`); not the main ATP agent channel
-- **AWS_alerts** — technical alerts; not for agent investigations
+- **ATP Control** — command/control interface (private group or direct chat) for `/investigate`, `/agent`, `/runtime-check`
+- **HILOVIVO3.0** — alerts-only; no commands
+- **Claw** — OpenClaw native bot (`/new`, `/reset`, `/status`, `/context`)
+- **AWS_alerts** — technical alerts only
 
-See [AGENT_OPERATING_MODEL.md](../AGENT_OPERATING_MODEL.md) and [TELEGRAM_AGENT_COMMANDS.md](../TELEGRAM_AGENT_COMMANDS.md).
+See [AGENT_OPERATING_MODEL.md](../AGENT_OPERATING_MODEL.md), [ATP_CONTROL_SETUP.md](../ATP_CONTROL_SETUP.md), and [TELEGRAM_AGENT_COMMANDS.md](../TELEGRAM_AGENT_COMMANDS.md).
 
 ---
 

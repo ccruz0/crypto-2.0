@@ -454,6 +454,209 @@ _ATP_COMMAND_NOTE = (
     "Use ONLY the pre-fetched context and workspace file reads. Do NOT suggest manual SSH or local commands."
 )
 
+# Strict mode: hard override for investigation tasks — blocks ready-for-patch until proof exists
+_STRICT_MODE_BLOCK = """
+## STRICT MODE ENABLED
+
+You must NOT:
+- auto-complete
+- skip investigation steps
+- reuse previous conclusions without proof
+- propose a fix before proving the exact failure point
+
+You must:
+- identify exact failure point with file, function, line or condition
+- include code-level evidence
+- provide one concrete failing scenario
+- trace the data flow end to end
+- continue investigating if proof is incomplete
+
+The task is NOT complete unless proof is present.
+
+---
+"""
+
+
+def _execution_mode_from_prepared_task(prepared_task: dict[str, Any]) -> str:
+    """Read execution_mode from prepared_task. Default 'normal' when absent."""
+    mode = (prepared_task or {}).get("execution_mode")
+    if mode is not None and isinstance(mode, str):
+        v = mode.strip().lower()
+        if v == "strict":
+            return "strict"
+    task = (prepared_task or {}).get("task") or {}
+    mode = task.get("execution_mode")
+    if mode is not None and isinstance(mode, str):
+        v = mode.strip().lower()
+        if v == "strict":
+            return "strict"
+    return "normal"
+
+
+def prepend_strict_mode_if_needed(user_prompt: str, prepared_task: dict[str, Any]) -> str:
+    """If execution_mode is strict, prepend the strict mode block to user_prompt."""
+    if _execution_mode_from_prepared_task(prepared_task) != "strict":
+        return user_prompt
+    return _STRICT_MODE_BLOCK + user_prompt
+
+
+def validate_strict_mode_proof(content: str) -> tuple[bool, str]:
+    """Validate that content contains minimum proof criteria for strict mode ready-for-patch.
+
+    ALL of the following are REQUIRED:
+    (a) At least one real file path (with slash: backend/, app/, path/to/file.ext)
+    (b) At least one real function definition (def name / async def name / function name)
+    (c) At least one code block (```...``` with code-like content)
+    (d) Explicit root cause that references code (root cause phrase near file/function)
+    (e) Explicit failing scenario (repro / steps to reproduce / failing scenario)
+    (f) Explicit fix logic (fix phrase + action: add, change, replace, check, etc.)
+    (g) Explicit validation scenarios (how to verify: validate, verify, test, confirm)
+
+    Rejects: generic explanation, no concrete code refs, no reproduction, no fix explanation.
+    Returns (passed: bool, reason: str).
+    """
+    if not content or len(content.strip()) < 100:
+        return False, "content too short for proof validation"
+
+    text = content.lower()
+    missing: list[str] = []
+
+    # (a) Real file path: must contain slash (repo path) or backend/app/frontend prefix
+    real_file_patterns = (
+        r"(?:backend|frontend|app)/[^\s]+\.(?:py|ts|tsx)\b",
+        r"[^\s]+/[^\s]+\.(?:py|ts|tsx)\b",  # path/to/file.py
+    )
+    has_file = any(re.search(p, content, re.I) for p in real_file_patterns)
+    if not has_file:
+        missing.append("at least one real file path (e.g. backend/.../file.py)")
+
+    # (b) Real function definition: def name, async def name, or function name
+    has_func = bool(re.search(r"\b(def|async\s+def)\s+\w+\s*\(", content, re.I))
+    if not has_func:
+        has_func = bool(re.search(r"\bfunction\s+\w+\s*\(", content, re.I))
+    if not has_func:
+        missing.append("at least one real function definition (def name(...) or function name(...))")
+
+    # (c) Code block: ```...``` with code-like content (assignment, call, def, return, etc.)
+    code_block_match = re.search(r"```[\s\S]+?```", content)
+    has_snippet = False
+    if code_block_match:
+        block = code_block_match.group(0)
+        code_like = any(
+            re.search(r, block)
+            for r in (
+                r"[=\(\)\[\]\{\}]",  # brackets/assign
+                r"\b(def|return|if|for|import)\b",
+                r"\w+\s*\(",  # function call
+            )
+        )
+        has_snippet = code_like
+    if not has_snippet:
+        missing.append("at least one code block with code-like content")
+
+    # (d) Root cause explicitly referencing code: root cause phrase and file/function nearby
+    has_root_cause_phrase = any(
+        k in text for k in ("root cause", "rootcause", "cause:", "caused by")
+    )
+    if not has_root_cause_phrase:
+        missing.append("explicit root cause classification")
+    else:
+        # Reject generic/hedged root cause
+        if re.search(r"root\s+cause\s+(?:might|could|possibly|may)\b", text):
+            missing.append("root cause must be stated definitively (not 'might/could')")
+        else:
+            # Require root cause to reference code: file or function within ~300 chars of "root cause" / "caused by"
+            root_idx = min(
+                (text.find(k) for k in ("root cause", "rootcause", "caused by") if k in text),
+                default=len(text),
+            )
+            window = content[max(0, root_idx - 150) : root_idx + 350]
+            refs_code = (
+                any(re.search(p, window, re.I) for p in real_file_patterns)
+                or bool(re.search(r"\b(def|async\s+def|function)\s+\w+", window, re.I))
+            )
+            if not refs_code:
+                missing.append("root cause must reference code (file path or function name)")
+
+    # (e) Explicit failing scenario
+    has_scenario = any(
+        k in text
+        for k in (
+            "reproduce",
+            "repro steps",
+            "steps to reproduce",
+            "failing scenario",
+            "reproduction",
+            "minimal repro",
+            "when user",
+            "when the user",
+            "concrete scenario",
+        )
+    )
+    if not has_scenario:
+        missing.append("explicit failing scenario (repro steps / failing scenario / when user...)")
+
+    # (f) Explicit fix logic: fix phrase + action verb
+    has_fix_phrase = any(
+        k in text
+        for k in (
+            "recommended fix",
+            "proposed fix",
+            "proposed minimal",
+            "minimal fix",
+            "fix:",
+            "solution",
+            "rationale",
+        )
+    )
+    has_fix_action = any(
+        k in text for k in ("add ", "change ", "replace ", "check ", "update ", "ensure ", "handle ", "fix ")
+    )
+    if not has_fix_phrase:
+        missing.append("explicit fix section (recommended fix / proposed fix / fix:)")
+    elif not has_fix_action:
+        missing.append("explicit fix logic (add/change/replace/check/ensure/handle)")
+
+    # (g) Explicit validation scenarios
+    has_validation = any(
+        k in text
+        for k in (
+            "validat",
+            "verify",
+            "regression",
+            "confirm",
+            "check that",
+            "manual test",
+            "automated test",
+            "how to verify",
+            "how to test",
+        )
+    )
+    if not has_validation:
+        missing.append("explicit validation scenarios (verify / test / confirm / how to verify)")
+
+    # Line/condition: still require some location or condition
+    has_line = bool(
+        re.search(r"(?:line\s+\d+|L\d+|:\d+|at\s+line|line\s*\d+)", content, re.I)
+        or "condition" in text
+    )
+    if not has_line:
+        missing.append("line/condition reference (line N, L123, or condition)")
+
+    # Anti-pattern: generic explanation without substance
+    generic_phrases = (
+        "investigate further",
+        "consider checking the logs",
+        "might be in the backend",
+        "could be related to",
+    )
+    if any(g in text for g in generic_phrases) and (not has_file or not has_snippet):
+        missing.append("concrete code references required (no generic 'investigate further')")
+
+    if missing:
+        return False, "strict mode proof incomplete: missing " + "; ".join(missing)
+    return True, "proof criteria satisfied"
+
 
 def _fetch_atp_runtime_context() -> str:
     """Fetch PROD and LAB runtime context via safe SSM APIs. Injected into prompts so OpenClaw

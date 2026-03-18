@@ -485,7 +485,7 @@ def ingest_bridge_results(
 
     Calls record_test_result with outcome (passed/failed/partial/not-run) and
     updates Notion metadata (cursor_patch_url for diff path). Advances task
-    to awaiting-deploy-approval when tests pass and advance_on_pass is True.
+    to ready-for-deploy when tests pass and advance_on_pass is True.
     """
     task_id = (task_id or "").strip()
     if not task_id:

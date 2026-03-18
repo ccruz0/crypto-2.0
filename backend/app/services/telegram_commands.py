@@ -960,6 +960,7 @@ def setup_bot_commands():
             {"command": "start", "description": "Mostrar mensaje de bienvenida"},
             {"command": "help", "description": "Mostrar ayuda con todos los comandos"},
             {"command": "investigate", "description": "Investigar problema (auto-ruta a agente)"},
+            {"command": "task", "description": "Crear tarea en Notion desde texto (ej: /task <descripción>)"},
             {"command": "agent", "description": "Forzar agente: /agent sentinel|ledger <problema>"},
             {"command": "runtime-check", "description": "Verificar dependencias de runtime (pydantic, etc.)"},
             {"command": "status", "description": "Estado del bot y trading"},
@@ -976,7 +977,6 @@ def setup_bot_commands():
             {"command": "skip_sl_tp_reminder", "description": "No preguntar más sobre SL/TP"},
             {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"},
             {"command": "kill", "description": "🛑 Kill switch: on/off/status - Global trading kill switch"},
-            {"command": "agent", "description": "Agent console: activity, approvals, failures"},
         ]
         
         payload = {
@@ -1322,7 +1322,7 @@ def send_audit_snapshot(chat_id: str, db: Optional[Session] = None) -> bool:
 
 
 def send_help_message(chat_id: str) -> bool:
-    """Send help message with command descriptions"""
+    """Send help message with command descriptions. ATP Control /help — single source of truth (telegram_commands.py)."""
     try:
         from app.services.agent_telegram_commands import get_agent_help_content
         agent_section = get_agent_help_content()
@@ -1335,6 +1335,7 @@ HILOVIVO3.0 = alerts-only. Claw = OpenClaw-native only.
 
 /start - Show welcome message and command list
 /help - Show this help message
+/task &lt;description&gt; - Create Notion task from Telegram. Example: /task Investigate why alerts are not sent
 /status - Get bot status report (system, trading status, settings)
 /portfolio - List all open orders and active positions
 /signals - Display last 5 trading signals (BUY/SELL)
@@ -4787,6 +4788,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     chat_id,
                     "🔍 <b>Investigate</b>\n\nType: <code>/investigate &lt;problem&gt;</code>\n\nExample: /investigate repeated BTC alerts"
                 )
+            elif cmd == "task":
+                # Prompt for task description; user replies with /task <description>
+                send_command_response(
+                    chat_id,
+                    "📋 <b>Task</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why alerts are not sent when buy conditions are met",
+                )
             elif cmd == "runtime-check":
                 try:
                     import importlib.util
@@ -4972,6 +4979,10 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     )
     text = (raw_text or "").strip()
     logger.info(
+        "telegram_update_received update_id=%s chat_id=%s text=%s",
+        update_id, chat_id, (text or "")[:120],
+    )
+    logger.info(
         "[TG][TEXT] raw_text=%s extracted_text=%s",
         (raw_text or "")[:100], (text or "")[:100],
     )
@@ -5014,6 +5025,10 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     parts = (text or "").split(None, 1)
     cmd_token = (parts[0] or "").strip()
     args = (parts[1] or "").strip() if len(parts) > 1 else ""
+    logger.info(
+        "telegram_command_detected update_id=%s command=%s args=%s",
+        update_id, (cmd_token or "")[:60], (args or "")[:80],
+    )
     logger.info(
         "[TG][CMD] raw_command=%s normalized_command=%s args=%s",
         (raw_command or "")[:80], (cmd_token or "")[:40], (args or "")[:60],
@@ -5091,7 +5106,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         logger.info("[TG][REPLY] success=%s handler=non_command", ok)
         return
 
-    # Explicit router: /start, /help, /runtime-check, /investigate, /agent, else unknown
+    # Explicit router: /start, /help, /runtime-check, /investigate, /task, /agent, else unknown
+    # Use lowercased check so /task, /Task, /TASK are all recognized.
+    # Defensive: also match by cmd_token so /task is recognized even with @botname or encoding quirks.
+    text_lower = (text or "").strip().lower()
+    cmd_lower = (cmd_token or "").strip().lower()
     handler_name = "unknown"
     if text.startswith("/start"):
         handler_name = "start"
@@ -5101,11 +5120,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         handler_name = "runtime-check"
     elif text.startswith("/investigate"):
         handler_name = "investigate"
+    elif text_lower.startswith("/task ") or text_lower.startswith("/task") or cmd_lower == "/task" or cmd_lower.startswith("/task"):
+        handler_name = "task"  # /task with or without args; cmd_token catches e.g. /task@BotName
     elif text.startswith("/agent "):
         handler_name = "agent"
     elif text.startswith("/agent"):
         handler_name = "agent"  # /agent without args -> show_agent_console
-    logger.info("[TG][ROUTER] selected_handler=%s", handler_name)
+    logger.info("[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s", handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40])
 
     try:
         if text.startswith("/start"):
@@ -5145,6 +5166,135 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 logger.exception("[TG][CMD] /investigate failed: %s", e)
                 ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
                 logger.info("[TG][REPLY] handler=investigate update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
+        elif text_lower.startswith("/task "):
+            logger.info("[TG][HANDLER] handler=task executing")
+            try:
+                # Intent = args from parsed command, or everything after "/task "
+                intent_text = (args or "").strip()
+                if not intent_text:
+                    # Fallback: strip /task (case-insensitive) from start of text
+                    intent_text = re.sub(r"^/task\s*", "", text, flags=re.IGNORECASE).strip()
+                logger.info(
+                    "telegram_task_command_received chat_id=%s intent_len=%s update_id=%s",
+                    chat_id, len(intent_text or ""), update_id,
+                )
+                if not intent_text:
+                    ok = send_command_response(
+                        chat_id,
+                        "📋 <b>Task</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why alerts are not sent when buy conditions are met",
+                    )
+                else:
+                    telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
+                    from app.services.task_compiler import (
+                        create_task_from_telegram_intent,
+                        ERROR_NOTION_NOT_CONFIGURED,
+                    )
+                    result = create_task_from_telegram_intent(intent_text, telegram_user)
+                    if result.get("ok"):
+                        priority = result.get("priority")
+                        priority_line = f"Priority: {priority}/100\n" if priority is not None else ""
+                        if result.get("reused"):
+                            msg = (
+                                "✅ <b>Similar task already exists.</b>\n\n"
+                                f"Title: {result.get('title', '')}\n"
+                                f"Status: {result.get('status', '')}\n"
+                                f"{priority_line}\n"
+                                "The system will continue working on this task."
+                            )
+                        else:
+                            msg = (
+                                "✅ <b>Task created successfully</b>\n\n"
+                                f"Title: {result.get('title', '')}\n"
+                                f"Type: {result.get('type', 'Investigation')}\n"
+                                f"Status: {result.get('status', 'Planned')}\n"
+                                f"{priority_line}"
+                                "Execution Mode: Strict\n\nThe system will automatically process it."
+                            )
+                        ok = send_command_response(chat_id, msg)
+                    else:
+                        err = result.get("error", "Unknown error")
+                        if err == ERROR_NOTION_NOT_CONFIGURED:
+                            msg = (
+                                "⚠️ Task could not be created because Notion is not configured. "
+                                "The system is still operational, but task tracking is disabled."
+                            )
+                        elif result.get("fallback_stored"):
+                            msg = "Notion unavailable. Task stored locally and will be synced automatically."
+                        elif result.get("rejected_low_value"):
+                            reasons = result.get("reasons") or []
+                            reason_line = " Reasons: " + "; ".join(reasons) + "." if reasons else ""
+                            msg = (
+                                "⚠️ <b>Task not created (low value)</b>\n\n"
+                                "This task has low impact and was not created."
+                                + reason_line + "\n\n"
+                                "If this is important, please clarify urgency or impact."
+                            )
+                        else:
+                            msg = f"❌ Task creation failed: {err}"
+                        ok = send_command_response(chat_id, msg)
+                    logger.info(
+                        "telegram_task_command_processed chat_id=%s ok=%s reused=%s update_id=%s",
+                        chat_id, result.get("ok"), result.get("reused", False), update_id,
+                    )
+                logger.info("[TG][REPLY] handler=task update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
+            except Exception as e:
+                logger.exception("[TG][CMD] /task failed: %s", e)
+                ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                logger.info("[TG][REPLY] handler=task update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
+        elif text_lower.startswith("/task"):
+            # /task without args: show usage
+            logger.info("telegram_task_command_received chat_id=%s intent_len=0 (usage) update_id=%s", chat_id, update_id)
+            ok = send_command_response(
+                chat_id,
+                "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
+            )
+            logger.info("[TG][REPLY] handler=task_usage success=%s", ok)
+        elif handler_name == "task":
+            # Router identified /task but string check missed (e.g. encoding/@botname); handle as /task
+            logger.info("[TG][HANDLER] handler=task (router fallback) executing text_repr=%s", repr((text or "")[:60]))
+            logger.info("telegram_task_command_received chat_id=%s intent_len=0 (router_fallback) update_id=%s", chat_id, update_id)
+            intent_fb = (args or "").strip() or re.sub(r"^/task\s*", "", text or "", flags=re.IGNORECASE).strip()
+            if not intent_fb:
+                ok = send_command_response(
+                    chat_id,
+                    "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
+                )
+            else:
+                telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
+                try:
+                    from app.services.task_compiler import create_task_from_telegram_intent, ERROR_NOTION_NOT_CONFIGURED
+                    result = create_task_from_telegram_intent(intent_fb, telegram_user)
+                    if result.get("ok"):
+                        priority = result.get("priority")
+                        priority_line = f"Priority: {priority}/100\n" if priority is not None else ""
+                        msg = (
+                            "✅ <b>Task created successfully</b>\n\n"
+                            f"Title: {result.get('title', '')}\n"
+                            f"Type: {result.get('type', 'Investigation')}\n"
+                            f"Status: {result.get('status', 'Planned')}\n"
+                            f"{priority_line}Execution Mode: Strict\n\nThe system will automatically process it."
+                        ) if not result.get("reused") else (
+                            "✅ <b>Similar task already exists.</b>\n\n"
+                            f"Title: {result.get('title', '')}\nStatus: {result.get('status', '')}\n{priority_line}\nThe system will continue working on this task."
+                        )
+                        ok = send_command_response(chat_id, msg)
+                    else:
+                        err = result.get("error", "Unknown error")
+                        if err == ERROR_NOTION_NOT_CONFIGURED:
+                            msg = "⚠️ Task could not be created because Notion is not configured."
+                        elif result.get("fallback_stored"):
+                            msg = "Notion unavailable. Task stored locally and will be synced automatically."
+                        elif result.get("rejected_low_value"):
+                            reasons = result.get("reasons") or []
+                            reason_line = " Reasons: " + "; ".join(reasons) + "." if reasons else ""
+                            msg = "⚠️ <b>Task not created (low value)</b>\n\nThis task has low impact and was not created." + reason_line + "\n\nIf this is important, please clarify urgency or impact."
+                        else:
+                            msg = f"❌ Task creation failed: {err}"
+                        ok = send_command_response(chat_id, msg)
+                except Exception as e:
+                    logger.exception("[TG][CMD] /task (router fallback) failed: %s", e)
+                    ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+            logger.info("[TG][REPLY] handler=task_router_fallback success=%s", ok)
         elif text.startswith("/runtime-check"):
             logger.info("[TG][CMD] handler=runtime-check update_id=%s chat_id=%s", update_id, chat_id)
             try:
@@ -5214,10 +5364,18 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/agent"):
             show_agent_console(chat_id)
         elif text.startswith("/"):
+            logger.warning(
+                "telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
+                update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
+            )
             logger.info("[TG][HANDLER] handler=unknown executing")
             ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
+            logger.warning(
+                "telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
+                update_id, chat_id, repr((text or "")[:80]),
+            )
             logger.info("[TG][HANDLER] handler=fallback executing")
             ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=fallback", ok)
@@ -5561,14 +5719,13 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
 
     test_status_raw = (task.get("test_status") or "").strip()
     if not test_status_raw:
-        if current_status == "awaiting-deploy-approval":
+        if current_status in ("awaiting-deploy-approval", "ready-for-deploy"):
             logger.info(
-                "[DEPLOY_GATE] Test Status property empty/missing but task is in "
-                "awaiting-deploy-approval — trusting orchestrator test gate "
-                "task_id=%s", task_id,
+                "[DEPLOY_GATE] Test Status property empty/missing but task is in %s — trusting orchestrator test gate "
+                "task_id=%s", current_status, task_id,
             )
             return True, (
-                "Test gate: task status (awaiting-deploy-approval). "
+                f"Test gate: task status ({current_status}). "
                 "Add a 'Test Status' property to the AI Task System DB to persist test results."
             )
         return False, "Test Status is empty — tests must pass before deploy"
@@ -5877,7 +6034,7 @@ def _handle_extended_approval_callback(
             if result.get("ok") and result.get("tests_ok"):
                 send_command_response(chat_id,
                     f"✅ <b>Cursor Bridge OK</b>\n\nTask {task_id[:12]}…: apply + tests passed.\n"
-                    "Task advanced to awaiting-deploy-approval.")
+                    "Task advanced to ready-for-deploy.")
                 _edit_approval_card(chat_id, message_id,
                                     f"✅ <b>Cursor Bridge</b> by {who}\nApply + tests passed.", task_id)
             else:

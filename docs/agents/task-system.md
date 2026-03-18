@@ -84,6 +84,28 @@ See: [task-execution-flow.md](task-execution-flow.md) and `execute_prepared_noti
 
 ---
 
+## Execution mode
+
+Tasks support an optional `execution_mode` property (Notion: "Execution Mode"):
+
+| Value | Behavior |
+|-------|----------|
+| **normal** | Default. Standard flow; auto-advance to ready-for-patch after investigation. |
+| **strict** | Blocks ready-for-patch until proof criteria are met: exact file, function, line/condition, code snippet, failing scenario, root cause, fix rationale. |
+
+When `execution_mode=strict`, OpenClaw prepends a hard investigation override to the prompt and does not auto-advance unless the output passes validation. The task stays in-progress until proof is present.
+
+### Manual verification (strict mode end-to-end)
+
+1. Add **Execution Mode** Select property to the Notion AI Task System (options: Normal, Strict).
+2. Create a bug investigation task and set Execution Mode = **Strict**.
+3. Let the scheduler pick it up and run OpenClaw.
+4. If the investigation output is shallow (no file path, function, code block, failing scenario, root cause, fix rationale), the task stays **in-progress** with a Notion comment explaining why.
+5. Re-run (or wait for next cycle) after improving the task instructions or letting OpenClaw produce a deeper investigation.
+6. When the output meets proof criteria, the task advances to investigation-complete → ready-for-patch as usual.
+
+---
+
 ## Version traceability (proposal → approval → release)
 
 For business-logic improvements, the workflow also tracks version metadata:

@@ -14,6 +14,7 @@ print_step1() {
   cat << 'STEP1'
 # --- Step 1: Prepare host (Docker, repo) ---
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 2>/dev/null || true
+sudo usermod -aG docker ubuntu
 sudo usermod -aG docker "$(whoami)"
 cd /home/ubuntu
 [ -d automated-trading-platform ] || git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform

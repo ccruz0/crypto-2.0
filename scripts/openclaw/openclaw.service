@@ -15,6 +15,7 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/home/ubuntu/automated-trading-platform
+ExecStartPre=/home/ubuntu/automated-trading-platform/scripts/openclaw/check_docker_access.sh
 ExecStartPre=/usr/bin/docker compose -f docker-compose.openclaw.yml pull --quiet
 ExecStart=/usr/bin/docker compose -f docker-compose.openclaw.yml up -d
 ExecStop=/usr/bin/docker compose -f docker-compose.openclaw.yml down

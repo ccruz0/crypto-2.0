@@ -552,7 +552,7 @@ def run_revalidate_patching_playbook(
       - No prior recovery_revalidate_patching_attempt for this task
 
     Action: Call advance_ready_for_patch_task once (re-runs validation).
-    If validation passes → advance to awaiting-deploy-approval.
+    If validation passes → advance to ready-for-deploy.
     If validation fails → task stays in patching, existing escalation applies.
 
     Retry rule: Max 1 recovery attempt per task (enforced via activity log).
@@ -598,8 +598,8 @@ def run_revalidate_patching_playbook(
             final_status = r.get("final_status", "")
             summary = r.get("summary", "")
 
-            # Map to outcome: passed if advanced to awaiting-deploy-approval
-            advanced = final_status == "awaiting-deploy-approval"
+            # Map to outcome: passed if advanced to ready-for-deploy
+            advanced = final_status == "ready-for-deploy"
             outcome = "passed" if advanced else ("failed" if not ok else "no_advance")
 
             _log_recovery_event(
@@ -729,6 +729,20 @@ def _extract_body_from_markdown(md_path: Path) -> str:
         return body
     except Exception:
         return ""
+
+
+def get_artifact_content_for_task(task_id: str) -> str:
+    """Return the body content of the first existing investigation artifact for this task.
+
+    Used for strict-mode proof validation before advancing to ready-for-patch.
+    Returns empty string if no artifact found.
+    """
+    for md_path, _ in _get_artifact_paths(task_id):
+        if md_path.exists():
+            body = _extract_body_from_markdown(md_path)
+            if len(body) >= _MIN_CONTENT_CHARS:
+                return body
+    return ""
 
 
 def _try_regenerate_from_raw_content(md_path: Path, task_id: str, title: str) -> bool:

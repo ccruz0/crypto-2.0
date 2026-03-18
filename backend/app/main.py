@@ -274,6 +274,13 @@ async def startup_event():
         logger.warning("PERF: Startup event DISABLED for performance testing")
         return
     
+    # Notion integration: validate env at startup; do not crash if missing (degraded)
+    try:
+        from app.services.notion_env import validate_notion_env_at_startup
+        validate_notion_env_at_startup()
+    except Exception as e:
+        logger.warning("Notion startup validation failed (non-fatal): %s", e)
+
     # Deploy secrets diagnostics: log presence (never values) for operator visibility
     _gh = bool((os.getenv("GITHUB_TOKEN") or "").strip())
     _gh_ws = bool((os.getenv("GITHUB_WEBHOOK_SECRET") or "").strip())
@@ -435,20 +442,11 @@ async def startup_event():
             else:
                 logger.warning("PERF: Telegram commands DISABLED for performance testing")
 
-            # Agent scheduler: periodic Notion task scanner
+            # Agent scheduler: periodic Notion task scanner (always start; pre-flight will auto-repair or skip)
             try:
                 from app.services.agent_scheduler import start_agent_scheduler_loop
-                notion_api_key = (os.getenv("NOTION_API_KEY") or "").strip()
-                notion_task_db = (os.getenv("NOTION_TASK_DB") or "").strip()
-                if notion_api_key and notion_task_db:
-                    asyncio.create_task(start_agent_scheduler_loop())
-                    logger.info("Agent scheduler loop started (Notion task scanner)")
-                else:
-                    logger.info(
-                        "Agent scheduler loop skipped: NOTION_API_KEY=%s NOTION_TASK_DB=%s",
-                        "set" if notion_api_key else "MISSING",
-                        "set" if notion_task_db else "MISSING",
-                    )
+                asyncio.create_task(start_agent_scheduler_loop())
+                logger.info("Agent scheduler loop started (Notion task scanner; pre-flight auto-repair enabled)")
             except Exception as e:
                 logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
         except Exception as e:

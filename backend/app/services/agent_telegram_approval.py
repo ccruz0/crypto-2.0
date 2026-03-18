@@ -47,9 +47,9 @@ _SECTIONS_CACHE: dict[str, dict[str, Any]] = {}
 _DEPLOY_APPROVAL_SENT: dict[str, float] = {}
 _DEPLOY_APPROVAL_DEDUP_HOURS = 24
 
-# Deduplication: task_id -> timestamp of last investigation info sent. Prevents spam
-# when the same task is retried or re-processed.
-_INVESTIGATION_INFO_SENT: dict[str, float] = {}
+# Investigation info dedup: DB-backed (TradingSettings). Key: agent_info_dedup:investigation_complete:<task_id>
+# Replaces volatile JSONL/memory; survives restarts and is shared across workers.
+_AGENT_INFO_DEDUP_KEY_PREFIX = "agent_info_dedup:investigation_complete:"
 _INVESTIGATION_INFO_DEDUP_HOURS = 24
 
 # Telegram message length limit
@@ -333,6 +333,15 @@ def send_task_approval_request(
     target_chat = (chat_id or "").strip() or _get_default_chat_id()
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None, "summary": "no chat_id"}
+
+    # Quiet mode: only deploy and critical go to Telegram; do not send initial approval request
+    try:
+        from app.services.agent_telegram_policy import is_quiet_mode
+        if is_quiet_mode():
+            logger.info("send_task_approval_request: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
+            return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None, "summary": "quiet mode: not sent"}
+    except Exception:
+        pass
 
     # Build message (structured format for clarity)
     rl = (risk_level or "").strip().lower()
@@ -1571,54 +1580,92 @@ def _load_sections_from_disk(task_id: str) -> dict[str, Any]:
     return {}
 
 
-def _should_skip_investigation_info_dedup(task_id: str) -> bool:
-    """Return True if we already sent investigation info for this task recently.
+def _investigation_info_dedup_key(task_id: str) -> str:
+    """DB key for investigation-complete dedup. Shared across workers/restarts."""
+    return f"{_AGENT_INFO_DEDUP_KEY_PREFIX}{task_id}"
 
-    Uses both in-memory cache (fast path) and activity log (persistent across workers/restarts).
-    """
-    now = time.time()
-    cutoff = now - (_INVESTIGATION_INFO_DEDUP_HOURS * 3600)
-    with _STORE_LOCK:
-        last_sent = _INVESTIGATION_INFO_SENT.get(task_id)
-        if last_sent and last_sent > cutoff:
-            logger.info(
-                "send_investigation_complete_info: skipping duplicate task_id=%s last_sent=%.0fs ago (memory)",
-                task_id, now - last_sent,
-            )
-            return True
 
-    # Persistent check: activity log is shared across Gunicorn workers and survives restarts
+def _get_investigation_info_last_sent_db(task_id: str) -> datetime | None:
+    """Read last-sent timestamp from DB. Returns None if not found or on error."""
     try:
-        from datetime import datetime as dt
-        from app.services.agent_activity_log import get_recent_agent_events
-        events = get_recent_agent_events(limit=500)
-        for ev in events:
-            if ev.get("event_type") != "investigation_info_sent" or ev.get("task_id") != task_id:
-                continue
-            if not ev.get("details", {}).get("sent", True):
-                continue  # Only dedup on successful sends
-            ts_str = ev.get("timestamp")
-            if not ts_str:
-                continue
-            try:
-                # Parse ISO timestamp
-                ts = ts_str.replace("Z", "+00:00")
-                ev_dt = dt.fromisoformat(ts)
-                if ev_dt.tzinfo is None:
-                    ev_dt = ev_dt.replace(tzinfo=timezone.utc)
-                ev_ts = ev_dt.timestamp()
-                if ev_ts > cutoff:
-                    logger.info(
-                        "send_investigation_complete_info: skipping duplicate task_id=%s (activity log, %.0fs ago)",
-                        task_id, now - ev_ts,
-                    )
-                    return True
-            except (ValueError, TypeError):
-                continue
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return None
+    db = SessionLocal()
+    try:
+        key = _investigation_info_dedup_key(task_id)
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if not row or not row.setting_value:
+            return None
+        return datetime.fromisoformat(row.setting_value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
     except Exception as e:
-        logger.debug("investigation_info dedup activity_log check failed: %s", e)
+        logger.debug("agent_telegram_approval: _get_investigation_info_last_sent_db failed: %s", e)
+        return None
+    finally:
+        db.close()
 
-    return False
+
+def _set_investigation_info_last_sent_db(task_id: str, ts: datetime) -> None:
+    """Write last-sent timestamp to DB."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = _investigation_info_dedup_key(task_id)
+        value = ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            row.setting_value = value
+        else:
+            db.add(TradingSettings(setting_key=key, setting_value=value))
+        db.commit()
+    except Exception as e:
+        logger.debug("agent_telegram_approval: _set_investigation_info_last_sent_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _should_skip_investigation_info_dedup(task_id: str) -> bool:
+    """Return True if we already sent investigation info for this task within cooldown.
+
+    Uses DB (TradingSettings) as source of truth. Survives restarts and shared across workers.
+    JSONL/agent_activity is no longer used for dedup (logging only).
+    """
+    from datetime import timedelta
+
+    key = _investigation_info_dedup_key(task_id)
+    now = datetime.now(timezone.utc)
+    last_sent = _get_investigation_info_last_sent_db(task_id)
+
+    if last_sent is None:
+        logger.info(
+            "investigation_info_dedup task_id=%s dedup_key=%s decision=allowed reason=no_previous_send",
+            task_id, key,
+        )
+        return False
+
+    cooldown = timedelta(hours=_INVESTIGATION_INFO_DEDUP_HOURS)
+    hours_ago = (now - last_sent).total_seconds() / 3600
+
+    if now - last_sent >= cooldown:
+        logger.info(
+            "investigation_info_dedup task_id=%s dedup_key=%s last_sent=%s decision=allowed reason=cooldown_elapsed hours_ago=%.1f",
+            task_id, key, last_sent.isoformat(), hours_ago,
+        )
+        return False
+
+    logger.info(
+        "investigation_info_dedup task_id=%s dedup_key=%s last_sent=%s decision=skipped reason=within_cooldown hours_ago=%.1f cooldown_h=%d",
+        task_id, key, last_sent.isoformat(), hours_ago, _INVESTIGATION_INFO_DEDUP_HOURS,
+    )
+    return True
 
 
 def send_investigation_complete_info(
@@ -1645,6 +1692,14 @@ def send_investigation_complete_info(
         return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    try:
+        from app.services.agent_telegram_policy import is_quiet_mode
+        if is_quiet_mode():
+            logger.info("send_investigation_complete_info: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
+            return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None}
+    except Exception:
+        pass
 
     if _should_skip_investigation_info_dedup(task_id):
         return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None, "skipped": "dedup"}
@@ -1677,13 +1732,18 @@ def send_investigation_complete_info(
 
     sent, message_id = _send_telegram_message(target_chat, text, reply_markup)
     if sent:
-        with _STORE_LOCK:
-            _INVESTIGATION_INFO_SENT[task_id] = time.time()
-    logger.info(
-        "send_investigation_complete_info task_id=%s sent=%s message_id=%s",
-        task_id, sent, message_id,
-    )
+        _set_investigation_info_last_sent_db(task_id, datetime.now(timezone.utc))
+        logger.info(
+            "investigation_info_dedup task_id=%s dedup_key=%s decision=sent message_id=%s (recorded to DB)",
+            task_id, _investigation_info_dedup_key(task_id), message_id,
+        )
+    else:
+        logger.info(
+            "send_investigation_complete_info task_id=%s sent=False message_id=%s",
+            task_id, message_id,
+        )
 
+    # Operational logging only (JSONL); no longer used for dedup
     try:
         from app.services.agent_activity_log import log_agent_event
         log_agent_event(
@@ -1716,6 +1776,14 @@ def send_investigation_complete_approval(
         return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    try:
+        from app.services.agent_telegram_policy import is_quiet_mode
+        if is_quiet_mode():
+            logger.info("send_investigation_complete_approval: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
+            return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None}
+    except Exception:
+        pass
 
     sections = sections or {}
     if not sections or not any(
@@ -1778,6 +1846,9 @@ def build_deploy_approval_message(
     repo_area = repo_area or {}
 
     risk = infer_risk_classification(sections=sections, task=task, repo_area=repo_area)
+    root_cause = _section_text(sections, "Root Cause", max_len=200)
+    if root_cause == "(not available)":
+        root_cause = _section_text(sections, "Task Summary", max_len=200)
     change_summary = _section_text(sections, "Recommended Fix", max_len=200)
     if change_summary == "(not available)":
         change_summary = _section_text(sections, "Task Summary", max_len=200)
@@ -1806,11 +1877,13 @@ def build_deploy_approval_message(
         "",
         f"<b>TASK</b>\n{title[:200]}",
         "",
-        f"<b>CHANGE SUMMARY</b>\n{change_summary}",
+        f"<b>ROOT CAUSE</b>\n{root_cause}",
+        "",
+        f"<b>SOLUTION</b>\n{change_summary}",
         "",
         f"<b>FILES CHANGED</b>\n{files_block}",
         "",
-        f"<b>TEST STATUS</b>\n{test_status_display}",
+        f"<b>VERIFICATION</b>\n{test_status_display}",
         "",
         f"<b>BENEFITS</b>\n{benefits}",
         "",
@@ -1818,7 +1891,8 @@ def build_deploy_approval_message(
         "",
         f"<b>SCOPE</b> {scope} · <b>RISK</b> {risk}",
         "",
-        "<b>ACTION REQUIRED</b>\nApprove Deploy to trigger deployment, or Smoke Check first.",
+        "<b>Do you want to deploy?</b>",
+        "Use <b>Approve Deploy</b> to trigger deployment, or <b>Smoke Check</b> first.",
     ]
     return "\n".join(lines)
 
@@ -1965,6 +2039,7 @@ def send_needs_revision_reinvestigate(
 
     Buttons: [Re-investigate] [View Report]
     Re-investigate moves task to investigating and scheduler will re-run with feedback.
+    Suppressed in quiet mode (only deploy and critical are sent).
     """
     task_id = (task_id or "").strip()
     title = (title or "(no title)")[:200]
@@ -1974,6 +2049,14 @@ def send_needs_revision_reinvestigate(
         return {"sent": False, "chat_id": "", "task_id": "", "message_id": None}
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
+
+    try:
+        from app.services.agent_telegram_policy import is_quiet_mode
+        if is_quiet_mode():
+            logger.info("send_needs_revision_reinvestigate: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
+            return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None}
+    except Exception:
+        pass
 
     feedback_preview = (feedback or "Output does not address task requirements.")[:400]
     lines = [

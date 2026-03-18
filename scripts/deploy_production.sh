@@ -6,6 +6,10 @@ set -euo pipefail
 # Usage:
 #   SERVER=175.41.189.249 ./scripts/deploy_production.sh
 #
+# If SSH is unavailable (timeout): use SSM-based deploy instead:
+#   ./scripts/deploy_production_via_ssm.sh
+# See: docs/runbooks/PROD_DEPLOY_WHEN_SSH_FAILS.md
+#
 # Steps:
 #   1) Run pre-deploy checks (local + DRY_RUN)
 #   2) Ask for explicit confirmation

@@ -62,6 +62,7 @@ def main() -> None:
         from app.services.notion_task_reader import (
             get_pending_notion_tasks,
             get_tasks_by_status,
+            get_raw_status_distribution,
             test_notion_task_scan,
         )
         from app.services.agent_recovery import _investigation_artifacts_exist
@@ -69,6 +70,17 @@ def main() -> None:
         print(f"\n[ERROR] Import failed: {e}")
         print("Run from backend: cd backend && python scripts/diagnose_stuck_notion_tasks.py")
         return
+
+    # 0. Raw status distribution (diagnostic: exact values Notion stores)
+    raw_dist = get_raw_status_distribution(max_pages=50)
+    print(f"\n0. Raw Status values in Notion (first 50 pages):")
+    if raw_dist.get("ok"):
+        for status_val, page_ids in sorted(raw_dist.get("by_status", {}).items()):
+            sv = (status_val or "").strip()
+            pickable_note = " ← PICKABLE" if sv in ("Planned", "Backlog", "Ready for Investigation", "Blocked") else ""
+            print(f"   - {repr(status_val or '(empty)')}: {len(page_ids)} task(s) {pickable_note}")
+    else:
+        print(f"   Error: {raw_dist.get('error', 'unknown')}")
 
     # 1. Pickable tasks (what intake sees)
     pickable = get_pending_notion_tasks()

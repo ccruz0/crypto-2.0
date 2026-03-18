@@ -1,32 +1,33 @@
 # Telegram Agent Commands — Multi-Agent Operator Interface
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** 2026-03-15
 
 Single Telegram bot; backend routes tasks to the correct agent. No separate bots per agent.
 
 ---
 
-## Telegram Channel Responsibilities
+## Telegram Context Responsibilities
 
-| Channel | Purpose | Use For |
+| Context | Purpose | Use For |
 |---------|---------|---------|
-| **HILOVIVO3.0** | Main operator channel for ATP agent commands | `/investigate`, `/agent`, `/runtime-check` — backend routes to Sentinel, Ledger, etc. |
-| **Claw** | OpenClaw native bot | OpenClaw-native commands: `/new`, `/reset`, `/status`, `/context` — not the main operator channel for ATP agents |
-| **AWS_alerts** | System health / anomaly / ops alerts | Technical alerts, health checks, anomalies — not the main conversation channel for agent investigations |
+| **ATP Control** | Command/control interface (private group or direct chat) | `/investigate`, `/agent`, `/runtime-check`, `/help` — all agent commands |
+| **HILOVIVO3.0** | Alerts-only channel | Signals, orders, reports — no commands |
+| **Claw** | OpenClaw native bot | OpenClaw-native commands: `/new`, `/reset`, `/status`, `/context` |
+| **AWS_alerts** | Technical alerts channel | System health, anomalies, ops — read-only |
 
-**Rule:** Agent operations for ATP must happen in **HILOVIVO3.0**. Use Claw for native OpenClaw commands. AWS_alerts is reserved for technical alerts.
+**Rule:** Agent operations must happen in **ATP Control** (private group or direct chat). HILOVIVO3.0 is alerts-only. See [ATP_CONTROL_SETUP.md](ATP_CONTROL_SETUP.md).
 
 ---
 
 ## Commands
 
-| Command | Purpose | Channel |
+| Command | Purpose | Context |
 |---------|---------|---------|
-| `/investigate <problem text>` | Describe an issue; backend auto-selects the best agent | HILOVIVO3.0 |
-| `/agent <agent_name> <problem text>` | Force a specific agent | HILOVIVO3.0 |
-| `/runtime-check` | Verify runtime dependencies (pydantic, etc.) | HILOVIVO3.0 |
-| `/help` | Show all commands including agent section | HILOVIVO3.0 |
+| `/investigate <problem text>` | Describe an issue; backend auto-selects the best agent | ATP Control |
+| `/agent <agent_name> <problem text>` | Force a specific agent | ATP Control |
+| `/runtime-check` | Verify runtime dependencies (pydantic, etc.) | ATP Control |
+| `/help` | Show all commands including agent section | ATP Control |
 
 ---
 

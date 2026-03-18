@@ -48,6 +48,7 @@ TASK_STATUS_INVESTIGATION_COMPLETE = "investigation-complete"
 TASK_STATUS_READY_FOR_PATCH = "ready-for-patch"
 TASK_STATUS_PATCHING = "patching"
 TASK_STATUS_TESTING = "testing"
+TASK_STATUS_READY_FOR_DEPLOY = "ready-for-deploy"
 TASK_STATUS_AWAITING_DEPLOY_APPROVAL = "awaiting-deploy-approval"
 TASK_STATUS_DEPLOYING = "deploying"
 TASK_STATUS_DONE = "done"
@@ -69,6 +70,7 @@ ALLOWED_TASK_STATUSES = (
     TASK_STATUS_READY_FOR_PATCH,
     TASK_STATUS_PATCHING,
     TASK_STATUS_TESTING,
+    TASK_STATUS_READY_FOR_DEPLOY,
     TASK_STATUS_AWAITING_DEPLOY_APPROVAL,
     TASK_STATUS_DEPLOYING,
     TASK_STATUS_DONE,
@@ -93,9 +95,10 @@ EXTENDED_LIFECYCLE_TRANSITIONS: dict[str, str] = {
     "investigating": "investigation-complete",
     "investigation-complete": "ready-for-patch",
     "ready-for-patch": "patching",
-    "patching": "testing",
+    "patching": "ready-for-deploy",
     "needs-revision": "investigating",
-    "testing": "awaiting-deploy-approval",
+    "testing": "ready-for-deploy",
+    "ready-for-deploy": "deploying",
     "awaiting-deploy-approval": "deploying",
     "deploying": "done",
 }
@@ -128,6 +131,7 @@ NOTION_STATUS_INTERNAL_TO_DISPLAY: dict[str, str] = {
     "ready-for-patch": "Ready for Patch",
     "patching": "Patching",
     "testing": "Testing",
+    "ready-for-deploy": "Ready for Deploy",
     "awaiting-deploy-approval": "Awaiting Deploy Approval",
     "deploying": "Deploying",
     "done": "Done",
@@ -252,6 +256,15 @@ def _get_config() -> tuple[str, str]:
     if not database_id:
         database_id = (getattr(settings, "NOTION_TASK_DB", None) or "").strip()
     return api_key, database_id
+
+
+def notion_is_configured() -> bool:
+    """
+    Return True if NOTION_API_KEY and NOTION_TASK_DB are both set.
+    Used by task_compiler and callers to preflight before creating tasks.
+    """
+    api_key, database_id = _get_config()
+    return bool(api_key and database_id)
 
 
 def _get_service_name() -> str:
@@ -406,6 +419,8 @@ def create_notion_task(
     *,
     status: str = DEFAULT_STATUS,
     source: str = DEFAULT_SOURCE,
+    execution_mode: Optional[str] = None,
+    priority_score: Optional[int] = None,
     version_metadata: dict[str, Any] | None = None,
 ) -> Optional[dict[str, Any]]:
     """
@@ -439,6 +454,11 @@ def create_notion_task(
         No exceptions; errors are logged and None is returned so callers
         (trading bot, monitoring, OpenClaw) can continue without failing.
     """
+    dry_run = (os.environ.get("AGENT_DRY_RUN") or os.environ.get("NOTION_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
+    if dry_run:
+        logger.info("dry_run skip create_notion_task title=%s project=%s type=%s", (title or "")[:50], project, type)
+        return {"id": "dry-run-fake-id", "url": None, "dry_run": True}
+
     api_key, database_id = _get_config()
     if not api_key:
         logger.warning("Notion integration skipped: NOTION_API_KEY not set")
@@ -485,20 +505,37 @@ def create_notion_task(
         enriched_details = (caller_details[:max_caller_len].rstrip() + "..." + suffix)
 
     # Property keys must match the Notion database schema.
-    # If your database uses Select type for Project/Type/Priority/Status/Source,
-    # use {"select": {"name": "Option Name"}} instead of rich_text for those keys.
-    properties: dict[str, Any] = {
+    # Status: use Select when we have a known status so pickup (reader filter by Status Select) finds the task.
+    status_internal = (status or "").strip().lower()
+    if status_internal in NOTION_STATUS_INTERNAL_TO_DISPLAY:
+        status_display = notion_status_to_display(status)
+        properties_status: dict[str, Any] = {"select": {"name": status_display}}
+    else:
+        properties_status = {"rich_text": _rich_text(status)}
+
+    properties = {
         "Task": {"title": _title(title)},
         "Project": {"rich_text": _rich_text(project)},
         "Type": {"rich_text": _rich_text(type)},
         "Priority": {"rich_text": _rich_text(resolved_priority)},
-        "Status": {"rich_text": _rich_text(status)},
+        "Status": properties_status,
         "Source": {"rich_text": _rich_text(source)},
         "Details": {"rich_text": _rich_text(enriched_details)},
     }
 
     if github_link and github_link.strip():
         properties["GitHub Link"] = {"url": github_link.strip()}
+
+    # Execution Mode: optional; when set, write as Select "Strict" or "Normal" (schema-dependent)
+    if execution_mode and str(execution_mode).strip():
+        mode = str(execution_mode).strip()
+        display = "Strict" if mode.lower() == "strict" else "Normal"
+        properties["Execution Mode"] = {"select": {"name": display}}
+
+    # Priority Score: optional 0–100 number for scheduler ordering (property "Priority Score" in Notion)
+    if priority_score is not None:
+        value = max(0, min(100, int(priority_score)))
+        properties["Priority Score"] = {"number": value}
 
     payload: dict[str, Any] = {
         "parent": {"database_id": database_id, "type": "database_id"},
@@ -651,6 +688,100 @@ def create_improvement_task(
     )
 
 
+def create_patch_task_from_investigation(
+    investigation_task_id: str,
+    investigation_title: str,
+    artifact_body: str,
+    sections: dict[str, Any],
+    *,
+    task: Optional[dict[str, Any]] = None,
+    repo_area: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Create a Cursor-ready patch task in Notion after a strict investigation passes.
+
+    Used by the handoff flow: when OpenClaw strict validation passes, this creates
+    a new task for implementation (Type=Patch, Status=Planned, Source=OpenClaw)
+    with root cause, files to change, fix summary, and Cursor-ready prompt in details.
+
+    Args:
+        investigation_task_id: Notion page ID of the investigation task.
+        investigation_title: Title of the investigation task (prefixed with PATCH:).
+        artifact_body: Full investigation output (markdown); used as Cursor prompt.
+        sections: Parsed sections (Root Cause, Recommended Fix, etc.).
+        task: Optional task dict for project/context.
+        repo_area: Optional repo_area for likely files.
+
+    Returns:
+        Notion page dict if created, None otherwise (e.g. dedup or API error).
+    """
+    title = "PATCH: " + (investigation_title or "Implementation").strip()
+    project = "Operations"
+    if task and isinstance(task, dict):
+        p = (task.get("project") or "").strip()
+        if p:
+            project = p
+
+    def _section(name: str, fallback: str = "") -> str:
+        v = (sections or {}).get(name)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return fallback
+        return str(v).strip()[:800]
+
+    root_cause = _section("Root Cause", "(see Cursor prompt below)")
+    recommended_fix = _section("Recommended Fix", "(see Cursor prompt below)")
+    files_block = _section("Files Affected", "")
+    if not files_block and repo_area:
+        likely = (repo_area.get("likely_files") or [])[:10]
+        if likely:
+            files_block = "\n".join(f"- {f}" for f in likely)
+
+    validation_steps = _section("Validation", "") or _section("How to verify", "")
+    if not validation_steps:
+        validation_steps = "Run existing tests; manual smoke check if applicable."
+
+    cursor_prompt = (artifact_body or "").strip()[:4000]
+    if not cursor_prompt:
+        cursor_prompt = f"Root cause: {root_cause}\n\nRecommended fix: {recommended_fix}"
+
+    details_parts = [
+        f"Original investigation task ID: {investigation_task_id}",
+        "",
+        "## Root cause summary",
+        root_cause,
+        "",
+        "## Files to change",
+        files_block or "(see Cursor prompt)",
+        "",
+        "## Minimal fix summary",
+        recommended_fix,
+        "",
+        "---",
+        "## Cursor-ready implementation prompt",
+        "",
+        cursor_prompt,
+        "",
+        "---",
+        "## Validation steps",
+        validation_steps,
+    ]
+    details = "\n".join(details_parts)
+
+    logger.info(
+        "Creating patch task from investigation task_id=%s title=%r",
+        investigation_task_id,
+        title,
+    )
+    return create_notion_task(
+        title=title,
+        project=project,
+        type="Patch",
+        details=details,
+        status="planned",
+        source="OpenClaw",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Status updates (read/write safe helpers for agents)
 # ---------------------------------------------------------------------------
@@ -690,6 +821,11 @@ def update_notion_task_status(
     """
     normalized_page_id = (page_id or "").strip()
     normalized_status = (status or "").strip().lower()
+
+    dry_run = (os.environ.get("AGENT_DRY_RUN") or os.environ.get("NOTION_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
+    if dry_run:
+        logger.info("dry_run skip update_notion_task_status page_id=%s status=%s", normalized_page_id[:12] if normalized_page_id else "?", normalized_status)
+        return True
 
     if not normalized_page_id:
         logger.warning("Notion status update skipped: empty page_id status=%r", normalized_status)
@@ -808,6 +944,114 @@ def update_notion_task_status(
         )
 
     return True
+
+
+# Default source names for auto-promotion of new Investigation tasks (Planned → Ready for Investigation)
+DEFAULT_AUTO_PROMOTE_SOURCES = ("Carlos",)
+
+
+def _get_auto_promote_source_names() -> tuple[str, ...]:
+    """Read NOTION_AUTO_PROMOTE_SOURCES env (comma-separated); default Carlos."""
+    raw = (os.environ.get("NOTION_AUTO_PROMOTE_SOURCES") or "").strip()
+    if not raw:
+        return DEFAULT_AUTO_PROMOTE_SOURCES
+    return tuple(s.strip() for s in raw.split(",") if s.strip())
+
+
+def promote_planned_investigation_tasks_to_ready(
+    *,
+    source_names: Optional[list[str]] = None,
+    max_tasks: int = 50,
+) -> list[str]:
+    """
+    Find new Investigation tasks with Status=Planned and Source in allowed list,
+    and update their status to Ready for Investigation so the scheduler picks them up.
+
+    Runs once per caller invocation; only touches Planned tasks (never in-progress).
+    Logs each promotion: auto_promoted_to_ready_for_investigation task_id=...
+
+    Args:
+        source_names: If provided, only promote tasks whose Source (case-insensitive)
+            is in this list. If None, uses NOTION_AUTO_PROMOTE_SOURCES env or default ("Carlos").
+        max_tasks: Maximum number of Planned tasks to fetch from Notion (default 50).
+
+    Returns:
+        List of Notion task IDs that were promoted.
+    """
+    promoted: list[str] = []
+    sources = source_names if source_names is not None else list(_get_auto_promote_source_names())
+    if not sources:
+        return promoted
+
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+    except Exception as e:
+        logger.warning("promote_planned_investigation_tasks_to_ready: import get_tasks_by_status failed %s", e)
+        return promoted
+
+    api_key, _ = _get_config()
+    if not api_key:
+        return promoted
+
+    tasks = get_tasks_by_status(
+        ["Planned", "planned"],
+        max_results=max_tasks,
+    )
+    for t in tasks:
+        task_id = (t.get("id") or "").strip()
+        task_type = (t.get("type") or "").strip().lower()
+        source = (t.get("source") or "").strip()
+        if not task_id or task_type != "investigation":
+            continue
+        if not any((source or "").lower() == (s or "").lower() for s in sources):
+            continue
+        ok = update_notion_task_status(task_id, TASK_STATUS_READY_FOR_INVESTIGATION)
+        if ok:
+            promoted.append(task_id)
+            logger.info(
+                "auto_promoted_to_ready_for_investigation task_id=%s",
+                task_id,
+            )
+    return promoted
+
+
+def update_notion_task_priority(page_id: str, priority_score: int) -> bool:
+    """
+    Set the "Priority Score" number property (0-100) on a Notion task page.
+    Used by the task compiler when reusing a task (recompute + store) and by scheduler visibility.
+    Best-effort: if the property does not exist or the API fails, returns False and never raises.
+    """
+    normalized_page_id = (page_id or "").strip()
+    if not normalized_page_id:
+        return False
+    value = max(0, min(100, int(priority_score)))
+    api_key, _ = _get_config()
+    if not api_key:
+        return False
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    payload: dict[str, Any] = {"properties": {"Priority Score": {"number": value}}}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.patch(
+                f"{NOTION_API_BASE}/pages/{normalized_page_id}",
+                json=payload,
+                headers=headers,
+            )
+        if r.status_code == 200:
+            logger.debug("Notion priority score updated page_id=%s score=%s", normalized_page_id[:12], value)
+            return True
+        logger.debug(
+            "Notion priority score update skipped page_id=%s score=%s http=%d (add Priority Score Number 0-100 to DB if needed)",
+            normalized_page_id[:12], value, r.status_code,
+        )
+        return False
+    except Exception as e:
+        logger.debug("Notion priority score update failed page_id=%s err=%s", normalized_page_id[:12], e)
+        return False
 
 
 def update_notion_deploy_progress(page_id: str, percent: int | float) -> bool:
@@ -1083,7 +1327,7 @@ def advance_notion_task_status(
     Extended mapping (use_extended_lifecycle=True):
         backlog -> ready-for-investigation -> investigating ->
         investigation-complete -> ready-for-patch -> patching ->
-        testing -> awaiting-deploy-approval -> deploying -> done
+        testing / patching -> ready-for-deploy -> deploying -> done
 
     Terminal statuses (done, deployed, rejected) return False (no-op).
     Never raises.

@@ -66,13 +66,19 @@ repeatedly in both containers. Commands in ATP Control will not reply.
 ### How to check logs on EC2
 
 ```bash
-# SSH/SSM into EC2, then:
+# SSH/SSM into EC2, then cd to repo (path may vary):
+cd /home/ubuntu/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 # Primary backend (should acquire lock and process commands)
 docker compose --profile aws logs backend-aws 2>&1 | grep -E '\[TG\]' | tail -50
 
 # Canary (should not spam lock warnings)
 docker compose --profile aws logs backend-aws-canary 2>&1 | grep -E '\[TG\]|Another poller' | tail -20
+```
+
+**Note:** If `cd` fails in SSM (e.g. "can't cd"), try running as ubuntu:
+```bash
+sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws-canary 2>&1 | grep -E "TG|poller" | tail -15'
 ```
 
 ### ATP Control verification

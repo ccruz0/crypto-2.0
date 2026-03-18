@@ -118,6 +118,9 @@ When the container runs behind a reverse proxy (e.g. `https://dashboard.hilovivo
 | [OPENCLAW_504_UPSTREAM_DIAGNOSIS.md](OPENCLAW_504_UPSTREAM_DIAGNOSIS.md) | 504 en `/openclaw/`: validación por invariantes (3 comandos → 1 cambio; sin interpretar, solo pegar). |
 | [FIX_OPENCLAW_308_REDIRECT.md](FIX_OPENCLAW_308_REDIRECT.md) | 308/404 routing issues for `/openclaw`. |
 | [OPENCLAW_IFRAME_BLANK_DIAGNOSIS.md](OPENCLAW_IFRAME_BLANK_DIAGNOSIS.md) | Blank iframe after auth (headers/401). |
+| [DOCKER_GROUP_FIX_RUNBOOK.md](DOCKER_GROUP_FIX_RUNBOOK.md) | `docker: Permission denied` — add ubuntu to docker group so OpenClaw tools can run diagnostics. |
+| [OPENCLAW_RUNTIME_ACCESS_FIX.md](OPENCLAW_RUNTIME_ACCESS_FIX.md) | Docker access, log visibility, run-lab-command, runtime-diagnostics for evidence-based investigations. |
+| [OPENCLAW_RUNTIME_LOGS.md](OPENCLAW_RUNTIME_LOGS.md) | Log path: /var/log/openclaw/ vs /var/log/openclaw.log; use run-lab-command for docker logs. |
 | [OPENCLAW_PLACEHOLDER_AND_WEBSOCKET.md](OPENCLAW_PLACEHOLDER_AND_WEBSOCKET.md) | Page shows "Placeholder" or console error `WebSocket connection to 'ws://localhost:8081/' failed` — deploy real image on LAB; app must use same-origin WebSocket URL. |
 | [OPENCLAW_FRONTEND_WEBSOCKET_AND_BASEPATH.md](OPENCLAW_FRONTEND_WEBSOCKET_AND_BASEPATH.md) | **Implementation guide for the OpenClaw frontend repo:** remove `ws://localhost:8081`, use env `NEXT_PUBLIC_OPENCLAW_WS_URL` / `VITE_OPENCLAW_WS_URL` + same-origin `/openclaw/ws`, basePath for `/openclaw/`. |
 | [OPENCLAW_END_TO_END_EXECUTION.md](OPENCLAW_END_TO_END_EXECUTION.md) | **Tight execution path:** (1) deploy real image on LAB, (2) fix WebSocket in OpenClaw frontend repo and rebuild, (3) confirm Nginx WS headers, (4) browser test. Includes search commands to find WS usage in the frontend repo. |

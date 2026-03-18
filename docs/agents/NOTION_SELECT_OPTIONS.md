@@ -71,6 +71,7 @@ In the database **AI Task System**, add or align these properties with **these e
 - **Details** — Rich text (full description).
 - **Priority** — Select. Add options: Critical, High, Medium, Low.
 - **Source** — Text (e.g. openclaw, monitoring).
+- **Execution Mode** — Select (optional). Options: Normal, Strict. When Strict, OpenClaw blocks ready-for-patch until proof criteria are met.
 - **GitHub Link** — URL (optional).
 - **Test Status** — Text (written by backend).
 - **Deploy Progress** — Number, 0–100 (optional).

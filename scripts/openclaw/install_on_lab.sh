@@ -20,6 +20,8 @@ sudo apt update -qq
 
 echo "=== 2) Docker + Git ==="
 sudo apt install -y docker.io docker-compose-v2 git
+# Ensure ubuntu (OpenClaw runtime user) can run docker without sudo
+sudo usermod -aG docker ubuntu 2>/dev/null || true
 sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
 
 echo "=== 3) Repo ==="

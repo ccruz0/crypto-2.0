@@ -356,9 +356,16 @@ def get_agent_help_content() -> str:
     """Return the multi-agent help section for /help."""
     return """
 
-<b>Multi-Agent Operations</b> — Use this channel for ATP agent operations.
-Use Claw for native OpenClaw commands. AWS_alerts is reserved for technical alerts.
+<b>ATP Command Console</b>
+This chat/group is the ATP command console. Commands work here.
 
+<b>Channel roles</b>
+• HILOVIVO3.0 — alerts-only (signals, orders, reports). No commands.
+• Claw — OpenClaw-native only (/new, /reset, /status, /context).
+• AWS_alerts — technical alerts only.
+
+<b>Multi-Agent Operations</b>
+/task &lt;description&gt; — Create Notion task from Telegram (e.g. /task Investigate alerts).
 /investigate &lt;problem&gt; — Describe an issue; backend selects the best agent.
 /agent &lt;agent&gt; &lt;problem&gt; — Force a specific agent.
 /runtime-check — Verify runtime dependencies.

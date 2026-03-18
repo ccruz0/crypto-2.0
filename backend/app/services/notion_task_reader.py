@@ -26,6 +26,21 @@ NOTION_VERSION = "2022-06-28"
 # Priority order for sorting (higher index = lower priority)
 _PRIORITY_ORDER = ("critical", "high", "medium", "low")
 
+# Ignore tasks with Priority Score below this unless no higher-priority tasks (idle)
+PRIORITY_SCORE_LOW_THRESHOLD = 20
+
+# Exact Notion Status/Select option names for pickup filter — must match schema exactly.
+# Notion API is case-sensitive; lowercase variants cause 400 "select option not found".
+# Normalization to internal form (planned, backlog, etc.) happens AFTER fetch in _parse_page.
+NOTION_PICKABLE_STATUS_OPTIONS = (
+    "Planned",
+    "Backlog",
+    "Ready for Investigation",
+    "Blocked",
+)
+# Internal normalized status names (used for comparisons after parsing).
+INTERNAL_PICKABLE_STATUSES = ("planned", "backlog", "ready-for-investigation", "blocked")
+
 
 def _get_config() -> tuple[str, str]:
     """
@@ -104,10 +119,73 @@ def _extract_url(prop_value: Any) -> str:
     return (prop_value.get("url") or "").strip()
 
 
+def _extract_priority_score(props: dict[str, Any]) -> int:
+    """Extract Priority Score (0–100 number) from Notion props. Returns 0 if missing or invalid."""
+    for name in ("Priority Score", "priority_score", "PriorityScore"):
+        if name not in props:
+            continue
+        val = props.get(name)
+        if val is None:
+            continue
+        if isinstance(val, dict) and "number" in val:
+            try:
+                n = val["number"]
+                return max(0, min(100, int(n))) if n is not None else 0
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
 def _normalize_status_from_notion(raw_status: str) -> str:
     """Map Notion Status (display or internal) to backend internal value (lowercase, hyphenated)."""
     from app.services.notion_tasks import notion_status_from_display
     return notion_status_from_display(raw_status or "")
+
+
+def _normalize_execution_mode(raw: str) -> str:
+    """Normalize execution_mode to 'normal' or 'strict'. Default 'normal' when absent or invalid."""
+    v = (raw or "").strip().lower()
+    if v == "strict":
+        return "strict"
+    return "normal"
+
+
+def _extract_execution_mode_raw(props: dict[str, Any]) -> str:
+    """Extract raw Execution Mode for debug logging. Returns repr of value or 'MISSING'."""
+    for name in ("Execution Mode", "execution_mode", "ExecutionMode"):
+        if name in props:
+            val = props.get(name)
+            if val is None:
+                return f"{name}=None"
+            if isinstance(val, dict):
+                sel = val.get("select")
+                if isinstance(sel, dict):
+                    n = sel.get("name")
+                    return f"{name}(select)={n!r}"
+                st = val.get("status")
+                if isinstance(st, dict):
+                    n = st.get("name")
+                    return f"{name}(status)={n!r}"
+                rt = val.get("rich_text")
+                if isinstance(rt, list) and rt:
+                    return f"{name}(rich_text)={_extract_plain_text(rt)!r}"
+                return f"{name}(dict)={list(val.keys())}"
+            return f"{name}={val!r}"
+    return "MISSING"
+
+
+def _extract_execution_mode_from_props(props: dict[str, Any]) -> str:
+    """Extract execution_mode from Notion props. Tries multiple property names and structures."""
+    for name in ("Execution Mode", "execution_mode", "ExecutionMode"):
+        if name not in props:
+            continue
+        val = props.get(name)
+        if val is None:
+            continue
+        extracted = _extract_plain_text(val)
+        if extracted:
+            return _normalize_execution_mode(extracted)
+    return "normal"
 
 
 def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
@@ -174,9 +252,34 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
         "test_status": _prop_text("Test Status", "test_status"),
         "deploy_approval": _prop_text("Deploy Approval", "deploy_approval"),
         "final_result": _prop_text("Final Result", "final_result"),
+        # Strict execution mode: "normal" (default) or "strict" — blocks ready-for-patch until proof exists
+        "execution_mode": _extract_execution_mode_from_props(props),
+        # Priority Score: 0–100 number for scheduler ordering (optional property "Priority Score")
+        "priority_score": _extract_priority_score(props),
         # Notion page metadata (for recovery / staleness checks)
         "last_edited_time": page.get("last_edited_time") or "",
+        "created_time": page.get("created_time") or "",
     }
+    # Debug: trace execution_mode from Notion through parse
+    _raw_exec = _extract_execution_mode_raw(props)
+    _norm_exec = task.get("execution_mode", "?")
+    logger.info(
+        "execution_mode_trace _parse_page page_id=%s raw_prop=%s normalized=%s",
+        page.get("id", "")[:12],
+        _raw_exec,
+        _norm_exec,
+    )
+    if _raw_exec == "MISSING":
+        _exec_keys = [k for k in props if "exec" in k.lower() or "mode" in k.lower()]
+        logger.info(
+            "execution_mode_trace _parse_page page_id=%s Execution Mode not found; "
+            "props_with_exec_or_mode=%s all_prop_keys=%s",
+            page.get("id", "")[:12],
+            _exec_keys,
+            list(props.keys())[:20],
+        )
+    if _norm_exec == "strict":
+        logger.info("STRICT MODE DETECTED at _parse_page task_id=%s", page.get("id", "")[:12])
     return task
 
 
@@ -239,23 +342,13 @@ def get_pending_notion_tasks(
         logger.warning("Notion task reader skipped: NOTION_TASK_DB not set")
         return []
 
-    # Status in Notion is a Select property: use only select filter with display names.
-    try:
-        from app.services.notion_tasks import notion_status_to_display
-    except (ImportError, AttributeError):
-        _FALLBACK_DISPLAY = {
-            "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
-            "blocked": "Blocked",
-            "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
-            "patching": "Patching", "testing": "Testing", "deploying": "Deploying", "done": "Done",
-        }
-        def notion_status_to_display(s: str) -> str:
-            return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())
-    _INTERNAL_PICKABLE = ("planned", "backlog", "ready-for-investigation", "blocked")
-    _STATUS_VARIANTS = [
-        notion_status_to_display(s) for s in _INTERNAL_PICKABLE
-    ] + ["Planned", "Backlog", "Ready for Investigation", "Blocked"]  # fallback display names
-    _STATUS_VARIANTS = list(dict.fromkeys(_STATUS_VARIANTS))  # dedupe
+    # Use only exact valid Notion Status/Select option names. Lowercase causes 400 validation_error.
+    status_options = list(NOTION_PICKABLE_STATUS_OPTIONS)
+
+    logger.info(
+        "notion_pickup_status_options options_queried=%s (exact Notion schema names only)",
+        status_options,
+    )
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -337,76 +430,142 @@ def get_pending_notion_tasks(
     all_tasks: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            raw_pages: list[dict[str, Any]] = []
+    import time
+    max_attempts = 3
+    last_error: Optional[str] = None
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            delay = min(2 ** attempt, 10)
+            logger.info("notion_pickup_retry attempt=%s delay=%ss", attempt + 1, delay)
+            time.sleep(delay)
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                raw_pages: list[dict[str, Any]] = []
 
-            for status_variant in _STATUS_VARIANTS:
-                # Status in Notion can be "status" type (native) or "select" type (legacy).
-                # Try "status" first, fall back to "select" on 400 validation_error.
-                filter_payload = {
-                    "filter": {"property": "Status", "select": {"equals": status_variant}},
-                    "page_size": 100,
-                }
-                pages = _query_pages(
-                    filter_payload, client,
-                    status_filter_keys=["status", "select"],
-                )
-                if pages is not None:
-                    for p in pages:
-                        pid = (p.get("id") or "").strip()
-                        if pid and pid not in seen_ids:
-                            seen_ids.add(pid)
-                            raw_pages.append(p)
+                for status_variant in status_options:
+                    # Status in Notion can be "status" type (native) or "select" type (legacy).
+                    filter_payload = {
+                        "filter": {"property": "Status", "select": {"equals": status_variant}},
+                        "page_size": 100,
+                    }
+                    pages = _query_pages(
+                        filter_payload, client,
+                        status_filter_keys=["status", "select"],
+                    )
+                    if pages is not None:
+                        for p in pages:
+                            pid = (p.get("id") or "").strip()
+                            if pid and pid not in seen_ids:
+                                seen_ids.add(pid)
+                                raw_pages.append(p)
+                        logger.info(
+                            "Notion query succeeded status_variant=%r pages=%d (total unique=%d)",
+                            status_variant,
+                            len(pages),
+                            len(raw_pages),
+                        )
+                        if pages:
+                            first_props = (pages[0].get("properties") or {}).get("Status") or {}
+                            raw_status_val = (
+                                (first_props.get("status") or first_props.get("select") or {})
+                                .get("name", "")
+                                if isinstance(first_props, dict)
+                                else ""
+                            )
+                            logger.info(
+                                "notion_pickup_debug first_page_status_raw=%r page_id=%s",
+                                raw_status_val or "(empty)",
+                                (pages[0].get("id") or "")[:12],
+                            )
+                    else:
+                        logger.warning(
+                            "Notion query failed for status_variant=%r (HTTP error or validation) — trying next variant",
+                            status_variant,
+                        )
+
+                if not raw_pages:
+                    logger.warning(
+                        "Notion task read: no tasks found for any pickable status "
+                        "database_id=%s status_options_tried=%s — check that tasks have Status "
+                        "exactly one of: Planned, Backlog, Ready for Investigation, Blocked",
+                        database_id[:8] + "…" if len(database_id) > 8 else database_id,
+                        status_options,
+                    )
+                    return []
+
+                for page in raw_pages:
+                    parsed = _parse_page(page)
+                    task_title = parsed.get("task") or "(untitled)"
+                    if project and project.strip():
+                        if project.strip().lower() not in (parsed.get("project") or "").lower():
+                            logger.info(
+                                "notion_pickup_task_rejected id=%s title=%r status=%r reason=project_mismatch "
+                                "task_project=%r filter_project=%r",
+                                parsed.get("id", "")[:12],
+                                task_title[:50],
+                                parsed.get("status"),
+                                parsed.get("project"),
+                                project,
+                            )
+                            continue
+                    if type_filter and type_filter.strip():
+                        if type_filter.strip().lower() not in (parsed.get("type") or "").lower():
+                            logger.info(
+                                "notion_pickup_task_rejected id=%s title=%r status=%r reason=type_mismatch "
+                                "task_type=%r filter_type=%r",
+                                parsed.get("id", "")[:12],
+                                task_title[:50],
+                                parsed.get("status"),
+                                parsed.get("type"),
+                                type_filter,
+                            )
+                            continue
                     logger.info(
-                        "Notion query succeeded status_variant=%r pages=%d (total unique=%d)",
-                        status_variant,
-                        len(pages),
-                        len(raw_pages),
+                        "task_detected title=%r status=%r type=%r priority=%r",
+                        task_title[:60], parsed.get("status"), parsed.get("type"), parsed.get("priority"),
                     )
-                else:
-                    logger.debug(
-                        "Notion query failed for status_variant=%r, trying next",
-                        status_variant,
-                    )
+                    all_tasks.append(parsed)
 
-            if not raw_pages:
-                logger.warning(
-                    "Notion task read: no tasks found for any pickable status "
-                    "database_id=%s",
-                    database_id[:8] + "…" if len(database_id) > 8 else database_id,
+            # Debug: patch tasks (Type=Patch or title PATCH:) eligible for Cursor execution
+            patch_candidates = [
+                t for t in all_tasks
+                if ((t.get("type") or "").strip().lower() == "patch")
+                or ((t.get("task") or "").strip().startswith("PATCH:"))
+            ]
+            if patch_candidates:
+                logger.info(
+                    "patch_task_candidates count=%d ids=%s titles=%s",
+                    len(patch_candidates),
+                    [str(t.get("id", ""))[:12] for t in patch_candidates],
+                    [str((t.get("task") or "")[:40]) for t in patch_candidates],
                 )
+            for t in patch_candidates:
+                logger.info(
+                    "patch_task_candidate id=%s title=%r type=%r status=%r source=%r",
+                    str(t.get("id", ""))[:12],
+                    (t.get("task") or "")[:50],
+                    t.get("type"),
+                    t.get("status"),
+                    t.get("source"),
+                )
+
+            logger.info(
+                "notion_tasks_found count=%d (after project/type filtering)",
+                len(all_tasks),
+            )
+            return all_tasks
+        except (httpx.TimeoutException, httpx.RequestError, Exception) as e:
+            last_error = str(e)
+            logger.warning("notion_pickup_retry attempt=%s error=%s", attempt + 1, last_error[:200])
+            if attempt == max_attempts - 1:
+                if isinstance(e, httpx.TimeoutException):
+                    logger.error("Notion task read timed out (after %s attempts): %s", max_attempts, e)
+                elif isinstance(e, httpx.RequestError):
+                    logger.error("Notion task read request failed (after %s attempts): %s", max_attempts, e)
+                else:
+                    logger.error("Notion task read failed (after %s attempts): %s", max_attempts, e, exc_info=True)
                 return []
-
-            for page in raw_pages:
-                parsed = _parse_page(page)
-                task_title = parsed.get("task") or "(untitled)"
-                if project and project.strip():
-                    if project.strip().lower() not in (parsed.get("project") or "").lower():
-                        logger.debug("task_skipped title=%r reason=project_mismatch", task_title)
-                        continue
-                if type_filter and type_filter.strip():
-                    if type_filter.strip().lower() not in (parsed.get("type") or "").lower():
-                        logger.debug("task_skipped title=%r reason=type_mismatch", task_title)
-                        continue
-                logger.info("task_detected title=%r status=%r priority=%r", task_title, parsed.get("status"), parsed.get("priority"))
-                all_tasks.append(parsed)
-
-        logger.info(
-            "notion_tasks_found count=%d (after project/type filtering)",
-            len(all_tasks),
-        )
-        return all_tasks
-
-    except httpx.TimeoutException as e:
-        logger.error("Notion task read timed out: %s", e)
-        return []
-    except httpx.RequestError as e:
-        logger.error("Notion task read request failed: %s", e)
-        return []
-    except Exception as e:
-        logger.error("Notion task read failed: %s", e, exc_info=True)
-        return []
+    return []
 
 
 def get_high_priority_pending_tasks(
@@ -420,16 +579,43 @@ def get_high_priority_pending_tasks(
     """
     tasks = get_pending_notion_tasks(project=project, type_filter=type_filter)
     if not tasks:
+        logger.info(
+            "get_high_priority_pending_tasks: no tasks project=%r type_filter=%r "
+            "(get_pending_notion_tasks returned empty — check notion_pickup_status_variants and "
+            "notion_pickup_task_rejected logs)",
+            project,
+            type_filter,
+        )
         return []
 
-    def priority_key(t: dict[str, Any]) -> int:
+    # Priority Score (0–100): prefer higher; default 0 when missing
+    def priority_score_val(t: dict[str, Any]) -> int:
+        return int(t.get("priority_score") or 0)
+
+    # Low-priority filter: ignore tasks with priority_score < threshold unless system idle (no higher-priority tasks)
+    high_enough = [t for t in tasks if priority_score_val(t) >= PRIORITY_SCORE_LOW_THRESHOLD]
+    candidates = high_enough if high_enough else tasks
+
+    # Sort by Priority Score DESC, then by text priority (critical > high > medium > low) as tiebreaker
+    def text_priority_key(t: dict[str, Any]) -> int:
         p = (t.get("priority") or "medium").strip().lower()
         try:
             return _PRIORITY_ORDER.index(p)
         except ValueError:
             return _PRIORITY_ORDER.index("medium")
 
-    tasks_sorted = sorted(tasks, key=priority_key)
+    tasks_sorted = sorted(
+        candidates,
+        key=lambda t: (-priority_score_val(t), text_priority_key(t)),
+    )
+    if tasks_sorted:
+        top = tasks_sorted[0]
+        logger.info(
+            "scheduler_priority_selection task_id=%s title=%r priority_score=%d",
+            (top.get("id") or "")[:12],
+            (top.get("task") or "")[:50],
+            priority_score_val(top),
+        )
     return tasks_sorted
 
 
@@ -460,7 +646,8 @@ def get_tasks_by_status(
         _FALLBACK_DISPLAY = {
             "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
             "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
-            "patching": "Patching", "testing": "Testing", "deploying": "Deploying", "done": "Done",
+            "patching": "Patching", "testing": "Testing", "ready-for-deploy": "Ready for Deploy",
+            "awaiting-deploy-approval": "Awaiting Deploy Approval", "deploying": "Deploying", "done": "Done",
         }
         def notion_status_to_display(s: str) -> str:
             return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())
@@ -523,6 +710,56 @@ def get_tasks_by_status(
 
     logger.info("get_tasks_by_status statuses=%s found=%d", statuses, len(all_tasks))
     return all_tasks
+
+
+def get_raw_status_distribution(max_pages: int = 100) -> dict[str, Any]:
+    """
+    Diagnostic: query Notion database with NO status filter, return distribution of
+    raw Status values. Use to verify exact casing/format Notion stores (e.g. "planned" vs "Planned").
+    """
+    api_key, database_id = _get_config()
+    if not api_key or not database_id:
+        return {"ok": False, "error": "missing config", "by_status": {}}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    by_status: dict[str, list[str]] = {}
+    total_fetched = 0
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            payload: dict[str, Any] = {"page_size": min(max_pages, 100)}
+            cursor = None
+            while total_fetched < max_pages:
+                if cursor:
+                    payload["start_cursor"] = cursor
+                else:
+                    payload.pop("start_cursor", None)
+                resp = client.post(
+                    f"{NOTION_API_BASE}/databases/{database_id}/query",
+                    json=payload,
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    return {"ok": False, "error": f"HTTP {resp.status_code}", "by_status": dict(by_status)}
+                data = resp.json()
+                results = data.get("results") or []
+                total_fetched += len(results)
+                for page in results:
+                    props = (page.get("properties") or {}).get("Status") or {}
+                    inner = (props.get("status") or props.get("select") or {}) if isinstance(props, dict) else {}
+                    raw = inner.get("name", "") if isinstance(inner, dict) else ""
+                    pid = (page.get("id") or "").strip()
+                    if raw not in by_status:
+                        by_status[raw] = []
+                    by_status[raw].append(pid[:12] + "…" if len(pid) > 12 else pid)
+                cursor = data.get("next_cursor")
+                if not cursor or not data.get("has_more"):
+                    break
+    except Exception as e:
+        return {"ok": False, "error": str(e), "by_status": dict(by_status)}
+    return {"ok": True, "by_status": {k: v for k, v in by_status.items()}, "pickable": list(NOTION_PICKABLE_STATUS_OPTIONS)}
 
 
 def test_notion_task_scan(

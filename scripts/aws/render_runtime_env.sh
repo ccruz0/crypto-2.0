@@ -37,6 +37,8 @@ SSM_AWS_ACCESS_KEY="/automated-trading-platform/prod/aws_access_key_id"
 SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
 SSM_NOTION_API_KEY="/automated-trading-platform/prod/notion/api_key"
 SSM_NOTION_TASK_DB="/automated-trading-platform/prod/notion/task_db"
+SSM_NOTION_API_KEY_LAB="/automated-trading-platform/lab/notion/api_key"
+NOTION_TASK_DB_DEFAULT="eb90cfa139f94724a8b476315908510a"
 
 SOURCE="none"
 BOT_TOKEN=""
@@ -71,6 +73,9 @@ if command -v aws >/dev/null 2>&1; then
     AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
     NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY" || true)"
     NOTION_TASK_DB_VAL="$(fetch_ssm "$SSM_NOTION_TASK_DB" || true)"
+    # LAB: if Notion not in prod SSM, try LAB SSM (instance role must have ssm:GetParameter for lab path)
+    [[ -z "$NOTION_API_KEY_VAL" ]] && NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY_LAB" || true)"
+    [[ -z "$NOTION_TASK_DB_VAL" && -n "$NOTION_API_KEY_VAL" ]] && NOTION_TASK_DB_VAL="$NOTION_TASK_DB_DEFAULT"
     if [[ -n "$BT" && -n "$CI" && -n "$AK" ]]; then
       BOT_TOKEN="$BT"
       CHAT_ID="$CI"
@@ -111,6 +116,11 @@ if [[ "$use_ssm" != "true" ]]; then
   NOTION_API_KEY_VAL="${NOTION_API_KEY:-}"
   NOTION_TASK_DB_VAL="${NOTION_TASK_DB:-}"
   SOURCE="fallback"
+  # LAB: try LAB SSM for Notion if still missing (no manual secret input)
+  if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
+    [[ -z "$NOTION_API_KEY_VAL" ]] && NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY_LAB" || true)"
+    [[ -z "$NOTION_TASK_DB_VAL" && -n "$NOTION_API_KEY_VAL" ]] && NOTION_TASK_DB_VAL="$NOTION_TASK_DB_DEFAULT"
+  fi
 fi
 
 missing=()

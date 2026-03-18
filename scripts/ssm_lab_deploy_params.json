@@ -1,0 +1,24 @@
+{
+  "commands": [
+    "set -e",
+    "export HOME=/home/ubuntu",
+    "cd /home/ubuntu/automated-trading-platform",
+    "test -f .env.local || touch .env.local",
+    "test -f .env || cp .env.example .env",
+    "test -f .env.aws || cp .env.prod.example .env.aws",
+    "bash scripts/aws/render_runtime_env.sh 2>/dev/null || true",
+    "echo === Step 1: Deploy git pull build backend-aws ===",
+    "git config --global --add safe.directory /home/ubuntu/automated-trading-platform",
+    "git pull origin main",
+    "echo Building backend-aws...",
+    "docker compose --profile aws build backend-aws --no-cache",
+    "echo Stopping backend-aws...",
+    "docker compose --profile aws stop backend-aws || true",
+    "docker compose --profile aws rm -f backend-aws || true",
+    "echo Starting backend-aws...",
+    "docker compose --profile aws up -d backend-aws",
+    "echo Waiting 45s for startup...",
+    "sleep 45",
+    "echo === Deploy done ==="
+  ]
+}

@@ -73,6 +73,10 @@ def _append_notion_page_comment(page_id: str, comment: str) -> bool:
 
     Returns True if Notion accepted the append request, else False. Never raises.
     """
+    dry_run = (os.environ.get("AGENT_DRY_RUN") or os.environ.get("NOTION_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
+    if dry_run:
+        logger.info("dry_run skip append_notion_page_comment page_id=%s", page_id[:12] if page_id else "?")
+        return True
     api_key = (os.environ.get("NOTION_API_KEY") or "").strip()
     if not api_key:
         logger.warning("Notion comment append skipped: NOTION_API_KEY not set page_id=%s", page_id)
@@ -545,7 +549,30 @@ def prepare_next_notion_task(
 
     task = tasks[0]
     page_id = str(task.get("id") or "").strip()
-
+    exec_mode = (task.get("execution_mode") or "normal").strip().lower()
+    if exec_mode not in ("strict", "normal"):
+        exec_mode = "normal"
+    task_type = (task.get("type") or "").strip().lower()
+    task_title = (task.get("task") or "").strip()
+    is_patch_eligible = task_type == "patch" or task_title.startswith("PATCH:")
+    logger.info(
+        "notion_task_detected task_id=%s title=%s type=%s execution_mode=%s",
+        page_id[:12] if page_id else "?",
+        (task_title[:50] + "…" if len(task_title) > 50 else task_title) or "?",
+        task.get("type") or "?",
+        exec_mode,
+    )
+    logger.info(
+        "selected_task_for_execution task_id=%s title=%s type=%s status=%s patch_eligible=%s execution_mode=%s",
+        page_id[:12] if page_id else "?",
+        (task_title[:50] + "…" if len(task_title) > 50 else task_title) or "?",
+        task.get("type") or "?",
+        task.get("status") or "?",
+        is_patch_eligible,
+        exec_mode,
+    )
+    if is_patch_eligible:
+        logger.info("patch_task_picked task_id=%s", page_id[:12] if page_id else "?")
     logger.info(
         "Selected Notion task for preparation id=%s priority=%s project=%s type=%s task=%r",
         page_id,
@@ -635,6 +662,14 @@ def prepare_task_by_id(task_id: str) -> dict[str, Any] | None:
         logger.warning("prepare_task_by_id: task not pickable task_id=%s status=%r", task_id, status)
         return None
     page_id = str(task.get("id") or "").strip()
+    exec_mode = task.get("execution_mode", "?")
+    logger.info(
+        "execution_mode_trace prepare_task_by_id task_id=%s execution_mode=%s",
+        page_id[:12] if page_id else "?",
+        exec_mode,
+    )
+    if exec_mode == "strict":
+        logger.info("STRICT MODE DETECTED at prepare_task_by_id task_id=%s", page_id[:12] if page_id else "?")
     repo_area = infer_repo_area_for_task(task)
     plan = build_task_execution_plan(task, repo_area)
     plan_text = "OpenClaw preparation plan\n\n" + "\n".join(f"- {s}" for s in plan)
@@ -698,6 +733,9 @@ def prepare_task_with_approval_check(
     versioning = build_version_summary(prepared, analysis_result=None)
     prepared["versioning"] = versioning
     task_obj = (prepared.get("task") or {})
+    # Propagate execution_mode to top level so executor and callbacks can read it reliably
+    if task_obj.get("execution_mode"):
+        prepared["execution_mode"] = task_obj["execution_mode"]
     task_obj["current_version"] = versioning.get("current_version", "")
     task_obj["proposed_version"] = versioning.get("proposed_version", "")
     task_obj["version_status"] = versioning.get("version_status", VERSION_STATUS_PROPOSED)
@@ -1009,6 +1047,9 @@ def execute_prepared_notion_task(
         )
 
     logger.info("execute_prepared_notion_task: starting task_id=%s task_title=%r", task_id, task_title)
+    use_extended_lifecycle = bool((prepared_task or {}).get("_use_extended_lifecycle"))
+    if use_extended_lifecycle:
+        logger.info("investigation_started task_id=%s", task_id[:12] if task_id else "?")
     try:
         from app.services.agent_activity_log import log_agent_event
         log_agent_event("execution_started", task_id=task_id, task_title=task_title, details={})
@@ -1053,6 +1094,7 @@ def execute_prepared_notion_task(
         "no" if use_extended_lifecycle else "YES",
     )
     if use_extended_lifecycle:
+        logger.info("investigation_completed task_id=%s", task_id[:12] if task_id else "?")
         # Validate artifact exists before advancing. Check all known artifact paths
         # (bug-investigations, telegram-alerts, execution-state, etc.) so we don't
         # advance when artifact is missing regardless of which callback wrote it.
@@ -1060,13 +1102,15 @@ def execute_prepared_notion_task(
             from app.services.agent_recovery import artifact_exists_for_task
             _artifact_ok = artifact_exists_for_task(task_id, min_size=200)
         except Exception as e:
-            logger.debug("execute_prepared_notion_task: artifact check failed task_id=%s: %s", task_id, e)
+            logger.warning(
+                "execute_prepared_notion_task: artifact check failed task_id=%s: %s",
+                task_id, e,
+            )
             _artifact_ok = False
         if not _artifact_ok:
             logger.warning(
-                "execute_prepared_notion_task: artifact missing or too small task_id=%s "
-                "— not advancing to investigation-complete",
-                task_id,
+                "artifact_missing_or_too_small task_id=%s — not advancing to investigation-complete",
+                task_id[:12] if task_id else "?",
             )
             _append_notion_page_comment(
                 task_id,
@@ -1078,6 +1122,127 @@ def execute_prepared_notion_task(
                 False, False, "",
                 "in-progress", False,
             )
+        # Strict mode: validate proof before advancing — block ready-for-patch if criteria not met
+        _exec_mode = (
+            (prepared_task or {}).get("execution_mode")
+            or ((prepared_task or {}).get("task") or {}).get("execution_mode")
+            or "normal"
+        )
+        logger.info(
+            "execution_mode_trace before_auto_advance task_id=%s execution_mode=%s prepared_task_keys=%s task_keys=%s",
+            task_id,
+            _exec_mode,
+            list((prepared_task or {}).keys()),
+            list(((prepared_task or {}).get("task") or {}).keys()),
+        )
+        if _exec_mode == "strict":
+            logger.info("STRICT MODE ACTIVE at auto-advance gate task_id=%s — will validate proof", task_id)
+        if isinstance(_exec_mode, str) and _exec_mode.strip().lower() == "strict":
+            try:
+                from app.services.agent_recovery import get_artifact_content_for_task
+                from app.services.openclaw_client import validate_strict_mode_proof
+                artifact_body = get_artifact_content_for_task(task_id)
+                proof_ok, proof_reason = validate_strict_mode_proof(artifact_body)
+                if not proof_ok:
+                    logger.warning(
+                        "strict_proof_failed task_id=%s reason=%s",
+                        task_id[:12] if task_id else "?",
+                        proof_reason[:200] if proof_reason else "?",
+                    )
+                    _append_notion_page_comment(
+                        task_id,
+                        f"[{executed_at}] Strict mode: proof criteria not met — staying in-progress. {proof_reason}",
+                    )
+                    return result(
+                        True, True, apply_summary,
+                        False, False, False, "",
+                        False, False, "",
+                        "in-progress", False,
+                    )
+                # Strict proof passed — create Cursor-ready patch task (handoff). Invariant: PATCH MUST exist.
+                logger.info("strict_proof_passed task_id=%s", task_id[:12] if task_id else "?")
+                patch_task = None
+                handoff_err = None
+                for attempt in (1, 2):  # fallback retry once
+                    try:
+                        from app.services.notion_tasks import create_patch_task_from_investigation
+                        patch_task = create_patch_task_from_investigation(
+                            investigation_task_id=task_id,
+                            investigation_title=task_title,
+                            artifact_body=artifact_body or "",
+                            sections=(prepared_task or {}).get("_openclaw_sections") or {},
+                            task=task,
+                            repo_area=(prepared_task or {}).get("repo_area") or {},
+                        )
+                        if patch_task:
+                            break
+                    except Exception as e:
+                        handoff_err = e
+                        if attempt == 1:
+                            logger.warning(
+                                "execute_prepared_notion_task: create_patch_task_from_investigation attempt=1 failed task_id=%s: %s — retrying",
+                                task_id, e,
+                            )
+                        else:
+                            logger.warning(
+                                "execute_prepared_notion_task: create_patch_task_from_investigation attempt=2 failed task_id=%s: %s",
+                                task_id, e,
+                            )
+                if patch_task:
+                    logger.info(
+                        "patch_task_created task_id=%s patch_id=%s",
+                        task_id[:12] if task_id else "?",
+                        (patch_task.get("id") or "")[:12] or "?",
+                    )
+                    logger.info("strict_patch_invariant_enforced task_id=%s", task_id[:12] if task_id else "?")
+                else:
+                    # Invariant: strict + proof passed => PATCH must exist. Block advance and alert.
+                    err_msg = str(handoff_err or "create_patch_task_from_investigation returned None")[:300]
+                    logger.warning(
+                        "strict_patch_creation_failed task_id=%s reason=%s",
+                        task_id[:12] if task_id else "?",
+                        err_msg,
+                    )
+                    logger.info("strict_patch_invariant_enforced task_id=%s block_advance=patch_creation_failed", task_id[:12] if task_id else "?")
+                    try:
+                        from app.services.notion_env import set_last_pickup_status
+                        set_last_pickup_status("patch_creation_failed", err_msg)
+                    except Exception:
+                        pass
+                    try:
+                        from app.services.telegram_notifier import telegram_notifier
+                        if getattr(telegram_notifier, "enabled", False):
+                            telegram_notifier.send_message(
+                                f"⚠️ Strict mode: PATCH creation failed task_id={task_id[:12] if task_id else '?'} reason={err_msg[:200]}",
+                                chat_destination="ops",
+                            )
+                    except Exception as tg_err:
+                        logger.warning("strict_patch_creation_failed: Telegram alert send failed: %s", tg_err)
+                    _append_notion_page_comment(
+                        task_id,
+                        f"[{executed_at}] Strict mode: PATCH task creation failed — staying in-progress. {err_msg}",
+                    )
+                    return result(
+                        True, True, apply_summary,
+                        False, False, False, "",
+                        False, False, "",
+                        "in-progress", False,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "execute_prepared_notion_task: strict mode validation error task_id=%s: %s — blocking advance",
+                    task_id, e,
+                )
+                _append_notion_page_comment(
+                    task_id,
+                    f"[{executed_at}] Strict mode: validation error — staying in-progress. {e}",
+                )
+                return result(
+                    True, True, apply_summary,
+                    False, False, False, "",
+                    False, False, "",
+                    "in-progress", False,
+                )
         inv_ok = update_notion_task_status(task_id, "investigation-complete")
         logger.info(
             "execute_prepared_notion_task: extended lifecycle → investigation-complete "
@@ -1175,9 +1340,9 @@ def execute_prepared_notion_task(
             )
         logger.info("execute_prepared_notion_task: validation passed task_id=%s", task_id)
 
-        # ----- Extended lifecycle gate: awaiting-deploy-approval -----
-        # Record the test result and pause for human deploy approval.  The
-        # existing deploy_approve handler checks the test gate, moves the
+        # ----- Extended lifecycle gate: ready-for-deploy -----
+        # Record the test result and advance to ready-for-deploy.  The
+        # deploy_approve handler checks the test gate, moves the
         # task to deploying, and can trigger a smoke check.
         if use_extended_lifecycle:
             gate_ok = False
@@ -1264,7 +1429,7 @@ def execute_prepared_notion_task(
                 True, True, apply_summary,
                 testing_updated, True, True, validation_summary,
                 False, False, "",
-                "awaiting-deploy-approval", True,
+                "ready-for-deploy", True,
             )
 
         _record_test_gate_result(task_id, True, True, validation_summary, "testing")
@@ -1370,9 +1535,9 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     Called by the scheduler when it finds tasks in ``ready-for-patch``.
     The sequence is:
 
-        ready-for-patch → patching → run validate_fn
-            → if passed:  awaiting-deploy-approval + Telegram deploy approval
-            → if failed:  stays in patching (manual fix required)
+        ready-for-patch → patching → run validate_fn (and optional cursor bridge)
+            → if passed:  ready-for-deploy + single Telegram deploy approval
+            → if failed:  stays in patching or needs-revision (no approval sent)
 
     This function does **not** re-run the apply step — the investigation
     artifacts already exist from the first executor run.  It only runs
@@ -1456,6 +1621,17 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                 if bridge_result.get("ok") and bridge_result.get("tests_ok"):
                     ingest_res = bridge_result.get("ingest") or {}
                     if ingest_res.get("gate_result", {}).get("advanced"):
+                        try:
+                            from app.services.notion_tasks import TASK_STATUS_READY_FOR_DEPLOY
+                            update_notion_task_status(
+                                task_id, TASK_STATUS_READY_FOR_DEPLOY,
+                                append_comment=f"[{ts}] Cursor bridge: apply + tests passed — ready for deploy approval.",
+                            )
+                        except Exception as status_exc:
+                            logger.warning(
+                                "advance_ready_for_patch_task: failed to set ready-for-deploy after bridge task_id=%s: %s",
+                                task_id, status_exc,
+                            )
                         _append_notion_page_comment(
                             task_id,
                             f"[{ts}] Cursor bridge: apply + tests passed — waiting for deploy approval.",
@@ -1477,7 +1653,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                             log_agent_event("cursor_bridge_auto_success", task_id=task_id, task_title=task_title, details={"bridge_ok": True})
                         except Exception:
                             pass
-                        return _result(True, "cursor_bridge", "bridge apply + tests passed", "awaiting-deploy-approval")
+                        return _result(True, "cursor_bridge", "bridge apply + tests passed", "ready-for-deploy")
                 else:
                     err = bridge_result.get("error") or "bridge failed"
                     logger.warning("advance_ready_for_patch_task: cursor bridge failed task_id=%s: %s", task_id, err)
@@ -1556,11 +1732,12 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     verify_enabled = _verify_raw not in ("0", "false", "no")
     verify_fn = callback_selection.get("verify_solution_fn")
     if verify_enabled and verify_fn is not None:
+        logger.info("verification_started task_id=%s", task_id[:12] if task_id else "?")
         verify_ok, verify_summary = _run_callback(prepared_task, verify_fn, "verify_solution")
         if not verify_ok:
             logger.warning(
-                "advance_ready_for_patch_task: solution verification failed task_id=%s summary=%s",
-                task_id, verify_summary,
+                "verification_failed task_id=%s summary=%s",
+                task_id[:12] if task_id else "?", verify_summary[:200] if verify_summary else "?",
             )
             try:
                 from app.services.notion_tasks import TASK_STATUS_NEEDS_REVISION, update_notion_task_status
@@ -1605,7 +1782,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             except Exception as exc:
                 logger.warning("advance_ready_for_patch_task: failed to move to needs-revision task_id=%s: %s", task_id, exc)
             return _result(False, "solution_verification", verify_summary, "needs-revision")
-        logger.info("advance_ready_for_patch_task: solution verification passed task_id=%s", task_id)
+        logger.info("verification_passed task_id=%s", task_id[:12] if task_id else "?")
 
     # --- 6. Record test gate and advance to awaiting-deploy-approval ---
     gate_ok = False
@@ -1641,18 +1818,21 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         _append_notion_page_comment(
             task_id,
             f"[{ts}] Validation passed but Test Status metadata could not be "
-            "persisted to Notion. Task stays in patching — deploy approval "
+            "persisted to Notion. Task stays in patching — ready-for-deploy "
             "deferred until metadata is confirmed.",
         )
         return _result(False, "metadata_persist", "Test Status not written — advancement blocked", "patching")
 
+    logger.info("ready_for_deploy_set task_id=%s", task_id[:12] if task_id else "?")
+    # --- 6b. Move to ready-for-deploy (record_test_result already advanced status) ---
+    # Status was advanced to ready-for-deploy by record_test_result above; ensure comment reflects it.
     _append_notion_page_comment(
         task_id,
         f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
-        "Tests passed — waiting for human deploy approval via Telegram.",
+        "Tests passed — task in ready-for-deploy. Telegram deploy approval sent.",
     )
 
-    # --- 7. Send deploy approval Telegram message ---
+    # --- 7. Send deploy approval Telegram message (only at ready-for-deploy) ---
     sections: dict[str, Any] = {}
     try:
         from app.services.cursor_handoff import _load_sections_from_sidecar
@@ -1689,5 +1869,5 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    return _result(True, "deploy_approval_sent", val_summary, "awaiting-deploy-approval")
+    return _result(True, "deploy_approval_sent", val_summary, "ready-for-deploy")
 

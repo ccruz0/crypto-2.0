@@ -30,6 +30,8 @@
 
 | Script | Qué hace |
 |--------|----------|
+| `./scripts/aws/prod_reachability.sh [URL]` | Instance state, public IP, SSM, SG SSH, API. Use when SSH/ping fail. |
+| `./scripts/deploy_production_via_ssm.sh`   | Deploy PROD via SSM (no SSH). Use when SSM is Online. |
 | `./scripts/aws/verify_prod_public.sh [URL]` | Curl a /api/health. Exit 0 si 200. |
 | `./scripts/aws/prod_status.sh [URL]`       | API + SSM (si hay AWS CLI). Resumen en una ejecución. |
 | `./scripts/aws/aws_audit_live.sh`          | Instancias, IAM, SGs, SSM. Requiere AWS CLI. |
@@ -52,6 +54,7 @@
 
 | Doc | Cuándo usar |
 |-----|-------------|
+| [PROD_DEPLOY_WHEN_SSH_FAILS.md](../runbooks/PROD_DEPLOY_WHEN_SSH_FAILS.md) | SSH/ping timeout: deploy vía SSM, diagnóstico, cuándo usar SSH vs SSM. |
 | [POST_DEPLOY_VERIFICATION.md](POST_DEPLOY_VERIFICATION.md) | Tras un deploy o al verificar que PROD responde. |
 | [RUNBOOK_SSM_PROD_CONNECTION_LOST.md](RUNBOOK_SSM_PROD_CONNECTION_LOST.md) | Cuando PROD (atp-rebuild-2026) tiene SSM ConnectionLost. |
 | [../audit/AWS_STATE_AUDIT.md](../audit/AWS_STATE_AUDIT.md) | Auditoría estado, decisión PROD/LAB, comandos vivos. |

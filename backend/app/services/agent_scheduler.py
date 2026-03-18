@@ -188,6 +188,33 @@ def run_agent_scheduler_cycle(
             "reason": "notion_env_missing",
         }
 
+    # Retry fallback tasks (Telegram-created tasks stored locally when Notion was down)
+    try:
+        from app.services.task_compiler import retry_failed_notion_tasks
+        synced = retry_failed_notion_tasks()
+        if synced:
+            logger.info("agent_scheduler: retry_failed_notion_tasks synced=%d", synced)
+    except Exception as e:
+        logger.warning("agent_scheduler: retry_failed_notion_tasks failed (non-fatal) %s", e)
+
+    # Auto-promote new Investigation tasks (Type=Investigation, Status=Planned, Source=Carlos) to Ready for Investigation once per cycle
+    try:
+        from app.services.notion_tasks import promote_planned_investigation_tasks_to_ready
+        promoted_ids = promote_planned_investigation_tasks_to_ready()
+        if promoted_ids:
+            logger.info("agent_scheduler: auto_promoted_planned_investigation count=%d task_ids=%s", len(promoted_ids), [t[:12] for t in promoted_ids])
+    except Exception as e:
+        logger.warning("agent_scheduler: promote_planned_investigation_tasks_to_ready failed (non-fatal) %s", e)
+
+    # Stuck task detection and recovery (before preparing next task)
+    try:
+        from app.services.task_health_monitor import check_for_stuck_tasks
+        handled = check_for_stuck_tasks()
+        if handled:
+            logger.info("agent_scheduler: check_for_stuck_tasks handled=%d", handled)
+    except Exception as e:
+        logger.warning("agent_scheduler: check_for_stuck_tasks failed (non-fatal) %s", e)
+
     try:
         from app.services.agent_task_executor import prepare_task_with_approval_check
     except Exception as e:
@@ -243,6 +270,40 @@ def run_agent_scheduler_cycle(
 
     task_id = _task_id_from_bundle(prepared_bundle)
     task_title = _task_title_from_bundle(prepared_bundle)
+
+    # Execution gate: skip low-value, low-priority tasks (unless Bug, production, or priority > 60)
+    try:
+        from app.services.task_compiler import (
+            compute_task_value,
+            _value_gate_safety_pass,
+            VALUE_EXECUTION_MIN,
+        )
+        prepared_task = (prepared_bundle or {}).get("prepared_task") or {}
+        task_dict = prepared_task.get("task") or {}
+        priority = int(task_dict.get("priority_score") or 0)
+        value = compute_task_value(task_dict, "")
+        if not _value_gate_safety_pass(task_dict, priority) and priority < VALUE_EXECUTION_MIN and value < VALUE_EXECUTION_MIN:
+            _log_event(
+                "task_execution_skipped_low_value",
+                task_id=task_id,
+                task_title=task_title,
+                details={"priority": priority, "value": value},
+            )
+            logger.info(
+                "agent_scheduler: task skipped (low value) task_id=%s priority=%d value=%d",
+                task_id[:12] if task_id else "?",
+                priority,
+                value,
+            )
+            return {
+                "ok": True,
+                "action": "skipped",
+                "task_id": task_id,
+                "task_title": task_title,
+                "reason": "low value and low priority",
+            }
+    except Exception as e:
+        logger.warning("agent_scheduler: execution gate check failed (non-fatal) %s", e)
 
     if is_task_already_in_flight(task_id):
         _log_event("scheduler_task_skipped", task_id=task_id, task_title=task_title, details={"reason": "already in flight or completed"})
@@ -302,6 +363,28 @@ def run_agent_scheduler_cycle(
             }
 
     if approval_required:
+        # Quiet mode: only deploy and critical go to Telegram; auto-proceed without sending approval request
+        try:
+            from app.services.agent_telegram_policy import is_quiet_mode
+            if is_quiet_mode():
+                from app.services.agent_task_executor import execute_prepared_task_if_approved
+                result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+                _log_event(
+                    "scheduler_auto_executed_quiet",
+                    task_id=task_id,
+                    task_title=task_title,
+                    details={"execution_result_success": result.get("execution_result", {}).get("success")},
+                )
+                return {
+                    "ok": True,
+                    "action": "auto_executed_quiet",
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "execution_result": result.get("execution_result"),
+                    "reason": "quiet mode: no approval request sent",
+                }
+        except Exception as e:
+            logger.warning("agent_scheduler: quiet-mode auto-execute failed (non-fatal) %s", e)
         try:
             from app.services.agent_telegram_approval import send_task_approval_request
             send_result = send_task_approval_request(prepared_bundle, chat_id=None)

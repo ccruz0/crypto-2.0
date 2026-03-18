@@ -165,7 +165,7 @@ def _is_bug_investigation_eligible(prepared_task: dict[str, Any]) -> bool:
     area_name = str(repo_area.get("area_name") or "").lower()
     blob = f"{title} {details} {task_type} {area_name}"
 
-    if task_type in ("bug", "bugfix", "bug fix", "architecture investigation"):
+    if task_type in ("bug", "bugfix", "bug fix", "investigation", "architecture investigation"):
         return True
 
     keywords = (
@@ -824,6 +824,17 @@ def _apply_via_openclaw(
             return fallback_fn(prepared_task)
         return {"success": False, "summary": "OPENCLAW_API_TOKEN not configured"}
 
+    # Debug: trace execution_mode before prompt build
+    _exec_from_pt = (prepared_task or {}).get("execution_mode")
+    _exec_from_task = ((prepared_task or {}).get("task") or {}).get("execution_mode")
+    _exec_mode = _exec_from_pt or _exec_from_task or "?"
+    logger.info(
+        "execution_mode_trace _apply_via_openclaw task_id=%s execution_mode=%s (from_pt=%s from_task=%s)",
+        task_id, _exec_mode, _exec_from_pt, _exec_from_task,
+    )
+    if _exec_mode == "strict":
+        logger.info("STRICT MODE ACTIVE at _apply_via_openclaw task_id=%s", task_id)
+
     try:
         user_prompt, instructions = prompt_builder_fn(prepared_task)
     except Exception as e:
@@ -831,6 +842,13 @@ def _apply_via_openclaw(
         if fallback_fn:
             return fallback_fn(prepared_task)
         return {"success": False, "summary": f"prompt build error: {e}"}
+
+    # Strict mode: prepend hard override block when execution_mode=strict
+    try:
+        from app.services.openclaw_client import prepend_strict_mode_if_needed
+        user_prompt = prepend_strict_mode_if_needed(user_prompt, prepared_task)
+    except Exception as e:
+        logger.debug("prepend_strict_mode_if_needed failed: %s — continuing without strict block", e)
 
     # Append verification feedback if this is a re-investigation after failed verification
     root = _repo_root()
@@ -1273,11 +1291,11 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
     )
 
     # ── Explicit Type field override (highest priority) ──────────────
-    # Notion Type="bug" or "architecture investigation" maps to the bug investigation pack
-    # with manual_only=True, regardless of keyword heuristics.  This ensures
-    # investigation tasks are never misclassified and always produce the expected
-    # artifact at docs/agents/bug-investigations/notion-bug-{id}.md.
-    if _task_type in ("bug", "bugfix", "bug fix", "architecture investigation"):
+    # Notion Type="bug", "investigation", or "architecture investigation" maps to the
+    # bug investigation pack with manual_only=True. This ensures investigation tasks
+    # are never misclassified and always produce the expected artifact at
+    # docs/agents/bug-investigations/notion-bug-{id}.md.
+    if _task_type in ("bug", "bugfix", "bug fix", "investigation", "architecture investigation"):
         logger.info(
             "select_default_callbacks_for_task: explicit bug type detected — "
             "selecting bug_investigation pack (extended lifecycle) "

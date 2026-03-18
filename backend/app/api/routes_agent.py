@@ -73,6 +73,7 @@ def agent_status() -> dict[str, Any]:
         "patching", "Patching",
     ])
     awaiting_deploy = _count_tasks_by_statuses([
+        "ready-for-deploy", "Ready for Deploy",
         "awaiting-deploy-approval", "Awaiting Deploy Approval",
     ])
     deploying = _count_tasks_by_statuses(["deploying", "Deploying"])
@@ -152,7 +153,7 @@ def agent_ops_failed_investigations(
 
 @router.get("/agent/ops/active-tasks")
 def agent_ops_active_tasks() -> dict[str, Any]:
-    """Return tasks currently in patching, deploying, or awaiting-deploy-approval."""
+    """Return tasks currently in patching, ready-for-deploy, or deploying."""
     try:
         from app.services.notion_task_reader import get_tasks_by_status
 
@@ -162,7 +163,7 @@ def agent_ops_active_tasks() -> dict[str, Any]:
         )
         deploying = get_tasks_by_status(["deploying", "Deploying"], max_results=10)
         awaiting = get_tasks_by_status(
-            ["awaiting-deploy-approval", "Awaiting Deploy Approval"],
+            ["ready-for-deploy", "Ready for Deploy", "awaiting-deploy-approval", "Awaiting Deploy Approval"],
             max_results=10,
         )
 
@@ -372,6 +373,94 @@ def agent_atp_instance_info() -> dict[str, Any]:
         return {"ok": True, **get_atp_instance_info()}
     except ImportError as e:
         return {"ok": False, "error": str(e)}
+
+
+@router.post("/agent/run-lab-command")
+def agent_run_lab_command(
+    body: dict[str, Any] = Body(default={}),
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """
+    Run a safe command on the LAB instance (OpenClaw host) via AWS SSM.
+
+    Use for OpenClaw self-diagnostics: docker ps, docker logs openclaw, etc.
+    Requires: Authorization: Bearer <OPENCLAW_API_TOKEN>.
+    Body: { "command": "docker logs openclaw --tail=100", "timeout_seconds": 60 }
+
+    Allowed: docker ps, docker logs openclaw --tail=N, docker inspect openclaw,
+    docker compose -f docker-compose.openclaw.yml ps/logs, whoami, ls/cat /var/log/openclaw.
+    """
+    _verify_agent_token(authorization)
+    try:
+        from app.services.lab_ssm_runner import run_lab_command
+    except ImportError as e:
+        return {"ok": False, "error": str(e), "stdout": "", "stderr": ""}
+
+    payload = body or {}
+    command = (payload.get("command") or "").strip()
+    timeout = int(payload.get("timeout_seconds") or 60)
+    if not command:
+        raise HTTPException(status_code=400, detail="command required")
+
+    result = run_lab_command(command, timeout_seconds=min(timeout, 120))
+    return {
+        "ok": result.get("ok", False),
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "status": result.get("status", ""),
+        "error": result.get("error"),
+    }
+
+
+@router.get("/agent/lab-instance-info")
+def agent_lab_instance_info() -> dict[str, Any]:
+    """Return LAB instance metadata and allowed commands (for prompts). No auth required."""
+    try:
+        from app.services.lab_ssm_runner import get_lab_instance_info
+        return {"ok": True, **get_lab_instance_info()}
+    except ImportError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/agent/runtime-diagnostics")
+def agent_runtime_diagnostics(
+    authorization: str | None = Header(None),
+) -> dict[str, Any]:
+    """
+    Run minimal runtime checks: whoami, docker ps (LAB), run-atp-command (PROD) connectivity.
+    Helps agents verify runtime visibility. Requires Authorization: Bearer <OPENCLAW_API_TOKEN>.
+    """
+    _verify_agent_token(authorization)
+    out: dict[str, Any] = {
+        "ok": True,
+        "lab": {},
+        "atp_prod": {},
+        "log_path_note": "OpenClaw logs: use run-lab-command with 'docker logs openclaw --tail=100'. "
+        "Inside container: /var/log/openclaw/ (directory). /var/log/openclaw.log does not exist.",
+    }
+    try:
+        from app.services.lab_ssm_runner import run_lab_command
+        whoami = run_lab_command("whoami")
+        docker_ps = run_lab_command("docker ps")
+        out["lab"] = {
+            "whoami": whoami.get("stdout", "").strip() or whoami.get("error", ""),
+            "whoami_ok": whoami.get("ok", False),
+            "docker_ps_ok": docker_ps.get("ok", False),
+            "docker_ps_preview": (docker_ps.get("stdout") or "")[:500] if docker_ps.get("ok") else docker_ps.get("error", ""),
+        }
+    except ImportError:
+        out["lab"] = {"error": "lab_ssm_runner not available"}
+    try:
+        from app.services.atp_ssm_runner import run_atp_command
+        prod_ps = run_atp_command("docker ps")
+        out["atp_prod"] = {
+            "docker_ps_ok": prod_ps.get("ok", False),
+            "docker_ps_preview": (prod_ps.get("stdout") or "")[:500] if prod_ps.get("ok") else prod_ps.get("error", ""),
+        }
+    except ImportError:
+        out["atp_prod"] = {"error": "atp_ssm_runner not available"}
+    out["ok"] = out.get("lab", {}).get("whoami_ok", False) or out.get("atp_prod", {}).get("docker_ps_ok", False)
+    return out
 
 
 @router.post("/agent/cursor-bridge/run")

@@ -23,8 +23,8 @@ When `backend/requirements.txt` changes or you see `ModuleNotFoundError` (e.g. `
 
 ```bash
 cd ~/automated-trading-platform
-docker compose build --no-cache backend-aws
-docker compose up -d backend-aws
+docker compose build --no-cache
+docker compose up -d
 ```
 
 For AWS profile:
@@ -48,15 +48,27 @@ docker compose --profile aws up -d backend-aws
 Verify critical dependencies inside the container:
 
 ```bash
-docker compose --profile aws exec backend-aws python scripts/diag/check_container_dependencies.py
+docker compose --profile aws exec backend-aws python scripts/diag/check_runtime_dependencies.py
+```
+
+Or via container name:
+
+```bash
+docker exec -it automated-trading-platform-backend-aws-1 python /app/scripts/diag/check_runtime_dependencies.py
 ```
 
 Expected output:
 ```
+Runtime dependency check
+
 pydantic: OK
 pydantic_settings: OK
 requests: OK
+
+Runtime environment: Docker
 ```
+
+**Telegram /runtime-check:** Send `/runtime-check` to the bot to run the same check and get results in Telegram.
 
 Or manually:
 ```bash

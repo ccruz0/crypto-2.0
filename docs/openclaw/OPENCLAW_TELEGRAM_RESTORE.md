@@ -4,7 +4,7 @@ When OpenClaw stops replying on Telegram, follow these steps.
 
 ## /investigate pydantic_settings error
 
-If `/investigate repeated BTC alerts` (or similar) fails with `ModuleNotFoundError: pydantic_settings`, OpenClaw is receiving the command and running ATP Python code from the mounted workspace. The OpenClaw container needs `pydantic-settings` installed.
+If `/investigate repeated BTC alerts` (or similar) fails with `ModuleNotFoundError: pydantic_settings`, **OpenClaw** is receiving the command and running ATP Python code from the mounted workspace. The ATP bot (backend-aws) has pydantic-settings and passes runtime-check; the mismatch means you are messaging the Claw bot, not the ATP bot. See [INVESTIGATE_EXECUTION_PATH.md](../agents/INVESTIGATE_EXECUTION_PATH.md) for the full execution path and diagnostics.
 
 **Fix:** Use the ATP wrapper image (which adds pydantic/pydantic-settings) and redeploy:
 

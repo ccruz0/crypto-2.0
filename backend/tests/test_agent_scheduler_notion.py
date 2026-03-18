@@ -2,11 +2,13 @@
 Tests for the agent scheduler and Notion task reader fixes.
 
 Validates:
-1. Case-insensitive Status filter (both "planned" and "Planned" match)
-2. Diagnostic logging produces expected messages
-3. test_notion_task_scan() returns structured results
-4. Scheduler background loop function exists and is importable
-5. Scheduler is wired into FastAPI startup
+1. Notion query uses only exact valid Status option names (Planned, Backlog, etc.)
+2. Lowercase invalid variants (planned, backlog) are NOT sent to Notion
+3. Local normalization still works after fetch
+4. Diagnostic logging produces expected messages
+5. test_notion_task_scan() returns structured results
+6. Scheduler background loop function exists and is importable
+7. Scheduler is wired into FastAPI startup
 """
 
 from __future__ import annotations
@@ -61,14 +63,52 @@ class FakeResponse:
 
 
 class TestNotionTaskReader:
-    """Verify the case-insensitive Status filter and diagnostic logging."""
+    """Verify Notion query uses exact valid Status options; normalization after fetch."""
 
     @patch.dict("os.environ", {"NOTION_API_KEY": "secret_test", "NOTION_TASK_DB": "db_test_id_1234"})
-    def test_finds_tasks_with_lowercase_planned(self):
-        """Tasks with status 'planned' (lowercase) are found on the first try."""
+    def test_only_sends_valid_notion_status_options(self):
+        """Notion query must use only exact valid option names; lowercase causes 400."""
+        from app.services.notion_task_reader import (
+            get_pending_notion_tasks,
+            NOTION_PICKABLE_STATUS_OPTIONS,
+        )
+
+        # Page with Status "Planned" (valid Notion option)
+        page = _notion_page("id-1", "Fix docs", "Planned")
+        ok_response = FakeResponse(200, _notion_query_response([page]))
+
+        filter_values_sent = []
+
+        def capture_post(url, json=None, headers=None):
+            nonlocal filter_values_sent
+            body = json or {}
+            flt = body.get("filter") or {}
+            if flt.get("property") == "Status":
+                eq_val = (flt.get("status") or flt.get("select") or {}).get("equals", "")
+                if eq_val:
+                    filter_values_sent.append(eq_val)
+            return ok_response
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = capture_post
+
+        with patch("app.services.notion_task_reader.httpx.Client", return_value=mock_client):
+            get_pending_notion_tasks()
+
+        valid_options = set(NOTION_PICKABLE_STATUS_OPTIONS)
+        invalid_lowercase = {"planned", "backlog", "blocked", "ready for investigation"}
+        for val in filter_values_sent:
+            assert val in valid_options, f"Invalid filter value sent: {val!r} (must be in {valid_options})"
+            assert val not in invalid_lowercase, f"Lowercase variant sent: {val!r} (causes 400)"
+
+    @patch.dict("os.environ", {"NOTION_API_KEY": "secret_test", "NOTION_TASK_DB": "db_test_id_1234"})
+    def test_finds_tasks_with_planned_and_normalizes(self):
+        """Tasks with Status 'Planned' are found; parsed status normalized to internal."""
         from app.services.notion_task_reader import get_pending_notion_tasks
 
-        page = _notion_page("id-1", "Fix docs", "planned")
+        page = _notion_page("id-1", "Fix docs", "Planned")
         ok_response = FakeResponse(200, _notion_query_response([page]))
 
         mock_client = MagicMock()
@@ -81,11 +121,12 @@ class TestNotionTaskReader:
 
         assert len(tasks) == 1
         assert tasks[0]["task"] == "Fix docs"
+        # Normalization: "Planned" -> "planned" (internal)
         assert tasks[0]["status"] == "planned"
 
     @patch.dict("os.environ", {"NOTION_API_KEY": "secret_test", "NOTION_TASK_DB": "db_test_id_1234"})
     def test_finds_tasks_with_capitalized_planned(self):
-        """When 'planned' returns 0 results, the reader retries with 'Planned'."""
+        """Reader queries 'Planned' (exact valid option) and finds tasks."""
         from app.services.notion_task_reader import get_pending_notion_tasks
 
         page = _notion_page("id-2", "Audit project documentation", "Planned")
@@ -124,10 +165,10 @@ class TestNotionTaskReader:
 
     @patch.dict("os.environ", {"NOTION_API_KEY": "secret_test", "NOTION_TASK_DB": "db_test_id_1234"})
     def test_falls_back_to_select_filter(self):
-        """When rich_text filter returns 400, the reader falls back to select filter."""
+        """When status filter returns 400, the reader falls back to select filter."""
         from app.services.notion_task_reader import get_pending_notion_tasks
 
-        page = _notion_page("id-3", "Strategy review", "planned")
+        page = _notion_page("id-3", "Strategy review", "Planned")
         error_response = FakeResponse(400, body='{"message": "validation_error"}')
         ok_response = FakeResponse(200, _notion_query_response([page]))
 
@@ -158,7 +199,7 @@ class TestNotionTaskReader:
         """Each detected task produces an INFO log with its title."""
         from app.services.notion_task_reader import get_pending_notion_tasks
 
-        page = _notion_page("id-4", "Audit documentation", "planned")
+        page = _notion_page("id-4", "Audit documentation", "Planned")
         ok_response = FakeResponse(200, _notion_query_response([page]))
 
         mock_client = MagicMock()
@@ -205,7 +246,7 @@ class TestNotionTaskScan:
     def test_returns_structured_report(self):
         from app.services.notion_task_reader import test_notion_task_scan
 
-        page = _notion_page("id-5", "Test task", "planned")
+        page = _notion_page("id-5", "Test task", "Planned")
         ok_response = FakeResponse(200, _notion_query_response([page]))
 
         mock_client = MagicMock()
@@ -266,8 +307,61 @@ class TestSchedulerWiring:
         main_py = Path(__file__).resolve().parents[1] / "app" / "main.py"
         content = main_py.read_text()
         assert "start_agent_scheduler_loop" in content
-        assert "NOTION_API_KEY" in content
-        assert "NOTION_TASK_DB" in content
+        assert "NOTION_API_KEY" in content or "notion_env" in content
+
+    def test_notion_env_missing_then_auto_repair_proceeds(self):
+        """Missing NOTION env → pre-flight triggers repair (mocked) → cycle proceeds to no task (no manual steps)."""
+        import os
+        from app.services.agent_scheduler import run_agent_scheduler_cycle
+
+        saved_key = os.environ.pop("NOTION_API_KEY", None)
+        saved_db = os.environ.pop("NOTION_TASK_DB", None)
+        try:
+            check_calls = []
+            def mock_check():
+                if len(check_calls) == 0:
+                    check_calls.append(1)
+                    return (False, "missing")
+                return (True, "ssm_repair")
+
+            def mock_repair():
+                os.environ["NOTION_API_KEY"] = "test-secret-not-logged"
+                os.environ["NOTION_TASK_DB"] = "eb90cfa139f94724a8b476315908510a"
+                return True
+
+            with patch("app.services.notion_env.check_notion_env", side_effect=mock_check), \
+                 patch("app.services.notion_env.try_repair_notion_env_from_ssm", side_effect=mock_repair), \
+                 patch("app.services.agent_task_executor.prepare_task_with_approval_check", return_value=None):
+                result = run_agent_scheduler_cycle()
+            assert result["ok"] is True
+            assert result.get("reason") == "no task"
+        finally:
+            if saved_key is not None:
+                os.environ["NOTION_API_KEY"] = saved_key
+            elif "NOTION_API_KEY" in os.environ:
+                os.environ.pop("NOTION_API_KEY")
+            if saved_db is not None:
+                os.environ["NOTION_TASK_DB"] = saved_db
+            elif "NOTION_TASK_DB" in os.environ:
+                os.environ.pop("NOTION_TASK_DB")
+
+    def test_notion_env_missing_no_repair_skips_cycle(self):
+        """When NOTION env missing and repair fails, cycle returns without crashing (reason notion_env_missing)."""
+        import os
+        from app.services.agent_scheduler import run_agent_scheduler_cycle
+
+        saved_key = os.environ.pop("NOTION_API_KEY", None)
+        saved_db = os.environ.pop("NOTION_TASK_DB", None)
+        try:
+            with patch("app.services.agent_scheduler._ensure_notion_env_preflight", return_value=False):
+                result = run_agent_scheduler_cycle()
+            assert result["ok"] is True
+            assert result.get("reason") == "notion_env_missing"
+        finally:
+            if saved_key is not None:
+                os.environ["NOTION_API_KEY"] = saved_key
+            if saved_db is not None:
+                os.environ["NOTION_TASK_DB"] = saved_db
 
 
 # ---------------------------------------------------------------------------

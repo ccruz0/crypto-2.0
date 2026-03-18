@@ -25,10 +25,10 @@ Rendered by `render_runtime_env.sh`:
 
 **Rendered by `render_runtime_env.sh` (Notion / AI Task System):**
 
-- NOTION_API_KEY — Notion integration token. Fetched from SSM `/automated-trading-platform/prod/notion/api_key` when available, or from `.env.aws` (fallback or when using primary but Notion not in SSM, e.g. LAB).
-- NOTION_TASK_DB — Notion database ID. SSM `/automated-trading-platform/prod/notion/task_db` or `.env.aws`. Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
+- NOTION_API_KEY — Notion integration token. Fetched from SSM (prod `/automated-trading-platform/prod/notion/api_key` or LAB `/automated-trading-platform/lab/notion/api_key`) when available, or from `.env.aws` (fallback). On LAB, render tries LAB SSM automatically so no manual secret insertion is required if the parameter exists.
+- NOTION_TASK_DB — Notion database ID. SSM `/automated-trading-platform/prod/notion/task_db` or `.env.aws`. On LAB, if only the API key is in SSM, a default DB ID is used. Example: `eb90cfa139f94724a8b476315908510a`. See [NOTION_TASK_TO_CURSOR_AND_DEPLOY.md](NOTION_TASK_TO_CURSOR_AND_DEPLOY.md) § Task stuck in Planned.
 
-**Source:** AWS SSM (primary) or `.env.aws` (fallback) for the rendered vars. Do not change secret sources unless necessary.
+**Source:** AWS SSM (prod, then LAB for Notion) or `.env.aws` (fallback). Do not change secret sources unless necessary.
 
 ## Where the Notion secret and database ID are stored
 
@@ -40,6 +40,16 @@ Rendered by `render_runtime_env.sh`:
 **Summary:** The Notion **secret** (API key) is in `backend/.env` locally and in `secrets/runtime.env` on the server (rendered by `render_runtime_env.sh` from SSM or `.env.aws`). The Notion **database ID** (`NOTION_TASK_DB`) is rendered the same way. Neither file should be committed to git.
 
 ### Verify Notion in backend-aws (LAB or EC2)
+
+**Diagnostic (no secrets printed):**  
+`./scripts/diagnostics/check_notion_env.sh` — reports NOTION_API_KEY and NOTION_TASK_DB present/missing and source (SSM, .env.aws, runtime.env, container).
+
+**LAB auto-repair (no manual keys):**  
+If Notion env is missing on LAB and the SSM parameter `/automated-trading-platform/lab/notion/api_key` exists, run on the LAB host:  
+`./scripts/aws/fix_notion_env_lab.sh` — fetches from SSM, updates `.env.aws`, rerenders, restarts backend-aws, verifies in container.
+
+**Full LAB loop (Notion → OpenClaw → PATCH):**  
+See [LAB_NOTION_OPENCLAW_PATCH_VERIFICATION.md](LAB_NOTION_OPENCLAW_PATCH_VERIFICATION.md) for end-to-end verification commands and expected output.
 
 After rendering runtime env and restarting backend-aws:
 
