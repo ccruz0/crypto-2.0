@@ -5376,20 +5376,36 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/agent"):
             show_agent_console(chat_id)
         elif text.startswith("/"):
-            logger.warning(
-                "telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
-                update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
-            )
-            logger.info("[TG][HANDLER] handler=unknown executing")
-            ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
+            # Safety: router identified /task but no handler matched (e.g. encoding) — show usage, never "Unknown"
+            if handler_name == "task":
+                logger.info("[TG][HANDLER] handler=task (unknown-guard) — showing usage")
+                ok = send_command_response(
+                    chat_id,
+                    "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
+                )
+            else:
+                logger.warning(
+                    "telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
+                    update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
+                )
+                logger.info("[TG][HANDLER] handler=unknown executing")
+                ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
-            logger.warning(
-                "telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
-                update_id, chat_id, repr((text or "")[:80]),
-            )
-            logger.info("[TG][HANDLER] handler=fallback executing")
-            ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
+            # Safety: router identified /task but text didn't start with / (edge case) — show usage
+            if handler_name == "task":
+                logger.info("[TG][HANDLER] handler=task (fallback-guard) — showing usage")
+                ok = send_command_response(
+                    chat_id,
+                    "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
+                )
+            else:
+                logger.warning(
+                    "telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
+                    update_id, chat_id, repr((text or "")[:80]),
+                )
+                logger.info("[TG][HANDLER] handler=fallback executing")
+                ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=fallback", ok)
     except Exception as e:
         logger.exception("[TG][ERROR] %s", e)
