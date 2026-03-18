@@ -205,6 +205,8 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
+      # Only backend-aws polls Telegram; canary has RUN_TELEGRAM_POLLER=false
+      - RUN_TELEGRAM_POLLER=true
       - RUNTIME_ORIGIN=AWS
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
       - EXECUTION_CONTEXT=AWS

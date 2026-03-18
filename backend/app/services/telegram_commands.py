@@ -115,6 +115,7 @@ SERVICE_NAMES = ["exchange_sync", "signal_monitor", "trading_scheduler"]
 LAST_UPDATE_ID = 0  # Global variable to track last processed update (loaded from DB on startup)
 PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent duplicate processing
 _POLLER_LOCK_ACQUIRED = False  # Track if this process has the poller lock
+_POLLER_STARTUP_LOGGED = False  # One-time log when this process becomes the active poller
 _NO_UPDATE_COUNT = 0  # Track consecutive cycles with no updates
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
@@ -187,7 +188,7 @@ def _acquire_poller_lock(db: Session) -> bool:
     """Acquire PostgreSQL advisory lock for single poller enforcement.
     Returns True if lock acquired, False if another poller is active.
     """
-    global _POLLER_LOCK_ACQUIRED
+    global _POLLER_LOCK_ACQUIRED, _POLLER_STARTUP_LOGGED
     if not db or not engine:
         logger.warning("[TG] Database not available for poller lock")
         return False
@@ -199,6 +200,18 @@ def _acquire_poller_lock(db: Session) -> bool:
         if acquired:
             _POLLER_LOCK_ACQUIRED = True
             logger.info("[TG] Poller lock acquired")
+            # One-time startup visibility: log process identity for operator debugging
+            if not _POLLER_STARTUP_LOGGED:
+                _POLLER_STARTUP_LOGGED = True
+                service = os.getenv("SERVICE_NAME") or ("backend-aws" if is_aws_runtime() else "backend")
+                try:
+                    hostname = os.uname().nodename
+                except AttributeError:
+                    hostname = os.getenv("HOSTNAME", "?")
+                logger.info(
+                    "[TG] Telegram poller started by %s (pid=%s hostname=%s RUNTIME_ORIGIN=%s)",
+                    service, os.getpid(), hostname, os.getenv("RUNTIME_ORIGIN", "not_set"),
+                )
             return True
         else:
             logger.warning("[TG] Another poller is active, cannot acquire lock")
@@ -1071,11 +1084,10 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         status = getattr(http_err.response, 'status_code', None)
         if status == 409:
             # 409 conflict - another client is polling or webhook is active
-            # This is expected when multiple pollers try to poll simultaneously
-            # The lock should prevent this, but if it happens, just skip this cycle
-            logger.debug(
+            # Indicates duplicate Telegram consumers (multiple processes using same token)
+            logger.warning(
                 "[TG] getUpdates conflict (409) - Another webhook or polling client is active. "
-                "This may be due to race condition between pollers. Skipping this cycle."
+                "Possible duplicate pollers. Run backend/scripts/diag/detect_telegram_consumers.sh to investigate."
             )
             return []
         logger.error(f"[TG] getUpdates HTTP error: {http_err}")
