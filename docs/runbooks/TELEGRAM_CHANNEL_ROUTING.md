@@ -1,13 +1,15 @@
-# Telegram Channel Routing (Trading vs Ops)
+# Telegram Channel Routing
 
 ## Overview
 
-Alertas de Telegram se enrutan a dos canales distintos:
+Four distinct channels. See `docs/audits/TELEGRAM_ROUTING_AUDIT.md` for full audit.
 
-| Canal | Chat | Contenido |
-|-------|------|------------|
-| **HILOVIVO3.0** (trading) | `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_TRADING` | Señales BUY/SELL, órdenes creadas, reportes de ventas, SL/TP |
-| **AWS_alerts** (ops) | `TELEGRAM_CHAT_ID_OPS` | Health alerts, anomalías, scheduler inactivity, system down |
+| Canal | Bot | Env Vars | Contenido |
+|-------|-----|----------|-----------|
+| **HiloVivo 3.0** (trading) | @HILOVIVO30_bot | TELEGRAM_CHAT_ID_TRADING | Señales BUY/SELL, órdenes, SL/TP, reportes |
+| **AWS Alerts** (ops/infra) | @AWS_alerts_hilovivo_bot | TELEGRAM_CHAT_ID_OPS, TELEGRAM_ALERT_* | Health, EC2/Docker, anomalías |
+| **ATP Control** (dev/tasks) | @ATP_control_bot | TELEGRAM_ATP_CONTROL_* | Tasks, approvals, investigations |
+| **Claw** (commands) | @Claw_cruz_bot | (reply to user) | /task /help, OpenClaw responses |
 
 ## Variables de entorno
 

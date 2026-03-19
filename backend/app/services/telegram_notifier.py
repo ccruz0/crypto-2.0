@@ -512,7 +512,20 @@ class TelegramNotifier:
             elif "SELL SIGNAL" in message or "🔴" in message:
                 log_side = "SELL"
             
-            # Log Telegram send attempt with full context
+            # Log Telegram send attempt with full context and routing
+            category = "TRADING" if chat_destination == "trading" else "INFRA"
+            dest_bot = "HILOVIVO30" if chat_destination == "trading" else "AWS_alerts"
+            logger.info(
+                "[TELEGRAM_ROUTE] category=%s destination=%s bot=%s chat_id=%s dest=%s origin=%s "
+                "source_module=telegram_notifier message_len=%d",
+                category,
+                dest_bot,
+                dest_bot,
+                effective_chat_id,
+                chat_destination,
+                origin_upper,
+                len(full_message),
+            )
             logger.info(
                 "[TELEGRAM_SEND] type=ALERT symbol=%s side=%s chat_id=%s dest=%s origin=%s message_len=%d message_preview=%s",
                 log_symbol,

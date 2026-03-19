@@ -186,9 +186,9 @@ def evaluate_and_maybe_send_system_alert(health: Optional[Dict] = None, db: Opti
 
 def _send_system_alert(alert_type: str, message: str):
     """Send a system alert via Telegram (if enabled)"""
-        if telegram_notifier.enabled:
-            try:
-                telegram_notifier.send_message(message, origin="AWS", chat_destination="ops")
+    if telegram_notifier.enabled:
+        try:
+            telegram_notifier.send_message(message, origin="AWS", chat_destination="ops")
             record_telegram_send_result(True)
             logger.warning(f"[SYSTEM_ALERT] Sent {alert_type} alert to Telegram")
             _record_alert_sent(alert_type)

@@ -73,7 +73,13 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID_LOCAL: Optional[str] = None  # Local development channel (not used for sending)
     TELEGRAM_CHAT_ID_TRADING: Optional[str] = None  # HILOVIVO3.0: signals, orders, reports
     TELEGRAM_CHAT_ID_OPS: Optional[str] = None  # AWS_alerts: health, anomalies, scheduler
-    
+    # ATP Control (@ATP_control_bot): tasks, investigations, approvals, needs revision, agent logs
+    TELEGRAM_ATP_CONTROL_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_ATP_CONTROL_CHAT_ID: Optional[str] = None
+    # Claw (@Claw_cruz_bot): control plane, user commands, /task /help, OpenClaw (responses)
+    TELEGRAM_CLAW_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_CLAW_CHAT_ID: Optional[str] = None
+
     class Config:
         env_file = (".env", "backend/.env", "secrets/runtime.env")
         extra = "ignore"  # Ignore extra environment variables
@@ -83,11 +89,17 @@ _inject_telegram_token_from_encrypted()
 settings = Settings()
 
 # Validate SECRET_KEY is set (critical for security)
-if not settings.SECRET_KEY or settings.SECRET_KEY == "your-secret-key-here":
-    import warnings
+# For local/test: auto-generate if missing so scripts run without warnings
+if not settings.SECRET_KEY or settings.SECRET_KEY in ("your-secret-key-here", "change-me"):
     import os
-    # Check if we're in a test environment
-    if os.getenv("ENVIRONMENT") != "test" and os.getenv("APP_ENV") != "test":
+    if os.getenv("ENVIRONMENT") == "test" or os.getenv("APP_ENV") == "test":
+        settings.SECRET_KEY = "test-secret-key-do-not-use-in-production"
+    elif os.getenv("ENVIRONMENT") == "local" or os.getenv("APP_ENV") == "local" or not os.getenv("APP_ENV"):
+        # Local dev: auto-generate ephemeral key so scheduler/scripts run without warnings
+        import secrets
+        settings.SECRET_KEY = secrets.token_urlsafe(32)
+    else:
+        import warnings
         warnings.warn(
             "SECRET_KEY is not set or using default value. "
             "This is a security risk. Set SECRET_KEY in your environment variables. "
