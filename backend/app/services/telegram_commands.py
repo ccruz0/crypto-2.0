@@ -22,7 +22,7 @@ from app.models.watchlist import WatchlistItem
 from app.models.telegram_state import TelegramState
 from app.database import SessionLocal, engine
 from app.utils.http_client import http_get, http_post, requests_exceptions
-from app.utils.telegram_token_loader import get_telegram_token, get_telegram_token_dev, mask_token
+from app.utils.telegram_token_loader import get_telegram_token, get_telegram_token_dev, get_telegram_token_source, mask_token
 
 logger = logging.getLogger(__name__)
 
@@ -4380,9 +4380,10 @@ def _handle_task_command(
     raw_text = (text or "").strip()
     normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
     intent_text = normalized_cmd
+    token_source = get_telegram_token_source()
     logger.info(
-        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=task update_id=%s chat_id=%s",
-        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id,
+        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
+        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
     )
     if not intent_text:
         logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
@@ -4484,10 +4485,24 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     msg_obj = update.get("message") or update.get("edited_message")
     channel_obj = update.get("channel_post") or update.get("edited_channel_post")
     obj = msg_obj or channel_obj
+    callback_query = update.get("callback_query")
+
+    # Audit logging: bot identity, incoming chat, update type (for /task routing audit)
+    token_source = get_telegram_token_source()
+    _chat_id = ""
+    if callback_query:
+        msg = callback_query.get("message", {}) or {}
+        _chat_id = str((msg.get("chat") or {}).get("id", ""))
+    elif obj:
+        _chat_id = str((obj.get("chat") or {}).get("id", ""))
+    _update_type = "callback_query" if callback_query else ("channel_post" if channel_obj else "message")
+    logger.info(
+        "[TG][UPDATE] update_id=%s chat_id=%s update_type=%s token_source=%s",
+        update_id, _chat_id or "(pending)", _update_type, token_source,
+    )
 
     # Determine update type and extract key info for logging
     update_type = "unknown"
-    callback_query = update.get("callback_query")
     message = (
         update.get("message")
         or update.get("edited_message")
@@ -5166,7 +5181,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
         )
         if _env_chat_id_trading and chat_id == str(_env_chat_id_trading):
-            deny_msg = "ATP Alerts is alerts-only. Use ATP Control (private group or direct chat) for commands."
+            deny_msg = "ATP Alerts is alerts-only. Use ATP Control for /task commands."
         else:
             deny_msg = "⛔ Not authorized"
         reply_ok = send_command_response(chat_id, deny_msg)
@@ -5297,14 +5312,18 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         handler_name = "agent"
     elif text.startswith("/agent"):
         handler_name = "agent"  # /agent without args -> show_agent_console
+    token_source = get_telegram_token_source()
     logger.info(
-        "[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s update_id=%s chat_id=%s",
-        handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40], update_id, chat_id,
+        "[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s update_id=%s chat_id=%s token_source=%s",
+        handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40], update_id, chat_id, token_source,
     )
 
     # CRITICAL: /task has one canonical handler. Dispatch first, never fall through to unknown.
     if handler_name == "task":
-        logger.info("[TG][TASK] handler start update_id=%s chat_id=%s", update_id, chat_id)
+        logger.info(
+            "[TG][TASK] handler=task path=_handle_task_command update_id=%s chat_id=%s token_source=%s",
+            update_id, chat_id, token_source,
+        )
         try:
             _handle_task_command(chat_id, text, args, from_user, send_command_response, update_id)
         except Exception as task_err:

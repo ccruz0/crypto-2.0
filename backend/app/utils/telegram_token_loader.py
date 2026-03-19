@@ -172,16 +172,18 @@ def _get_token_interactive() -> Optional[str]:
 
 def get_telegram_token() -> Optional[str]:
     """
-    Get the Telegram bot token. Never writes it to disk or logs it.
+    Get the Telegram bot token for polling and command responses. Never writes it to disk or logs it.
 
     Priority:
     0. FORCE_TELEGRAM_TOKEN_PROMPT=true → always prompt (ignores env)
     1. TELEGRAM_BOT_TOKEN
     2. TELEGRAM_BOT_TOKEN_DEV
-    3. Interactive popup (tkinter → prompt_toolkit → terminal)
+    3. TELEGRAM_ATP_CONTROL_BOT_TOKEN (ATP Control /task /help channel)
+    4. TELEGRAM_CLAW_BOT_TOKEN (Claw fallback)
+    5. Interactive popup (tkinter → prompt_toolkit → terminal)
 
-    Returns:
-        Token string or None if not available and user cancelled.
+    ATP Control fallback ensures /task works when deploy sets TELEGRAM_ATP_CONTROL_* but not
+    TELEGRAM_BOT_TOKEN (e.g. SSM atp_control_bot_token only).
     """
     force_prompt = os.getenv("FORCE_TELEGRAM_TOKEN_PROMPT", "false").lower() == "true"
     if force_prompt:
@@ -201,6 +203,16 @@ def get_telegram_token() -> Optional[str]:
     if token:
         return token
 
+    token = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
+    if token:
+        logger.info("[TG] Using TELEGRAM_ATP_CONTROL_BOT_TOKEN for polling (TELEGRAM_BOT_TOKEN not set)")
+        return token
+
+    token = (os.getenv("TELEGRAM_CLAW_BOT_TOKEN") or "").strip()
+    if token:
+        logger.info("[TG] Using TELEGRAM_CLAW_BOT_TOKEN for polling (TELEGRAM_BOT_TOKEN not set)")
+        return token
+
     logger.info("[TG] No token in env - prompting operator for Telegram Bot Token")
     token = _get_token_interactive()
     if token:
@@ -216,3 +228,19 @@ def get_telegram_token_dev() -> Optional[str]:
     Only from env; never prompts.
     """
     return (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip() or None
+
+
+def get_telegram_token_source() -> str:
+    """
+    Return which env var provided the active polling token (for audit logging).
+    Matches the priority in get_telegram_token().
+    """
+    if (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
+        return "TELEGRAM_BOT_TOKEN"
+    if (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip():
+        return "TELEGRAM_BOT_TOKEN_DEV"
+    if (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip():
+        return "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
+    if (os.getenv("TELEGRAM_CLAW_BOT_TOKEN") or "").strip():
+        return "TELEGRAM_CLAW_BOT_TOKEN"
+    return "interactive_prompt"
