@@ -1,15 +1,15 @@
 """
-Tests for /task Telegram command: intent parsing and routing logic.
+Tests for /task Telegram command: intent parsing, routing logic, and canonical handler.
 
-Full handle_telegram_update is not imported here to avoid triggering
-telegram token loading at module load. Manual verification: send /task fix order mismatch
-in Telegram and confirm task is created or reused and response is returned.
+Manual verification: send /task fix order mismatch in Telegram and confirm
+task is created or reused and response is returned.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -75,6 +75,129 @@ def test_script_api_default_pattern_no_8000(monkeypatch):
     )
     assert "8002" in default
     assert default == "http://localhost:8002"
+
+
+def test_handle_task_command_with_intent():
+    """_handle_task_command creates task and sends success when intent provided."""
+    from app.services.telegram_commands import _handle_task_command
+
+    mock_send = MagicMock(return_value=True)
+    with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_create:
+        mock_create.return_value = {
+            "ok": True,
+            "title": "Test task",
+            "type": "Investigation",
+            "status": "Planned",
+            "priority": 50,
+            "priority_label": "medium",
+        }
+        _handle_task_command(
+            "123", "/task Critical: fix production", "Critical: fix production",
+            {"username": "test"}, mock_send, update_id=1,
+        )
+    mock_send.assert_called_once()
+    call_args = mock_send.call_args[0]
+    assert "Task created" in call_args[1] or "Matched existing" in call_args[1]
+    assert "Unknown command" not in call_args[1]
+
+
+def test_handle_task_command_no_intent_shows_usage():
+    """_handle_task_command shows usage when no intent (e.g. /task alone)."""
+    from app.services.telegram_commands import _handle_task_command
+
+    mock_send = MagicMock(return_value=True)
+    _handle_task_command("123", "/task", "", {"username": "test"}, mock_send, update_id=1)
+    mock_send.assert_called_once()
+    call_args = mock_send.call_args[0]
+    assert "Create task from Telegram" in call_args[1]
+    assert "/task" in call_args[1]
+
+
+def test_task_never_returns_unknown_command(monkeypatch):
+    """Regression: /task must never trigger 'Unknown command' regardless of format."""
+    from unittest.mock import patch
+    monkeypatch.setenv("TELEGRAM_AUTH_USER_ID", "12345")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    import app.services.telegram_commands as tc_mod
+    if "12345" not in tc_mod.AUTHORIZED_USER_IDS:
+        tc_mod.AUTHORIZED_USER_IDS.add("12345")
+    handle_telegram_update = tc_mod.handle_telegram_update
+
+    variants = [
+        "/task foo",
+        "/task Critical: fix production",
+        "/task@ATP_control_bot bar",
+    ]
+    for i, text in enumerate(variants):
+        with patch("app.services.telegram_commands.send_command_response") as mock_send:
+            with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_create:
+                mock_create.return_value = {
+                    "ok": True, "title": "T", "type": "I", "status": "P",
+                    "priority": 50, "priority_label": "m", "reused": False,
+                }
+                update = {
+                    "update_id": 99990 + i,
+                    "message": {
+                        "message_id": 1 + i,
+                        "text": text,
+                        "chat": {"id": 12345, "type": "private"},
+                        "from": {"id": 12345, "username": "t"},
+                    },
+                }
+                handle_telegram_update(update, db=None)
+        all_msg = " ".join(str(c[0][1]) for c in mock_send.call_args_list if len(c[0]) > 1)
+        assert "Unknown command" not in all_msg, f"/task variant {text!r} must not return Unknown command"
+
+
+def test_task_at_botname_normalization():
+    """Router recognizes /task@ATP_control_bot foo; cmd_token after strip is /task."""
+    text = "/task@ATP_control_bot Critical: fix production"
+    normalized = re.sub(r"@\S+", "", text).strip()
+    assert normalized == "/task Critical: fix production"
+    parts = normalized.split(None, 1)
+    cmd_token = (parts[0] or "").strip()
+    args = (parts[1] or "").strip() if len(parts) > 1 else ""
+    assert cmd_token == "/task"
+    assert "Critical" in args
+
+
+def test_handle_task_command_notion_not_configured_returns_debug_marker():
+    """When Notion is not configured, error message includes [task-debug-v4] marker (proves updated code)."""
+    from app.services.telegram_commands import _handle_task_command
+
+    mock_send = MagicMock(return_value=True)
+    with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_create:
+        mock_create.return_value = {"ok": False, "error": "Notion is not configured"}
+        _handle_task_command(
+            "123", "/task fix order mismatch", "fix order mismatch",
+            {"username": "test"}, mock_send, update_id=2,
+        )
+    mock_send.assert_called_once()
+    msg = mock_send.call_args[0][1]
+    assert "[task-debug-v4]" in msg
+    assert "Notion is not configured" in msg
+
+
+def test_handle_task_command_fallback_stored_message():
+    """When Notion API fails but fallback store works, show sync message."""
+    from app.services.telegram_commands import _handle_task_command
+
+    mock_send = MagicMock(return_value=True)
+    with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_create:
+        mock_create.return_value = {
+            "ok": False,
+            "error": "Notion unavailable",
+            "fallback_stored": True,
+            "fallback_id": "uuid-123",
+        }
+        _handle_task_command(
+            "123", "/task fix order mismatch", "fix order mismatch",
+            {"username": "test"}, mock_send, update_id=3,
+        )
+    mock_send.assert_called_once()
+    msg = mock_send.call_args[0][1]
+    assert "stored locally" in msg
+    assert "synced automatically" in msg
 
 
 def test_task_token_fallback_atp_control(monkeypatch):

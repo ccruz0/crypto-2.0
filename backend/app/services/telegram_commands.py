@@ -4364,6 +4364,113 @@ def handle_kill_command(chat_id: str, text: str, db: Optional[Session] = None) -
         return send_command_response(chat_id, f"❌ Error executing kill command: {str(e)}")
 
 
+def _handle_task_command(
+    chat_id: str,
+    text: str,
+    args: str,
+    from_user: dict,
+    send_response: Any,
+    update_id: int = 0,
+) -> bool:
+    """
+    Canonical handler for /task. Single path: extract intent, create task, send one response.
+    Never falls through to unknown-command.
+    """
+    # High-signal debug logging for /task (proves production uses updated code)
+    raw_text = (text or "").strip()
+    normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
+    intent_text = normalized_cmd
+    logger.info(
+        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=task update_id=%s chat_id=%s",
+        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id,
+    )
+    if not intent_text:
+        logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
+        ok = send_response(
+            chat_id,
+            "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
+        )
+        logger.info("[TG][TASK] handler=task success=usage update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
+        return bool(ok)
+    telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
+    # Best-effort: try SSM repair when Notion missing (LAB can recover from SSM)
+    try:
+        from app.services.notion_tasks import notion_is_configured
+        from app.services.notion_env import try_repair_notion_env_from_ssm
+        if not notion_is_configured():
+            repaired = try_repair_notion_env_from_ssm()
+            logger.info("[TG][TASK][DEBUG] notion_preflight repaired=%s update_id=%s", repaired, update_id)
+    except Exception as repair_err:
+        logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
+    try:
+        from app.services.task_compiler import (
+            create_task_from_telegram_intent,
+            ERROR_NOTION_NOT_CONFIGURED,
+        )
+        result = create_task_from_telegram_intent(intent_text, telegram_user)
+        logger.info(
+            "[TG][TASK][DEBUG] create_task_from_telegram_intent result ok=%s error=%s fallback_stored=%s update_id=%s",
+            result.get("ok"), result.get("error"), result.get("fallback_stored"), update_id,
+        )
+        if result.get("ok"):
+            priority = result.get("priority")
+            priority_label = result.get("priority_label") or ""
+            priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
+            if result.get("reused"):
+                input_merged = result.get("input_merged", False)
+                merge_line = (
+                    "Your new instruction was added to the task history.\n"
+                    "Notion record updated.\n\n"
+                    if input_merged
+                    else "⚠️ Could not append to task history (Notion update failed).\n\n"
+                )
+                msg = (
+                    "✅ <b>Matched existing task</b>\n\n"
+                    f"Title: {result.get('title', '')}\n"
+                    f"Status: {result.get('status', '')}\n"
+                    f"{priority_line}\n"
+                    f"{merge_line}"
+                    "The system will continue working on this task."
+                )
+            else:
+                msg = (
+                    "✅ <b>Task created</b>\n\n"
+                    f"Title: {result.get('title', '')}\n"
+                    f"Type: {result.get('type', 'Investigation')}\n"
+                    f"Status: {result.get('status', 'Planned')}\n"
+                    f"{priority_line}"
+                    "Execution Mode: Strict\n\nThe system will automatically process it."
+                )
+            ok = send_response(chat_id, msg)
+            logger.info(
+                "[TG][TASK] handler=task success update_id=%s chat_id=%s ok=%s reused=%s",
+                update_id, chat_id, ok, result.get("reused", False),
+            )
+            return bool(ok)
+        err = result.get("error", "Unknown error")
+        if err == ERROR_NOTION_NOT_CONFIGURED:
+            msg = (
+                "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
+                "Set NOTION_API_KEY and NOTION_TASK_DB in .env (local) or SSM (AWS). "
+                "The system is still operational, but task tracking is disabled."
+            )
+        elif result.get("fallback_stored"):
+            msg = "Notion unavailable. Task stored locally and will be synced automatically."
+        else:
+            msg = f"❌ Task creation failed: {err}"
+        ok = send_response(chat_id, msg)
+        logger.info(
+            "[TG][TASK][DEBUG] user_facing_message=%r update_id=%s chat_id=%s ok=%s",
+            msg[:80], update_id, chat_id, ok,
+        )
+        return bool(ok)
+    except Exception as e:
+        logger.exception("[TG][TASK] handler=task failed update_id=%s chat_id=%s: %s", update_id, chat_id, e)
+        ok = send_response(chat_id, f"❌ Error: {str(e)[:200]}")
+        logger.info("[TG][TASK] handler=task exception update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
+        return bool(ok)
+
+
 def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
@@ -5080,13 +5187,18 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             logger.exception("[TG][ERROR] normalization failed: %s", norm_err)
             text = text.split("@")[0].strip() if "@" in text else text
 
+    # Strip zero-width/invisible chars from command token for robust matching (preserve args)
+    _ZW = "\u200b\u200c\u200d\ufeff"
+    if text and any(c in text for c in _ZW):
+        text = "".join(c for c in text if c not in _ZW).strip()
+
     # Extract cmd token and args for logging; do NOT drop args
     parts = (text or "").split(None, 1)
     cmd_token = (parts[0] or "").strip()
     args = (parts[1] or "").strip() if len(parts) > 1 else ""
     logger.info(
-        "telegram_command_detected update_id=%s command=%s args=%s",
-        update_id, (cmd_token or "")[:60], (args or "")[:80],
+        "[TG][CMD] telegram_command_detected update_id=%s chat_id=%s cmd_token=%s args_len=%s",
+        update_id, chat_id, (cmd_token or "")[:50], len(args or ""),
     )
     logger.info(
         "[TG][CMD] raw_command=%s normalized_command=%s args=%s",
@@ -5185,7 +5297,21 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         handler_name = "agent"
     elif text.startswith("/agent"):
         handler_name = "agent"  # /agent without args -> show_agent_console
-    logger.info("[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s", handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40])
+    logger.info(
+        "[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s update_id=%s chat_id=%s",
+        handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40], update_id, chat_id,
+    )
+
+    # CRITICAL: /task has one canonical handler. Dispatch first, never fall through to unknown.
+    if handler_name == "task":
+        logger.info("[TG][TASK] handler start update_id=%s chat_id=%s", update_id, chat_id)
+        try:
+            _handle_task_command(chat_id, text, args, from_user, send_command_response, update_id)
+        except Exception as task_err:
+            logger.exception("[TG][TASK] handler failed update_id=%s chat_id=%s: %s", update_id, chat_id, task_err)
+            send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
+        logger.info("[TG][TASK] handler end update_id=%s chat_id=%s", update_id, chat_id)
+        return
 
     try:
         if text.startswith("/start"):
@@ -5225,143 +5351,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 logger.exception("[TG][CMD] /investigate failed: %s", e)
                 ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
                 logger.info("[TG][REPLY] handler=investigate update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
-        elif text_lower.startswith("/task "):
-            logger.info("[TG][HANDLER] handler=task executing")
-            try:
-                # Intent = args from parsed command, or everything after "/task "
-                intent_text = (args or "").strip()
-                if not intent_text:
-                    # Fallback: strip /task (case-insensitive) from start of text
-                    intent_text = re.sub(r"^/task\s*", "", text, flags=re.IGNORECASE).strip()
-                logger.info(
-                    "telegram_task_command_received chat_id=%s intent_len=%s update_id=%s",
-                    chat_id, len(intent_text or ""), update_id,
-                )
-                if not intent_text:
-                    ok = send_command_response(
-                        chat_id,
-                        "📋 <b>Task</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why alerts are not sent when buy conditions are met",
-                    )
-                else:
-                    telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
-                    from app.services.task_compiler import (
-                        create_task_from_telegram_intent,
-                        ERROR_NOTION_NOT_CONFIGURED,
-                    )
-                    result = create_task_from_telegram_intent(intent_text, telegram_user)
-                    if result.get("ok"):
-                        priority = result.get("priority")
-                        priority_label = result.get("priority_label") or ""
-                        priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
-                        if result.get("reused"):
-                            input_merged = result.get("input_merged", False)
-                            merge_line = (
-                                "Your new instruction was added to the task history.\n"
-                                "Notion record updated.\n\n"
-                                if input_merged
-                                else "⚠️ Could not append to task history (Notion update failed).\n\n"
-                            )
-                            msg = (
-                                "✅ <b>Matched existing task</b>\n\n"
-                                f"Title: {result.get('title', '')}\n"
-                                f"Status: {result.get('status', '')}\n"
-                                f"{priority_line}\n"
-                                f"{merge_line}"
-                                "The system will continue working on this task."
-                            )
-                        else:
-                            msg = (
-                                "✅ <b>Task created</b>\n\n"
-                                f"Title: {result.get('title', '')}\n"
-                                f"Type: {result.get('type', 'Investigation')}\n"
-                                f"Status: {result.get('status', 'Planned')}\n"
-                                f"{priority_line}"
-                                "Execution Mode: Strict\n\nThe system will automatically process it."
-                            )
-                        ok = send_command_response(chat_id, msg)
-                    else:
-                        err = result.get("error", "Unknown error")
-                        if err == ERROR_NOTION_NOT_CONFIGURED:
-                            msg = (
-                                "⚠️ Task could not be created because Notion is not configured. "
-                                "The system is still operational, but task tracking is disabled."
-                            )
-                        elif result.get("fallback_stored"):
-                            msg = "Notion unavailable. Task stored locally and will be synced automatically."
-                        else:
-                            msg = f"❌ Task creation failed: {err}"
-                        ok = send_command_response(chat_id, msg)
-                    logger.info(
-                        "telegram_task_command_processed chat_id=%s ok=%s reused=%s update_id=%s",
-                        chat_id, result.get("ok"), result.get("reused", False), update_id,
-                    )
-                logger.info("[TG][REPLY] handler=task update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
-            except Exception as e:
-                logger.exception("[TG][CMD] /task failed: %s", e)
-                ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
-                logger.info("[TG][REPLY] handler=task update_id=%s chat_id=%s success=%s (after error)", update_id, chat_id, ok)
-        elif text_lower.startswith("/task"):
-            # /task without args: show usage
-            logger.info("telegram_task_command_received chat_id=%s intent_len=0 (usage) update_id=%s", chat_id, update_id)
-            ok = send_command_response(
-                chat_id,
-                "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
-            )
-            logger.info("[TG][REPLY] handler=task_usage success=%s", ok)
-        elif handler_name == "task":
-            # Router identified /task but string check missed (e.g. encoding/@botname); handle as /task
-            logger.info("[TG][HANDLER] handler=task (router fallback) executing text_repr=%s", repr((text or "")[:60]))
-            logger.info("telegram_task_command_received chat_id=%s intent_len=0 (router_fallback) update_id=%s", chat_id, update_id)
-            intent_fb = (args or "").strip() or re.sub(r"^/task\s*", "", text or "", flags=re.IGNORECASE).strip()
-            if not intent_fb:
-                ok = send_command_response(
-                    chat_id,
-                    "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
-                )
-            else:
-                telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
-                try:
-                    from app.services.task_compiler import create_task_from_telegram_intent, ERROR_NOTION_NOT_CONFIGURED
-                    result = create_task_from_telegram_intent(intent_fb, telegram_user)
-                    if result.get("ok"):
-                        priority = result.get("priority")
-                        priority_label = result.get("priority_label") or ""
-                        priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
-                        if result.get("reused"):
-                            input_merged = result.get("input_merged", False)
-                            merge_line = (
-                                "Your new instruction was added to the task history.\n"
-                                "Notion record updated.\n\n"
-                                if input_merged
-                                else "⚠️ Could not append to task history (Notion update failed).\n\n"
-                            )
-                            msg = (
-                                "✅ <b>Matched existing task</b>\n\n"
-                                f"Title: {result.get('title', '')}\nStatus: {result.get('status', '')}\n{priority_line}\n{merge_line}"
-                                "The system will continue working on this task."
-                            )
-                        else:
-                            msg = (
-                                "✅ <b>Task created</b>\n\n"
-                                f"Title: {result.get('title', '')}\n"
-                                f"Type: {result.get('type', 'Investigation')}\n"
-                                f"Status: {result.get('status', 'Planned')}\n"
-                                f"{priority_line}Execution Mode: Strict\n\nThe system will automatically process it."
-                            )
-                        ok = send_command_response(chat_id, msg)
-                    else:
-                        err = result.get("error", "Unknown error")
-                        if err == ERROR_NOTION_NOT_CONFIGURED:
-                            msg = "⚠️ Task could not be created because Notion is not configured."
-                        elif result.get("fallback_stored"):
-                            msg = "Notion unavailable. Task stored locally and will be synced automatically."
-                        else:
-                            msg = f"❌ Task creation failed: {err}"
-                        ok = send_command_response(chat_id, msg)
-                except Exception as e:
-                    logger.exception("[TG][CMD] /task (router fallback) failed: %s", e)
-                    ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
-            logger.info("[TG][REPLY] handler=task_router_fallback success=%s", ok)
         elif text.startswith("/runtime-check"):
             logger.info("[TG][CMD] handler=runtime-check update_id=%s chat_id=%s", update_id, chat_id)
             try:
@@ -5431,32 +5420,37 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/agent"):
             show_agent_console(chat_id)
         elif text.startswith("/"):
-            # Safety: router identified /task but no handler matched (e.g. encoding) — show usage, never "Unknown"
+            # /task is dispatched above; this branch is for other unknown commands
             if handler_name == "task":
-                logger.info("[TG][HANDLER] handler=task (unknown-guard) — showing usage")
+                logger.error(
+                    "[TG][TASK] BUG: task routed but fell through to unknown update_id=%s chat_id=%s — sending usage",
+                    update_id, chat_id,
+                )
                 ok = send_command_response(
                     chat_id,
                     "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
                 )
             else:
                 logger.warning(
-                    "telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
+                    "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
                     update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
                 )
                 logger.info("[TG][HANDLER] handler=unknown executing")
                 ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
-            # Safety: router identified /task but text didn't start with / (edge case) — show usage
             if handler_name == "task":
-                logger.info("[TG][HANDLER] handler=task (fallback-guard) — showing usage")
+                logger.error(
+                    "[TG][TASK] BUG: task routed but fell through to fallback update_id=%s chat_id=%s — sending usage",
+                    update_id, chat_id,
+                )
                 ok = send_command_response(
                     chat_id,
                     "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
                 )
             else:
                 logger.warning(
-                    "telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
+                    "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
                     update_id, chat_id, repr((text or "")[:80]),
                 )
                 logger.info("[TG][HANDLER] handler=fallback executing")
@@ -6011,6 +6005,21 @@ def _handle_extended_approval_callback(
             logger.warning("[TG][EXT_APPROVAL] Notion status update failed task_id=%s", task_id)
             _edit_approval_card(chat_id, message_id,
                                 f"⚠️ Deploy approved by {who} but Notion status update failed.", task_id)
+
+        # --- Apply any prepared strategy patch (prod mutation deferred until approval) ---
+        try:
+            from app.services.agent_strategy_patch import apply_prepared_strategy_patch_after_approval
+            patch_result = apply_prepared_strategy_patch_after_approval(task_id)
+            if patch_result.get("ok") and patch_result.get("modified_files"):
+                logger.info(
+                    "[TG][EXT_APPROVAL] applied prepared strategy patch task_id=%s files=%s",
+                    task_id, patch_result.get("modified_files"),
+                )
+        except Exception as patch_exc:
+            logger.warning(
+                "[TG][EXT_APPROVAL] apply_prepared_strategy_patch_after_approval failed (non-fatal) task_id=%s: %s",
+                task_id, patch_exc,
+            )
 
         # --- Trigger real deployment via GitHub Actions ---
         deploy_result: dict = {}
