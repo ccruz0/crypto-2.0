@@ -55,9 +55,9 @@ _env_bot_token = get_telegram_token() or ""
 _env_bot_token_dev = get_telegram_token_dev()
 # TELEGRAM_AUTH_USER_ID: Comma or space-separated list of authorized user IDs and/or channel IDs
 # If not set, falls back to TELEGRAM_CHAT_ID (for backward compatibility)
-# For multiple channels (e.g. HILOVIVO3.0 + Hilovivo-alerts): "CHANNEL_ID_1,CHANNEL_ID_2"
+# For multiple channels (e.g. ATP Alerts + Hilovivo-alerts): "CHANNEL_ID_1,CHANNEL_ID_2"
 _env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
-# TELEGRAM_CHAT_ID_TRADING: HILOVIVO3.0 — alerts-only (signals, orders, reports). NOT used for commands.
+# TELEGRAM_CHAT_ID_TRADING: ATP Alerts — alerts-only (signals, orders, reports). NOT used for commands.
 _env_chat_id_trading = (os.getenv("TELEGRAM_CHAT_ID_TRADING") or "").strip()
 # TELEGRAM_CHAT_ID: Primary channel ID; also used as single authorized chat when TELEGRAM_AUTH_USER_ID unset
 AUTH_CHAT_ID = _env_chat_id or None
@@ -82,7 +82,12 @@ if AUTH_CHAT_ID and str(AUTH_CHAT_ID) not in AUTHORIZED_USER_IDS:
     # Always allow AUTH_CHAT_ID (TELEGRAM_CHAT_ID) even when TELEGRAM_AUTH_USER_ID is set
     # Enables both primary channel and additional channels in TELEGRAM_AUTH_USER_ID
     AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-# HILOVIVO3.0 (TELEGRAM_CHAT_ID_TRADING) is alerts-only — do NOT add to command auth.
+# TELEGRAM_ATP_CONTROL_CHAT_ID: ATP Control Alerts channel — allow commands from this channel
+_env_atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+if _env_atp_control_chat:
+    AUTHORIZED_USER_IDS.add(_env_atp_control_chat)
+    logger.info(f"[TG][AUTH] Added ATP Control channel: {_env_atp_control_chat}")
+# ATP Alerts (TELEGRAM_CHAT_ID_TRADING) is alerts-only — do NOT add to command auth.
 # Commands must go to ATP Control (TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID).
 
 TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
@@ -93,23 +98,26 @@ if not TELEGRAM_ENABLED:
     logger.warning("Telegram disabled: missing env vars - Telegram commands inactive")
 
 # Startup: log command-intake config for operator visibility (no secrets)
-# ATP Control = TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID (private group / direct chat). HILOVIVO3.0 = alerts-only.
+# ATP Control = TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID (private group / direct chat). ATP Alerts = alerts-only.
 # Token is never logged in full; only masked.
 logger.info(
     "[TG][CONFIG] command_intake: bot_token=%s telegram_enabled=%s control_chat_id=%s "
-    "alerts_chat_id=%s authorized_count=%s",
+    "alerts_chat_id=%s atp_control_chat_id=%s authorized_count=%s",
     mask_token(BOT_TOKEN) if BOT_TOKEN else "MISSING",
     TELEGRAM_ENABLED,
     AUTH_CHAT_ID or "none",
     _env_chat_id_trading or "none",
+    _env_atp_control_chat or "none",
     len(AUTHORIZED_USER_IDS),
 )
 
+# Backend listens on 8002 (gunicorn/uvicorn). Default must match; 8000 was wrong.
 API_BASE_URL = (
     os.getenv("API_BASE_URL")
     or os.getenv("AWS_BACKEND_URL")
-    or "http://localhost:8000"
+    or "http://localhost:8002"
 )
+logger.info("[TG][CONFIG] api_base_url=%s", API_BASE_URL)
 SERVICE_ENDPOINT = f"{API_BASE_URL.rstrip('/')}/api/services"
 SERVICE_NAMES = ["exchange_sync", "signal_monitor", "trading_scheduler"]
 LAST_UPDATE_ID = 0  # Global variable to track last processed update (loaded from DB on startup)
@@ -146,7 +154,8 @@ def _is_authorized(chat_id: str, user_id: str) -> bool:
     Authorization rules:
     1. If chat_id matches AUTH_CHAT_ID (channel/group ID), allow
     2. If user_id is in AUTHORIZED_USER_IDS, allow
-    3. If chat_id is in AUTHORIZED_USER_IDS (for private chats), allow
+    3. If chat_id is in AUTHORIZED_USER_IDS (for private chats, channels, supergroups), allow
+    4. If chat_id matches TELEGRAM_ATP_CONTROL_CHAT_ID (runtime check for ATP Control Alerts channel), allow
     
     Args:
         chat_id: Telegram chat ID (can be user ID for private chats, or channel/group ID)
@@ -159,27 +168,38 @@ def _is_authorized(chat_id: str, user_id: str) -> bool:
         # No authorization configured - allow all (for development)
         return True
     
-    chat_id_str = str(chat_id) if chat_id else ""
-    user_id_str = str(user_id) if user_id else ""
-    auth_chat_id_str = str(AUTH_CHAT_ID) if AUTH_CHAT_ID else ""
+    chat_id_str = str(chat_id).strip() if chat_id else ""
+    user_id_str = str(user_id).strip() if user_id else ""
+    auth_chat_id_str = str(AUTH_CHAT_ID).strip() if AUTH_CHAT_ID else ""
     
     # Check if chat_id matches channel/group ID
     if auth_chat_id_str and chat_id_str == auth_chat_id_str:
+        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=AUTH_CHAT_ID", chat_id_str)
         return True
     
     # Check if user_id is in authorized user IDs
     if user_id_str and user_id_str in AUTHORIZED_USER_IDS:
+        logger.info("[TG][AUTH] ALLOW chat_id=%s user_id=%s reason=user_in_authorized", chat_id_str, user_id_str)
         return True
     
-    # Check if chat_id is in authorized user IDs (for private chats)
+    # Check if chat_id is in authorized user IDs (for private chats, channels, supergroups)
     if chat_id_str and chat_id_str in AUTHORIZED_USER_IDS:
+        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=chat_in_authorized", chat_id_str)
+        return True
+    
+    # Runtime check: TELEGRAM_ATP_CONTROL_CHAT_ID (ATP Control Alerts channel)
+    # Handles env loaded after module import and ensures channel/supergroup IDs (-100...) are authorized
+    _atp_control = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+    if _atp_control and chat_id_str == _atp_control:
+        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=TELEGRAM_ATP_CONTROL_CHAT_ID", chat_id_str)
         return True
     
     logger.info(
-        "[TG][AUTH] Unauthorized command blocked: chat_id=%s user_id=%s authorized_ids=%s",
+        "[TG][AUTH] DENY chat_id=%s user_id=%s authorized_ids=%s atp_control_env=%s",
         chat_id_str or "N/A",
         user_id_str or "N/A",
         ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+        _atp_control or "(not set)",
     )
     return False
 
@@ -1054,7 +1074,7 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         if offset is not None:
             params["offset"] = offset
         # Include message, channel_post, and my_chat_member updates
-        # channel_post: required for commands in channels (e.g. HILOVIVO3.0) — channel posts use channel_post, not message
+        # channel_post: required for commands in channels (e.g. ATP Alerts) — channel posts use channel_post, not message
         # my_chat_member: needed for bot being added to groups
         params["allowed_updates"] = [
             "message", "edited_message",
@@ -1233,8 +1253,12 @@ def send_audit_snapshot(chat_id: str, db: Optional[Session] = None) -> bool:
         try:
             response = http_get(f"{API_BASE_URL.rstrip('/')}/api/ping_fast", timeout=5, calling_module="telegram_commands")
             backend_ok = response.status_code == 200
-        except:
-            pass
+        except Exception as e:
+            logger.warning(
+                "[TG][AUDIT] Backend health check failed url=%s err=%s",
+                f"{API_BASE_URL.rstrip('/')}/api/ping_fast",
+                e,
+            )
         
         lines.append(f"📊 <b>Service Health:</b>")
         lines.append(f"  Backend: {'✅ OK' if backend_ok else '❌ FAILED'}")
@@ -1343,7 +1367,7 @@ def send_help_message(chat_id: str) -> bool:
     message = """📚 <b>Command Help</b>
 
 <b>ATP Control</b> — You are in the ATP command console. Commands work here.
-HILOVIVO3.0 = alerts-only. Claw = OpenClaw-native only.
+ATP Alerts = alerts-only. Claw = OpenClaw-native only.
 
 /start - Show welcome message and command list
 /help - Show this help message
@@ -4518,7 +4542,17 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         # Only authorized chat (group/channel) or user - use helper function
         if not _is_authorized(chat_id, user_id):
-            logger.warning(f"[TG][DENY] callback_query from chat_id={chat_id}, user_id={user_id}, AUTH_CHAT_ID={AUTH_CHAT_ID}, AUTHORIZED_USER_IDS={AUTHORIZED_USER_IDS}")
+            _chat_type = chat.get("type", "unknown")
+            _chat_title = chat.get("title", "") or "(empty)"
+            _chat_username = chat.get("username", "") or "(empty)"
+            _atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+            logger.warning(
+                "[TG][AUTH][DENY] callback chat_id=%s chat_type=%s chat_title=%s chat_username=%s "
+                "user_id=%s TELEGRAM_ATP_CONTROL_CHAT_ID=%s AUTHORIZED_USER_IDS=%s",
+                chat_id, _chat_type, _chat_title, _chat_username, user_id,
+                _atp_control_chat or "(not set)",
+                ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+            )
             # Send error message to user
             try:
                 send_command_response(chat_id, "⛔ Not authorized")
@@ -4962,7 +4996,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         return
     
-    # Handle regular message (groups/supergroups) or channel_post (channels like HILOVIVO3.0)
+    # Handle regular message (groups/supergroups) or channel_post (channels like ATP Alerts)
     message = (
         update.get("message")
         or update.get("edited_message")
@@ -5011,8 +5045,21 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         "ALLOW" if auth_ok else "DENY", auth_reason,
     )
     if not auth_ok:
+        # Diagnostic: log incoming chat metadata for authorization troubleshooting
+        chat_username = chat.get("username", "") or ""
+        _atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+        logger.warning(
+            "[TG][AUTH][DENY] chat_id=%s chat_type=%s chat_title=%s chat_username=%s "
+            "TELEGRAM_ATP_CONTROL_CHAT_ID=%s AUTHORIZED_USER_IDS=%s",
+            chat_id,
+            chat_type,
+            chat_title or "(empty)",
+            chat_username or "(empty)",
+            _atp_control_chat or "(not set)",
+            ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+        )
         if _env_chat_id_trading and chat_id == str(_env_chat_id_trading):
-            deny_msg = "HILOVIVO3.0 is alerts-only. Use ATP Control (private group or direct chat) for commands."
+            deny_msg = "ATP Alerts is alerts-only. Use ATP Control (private group or direct chat) for commands."
         else:
             deny_msg = "⛔ Not authorized"
         reply_ok = send_command_response(chat_id, deny_msg)
@@ -5172,7 +5219,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     format_runtime_identity_short(identity),
                 )
                 from app.services.agent_telegram_commands import handle_investigate_command
-                ok = handle_investigate_command(chat_id, text, send_command_response)
+                ok = handle_investigate_command(chat_id, text, send_command_response, from_user=from_user)
                 logger.info("[TG][REPLY] handler=investigate update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
             except Exception as e:
                 logger.exception("[TG][CMD] /investigate failed: %s", e)
@@ -5204,18 +5251,27 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     result = create_task_from_telegram_intent(intent_text, telegram_user)
                     if result.get("ok"):
                         priority = result.get("priority")
-                        priority_line = f"Priority: {priority}/100\n" if priority is not None else ""
+                        priority_label = result.get("priority_label") or ""
+                        priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
                         if result.get("reused"):
+                            input_merged = result.get("input_merged", False)
+                            merge_line = (
+                                "Your new instruction was added to the task history.\n"
+                                "Notion record updated.\n\n"
+                                if input_merged
+                                else "⚠️ Could not append to task history (Notion update failed).\n\n"
+                            )
                             msg = (
-                                "✅ <b>Similar task already exists.</b>\n\n"
+                                "✅ <b>Matched existing task</b>\n\n"
                                 f"Title: {result.get('title', '')}\n"
                                 f"Status: {result.get('status', '')}\n"
                                 f"{priority_line}\n"
+                                f"{merge_line}"
                                 "The system will continue working on this task."
                             )
                         else:
                             msg = (
-                                "✅ <b>Task created successfully</b>\n\n"
+                                "✅ <b>Task created</b>\n\n"
                                 f"Title: {result.get('title', '')}\n"
                                 f"Type: {result.get('type', 'Investigation')}\n"
                                 f"Status: {result.get('status', 'Planned')}\n"
@@ -5232,15 +5288,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             )
                         elif result.get("fallback_stored"):
                             msg = "Notion unavailable. Task stored locally and will be synced automatically."
-                        elif result.get("rejected_low_value"):
-                            reasons = result.get("reasons") or []
-                            reason_line = " Reasons: " + "; ".join(reasons) + "." if reasons else ""
-                            msg = (
-                                "⚠️ <b>Task not created (low value)</b>\n\n"
-                                "This task has low impact and was not created."
-                                + reason_line + "\n\n"
-                                "If this is important, please clarify urgency or impact."
-                            )
                         else:
                             msg = f"❌ Task creation failed: {err}"
                         ok = send_command_response(chat_id, msg)
@@ -5278,17 +5325,29 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     result = create_task_from_telegram_intent(intent_fb, telegram_user)
                     if result.get("ok"):
                         priority = result.get("priority")
-                        priority_line = f"Priority: {priority}/100\n" if priority is not None else ""
-                        msg = (
-                            "✅ <b>Task created successfully</b>\n\n"
-                            f"Title: {result.get('title', '')}\n"
-                            f"Type: {result.get('type', 'Investigation')}\n"
-                            f"Status: {result.get('status', 'Planned')}\n"
-                            f"{priority_line}Execution Mode: Strict\n\nThe system will automatically process it."
-                        ) if not result.get("reused") else (
-                            "✅ <b>Similar task already exists.</b>\n\n"
-                            f"Title: {result.get('title', '')}\nStatus: {result.get('status', '')}\n{priority_line}\nThe system will continue working on this task."
-                        )
+                        priority_label = result.get("priority_label") or ""
+                        priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
+                        if result.get("reused"):
+                            input_merged = result.get("input_merged", False)
+                            merge_line = (
+                                "Your new instruction was added to the task history.\n"
+                                "Notion record updated.\n\n"
+                                if input_merged
+                                else "⚠️ Could not append to task history (Notion update failed).\n\n"
+                            )
+                            msg = (
+                                "✅ <b>Matched existing task</b>\n\n"
+                                f"Title: {result.get('title', '')}\nStatus: {result.get('status', '')}\n{priority_line}\n{merge_line}"
+                                "The system will continue working on this task."
+                            )
+                        else:
+                            msg = (
+                                "✅ <b>Task created</b>\n\n"
+                                f"Title: {result.get('title', '')}\n"
+                                f"Type: {result.get('type', 'Investigation')}\n"
+                                f"Status: {result.get('status', 'Planned')}\n"
+                                f"{priority_line}Execution Mode: Strict\n\nThe system will automatically process it."
+                            )
                         ok = send_command_response(chat_id, msg)
                     else:
                         err = result.get("error", "Unknown error")
@@ -5296,10 +5355,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             msg = "⚠️ Task could not be created because Notion is not configured."
                         elif result.get("fallback_stored"):
                             msg = "Notion unavailable. Task stored locally and will be synced automatically."
-                        elif result.get("rejected_low_value"):
-                            reasons = result.get("reasons") or []
-                            reason_line = " Reasons: " + "; ".join(reasons) + "." if reasons else ""
-                            msg = "⚠️ <b>Task not created (low value)</b>\n\nThis task has low impact and was not created." + reason_line + "\n\nIf this is important, please clarify urgency or impact."
                         else:
                             msg = f"❌ Task creation failed: {err}"
                         ok = send_command_response(chat_id, msg)
@@ -5333,7 +5388,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             logger.info("[TG][CMD] handler=agent update_id=%s chat_id=%s", update_id, chat_id)
             try:
                 from app.services.agent_telegram_commands import handle_agent_command
-                ok = handle_agent_command(chat_id, text, send_command_response)
+                ok = handle_agent_command(chat_id, text, send_command_response, from_user=from_user)
                 logger.info("[TG][REPLY] handler=agent update_id=%s chat_id=%s success=%s", update_id, chat_id, ok)
             except Exception as e:
                 logger.exception("[TG][CMD] /agent failed: %s", e)
@@ -5729,15 +5784,25 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
     Legacy tasks (status in the legacy lifecycle set) bypass the gate
     so existing flows are not disrupted.
     """
+    import time
     try:
         from app.services.notion_task_reader import get_notion_task_by_id
         task = get_notion_task_by_id(task_id)
+        # Retry once on transient failure (Notion API can be slow or rate-limited)
+        if task is None:
+            time.sleep(1.5)
+            task = get_notion_task_by_id(task_id)
+        # Try alternate ID format if still None (hyphens vs no-hyphens)
+        if task is None and "-" in (task_id or ""):
+            alt_id = (task_id or "").replace("-", "")
+            if alt_id:
+                task = get_notion_task_by_id(alt_id)
     except Exception as exc:
         logger.warning("[DEPLOY_GATE] failed to read task page task_id=%s: %s", task_id, exc)
         return False, "unable to read task metadata from Notion"
 
     if task is None:
-        return False, "task not found in Notion"
+        return False, "task not found in Notion (retried). Check NOTION_API_KEY and task ID."
 
     current_status = (task.get("status") or "").strip().lower()
 
@@ -5747,7 +5812,7 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
 
     test_status_raw = (task.get("test_status") or "").strip()
     if not test_status_raw:
-        if current_status in ("awaiting-deploy-approval", "ready-for-deploy"):
+        if current_status in ("awaiting-deploy-approval", "ready-for-deploy", "release-candidate-ready"):
             logger.info(
                 "[DEPLOY_GATE] Test Status property empty/missing but task is in %s — trusting orchestrator test gate "
                 "task_id=%s", current_status, task_id,
@@ -5877,7 +5942,38 @@ def _handle_extended_approval_callback(
         return
 
     if action == "approve_deploy":
-        # --- Deploy gate: require passing test status ---
+        # --- Deploy gate 1: code-fix tasks require patch proof ---
+        try:
+            from app.services.patch_proof import cursor_bridge_required_for_task
+            from app.services.notion_task_reader import get_notion_task_by_id
+            _task = get_notion_task_by_id(task_id)
+            bridge_required, _ = cursor_bridge_required_for_task(_task or {}, task_id)
+            if bridge_required:
+                logger.info(
+                    "[TG][EXT_APPROVAL] deploy blocked: code task has no patch proof task_id=%s who=%s",
+                    task_id, who,
+                )
+                try:
+                    from app.services.agent_activity_log import log_agent_event
+                    log_agent_event(
+                        "deploy_blocked_no_patch",
+                        task_id=task_id,
+                        details={"who": who, "reason": "code_fix_no_patch_proof"},
+                    )
+                except Exception:
+                    pass
+                send_command_response(
+                    chat_id,
+                    f"🚫 <b>Deploy blocked</b>\n\n"
+                    f"Task <code>{task_id[:12]}</code> cannot be deployed.\n"
+                    "<b>Reason:</b> Patch not yet applied. Code-fix tasks require Cursor Bridge to run first.\n\n"
+                    "Tap <b>🛠️ Run Cursor Bridge</b> in the approval card to apply the fix, then deploy approval will be available.",
+                )
+                return
+        except Exception as e:
+            logger.warning("[TG][EXT_APPROVAL] patch_proof check failed (non-fatal): %s", e)
+
+        # --- Deploy gate 2: require passing test status ---
         gate_passed, gate_reason = _check_deploy_test_gate(task_id)
         if not gate_passed:
             logger.info(
@@ -5999,29 +6095,88 @@ def _handle_extended_approval_callback(
         return
 
     if action == "reinvestigate":
-        from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION, update_notion_task_status
+        logger.info(
+            "[TG][EXT_APPROVAL] reinvestigate action=reinvestigate task_id=%s source=telegram",
+            task_id,
+        )
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+            from app.services.notion_tasks import (
+                TASK_STATUS_READY_FOR_INVESTIGATION,
+                update_notion_task_status,
+            )
+            from app.services.agent_telegram_approval import clear_task_approval_record
+        except ImportError as imp_err:
+            logger.error("[TG][EXT_APPROVAL] reinvestigate import failed: %s", imp_err, exc_info=True)
+            send_command_response(chat_id, "❌ Re-investigate module unavailable.")
+            return
+
+        # Fetch task from Notion; ignore if already running
+        task = get_notion_task_by_id(task_id) if task_id else None
+        current_status = (task.get("status") or "").strip().lower() if task else ""
+        if current_status in ("investigating", "in-progress"):
+            logger.info(
+                "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (already running)",
+                task_id, current_status,
+            )
+            send_command_response(
+                chat_id,
+                f"⏳ Task <code>{task_id[:12]}</code> is already being investigated (status: {current_status}).",
+            )
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "reinvestigate_skipped",
+                    task_id=task_id,
+                    details={"reason": "already_running", "status": current_status, "source": "telegram"},
+                )
+            except Exception:
+                pass
+            return
+
+        if task and current_status not in ("needs-revision", "needs revision", "ready-for-investigation"):
+            logger.info(
+                "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (not in needs-revision)",
+                task_id, current_status,
+            )
+            send_command_response(
+                chat_id,
+                f"⚠️ Task <code>{task_id[:12]}</code> is in status <b>{current_status or 'unknown'}</b>. "
+                "Re-investigate only applies to tasks in Needs Revision.",
+            )
+            return
+
+        # Clear approval state so task can be re-picked
+        clear_task_approval_record(task_id)
+
         ok = update_notion_task_status(
             task_id,
             TASK_STATUS_READY_FOR_INVESTIGATION,
             append_comment=f"Re-investigate approved by {who} via Telegram. Scheduler will re-run with verification feedback.",
         )
         if ok:
-            logger.info("[TG][EXT_APPROVAL] task %s → ready-for-investigation (reinvestigate) by %s", task_id, who)
+            logger.info(
+                "[TG][EXT_APPROVAL] reinvestigate task_id=%s → ready-for-investigation by %s",
+                task_id, who,
+            )
             _edit_approval_card(chat_id, message_id,
-                                f"🔄 <b>Re-investigate</b> by {who}\nTask moved to <b>ready-for-investigation</b>. "
+                                f"🔁 <b>Re-investigate</b> by {who}\nTask moved to <b>ready-for-investigation</b>. "
                                 "Scheduler will re-run with feedback.", task_id)
             send_command_response(
                 chat_id,
-                f"🔄 Task <code>{task_id[:12]}</code> moved to <b>ready-for-investigation</b>.\n\n"
-                "The scheduler will re-run the investigation with the verification feedback "
-                "(next cycle, typically within 5 min).",
+                f"🔁 Re-investigation started for task <code>{task_id[:12]}</code>\n\n"
+                "The scheduler will re-run the investigation (next cycle, typically within 5 min).",
             )
         else:
             _edit_approval_card(chat_id, message_id,
                                 f"⚠️ Re-investigate by {who} but Notion status update failed.", task_id)
         try:
             from app.services.agent_activity_log import log_agent_event
-            log_agent_event("reinvestigate_approved", task_id=task_id, details={"approved_by": who, "notion_updated": ok})
+            log_agent_event(
+                "reinvestigate_approved",
+                task_id=task_id,
+                details={"approved_by": who, "notion_updated": ok, "source": "telegram"},
+            )
         except Exception:
             pass
         return
@@ -6062,7 +6217,7 @@ def _handle_extended_approval_callback(
             if result.get("ok") and result.get("tests_ok"):
                 send_command_response(chat_id,
                     f"✅ <b>Cursor Bridge OK</b>\n\nTask {task_id[:12]}…: apply + tests passed.\n"
-                    "Task advanced to ready-for-deploy.")
+                    "Task advanced to release-candidate-ready.")
                 _edit_approval_card(chat_id, message_id,
                                     f"✅ <b>Cursor Bridge</b> by {who}\nApply + tests passed.", task_id)
             else:
