@@ -3,8 +3,13 @@ Task health monitor: detect and recover tasks stuck in In Progress, Patching, or
 
 Runs at the start of each scheduler cycle. Applies stuck thresholds, attempts
 automatic recovery (comment + status move or re-trigger Cursor bridge), sends
-at most one Telegram alert per stuck incident with cooldown, and after max
-retries moves to needs-revision and sends a single "Task requires manual attention" alert.
+at most one Telegram alert per stuck incident with cooldown.
+
+Investigation stuck: moves to ready-for-investigation (retryable) — never to Needs Revision.
+Operational failures (timeout, no progress) are retried automatically. After max retries,
+task is moved to Blocked with explicit blocker_reason — not Needs Revision.
+
+Needs Revision is reserved for explicit user-action cases (e.g. solution verification failed).
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ STUCK_CHECK_STATUSES = list(STUCK_THRESHOLD_MINUTES.keys())
 # Alert cooldown: do not send another "stuck" alert for the same task within this many minutes
 ALERT_COOLDOWN_MINUTES = 30
 
-# Max recovery attempts per task; after this we move to needs-revision and send manual-attention alert
+# Max recovery attempts per task; after this we move to Blocked (not Needs Revision)
 MAX_RETRIES = 3
 
 # In-memory state (per process). Key: task_id, value: timestamp (alert) or retry count
@@ -97,7 +102,8 @@ def _minutes_stuck(task: dict[str, Any], now: datetime | None = None) -> float:
 
 
 def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float) -> None:
-    """Send a single Telegram alert for stuck task (ops channel). Suppressed in quiet mode (INFO/IMPORTANT)."""
+    """Send to Claw (task-system). Stuck task alert. Suppressed in quiet mode (INFO/IMPORTANT).
+    Includes Re-investigate button when task is in investigation phase."""
     try:
         from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_IMPORTANT
         if not should_send_agent_telegram(AGENT_MSG_IMPORTANT):
@@ -106,26 +112,42 @@ def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float) -> None:
     except Exception:
         pass
     try:
-        from app.services.telegram_notifier import telegram_notifier
+        from app.services.claw_telegram import send_claw_message
+        from app.services.agent_telegram_approval import PREFIX_REINVESTIGATE, PREFIX_VIEW_REPORT
+        task_id = (task.get("id") or "").strip()
+        title = (task.get("task") or "(untitled)")[:80]
+        status = (task.get("status") or "?")[:30]
+        message = (
+            "Task appears stuck.\n\n"
+            f"Title: {title}\n"
+            f"Status: {status}\n"
+            f"Time stuck: {minutes_stuck:.0f} min\n\n"
+            "Attempting automatic recovery."
+        )
+        reply_markup = None
+        # Add Re-investigate when task was moved to needs-revision (investigation stuck case)
+        if task_id and (status or "").lower() in ("in-progress", "investigating"):
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "🔁 Re-investigate", "callback_data": f"{PREFIX_REINVESTIGATE}{task_id}"},
+                        {"text": "📋 View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"},
+                    ],
+                ]
+            }
+        send_claw_message(
+            message,
+            message_type="TASK",
+            source_module="task_health_monitor",
+            reply_markup=reply_markup,
+        )
     except Exception as e:
-        logger.debug("task_health_monitor: telegram_notifier import failed %s", e)
-        return
-    task_id = (task.get("id") or "").strip()
-    title = (task.get("task") or "(untitled)")[:80]
-    status = (task.get("status") or "?")[:30]
-    message = (
-        "Task appears stuck.\n\n"
-        f"Title: {title}\n"
-        f"Status: {status}\n"
-        f"Time stuck: {minutes_stuck:.0f} min\n\n"
-        "Attempting automatic recovery."
-    )
-    if getattr(telegram_notifier, "send_message", None):
-        telegram_notifier.send_message(message, chat_destination="ops")
+        logger.debug("task_health_monitor: claw_telegram import/send failed %s", e)
 
 
-def _send_manual_attention_alert(task: dict[str, Any]) -> None:
-    """Send a single Telegram alert that task requires attention (CRITICAL: after max retries)."""
+def _send_manual_attention_alert(task: dict[str, Any], *, blocked_reason: str = "") -> None:
+    """Send to Claw (task-system). Task requires attention (CRITICAL: after max retries).
+    Task was moved to Blocked — operational failure, no user revision required."""
     try:
         from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_CRITICAL
         if not should_send_agent_telegram(AGENT_MSG_CRITICAL):
@@ -133,20 +155,37 @@ def _send_manual_attention_alert(task: dict[str, Any]) -> None:
     except Exception:
         pass
     try:
-        from app.services.telegram_notifier import telegram_notifier
+        from app.services.claw_telegram import send_claw_message
+        from app.services.agent_telegram_approval import PREFIX_REINVESTIGATE, PREFIX_VIEW_REPORT
+        task_id = (task.get("id") or "").strip()
+        title = (task.get("task") or "(untitled)")[:80]
+        status = (task.get("status") or "?")[:30]
+        reason = (blocked_reason or "Max automatic retries reached.")[:200]
+        message = (
+            "Task blocked (operational failure).\n\n"
+            f"Title: {title}\n"
+            f"Status: {status}\n\n"
+            f"Reason: {reason}\n\n"
+            "No user revision required. Re-queue manually when ready."
+        )
+        reply_markup = None
+        if task_id:
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "🔁 Re-investigate", "callback_data": f"{PREFIX_REINVESTIGATE}{task_id}"},
+                        {"text": "📋 View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"},
+                    ],
+                ]
+            }
+        send_claw_message(
+            message,
+            message_type="ERROR",
+            source_module="task_health_monitor",
+            reply_markup=reply_markup,
+        )
     except Exception as e:
-        logger.debug("task_health_monitor: telegram_notifier import failed %s", e)
-        return
-    title = (task.get("task") or "(untitled)")[:80]
-    status = (task.get("status") or "?")[:30]
-    message = (
-        "Task requires attention.\n\n"
-        f"Title: {title}\n"
-        f"Status: {status}\n\n"
-        "Max automatic retries reached; moved to Needs Revision."
-    )
-    if getattr(telegram_notifier, "send_message", None):
-        telegram_notifier.send_message(message, chat_destination="ops")
+        logger.debug("task_health_monitor: claw_telegram import/send failed %s", e)
 
 
 def _log_event(event_type: str, task_id: str = "", task_title: str = "", details: dict | None = None) -> None:
@@ -160,8 +199,11 @@ def _log_event(event_type: str, task_id: str = "", task_title: str = "", details
 def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None:
     """
     Handle a single stuck task: recovery action by status, or after max retries
-    move to needs-revision and send manual-attention alert. Sends at most one
-    stuck alert per incident (cooldown 30 min). Never raises.
+    move to Blocked (never Needs Revision for operational failures). Sends at most
+    one stuck alert per incident (cooldown 30 min). Never raises.
+
+    Investigation stuck: moves to ready-for-investigation (retryable). Never uses
+    Needs Revision for operational timeouts — only explicit user-action cases.
     """
     if not task:
         return
@@ -172,18 +214,42 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
 
     retries = _retry_count.get(task_id, 0)
     if retries >= MAX_RETRIES:
-        # Move to needs-revision and send manual attention (once per incident)
+        # Move to Blocked (not Needs Revision) — operational failure
+        blocker_reason = (
+            f"Task stuck after {MAX_RETRIES} automatic retries (operational timeout). "
+            "No user revision required. Re-queue manually when ready."
+        )
         try:
-            from app.services.notion_tasks import update_notion_task_status, TASK_STATUS_NEEDS_REVISION
+            from app.services.notion_tasks import (
+                TASK_STATUS_BLOCKED,
+                update_notion_task_status,
+                update_notion_task_metadata,
+            )
             update_notion_task_status(
                 task_id,
-                TASK_STATUS_NEEDS_REVISION,
-                append_comment="Task stuck: max automatic retries reached. Moved to Needs Revision for manual attention.",
+                TASK_STATUS_BLOCKED,
+                append_comment=(
+                    f"Auto-transition: {status} → blocked.\n"
+                    f"Reason: {blocker_reason}\n"
+                    "Retryable: yes (re-queue manually). User action required: no."
+                ),
             )
+            update_notion_task_metadata(task_id, {"blocker_reason": blocker_reason[:500]})
         except Exception as e:
-            logger.warning("task_health_monitor: move to needs-revision failed task_id=%s %s", task_id[:12], e)
-        _send_manual_attention_alert(task)
-        _log_event("stuck_task_retry_failed", task_id=task_id, task_title=task_title, details={"retries": retries})
+            logger.warning("task_health_monitor: move to blocked failed task_id=%s %s", task_id[:12], e)
+        _send_manual_attention_alert(task, blocked_reason=blocker_reason)
+        _log_event(
+            "auto_transition",
+            task_id=task_id,
+            task_title=task_title,
+            details={
+                "from_status": status,
+                "to_status": "blocked",
+                "reason": "operational_timeout",
+                "user_action_required": False,
+                "retryable": True,
+            },
+        )
         # Reset retry count so we don't keep updating the same task
         _retry_count.pop(task_id, None)
         _last_alert_sent.pop(task_id, None)
@@ -194,16 +260,35 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
     send_alert = last_alert is None or (now.timestamp() - last_alert) >= (ALERT_COOLDOWN_MINUTES * 60)
     minutes_stuck = _minutes_stuck(task, now)
 
-    _log_event("stuck_task_detected", task_id=task_id, task_title=task_title, details={"status": status, "minutes_stuck": round(minutes_stuck, 1)})
+    _log_event(
+        "stuck_task_detected",
+        task_id=task_id,
+        task_title=task_title,
+        details={"status": status, "minutes_stuck": round(minutes_stuck, 1)},
+    )
 
     if status in ("in-progress", "investigating"):
-        # Case 1: Investigation stuck — add comment and move to needs-revision
+        # Case 1: Investigation stuck — move to ready-for-investigation (retryable)
+        # Never use Needs Revision for operational timeouts.
+        failure_reason = "Investigation timed out (no progress within threshold). Retrying automatically."
         try:
-            from app.services.notion_tasks import update_notion_task_status, TASK_STATUS_NEEDS_REVISION
+            from app.services.notion_tasks import (
+                TASK_STATUS_READY_FOR_INVESTIGATION,
+                update_notion_task_status,
+                update_notion_task_metadata,
+            )
             update_notion_task_status(
                 task_id,
-                TASK_STATUS_NEEDS_REVISION,
-                append_comment="Task stuck during investigation. Moved to Needs Revision.",
+                TASK_STATUS_READY_FOR_INVESTIGATION,
+                append_comment=(
+                    f"Auto-transition: {status} → ready-for-investigation.\n"
+                    f"Reason: {failure_reason}\n"
+                    f"Attempt {retries + 1}/{MAX_RETRIES}. Retryable: yes. User action required: no."
+                ),
+            )
+            update_notion_task_metadata(
+                task_id,
+                {"revision_reason": f"[operational] {failure_reason}"[:500]},
             )
         except Exception as e:
             logger.warning("task_health_monitor: investigation recovery failed task_id=%s %s", task_id[:12], e)
@@ -211,7 +296,19 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             _send_stuck_alert(task, minutes_stuck)
             _last_alert_sent[task_id] = now.timestamp()
         _retry_count[task_id] = retries + 1
-        _log_event("stuck_task_recovered", task_id=task_id, task_title=task_title, details={"action": "move_to_needs_revision"})
+        _log_event(
+            "auto_transition",
+            task_id=task_id,
+            task_title=task_title,
+            details={
+                "from_status": status,
+                "to_status": "ready-for-investigation",
+                "reason": failure_reason,
+                "retryable": True,
+                "user_action_required": False,
+                "retry_attempt": retries + 1,
+            },
+        )
 
     elif status == "patching":
         # Case 2: Patching stuck — re-trigger Cursor execution bridge
@@ -246,7 +343,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             update_notion_task_status(
                 task_id,
                 "testing",
-                append_comment="Task stuck during testing. Consider re-running validation or moving to Needs Revision.",
+                append_comment="Task stuck during testing. Consider re-running validation or re-queuing manually.",
             )
         except Exception as e:
             logger.warning("task_health_monitor: testing comment failed task_id=%s %s", task_id[:12], e)

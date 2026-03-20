@@ -49,6 +49,7 @@ TASK_STATUS_READY_FOR_PATCH = "ready-for-patch"
 TASK_STATUS_PATCHING = "patching"
 TASK_STATUS_TESTING = "testing"
 TASK_STATUS_READY_FOR_DEPLOY = "ready-for-deploy"
+TASK_STATUS_RELEASE_CANDIDATE_READY = "release-candidate-ready"
 TASK_STATUS_AWAITING_DEPLOY_APPROVAL = "awaiting-deploy-approval"
 TASK_STATUS_DEPLOYING = "deploying"
 TASK_STATUS_DONE = "done"
@@ -62,6 +63,9 @@ TASK_STATUS_IN_PROGRESS = "in-progress"
 TASK_STATUS_DEPLOYED = "deployed"
 
 # All valid statuses (extended + legacy)
+TASK_STATUS_VERIFYING = "verifying"
+TASK_STATUS_RE_ITERATING = "re-iterating"
+
 ALLOWED_TASK_STATUSES = (
     TASK_STATUS_BACKLOG,
     TASK_STATUS_READY_FOR_INVESTIGATION,
@@ -69,8 +73,11 @@ ALLOWED_TASK_STATUSES = (
     TASK_STATUS_INVESTIGATION_COMPLETE,
     TASK_STATUS_READY_FOR_PATCH,
     TASK_STATUS_PATCHING,
+    TASK_STATUS_VERIFYING,
+    TASK_STATUS_RE_ITERATING,
     TASK_STATUS_TESTING,
     TASK_STATUS_READY_FOR_DEPLOY,
+    TASK_STATUS_RELEASE_CANDIDATE_READY,
     TASK_STATUS_AWAITING_DEPLOY_APPROVAL,
     TASK_STATUS_DEPLOYING,
     TASK_STATUS_DONE,
@@ -89,15 +96,17 @@ TERMINAL_STATUSES = (TASK_STATUS_DONE, TASK_STATUS_DEPLOYED, TASK_STATUS_REJECTE
 # Extended lifecycle: ordered forward transitions
 # needs-revision is a back-loop: patching -> needs-revision (when verify fails)
 # needs-revision -> investigating (when user approves re-investigate)
+# release-candidate-ready: single approval trigger; ready-for-deploy/awaiting-deploy-approval are aliases
 EXTENDED_LIFECYCLE_TRANSITIONS: dict[str, str] = {
     "backlog": "ready-for-investigation",
     "ready-for-investigation": "investigating",
     "investigating": "investigation-complete",
     "investigation-complete": "ready-for-patch",
     "ready-for-patch": "patching",
-    "patching": "ready-for-deploy",
+    "patching": "release-candidate-ready",
     "needs-revision": "investigating",
-    "testing": "ready-for-deploy",
+    "testing": "release-candidate-ready",
+    "release-candidate-ready": "deploying",
     "ready-for-deploy": "deploying",
     "awaiting-deploy-approval": "deploying",
     "deploying": "done",
@@ -130,7 +139,10 @@ NOTION_STATUS_INTERNAL_TO_DISPLAY: dict[str, str] = {
     "investigation-complete": "Investigation Complete",
     "ready-for-patch": "Ready for Patch",
     "patching": "Patching",
+    "verifying": "Verifying",
+    "re-iterating": "Re-iterating",
     "testing": "Testing",
+    "release-candidate-ready": "Release Candidate Ready",
     "ready-for-deploy": "Ready for Deploy",
     "awaiting-deploy-approval": "Awaiting Deploy Approval",
     "deploying": "Deploying",
@@ -174,6 +186,9 @@ TASK_METADATA_PROPERTY_MAP: dict[str, str] = {
     "test_status": "Test Status",
     "deploy_approval": "Deploy Approval",
     "final_result": "Final Result",
+    "revision_count": "Revision Count",
+    "blocker_reason": "Blocker Reason",
+    "revision_reason": "Revision Reason",
 }
 
 # Deploy progress: Number property (0-100) shown as progress bar in Notion.
@@ -354,6 +369,38 @@ def _append_page_comment(page_id: str, comment: str, headers: dict[str, str]) ->
         return r.status_code == 200
     except Exception:
         return False
+
+
+def append_telegram_input_to_task(page_id: str, intent_text: str, user: str = "") -> bool:
+    """
+    Append a Telegram input to an existing task page as a new block (task history).
+    Used when a similar task is found: the new user instruction is never discarded.
+
+    Format: "Telegram input (merged): {intent_text}" — User: {user}
+    Best-effort: returns False on failure, never raises.
+    """
+    normalized_page_id = (page_id or "").strip()
+    text = (intent_text or "").strip()
+    if not normalized_page_id or not text:
+        return False
+    dry_run = (os.environ.get("AGENT_DRY_RUN") or os.environ.get("NOTION_DRY_RUN") or "").strip().lower() in ("1", "true", "yes")
+    if dry_run:
+        logger.info("dry_run skip append_telegram_input_to_task page_id=%s intent_len=%s", normalized_page_id[:12], len(text))
+        return True
+    user_display = (user or "").strip() or "Telegram"
+    content = f"Telegram input (merged): {text[:1500]}" + (f" — User: {user_display}" if user_display else "")
+    api_key, _ = _get_config()
+    if not api_key:
+        return False
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    ok = _append_page_comment(normalized_page_id, content, headers)
+    if ok:
+        logger.info("notion_task_updated_from_telegram page_id=%s intent_len=%s", normalized_page_id[:12], len(text))
+    return ok
 
 
 # Priority inference: keyword overrides (case-insensitive) take precedence, then task_type, then default.
@@ -581,15 +628,16 @@ def create_notion_task(
                 )
         return data
 
-    # Log error with body for debugging (avoid logging full token)
+    # Log structured error for traceability (avoid logging full token)
     try:
         err_body = response.text
     except Exception:
         err_body = ""
     logger.error(
-        "Notion API error: status=%d body=%s",
+        "notion_sync_failed status=%d body=%s title=%r",
         response.status_code,
         err_body[:500] if err_body else "",
+        (title or "")[:80],
     )
     return None
 
@@ -792,6 +840,7 @@ def update_notion_task_status(
     status: str,
     *,
     append_comment: str | None = None,
+    needs_revision_metadata: dict | None = None,
 ) -> bool:
     """
     Update the "Status" property of an existing Notion task page.
@@ -839,6 +888,19 @@ def update_notion_task_status(
             ",".join(ALLOWED_TASK_STATUSES),
         )
         return False
+
+    # CRITICAL: needs-revision requires explicit metadata (revision_reason/verify_summary/missing_inputs/decision_required)
+    # Use task_status_transition.safe_transition_to_needs_revision() or pass needs_revision_metadata.
+    if normalized_status == TASK_STATUS_NEEDS_REVISION:
+        _required_keys = ("revision_reason", "verify_summary", "missing_inputs", "decision_required")
+        _meta = needs_revision_metadata or {}
+        _has_valid = any(str(_meta.get(k) or "").strip() for k in _required_keys)
+        if not _has_valid:
+            logger.error(
+                "invalid_needs_revision_transition page_id=%s — use safe_transition_to_needs_revision() with metadata",
+                normalized_page_id[:12],
+            )
+            return False
 
     api_key, _database_id = _get_config()
     if not api_key:

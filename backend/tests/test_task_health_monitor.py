@@ -93,32 +93,36 @@ class TestHandleStuckTask:
         thm._last_alert_sent.clear()
         thm._retry_count.clear()
 
-    def test_investigation_stuck_moves_to_needs_revision(self):
+    def test_investigation_stuck_moves_to_ready_for_investigation(self):
+        """Investigation stuck moves to ready-for-investigation (retryable), never Needs Revision."""
         now = datetime.now(timezone.utc)
         old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         t = _task(task_id="inv-1", status="investigating", last_edited_time=old)
         with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
-            with patch.object(thm, "_send_stuck_alert"):
-                with patch.object(thm, "_log_event"):
-                    thm.handle_stuck_task(t, now)
+            with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
+                with patch.object(thm, "_send_stuck_alert"):
+                    with patch.object(thm, "_log_event"):
+                        thm.handle_stuck_task(t, now)
         mock_update.assert_called_once()
         call_args = mock_update.call_args[0]
         assert call_args[0] == "inv-1"
-        assert call_args[1] == "needs-revision"
+        assert call_args[1] == "ready-for-investigation"
 
-    def test_max_retries_moves_to_needs_revision_and_sends_manual_alert(self):
+    def test_max_retries_moves_to_blocked_not_needs_revision(self):
+        """Max retries moves to Blocked (operational failure), never Needs Revision."""
         now = datetime.now(timezone.utc)
         old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         t = _task(task_id="max-1", status="patching", last_edited_time=old)
         thm._retry_count["max-1"] = thm.MAX_RETRIES  # already at max
         with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
-            with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
-                with patch.object(thm, "_log_event"):
-                    thm.handle_stuck_task(t, now)
+            with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
+                with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
+                    with patch.object(thm, "_log_event"):
+                        thm.handle_stuck_task(t, now)
         mock_update.assert_called_once()
         call_args = mock_update.call_args[0]
         assert call_args[0] == "max-1"
-        assert call_args[1] == "needs-revision"
+        assert call_args[1] == "blocked"
         mock_manual.assert_called_once()
         # Retry count should be cleared so we don't keep updating
         assert "max-1" not in thm._retry_count

@@ -657,7 +657,7 @@ def prepare_task_by_id(task_id: str) -> dict[str, Any] | None:
         logger.warning("prepare_task_by_id: task not found task_id=%s", task_id)
         return None
     status = (task.get("status") or "").strip().lower()
-    pickable = status in ("planned", "backlog", "ready-for-investigation", "blocked")
+    pickable = status in ("planned", "backlog", "ready-for-investigation", "blocked", "needs-revision", "in-progress")
     if not pickable:
         logger.warning("prepare_task_by_id: task not pickable task_id=%s status=%r", task_id, status)
         return None
@@ -1095,26 +1095,28 @@ def execute_prepared_notion_task(
     )
     if use_extended_lifecycle:
         logger.info("investigation_completed task_id=%s", task_id[:12] if task_id else "?")
-        # Validate artifact exists before advancing. Check all known artifact paths
-        # (bug-investigations, telegram-alerts, execution-state, etc.) so we don't
-        # advance when artifact is missing regardless of which callback wrote it.
+        # Validate artifact AND sidecar exist before advancing. Check all known artifact paths.
         try:
-            from app.services.agent_recovery import artifact_exists_for_task
-            _artifact_ok = artifact_exists_for_task(task_id, min_size=200)
+            from app.services.agent_recovery import artifact_and_sidecar_exist_for_task
+            _artifact_ok, _artifact_reason = artifact_and_sidecar_exist_for_task(task_id, min_size=200)
         except Exception as e:
             logger.warning(
                 "execute_prepared_notion_task: artifact check failed task_id=%s: %s",
                 task_id, e,
             )
-            _artifact_ok = False
+            _artifact_ok, _artifact_reason = False, str(e)
         if not _artifact_ok:
             logger.warning(
-                "artifact_missing_or_too_small task_id=%s — not advancing to investigation-complete",
-                task_id[:12] if task_id else "?",
+                "ready_for_patch_blocked_missing_artifact task_id=%s reason=%s",
+                task_id[:12] if task_id else "?", _artifact_reason,
+            )
+            logger.info(
+                "validation_before_ready_for_patch task_id=%s passed=False reason=%s",
+                task_id[:12] if task_id else "?", _artifact_reason,
             )
             _append_notion_page_comment(
                 task_id,
-                f"[{executed_at}] Investigation artifact missing or incomplete — staying in-progress. Retry next cycle.",
+                f"[{executed_at}] Investigation artifact missing or incomplete ({_artifact_reason}) — staying in-progress. Retry next cycle.",
             )
             return result(
                 True, True, apply_summary,
@@ -1122,6 +1124,10 @@ def execute_prepared_notion_task(
                 False, False, "",
                 "in-progress", False,
             )
+        logger.info(
+            "validation_before_ready_for_patch task_id=%s passed=True",
+            task_id[:12] if task_id else "?",
+        )
         # Strict mode: validate proof before advancing — block ready-for-patch if criteria not met
         _exec_mode = (
             (prepared_task or {}).get("execution_mode")
@@ -1210,14 +1216,14 @@ def execute_prepared_notion_task(
                     except Exception:
                         pass
                     try:
-                        from app.services.telegram_notifier import telegram_notifier
-                        if getattr(telegram_notifier, "enabled", False):
-                            telegram_notifier.send_message(
-                                f"⚠️ Strict mode: PATCH creation failed task_id={task_id[:12] if task_id else '?'} reason={err_msg[:200]}",
-                                chat_destination="ops",
-                            )
+                        from app.services.agent_telegram_approval import send_blocker_notification
+                        send_blocker_notification(
+                            task_id, task_title,
+                            reason=err_msg,
+                            suggested_action="Re-run investigation or fix patch task creation.",
+                        )
                     except Exception as tg_err:
-                        logger.warning("strict_patch_creation_failed: Telegram alert send failed: %s", tg_err)
+                        logger.warning("strict_patch_creation_failed: Telegram blocker send failed: %s", tg_err)
                     _append_notion_page_comment(
                         task_id,
                         f"[{executed_at}] Strict mode: PATCH task creation failed — staying in-progress. {err_msg}",
@@ -1253,27 +1259,10 @@ def execute_prepared_notion_task(
         _append_notion_page_comment(
             task_id,
             f"[{executed_at}] {exec_msg}\n"
-            "Investigation complete — advancing to ready-for-patch (approval only when patch ready).",
+            "Investigation complete — advancing to ready-for-patch. No approval until release-candidate-ready.",
         )
-        sections = (prepared_task or {}).get("_openclaw_sections") or {}
-        try:
-            from app.services.agent_telegram_approval import send_investigation_complete_info
-            tg = send_investigation_complete_info(
-                task_id, task_title, sections=sections,
-                task=task, repo_area=(prepared_task or {}).get("repo_area"),
-            )
-            logger.info(
-                "execute_prepared_notion_task: send_investigation_complete_info "
-                "task_id=%s sent=%s message_id=%s",
-                task_id, tg.get("sent"), tg.get("message_id"),
-            )
-        except Exception as exc:
-            logger.warning(
-                "execute_prepared_notion_task: send_investigation_complete_info "
-                "failed task_id=%s: %s",
-                task_id, exc,
-            )
-        # Auto-advance to ready-for-patch — approval required only when patch is ready to deploy
+        # No approval here — single approval only when release-candidate-ready (after patching + verification)
+        # Auto-advance to ready-for-patch
         try:
             from app.services.notion_tasks import TASK_STATUS_READY_FOR_PATCH
             patch_ok = update_notion_task_status(
@@ -1393,35 +1382,21 @@ def execute_prepared_notion_task(
             _append_notion_page_comment(
                 task_id,
                 f"[{executed_at}] {val_msg}\n"
-                "Tests passed — waiting for human deploy approval via Telegram.",
+                "Tests passed — task advanced to ready-for-deploy (approval only at ready-for-patch).",
             )
-            sections = (prepared_task or {}).get("_openclaw_sections") or {}
-            try:
-                from app.services.agent_telegram_approval import send_patch_deploy_approval
-                tg = send_patch_deploy_approval(
-                    task_id, task_title,
-                    test_summary=validation_summary,
-                    sections=sections,
-                    task=task, repo_area=(prepared_task or {}).get("repo_area"),
-                )
-                logger.info(
-                    "execute_prepared_notion_task: send_patch_deploy_approval "
-                    "task_id=%s sent=%s message_id=%s",
-                    task_id, tg.get("sent"), tg.get("message_id"),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "execute_prepared_notion_task: send_patch_deploy_approval "
-                    "failed task_id=%s: %s",
-                    task_id, exc,
-                )
+            # Approval NOT sent here — single trigger point is ready-for-patch only
+            logger.info(
+                "execute_prepared_notion_task: approval_skipped_reason=not_ready_for_patch "
+                "task_id=%s status=ready-for-deploy (approval only at ready-for-patch)",
+                task_id,
+            )
             try:
                 from app.services.agent_activity_log import log_agent_event
                 log_agent_event(
                     "extended_awaiting_deploy_approval",
                     task_id=task_id,
                     task_title=task_title,
-                    details={"validation_summary": validation_summary},
+                    details={"validation_summary": validation_summary, "approval_skipped_reason": "not_ready_for_patch"},
                 )
             except Exception:
                 pass
@@ -1604,6 +1579,11 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     _bridge_auto = (os.environ.get("CURSOR_BRIDGE_AUTO_IN_ADVANCE") or "").strip().lower() in ("1", "true", "yes")
     if _bridge_auto:
         try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("cursor_bridge_auto_attempt", task_id=task_id, task_title=task_title, details={})
+        except Exception:
+            pass
+        try:
             from app.services.cursor_execution_bridge import (
                 is_bridge_enabled,
                 run_bridge_phase2,
@@ -1622,9 +1602,9 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                     ingest_res = bridge_result.get("ingest") or {}
                     if ingest_res.get("gate_result", {}).get("advanced"):
                         try:
-                            from app.services.notion_tasks import TASK_STATUS_READY_FOR_DEPLOY
+                            from app.services.notion_tasks import TASK_STATUS_RELEASE_CANDIDATE_READY
                             update_notion_task_status(
-                                task_id, TASK_STATUS_READY_FOR_DEPLOY,
+                                task_id, TASK_STATUS_RELEASE_CANDIDATE_READY,
                                 append_comment=f"[{ts}] Cursor bridge: apply + tests passed — ready for deploy approval.",
                             )
                         except Exception as status_exc:
@@ -1634,26 +1614,34 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                             )
                         _append_notion_page_comment(
                             task_id,
-                            f"[{ts}] Cursor bridge: apply + tests passed — waiting for deploy approval.",
+                            f"[{ts}] Cursor bridge: apply + tests passed — release candidate ready.",
                         )
+                        # Single approval when release-candidate-ready
                         try:
-                            from app.services.agent_telegram_approval import send_patch_deploy_approval
-                            _repo_area = infer_repo_area_for_task(task)
-                            tg = send_patch_deploy_approval(
+                            from app.services.agent_telegram_approval import send_release_candidate_approval
+                            pv = str((task or {}).get("proposed_version") or "").strip()
+                            tg = send_release_candidate_approval(
                                 task_id, task_title,
-                                test_summary=bridge_result.get("ingest", {}).get("gate_result", {}).get("outcome", "passed"),
-                                sections={},
-                                task=task, repo_area=_repo_area,
+                                test_summary="Cursor bridge: apply + tests passed",
+                                sections=None, task=task, repo_area=repo_area,
+                                proposed_version=pv,
                             )
-                            logger.info("advance_ready_for_patch_task: bridge success, deploy approval sent task_id=%s", task_id)
+                            logger.info(
+                                "advance_ready_for_patch_task: send_release_candidate_approval "
+                                "task_id=%s sent=%s dedup_write_failed=%s (cursor bridge path)",
+                                task_id, tg.get("sent"), tg.get("dedup_write_failed", False),
+                            )
                         except Exception as exc:
-                            logger.warning("advance_ready_for_patch_task: send_patch_deploy_approval after bridge failed: %s", exc)
+                            logger.warning(
+                                "advance_ready_for_patch_task: send_release_candidate_approval failed task_id=%s: %s",
+                                task_id, exc,
+                            )
                         try:
                             from app.services.agent_activity_log import log_agent_event
                             log_agent_event("cursor_bridge_auto_success", task_id=task_id, task_title=task_title, details={"bridge_ok": True})
                         except Exception:
                             pass
-                        return _result(True, "cursor_bridge", "bridge apply + tests passed", "ready-for-deploy")
+                        return _result(True, "cursor_bridge", "bridge apply + tests passed", "release-candidate-ready")
                 else:
                     err = bridge_result.get("error") or "bridge failed"
                     logger.warning("advance_ready_for_patch_task: cursor bridge failed task_id=%s: %s", task_id, err)
@@ -1664,6 +1652,17 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                     return _result(False, "cursor_bridge", err, "patching")
         except Exception as exc:
             logger.warning("advance_ready_for_patch_task: cursor bridge branch raised task_id=%s: %s", task_id, exc)
+    else:
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "cursor_bridge_skipped",
+                task_id=task_id,
+                task_title=task_title,
+                details={"reason": "CURSOR_BRIDGE_AUTO_IN_ADVANCE not set"},
+            )
+        except Exception:
+            pass
 
     # --- 3. Reconstruct a minimal prepared_task for callback selection ---
     repo_area = infer_repo_area_for_task(task)
@@ -1728,6 +1727,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
 
     # --- 5b. Solution verification: does output address the task requirements? ---
     # Default: enabled. Set ATP_SOLUTION_VERIFICATION_ENABLED=false to disable.
+    verification_unavailable_reason: str | None = None
     _verify_raw = (os.environ.get("ATP_SOLUTION_VERIFICATION_ENABLED") or "").strip().lower()
     verify_enabled = _verify_raw not in ("0", "false", "no")
     verify_fn = callback_selection.get("verify_solution_fn")
@@ -1735,54 +1735,173 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         logger.info("verification_started task_id=%s", task_id[:12] if task_id else "?")
         verify_ok, verify_summary = _run_callback(prepared_task, verify_fn, "verify_solution")
         if not verify_ok:
-            logger.warning(
-                "verification_failed task_id=%s summary=%s",
-                task_id[:12] if task_id else "?", verify_summary[:200] if verify_summary else "?",
+            # Distinguish: verification unavailable (env/config/error) vs verification failed (bad solution)
+            _s = (verify_summary or "").lower()
+            verification_unavailable = (
+                "verification unavailable" in _s or "verification error" in _s
             )
-            try:
-                from app.services.notion_tasks import TASK_STATUS_NEEDS_REVISION, update_notion_task_status
-                update_notion_task_status(
-                    task_id,
-                    TASK_STATUS_NEEDS_REVISION,
-                    append_comment=(
-                        f"[{ts}] Solution verification FAILED — output does not address task requirements.\n"
-                        f"Feedback: {verify_summary}\n\n"
-                        "Use the Re-investigate button in Telegram to iterate with this feedback."
-                    ),
+            if verification_unavailable:
+                logger.info(
+                    "verification_unavailable task_id=%s reason=%s",
+                    task_id[:12] if task_id else "?",
+                    (verify_summary or "")[:200],
                 )
-                try:
-                    from app.services.agent_telegram_approval import clear_task_approval_record
-                    clear_task_approval_record(task_id)
-                except Exception as clr_exc:
-                    logger.warning(
-                        "advance_ready_for_patch_task: clear_task_approval_record failed task_id=%s: %s",
-                        task_id, clr_exc,
-                    )
-                try:
-                    from app.services.agent_telegram_approval import send_needs_revision_reinvestigate
-                    send_needs_revision_reinvestigate(
-                        task_id, task_title,
-                        feedback=verify_summary,
-                    )
-                except Exception as tg_exc:
-                    logger.warning(
-                        "advance_ready_for_patch_task: send_needs_revision_reinvestigate failed task_id=%s: %s",
-                        task_id, tg_exc,
-                    )
                 try:
                     from app.services.agent_activity_log import log_agent_event
                     log_agent_event(
-                        "solution_verification_failed",
+                        "verification_unavailable",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={
+                            "summary": verify_summary,
+                            "verification_unavailable_reason": verify_summary,
+                        },
+                    )
+                except Exception:
+                    pass
+                verification_unavailable_reason = verify_summary
+                # Proceed to deploy approval path — patch is ready; verification skipped due to env
+                logger.info(
+                    "verification_unavailable: advancing to deploy approval (patch ready, env not configured) task_id=%s",
+                    task_id[:12] if task_id else "?",
+                )
+            else:
+                # Actual verification failure — solution does not address task
+                logger.warning(
+                    "verification_failed task_id=%s summary=%s",
+                    task_id[:12] if task_id else "?", verify_summary[:200] if verify_summary else "?",
+                )
+                try:
+                    from app.services.agent_activity_log import log_agent_event
+                    log_agent_event(
+                        "verification_failed",
                         task_id=task_id,
                         task_title=task_title,
                         details={"summary": verify_summary},
                     )
                 except Exception:
                     pass
+                try:
+                    from app.services.task_status_transition import safe_transition_to_needs_revision
+                    revision_reason = f"Solution verification failed: {verify_summary}"[:400]
+                    status_ok = safe_transition_to_needs_revision(
+                        task_id,
+                        revision_reason=revision_reason,
+                        verify_summary=verify_summary,
+                        from_status="ready-for-patch",
+                        task_title=task_title,
+                        append_comment=(
+                            f"[{ts}] Solution verification FAILED — output does not address task requirements.\n"
+                            f"Feedback: {verify_summary}\n\n"
+                            "Use the Re-investigate button in Telegram to iterate with this feedback."
+                        ),
+                    )
+                    if status_ok:
+                        try:
+                            from app.services.needs_revision_processor import update_task_on_needs_revision
+                            update_task_on_needs_revision(task_id, revision_reason)
+                        except Exception as nr_e:
+                            logger.debug("advance_ready_for_patch_task: update_task_on_needs_revision failed %s", nr_e)
+                        try:
+                            from app.services.agent_telegram_approval import clear_task_approval_record
+                            clear_task_approval_record(task_id)
+                        except Exception as clr_exc:
+                            logger.warning(
+                                "advance_ready_for_patch_task: clear_task_approval_record failed task_id=%s: %s",
+                                task_id, clr_exc,
+                            )
+                        try:
+                            from app.services.agent_telegram_approval import send_needs_revision_reinvestigate
+                            send_needs_revision_reinvestigate(
+                                task_id, task_title,
+                                feedback=verify_summary,
+                            )
+                        except Exception as tg_exc:
+                            logger.warning(
+                                "advance_ready_for_patch_task: send_needs_revision_reinvestigate failed task_id=%s: %s",
+                                task_id, tg_exc,
+                            )
+                except Exception as exc:
+                    logger.warning("advance_ready_for_patch_task: failed to move to needs-revision task_id=%s: %s", task_id, exc)
+                return _result(False, "solution_verification", verify_summary, "needs-revision")
+        else:
+            logger.info("verification_passed task_id=%s", task_id[:12] if task_id else "?")
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "verification_passed",
+                    task_id=task_id,
+                    task_title=task_title,
+                    details={"summary": verify_summary},
+                )
+            except Exception:
+                pass
+
+    # --- 5c. Patch proof gate: code-fix tasks require Cursor Bridge before ready-for-deploy ---
+    # Investigation is not implementation. Deploy approval blocked until patch evidence exists.
+    try:
+        from app.services.patch_proof import cursor_bridge_required_for_task
+        bridge_required, bridge_reason = cursor_bridge_required_for_task(task, task_id)
+        if bridge_required:
+            logger.info(
+                "cursor_bridge_required task_id=%s reason=%s — blocking advance to ready-for-deploy",
+                task_id[:12] if task_id else "?",
+                bridge_reason,
+            )
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "deploy_blocked_no_patch",
+                    task_id=task_id,
+                    task_title=task_title,
+                    details={"reason": bridge_reason},
+                )
+            except Exception:
+                pass
+            _append_notion_page_comment(
+                task_id,
+                f"[{ts}] Validation passed but patch not yet applied. "
+                "Code-fix tasks require Cursor Bridge to run before deploy approval. "
+                "Use 'Run Cursor Bridge' in Telegram to apply the fix.",
+            )
+            try:
+                from app.services.agent_telegram_approval import send_patch_not_applied_message
+                tg = send_patch_not_applied_message(task_id, task_title)
+                logger.info(
+                    "advance_ready_for_patch_task: send_patch_not_applied_message task_id=%s sent=%s",
+                    task_id, tg.get("sent"),
+                )
             except Exception as exc:
-                logger.warning("advance_ready_for_patch_task: failed to move to needs-revision task_id=%s: %s", task_id, exc)
-            return _result(False, "solution_verification", verify_summary, "needs-revision")
-        logger.info("verification_passed task_id=%s", task_id[:12] if task_id else "?")
+                logger.warning(
+                    "advance_ready_for_patch_task: send_patch_not_applied_message failed task_id=%s: %s",
+                    task_id, exc,
+                )
+            return _result(
+                False,
+                "patch_proof_gate",
+                f"Cursor Bridge required ({bridge_reason}) — no deploy until patch applied",
+                "patching",
+            )
+        logger.info(
+            "deploy_allowed_with_patch task_id=%s reason=%s",
+            task_id[:12] if task_id else "?",
+            bridge_reason,
+        )
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "deploy_allowed_with_patch",
+                task_id=task_id,
+                task_title=task_title,
+                details={"reason": bridge_reason},
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning(
+            "advance_ready_for_patch_task: patch_proof gate check failed task_id=%s: %s — allowing advance (fail-open for non-code tasks)",
+            task_id, exc,
+        )
 
     # --- 6. Record test gate and advance to awaiting-deploy-approval ---
     gate_ok = False
@@ -1823,45 +1942,51 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         )
         return _result(False, "metadata_persist", "Test Status not written — advancement blocked", "patching")
 
-    logger.info("ready_for_deploy_set task_id=%s", task_id[:12] if task_id else "?")
-    # --- 6b. Move to ready-for-deploy (record_test_result already advanced status) ---
-    # Status was advanced to ready-for-deploy by record_test_result above; ensure comment reflects it.
-    _append_notion_page_comment(
-        task_id,
-        f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
-        "Tests passed — task in ready-for-deploy. Telegram deploy approval sent.",
-    )
+    logger.info("release_candidate_ready_set task_id=%s", task_id[:12] if task_id else "?")
+    # --- 6b. Move to release-candidate-ready (record_test_result already advanced status) ---
+    if verification_unavailable_reason:
+        _append_notion_page_comment(
+            task_id,
+            f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
+            f"Verification unavailable ({verification_unavailable_reason[:100]}). "
+            "Patch ready — single approval sent.",
+        )
+    else:
+        _append_notion_page_comment(
+            task_id,
+            f"[{ts}] {summarize_validation_result(True, val_summary)}\n"
+            "Tests passed — release candidate ready. Single approval sent.",
+        )
 
-    # --- 7. Send deploy approval Telegram message (only at ready-for-deploy) ---
-    sections: dict[str, Any] = {}
+    # --- 7. Single approval ONLY when release-candidate-ready ---
     try:
-        from app.services.cursor_handoff import _load_sections_from_sidecar
-        sections = _load_sections_from_sidecar(task_id)
-    except Exception:
-        pass
-
-    try:
-        from app.services.agent_telegram_approval import send_patch_deploy_approval
-        tg = send_patch_deploy_approval(
-            task_id, task_title,
+        from app.services.agent_telegram_approval import send_release_candidate_approval
+        pv = str((task or {}).get("proposed_version") or "").strip()
+        tg = send_release_candidate_approval(
+            task_id,
+            task_title,
             test_summary=val_summary,
-            sections=sections,
-            task=task, repo_area=repo_area,
+            sections=None,
+            task=task,
+            repo_area=repo_area,
+            verification_unavailable_reason=verification_unavailable_reason,
+            proposed_version=pv,
         )
         logger.info(
-            "advance_ready_for_patch_task: send_patch_deploy_approval task_id=%s sent=%s",
-            task_id, tg.get("sent"),
+            "advance_ready_for_patch_task: send_release_candidate_approval "
+            "task_id=%s sent=%s message_id=%s dedup_write_failed=%s status=release-candidate-ready",
+            task_id, tg.get("sent"), tg.get("message_id"), tg.get("dedup_write_failed", False),
         )
     except Exception as exc:
         logger.warning(
-            "advance_ready_for_patch_task: send_patch_deploy_approval failed task_id=%s: %s",
+            "advance_ready_for_patch_task: send_release_candidate_approval failed task_id=%s: %s",
             task_id, exc,
         )
 
     try:
         from app.services.agent_activity_log import log_agent_event
         log_agent_event(
-            "patch_advanced_to_deploy_approval",
+            "release_candidate_approval_sent",
             task_id=task_id,
             task_title=task_title,
             details={"validation_summary": val_summary},
@@ -1869,5 +1994,5 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    return _result(True, "deploy_approval_sent", val_summary, "ready-for-deploy")
+    return _result(True, "release_candidate_approval_sent", val_summary, "release-candidate-ready")
 

@@ -6162,15 +6162,15 @@ def _handle_extended_approval_callback(
                 pass
             return
 
-        if task and current_status not in ("needs-revision", "needs revision", "ready-for-investigation"):
+        if task and current_status not in ("needs-revision", "needs revision", "ready-for-investigation", "blocked"):
             logger.info(
-                "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (not in needs-revision)",
+                "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (not eligible)",
                 task_id, current_status,
             )
             send_command_response(
                 chat_id,
                 f"⚠️ Task <code>{task_id[:12]}</code> is in status <b>{current_status or 'unknown'}</b>. "
-                "Re-investigate only applies to tasks in Needs Revision.",
+                "Re-investigate applies to: Needs Revision, Ready for Investigation, Blocked.",
             )
             return
 
