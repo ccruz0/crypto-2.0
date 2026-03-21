@@ -245,3 +245,23 @@ git pull
 The script (in order): checks `OPENCLAW_BASIC_AUTH`, repo `.env` / `secrets/runtime.env` for `OPENCLAW_BASIC_AUTH=openclaw:…`, scans `~/.bash_history` for `curl -u openclaw:…`; if nothing validates with `curl` against `/openclaw/`, backs up `/etc/nginx/.htpasswd_openclaw`, sets a new random password, `nginx -t` + `reload`, prints the password and a test `curl` command.
 
 **Do not commit** the printed password. Prefer a password manager; optional local file: `~/.openclaw_basic_auth.env` with `chmod 600` (see script output).
+
+---
+
+## 503 on `/openclaw/` but message mentioned port 3000 (misleading)
+
+**Cause:** Basic Auth works; nginx **cannot reach** the OpenClaw **upstream** (`proxy_pass` in `location ^~ /openclaw/` — e.g. `http://172.31.3.214:8081/`). Older nginx used `@frontend_error` for that path and wrongly said “frontend on port 3000”. Current `nginx/dashboard.conf` uses `@openclaw_upstream_error` with an accurate message.
+
+**Diagnose on the dashboard EC2:**
+
+```bash
+# Match IP:port to your nginx openclaw proxy_pass
+curl -sS -I --max-time 5 http://172.31.3.214:8081/ || echo "LAB unreachable"
+curl -sS -I --max-time 5 http://127.0.0.1:8080/   || echo "local 8080 unreachable"
+```
+
+**Fix:**
+
+1. Start OpenClaw on the LAB (or bind on PROD `127.0.0.1:8080` if that is your design).
+2. **Security group:** allow TCP from dashboard instance (or its subnet) to OpenClaw host on **8081** (or **8080**).
+3. Edit `proxy_pass` in `nginx/dashboard.conf` to the real IP and port, then redeploy nginx (`./scripts/openclaw/deploy_openclaw_basepath_nginx.sh`).

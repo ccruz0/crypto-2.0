@@ -153,5 +153,12 @@ fi
 
 echo "FAIL: validation returned HTTP $code (expected 2xx or 3xx)"
 echo "New password was set: $NEW_PASS"
-echo "Check OpenClaw upstream (502) or URL: $VALIDATE_URL"
+echo ""
+if [ "$code" = "503" ] || [ "$code" = "502" ] || [ "$code" = "504" ]; then
+  echo "HTTP $code usually means nginx cannot reach OpenClaw (wrong proxy_pass IP/port, SG, or OpenClaw down)."
+  echo "On this host test upstream (edit IP/port to match nginx dashboard.conf):"
+  echo "  curl -sS -I --max-time 5 http://172.31.3.214:8081/   # LAB"
+  echo "  curl -sS -I --max-time 5 http://127.0.0.1:8080/     # same-host OpenClaw"
+fi
+echo "URL: $VALIDATE_URL"
 exit 1
