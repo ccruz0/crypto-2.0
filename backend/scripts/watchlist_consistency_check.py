@@ -441,6 +441,13 @@ def generate_markdown_report(report_data: dict) -> str:
 def main():
     """Main function"""
     try:
+        if SessionLocal is None:
+            logger.error(
+                "Database is not available (SessionLocal is None). "
+                "Check DATABASE_URL and that the engine initialized successfully."
+            )
+            print("\n❌ Error: database not configured or engine failed to start.")
+            return 1
         db: Session = SessionLocal()
         try:
             logger.info("Starting watchlist consistency check...")
