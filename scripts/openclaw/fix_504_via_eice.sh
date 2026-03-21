@@ -55,7 +55,11 @@ git pull origin main 2>/dev/null || true
 export LAB_PRIVATE_IP="${LAB_PRIVATE_IP:-172.31.3.214}"
 # Default 8080 matches docker-compose.openclaw.yml (8080:18789). Use 8081 only if LAB publishes 8081.
 export OPENCLAW_PORT="${OPENCLAW_PORT:-8080}"
-if [ -f scripts/openclaw/fix_openclaw_proxy_prod.sh ]; then
+# Prefer full repo nginx (rate limits + all openclaw paths) after pull — fixes wrong LAB port in git.
+# Run deploy as ubuntu (not root): git pull needs ubuntu's credentials.
+if [ -f scripts/openclaw/deploy_openclaw_basepath_nginx.sh ]; then
+  bash scripts/openclaw/deploy_openclaw_basepath_nginx.sh
+elif [ -f scripts/openclaw/fix_openclaw_proxy_prod.sh ]; then
   sudo -E bash scripts/openclaw/fix_openclaw_proxy_prod.sh
 fi
 # Normalize every sites-enabled file that mentions openclaw (502 fix when active server is not default).

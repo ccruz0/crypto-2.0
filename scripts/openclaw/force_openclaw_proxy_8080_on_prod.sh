@@ -36,7 +36,9 @@ for f in /etc/nginx/sites-enabled/*; do
   echo "--- $f ---"
   sudo cp -a "$f" "${BAK_DIR}/$(basename "$f").bak.force-openclaw.${TS}"
   # Normalize common broken upstreams to NEW (idempotent if already NEW)
+  # Normalize any LAB:8081 (main, /ws, /assets/) to LAB:${PORT}
   sudo sed -i \
+    -e "s|http://${LAB}:8081|http://${LAB}:${PORT}|g" \
     -e "s|proxy_pass http://52.77.216.100:8080/;|$NEW|g" \
     -e "s|proxy_pass http://52.77.216.100:8081/;|$NEW|g" \
     -e "s|proxy_pass http://${LAB}:8081/;|$NEW|g" \

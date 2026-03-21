@@ -273,6 +273,27 @@ With `docker compose --profile aws`, **port 8080** on the dashboard machine is c
 
 ---
 
+## 503 OpenClaw upstream unreachable (after Basic Auth)
+
+**Common cause:** Nginx pointed at the wrong **LAB host port**. `docker-compose.openclaw.yml` publishes **`8080:18789`** — repo `nginx/dashboard.conf` must use **`http://<LAB_IP>:8080/`** for `/openclaw/`, `/openclaw/ws`, and `/openclaw/assets/`. If git had **8081**, every deploy copied the wrong port → 503.
+
+### One command from your Mac (AWS CLI + EC2 Instance Connect)
+
+From a clone of this repo (with AWS credentials that can push temp SSH keys to **dashboard** and **LAB**):
+
+```bash
+cd /path/to/automated-trading-platform
+./scripts/openclaw/repair_openclaw_503.sh
+```
+
+Same as `fix_504_via_eice.sh`: pulls latest on dashboard, runs **`deploy_openclaw_basepath_nginx.sh`**, fixes `proxy_pass`, reloads nginx, then tries to start OpenClaw on the LAB over SSH from the dashboard.
+
+Optional env: `ATP_INSTANCE_ID`, `OPENCLAW_LAB_INSTANCE_ID`, `LAB_PRIVATE_IP`, `OPENCLAW_PORT`, `AWS_REGION`.
+
+**If that fails:** open **TCP `8080`** (or your `OPENCLAW_PORT`) on the **LAB security group** from the **dashboard instance private IP** `/32` (or VPC CIDR). See **Common mistakes** above for private-IP testing.
+
+---
+
 ## Troubleshooting: `nginx -t` fails — `zero size shared memory zone "monitoring_limit"`
 
 `nginx/dashboard.conf` uses `limit_req zone=monitoring_limit` and `zone=api_limit`. Those zones must be defined in the **`http { }`** block (not inside `server { }`).
