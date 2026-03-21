@@ -209,3 +209,22 @@ curl -sS -I -L -u USER:PASS https://dashboard.hilovivo.com/openclaw/ 2>/dev/null
    ```
 
 6. **Still broken in-browser after nginx is correct?** Rebuild OpenClaw image with `basePath` (see **Fix Required in OpenClaw Repo** above); nginx cannot fix client-side `navigate('/containers')`.
+
+---
+
+## Troubleshooting: `nginx -t` fails — `zero size shared memory zone "monitoring_limit"`
+
+`nginx/dashboard.conf` uses `limit_req zone=monitoring_limit` and `zone=api_limit`. Those zones must be defined in the **`http { }`** block (not inside `server { }`).
+
+**Fix (automated):** Re-run `./scripts/openclaw/deploy_openclaw_basepath_nginx.sh` from a repo that includes the script update: it copies `nginx/rate_limiting_zones.conf` to `/etc/nginx/` and adds `include /etc/nginx/rate_limiting_zones.conf;` after `http {` in `/etc/nginx/nginx.conf` if missing.
+
+**Fix (manual):**
+
+```bash
+sudo cp /home/ubuntu/automated-trading-platform/nginx/rate_limiting_zones.conf /etc/nginx/rate_limiting_zones.conf
+# Edit /etc/nginx/nginx.conf — inside http { }, add before sites-enabled:
+#   include /etc/nginx/rate_limiting_zones.conf;
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+If nginx was left broken after a failed deploy, restore the previous site file from backup or `git checkout` the old `default` from backup under `/etc/nginx/nginx.conf.bak.*` only if you edited nginx.conf badly.

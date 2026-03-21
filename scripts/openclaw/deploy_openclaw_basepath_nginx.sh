@@ -15,6 +15,19 @@ fi
 NGINX_SITE_TARGET="${NGINX_SITE_TARGET:-$(readlink -f /etc/nginx/sites-enabled/default)}"
 echo "=== Deploying nginx/dashboard.conf -> $NGINX_SITE_TARGET ==="
 git pull
+
+# dashboard.conf uses limit_req zone=api_limit and monitoring_limit; they must exist in http {}.
+# Without them: nginx: [emerg] zero size shared memory zone "monitoring_limit"
+if [ -f "$REPO/nginx/rate_limiting_zones.conf" ]; then
+  echo "=== Ensuring rate limit zones (api_limit, monitoring_limit) ==="
+  sudo cp "$REPO/nginx/rate_limiting_zones.conf" /etc/nginx/rate_limiting_zones.conf
+  if ! grep -qF 'include /etc/nginx/rate_limiting_zones.conf;' /etc/nginx/nginx.conf 2>/dev/null; then
+    echo "Adding include /etc/nginx/rate_limiting_zones.conf; to nginx.conf (backup created)..."
+    sudo cp -a /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.$(date +%s)"
+    sudo sed -i '/^http {/a\    include /etc/nginx/rate_limiting_zones.conf;' /etc/nginx/nginx.conf
+  fi
+fi
+
 sudo cp nginx/dashboard.conf "$NGINX_SITE_TARGET"
 sudo nginx -t
 sudo systemctl reload nginx
