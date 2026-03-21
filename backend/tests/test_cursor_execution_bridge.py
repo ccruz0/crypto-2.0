@@ -26,6 +26,54 @@ except ImportError:
     _HAVE_APP = False
 
 
+class TestBridgeApprovalGate:
+    """CURSOR_BRIDGE_REQUIRE_APPROVAL and scheduler auto-run toggles."""
+
+    def test_require_approval_default_true(self):
+        with patch.dict("os.environ", {}, clear=True):
+            from app.services.cursor_execution_bridge import is_bridge_require_approval
+            assert is_bridge_require_approval() is True
+
+    def test_may_execute_api_blocks_without_patch_approved(self):
+        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}, clear=True):
+            from app.services.cursor_execution_bridge import may_execute_cursor_bridge
+            ok, err = may_execute_cursor_bridge("fake-task-id-no-approval", context="api")
+            assert ok is False
+            assert "patch_approved" in err.lower() or "REQUIRE_APPROVAL" in err
+
+    def test_may_execute_telegram_allows_without_log(self):
+        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}, clear=True):
+            from app.services.cursor_execution_bridge import may_execute_cursor_bridge
+            ok, _ = may_execute_cursor_bridge("any-id", context="telegram")
+            assert ok is True
+
+    def test_scheduler_auto_unset_is_false_even_if_bridge_enabled(self):
+        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}, clear=True):
+            from app.services.cursor_execution_bridge import scheduler_should_auto_run_cursor_bridge
+            assert scheduler_should_auto_run_cursor_bridge() is False
+        with patch.dict("os.environ", {}, clear=True):
+            from app.services.cursor_execution_bridge import scheduler_should_auto_run_cursor_bridge
+            assert scheduler_should_auto_run_cursor_bridge() is False
+
+    def test_scheduler_auto_explicit_true(self):
+        with patch.dict(
+            "os.environ",
+            {"CURSOR_BRIDGE_ENABLED": "true", "CURSOR_BRIDGE_AUTO_IN_ADVANCE": "true"},
+            clear=True,
+        ):
+            from app.services.cursor_execution_bridge import scheduler_should_auto_run_cursor_bridge
+            assert scheduler_should_auto_run_cursor_bridge() is True
+
+    def test_scheduler_auto_explicit_false(self):
+        with patch.dict(
+            "os.environ",
+            {"CURSOR_BRIDGE_ENABLED": "true", "CURSOR_BRIDGE_AUTO_IN_ADVANCE": "false"},
+            clear=True,
+        ):
+            from app.services.cursor_execution_bridge import scheduler_should_auto_run_cursor_bridge
+            assert scheduler_should_auto_run_cursor_bridge() is False
+
+
 class TestCursorBridgeEnabled:
     """Verify is_bridge_enabled respects env."""
 
@@ -49,7 +97,7 @@ class TestRunBridgePhase1:
     """Verify run_bridge_phase1 error handling."""
 
     def test_empty_task_id(self):
-        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}):
+        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}, clear=False):
             from app.services.cursor_execution_bridge import run_bridge_phase1
             r = run_bridge_phase1("")
             assert r.get("ok") is False
@@ -63,7 +111,11 @@ class TestRunBridgePhase1:
             assert "CURSOR_BRIDGE" in r.get("error", "")
 
     def test_handoff_not_found(self):
-        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}):
+        env = {
+            "CURSOR_BRIDGE_ENABLED": "true",
+            "CURSOR_BRIDGE_REQUIRE_APPROVAL": "false",
+        }
+        with patch.dict("os.environ", env, clear=False):
             from app.services.cursor_execution_bridge import run_bridge_phase1
             r = run_bridge_phase1("nonexistent-task-id-xyz")
             assert r.get("ok") is False
@@ -104,7 +156,8 @@ class TestCursorBridgeAPI:
 
     def test_run_bridge_requires_task_id(self):
         """POST without task_id returns error."""
-        with patch.dict("os.environ", {"CURSOR_BRIDGE_ENABLED": "true"}):
+        env = {"CURSOR_BRIDGE_ENABLED": "true", "CURSOR_BRIDGE_REQUIRE_APPROVAL": "false"}
+        with patch.dict("os.environ", env, clear=False):
             client = TestClient(app)
             r = client.post("/api/agent/cursor-bridge/run", json={})
             assert r.status_code == 200

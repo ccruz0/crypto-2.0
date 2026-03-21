@@ -404,7 +404,14 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         # Case 2: Patching stuck — re-trigger Cursor execution bridge
         try:
             from app.services.cursor_execution_bridge import run_bridge_phase2
-            result = run_bridge_phase2(task_id, prompt=None, ingest=True, create_pr=False, current_status="patching")
+            result = run_bridge_phase2(
+                task_id,
+                prompt=None,
+                ingest=True,
+                create_pr=False,
+                current_status="patching",
+                execution_context="telegram",
+            )
             if result.get("ok"):
                 _log_event("stuck_task_recovered", task_id=task_id, task_title=task_title, details={"action": "cursor_bridge_retriggered"})
             else:

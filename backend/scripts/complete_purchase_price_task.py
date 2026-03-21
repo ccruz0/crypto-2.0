@@ -119,6 +119,7 @@ def main():
                     ingest=True,
                     create_pr=False,
                     current_status="patching",
+                    execution_context="telegram",
                 )
                 results["cursor_bridge_ran"] = True
                 results["cursor_bridge_ok"] = bridge_result.get("ok", False)

@@ -5756,6 +5756,15 @@ def _handle_agent_approval_callback(
             if is_inv_complete:
                 ok = update_notion_task_status(task_id, "ready-for-patch")
                 if ok:
+                    try:
+                        from app.services.agent_activity_log import log_agent_event
+                        log_agent_event(
+                            "patch_approved",
+                            task_id=task_id,
+                            details={"approved_by": who, "source": "telegram_investigation_complete"},
+                        )
+                    except Exception:
+                        pass
                     r = advance_ready_for_patch_task(task_id)
                     status = r.get("final_status") or r.get("stage") or "ready-for-patch"
                     logger.info(f"[TG][APPROVAL] Advanced from investigation-complete task_id={task_id}, result={r.get('ok')}, status={status}")
@@ -6239,7 +6248,13 @@ def _handle_extended_approval_callback(
                                     f"✅ <b>Patch approved</b> by {who}\nTask in <b>ready-for-patch</b>.\n\n"
                                     "Bridge disabled.", task_id)
                 return
-            result = run_bridge_phase2(task_id=task_id, ingest=True, create_pr=False, current_status="patching")
+            result = run_bridge_phase2(
+                task_id=task_id,
+                ingest=True,
+                create_pr=False,
+                current_status="patching",
+                execution_context="telegram",
+            )
             if result.get("ok") and result.get("tests_ok"):
                 send_command_response(chat_id,
                     f"✅ <b>Cursor Bridge OK</b>\n\nTask {task_id[:12]}…: apply + tests passed.\n"

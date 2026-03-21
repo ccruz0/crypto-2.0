@@ -260,7 +260,29 @@ async def startup_event():
             raise RuntimeError(
                 "Missing required AWS env vars: " + ", ".join(missing)
             )
-    
+
+    # Cursor Execution Bridge — startup visibility (values from env / secrets/runtime.env)
+    try:
+        from app.services.cursor_execution_bridge import (
+            is_bridge_enabled,
+            is_bridge_require_approval,
+            scheduler_should_auto_run_cursor_bridge,
+        )
+        if is_bridge_enabled():
+            logger.info("CursorBridge: ENABLED")
+        else:
+            logger.info("CursorBridge: DISABLED")
+        logger.info(
+            "CursorBridge: REQUIRE_APPROVAL=%s",
+            "true" if is_bridge_require_approval() else "false",
+        )
+        logger.info(
+            "CursorBridge: AUTO_IN_ADVANCE=%s",
+            "true" if scheduler_should_auto_run_cursor_bridge() else "false",
+        )
+    except Exception as e:
+        logger.warning("CursorBridge: config log skipped (%s)", e)
+
     # Verify critical scripts exist (if PRINT_FINGERPRINTS_ON_START is set)
     if os.getenv("PRINT_FINGERPRINTS_ON_START") == "1":
         import pathlib

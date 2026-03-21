@@ -11,17 +11,23 @@ Env vars:
   CURSOR_BRIDGE_ENABLED — Master switch (default: false)
   CURSOR_CLI_TIMEOUT    — Timeout seconds for Cursor (default: 300)
   CURSOR_BRIDGE_TEST_TIMEOUT — Timeout per test suite (default: 120)
+  CURSOR_BRIDGE_REQUIRE_APPROVAL — When true (default), API/scheduler require a patch_approved
+      activity event before running; Telegram "Run Cursor Bridge" bypasses (human already approved).
+  CURSOR_BRIDGE_AUTO_IN_ADVANCE — When true, scheduler auto-runs the bridge when eligible.
+      When unset or false, no scheduler auto-run (production default); use Telegram or API.
   GITHUB_TOKEN          — For PR creation (requires repo scope)
   GITHUB_REPOSITORY     — owner/repo (default: ccruz0/crypto-2.0)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +44,9 @@ _DEFAULT_TIMEOUT = 300
 _DEFAULT_TEST_TIMEOUT = 120
 _MAX_STAGING_DIRS = 5
 _PATCHES_SUBDIR = "docs/agents/patches"
+# Keep in sync with app.services.agent_activity_log
+_AGENT_ACTIVITY_LOG_DIR = "logs"
+_AGENT_ACTIVITY_LOG_FILE = "agent_activity.jsonl"
 
 
 def _workspace_root() -> Path:
@@ -74,6 +83,96 @@ def is_bridge_enabled() -> bool:
     """True when CURSOR_BRIDGE_ENABLED is set to a truthy value."""
     v = (os.environ.get("CURSOR_BRIDGE_ENABLED") or "").strip().lower()
     return v in ("1", "true", "yes")
+
+
+def is_bridge_require_approval() -> bool:
+    """When True, API and scheduler must see patch approval before executing the bridge."""
+    v = (os.environ.get("CURSOR_BRIDGE_REQUIRE_APPROVAL") or "").strip().lower()
+    if v in ("0", "false", "no"):
+        return False
+    return True
+
+
+def scheduler_should_auto_run_cursor_bridge() -> bool:
+    """
+    Whether the agent scheduler may auto-invoke the bridge for ready-for-patch tasks.
+
+    Production-safe default: when unset, False (no scheduler auto-run). Opt in with
+    CURSOR_BRIDGE_AUTO_IN_ADVANCE=true.
+    """
+    raw = (os.environ.get("CURSOR_BRIDGE_AUTO_IN_ADVANCE") or "").strip().lower()
+    if raw in ("0", "false", "no"):
+        return False
+    if raw in ("1", "true", "yes"):
+        return True
+    return False
+
+
+def _task_id_match_variants(task_id: str) -> set[str]:
+    t = (task_id or "").strip()
+    if not t:
+        return set()
+    out = {t, t.replace("-", "")}
+    return {x for x in out if x}
+
+
+def task_has_patch_approval(task_id: str, *, max_lines: int = 100_000) -> bool:
+    """
+    True if agent activity log contains patch_approved for this task (Telegram patch or investigation approve).
+
+    Scans the tail of logs/agent_activity.jsonl (bounded) for event_type patch_approved.
+    """
+    variants_n = {v.replace("-", "") for v in _task_id_match_variants(task_id)}
+    if not variants_n:
+        return False
+    try:
+        path = _repo_root() / _AGENT_ACTIVITY_LOG_DIR / _AGENT_ACTIVITY_LOG_FILE
+        if not path.exists():
+            return False
+        buf: deque[str] = deque(maxlen=max(1000, max_lines))
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                buf.append(line)
+        for line in reversed(buf):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("event_type") != "patch_approved":
+                continue
+            ev_n = (row.get("task_id") or "").strip().replace("-", "")
+            if ev_n and ev_n in variants_n:
+                return True
+        return False
+    except Exception as e:
+        logger.debug("cursor_bridge: task_has_patch_approval scan failed: %s", e)
+        return False
+
+
+def may_execute_cursor_bridge(task_id: str, *, context: str) -> tuple[bool, str]:
+    """
+    Enforce CURSOR_BRIDGE_REQUIRE_APPROVAL for api and scheduler contexts.
+
+    context: "api" | "scheduler" | "telegram"
+    """
+    if not is_bridge_enabled():
+        return False, "CURSOR_BRIDGE_ENABLED not set"
+    ctx = (context or "").strip().lower()
+    if ctx not in ("api", "scheduler", "telegram"):
+        return False, "invalid execution context"
+    if not is_bridge_require_approval():
+        return True, ""
+    if ctx == "telegram":
+        return True, ""
+    if task_has_patch_approval(task_id):
+        return True, ""
+    return False, (
+        "CURSOR_BRIDGE_REQUIRE_APPROVAL: no patch_approved event for this task "
+        "(approve patch in Telegram or set CURSOR_BRIDGE_REQUIRE_APPROVAL=false in non-prod only)"
+    )
 
 
 def get_bridge_diagnostics() -> dict[str, Any]:
@@ -114,6 +213,8 @@ def get_bridge_diagnostics() -> dict[str, Any]:
 
     return {
         "enabled": is_bridge_enabled(),
+        "require_approval": is_bridge_require_approval(),
+        "scheduler_auto_bridge": scheduler_should_auto_run_cursor_bridge(),
         "cursor_cli_path": cli,
         "cursor_cli_found": cursor_found,
         "staging_root": str(staging_root),
@@ -124,6 +225,18 @@ def get_bridge_diagnostics() -> dict[str, Any]:
         "github_token_set": bool((os.environ.get("GITHUB_TOKEN") or "").strip()),
         "ready": is_bridge_enabled() and cursor_found and staging_writable,
     }
+
+
+def _notify_cursor_bridge_failure(title: str, detail: str) -> None:
+    """Best-effort Telegram ops alert for scheduler/API failures (never raises)."""
+    try:
+        from app.services.telegram_notifier import telegram_notifier
+        if not getattr(telegram_notifier, "enabled", False):
+            return
+        msg = f"⚠️ {title}\n{detail}"[:3500]
+        telegram_notifier.send_message(msg, chat_destination="ops")
+    except Exception as e:
+        logger.debug("cursor_bridge: failure notify skipped: %s", e)
 
 
 def _log_event(event_type: str, task_id: str = "", details: dict | None = None) -> None:
@@ -243,6 +356,7 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
         else:
             args = [cli, "agent", "-p", "--output-format", "json", prompt]
 
+    logger.info("CursorBridge: applying patch task_id=%s staging=%s", task_id, staging_path)
     logger.info(
         "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d",
         task_id, staging_path, timeout, len(prompt),
@@ -451,6 +565,10 @@ def run_tests_in_staging(staging_path: Path, *, task_id: str = "") -> dict[str, 
         frontend_ok = True  # Skip if no frontend
 
     all_ok = backend_ok and frontend_ok
+    if all_ok:
+        logger.info("CursorBridge: tests passed task_id=%s", task_id)
+    else:
+        logger.warning("CursorBridge: tests failed task_id=%s", task_id)
     _log_event(
         "cursor_bridge_tests_done" if all_ok else "cursor_bridge_tests_failed",
         task_id=task_id,
@@ -571,7 +689,12 @@ def ingest_bridge_results(
     }
 
 
-def run_bridge_phase1(task_id: str, prompt: str | None = None) -> dict[str, Any]:
+def run_bridge_phase1(
+    task_id: str,
+    prompt: str | None = None,
+    *,
+    execution_context: str = "api",
+) -> dict[str, Any]:
     """
     Phase 1: Provision staging, invoke Cursor CLI, return result. No cleanup by default.
 
@@ -581,8 +704,12 @@ def run_bridge_phase1(task_id: str, prompt: str | None = None) -> dict[str, Any]
     if not task_id:
         return {"ok": False, "error": "empty task_id"}
 
-    if not is_bridge_enabled():
-        return {"ok": False, "error": "CURSOR_BRIDGE_ENABLED not set"}
+    ctx = (execution_context or "api").strip().lower()
+    if ctx not in ("api", "scheduler", "telegram"):
+        ctx = "api"
+    may_ok, may_err = may_execute_cursor_bridge(task_id, context=ctx)
+    if not may_ok:
+        return {"ok": False, "error": may_err, "task_id": task_id}
 
     if prompt is None:
         handoff_path = _workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
@@ -713,6 +840,7 @@ def run_bridge_phase2(
     ingest: bool = True,
     create_pr: bool = False,
     current_status: str = "patching",
+    execution_context: str = "api",
 ) -> dict[str, Any]:
     """
     Phase 2: Phase 1 + diff capture + test execution + result ingestion + optional PR.
@@ -720,10 +848,25 @@ def run_bridge_phase2(
     Runs: provision → invoke → capture_diff → run_tests_in_staging → ingest_bridge_results
     → create_patch_pr (if create_pr=True and tests pass).
     When ingest=True (default), feeds results to record_test_result and Notion.
+
+    execution_context: api | scheduler | telegram — controls approval bypass (telegram) and alerts (scheduler).
     """
-    _log_event("cursor_bridge_started", task_id=task_id, details={"ingest": ingest, "create_pr": create_pr})
-    phase1 = run_bridge_phase1(task_id=task_id, prompt=prompt)
+    task_id = (task_id or "").strip()
+    ctx = (execution_context or "api").strip().lower()
+    if ctx not in ("api", "scheduler", "telegram"):
+        ctx = "api"
+
+    logger.info("CursorBridge: patch detected task_id=%s context=%s", task_id, ctx)
+    _log_event("cursor_bridge_started", task_id=task_id, details={
+        "ingest": ingest, "create_pr": create_pr, "execution_context": ctx,
+    })
+    phase1 = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=ctx)
     if not phase1.get("ok"):
+        if ctx == "scheduler":
+            _notify_cursor_bridge_failure(
+                "Cursor bridge: apply failed",
+                f"task_id={task_id[:24]}… error={str(phase1.get('error', ''))[:400]}",
+            )
         return phase1
 
     staging_path_str = phase1.get("staging_path", "")
@@ -736,6 +879,28 @@ def run_bridge_phase2(
 
     invoke_ok = phase1.get("invoke", {}).get("success", False)
     tests_ok = tests.get("all_ok", False)
+
+    if invoke_ok and not tests_ok:
+        logger.warning(
+            "CursorBridge: tests failed — rolling back workspace diff and staging task_id=%s",
+            task_id,
+        )
+        if diff_path and diff_path.exists():
+            try:
+                diff_path.unlink()
+            except OSError as e:
+                logger.warning("cursor_bridge: rollback diff unlink failed task_id=%s: %s", task_id, e)
+        cleanup_staging(task_id)
+        diff_path = None
+        _log_event("cursor_bridge_rollback_tests_failed", task_id=task_id, details={
+            "backend_ok": tests.get("backend_ok"),
+            "frontend_ok": tests.get("frontend_ok"),
+        })
+        _notify_cursor_bridge_failure(
+            "Cursor bridge: tests failed (rolled back diff)",
+            f"task_id={task_id[:24]}… backend_ok={tests.get('backend_ok')} frontend_ok={tests.get('frontend_ok')}",
+        )
+
     overall_ok = invoke_ok and tests_ok
 
     result: dict[str, Any] = {
@@ -774,14 +939,24 @@ def run_bridge_phase2(
                 logger.debug("cursor_bridge: Notion PR link update failed: %s", e)
 
     if overall_ok:
+        logger.info("CursorBridge: deploy success (release candidate path) task_id=%s", task_id)
         _log_event("cursor_bridge_succeeded", task_id=task_id, details={
             "diff_path": str(diff_path) if diff_path else None,
             "tests_ok": tests_ok,
         })
     else:
+        logger.warning(
+            "CursorBridge: deploy failure (bridge did not complete) task_id=%s invoke_ok=%s tests_ok=%s",
+            task_id, invoke_ok, tests_ok,
+        )
         _log_event("cursor_bridge_failed", task_id=task_id, details={
             "invoke_ok": invoke_ok,
             "tests_ok": tests_ok,
         })
+        if ctx == "scheduler" and not (invoke_ok and not tests_ok):
+            _notify_cursor_bridge_failure(
+                "Cursor bridge: incomplete",
+                f"task_id={task_id[:24]}… invoke_ok={invoke_ok} tests_ok={tests_ok}",
+            )
 
     return result

@@ -1575,8 +1575,17 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             return _result(False, "patching", "Notion status update to patching failed")
         logger.info("advance_ready_for_patch_task: moved to patching task_id=%s", task_id)
 
-    # --- 2b. Cursor bridge: when handoff exists and auto-invoke enabled, run bridge first ---
-    _bridge_auto = (os.environ.get("CURSOR_BRIDGE_AUTO_IN_ADVANCE") or "").strip().lower() in ("1", "true", "yes")
+    # --- 2b. Cursor bridge: when handoff exists, bridge enabled, scheduler auto-run, and approval OK ---
+    from app.services.cursor_execution_bridge import (
+        is_bridge_enabled,
+        is_bridge_require_approval,
+        run_bridge_phase2,
+        scheduler_should_auto_run_cursor_bridge,
+        task_has_patch_approval,
+    )
+    from app.services.patch_proof import cursor_bridge_required_for_task
+
+    _bridge_auto = scheduler_should_auto_run_cursor_bridge()
     if _bridge_auto:
         try:
             from app.services.agent_activity_log import log_agent_event
@@ -1584,19 +1593,23 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         except Exception:
             pass
         try:
-            from app.services.cursor_execution_bridge import (
-                is_bridge_enabled,
-                run_bridge_phase2,
-            )
             from app.services._paths import workspace_root
             handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
-            if handoff_path.exists() and is_bridge_enabled():
+            _need_bridge, _bridge_reason = cursor_bridge_required_for_task(task, task_id)
+            _approval_ok = (not is_bridge_require_approval()) or task_has_patch_approval(task_id)
+            if (
+                handoff_path.exists()
+                and is_bridge_enabled()
+                and _need_bridge
+                and _approval_ok
+            ):
                 logger.info("advance_ready_for_patch_task: cursor handoff found, running bridge task_id=%s", task_id)
                 bridge_result = run_bridge_phase2(
                     task_id=task_id,
                     ingest=True,
                     create_pr=False,
                     current_status="patching",
+                    execution_context="scheduler",
                 )
                 if bridge_result.get("ok") and bridge_result.get("tests_ok"):
                     ingest_res = bridge_result.get("ingest") or {}
@@ -1643,13 +1656,39 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                             pass
                         return _result(True, "cursor_bridge", "bridge apply + tests passed", "release-candidate-ready")
                 else:
-                    err = bridge_result.get("error") or "bridge failed"
+                    err = bridge_result.get("error") or ""
+                    if not err:
+                        err = (
+                            "invoke or tests did not pass"
+                            if not bridge_result.get("tests_ok", True)
+                            else "bridge failed"
+                        )
                     logger.warning("advance_ready_for_patch_task: cursor bridge failed task_id=%s: %s", task_id, err)
                     _append_notion_page_comment(
                         task_id,
                         f"[{ts}] Cursor bridge ran but did not pass: {err[:200]}. Task stays in patching.",
                     )
                     return _result(False, "cursor_bridge", err, "patching")
+            elif (
+                handoff_path.exists()
+                and is_bridge_enabled()
+                and _need_bridge
+                and not _approval_ok
+            ):
+                logger.info(
+                    "advance_ready_for_patch_task: bridge skipped (awaiting patch approval) task_id=%s",
+                    task_id,
+                )
+                try:
+                    from app.services.agent_activity_log import log_agent_event
+                    log_agent_event(
+                        "cursor_bridge_skipped",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={"reason": "CURSOR_BRIDGE_REQUIRE_APPROVAL: no patch_approved event"},
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             logger.warning("advance_ready_for_patch_task: cursor bridge branch raised task_id=%s: %s", task_id, exc)
     else:
@@ -1659,7 +1698,10 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                 "cursor_bridge_skipped",
                 task_id=task_id,
                 task_title=task_title,
-                details={"reason": "CURSOR_BRIDGE_AUTO_IN_ADVANCE not set"},
+                details={
+                    "reason": "scheduler_auto_bridge_off",
+                    "hint": "Set CURSOR_BRIDGE_AUTO_IN_ADVANCE=true to opt in; requires CURSOR_BRIDGE_ENABLED=true",
+                },
             )
         except Exception:
             pass

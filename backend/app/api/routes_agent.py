@@ -497,8 +497,12 @@ def agent_cursor_bridge_run(body: dict[str, Any] = Body(default={})) -> dict[str
     if not task_id:
         return {"ok": False, "error": "task_id required"}
 
+    exec_ctx = (payload.get("execution_context") or "api").strip().lower()
+    if exec_ctx not in ("api", "scheduler", "telegram"):
+        exec_ctx = "api"
+
     if phase == 1:
-        result = run_bridge_phase1(task_id=task_id, prompt=prompt)
+        result = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=exec_ctx)
     else:
         result = run_bridge_phase2(
             task_id=task_id,
@@ -506,5 +510,6 @@ def agent_cursor_bridge_run(body: dict[str, Any] = Body(default={})) -> dict[str
             ingest=ingest,
             create_pr=create_pr,
             current_status=current_status,
+            execution_context=exec_ctx,
         )
     return result
