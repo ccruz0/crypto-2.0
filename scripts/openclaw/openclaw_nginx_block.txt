@@ -18,6 +18,12 @@
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /openclaw;
+
+        # Rewrite Location headers so redirects stay under /openclaw/ (fixes /containers -> 404)
+        proxy_redirect / /openclaw/;
+        proxy_redirect https://$host/ https://$host/openclaw/;
+        proxy_redirect http://$host/ http://$host/openclaw/;
 
         proxy_connect_timeout 30s;
         proxy_send_timeout 300s;
