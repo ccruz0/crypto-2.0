@@ -167,6 +167,7 @@ curl -sS -I -L -u USER:PASS https://dashboard.hilovivo.com/openclaw/ 2>/dev/null
 | Item | Location |
 |------|----------|
 | Nginx config | `nginx/dashboard.conf` |
+| Basic Auth find/reset + validate | `scripts/openclaw/openclaw_basic_auth_find_or_reset.sh` (run on dashboard EC2) |
 | OpenClaw basePath doc | `docs/openclaw/OPENCLAW_FRONTEND_WEBSOCKET_AND_BASEPATH.md` |
 | Reference frontend | `docs/openclaw/reference-frontend/` |
 | OPENCLAW_CONTROL_UI_BASE_PATH | `docker-compose.openclaw.yml` (backend env, not frontend build) |
@@ -228,3 +229,19 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 If nginx was left broken after a failed deploy, restore the previous site file from backup or `git checkout` the old `default` from backup under `/etc/nginx/nginx.conf.bak.*` only if you edited nginx.conf badly.
+
+---
+
+## Basic Auth: find, reset, validate (script)
+
+On the **dashboard** host:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+git pull
+./scripts/openclaw/openclaw_basic_auth_find_or_reset.sh
+```
+
+The script (in order): checks `OPENCLAW_BASIC_AUTH`, repo `.env` / `secrets/runtime.env` for `OPENCLAW_BASIC_AUTH=openclaw:…`, scans `~/.bash_history` for `curl -u openclaw:…`; if nothing validates with `curl` against `/openclaw/`, backs up `/etc/nginx/.htpasswd_openclaw`, sets a new random password, `nginx -t` + `reload`, prints the password and a test `curl` command.
+
+**Do not commit** the printed password. Prefer a password manager; optional local file: `~/.openclaw_basic_auth.env` with `chmod 600` (see script output).
