@@ -30,6 +30,11 @@ proxy_set_header X-Forwarded-Prefix /openclaw;
 proxy_redirect / /openclaw/;
 proxy_redirect https://$host/ https://$host/openclaw/;
 proxy_redirect http://$host/ http://$host/openclaw/;
+# If upstream returns absolute Location with internal host:port
+proxy_redirect http://127.0.0.1:8080/ https://$host/openclaw/;
+proxy_redirect http://127.0.0.1:8081/ https://$host/openclaw/;
+proxy_redirect http://127.0.0.1:18789/ https://$host/openclaw/;
+proxy_redirect http://172.31.3.214:8081/ https://$host/openclaw/;
 ```
 
 **Effect:**
@@ -106,23 +111,41 @@ VITE_OPENCLAW_BASE_PATH=/openclaw/ npm run build
 
 ### 1. Deploy nginx changes on PROD
 
+**Important:** Nginx loads the file symlinked by `/etc/nginx/sites-enabled/default` (often `/etc/nginx/sites-available/default`), **not** `sites-available/dashboard`. Copying only to `dashboard` does nothing if that file is not enabled.
+
+Use the deploy script (copies to the resolved target):
+
 ```bash
 cd /home/ubuntu/automated-trading-platform
-git pull  # or copy updated nginx/dashboard.conf
-# If OpenClaw runs on same host, ensure proxy_pass uses 127.0.0.1:8080; if on LAB, use 172.31.3.214:8081
-sudo cp nginx/dashboard.conf /etc/nginx/sites-available/dashboard  # or your actual path
-sudo nginx -t
-sudo systemctl reload nginx
+git pull
+./scripts/openclaw/deploy_openclaw_basepath_nginx.sh
+```
+
+Or manually:
+
+```bash
+TARGET=$(readlink -f /etc/nginx/sites-enabled/default)
+sudo cp nginx/dashboard.conf "$TARGET"
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ### 2. Check server-side redirects
 
+`/openclaw/` uses **Basic Auth**. `curl` without `-u` returns **401** and **no `Location`** — that is normal; nginx never proxies to OpenClaw.
+
 ```bash
-# Follow redirects, check final URL
-curl -sS -I -L -u openclaw:PASSWORD https://dashboard.hilovivo.com/openclaw/ 2>/dev/null | grep -E "HTTP|ocation"
+# Replace USER:PASS with your .htpasswd_openclaw credentials
+curl -sS -I -u USER:PASS https://dashboard.hilovivo.com/openclaw/ | grep -i location
 ```
 
-- Final URL should stay under `/openclaw/`, not `/containers` at root.
+- **Good:** `Location: /openclaw/containers` (or `/openclaw/containers/`)
+- **Bad:** `Location: /containers` (proxy_redirect not active or wrong nginx file — see deploy script `readlink -f sites-enabled/default`)
+
+Optional follow chain:
+
+```bash
+curl -sS -I -L -u USER:PASS https://dashboard.hilovivo.com/openclaw/ 2>/dev/null | grep -E "HTTP|ocation"
+```
 
 ### 3. Manual browser checks
 
@@ -147,3 +170,42 @@ curl -sS -I -L -u openclaw:PASSWORD https://dashboard.hilovivo.com/openclaw/ 2>/
 | OpenClaw basePath doc | `docs/openclaw/OPENCLAW_FRONTEND_WEBSOCKET_AND_BASEPATH.md` |
 | Reference frontend | `docs/openclaw/reference-frontend/` |
 | OPENCLAW_CONTROL_UI_BASE_PATH | `docker-compose.openclaw.yml` (backend env, not frontend build) |
+
+---
+
+## Continue checklist (copy-paste)
+
+1. **Push latest ATP changes** (at minimum these paths if you do not want one giant commit):
+
+   ```bash
+   git add nginx/dashboard.conf scripts/openclaw/deploy_openclaw_basepath_nginx.sh scripts/openclaw/openclaw_nginx_block.txt docs/runbooks/OPENCLAW_BASEPATH_FIX.md
+   git commit -m "OpenClaw nginx: deploy to sites-enabled target, proxy_redirect, Basic Auth curl note"
+   git push
+   ```
+
+2. **Deploy on dashboard host** (one line; no comment lines — zsh can mangle pasted `#` blocks):
+
+   ```bash
+   ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/automated-trading-platform && git pull && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
+   ```
+
+3. **Verify redirect** (must use Basic Auth):
+
+   ```bash
+   curl -sS -I -u 'openclaw:YOUR_PASSWORD' https://dashboard.hilovivo.com/openclaw/ | grep -i location
+   ```
+
+4. **Confirm nginx loaded `proxy_redirect`** (on server):
+
+   ```bash
+   sudo nginx -T 2>/dev/null | grep -A2 'location \^~ /openclaw/' | head -20
+   sudo nginx -T 2>/dev/null | grep proxy_redirect
+   ```
+
+5. **Optional shell alias for LAB** (on your Mac, `~/.zshrc` — replace host):
+
+   ```bash
+   alias lab='ssh ubuntu@YOUR_LAB_HOST_OR_IP'
+   ```
+
+6. **Still broken in-browser after nginx is correct?** Rebuild OpenClaw image with `basePath` (see **Fix Required in OpenClaw Repo** above); nginx cannot fix client-side `navigate('/containers')`.
