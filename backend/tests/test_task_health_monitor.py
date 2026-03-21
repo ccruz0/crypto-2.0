@@ -133,7 +133,7 @@ class TestHandleStuckTask:
         t = _task(task_id="cooldown-1", status="testing", last_edited_time=old)
         alerts = []
 
-        def capture_alert(task, minutes_stuck):
+        def capture_alert(task, minutes_stuck, **kwargs):
             alerts.append((task.get("id"), minutes_stuck))
 
         with patch("app.services.notion_tasks.update_notion_task_status"):

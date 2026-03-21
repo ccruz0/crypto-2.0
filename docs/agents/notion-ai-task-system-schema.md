@@ -48,7 +48,7 @@ When **Status** is a Select, these values are used by the backend:
 - `in-progress`, `ready-for-investigation`, `investigation-complete`
 - `ready-for-patch`, `patching`, `testing`
 - `awaiting-deploy-approval`, `deploying`
-- `done`, `blocked`
+- `done`, `blocked`, `waiting-on-subtasks` (parent tasks decomposed into children)
 - Legacy: `Planned`, `Deployed`, `Monitoring`, etc. (backend accepts both cases)
 
 If Status is **Rich text**, the backend writes the same values as text.

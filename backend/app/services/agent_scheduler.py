@@ -215,6 +215,34 @@ def run_agent_scheduler_cycle(
     except Exception as e:
         logger.warning("agent_scheduler: check_for_stuck_tasks failed (non-fatal) %s", e)
 
+    # Parent aggregation: resume parents when all children complete
+    try:
+        from app.services.task_health_monitor import check_parent_aggregation
+        resumed = check_parent_aggregation()
+        if resumed:
+            logger.info("agent_scheduler: check_parent_aggregation resumed=%d", resumed)
+    except Exception as e:
+        logger.warning("agent_scheduler: check_parent_aggregation failed (non-fatal) %s", e)
+
+    # Needs Revision: process before main intake so stuck tasks converge to resolution
+    requeued_task_id: str | None = None
+    try:
+        from app.services.needs_revision_processor import run_needs_revision_cycle
+        nr_results = run_needs_revision_cycle(max_tasks=1)
+        if nr_results:
+            r0 = nr_results[0]
+            logger.info(
+                "agent_scheduler: needs_revision_cycle action=%s task_id=%s ok=%s",
+                r0.get("action"), (r0.get("task_id") or "")[:12], r0.get("ok"),
+            )
+            # If we requeued a task, prioritize it for this cycle
+            if r0.get("action") == "requeued" and r0.get("ok"):
+                requeued_task_id = r0.get("task_id")
+                if requeued_task_id:
+                    _log_event("scheduler_needs_revision_requeued", task_id=requeued_task_id, details=r0)
+    except Exception as e:
+        logger.warning("agent_scheduler: needs_revision_cycle failed (non-fatal) %s", e)
+
     try:
         from app.services.agent_task_executor import prepare_task_with_approval_check
     except Exception as e:
@@ -229,9 +257,11 @@ def run_agent_scheduler_cycle(
 
     prepared_bundle = None
     last_error = None
+    # Prefer explicit task_id when provided; otherwise use requeued needs-revision task
+    effective_task_id = task_id if (task_id or "").strip() else requeued_task_id
     for attempt in range(2):  # initial + one retry after repair
         try:
-            prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=task_id)
+            prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=effective_task_id)
             break
         except Exception as e:
             last_error = e
@@ -271,39 +301,8 @@ def run_agent_scheduler_cycle(
     task_id = _task_id_from_bundle(prepared_bundle)
     task_title = _task_title_from_bundle(prepared_bundle)
 
-    # Execution gate: skip low-value, low-priority tasks (unless Bug, production, or priority > 60)
-    try:
-        from app.services.task_compiler import (
-            compute_task_value,
-            _value_gate_safety_pass,
-            VALUE_EXECUTION_MIN,
-        )
-        prepared_task = (prepared_bundle or {}).get("prepared_task") or {}
-        task_dict = prepared_task.get("task") or {}
-        priority = int(task_dict.get("priority_score") or 0)
-        value = compute_task_value(task_dict, "")
-        if not _value_gate_safety_pass(task_dict, priority) and priority < VALUE_EXECUTION_MIN and value < VALUE_EXECUTION_MIN:
-            _log_event(
-                "task_execution_skipped_low_value",
-                task_id=task_id,
-                task_title=task_title,
-                details={"priority": priority, "value": value},
-            )
-            logger.info(
-                "agent_scheduler: task skipped (low value) task_id=%s priority=%d value=%d",
-                task_id[:12] if task_id else "?",
-                priority,
-                value,
-            )
-            return {
-                "ok": True,
-                "action": "skipped",
-                "task_id": task_id,
-                "task_title": task_title,
-                "reason": "low value and low priority",
-            }
-    except Exception as e:
-        logger.warning("agent_scheduler: execution gate check failed (non-fatal) %s", e)
+    # No execution gate: user decides what matters. System prioritizes and schedules; never skips.
+    # Low-priority tasks (backlog) are picked when higher-priority work is done.
 
     if is_task_already_in_flight(task_id):
         _log_event("scheduler_task_skipped", task_id=task_id, task_title=task_title, details={"reason": "already in flight or completed"})
@@ -320,14 +319,12 @@ def run_agent_scheduler_cycle(
     callback_selection = (prepared_bundle.get("callback_selection") or {})
     manual_only = bool(callback_selection.get("manual_only"))
 
-    # Extended lifecycle (manual_only): skip legacy pre-execution approval.
-    # The first human approval comes after investigation completes via
-    # send_investigation_complete_approval; the second before deploy via
-    # send_patch_deploy_approval. This reduces approval fatigue.
+    # Extended lifecycle (manual_only) and all approval_required: skip intake approval.
+    # Approval is triggered ONLY when task reaches ready-for-patch (single trigger point).
     if manual_only and approval_required:
         logger.info(
             "agent_scheduler: manual_only task — running execution directly "
-            "(first approval at investigation-complete) task_id=%s",
+            "(approval only at ready-for-patch) task_id=%s",
             task_id,
         )
         try:
@@ -348,7 +345,7 @@ def run_agent_scheduler_cycle(
                 "task_id": task_id,
                 "task_title": task_title,
                 "execution_result": result.get("execution_result"),
-                "reason": "manual_only: first approval at investigation-complete",
+                "reason": "manual_only: approval only at ready-for-patch",
             }
         except Exception as e:
             logger.exception("agent_scheduler: execute_prepared_task_if_approved failed (manual_only)")
@@ -363,49 +360,42 @@ def run_agent_scheduler_cycle(
             }
 
     if approval_required:
-        # Quiet mode: only deploy and critical go to Telegram; auto-proceed without sending approval request
+        # Approval is triggered ONLY when task reaches ready-for-patch (single trigger point).
+        # Do NOT send approval at intake; run execution directly.
+        logger.info(
+            "agent_scheduler: approval_required — running execution directly "
+            "(approval_skipped_reason=not_ready_for_patch) task_id=%s",
+            task_id,
+        )
         try:
-            from app.services.agent_telegram_policy import is_quiet_mode
-            if is_quiet_mode():
-                from app.services.agent_task_executor import execute_prepared_task_if_approved
-                result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
-                _log_event(
-                    "scheduler_auto_executed_quiet",
-                    task_id=task_id,
-                    task_title=task_title,
-                    details={"execution_result_success": result.get("execution_result", {}).get("success")},
-                )
-                return {
-                    "ok": True,
-                    "action": "auto_executed_quiet",
-                    "task_id": task_id,
-                    "task_title": task_title,
-                    "execution_result": result.get("execution_result"),
-                    "reason": "quiet mode: no approval request sent",
-                }
-        except Exception as e:
-            logger.warning("agent_scheduler: quiet-mode auto-execute failed (non-fatal) %s", e)
-        try:
-            from app.services.agent_telegram_approval import send_task_approval_request
-            send_result = send_task_approval_request(prepared_bundle, chat_id=None)
-            _log_event("scheduler_approval_requested", task_id=task_id, task_title=task_title, details={"sent": send_result.get("sent"), "message_id": send_result.get("message_id")})
+            from app.services.agent_task_executor import execute_prepared_task_if_approved
+            result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+            _log_event(
+                "scheduler_execution_started",
+                task_id=task_id,
+                task_title=task_title,
+                details={
+                    "execution_result_success": result.get("execution_result", {}).get("success"),
+                    "approval_skipped_reason": "not_ready_for_patch",
+                },
+            )
             return {
                 "ok": True,
-                "action": "approval_requested",
+                "action": "execution_started",
                 "task_id": task_id,
                 "task_title": task_title,
-                "sent": send_result.get("sent"),
-                "message_id": send_result.get("message_id"),
+                "execution_result": result.get("execution_result"),
+                "reason": "approval only at ready-for-patch",
             }
         except Exception as e:
-            logger.exception("agent_scheduler: send_task_approval_request failed")
-            _log_event("scheduler_cycle_failed", task_id=task_id, task_title=task_title, details={"reason": "send approval failed", "error": str(e)})
+            logger.exception("agent_scheduler: execute_prepared_task_if_approved failed")
+            _log_event("scheduler_cycle_failed", task_id=task_id, task_title=task_title, details={"reason": "execution failed", "error": str(e)})
             return {
                 "ok": False,
-                "action": "approval_requested",
+                "action": "execution_started",
                 "task_id": task_id,
                 "task_title": task_title,
-                "reason": "send approval failed",
+                "reason": "execution failed",
                 "error": str(e),
             }
 

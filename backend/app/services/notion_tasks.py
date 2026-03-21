@@ -56,6 +56,8 @@ TASK_STATUS_DONE = "done"
 TASK_STATUS_REJECTED = "rejected"
 TASK_STATUS_BLOCKED = "blocked"
 TASK_STATUS_NEEDS_REVISION = "needs-revision"
+TASK_STATUS_WAITING_ON_SUBTASKS = "waiting-on-subtasks"
+TASK_STATUS_SPLIT_INTO_SUBTASKS = "split-into-subtasks"
 
 # Legacy statuses kept for backward compatibility
 TASK_STATUS_PLANNED = "planned"
@@ -84,6 +86,8 @@ ALLOWED_TASK_STATUSES = (
     TASK_STATUS_REJECTED,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_NEEDS_REVISION,
+    TASK_STATUS_WAITING_ON_SUBTASKS,
+    TASK_STATUS_SPLIT_INTO_SUBTASKS,
     # Legacy
     TASK_STATUS_PLANNED,
     TASK_STATUS_IN_PROGRESS,
@@ -150,6 +154,8 @@ NOTION_STATUS_INTERNAL_TO_DISPLAY: dict[str, str] = {
     "blocked": "Blocked",
     "rejected": "Rejected",
     "needs-revision": "Needs Revision",
+    "waiting-on-subtasks": "Waiting on Subtasks",
+    "split-into-subtasks": "Split into Subtasks",
     "planned": "Planned",
     "in-progress": "In Progress",
     "deployed": "Deployed",

@@ -37,7 +37,9 @@ STUCK_CHECK_STATUSES = list(STUCK_THRESHOLD_MINUTES.keys())
 # Alert cooldown: do not send another "stuck" alert for the same task within this many minutes
 ALERT_COOLDOWN_MINUTES = 30
 
-# Max recovery attempts per task; after this we move to Blocked (not Needs Revision)
+# Max automatic re-investigate attempts before decompose or block
+MAX_AUTO_REINVESTIGATE = 2
+# Max recovery attempts (legacy name); after this we move to Blocked
 MAX_RETRIES = 3
 
 # In-memory state (per process). Key: task_id, value: timestamp (alert) or retry count
@@ -46,6 +48,10 @@ _retry_count: dict[str, int] = {}
 # When user clicks Re-investigate but Notion write fails: suppress stuck-alert spam
 _reinvestigate_failed_at: dict[str, float] = {}
 REINVESTIGATE_FAILED_SUPPRESS_MINUTES = 90
+# Parents already decomposed this run (avoid duplicate decomposition)
+_decomposed_parents: set[str] = set()
+# Parent -> child task ids (for aggregation when children complete)
+_parent_child_map: dict[str, list[str]] = {}
 
 
 def record_reinvestigate_failed(task_id: str) -> None:
@@ -120,9 +126,9 @@ def _minutes_stuck(task: dict[str, Any], now: datetime | None = None) -> float:
     return (now - ts).total_seconds() / 60.0
 
 
-def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float) -> None:
+def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float, *, retry_attempt: int = 1) -> None:
     """Send to Claw (task-system). Stuck task alert. Suppressed in quiet mode (INFO/IMPORTANT).
-    Includes Re-investigate button when task is in investigation phase."""
+    Includes retry attempt count. Re-investigate button when in investigation phase."""
     try:
         from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_IMPORTANT
         if not should_send_agent_telegram(AGENT_MSG_IMPORTANT):
@@ -140,7 +146,8 @@ def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float) -> None:
             "Task appears stuck.\n\n"
             f"Title: {title}\n"
             f"Status: {status}\n"
-            f"Time stuck: {minutes_stuck:.0f} min\n\n"
+            f"Time stuck: {minutes_stuck:.0f} min\n"
+            f"Retry attempt: {retry_attempt}/{MAX_AUTO_REINVESTIGATE}\n\n"
             "Attempting automatic recovery."
         )
         reply_markup = None
@@ -162,6 +169,32 @@ def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float) -> None:
         )
     except Exception as e:
         logger.debug("task_health_monitor: claw_telegram import/send failed %s", e)
+
+
+def _send_decomposition_alert(task: dict[str, Any], *, child_count: int) -> None:
+    """Send to Claw: task was decomposed into subtasks."""
+    try:
+        from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_IMPORTANT
+        if not should_send_agent_telegram(AGENT_MSG_IMPORTANT):
+            return
+    except Exception:
+        pass
+    try:
+        from app.services.claw_telegram import send_claw_message
+        from app.services.agent_telegram_approval import PREFIX_VIEW_REPORT
+        task_id = (task.get("id") or "").strip()
+        title = (task.get("task") or "(untitled)")[:80]
+        message = (
+            "Task decomposed into subtasks.\n\n"
+            f"Title: {title}\n"
+            f"Parent task ID: {task_id[:12]}…\n"
+            f"Created {child_count} child tasks.\n\n"
+            "Scheduler will pick up subtasks. Parent will resume when all complete."
+        )
+        reply_markup = {"inline_keyboard": [[{"text": "📋 View Report", "callback_data": f"{PREFIX_VIEW_REPORT}{task_id}"}]]} if task_id else None
+        send_claw_message(message, message_type="TASK", source_module="task_health_monitor", reply_markup=reply_markup)
+    except Exception as e:
+        logger.debug("task_health_monitor: decomposition alert failed %s", e)
 
 
 def _send_manual_attention_alert(task: dict[str, Any], *, blocked_reason: str = "") -> None:
@@ -232,11 +265,44 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
     status = (task.get("status") or "").strip().lower()
 
     retries = _retry_count.get(task_id, 0)
-    if retries >= MAX_RETRIES:
-        # Move to Blocked (not Needs Revision) — operational failure
+    already_decomposed = task_id in _decomposed_parents
+
+    # At retry limit: decompose if eligible, else block
+    if retries >= MAX_AUTO_REINVESTIGATE:
+        try:
+            from app.services.task_decomposition import (
+                should_decompose_task,
+                execute_decomposition,
+            )
+            if should_decompose_task(task, retries, already_decomposed=already_decomposed):
+                result = execute_decomposition(task)
+                if result.get("ok") and result.get("child_ids"):
+                    _decomposed_parents.add(task_id)
+                    _parent_child_map[task_id] = list(result.get("child_ids", []))
+                    _log_event(
+                        "task_decomposed",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={
+                            "parent_id": task_id,
+                            "child_count": result.get("child_count", 0),
+                            "child_ids": result.get("child_ids", []),
+                            "reason": "retry_limit_reached",
+                        },
+                    )
+                    if result.get("child_count"):
+                        _send_decomposition_alert(task, child_count=result["child_count"])
+                    _retry_count.pop(task_id, None)
+                    _last_alert_sent.pop(task_id, None)
+                    return
+        except Exception as e:
+            logger.warning("task_health_monitor: decomposition failed task_id=%s %s", task_id[:12], e)
+            _log_event("task_decomposition_failed", task_id=task_id, task_title=task_title, details={"error": str(e)[:200]})
+
+        # Decompose failed or not eligible — move to Blocked
         blocker_reason = (
-            f"Task stuck after {MAX_RETRIES} automatic retries (operational timeout). "
-            "No user revision required. Re-queue manually when ready."
+            f"Task stuck after {MAX_AUTO_REINVESTIGATE} automatic retries. "
+            "Decomposition not applicable or failed. Re-queue manually when ready."
         )
         try:
             from app.services.notion_tasks import (
@@ -264,7 +330,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             details={
                 "from_status": status,
                 "to_status": "blocked",
-                "reason": "operational_timeout",
+                "reason": "retry_limit_or_decompose_failed",
                 "user_action_required": False,
                 "retryable": True,
             },
@@ -317,7 +383,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         except Exception as e:
             logger.warning("task_health_monitor: investigation recovery failed task_id=%s %s", task_id[:12], e)
         if send_alert:
-            _send_stuck_alert(task, minutes_stuck)
+            _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
         _log_event(
@@ -356,7 +422,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         except Exception:
             pass
         if send_alert:
-            _send_stuck_alert(task, minutes_stuck)
+            _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
 
@@ -372,10 +438,65 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         except Exception as e:
             logger.warning("task_health_monitor: testing comment failed task_id=%s %s", task_id[:12], e)
         if send_alert:
-            _send_stuck_alert(task, minutes_stuck)
+            _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
         _log_event("stuck_task_recovered", task_id=task_id, task_title=task_title, details={"action": "comment_only_testing"})
+
+
+TERMINAL_OR_DONE_STATUSES = ("done", "deployed", "rejected", "blocked", "investigation-complete")
+
+
+def check_parent_aggregation() -> int:
+    """
+    For parents in waiting-on-subtasks, check if all children are done/blocked.
+    If so, move parent to ready-for-investigation for final aggregation.
+    Returns number of parents resumed.
+    """
+    count = 0
+    for parent_id, child_ids in list(_parent_child_map.items()):
+        if not child_ids:
+            continue
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+            from app.services.notion_tasks import (
+                TASK_STATUS_READY_FOR_INVESTIGATION,
+                update_notion_task_status,
+            )
+            parent = get_notion_task_by_id(parent_id)
+            if not parent:
+                continue
+            if (parent.get("status") or "").strip().lower() != "waiting-on-subtasks":
+                continue
+            all_terminal = True
+            for cid in child_ids:
+                child = get_notion_task_by_id(cid)
+                if not child:
+                    all_terminal = False
+                    break
+                cs = (child.get("status") or "").strip().lower()
+                if cs not in TERMINAL_OR_DONE_STATUSES:
+                    all_terminal = False
+                    break
+            if all_terminal:
+                ok = update_notion_task_status(
+                    parent_id,
+                    TASK_STATUS_READY_FOR_INVESTIGATION,
+                    append_comment="All subtasks complete. Resuming parent for final aggregation.",
+                )
+                if ok:
+                    _parent_child_map.pop(parent_id, None)
+                    _decomposed_parents.discard(parent_id)
+                    _log_event(
+                        "parent_aggregation_resumed",
+                        task_id=parent_id,
+                        task_title=(parent.get("task") or "")[:200],
+                        details={"child_count": len(child_ids), "reason": "all_children_terminal"},
+                    )
+                    count += 1
+        except Exception as e:
+            logger.debug("check_parent_aggregation failed parent_id=%s %s", parent_id[:12], e)
+    return count
 
 
 def check_for_stuck_tasks() -> int:
