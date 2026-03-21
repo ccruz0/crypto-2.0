@@ -265,3 +265,27 @@ curl -sS -I --max-time 5 http://127.0.0.1:8080/   || echo "local 8080 unreachabl
 1. Start OpenClaw on the LAB (or bind on PROD `127.0.0.1:8080` if that is your design).
 2. **Security group:** allow TCP from dashboard instance (or its subnet) to OpenClaw host on **8081** (or **8080**).
 3. Edit `proxy_pass` in `nginx/dashboard.conf` to the real IP and port, then redeploy nginx (`./scripts/openclaw/deploy_openclaw_basepath_nginx.sh`).
+
+---
+
+## Continue: automated upstream check (dashboard EC2)
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+git pull
+./scripts/openclaw/diagnose_openclaw_prod.sh
+```
+
+Read section **3)** in the output: whichever `curl -I http://HOST:PORT/` returns **200 / 301 / 302** is a valid `proxy_pass` target. Align **all three** OpenClaw `proxy_pass` lines in `nginx/dashboard.conf` (`/openclaw/`, `/openclaw/ws`, `/openclaw/assets/`) to that host:port, commit/push if you use repo as source, then:
+
+```bash
+./scripts/openclaw/deploy_openclaw_basepath_nginx.sh
+```
+
+**Quick port fix (LAB listens on 8080 but nginx used 8081):**
+
+```bash
+LAB_PRIVATE_IP=172.31.x.x OPENCLAW_PORT=8080 sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh
+```
+
+(Then reconcile `nginx/dashboard.conf` in git so the next deploy does not revert.)
