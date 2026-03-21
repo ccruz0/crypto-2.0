@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Fix OpenClaw 503/504 without SSH from your Mac (uses SSM Run Command).
-# Use when: repair_openclaw_503.sh / fix_504_via_eice.sh fail with "Permission denied (publickey)"
-# — SG often blocks :22 from home; Instance Connect can still fail; SSM uses the agent on the instance.
+# Fix OpenClaw 503/504 using SSM Run Command.
 #
-# Requires: AWS CLI, ssm:SendCommand on these instances, SSM agent Online.
+# Run from: your Mac or any host with AWS CLI + IAM (ssm:SendCommand). NOT required to SSH to EC2.
+# Do NOT use Mac paths on Linux: repo on the server is /home/ubuntu/automated-trading-platform
+#
+# If you are already SSH'd ON the dashboard instance, skip this file — use instead:
+#   cd /home/ubuntu/automated-trading-platform && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
+#
+# Use when: repair_openclaw_503.sh fails with "Permission denied (publickey)" from home.
+#
+# Requires: AWS CLI, ssm:SendCommand, SSM agent Online on target instances.
 #
 # Env (optional):
-#   ATP_INSTANCE_ID / DASHBOARD_INSTANCE_ID  (default i-087953603011543c5)
+#   ATP_INSTANCE_ID / DASHBOARD_INSTANCE_ID  (default may be stale — set to real dashboard i-...)
 #   OPENCLAW_LAB_INSTANCE_ID / LAB_INSTANCE_ID (default i-0d82c172235770a0d)
 #   AWS_REGION (default ap-southeast-1)
 #   ATP_REPO_PATH (default /home/ubuntu/automated-trading-platform)
@@ -49,15 +55,27 @@ wait_ssm() {
     --output text 2>/dev/null || true
 }
 
-echo "=== OpenClaw repair via SSM (no laptop SSH) ==="
+echo "=== OpenClaw repair via SSM ==="
 echo "Dashboard: $DASHBOARD_INSTANCE_ID  LAB: $LAB_INSTANCE_ID  region: $AWS_REGION"
 echo ""
+
+THIS_IID=""
+if curl -sS --max-time 1 -o /dev/null http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null; then
+  THIS_IID=$(curl -sS --max-time 2 http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || true)
+  echo "NOTE: This shell appears to be ON EC2 (instance $THIS_IID). Fixing nginx here? Use repair_openclaw_503_on_dashboard.sh instead of SSM."
+  echo ""
+fi
 
 for id in "$DASHBOARD_INSTANCE_ID" "$LAB_INSTANCE_ID"; do
   st=$(check_ssm "$id")
   echo "SSM PingStatus $id: $st"
   if [[ "$st" != "Online" ]]; then
-    echo "ERROR: SSM not Online for $id. Fix agent/IAM/endpoint (see docs/aws/RUNBOOK_SSM_PROD_CONNECTION_LOST.md)."
+    echo "ERROR: SSM not Online for $id."
+    echo "  • Wrong instance ID? EC2 console → Instances → copy Id. Then:"
+    echo "      DASHBOARD_INSTANCE_ID=i-xxxxxxxx LAB_INSTANCE_ID=i-yyyyyyyy $0"
+    echo "  • Or fix SSM agent / IAM / VPC endpoints: docs/aws/RUNBOOK_SSM_PROD_CONNECTION_LOST.md"
+    echo "  • If you are logged into the dashboard server now, run locally (no SSM):"
+    echo "      cd /home/ubuntu/automated-trading-platform && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh"
     exit 1
   fi
 done

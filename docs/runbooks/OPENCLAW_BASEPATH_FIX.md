@@ -288,14 +288,22 @@ cd /path/to/automated-trading-platform
 
 Same as `fix_504_via_eice.sh`: pulls latest on dashboard, runs **`deploy_openclaw_basepath_nginx.sh`**, fixes `proxy_pass`, reloads nginx, then tries to start OpenClaw on the LAB over SSH from the dashboard.
 
-**If you see `Permission denied (publickey)`** (Instance Connect pushed a key but port 22 from home is blocked or SSH still fails), **do not rely on laptop SSH**. Use SSM instead:
+**If you see `Permission denied (publickey)`** (Instance Connect pushed a key but port 22 from home is blocked or SSH still fails), **do not rely on laptop SSH**. Use SSM instead **from your Mac** (AWS CLI):
 
 ```bash
 cd /path/to/automated-trading-platform
 ./scripts/openclaw/repair_openclaw_503_via_ssm.sh
 ```
 
-Requires SSM agent **Online** on dashboard + LAB and IAM permission for `ssm:SendCommand`.
+Requires SSM agent **Online** on dashboard + LAB and IAM permission for `ssm:SendCommand`. If SSM says `NotFound` / not Online, the default `i-0879…` dashboard id may be wrong — set `DASHBOARD_INSTANCE_ID` and `LAB_INSTANCE_ID` from the EC2 console.
+
+**If you are already SSH’d on the dashboard EC2** (not your Mac), do **not** use `/Users/...` paths and you do **not** need SSM to fix nginx on this host:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+git pull origin main
+bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
+```
 
 Optional env: `ATP_INSTANCE_ID`, `OPENCLAW_LAB_INSTANCE_ID`, `LAB_PRIVATE_IP`, `OPENCLAW_PORT`, `AWS_REGION`.
 
