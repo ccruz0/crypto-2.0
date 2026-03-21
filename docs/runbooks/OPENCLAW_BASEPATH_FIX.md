@@ -113,7 +113,7 @@ VITE_OPENCLAW_BASE_PATH=/openclaw/ npm run build
 
 **Important:** Nginx loads the file symlinked by `/etc/nginx/sites-enabled/default` (often `/etc/nginx/sites-available/default`), **not** `sites-available/dashboard`. Copying only to `dashboard` does nothing if that file is not enabled.
 
-Use the deploy script (copies to the resolved target):
+Use the deploy script (copies to the resolved target). It **finds the repo from the script path** (or use `REPO=/path/to/automated-trading-platform` if you moved the script):
 
 ```bash
 cd /home/ubuntu/automated-trading-platform
@@ -159,6 +159,66 @@ curl -sS -I -L -u USER:PASS https://dashboard.hilovivo.com/openclaw/ 2>/dev/null
 - Open `https://dashboard.hilovivo.com/openclaw/`.
 - Navigate via UI.
 - Address bar should stay under `/openclaw/...`, never show `/containers` or `/logs` at root.
+
+---
+
+## Common mistakes (SSH, paths, private IPs)
+
+### `172.31.*` / `10.*` LAB IPs from your Mac → timeout
+
+Addresses like **`172.31.3.214`** are **private VPC IPs**. They are **not** reachable from the public internet. `curl http://172.31.…` from a laptop will usually **hang or time out** — that does **not** prove OpenClaw is down.
+
+**Do this instead:** SSH into an instance **inside the same VPC** (e.g. the **dashboard EC2**), then:
+
+```bash
+curl -sS -I --max-time 5 http://172.31.3.214:8081/
+```
+
+(Adjust IP/port to match `proxy_pass` in `nginx/dashboard.conf`.)
+
+### SSH: `Permission denied (publickey)`
+
+`ssh ubuntu@dashboard.hilovivo.com` only works if your **public key** is in `~ubuntu/.ssh/authorized_keys` on that host (or you use the right key):
+
+```bash
+ssh -i ~/.ssh/your_dashboard_key ubuntu@dashboard.hilovivo.com
+```
+
+If you have no key on file, use **AWS Console → EC2 → Connect**, **Session Manager**, or another jump host that already has access, then fix `authorized_keys`.
+
+### `cp: cannot stat 'nginx/dashboard.conf'`
+
+`nginx/dashboard.conf` is **relative to the repo root**. You must:
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+ls nginx/dashboard.conf
+```
+
+If you run `cp` from `~` or `/tmp`, the file will not be found.
+
+### Copying to `sites-available/dashboard` but nginx uses `default`
+
+On many hosts the **active** site is whatever **`/etc/nginx/sites-enabled/default`** points to (often `sites-available/default`), **not** `sites-available/dashboard`. Copying only to `dashboard` may change a file nginx never loads.
+
+**Prefer:** `./scripts/openclaw/deploy_openclaw_basepath_nginx.sh` or:
+
+```bash
+TARGET=$(readlink -f /etc/nginx/sites-enabled/default)
+sudo cp nginx/dashboard.conf "$TARGET"
+```
+
+### Command typo: `reload nginxcp`
+
+`systemctl reload nginx` and `cp` are **separate** commands. `reload nginxcp` is invalid. Example:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Dashboard host: `127.0.0.1:8080` is often **cAdvisor**, not OpenClaw
+
+With `docker compose --profile aws`, **port 8080** on the dashboard machine is commonly mapped to **cAdvisor**. Do not point OpenClaw `proxy_pass` at `http://127.0.0.1:8080/` on that host unless you intentionally mean metrics UI. Use the **LAB** IP:port (or a dedicated OpenClaw port).
 
 ---
 
@@ -265,6 +325,32 @@ curl -sS -I --max-time 5 http://127.0.0.1:8080/   || echo "local 8080 unreachabl
 1. Start OpenClaw on the LAB (or bind on PROD `127.0.0.1:8080` if that is your design).
 2. **Security group:** allow TCP from dashboard instance (or its subnet) to OpenClaw host on **8081** (or **8080**).
 3. Edit `proxy_pass` in `nginx/dashboard.conf` to the real IP and port, then redeploy nginx (`./scripts/openclaw/deploy_openclaw_basepath_nginx.sh`).
+
+---
+
+## Troubleshooting: `connect() failed (111: Connection refused)` to `127.0.0.1:3000` or `127.0.0.1:8002`
+
+**Meaning:** Nginx on the dashboard host proxies the **main site** and **API** to the ATP Docker stack on **this same machine** (`frontend` → 3000, backend → 8002). **Refused** = nothing is listening — containers stopped, crashed, or never started.
+
+**Not OpenClaw:** Those errors are separate from `/openclaw/` (which uses the LAB IP in `proxy_pass`). Fix the stack first so the dashboard and health checks recover.
+
+**On the dashboard EC2:**
+
+```bash
+cd /home/ubuntu/automated-trading-platform
+git pull
+docker compose --profile aws ps
+docker compose --profile aws up -d
+```
+
+Then verify listeners (expect `3000` and `8002` on `127.0.0.1` or `0.0.0.0`):
+
+```bash
+ss -lntp | grep -E ':3000|:8002' || true
+curl -sS -I --max-time 3 http://127.0.0.1:8002/__ping 2>/dev/null || curl -sS -I --max-time 3 http://127.0.0.1:8002/api/health 2>/dev/null || true
+```
+
+Re-run `./scripts/openclaw/diagnose_openclaw_prod.sh` — sections **3)** (local 3000/8002), **4)** (OpenClaw LAB), and **7)** (`docker compose ps`) should match your expectations after recovery.
 
 ---
 

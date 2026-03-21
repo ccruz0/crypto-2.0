@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Deploy dashboard nginx config to the file nginx actually loads (not sites-available/dashboard).
 # Run on EC2 (PROD) or: ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/automated-trading-platform && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
+#
+# Repo root is detected from this script's path unless you set REPO=...
 set -euo pipefail
 
-REPO="${REPO:-/home/ubuntu/automated-trading-platform}"
-cd "$REPO" || exit 1
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_DEFAULT_REPO="$(cd "$_SCRIPT_DIR/../.." && pwd)"
+REPO="${REPO:-$_DEFAULT_REPO}"
+cd "$REPO" || { echo "ERROR: cannot cd to REPO=$REPO"; exit 1; }
+if [ ! -f "$REPO/nginx/dashboard.conf" ]; then
+  echo "ERROR: nginx/dashboard.conf not found under: $REPO"
+  echo "Fix: cd to your automated-trading-platform clone, or: REPO=/path/to/automated-trading-platform $0"
+  exit 1
+fi
 
 # nginx includes sites-enabled/*; default is usually a symlink to sites-available/default
 if [ ! -L /etc/nginx/sites-enabled/default ] && [ ! -f /etc/nginx/sites-enabled/default ]; then
