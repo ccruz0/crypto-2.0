@@ -288,6 +288,15 @@ cd /path/to/automated-trading-platform
 
 Same as `fix_504_via_eice.sh`: pulls latest on dashboard, runs **`deploy_openclaw_basepath_nginx.sh`**, fixes `proxy_pass`, reloads nginx, then tries to start OpenClaw on the LAB over SSH from the dashboard.
 
+**If you see `Permission denied (publickey)`** (Instance Connect pushed a key but port 22 from home is blocked or SSH still fails), **do not rely on laptop SSH**. Use SSM instead:
+
+```bash
+cd /path/to/automated-trading-platform
+./scripts/openclaw/repair_openclaw_503_via_ssm.sh
+```
+
+Requires SSM agent **Online** on dashboard + LAB and IAM permission for `ssm:SendCommand`.
+
 Optional env: `ATP_INSTANCE_ID`, `OPENCLAW_LAB_INSTANCE_ID`, `LAB_PRIVATE_IP`, `OPENCLAW_PORT`, `AWS_REGION`.
 
 **If that fails:** open **TCP `8080`** (or your `OPENCLAW_PORT`) on the **LAB security group** from the **dashboard instance private IP** `/32` (or VPC CIDR). See **Common mistakes** above for private-IP testing.

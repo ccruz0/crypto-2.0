@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # One entrypoint: repair OpenClaw 503/504 (upstream dead or wrong port) from your Mac.
-# Requires: AWS CLI, permission for EC2 Instance Connect on dashboard + lab instance IDs.
-#
-# Does: git pull on dashboard → deploy nginx from repo → normalize proxy → start OpenClaw on LAB via SSH from dashboard.
+# Tries EC2 Instance Connect + SSH first. If you get "Permission denied (publickey)", use SSM instead (see below).
 #
 # Env (optional, defaults match this repo):
 #   ATP_INSTANCE_ID       Dashboard EC2 (nginx)
@@ -12,4 +10,9 @@
 #
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-exec "$ROOT/fix_504_via_eice.sh" "$@"
+if ! "$ROOT/fix_504_via_eice.sh" "$@"; then
+  echo ""
+  echo "=== SSH failed (common: security group blocks :22 from home, or wrong key). Use SSM (no SSH from Mac): ==="
+  echo "  $ROOT/repair_openclaw_503_via_ssm.sh"
+  exit 1
+fi
