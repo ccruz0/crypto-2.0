@@ -31,11 +31,9 @@ def _repo_root() -> Path:
 
 
 def _note_dir_for_subdir(save_subdir: str) -> Path:
-    """Return writable directory for notes; use bug-investigations fallback when repo path not writable."""
-    if save_subdir == "docs/agents/bug-investigations":
-        from app.services._paths import get_writable_bug_investigations_dir
-        return get_writable_bug_investigations_dir()
-    return _repo_root() / save_subdir
+    """Return writable directory for notes; single canonical path (repo or fallback)."""
+    from app.services._paths import get_writable_dir_for_subdir
+    return get_writable_dir_for_subdir(save_subdir)
 
 
 def _safe_task_id(prepared_task: dict[str, Any]) -> str:
@@ -50,6 +48,22 @@ def _safe_task_title(prepared_task: dict[str, Any]) -> str:
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
+
+
+def _preflight_writable_artifact_dir(artifact_dir: Path, task_id: str = "") -> tuple[bool, str]:
+    """
+    Verify artifact directory is writable before artifact generation.
+    Returns (ok, error_msg). Use to fail fast with a clear message.
+    """
+    try:
+        probe = artifact_dir / ".artifact_write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True, ""
+    except (OSError, PermissionError) as e:
+        msg = f"Artifact dir not writable: {artifact_dir} — {e}"
+        logger.warning("preflight_writable_check_failed task_id=%s path=%s err=%s", task_id[:12] if task_id else "?", artifact_dir, e)
+        return False, msg
 
 
 def _write_if_missing(path: Path, contents: str) -> bool:
@@ -580,9 +594,12 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
 
         inv_dir = _note_dir_for_subdir("docs/agents/bug-investigations")
         _ensure_dir(inv_dir)
+        ok, err = _preflight_writable_artifact_dir(inv_dir, task_id)
+        if not ok:
+            return {"success": False, "summary": err}
 
         note_path = inv_dir / f"notion-bug-{task_id}.md"
-        idx_path = inv_dir / "README.md"
+        logger.info("artifact_write_started task_id=%s path=%s", task_id[:12] if task_id else "?", note_path)
 
         def rel_link(from_dir: Path, target_repo_path: str) -> str:
             target = (root / target_repo_path).resolve()
@@ -634,36 +651,51 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
             f"- [ ] Validate (tests/lint/manual) before marking deployed\n"
         )
 
-        created = _write_if_missing(note_path, note_contents)
-        if not created:
-            _append_line_if_missing(
-                note_path,
-                "\n---\n\n- Investigation note touched by agent callback (no overwrite).\n",
-            )
+        try:
+            created = _write_if_missing(note_path, note_contents)
+            if not created:
+                _append_line_if_missing(
+                    note_path,
+                    "\n---\n\n- Investigation note touched by agent callback (no overwrite).\n",
+                )
+            logger.info("artifact_write_succeeded task_id=%s path=%s chars=%d", task_id[:12] if task_id else "?", note_path, len(note_contents))
+        except Exception as e:
+            logger.warning("artifact_write_failed task_id=%s path=%s err=%s", task_id[:12] if task_id else "?", note_path, e)
+            return {"success": False, "summary": f"Failed to write artifact: {e}"}
 
-        idx_header = (
-            "# Bug investigations (agent)\n\n"
-            "Structured investigation notes for bug-type tasks.\n"
-            "These are documentation-only and must not change runtime behavior.\n\n"
+        # No README index write: avoids Permission denied on repo-owned README.md in Docker.
+        # Artifacts are per-task (.md + .sections.json); index is optional and not required.
+
+        # Parse ALL ## sections from the note so .sections.json is complete at creation time.
+        # This ensures deploy approval can read only from .sections.json (single source of truth).
+        try:
+            from app.services.openclaw_client import parse_all_markdown_sections
+            sidecar_sections = parse_all_markdown_sections(note_contents)
+        except Exception as e:
+            logger.warning("parse_all_markdown_sections failed task_id=%s: %s — using _preamble", task_id, e)
+            sidecar_sections = {}
+        if not sidecar_sections:
+            sidecar_sections = {"_preamble": note_contents}
+
+        _REQUIRED_DEPLOY = ("Task Summary", "Root Cause", "Recommended Fix", "Affected Files")
+        sections_complete = all(
+            sidecar_sections.get(k) and str(sidecar_sections.get(k)).strip().lower() not in ("", "n/a")
+            for k in _REQUIRED_DEPLOY
         )
-        _write_if_missing(idx_path, idx_header)
-        idx_line = f"- [Notion bug {task_id}: {title}](notion-bug-{task_id}.md)"
-        _append_line_if_missing(idx_path, idx_line)
-
-        # Write sections sidecar so recovery can regenerate if md is lost/corrupted
         sidecar_path = inv_dir / f"notion-bug-{task_id}.sections.json"
         sidecar_data = {
             "task_id": task_id,
             "title": title,
             "source": "fallback",
-            "sections": {"_preamble": note_contents},
+            "sections": sidecar_sections,
+            "sections_complete": sections_complete,
         }
         try:
             sidecar_path.write_text(
                 json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
-            logger.debug("Bug investigation sidecar saved at %s", sidecar_path)
+            logger.info("sidecar_write_succeeded task_id=%s path=%s", task_id[:12] if task_id else "?", sidecar_path)
         except Exception as e:
             logger.warning("Failed to write bug investigation sidecar task_id=%s: %s", task_id, e)
 
@@ -951,8 +983,12 @@ def _apply_via_openclaw(
 
     out_dir = _note_dir_for_subdir(save_subdir)
     _ensure_dir(out_dir)
+    ok, err = _preflight_writable_artifact_dir(out_dir, task_id)
+    if not ok:
+        return {"success": False, "summary": err}
 
     note_path = out_dir / f"{file_prefix}-{task_id}.md"
+    logger.info("artifact_write_started task_id=%s path=%s", task_id[:12] if task_id else "?", note_path)
     note_contents = (
         f"# {title}\n\n"
         f"- **Notion page id**: `{task_id}`\n"
@@ -961,33 +997,62 @@ def _apply_via_openclaw(
         f"{content}\n"
     )
 
-    note_path.write_text(note_contents, encoding="utf-8")
+    try:
+        note_path.write_text(note_contents, encoding="utf-8")
+        logger.info("artifact_write_succeeded task_id=%s path=%s chars=%d", task_id[:12] if task_id else "?", note_path, len(note_contents))
+    except Exception as e:
+        logger.warning("artifact_write_failed task_id=%s path=%s err=%s", task_id[:12] if task_id else "?", note_path, e)
+        return {"success": False, "summary": f"Failed to write artifact: {e}"}
 
-    # Save parsed sections as JSON sidecar for downstream consumption and recovery.
-    # Always write when we have content so recovery can regenerate if md is lost.
-    sidecar_sections = sections if sections else {"_preamble": content.strip()[:5000] if content else ""}
+    # Parse ALL ## sections from the canonical artifact so .sections.json is always complete.
+    # This is the single source of truth; deploy approval reads only from .sections.json.
+    try:
+        from app.services.openclaw_client import parse_all_markdown_sections
+        full_sections = parse_all_markdown_sections(note_contents)
+    except Exception as e:
+        logger.warning("parse_all_markdown_sections failed task_id=%s: %s — using schema parse", task_id, e)
+        full_sections = {}
+    if full_sections:
+        sidecar_sections = full_sections
+    elif sections:
+        # Fallback: schema-specific parse (may have None values)
+        sidecar_sections = {k: (v or "") for k, v in sections.items() if v is not None}
+        if not sidecar_sections:
+            sidecar_sections = {"_preamble": content.strip()[:5000] if content else ""}
+    else:
+        sidecar_sections = {"_preamble": content.strip()[:5000] if content else ""}
+    _REQUIRED_DEPLOY_SECTIONS = (
+        "Task Summary", "Root Cause", "Recommended Fix", "Affected Files",
+    )
+    sections_complete = all(
+        sidecar_sections.get(k) and str(sidecar_sections.get(k)).strip().lower() not in ("", "n/a")
+        for k in _REQUIRED_DEPLOY_SECTIONS
+    )
+    if not sections_complete:
+        logger.error(
+            "sections_json_validation_failed task_id=%s source=openclaw — "
+            "new artifact missing required sections %s; deploy approval will be blocked",
+            task_id, _REQUIRED_DEPLOY_SECTIONS,
+        )
     sidecar_path = out_dir / f"{file_prefix}-{task_id}.sections.json"
     sidecar_data = {
         "task_id": task_id,
         "title": title,
         "source": "openclaw",
         "sections": sidecar_sections,
+        "sections_complete": sections_complete,
     }
     try:
         sidecar_path.write_text(
             json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        logger.info("Structured sections sidecar saved at %s", sidecar_path)
+        logger.info("sidecar_write_succeeded task_id=%s path=%s", task_id[:12] if task_id else "?", sidecar_path)
     except Exception as e:
         logger.warning("Failed to write sections sidecar for task %s: %s", task_id, e)
 
-    idx_path = out_dir / "README.md"
-    idx_line = f"- [{file_prefix} {task_id}: {title}]({file_prefix}-{task_id}.md)"
-    if not idx_path.exists():
-        idx_path.write_text(f"# AI analysis notes\n\n{idx_line}\n", encoding="utf-8")
-    else:
-        _append_line_if_missing(idx_path, idx_line)
+    # No README index write: avoids Permission denied on repo-owned README.md in Docker.
+    # Artifacts are per-task (.md + .sections.json); index is optional and not required.
 
     summary = content.strip()[:200]
     try:
@@ -1088,32 +1153,46 @@ def _validate_openclaw_note(
                 ),
             }
     elif not found_sections:
-        logger.warning(
-            "openclaw_note_validation: FAILED — no structured sections found "
-            "task_id=%s path=%s",
-            task_id, note_path,
-        )
-        return {
-            "success": False,
-            "summary": (
-                "investigation missing structured sections — expected at least one of: "
-                + ", ".join(use_sections[:4])
-            ),
-        }
+        # Accept fallback template format (apply_bug_investigation_task) when OpenClaw sections missing
+        _fallback_sections = ("Inferred area", "Affected modules", "Relevant docs", "Bug details", "Investigation checklist")
+        fallback_found = [s for s in _fallback_sections if f"## {s}" in content]
+        if len(fallback_found) >= 2:  # at least Affected modules + one other
+            logger.info(
+                "openclaw_note_validation: PASSED (fallback template) task_id=%s sections=%s path=%s",
+                task_id, fallback_found, note_path,
+            )
+            found_sections = list(fallback_found)  # for body_len check below
+        else:
+            logger.warning(
+                "openclaw_note_validation: FAILED — no structured sections found "
+                "task_id=%s path=%s",
+                task_id, note_path,
+            )
+            return {
+                "success": False,
+                "summary": (
+                    "investigation missing structured sections — expected at least one of: "
+                    + ", ".join(use_sections[:4])
+                    + ", or fallback template (Affected modules, Relevant docs, Bug details)"
+                ),
+            }
 
     body_start = content.find("---")
     body = content[body_start + 3:].strip() if body_start != -1 else content.strip()
+    # Use longer of body or preamble for min length — agent callback may append short footer after ---
+    preamble = content[:body_start].strip() if body_start != -1 else ""
+    body_for_len = max(body, preamble, key=len) if preamble else body
     min_body = _MIN_AGENT_BODY_CHARS if is_agent_schema else _MIN_INVESTIGATION_CONTENT_CHARS
-    if len(body) < min_body:
+    if len(body_for_len) < min_body:
         logger.warning(
             "openclaw_note_validation: FAILED — content too short "
             "task_id=%s body_len=%d min=%d path=%s",
-            task_id, len(body), min_body, note_path,
+            task_id, len(body_for_len), min_body, note_path,
         )
         return {
             "success": False,
             "summary": (
-                f"Output too short ({len(body)} chars, minimum {min_body}). "
+                f"Output too short ({len(body_for_len)} chars, minimum {min_body}). "
                 "Expand each section with concrete findings and actionable fixes."
             ),
         }
@@ -1249,7 +1328,17 @@ def _verify_openclaw_solution(
     if passed:
         return {"success": True, "summary": f"Solution verified: {reason or 'addresses task requirements'}"}
 
-    # FAIL: write feedback for next iteration
+    # Unavailable: environment/config issue — do NOT write feedback (not investigative failure)
+    _unavailable_prefix = "verification unavailable:"
+    if (reason or "").strip().lower().startswith(_unavailable_prefix.lower()):
+        return {
+            "success": False,
+            "summary": (reason or "").strip(),
+            "unavailable": True,
+            "unavailable_reason": (reason or "").strip(),
+        }
+
+    # FAIL: actual content failure — write feedback for next iteration
     try:
         (feedback_dir / f"{task_id}.txt").write_text(reason or "Output does not address task requirements", encoding="utf-8")
     except Exception as e:

@@ -84,3 +84,30 @@ def get_writable_bug_investigations_dir() -> Path:
         fallback.mkdir(parents=True, exist_ok=True)
         _bug_investigations_dir = fallback
         return _bug_investigations_dir
+
+
+def get_writable_dir_for_subdir(save_subdir: str) -> Path:
+    """
+    Return a writable directory for artifact subdirs. Single canonical path resolution.
+    - bug-investigations: uses get_writable_bug_investigations_dir (repo or fallback)
+    - telegram-alerts, execution-state, etc.: try repo first; fallback to AGENT_ARTIFACTS_DIR/subdir
+    """
+    if save_subdir == "docs/agents/bug-investigations":
+        return get_writable_bug_investigations_dir()
+    root = workspace_root()
+    candidate = root / save_subdir
+    base_fallback = Path(os.environ.get("AGENT_ARTIFACTS_DIR", "/tmp/agent-artifacts"))
+    fallback = base_fallback / Path(save_subdir).name
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return candidate
+    except (OSError, PermissionError) as e:
+        logger.warning(
+            "artifacts: repo path %s not writable (%s), using fallback %s",
+            candidate, e, fallback,
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback

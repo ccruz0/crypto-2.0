@@ -167,7 +167,7 @@ An automated crypto trading platform that:
 - **Entry point:** `TelegramNotifier.send_message()` in `backend/app/services/telegram_notifier.py`
 - **Guard:** Only sends when `origin="AWS"` (or runtime ENV=aws). Local/test blocks sends.
 - **Channels:**
-  - `chat_destination="trading"` → TELEGRAM_CHAT_ID_TRADING (HILOVIVO3.0)
+  - `chat_destination="trading"` → TELEGRAM_CHAT_ID_TRADING (ATP Alerts)
   - `chat_destination="ops"` → TELEGRAM_CHAT_ID_OPS (AWS_alerts)
 
 ### Alert types

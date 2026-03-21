@@ -13,7 +13,7 @@
 
 2. **Channel posts not handled** — `handle_telegram_update()` only read `message` and `edited_message`. It never checked `channel_post` or `edited_channel_post`.
 
-3. **Auth mismatch** — Command authorization used `TELEGRAM_CHAT_ID` and `TELEGRAM_AUTH_USER_ID`. Alerts use `TELEGRAM_CHAT_ID_TRADING` (HILOVIVO3.0). HILOVIVO3.0 was not in the command auth list, so even if updates were received, they would be denied.
+3. **Auth mismatch** — Command authorization used `TELEGRAM_CHAT_ID` and `TELEGRAM_AUTH_USER_ID`. Alerts use `TELEGRAM_CHAT_ID_TRADING` (ATP Alerts). ATP Alerts was not in the command auth list, so even if updates were received, they would be denied.
 
 4. **PENDING_VALUE_INPUTS** — Commands starting with `/` could be consumed by pending value input handlers before reaching command dispatch. Fixed by returning `False` for slash-commands in `_handle_pending_value_message()`.
 
@@ -56,7 +56,7 @@
 
 1. **Intake:** Bot now requests and handles `channel_post` and `edited_channel_post`. Commands posted in HILOVIVO3.0 (a channel) are received.
 
-2. **Auth:** `TELEGRAM_CHAT_ID_TRADING` is added to `AUTHORIZED_USER_IDS` at startup. HILOVIVO3.0 is authorized for commands.
+2. **Auth:** `TELEGRAM_CHAT_ID_TRADING` is added to `AUTHORIZED_USER_IDS` at startup. ATP Alerts is authorized for commands.
 
 3. **Reply:** All command handlers wrapped in try/except; failures send a visible error reply. No silent drops.
 
@@ -65,7 +65,7 @@
 ### Prerequisites for HILOVIVO3.0 commands
 
 - Bot must be **admin** in the channel (required for receiving `channel_post`).
-- `TELEGRAM_CHAT_ID_TRADING` must be set to HILOVIVO3.0's chat ID (e.g. `-1001234567890`).
+- `TELEGRAM_CHAT_ID_TRADING` must be set to ATP Alerts channel ID (e.g. `-1003820753438`).
 - Same bot token used for alerts and commands (no token mismatch).
 
 ---
@@ -118,6 +118,6 @@ Run these tests **in HILOVIVO3.0** after deploy. Capture for each:
 ### If HILOVIVO3.0 still fails after deploy
 
 1. Confirm bot is **admin** in the channel.
-2. Confirm `TELEGRAM_CHAT_ID_TRADING` matches HILOVIVO3.0's chat ID.
+2. Confirm `TELEGRAM_CHAT_ID_TRADING` matches ATP Alerts channel ID.
 3. Check logs for `[TG][DENY]` or missing `[TG][INTAKE]`.
 4. Fallback: Use a **private supergroup** or **direct bot chat** for commands; keep HILOVIVO3.0 for alerts only.

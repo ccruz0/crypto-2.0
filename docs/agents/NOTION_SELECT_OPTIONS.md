@@ -76,6 +76,9 @@ In the database **AI Task System**, add or align these properties with **these e
 - **Test Status** — Text (written by backend).
 - **Deploy Progress** — Number, 0–100 (optional).
 - **Cursor Patch URL** — URL (optional; written by backend).
+- **Revision Count** — Text (written by backend when task enters Needs Revision; tracks retry attempts).
+- **Revision Reason** — Text (written by backend; reason for last revision).
+- **Blocker Reason** — Text (written by backend when task is Blocked after max revision attempts).
 
 Do not create Status options in lowercase or with hyphens (e.g. not "ready-for-patch"); use the human-readable form above (e.g. "Ready for Patch"). Keep all property names exactly as written.
 ```

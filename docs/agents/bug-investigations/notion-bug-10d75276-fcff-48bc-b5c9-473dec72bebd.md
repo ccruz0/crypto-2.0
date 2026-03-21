@@ -1,0 +1,79 @@
+# Bug investigation: RESET: purchase_price becomes null/missing — prove exact failure point (code + data flow)
+
+- **Notion page id**: `10d75276-fcff-48bc-b5c9-473dec72bebd`
+- **Priority**: `Critical`
+- **Project**: `Crypto Trading`
+- **Type**: `Bug`
+
+## Task Summary
+
+The `purchase_price` field on watchlist items becomes null or missing after certain operations, breaking SELL signal logic, TP/SL calculations, and dashboard display. This investigation traces the exact failure point from DB through services to API consumers.
+
+## Root Cause
+
+`purchase_price` can become null via multiple paths:
+
+1. **Payload-driven null**: `routes_dashboard.py` PATCH handler (lines 1606–1620) updates `purchase_price` from payload. If the frontend sends `purchase_price: null`, it is written to DB via `setattr(item, field, new_value)`.
+2. **Never populated**: `purchase_price` is nullable in `WatchlistItem` and `WatchlistMaster`. It is only set when: (a) SL/TP checker creates a new watchlist item from filled BUY order (`sl_tp_checker.py` ~line 769), (b) manual script (`set_xrp_purchase_price.py`), or (c) dashboard PATCH with explicit value.
+3. **Sync gap**: Exchange order fill → watchlist update flow may not consistently write `purchase_price`. The SL/TP checker uses filled BUY order `avg_price` as fallback, but if no BUY order exists and watchlist has no `purchase_price`, it stays null.
+
+## Risk Level
+
+**High** — Affects trading decisions (SELL signals, TP/SL), dashboard display, and alert logic. `last_buy_price` is derived from `purchase_price`; when null, strategies cannot compute correct SELL/TP thresholds.
+
+## Affected Components
+
+- `backend/app/models/watchlist.py` — `purchase_price` column (nullable)
+- `backend/app/models/watchlist_master.py` — `purchase_price` column (nullable)
+- `backend/app/api/routes_dashboard.py` — serialization (line 156), PATCH update (lines 1600, 1979)
+- `backend/app/services/sl_tp_checker.py` — entry price resolution, `purchase_price` write (lines 739–769, 1786–1816)
+- `backend/app/services/signal_monitor.py` — `last_buy_price` from `purchase_price` (line 2090)
+- `backend/app/services/signal_evaluator.py` — `last_buy_price` from `purchase_price` (line 285)
+- `backend/app/api/routes_market.py` — `last_buy_price` from `purchase_price` (lines 1050–1052)
+- `backend/app/api/routes_signals.py` — `last_buy_price` from `purchase_price` (lines 921, 1307)
+
+## Affected Files
+
+- `backend/app/models/watchlist.py`
+- `backend/app/models/watchlist_master.py`
+- `backend/app/api/routes_dashboard.py`
+- `backend/app/services/sl_tp_checker.py`
+- `backend/app/services/signal_monitor.py`
+- `backend/app/services/signal_evaluator.py`
+- `backend/app/api/routes_market.py`
+- `backend/app/api/routes_signals.py`
+
+## Exact Failure Point
+
+**Primary**: `backend/app/api/routes_dashboard.py` lines 1606–1620. The PATCH handler accepts `purchase_price` from the payload and writes it directly. If the frontend sends `null` (e.g. after a reset or when the field is cleared), the DB is updated to null.
+
+**Secondary**: No guaranteed write path from order fill to watchlist. `sl_tp_checker.py` writes `purchase_price` only when creating a new watchlist item or when `entry_price` is resolved from a filled BUY order. If the order sync is delayed or the BUY order is missing, `purchase_price` remains null.
+
+## Data Flow Trace
+
+1. **DB → API**: `_serialize_watchlist_item` returns `item.purchase_price` as-is (line 156). No mutation.
+2. **API → Frontend**: Frontend receives `purchase_price` (or null). If the frontend then PATCHes the item with `purchase_price: null` (e.g. form reset), the backend writes null.
+3. **Services**: `last_buy_price = watchlist_item.purchase_price if watchlist_item.purchase_price and watchlist_item.purchase_price > 0 else None` — when `purchase_price` is null, `last_buy_price` is null, and SELL/TP logic may fail or behave incorrectly.
+4. **Order fill → watchlist**: `sl_tp_checker` resolves `entry_price` from: (1) filled BUY order, (2) `watchlist_item.purchase_price`, (3) `watchlist_item.price`. Only (1) and (3) can populate `purchase_price` on the watchlist when it was null; (2) is a read, not a write.
+
+## Recommended Fix
+
+1. **Guard PATCH**: In `routes_dashboard.py`, do not allow `purchase_price` to be set to null when the item has `order_status != "PENDING"` or when a filled BUY order exists for the symbol. Preserve existing `purchase_price` unless explicitly overwritten with a valid number.
+2. **Order-fill sync**: Ensure exchange order sync or order fill handler explicitly updates `watchlist_item.purchase_price` from the filled BUY order `avg_price` when an order is marked filled.
+3. **Frontend**: Avoid sending `purchase_price: null` on PATCH when the field should retain its value. Only send `purchase_price` when the user explicitly changes it.
+
+## Testing Plan
+
+1. Create a watchlist item with a valid `purchase_price`. PATCH with `purchase_price: null`. Verify current behavior (null is written).
+2. After fix: PATCH with `purchase_price: null` when item has a filled BUY order — verify `purchase_price` is preserved.
+3. Simulate order fill for a symbol with watchlist item — verify `purchase_price` is updated from order `avg_price`.
+4. Run signal evaluation for a symbol with null `purchase_price` — verify `last_buy_price` is null and SELL logic handles it.
+
+## Notes
+
+- The task requires proving the exact failure point. The primary failure point is the PATCH handler accepting and persisting `purchase_price: null`. The secondary gap is the lack of a guaranteed write from order fill to watchlist.
+- `routes_dashboard.py.current` (backup) shows `item.purchase_price = None` at line 635 in a different code path; the main `routes_dashboard.py` uses payload-driven updates.
+
+---
+
+- Investigation note touched by agent callback (no overwrite).

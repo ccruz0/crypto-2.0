@@ -19,7 +19,7 @@
 | DEVELOPMENT | ATP Control | TELEGRAM_ATP_CONTROL_BOT_TOKEN, TELEGRAM_ATP_CONTROL_CHAT_ID |
 | INFRA | AWS Alerts | TELEGRAM_ALERT_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID (or TELEGRAM_CHAT_ID_OPS) |
 | CONTROL | Claw | (responses to user commands; chat_id from update) |
-| TRADING | HiloVivo 3.0 | TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID_TRADING |
+| TRADING | ATP Alerts | TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID_TRADING |
 
 ## Current Routing Map (Post-Fix)
 
@@ -28,7 +28,7 @@
 | Module | Message Type | Category | Bot Used | Chat ID | Status |
 |--------|--------------|----------|----------|---------|--------|
 | **claw_telegram** | TASK, INVESTIGATION, PATCH, ERROR | DEV | ATP Control | TELEGRAM_ATP_CONTROL_CHAT_ID | ✅ Fixed |
-| **telegram_notifier** (chat_destination=trading) | BUY/SELL, orders, SL/TP, reports | TRADING | HiloVivo 3.0 | TELEGRAM_CHAT_ID_TRADING | ✅ Correct |
+| **telegram_notifier** (chat_destination=trading) | BUY/SELL, orders, SL/TP, reports | TRADING | ATP Alerts | TELEGRAM_CHAT_ID_TRADING | ✅ Correct |
 | **telegram_notifier** (chat_destination=ops) | System alerts, stale data, scheduler down | INFRA | AWS Alerts | TELEGRAM_CHAT_ID_OPS | ✅ Correct |
 | **infra/telegram_helper** | EC2/Docker health | INFRA | AWS Alerts | TELEGRAM_ALERT_* or TELEGRAM_CHAT_ID_OPS | ✅ Fixed |
 | **scripts/aws/observability/telegram-alerts** | Prometheus/Alertmanager | INFRA | AWS Alerts | TELEGRAM_ALERT_* | ✅ Correct |
@@ -70,7 +70,7 @@
 
 # Fallback (backward compat): TELEGRAM_CLAW_BOT_TOKEN, TELEGRAM_CLAW_CHAT_ID
 
-# HiloVivo 3.0 - trading: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID_TRADING
+# ATP Alerts - trading: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID_TRADING
 
 # AWS Alerts - infra: TELEGRAM_CHAT_ID_OPS, TELEGRAM_ALERT_BOT_TOKEN, TELEGRAM_ALERT_CHAT_ID
 ```
@@ -109,6 +109,12 @@ Every message logs:
 ## Missing Config Checklist
 
 - [ ] Set TELEGRAM_ATP_CONTROL_BOT_TOKEN and TELEGRAM_ATP_CONTROL_CHAT_ID for task/approval messages
+- [ ] **TELEGRAM_ATP_CONTROL_CHAT_ID must be a channel/group ID, not a bot ID** (see ATP_CONTROL_TELEGRAM_FIX.md)
 - [ ] Set TELEGRAM_ALERT_BOT_TOKEN and TELEGRAM_ALERT_CHAT_ID for infra scripts (or use TELEGRAM_CHAT_ID_OPS)
-- [ ] Ensure TELEGRAM_CHAT_ID_TRADING = HiloVivo 3.0 channel
+- [ ] Ensure TELEGRAM_CHAT_ID_TRADING = ATP Alerts channel (-1003820753438)
 - [ ] Ensure TELEGRAM_CHAT_ID_OPS = AWS Alerts channel
+
+## Validation
+
+Run `python scripts/validate_telegram_routing.py` to send test messages to each configured channel.
+See [TELEGRAM_ROUTING_VALIDATION_REPORT.md](TELEGRAM_ROUTING_VALIDATION_REPORT.md) for full audit.

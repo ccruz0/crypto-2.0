@@ -252,6 +252,9 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
         "test_status": _prop_text("Test Status", "test_status"),
         "deploy_approval": _prop_text("Deploy Approval", "deploy_approval"),
         "final_result": _prop_text("Final Result", "final_result"),
+        "revision_count": _prop_text("Revision Count", "revision_count"),
+        "revision_reason": _prop_text("Revision Reason", "revision_reason"),
+        "blocker_reason": _prop_text("Blocker Reason", "blocker_reason"),
         # Strict execution mode: "normal" (default) or "strict" — blocks ready-for-patch until proof exists
         "execution_mode": _extract_execution_mode_from_props(props),
         # Priority Score: 0–100 number for scheduler ordering (optional property "Priority Score")
@@ -646,8 +649,9 @@ def get_tasks_by_status(
         _FALLBACK_DISPLAY = {
             "planned": "Planned", "backlog": "Backlog", "ready-for-investigation": "Ready for Investigation",
             "investigation-complete": "Investigation Complete", "ready-for-patch": "Ready for Patch",
-            "patching": "Patching", "testing": "Testing", "ready-for-deploy": "Ready for Deploy",
-            "awaiting-deploy-approval": "Awaiting Deploy Approval", "deploying": "Deploying", "done": "Done",
+            "patching": "Patching", "testing": "Testing", "release-candidate-ready": "Release Candidate Ready",
+            "ready-for-deploy": "Ready for Deploy", "awaiting-deploy-approval": "Awaiting Deploy Approval",
+            "deploying": "Deploying", "done": "Done",
         }
         def notion_status_to_display(s: str) -> str:
             return _FALLBACK_DISPLAY.get((s or "").strip().lower(), (s or "").strip())

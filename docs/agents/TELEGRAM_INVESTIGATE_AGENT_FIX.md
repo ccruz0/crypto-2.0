@@ -1,4 +1,4 @@
-# Fix: /investigate and /agent Not Responding in HILOVIVO3.0
+# Fix: /investigate and /agent Not Responding in ATP Alerts
 
 **Date:** 2026-03-15
 
@@ -80,13 +80,13 @@ The backend should:
    - `[TG][CMD] Routing /investigate to agent handler chat_id=... text=/investigate repeated BTC alerts`
    - `telegram_command_received command=investigate chat_id=...`
 
-2. **Send** `/investigate repeated BTC alerts` in HILOVIVO3.0.
+2. **Send** `/investigate repeated BTC alerts` in ATP Alerts.
 
 3. **Verify** you receive at least the acknowledgment within ~30 seconds (poll interval + processing).
 
 ### If Still No Response
 
-- Ensure `TELEGRAM_CHAT_ID` (or `TELEGRAM_AUTH_USER_ID`) includes the HILOVIVO3.0 channel/group ID.
+- Ensure `TELEGRAM_CHAT_ID` (or `TELEGRAM_AUTH_USER_ID`) includes the ATP Alerts channel/group ID.
 - Check backend logs for `[TG][DENY]` (authorization failure).
 - Check for `[TG][ERROR] Failed to send command response` (send failure).
 - Verify OpenClaw is configured (`OPENCLAW_API_URL`, `OPENCLAW_API_TOKEN`).

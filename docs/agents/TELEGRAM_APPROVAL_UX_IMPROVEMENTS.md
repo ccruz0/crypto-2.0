@@ -4,27 +4,25 @@ This document summarizes the changes made to reduce approval fatigue and improve
 
 ## Summary of Changes
 
-### 1. Reduced Approval Prompts
+### 1. Reduced Approval Prompts (Single-Approval Workflow)
 
 **Before:** Extended-lifecycle tasks (bug, strategy-patch, etc.) required **three** human approvals:
 1. Legacy approval at scheduler (before any work)
 2. Investigation-complete approval (after OpenClaw analysis)
 3. Deploy approval (after tests pass)
 
-**After:** Extended-lifecycle tasks require **two** approvals:
-1. **Investigation approval** — after OpenClaw investigation completes
-2. **Deploy approval** — after patch + tests pass, before deployment
+**After:** Extended-lifecycle tasks require **one** approval:
+1. **Release-candidate approval** — only when task reaches `release-candidate-ready` (investigation + patching + validation complete)
 
-The legacy pre-execution approval is skipped for `manual_only` tasks. The scheduler runs execution directly; the first human touchpoint is the investigation-complete message.
+No approvals during investigation, patching, or verification. OpenClaw iterates internally until release-candidate-ready or a real blocker. The legacy pre-execution approval is skipped for `manual_only` tasks.
 
-### 2. Exact Approval Points After Simplification
+### 2. Exact Approval Points (Single-Approval)
 
 | Point | When | Message | Buttons |
 |-------|------|---------|---------|
-| **1. Investigation** | After OpenClaw analysis is saved and validated | `send_investigation_complete_approval` | Approve, Reject, View Report |
-| **2. Deploy** | After patch validation passes, before deploy trigger | `send_patch_deploy_approval` | Approve Deploy, Reject, Smoke Check, View Report |
+| **1. Release-candidate** | When task reaches `release-candidate-ready` (all checks pass) | `send_release_candidate_approval` | Approve Deploy, Reject, Smoke Check, View Report |
 
-Legacy tasks (documentation, monitoring triage) that are not `manual_only` still use the original flow: one approval at scheduler if required, then full execution.
+`send_investigation_complete_approval` and `send_ready_for_patch_approval` are **disabled** (return `skipped: "single_approval_workflow"`). Legacy tasks (documentation, monitoring triage) that are not `manual_only` still use the original flow: one approval at scheduler if required, then full execution.
 
 ### 3. New Message Format
 

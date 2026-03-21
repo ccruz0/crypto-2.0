@@ -4,7 +4,7 @@ ATP Control Telegram client — routes task-system and orchestration messages to
 Routing (per TELEGRAM_ROUTING_AUDIT.md):
 - ATP Control (@ATP_control_bot) = tasks, investigations, approvals, needs revision, agent logs
 - Claw (@Claw_cruz_bot) = control plane, user commands, /task /help (responses go to user chat)
-- HiloVivo 3.0 = trading (via telegram_notifier)
+- ATP Alerts = trading (via telegram_notifier)
 - AWS Alerts = infra (via telegram_notifier chat_destination=ops)
 
 Message tagging: [TASK], [INVESTIGATION], [PATCH], [ERROR]

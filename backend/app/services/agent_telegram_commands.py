@@ -187,9 +187,23 @@ def _get_investigate_debug_preamble() -> str:
     return ""
 
 
-def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> bool:
+def _get_telegram_user(from_user: Optional[dict] = None) -> str:
+    """Extract display user from Telegram from_user dict; default Carlos."""
+    if not from_user or not isinstance(from_user, dict):
+        return "Carlos"
+    return (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
+
+
+def handle_investigate_command(
+    chat_id: str,
+    text: str,
+    send_response: Any,
+    *,
+    from_user: Optional[dict] = None,
+) -> bool:
     """
     Handle /investigate <problem text>. Route via backend; ack and run.
+    Always creates a Notion task before running agent (traceability).
     send_response: callable(chat_id, message) -> bool
     """
     ok, problem_or_err = parse_investigate(text)
@@ -206,6 +220,7 @@ def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> b
         logger.warning("runtime_identity command=investigate chat_id=%s failed=%s", chat_id, id_err)
 
     problem_text = problem_or_err
+    telegram_user = _get_telegram_user(from_user)
     task_id = _generate_task_id(chat_id)
     prepared_task = _build_prepared_task(problem_text, task_id, forced_agent_id=None)
 
@@ -220,7 +235,7 @@ def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> b
         )
 
         if agent_id is None or route_reason == "no_match":
-            # Unclear routing - suggest agents (fallback path)
+            # Unclear routing - suggest agents (fallback path); no execution, no task
             logger.info(
                 "fallback_used command=investigate chat_id=%s reason=no_match selected_agent=none",
                 chat_id,
@@ -241,7 +256,7 @@ def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> b
         callbacks = select_default_callbacks_for_task(prepared_task)
         apply_fn = callbacks.get("apply_change_fn")
         if not apply_fn:
-            # Scaffolded agent - no handler yet (fallback path)
+            # Scaffolded agent - no handler yet (fallback path); no execution, no task
             logger.info(
                 "fallback_used command=investigate chat_id=%s reason=scaffolded_agent selected_agent=%s",
                 chat_id, agent_id,
@@ -255,6 +270,43 @@ def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> b
                 "Use Sentinel or Ledger for now."
             )
             return send_response(chat_id, msg)
+
+        # CRITICAL: Create Notion task before execution — every Telegram action that triggers work must be registered
+        try:
+            from app.services.task_compiler import (
+                create_task_from_telegram_intent,
+                ERROR_NOTION_NOT_CONFIGURED,
+            )
+            from app.services.agent_activity_log import log_agent_event
+
+            task_result = create_task_from_telegram_intent(problem_text, telegram_user)
+            if not task_result.get("ok") and not task_result.get("fallback_stored"):
+                log_agent_event(
+                    "task_bypassed_without_registration",
+                    details={
+                        "command": "investigate",
+                        "chat_id": chat_id,
+                        "intent_preview": (problem_text or "")[:100],
+                        "error": task_result.get("error", "unknown"),
+                    },
+                )
+                err = task_result.get("error", "Task creation failed")
+                if err == ERROR_NOTION_NOT_CONFIGURED:
+                    return send_response(
+                        chat_id,
+                        "⚠️ Task could not be created: Notion is not configured. Fix NOTION_API_KEY and NOTION_TASK_DB, then retry.",
+                    )
+                return send_response(chat_id, f"❌ Cannot proceed: {err}")
+        except Exception as task_err:
+            logger.exception("investigate task registration failed: %s", task_err)
+            try:
+                log_agent_event(
+                    "task_bypassed_without_registration",
+                    details={"command": "investigate", "chat_id": chat_id, "error": str(task_err)},
+                )
+            except Exception:
+                pass
+            return send_response(chat_id, f"❌ Task registration failed: {task_err}")
 
         display = AGENT_ID_TO_DISPLAY.get(agent_id, agent_id)
         debug_preamble = _get_investigate_debug_preamble()
@@ -293,9 +345,16 @@ def handle_investigate_command(chat_id: str, text: str, send_response: Any) -> b
             return send_response(chat_id, f"Error: {e}")
 
 
-def handle_agent_command(chat_id: str, text: str, send_response: Any) -> bool:
+def handle_agent_command(
+    chat_id: str,
+    text: str,
+    send_response: Any,
+    *,
+    from_user: Optional[dict] = None,
+) -> bool:
     """
     Handle /agent <agent_name> <problem text>. Force agent; ack and run.
+    Always creates a Notion task before running agent (traceability).
     send_response: callable(chat_id, message) -> bool
     """
     ok, agent_id, problem_or_err = parse_agent(text)
@@ -304,6 +363,7 @@ def handle_agent_command(chat_id: str, text: str, send_response: Any) -> bool:
         return send_response(chat_id, problem_or_err)
 
     problem_text = problem_or_err
+    telegram_user = _get_telegram_user(from_user)
     task_id = _generate_task_id(chat_id)
     prepared_task = _build_prepared_task(problem_text, task_id, forced_agent_id=agent_id)
 
@@ -322,6 +382,44 @@ def handle_agent_command(chat_id: str, text: str, send_response: Any) -> bool:
             "Active agents: Sentinel, Ledger"
         )
         return send_response(chat_id, msg)
+
+    # CRITICAL: Create Notion task before execution — every Telegram action that triggers work must be registered
+    try:
+        from app.services.task_compiler import (
+            create_task_from_telegram_intent,
+            ERROR_NOTION_NOT_CONFIGURED,
+        )
+        from app.services.agent_activity_log import log_agent_event
+
+        task_result = create_task_from_telegram_intent(problem_text, telegram_user)
+        if not task_result.get("ok") and not task_result.get("fallback_stored"):
+            log_agent_event(
+                "task_bypassed_without_registration",
+                details={
+                    "command": "agent",
+                    "chat_id": chat_id,
+                    "agent_id": agent_id,
+                    "intent_preview": (problem_text or "")[:100],
+                    "error": task_result.get("error", "unknown"),
+                },
+            )
+            err = task_result.get("error", "Task creation failed")
+            if err == ERROR_NOTION_NOT_CONFIGURED:
+                return send_response(
+                    chat_id,
+                    "⚠️ Task could not be created: Notion is not configured. Fix NOTION_API_KEY and NOTION_TASK_DB, then retry.",
+                )
+            return send_response(chat_id, f"❌ Cannot proceed: {err}")
+    except Exception as task_err:
+        logger.exception("agent task registration failed: %s", task_err)
+        try:
+            log_agent_event(
+                "task_bypassed_without_registration",
+                details={"command": "agent", "chat_id": chat_id, "agent_id": agent_id, "error": str(task_err)},
+            )
+        except Exception:
+            pass
+        return send_response(chat_id, f"❌ Task registration failed: {task_err}")
 
     ack = (
         "Task received\n"
@@ -360,7 +458,7 @@ def get_agent_help_content() -> str:
 This chat/group is the ATP command console. Commands work here.
 
 <b>Channel roles</b>
-• HILOVIVO3.0 — alerts-only (signals, orders, reports). No commands.
+• ATP Alerts — alerts-only (signals, orders, reports). No commands.
 • Claw — OpenClaw-native only (/new, /reset, /status, /context).
 • AWS_alerts — technical alerts only.
 

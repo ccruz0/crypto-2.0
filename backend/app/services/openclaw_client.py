@@ -378,6 +378,40 @@ _AGENT_SECTION_HEADING_RE = re.compile(
 )
 
 
+def parse_all_markdown_sections(text: str) -> dict[str, str]:
+    """Extract ALL ## Section Name -> content from markdown. Canonical parser for .sections.json.
+
+    Use this at artifact creation time to ensure .sections.json is always complete.
+    Handles frontmatter (---...---) and trailing ---. Returns dict with _preamble and
+    all ## sections. Empty/N/A section bodies are omitted.
+    """
+    result: dict[str, str] = {}
+    parts = text.split("---")
+    if len(parts) >= 3:
+        body = parts[2].strip()  # YAML frontmatter: ---...---\ncontent
+    elif len(parts) == 2:
+        # Single ---: pick the part with more ## sections (main content vs header/footer)
+        body = max(parts, key=lambda p: p.count("\n## ")).strip()
+    else:
+        body = (parts[0] if parts else "").strip()
+    if not body:
+        return result
+    pattern = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+    matches = list(pattern.finditer(body))
+    if matches:
+        preamble = body[: matches[0].start()].strip()
+        if preamble:
+            result["_preamble"] = preamble
+    for idx, m in enumerate(matches):
+        name = m.group(1).strip()
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        content = body[start:end].strip()
+        if content and name.lower() not in ("", "n/a"):
+            result[name] = content
+    return result
+
+
 def parse_investigation_sections(text: str) -> dict[str, str | None]:
     """Extract structured sections from an OpenClaw investigation response.
 

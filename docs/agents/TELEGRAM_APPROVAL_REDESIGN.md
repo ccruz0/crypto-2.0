@@ -16,6 +16,13 @@
 - **Scheduler cycle**: `advance_ready_for_patch_task` runs every 5 minutes for tasks in `ready-for-patch`; if validation passed but metadata persist failed, the task stayed in `patching` and the next cycle could re-send deploy approval.  
 - **Early approval gate**: Investigation-complete was approval-gated before any patch existed; users approved "investigation only" repeatedly.
 
+### Current Flow (Single-Approval Workflow)
+
+- **One approval** at `release-candidate-ready` via `send_release_candidate_approval`.
+- **No approval** during investigation, patching, or verification.
+- **DB-backed dedup** per task+version; fail-closed when DB unavailable.
+- **Mandatory proposed_version**; blocked if missing or empty.
+
 ### Files Affected
 
 | File | Functions |
@@ -71,14 +78,15 @@ planned → in-progress → investigating → investigation-complete
 ### 1. Investigation-complete → INFO only
 
 - **Before**: `send_investigation_complete_approval` with [Approve] [Reject] [View Report]  
-- **After**: `send_investigation_complete_info` with no approval buttons; message includes `ℹ️ INFO` prefix  
-- **Auto-advance**: Task moves from `investigation-complete` to `ready-for-patch`; scheduler continues validation automatically
+- **After**: `send_investigation_complete_approval` and `send_ready_for_patch_approval` are **disabled** (return `skipped: "single_approval_workflow"`)  
+- **Single approval**: Only `send_release_candidate_approval` at `release-candidate-ready`; one approval per task+version
 
-### 2. Deduplication for deploy approval
+### 2. Deduplication for release-candidate approval
 
-- In-memory cache: `_DEPLOY_APPROVAL_SENT[task_id] = timestamp`  
-- Before sending, check `_DEPLOY_APPROVAL_DEDUP_HOURS` (24h); if already sent recently, skip  
-- Prevents duplicate approval messages when `advance_ready_for_patch_task` runs every 5 minutes
+- DB-backed: `TradingSettings` key `agent_release_candidate_approval:{task_id}:{proposed_version}`  
+- **Fail-closed**: If DB unavailable, do not send; return `skipped: "dedup_check_unavailable"`  
+- **Mandatory proposed_version**: If missing or empty, do not send; return `skipped: "missing_proposed_version"`  
+- 7-day cooldown per task+version; prevents duplicate approval messages when `advance_ready_for_patch_task` runs every 5 minutes
 
 ### 3. Missing artifact handling
 
@@ -104,7 +112,7 @@ planned → in-progress → investigating → investigation-complete
 - Status updates remain visible (INFO messages).
 - Approval is requested only once when a real patch is ready (awaiting-deploy-approval).
 - Duplicate approval prompts no longer occur (24h dedup).
-- Legacy `send_investigation_complete_approval` remains for backward compatibility.
+- Legacy `send_investigation_complete_approval` and `send_ready_for_patch_approval` are disabled (return immediately with `skipped: "single_approval_workflow"`).
 - Final human safety gate for deploy is preserved.
 
 ---

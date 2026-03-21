@@ -64,7 +64,7 @@ This document corrects and maps the external Telegram Bot Issues report to the a
 | `TELEGRAM_BOT_TOKEN` | Production bot token (AWS). |
 | `TELEGRAM_BOT_TOKEN_DEV` | Dev bot token (local, avoids 409 with prod). |
 | `TELEGRAM_CHAT_ID` | Primary control channel (ATP Control). |
-| `TELEGRAM_CHAT_ID_TRADING` | Alerts-only (e.g. HILOVIVO3.0). |
+| `TELEGRAM_CHAT_ID_TRADING` | Alerts-only (e.g. ATP Alerts). |
 | `TELEGRAM_AUTH_USER_ID` | Authorized chat/user IDs for commands (comma-separated). |
 | `TELEGRAM_BOT_TOKEN_AWS` | AWS-specific token (fallback). |
 | `TELEGRAM_CHAT_ID_AWS` | AWS-specific chat ID (fallback). |

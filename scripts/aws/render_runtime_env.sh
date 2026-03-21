@@ -38,12 +38,16 @@ SSM_AWS_SECRET_KEY="/automated-trading-platform/prod/aws_secret_access_key"
 SSM_NOTION_API_KEY="/automated-trading-platform/prod/notion/api_key"
 SSM_NOTION_TASK_DB="/automated-trading-platform/prod/notion/task_db"
 SSM_NOTION_API_KEY_LAB="/automated-trading-platform/lab/notion/api_key"
+SSM_ATP_CONTROL_CHAT_ID="/automated-trading-platform/prod/telegram/atp_control_chat_id"
+SSM_ATP_CONTROL_BOT_TOKEN="/automated-trading-platform/prod/telegram/atp_control_bot_token"
 NOTION_TASK_DB_DEFAULT="eb90cfa139f94724a8b476315908510a"
 
 SOURCE="none"
 BOT_TOKEN=""
 CHAT_ID=""
 CHAT_ID_OPS=""
+ATP_CONTROL_CHAT_ID_VAL=""
+ATP_CONTROL_BOT_TOKEN_VAL=""
 ADMIN_KEY=""
 DIAG_KEY=""
 ATP_API_KEY=""
@@ -73,6 +77,8 @@ if command -v aws >/dev/null 2>&1; then
     AWS_SECRET_ACCESS_KEY_VAL="$(fetch_ssm "$SSM_AWS_SECRET_KEY" || true)"
     NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY" || true)"
     NOTION_TASK_DB_VAL="$(fetch_ssm "$SSM_NOTION_TASK_DB" || true)"
+    ATP_CONTROL_CHAT_ID_VAL="$(fetch_ssm "$SSM_ATP_CONTROL_CHAT_ID" || true)"
+    ATP_CONTROL_BOT_TOKEN_VAL="$(fetch_ssm "$SSM_ATP_CONTROL_BOT_TOKEN" || true)"
     # LAB: if Notion not in prod SSM, try LAB SSM (instance role must have ssm:GetParameter for lab path)
     [[ -z "$NOTION_API_KEY_VAL" ]] && NOTION_API_KEY_VAL="$(fetch_ssm "$SSM_NOTION_API_KEY_LAB" || true)"
     [[ -z "$NOTION_TASK_DB_VAL" && -n "$NOTION_API_KEY_VAL" ]] && NOTION_TASK_DB_VAL="$NOTION_TASK_DB_DEFAULT"
@@ -115,6 +121,8 @@ if [[ "$use_ssm" != "true" ]]; then
   AWS_SECRET_ACCESS_KEY_VAL="${AWS_SECRET_ACCESS_KEY:-}"
   NOTION_API_KEY_VAL="${NOTION_API_KEY:-}"
   NOTION_TASK_DB_VAL="${NOTION_TASK_DB:-}"
+  ATP_CONTROL_CHAT_ID_VAL="${TELEGRAM_ATP_CONTROL_CHAT_ID:-}"
+  ATP_CONTROL_BOT_TOKEN_VAL="${TELEGRAM_ATP_CONTROL_BOT_TOKEN:-}"
   SOURCE="fallback"
   # LAB: try LAB SSM for Notion if still missing (no manual secret input)
   if command -v aws >/dev/null 2>&1 && aws sts get-caller-identity >/dev/null 2>&1; then
@@ -122,6 +130,10 @@ if [[ "$use_ssm" != "true" ]]; then
     [[ -z "$NOTION_TASK_DB_VAL" && -n "$NOTION_API_KEY_VAL" ]] && NOTION_TASK_DB_VAL="$NOTION_TASK_DB_DEFAULT"
   fi
 fi
+
+# Use ATP Control token/chat for polling when primary not set (ensures /task works)
+[[ -z "$BOT_TOKEN" && -n "$ATP_CONTROL_BOT_TOKEN_VAL" ]] && BOT_TOKEN="$ATP_CONTROL_BOT_TOKEN_VAL" && echo "Using ATP Control token for TELEGRAM_BOT_TOKEN (primary not set)" && SOURCE="${SOURCE}+atp_control_fallback"
+[[ -z "$CHAT_ID" && -n "$ATP_CONTROL_CHAT_ID_VAL" ]] && CHAT_ID="$ATP_CONTROL_CHAT_ID_VAL" && echo "Using ATP Control chat_id for TELEGRAM_CHAT_ID (primary not set)" && SOURCE="${SOURCE}+atp_control_chat_fallback"
 
 missing=()
 [[ -z "$BOT_TOKEN" ]] && missing+=("TELEGRAM_BOT_TOKEN")
@@ -184,6 +196,10 @@ if [[ "$SOURCE" == "primary" && ( -z "$NOTION_API_KEY_VAL" || -z "$NOTION_TASK_D
     if [[ -n "${NOTION_TASK_DB:-}" ]] && ! grep -q '^NOTION_TASK_DB=' "$RUNTIME_ENV" 2>/dev/null; then printf "NOTION_TASK_DB=%s\n" "${NOTION_TASK_DB:-}" >> "$RUNTIME_ENV"; fi
   )
 fi
+
+# ATP Control (@ATP_control_bot): tasks, approvals, investigations. Auto-authorizes channel for commands.
+[[ -n "$ATP_CONTROL_CHAT_ID_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_CHAT_ID=%s\n" "$ATP_CONTROL_CHAT_ID_VAL" >> "$RUNTIME_ENV"
+[[ -n "$ATP_CONTROL_BOT_TOKEN_VAL" ]] && printf "TELEGRAM_ATP_CONTROL_BOT_TOKEN=%s\n" "$ATP_CONTROL_BOT_TOKEN_VAL" >> "$RUNTIME_ENV"
 
 echo "Rendered (source=$SOURCE)"
 echo "Present: TELEGRAM_BOT_TOKEN=YES TELEGRAM_CHAT_ID=YES ADMIN_ACTIONS_KEY=YES DIAGNOSTICS_API_KEY=$([[ -n "$DIAG_KEY" ]] && echo YES || echo NO) ATP_API_KEY=$([[ -n "$ATP_API_KEY" ]] && echo YES || echo NO) GITHUB_TOKEN=$([[ -n "$GITHUB_TOKEN" ]] && echo YES || echo NO) NOTION_API_KEY=$([[ -n "$NOTION_API_KEY_VAL" ]] && echo YES || echo NO) NOTION_TASK_DB=$([[ -n "$NOTION_TASK_DB_VAL" ]] && echo YES || echo NO)"

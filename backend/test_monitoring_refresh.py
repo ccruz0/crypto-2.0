@@ -4,15 +4,21 @@ Test script for monitoring refresh functionality
 Tests the new force_refresh parameter and signals_last_calculated timestamp
 """
 
+import os
 import requests
 import json
 import time
 from datetime import datetime
 from typing import Dict, Any
 
-# Configuration
-BASE_URL = "http://localhost:8000/api"
-# BASE_URL = "http://175.41.189.249:8000/api"  # Uncomment for AWS testing
+# Shared env (API_BASE_URL, AWS_BACKEND_URL, API_URL) or local default 8002
+_BASE = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("AWS_BACKEND_URL")
+    or os.getenv("API_URL")
+    or "http://localhost:8002"
+)
+BASE_URL = f"{_BASE.rstrip('/')}/api"
 
 def test_monitoring_summary_basic():
     """Test basic monitoring summary endpoint"""

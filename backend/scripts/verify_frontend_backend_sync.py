@@ -15,24 +15,35 @@ from app.models.watchlist import WatchlistItem
 
 def fetch_frontend_data():
     """Fetch data from frontend API endpoint"""
+    api_base = (
+        os.getenv("API_BASE_URL")
+        or os.getenv("AWS_BACKEND_URL")
+        or os.getenv("API_URL")
+        or "http://localhost:8002"
+    )
+    url = f"{api_base.rstrip('/')}/api/dashboard"
     try:
-        # Try to fetch from local backend
-        response = requests.get('http://localhost:8000/api/dashboard', timeout=5)
+        response = requests.get(url, timeout=5)
         if response.status_code == 200:
             return response.json()
         else:
             print(f"⚠️ Frontend API returned status {response.status_code}")
             return None
     except Exception as e:
-        print(f"⚠️ Could not fetch from frontend API: {e}")
+        print(f"⚠️ Could not fetch from frontend API ({url}): {e}")
         return None
 
-def get_backend_data():
+def get_backend_data() -> list[WatchlistItem]:
     """Get all watchlist items from backend database"""
+    if SessionLocal is None:
+        raise RuntimeError(
+            "Database is unavailable (SessionLocal is None). "
+            "Check DATABASE_URL and that the engine started successfully."
+        )
     db = SessionLocal()
     try:
         items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
-        return items
+        return list(items)
     finally:
         db.close()
 
@@ -164,11 +175,11 @@ def verify_sync():
     
     for backend_item in backend_items:
         symbol = backend_item.symbol
-        trade_enabled = backend_item.trade_enabled
+        trade_enabled = getattr(backend_item, "trade_enabled", False)
         alert_enabled = getattr(backend_item, 'alert_enabled', False)
         buy_alert = getattr(backend_item, 'buy_alert_enabled', False)
         sell_alert = getattr(backend_item, 'sell_alert_enabled', False)
-        amount = backend_item.trade_amount_usd
+        amount = getattr(backend_item, "trade_amount_usd", None)
         
         status_icons = []
         if trade_enabled:

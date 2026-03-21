@@ -304,10 +304,13 @@ def _compute_changed_lines(before: str, after: str) -> int:
     return changed
 
 
-def _apply_allowed_patch(rel_path: str, proposal_text: str) -> dict[str, Any]:
+def _apply_allowed_patch(rel_path: str, proposal_text: str, *, apply_to_disk: bool = True) -> dict[str, Any]:
     """
     Apply a small, explicit patch in an allowlisted file.
     Current first implementation supports `signal_monitor.py` threshold tuning only.
+
+    When apply_to_disk=False (prepare-only): compute patch and return metadata; do NOT write to file.
+    Used when ATP_SAFE_AUTONOMOUS_MODE=true to avoid prod mutation before approval.
     """
     root = _repo_root()
     path = root / rel_path
@@ -345,13 +348,16 @@ def _apply_allowed_patch(rel_path: str, proposal_text: str) -> dict[str, Any]:
     if touched > 40:
         return {"ok": False, "reason": f"patch too broad ({touched} lines touched)"}
 
-    path.write_text(updated, encoding="utf-8")
+    if apply_to_disk:
+        path.write_text(updated, encoding="utf-8")
     return {
         "ok": True,
         "file": rel_path,
         "touched_lines": touched,
         "changes": changes,
         "proposal_excerpt": proposal_text[:240].replace("\n", " "),
+        "prepared_only": not apply_to_disk,
+        "patch_content": updated if not apply_to_disk else None,
     }
 
 
@@ -397,11 +403,26 @@ def apply_strategy_patch_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
         versioning["version_status"] = "proposed"
         versioning["confidence_score"] = confidence_score
 
+        # Safe autonomous mode: prepare patch only, do NOT mutate production files.
+        # Approval is required before the actual prod mutation (deploy step).
+        try:
+            from app.services.agent_execution_policy import is_safe_autonomous_mode
+            apply_to_disk = not is_safe_autonomous_mode()
+        except Exception:
+            apply_to_disk = False  # Default to prepare-only on import error
+
+        if not apply_to_disk:
+            logger.info(
+                "apply_strategy_patch_task: prepare-only mode (ATP_SAFE_AUTONOMOUS_MODE) "
+                "task_id=%s — patch proposal to docs/, no prod mutation",
+                task_id[:12] if task_id else "?",
+            )
+
         patch_results: list[dict[str, Any]] = []
         for rel_path in affected_files:
             if not _is_allowlisted(rel_path):
                 return {"success": False, "summary": "task not eligible for strategy patch callback"}
-            result = _apply_allowed_patch(rel_path, proposed_improvement)
+            result = _apply_allowed_patch(rel_path, proposed_improvement, apply_to_disk=apply_to_disk)
             if not result.get("ok"):
                 return {"success": False, "summary": f"patch failed safely: {result.get('reason', 'unknown')}"}
             patch_results.append(result)
@@ -423,10 +444,14 @@ def apply_strategy_patch_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
                     f"- `{pr['file']}`: `{c.get('parameter')}` `{c.get('from')}` -> `{c.get('to')}`"
                 )
 
+        prepared_only = any(r.get("prepared_only") for r in patch_results)
         note = "\n".join(
             [
                 "## Task ID",
                 f"`{task_id}`",
+                "",
+                "## Prepared Only (Awaiting Approval)",
+                "true" if prepared_only else "false",
                 "",
                 "## Current Version",
                 f"`v{versioning.get('current_version', '')}`",
@@ -491,6 +516,44 @@ def apply_strategy_patch_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.exception("apply_strategy_patch_task failed: %s", e)
         return {"success": False, "summary": str(e)}
+
+
+def apply_prepared_strategy_patch_after_approval(task_id: str) -> dict[str, Any]:
+    """
+    Apply a strategy patch that was prepared-only (ATP_SAFE_AUTONOMOUS_MODE).
+    Call this when deploy is approved to perform the actual prod mutation.
+
+    Returns:
+        {"ok": True, "modified_files": [...], "summary": "..."} or {"ok": False, "reason": "..."}
+    """
+    root = _repo_root()
+    note_path = root / "docs" / "analysis" / "patches" / f"notion-task-{task_id}.md"
+    if not note_path.exists():
+        return {"ok": False, "reason": f"patch note not found: {note_path.name}"}
+    note = _read_text(note_path)
+    prepared_sec = _extract_section(note, "Prepared Only (Awaiting Approval)")
+    if "true" not in prepared_sec.lower():
+        return {"ok": False, "reason": "patch was already applied or not prepared-only"}
+    affected_sec = _extract_section(note, "Affected Files")
+    modified_files = _parse_affected_files(affected_sec)
+    if not modified_files:
+        return {"ok": False, "reason": "no affected files in patch note"}
+    if not all(_is_allowlisted(p) for p in modified_files):
+        return {"ok": False, "reason": "non-allowlisted file in patch note"}
+    rationale = _extract_section(note, "Rationale") or "strategy patch from deploy approval"
+    applied: list[str] = []
+    for rel_path in modified_files:
+        result = _apply_allowed_patch(rel_path, rationale, apply_to_disk=True)
+        if not result.get("ok"):
+            return {"ok": False, "reason": result.get("reason", "apply failed"), "applied_so_far": applied}
+        applied.append(rel_path)
+    # Update patch note to mark as applied
+    updated_note = note.replace("## Prepared Only (Awaiting Approval)\ntrue", "## Prepared Only (Awaiting Approval)\nfalse (applied on deploy approval)")
+    try:
+        note_path.write_text(updated_note, encoding="utf-8")
+    except Exception as e:
+        logger.warning("apply_prepared_strategy_patch_after_approval: could not update note %s", e)
+    return {"ok": True, "modified_files": applied, "summary": f"Applied patch to {len(applied)} file(s)"}
 
 
 def validate_strategy_patch_task(prepared_task: dict[str, Any]) -> dict[str, Any]:

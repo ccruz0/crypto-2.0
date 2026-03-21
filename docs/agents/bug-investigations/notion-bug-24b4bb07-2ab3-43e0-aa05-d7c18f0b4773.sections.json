@@ -1,0 +1,8 @@
+{
+  "task_id": "24b4bb07-2ab3-43e0-aa05-d7c18f0b4773",
+  "title": "Fix purchase_price discrepancy across trading system",
+  "source": "fallback+backfill",
+  "sections": {
+    "2. Expected Behavior": "- The system must correctly detect purchase_price when it exists in any valid source.\n- purchase_price must be resolved using a clear precedence across:\n\t1) watchlist_items\n\t2) watchlist_master\n\t3) executed BUY orders\n- SL/TP logic must use this value.\n- P&L calculations must use this value.\n- Trading decisions must not be blocked when purchase_price exists."
+  }
+}

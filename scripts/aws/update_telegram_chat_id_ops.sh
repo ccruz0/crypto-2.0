@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Update Telegram OPS chat ID (AWS_alerts) on PROD.
 # Ops channel receives: health alerts, anomalies, scheduler inactivity, system down.
-# Trading channel (HILOVIVO3.0) is updated via update_telegram_chat_id.sh.
+# Trading channel (ATP Alerts) is updated via update_telegram_chat_id.sh.
 #
 # Chat IDs:
 #   - Private chat: positive number (e.g. 839853931)
@@ -24,7 +24,7 @@ if [[ -z "$NEW_CHAT_ID" ]]; then
   echo "   or: $0 <new_chat_id>"
   echo ""
   echo "This sets the OPS channel (AWS_alerts) for health/anomaly alerts."
-  echo "Trading channel (HILOVIVO3.0): use update_telegram_chat_id.sh"
+  echo "Trading channel (ATP Alerts): use update_telegram_chat_id.sh"
   exit 1
 fi
 

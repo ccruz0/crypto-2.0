@@ -4,7 +4,7 @@ CLI tool to verify portfolio match between dashboard and Crypto.com.
 
 Usage:
     python -m tools.verify_portfolio
-    python -m tools.verify_portfolio --endpoint http://localhost:8000
+    python -m tools.verify_portfolio --endpoint http://localhost:8002
     python -m tools.verify_portfolio --endpoint https://dashboard.hilovivo.com --key <DIAGNOSTICS_API_KEY>
     python -m tools.verify_portfolio --full  # Use full endpoint instead of lite
 """
@@ -18,12 +18,19 @@ from pathlib import Path
 # Add parent directory to path to import app modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+_DEFAULT_API_URL = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("AWS_BACKEND_URL")
+    or os.getenv("API_URL")
+    or "http://localhost:8002"
+)
+
 def verify_portfolio(endpoint_url: str = None, api_key: str = None, use_full: bool = False):
     """Call the portfolio verification endpoint and display results."""
     import requests
     
     if endpoint_url is None:
-        endpoint_url = os.getenv("API_URL", "http://localhost:8000")
+        endpoint_url = _DEFAULT_API_URL
     
     # Get API key from arg or env
     if api_key is None:
@@ -36,6 +43,7 @@ def verify_portfolio(endpoint_url: str = None, api_key: str = None, use_full: bo
     # Use lite endpoint by default, full endpoint if --full flag
     endpoint_path = "/api/diagnostics/portfolio-verify" if use_full else "/api/diagnostics/portfolio-verify-lite"
     verify_url = f"{endpoint_url.rstrip('/')}{endpoint_path}"
+    print(f"Endpoint: {verify_url}")
     
     try:
         headers = {"X-Diagnostics-Key": api_key}
@@ -86,7 +94,7 @@ if __name__ == "__main__":
         "--endpoint",
         type=str,
         default=None,
-        help="API endpoint URL (default: http://localhost:8000 or API_URL env var)"
+        help="API endpoint URL (default: http://localhost:8002 or API_BASE_URL/API_URL env var)"
     )
     parser.add_argument(
         "--key",
@@ -109,7 +117,7 @@ if __name__ == "__main__":
     
     if args.json:
         import requests
-        endpoint_url = args.endpoint or os.getenv("API_URL", "http://localhost:8000")
+        endpoint_url = args.endpoint or _DEFAULT_API_URL
         api_key = args.key or os.getenv("DIAGNOSTICS_API_KEY")
         
         if not api_key:

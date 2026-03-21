@@ -2,7 +2,7 @@
 # Quick check script to verify ETC_USDT configuration via API
 # Usage: ./check_etc_via_api.sh
 
-API_URL="${API_BASE_URL:-http://localhost:8000}"
+API_URL="${API_BASE_URL:-${AWS_BACKEND_URL:-http://localhost:8002}}"
 SYMBOL="ETC_USDT"
 
 echo "=========================================="

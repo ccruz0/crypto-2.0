@@ -108,6 +108,12 @@ The script prints a JSON result (e.g. `{"ok": true, "action": "approval_requeste
 
 ---
 
+## Execution policy (safe autonomous mode)
+
+When `ATP_SAFE_AUTONOMOUS_MODE=true` (default), prod-mutation callbacks (e.g. strategy patch) run in **prepare-only** mode during apply: they write proposals to `docs/` but do not edit production files. A single approval at release-candidate-ready triggers the actual prod mutation and deploy. See [AGENT_EXECUTION_POLICY.md](AGENT_EXECUTION_POLICY.md) and [AGENT_EXECUTION_POLICY_OPERATOR.md](../runbooks/AGENT_EXECUTION_POLICY_OPERATOR.md).
+
+---
+
 ## Related
 
 - [Human approval gate](human-approval-gate.md) — When approval is required.

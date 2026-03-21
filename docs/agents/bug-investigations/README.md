@@ -10,3 +10,7 @@ Notes are created by the agent when applying bug-investigation tasks (e.g. from 
 - [Notion bug 6c800cf6-1ad1-4b51-bbed-56f2b4980aad: E2E flow test: add runbook link to README](notion-bug-6c800cf6-1ad1-4b51-bbed-56f2b4980aad.md)
 - [Notion bug 4d7d1312-8ece-4fcb-b092-ef437c09ee2c: Investigate why Telegram alerts are not sent when buy or sell conditions trigger](notion-bug-4d7d1312-8ece-4fcb-b092-ef437c09ee2c.md)
 - [Notion bug 31db1837-03fe-80d7-bf88-d802134064ad: Investigate duplicate signal alert generation after monitoring cycle](notion-bug-31db1837-03fe-80d7-bf88-d802134064ad.md)
+- [Notion bug 10d75276-fcff-48bc-b5c9-473dec72bebd: RESET: purchase_price becomes null/missing — prove exact failure point (code + data flow)](notion-bug-10d75276-fcff-48bc-b5c9-473dec72bebd.md)
+- [Notion bug 1df2868f-7a3f-4013-8820-2b0e92109221: Audit BTC Alert Spam and Alert Rules Compliance](notion-bug-1df2868f-7a3f-4013-8820-2b0e92109221.md)
+- [Notion bug 24b4bb07-2ab3-43e0-aa05-d7c18f0b4773: Fix purchase_price discrepancy across trading system](notion-bug-24b4bb07-2ab3-43e0-aa05-d7c18f0b4773.md)
+- [Notion bug 31cb1837-03fe-8045-b8a8-e27cca1198e0: Open orders not appearing in dashboard](notion-bug-31cb1837-03fe-8045-b8a8-e27cca1198e0.md)

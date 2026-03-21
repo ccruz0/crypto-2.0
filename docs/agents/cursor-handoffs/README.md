@@ -7,3 +7,4 @@ Generated prompts for Cursor-driven patching.
 - [Test task](cursor-handoff-handoff-test-001.md)
 - [E2E test bug](cursor-handoff-e2e-test-001.md)
 - [HARD RESET: purchase_price investigation](cursor-handoff-inv-task-456.md)
+- [RESET: purchase_price becomes null/missing](cursor-handoff-10d75276-fcff-48bc-b5c9-473dec72bebd.md)

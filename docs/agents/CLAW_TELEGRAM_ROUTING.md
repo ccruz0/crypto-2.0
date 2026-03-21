@@ -8,7 +8,7 @@
 |-------------|---------|----------|
 | **ATP Control** (@ATP_control_bot) | Tasks, investigations, approvals, needs revision, agent logs | `TELEGRAM_ATP_CONTROL_BOT_TOKEN`, `TELEGRAM_ATP_CONTROL_CHAT_ID` |
 | **Claw** (@Claw_cruz_bot) | Control plane, user commands, /task /help, OpenClaw (responses) | (replies to user chat) |
-| **HiloVivo 3.0** (@HILOVIVO30_bot) | Trading alerts (buy/sell), execution, SL/TP, reports | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID_TRADING` |
+| **ATP Alerts** | Trading alerts (buy/sell), execution, SL/TP, reports | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID_TRADING` |
 | **AWS Alerts** (@AWS_alerts_hilovivo_bot) | EC2/Docker, health, anomalies, scheduler down | `TELEGRAM_CHAT_ID_OPS`, `TELEGRAM_ALERT_*` |
 
 ## Message Tags

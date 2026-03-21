@@ -275,12 +275,13 @@ def _load_sections_from_sidecar(task_id: str) -> dict[str, Any]:
     if not task_id:
         return {}
     try:
-        from app.services._paths import get_writable_bug_investigations_dir
-        root = _repo_root()
+        from app.services._paths import get_writable_dir_for_subdir
         search_dirs = [
-            get_writable_bug_investigations_dir(),
-            root / "docs" / "agents" / "generated-notes",
-            root / "docs" / "runbooks" / "triage",
+            get_writable_dir_for_subdir("docs/agents/bug-investigations"),
+            get_writable_dir_for_subdir("docs/agents/telegram-alerts"),
+            get_writable_dir_for_subdir("docs/agents/execution-state"),
+            get_writable_dir_for_subdir("docs/agents/generated-notes"),
+            get_writable_dir_for_subdir("docs/runbooks/triage"),
         ]
         for d in search_dirs:
             if not d.is_dir():

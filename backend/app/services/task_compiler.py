@@ -21,6 +21,7 @@ from typing import Any, Optional
 from app.services.notion_tasks import (
     ALLOWED_TASK_STATUSES,
     TERMINAL_STATUSES,
+    append_telegram_input_to_task,
     create_notion_task,
     notion_is_configured,
     notion_status_to_display,
@@ -47,6 +48,7 @@ ACTIVE_STATUSES_FOR_SIMILARITY = [
     "ready-for-patch",
     "patching",
     "testing",
+    "release-candidate-ready",
     "ready-for-deploy",
     "awaiting-deploy-approval",
     "deploying",
@@ -111,33 +113,46 @@ PRIORITY_TYPE_WEIGHT: dict[str, int] = {
 }
 PRIORITY_URGENCY_KEYWORDS = ("urgent", "now", "asap", "immediately")
 PRIORITY_PRODUCTION_KEYWORDS = ("production", "prod", "live", "trading", "orders")
-PRIORITY_FAILURE_KEYWORDS = ("not working", "fails", "error", "broken")
+PRIORITY_FAILURE_KEYWORDS = ("not working", "fails", "error", "broken", "blocks", "blocking", "prevents")
+PRIORITY_OPERATIONAL_KEYWORDS = ("operational", "incident", "workflow", "intake", "affects")
 PRIORITY_REUSED_BOOST = 15
 PRIORITY_CAP = 100
 PRIORITY_LOW_THRESHOLD = 20  # Scheduler ignores tasks below this unless idle
 
-# Value scoring (0–100) for task gating: creation and execution.
-# Used to reject or skip low-value / noise tasks.
+# Value scoring (0–100) for task prioritization. NEVER blocks creation.
+# Used only to assign priority (low/medium/high) and status (queued vs planned).
 VALUE_IMPACT_KEYWORDS = ("production", "prod", "orders", "trading", "revenue", "live")
 VALUE_URGENCY_KEYWORDS = ("urgent", "now", "asap")
-VALUE_FAILURE_KEYWORDS = ("error", "not working", "broken", "fails", "failing")
+VALUE_FAILURE_KEYWORDS = ("error", "not working", "broken", "fails", "failing", "blocks", "blocking", "prevents")
 VALUE_STRATEGIC_KEYWORDS = ("architecture", "core", "system", "security")
+# Operational/production-blocking: task intake, incident response, agent workflow
+VALUE_OPERATIONAL_KEYWORDS = ("operational", "incident", "workflow", "intake", "affects", "blocks", "blocking", "prevents")
 VALUE_NOISE_KEYWORDS = ("test", "experiment", "try", "maybe")
-VALUE_CREATION_THRESHOLD = 30  # Do not create if value < this (unless safety pass)
-VALUE_EXECUTION_MIN = 30  # Skip execution if priority < 30 AND value < this (unless safety pass)
-VALUE_SAFETY_PRIORITY_MIN = 60  # Never block tasks with priority >= this
+VALUE_CREATION_THRESHOLD = 30  # Below this: low-impact, assign status=queued, priority=low (never blocks)
+VALUE_EXECUTION_MIN = 30  # Scheduler may deprioritize; never blocks creation
+VALUE_SAFETY_PRIORITY_MIN = 60  # High-priority tasks get status=planned
 VALUE_CAP = 100
+
+# Priority labels for user-facing output
+PRIORITY_LABEL_LOW = "low"
+PRIORITY_LABEL_MEDIUM = "medium"
+PRIORITY_LABEL_HIGH = "high"
+
+
+def _value_text(task: dict[str, Any], intent_text: str = "") -> str:
+    """Combined text for value/impact scoring. Includes title, details, objective, intent."""
+    return f"{(task.get('title') or '')} {(task.get('details') or '')} {(task.get('objective') or '')} {(task.get('task') or '')} {intent_text}".lower()
 
 
 def compute_task_value(task: dict[str, Any], intent_text: str = "") -> int:
     """
     Compute a 0–100 value score for gating. Deterministic.
 
-    Boosts: Impact (+40), Urgency (+30), Failure (+30), Strategic (+20).
+    Boosts: Impact (+40), Urgency (+30), Failure (+30), Strategic (+20), Operational (+25).
     Penalty: Noise (-20). Cap 0–100.
     """
     score = 0
-    text = f"{(task.get('title') or '')} {(task.get('details') or '')} {(task.get('task') or '')} {intent_text}".lower()
+    text = _value_text(task, intent_text)
     if any(kw in text for kw in VALUE_IMPACT_KEYWORDS):
         score += 40
     if any(kw in text for kw in VALUE_URGENCY_KEYWORDS):
@@ -146,31 +161,43 @@ def compute_task_value(task: dict[str, Any], intent_text: str = "") -> int:
         score += 30
     if any(kw in text for kw in VALUE_STRATEGIC_KEYWORDS):
         score += 20
+    if any(kw in text for kw in VALUE_OPERATIONAL_KEYWORDS):
+        score += 25
     if any(kw in text for kw in VALUE_NOISE_KEYWORDS):
         score -= 20
     capped = max(0, min(VALUE_CAP, score))
-    logger.debug("task_value_computed score=%d", capped)
+    logger.info(
+        "task_value_computed score=%d impact=%s urgency=%s failure=%s operational=%s text_len=%d",
+        capped,
+        any(kw in text for kw in VALUE_IMPACT_KEYWORDS),
+        any(kw in text for kw in VALUE_URGENCY_KEYWORDS),
+        any(kw in text for kw in VALUE_FAILURE_KEYWORDS),
+        any(kw in text for kw in VALUE_OPERATIONAL_KEYWORDS),
+        len(text),
+    )
     return capped
 
 
-def _value_gate_safety_pass(task: dict[str, Any], priority: int) -> bool:
-    """True if we must never block: Bug type, production-related text, or priority > 60."""
+def _value_gate_safety_pass(task: dict[str, Any], priority: int, intent_text: str = "") -> bool:
+    """True if we must never treat as low-impact: Bug type, production/operational text, or priority > 60."""
     if priority is not None and priority > VALUE_SAFETY_PRIORITY_MIN:
         return True
     type_val = (task.get("type") or "").strip().lower()
     if type_val == "bug":
         return True
-    text = f"{(task.get('title') or '')} {(task.get('details') or '')} {(task.get('task') or '')}".lower()
+    text = _value_text(task, intent_text)
     if any(kw in text for kw in VALUE_IMPACT_KEYWORDS):
+        return True
+    if any(kw in text for kw in VALUE_OPERATIONAL_KEYWORDS):
         return True
     return False
 
 
-def _rejection_reasons(task: dict[str, Any], intent_text: str = "") -> list[str]:
-    """Short reasons why the task was rejected (low value)."""
-    text = f"{(task.get('title') or '')} {(task.get('details') or '')} {(task.get('task') or '')} {intent_text}".lower()
+def _low_impact_reasons(task: dict[str, Any], intent_text: str = "") -> list[str]:
+    """Reasons for low-impact classification (debugging only; never blocks creation)."""
+    text = _value_text(task, intent_text)
     reasons = []
-    if not any(kw in text for kw in VALUE_IMPACT_KEYWORDS) and not any(kw in text for kw in VALUE_FAILURE_KEYWORDS):
+    if not any(kw in text for kw in VALUE_IMPACT_KEYWORDS) and not any(kw in text for kw in VALUE_FAILURE_KEYWORDS) and not any(kw in text for kw in VALUE_OPERATIONAL_KEYWORDS):
         reasons.append("low impact")
     if not any(kw in text for kw in VALUE_URGENCY_KEYWORDS):
         reasons.append("no urgency")
@@ -179,23 +206,46 @@ def _rejection_reasons(task: dict[str, Any], intent_text: str = "") -> list[str]
     return reasons[:3]  # cap for message
 
 
+def _priority_score_to_label(priority_score: int) -> str:
+    """Map 0–100 priority score to low/medium/high. Never blocks creation."""
+    if priority_score >= 67:
+        return PRIORITY_LABEL_HIGH
+    if priority_score >= 34:
+        return PRIORITY_LABEL_MEDIUM
+    return PRIORITY_LABEL_LOW
+
+
+def _priority_label_for_notion(label: str) -> str:
+    """Capitalize for Notion display (Low, Medium, High)."""
+    return (label or "medium").capitalize()
+
+
+def _is_low_impact(value_score: int, priority_score: int, task: dict[str, Any], intent_text: str = "") -> bool:
+    """True if task would have been classified as low-impact (for status/priority assignment only)."""
+    if _value_gate_safety_pass(task, priority_score, intent_text):
+        return False
+    return value_score < VALUE_CREATION_THRESHOLD
+
+
 def compute_task_priority(task: dict[str, Any], intent_text: str = "", *, reused: bool = False) -> int:
     """
     Compute a 0–100 priority score for a task. Deterministic.
 
     Base: type weight (Bug 40, Investigation 30, Patch 25, Deploy 35, Monitoring 20, Content 10).
-    Boosts: urgency (+30), production impact (+25), failure indicators (+20), reused (+15).
+    Boosts: urgency (+30), production impact (+25), failure indicators (+20), operational (+20), reused (+15).
     Cap at 100.
     """
     score = 0
     type_val = (task.get("type") or "").strip()
     score += PRIORITY_TYPE_WEIGHT.get(type_val, PRIORITY_TYPE_WEIGHT.get("Investigation", 30))
-    text = f"{(task.get('title') or '')} {(task.get('details') or '')} {intent_text}".lower()
+    text = f"{(task.get('title') or '')} {(task.get('details') or '')} {(task.get('objective') or '')} {intent_text}".lower()
     if any(kw in text for kw in PRIORITY_URGENCY_KEYWORDS):
         score += 30
     if any(kw in text for kw in PRIORITY_PRODUCTION_KEYWORDS):
         score += 25
     if any(kw in text for kw in PRIORITY_FAILURE_KEYWORDS):
+        score += 20
+    if any(kw in text for kw in PRIORITY_OPERATIONAL_KEYWORDS):
         score += 20
     if reused:
         score += PRIORITY_REUSED_BOOST
@@ -412,12 +462,26 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
 
     Does NOT overwrite or edit existing tasks; only creates new ones.
     """
-    logger.info("telegram_task_received intent_len=%s user=%s", len(intent_text or ""), (user or "")[:30])
+    raw_intent = (intent_text or "").strip()
+    logger.info(
+        "task_compiler_intent raw_intent_len=%s user=%s raw_preview=%s",
+        len(raw_intent), (user or "")[:30], repr(raw_intent[:150]),
+    )
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event("telegram_task_received", details={"intent_len": len(intent_text or ""), "user": (user or "")[:30]})
+    except Exception:
+        pass
 
     compiled = compile_task_from_intent(intent_text, user)
     task, err = validate_and_fix_task(compiled)
     if err:
         logger.warning("task_compiler validation failed: %s", err)
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("task_creation_rejected", details={"reason": err, "intent_preview": (intent_text or "")[:100]})
+        except Exception:
+            pass
         return {"ok": False, "error": err}
 
     # Preflight: Never fail silently. If Notion is not configured, return clear error.
@@ -425,14 +489,39 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
         logger.error("notion_preflight_failed NOTION_API_KEY or NOTION_TASK_DB missing")
         return {"ok": False, "error": ERROR_NOTION_NOT_CONFIGURED}
 
-    # Reuse similar existing task instead of creating a duplicate
+    # Reuse similar existing task instead of creating a duplicate.
+    # CRITICAL: Always persist the new Telegram input to the existing task (never discard).
     existing = find_similar_task(intent_text)
     if existing:
         task_id = (existing.get("id") or "").strip()
         title = (existing.get("task") or "").strip()
         status_internal = (existing.get("status") or "").strip().lower()
         status_display = notion_status_to_display(status_internal)
-        logger.info("task_reused task_id=%s title=%r status=%s", task_id[:12] if task_id else "?", title[:50], status_display)
+        logger.info("similar_task_detected task_id=%s title=%r status=%s", task_id[:12] if task_id else "?", title[:50], status_display)
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("similar_task_detected", task_id=task_id, task_title=title[:80], details={"intent_preview": (intent_text or "")[:100]})
+        except Exception:
+            pass
+
+        # Always append the new Telegram input to the existing task (full traceability)
+        input_merged = append_telegram_input_to_task(task_id, intent_text, user)
+        if input_merged:
+            logger.info("telegram_input_merged_into_existing_task task_id=%s", task_id[:12] if task_id else "?")
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event("telegram_input_merged_into_existing_task", task_id=task_id, task_title=title[:80], details={"intent_len": len(intent_text or "")})
+                log_agent_event("notion_task_updated_from_telegram", task_id=task_id, task_title=title[:80], details={"merged": True})
+            except Exception:
+                pass
+        else:
+            logger.warning("telegram_input_dropped_after_match task_id=%s append_failed", task_id[:12] if task_id else "?")
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event("telegram_input_dropped_after_match", task_id=task_id, task_title=title[:80], details={"reason": "append_failed", "intent_preview": (intent_text or "")[:100]})
+            except Exception:
+                pass
+
         # Recompute priority with reused boost and update in Notion
         reused_priority = compute_task_priority(
             {"title": title, "type": existing.get("type"), "details": existing.get("details")},
@@ -449,14 +538,24 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
                 append_comment="Re-triggered via Telegram; moved to Ready for Investigation.",
             )
             status_display = notion_status_to_display("ready-for-investigation")
+
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event("task_created", task_id=task_id, task_title=title[:80], details={"reused": True, "input_merged": input_merged})
+            log_agent_event("notion_sync_succeeded", task_id=task_id, task_title=title[:80], details={"source": "telegram", "reused": True, "input_merged": input_merged})
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "reused": True,
+            "input_merged": input_merged,
             "task_id": task_id,
             "title": title,
             "status": status_display,
             "type": (existing.get("type") or "").strip() or DEFAULT_TYPE,
             "priority": reused_priority,
+            "priority_label": _priority_score_to_label(reused_priority),
         }
 
     # Build details: objective + original intent (for pipeline and audit)
@@ -464,40 +563,64 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
     if (task.get("details") or "").strip() and task.get("details") != task.get("objective"):
         details = details + "\n\nOriginal intent:\n" + (task.get("details") or "").strip()
 
-    # Compute priority and value for creation and gating
+    # Compute priority and value for prioritization only. NEVER block creation.
     priority_score = compute_task_priority(task, intent_text, reused=False)
     value_score = compute_task_value(task, intent_text)
+    priority_label = _priority_score_to_label(priority_score)
 
-    # Creation gate: do not create low-value tasks unless safety pass (Bug, production, priority > 60)
-    if not _value_gate_safety_pass(task, priority_score) and value_score < VALUE_CREATION_THRESHOLD:
-        reasons = _rejection_reasons(task, intent_text)
-        reason_text = "; ".join(reasons) if reasons else "low impact"
+    # Low-impact: assign status=backlog (queued), priority=low. User decides what matters.
+    is_low_impact = _is_low_impact(value_score, priority_score, task, intent_text)
+    title_preview = (task.get("title") or "")[:80]
+    logger.info(
+        "task_compiler_impact decision title=%s value_score=%d priority_score=%d is_low_impact=%s safety_pass=%s",
+        repr(title_preview), value_score, priority_score, is_low_impact, _value_gate_safety_pass(task, priority_score, intent_text),
+    )
+    if is_low_impact:
+        task_status = "backlog"  # queued; Backlog is in Notion schema
+        task_priority_label = PRIORITY_LABEL_LOW
+        reasons = _low_impact_reasons(task, intent_text)
+        logger.info(
+            "task_compiler_low_impact reasons=%s value=%d priority=%d",
+            reasons, value_score, priority_score,
+        )
         try:
             from app.services.agent_activity_log import log_agent_event
             log_agent_event(
-                "task_rejected_low_value",
+                "task_created_low_priority",
                 task_title=(task.get("title") or "")[:200],
-                details={"value": value_score, "priority": priority_score, "reasons": reasons},
+                details={
+                    "value": value_score,
+                    "priority": priority_score,
+                    "reasons": reasons,
+                    "status": task_status,
+                },
             )
         except Exception:
             pass
-        logger.info("task_rejected_low_value value=%d priority=%d reasons=%s", value_score, priority_score, reasons)
-        return {
-            "ok": False,
-            "error": "This task has low impact and was not created. If this is important, please clarify urgency or impact.",
-            "rejected_low_value": True,
-            "reasons": reasons,
-        }
+        logger.info(
+            "task_created_low_priority value=%d priority=%d reasons=%s status=%s",
+            value_score, priority_score, reasons, task_status,
+        )
+    else:
+        task_status = (task.get("status") or DEFAULT_STATUS).strip()
+        task_priority_label = priority_label
 
-    # Create in Notion via existing integration
+    # Create in Notion via existing integration (always; never reject)
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event("notion_sync_started", task_title=(task.get("title") or "")[:80], details={"source": "telegram"})
+    except Exception:
+        pass
+
     page = create_notion_task(
         title=(task.get("title") or "Untitled").strip(),
         project=DEFAULT_PROJECT,
         type=(task.get("type") or DEFAULT_TYPE).strip(),
         details=details,
-        status=(task.get("status") or DEFAULT_STATUS).strip(),
+        status=task_status,
         source=(task.get("source") or DEFAULT_SOURCE).strip(),
         execution_mode=(task.get("execution_mode") or DEFAULT_EXECUTION_MODE).strip(),
+        priority=_priority_label_for_notion(task_priority_label),
         priority_score=priority_score,
     )
 
@@ -508,11 +631,21 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
                 "ok": True,
                 "task_id": "dry-run-fake-id",
                 "title": (task.get("title") or "").strip(),
-                "status": notion_status_to_display((task.get("status") or DEFAULT_STATUS).strip()),
+                "status": notion_status_to_display(task_status),
                 "type": (task.get("type") or DEFAULT_TYPE).strip(),
                 "priority": priority_score,
+                "priority_label": task_priority_label,
             }
         logger.error("notion_task_creation_failed create_notion_task returned None (dedup or API error) title=%r", (task.get("title") or "")[:50])
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "notion_sync_failed",
+                task_title=(task.get("title") or "")[:80],
+                details={"reason": "create_notion_task returned None", "source": "telegram"},
+            )
+        except Exception:
+            pass
         # Graceful degradation: store locally so task is not lost; retry will sync later
         fallback_id = store_fallback_task(task)
         if fallback_id:
@@ -526,9 +659,15 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
 
     task_id = (page.get("id") or "").strip()
     logger.info("notion_task_created task_id=%s title=%r", task_id[:12] if task_id else "?", (task.get("title") or "")[:50])
-    logger.info("new_task_created task_id=%s title=%r priority=%d", task_id[:12] if task_id else "?", (task.get("title") or "")[:50], priority_score)
+    logger.info("new_task_created task_id=%s title=%r priority=%d priority_label=%s", task_id[:12] if task_id else "?", (task.get("title") or "")[:50], priority_score, task_priority_label)
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event("task_created", task_id=task_id, task_title=(task.get("title") or "")[:80], details={"priority": priority_score, "priority_label": task_priority_label})
+        log_agent_event("notion_sync_succeeded", task_id=task_id, task_title=(task.get("title") or "")[:80], details={"source": "telegram"})
+    except Exception:
+        pass
 
-    status_display = notion_status_to_display((task.get("status") or DEFAULT_STATUS).strip())
+    status_display = notion_status_to_display(task_status)
     return {
         "ok": True,
         "task_id": task_id,
@@ -536,6 +675,7 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
         "status": status_display,
         "type": (task.get("type") or DEFAULT_TYPE).strip(),
         "priority": priority_score,
+        "priority_label": task_priority_label,
     }
 
 
@@ -554,6 +694,15 @@ def retry_failed_notion_tasks() -> int:
         task = entry.get("task") or {}
         if not fallback_id or not task:
             continue
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "notion_sync_started",
+                task_title=(task.get("title") or "")[:80],
+                details={"source": "retry", "fallback_id": fallback_id},
+            )
+        except Exception:
+            pass
         details = (task.get("objective") or "").strip()
         if (task.get("details") or "").strip() and task.get("details") != task.get("objective"):
             details = details + "\n\nOriginal intent:\n" + (task.get("details") or "").strip()
@@ -571,10 +720,39 @@ def retry_failed_notion_tasks() -> int:
             )
         except Exception as e:
             logger.warning("retry_failed_notion_tasks create_notion_task failed fallback_id=%s err=%s", fallback_id, e)
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "notion_sync_failed",
+                    task_title=(task.get("title") or "")[:80],
+                    details={"source": "retry", "fallback_id": fallback_id, "error": str(e)},
+                )
+            except Exception:
+                pass
             continue
-        if page and not page.get("dry_run"):
-            if remove_fallback_task(fallback_id):
-                synced += 1
-                notion_id = (page.get("id") or "").strip()
-                logger.info("fallback_task_synced task_id=%s fallback_id=%s", notion_id[:12] if notion_id else "?", fallback_id)
+        if not page or page.get("dry_run"):
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "notion_sync_failed",
+                    task_title=(task.get("title") or "")[:80],
+                    details={"source": "retry", "fallback_id": fallback_id, "reason": "create_notion_task returned None or dry_run"},
+                )
+            except Exception:
+                pass
+            continue
+        if remove_fallback_task(fallback_id):
+            synced += 1
+            notion_id = (page.get("id") or "").strip()
+            logger.info("fallback_task_synced task_id=%s fallback_id=%s", notion_id[:12] if notion_id else "?", fallback_id)
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "notion_sync_succeeded",
+                    task_id=notion_id,
+                    task_title=(task.get("title") or "")[:80],
+                    details={"source": "retry", "fallback_id": fallback_id},
+                )
+            except Exception:
+                pass
     return synced

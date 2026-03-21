@@ -41,7 +41,10 @@ Backward compatibility: **awaiting-deploy-approval** is still supported (deploy 
    - **Optional Cursor bridge:** if `CURSOR_BRIDGE_AUTO_IN_ADVANCE` is set and a handoff file exists, runs `run_bridge_phase2()` (apply + tests). If that passes, sets status to **ready-for-deploy**, sends **one** Telegram approval, returns.
    - Otherwise: re-selects callbacks to get `validate_fn` (and optionally `verify_solution_fn`).
    - Runs **validate_fn** (generic/task-specific validation). If it fails → task stays in **patching**, comment + log; no Telegram.
-   - Runs **verify_solution_fn** if enabled (solution verification). If it fails → task moves to **needs-revision**, Telegram “Re-investigate”; no deploy approval.
+   - Runs **verify_solution_fn** if enabled (solution verification).
+     - **Verification passed** → advance to ready-for-deploy, send deploy approval.
+     - **Verification failed** (solution does not address task) → task moves to **needs-revision**, Telegram “Re-investigate”; no deploy approval.
+     - **Verification unavailable** (OpenClaw not configured, API error, etc.) → advance to ready-for-deploy, send deploy approval with warning that verification was skipped; approval can proceed manually.
    - Calls **record_test_result** (test gate). On pass, **record_test_result** advances status to **ready-for-deploy**.
    - Then sends **send_patch_deploy_approval** (single Telegram message with root cause, solution, files, verification, “Do you want to deploy?”).
 

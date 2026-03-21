@@ -3,7 +3,7 @@
 **Version:** 1.0  
 **Date:** 2026-03-15
 
-ATP Control is the command/control interface for ATP agent operations. Use a **private group** or **direct bot chat** — not HILOVIVO3.0 (alerts-only).
+ATP Control is the command/control interface for ATP agent operations. Use a **private group** or **direct bot chat** — not ATP Alerts (alerts-only).
 
 ---
 
@@ -73,7 +73,7 @@ TELEGRAM_AUTH_USER_ID=-1001234567890,839853931
 |----------|---------|
 | `TELEGRAM_CHAT_ID` | Primary command chat (ATP Control group or direct chat ID) |
 | `TELEGRAM_AUTH_USER_ID` | Comma-separated list of authorized chat IDs and user IDs |
-| `TELEGRAM_CHAT_ID_TRADING` | HILOVIVO3.0 — alerts only. Do NOT add to command auth. |
+| `TELEGRAM_CHAT_ID_TRADING` | ATP Alerts — alerts only. Do NOT add to command auth. |
 
 ---
 
@@ -91,5 +91,5 @@ TELEGRAM_AUTH_USER_ID=-1001234567890,839853931
 | Symptom | Action |
 |---------|--------|
 | "⛔ Not authorized" | Add your chat_id or user_id to `TELEGRAM_AUTH_USER_ID` or `TELEGRAM_CHAT_ID` |
-| "HILOVIVO3.0 is alerts-only" | You are in HILOVIVO3.0. Use ATP Control instead. |
+| "ATP Alerts is alerts-only" | You are in ATP Alerts. Use ATP Control instead. |
 | No reply at all | Check `[TG][INTAKE]` in logs — if missing, bot may not be receiving updates |

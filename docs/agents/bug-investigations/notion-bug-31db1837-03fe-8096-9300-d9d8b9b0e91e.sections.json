@@ -1,0 +1,14 @@
+{
+  "task_id": "31db1837-03fe-8096-9300-d9d8b9b0e91e",
+  "title": "Investigate duplicate signal alert generation after monitoring cycle",
+  "source": "fallback+backfill",
+  "sections": {
+    "_preamble": "# Bug investigation: Investigate duplicate signal alert generation after monitoring cycle\n\n- **Notion page id**: `31db1837-03fe-8096-9300-d9d8b9b0e91e`\n- **Priority**: `High`\n- **Project**: `Crypto Trading`\n- **Type**: `Bug`\n- **GitHub link**: ``",
+    "Inferred area": "- **Area**: Trading Engine / Strategy\n- **Matched rules**: strategy-signals",
+    "Affected modules": "- `backend/app/services/signal_monitor.py`\n- `backend/app/services/trading_signals.py`\n- `backend/app/services/strategy_profiles.py`\n- `backend/app/services/signal_throttle.py`",
+    "Relevant docs": "- [docs/architecture/system-map.md](../../architecture/system-map.md)\n- [docs/agents/context.md](../context.md)\n- [docs/agents/task-system.md](../task-system.md)\n- [docs/decision-log/README.md](../../decision-log/README.md)\n- [docs/integrations/crypto-api.md](../../integrations/crypto-api.md)",
+    "Relevant runbooks": "- [docs/runbooks/OPEN_VS_TRIGGER_ORDERS_DIAGNOSTIC.md](../../runbooks/OPEN_VS_TRIGGER_ORDERS_DIAGNOSTIC.md)",
+    "Bug details": "- **Reported symptom**: Investigate duplicate signal alert generation after monitoring cycle\n- **Reproducible**: (to be confirmed)\n- **Severity**: (inferred from priority: High)",
+    "Investigation checklist": "- [ ] Confirm current behavior (logs, health endpoint, dashboard)\n- [ ] Identify root cause in affected module(s)\n- [ ] Determine smallest safe fix\n- [ ] Verify fix does not affect unrelated areas\n- [ ] Update relevant docs/runbooks if behavior changes\n- [ ] Validate (tests/lint/manual) before marking deployed"
+  }
+}

@@ -4,7 +4,7 @@ Test gate for task lifecycle progression.
 Records test execution results and conditionally advances tasks through
 the extended lifecycle based on outcome:
 
-    patching / testing  →  ready-for-deploy  (if passed)
+    patching / testing  →  release-candidate-ready  (if passed)
     patching / testing  →  stays in place            (if failed / partial / not-run)
 
 Persists the test outcome to the Notion ``Test Status`` metadata field
@@ -73,7 +73,7 @@ def record_test_result(
         Optional structured details (stored in activity log, not Notion).
     advance_on_pass:
         When True and outcome is ``passed``, advance the task from
-        ``testing`` / ``patching`` to ``ready-for-deploy``.
+        ``testing`` / ``patching`` to ``release-candidate-ready``.
         Set to False if you only want to record the result without
         moving the task (useful for legacy lifecycle callers).
     current_status:
@@ -160,10 +160,10 @@ def record_test_result(
             if should_advance:
                 try:
                     from app.services.notion_tasks import (
-                        TASK_STATUS_READY_FOR_DEPLOY,
+                        TASK_STATUS_RELEASE_CANDIDATE_READY,
                         update_notion_task_status,
                     )
-                    target = TASK_STATUS_READY_FOR_DEPLOY
+                    target = TASK_STATUS_RELEASE_CANDIDATE_READY
                     ok = update_notion_task_status(
                         task_id,
                         target,

@@ -27,6 +27,10 @@ ENV_INVENTORY = [
     ("TELEGRAM_AUTH_USER_ID", "Optional: allowed user ID(s) for bot commands", "backend/app/services/telegram_commands.py", "NO", "Reuse or leave empty"),
     ("TELEGRAM_ALERT_BOT_TOKEN", "Telegram for Alertmanager (Prometheus alerts)", "scripts/aws/observability/telegram-alerts/server.py", "YES", "Separate bot or same as prod (encrypted)"),
     ("TELEGRAM_ALERT_CHAT_ID", "Chat ID for Alertmanager alerts", "scripts/aws/observability/telegram-alerts/server.py", "NO", "Reuse same TELEGRAM_CHAT_ID or separate channel"),
+    ("TELEGRAM_ATP_CONTROL_BOT_TOKEN", "ATP Control bot (@ATP_control_bot): tasks, approvals, investigations", "backend/app/services/claw_telegram.py", "NO", "ATP Control bot token; fallback TELEGRAM_CLAW_BOT_TOKEN"),
+    ("TELEGRAM_ATP_CONTROL_CHAT_ID", "ATP Control channel for tasks, approvals, needs revision", "backend/app/services/claw_telegram.py", "NO", "ATP Control channel; fallback TELEGRAM_CLAW_CHAT_ID"),
+    ("TELEGRAM_CLAW_BOT_TOKEN", "Claw bot (@Claw_cruz_bot): control plane, /task /help (fallback for ATP)", "backend/app/services/claw_telegram.py", "NO", "Claw bot token; used when ATP_CONTROL_* unset"),
+    ("TELEGRAM_CLAW_CHAT_ID", "Claw channel (fallback for ATP Control)", "backend/app/services/claw_telegram.py", "NO", "Claw channel; used when ATP_CONTROL_* unset"),
     # Crypto.com Exchange
     ("EXCHANGE_CUSTOM_API_KEY", "Crypto.com Exchange API key", "backend routes_internal, portfolio, diag, verify_credentials, etc.", "YES", "Rotate in Crypto.com Exchange UI; create new API key"),
     ("EXCHANGE_CUSTOM_API_SECRET", "Crypto.com Exchange API secret", "backend routes_internal, portfolio, diag, verify_credentials", "YES", "From Exchange when creating new API key"),

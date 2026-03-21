@@ -1,0 +1,1 @@
+verification unavailable: OpenClaw not configured

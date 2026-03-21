@@ -9,6 +9,7 @@ Tests:
 """
 
 import sys
+import os
 import requests
 import json
 from pathlib import Path
@@ -17,13 +18,20 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-BASE_URL = "http://localhost:8000"  # Adjust if needed
+# Shared env (API_BASE_URL, AWS_BACKEND_URL, API_URL) or local default 8002
+BASE_URL = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("AWS_BACKEND_URL")
+    or os.getenv("API_URL")
+    or "http://localhost:8002"
+)
 
 
 def test_get_dashboard():
     """Test GET /api/dashboard endpoint."""
     print("=" * 60)
     print("Test 1: GET /api/dashboard")
+    print(f"Base URL: {BASE_URL}")
     print("=" * 60)
     
     try:

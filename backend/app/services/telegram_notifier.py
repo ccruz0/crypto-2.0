@@ -289,7 +289,7 @@ class TelegramNotifier:
             token_source = "aws" if token_aws else ("generic" if token_generic else "missing")
             chat_id_source = "aws" if chat_aws else ("generic" if chat_generic else "missing")
 
-            # Store both chat IDs for routing (trading=HILOVIVO3.0, ops=AWS_alerts)
+            # Store both chat IDs for routing (trading=ATP Alerts, ops=AWS_alerts)
             self._chat_id_trading = chat_id_trading or None
             self._chat_id_ops = chat_id_ops or None
 
@@ -402,7 +402,7 @@ class TelegramNotifier:
         - Blocks Telegram sends for non-AWS origins (logs instead)
         - Adds environment prefix [AWS] or [LOCAL] based on origin
         - Routes to the appropriate channel based on chat_destination:
-          - "trading" -> TELEGRAM_CHAT_ID_TRADING (HILOVIVO3.0: signals, orders, reports)
+          - "trading" -> TELEGRAM_CHAT_ID_TRADING (ATP Alerts: signals, orders, reports)
           - "ops" -> TELEGRAM_CHAT_ID_OPS (AWS_alerts: health, anomalies, scheduler)
         
         Args:
@@ -411,7 +411,7 @@ class TelegramNotifier:
             origin: Origin identifier ("AWS" or "LOCAL"). If None, defaults to runtime origin.
                     Only "AWS" origin will actually send to Telegram.
             symbol: Optional trading symbol (e.g., "BTC_USDT"). If not provided, will be extracted from message.
-            chat_destination: "trading" for HILOVIVO3.0 (signals, orders), "ops" for AWS_alerts (health, anomalies).
+            chat_destination: "trading" for ATP Alerts (signals, orders), "ops" for AWS_alerts (health, anomalies).
             
         Returns:
             True if message sent successfully, False otherwise
@@ -514,7 +514,7 @@ class TelegramNotifier:
             
             # Log Telegram send attempt with full context and routing
             category = "TRADING" if chat_destination == "trading" else "INFRA"
-            dest_bot = "HILOVIVO30" if chat_destination == "trading" else "AWS_alerts"
+            dest_bot = "ATP_ALERTS" if chat_destination == "trading" else "AWS_alerts"
             logger.info(
                 "[TELEGRAM_ROUTE] category=%s destination=%s bot=%s chat_id=%s dest=%s origin=%s "
                 "source_module=telegram_notifier message_len=%d",

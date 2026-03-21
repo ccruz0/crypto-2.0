@@ -6,7 +6,7 @@ Four distinct channels. See `docs/audits/TELEGRAM_ROUTING_AUDIT.md` for full aud
 
 | Canal | Bot | Env Vars | Contenido |
 |-------|-----|----------|-----------|
-| **HiloVivo 3.0** (trading) | @HILOVIVO30_bot | TELEGRAM_CHAT_ID_TRADING | Señales BUY/SELL, órdenes, SL/TP, reportes |
+| **ATP Alerts** (trading) | @ATP_ALERTS_bot | TELEGRAM_CHAT_ID_TRADING | Señales BUY/SELL, órdenes, SL/TP, reportes |
 | **AWS Alerts** (ops/infra) | @AWS_alerts_hilovivo_bot | TELEGRAM_CHAT_ID_OPS, TELEGRAM_ALERT_* | Health, EC2/Docker, anomalías |
 | **ATP Control** (dev/tasks) | @ATP_control_bot | TELEGRAM_ATP_CONTROL_* | Tasks, approvals, investigations |
 | **Claw** (commands) | @Claw_cruz_bot | (reply to user) | /task /help, OpenClaw responses |
@@ -17,7 +17,7 @@ Four distinct channels. See `docs/audits/TELEGRAM_ROUTING_AUDIT.md` for full aud
 # Trading (HILOVIVO3.0) - señales, órdenes, reportes
 TELEGRAM_CHAT_ID=<chat_id_hilovivo3>
 # o explícito:
-TELEGRAM_CHAT_ID_TRADING=<chat_id_hilovivo3>
+TELEGRAM_CHAT_ID_TRADING=<chat_id_atp_alerts>
 
 # Ops (AWS_alerts) - health, anomalías, servidor
 TELEGRAM_CHAT_ID_OPS=<chat_id_aws_alerts>

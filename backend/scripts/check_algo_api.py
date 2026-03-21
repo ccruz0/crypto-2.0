@@ -5,18 +5,23 @@ import json
 import sys
 import os
 
-# Default API URL (puede ser sobrescrito con variable de entorno)
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Shared env (API_BASE_URL, AWS_BACKEND_URL) or local default 8002
+API_BASE_URL = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("AWS_BACKEND_URL")
+    or "http://localhost:8002"
+)
 SYMBOL = "ALGO_USDT"
 
 def main():
     print("=" * 80)
     print(f"🔍 Verificando estado de alertas para {SYMBOL}")
     print("=" * 80)
+    print(f"📡 API Base: {API_BASE_URL}")
     print()
     
     # Construir URL del endpoint
-    url = f"{API_BASE_URL}/api/dashboard/symbol/{SYMBOL}"
+    url = f"{API_BASE_URL.rstrip('/')}/api/dashboard/symbol/{SYMBOL}"
     
     print(f"📡 Consultando: {url}")
     print()
@@ -142,7 +147,7 @@ def main():
         print("   - La URL sea correcta (usa API_BASE_URL env var para cambiarla)")
         print("   - No haya problemas de red/firewall")
         print()
-        print("   Ejemplo: API_BASE_URL=http://localhost:8000 python3 check_algo_api.py")
+        print("   Ejemplo: API_BASE_URL=http://localhost:8002 python3 check_algo_api.py")
         sys.exit(1)
     except requests.exceptions.Timeout:
         print(f"❌ Timeout: La petición tardó demasiado")

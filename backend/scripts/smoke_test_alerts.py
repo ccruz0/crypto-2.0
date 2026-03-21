@@ -29,8 +29,12 @@ from app.models.watchlist import WatchlistItem
 from app.models.telegram_message import TelegramMessage
 from app.models.market_price import MarketData
 
-# Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Configuration: shared env (API_BASE_URL, AWS_BACKEND_URL) or local default 8002
+API_BASE_URL = (
+    os.getenv("API_BASE_URL")
+    or os.getenv("AWS_BACKEND_URL")
+    or "http://localhost:8002"
+)
 DRY_RUN = True
 
 class SmokeTestResults:

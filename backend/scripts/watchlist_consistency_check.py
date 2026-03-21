@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import requests
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, cast
 import hashlib
 from urllib.parse import urlparse, urlunparse
 
@@ -204,8 +204,10 @@ def get_resolved_strategy_key(db: Session, item: WatchlistItem) -> Optional[str]
     """
     try:
         from app.services.strategy_profiles import resolve_strategy_profile
+        # ORM instance values are str at runtime; declarative Column typing is Column[str].
+        symbol = cast(str, item.symbol)
         strategy_type, risk_approach = resolve_strategy_profile(
-            symbol=item.symbol,
+            symbol=symbol,
             db=db,
             watchlist_item=item
         )
@@ -213,7 +215,7 @@ def get_resolved_strategy_key(db: Session, item: WatchlistItem) -> Optional[str]
             return f"{strategy_type.value}-{risk_approach.value}"
         return None
     except Exception as e:
-        logger.debug(f"Could not resolve strategy for {item.symbol}: {e}")
+        logger.debug(f"Could not resolve strategy for {cast(str, item.symbol)}: {e}")
         return None
 
 
@@ -444,11 +446,19 @@ def main():
             logger.info("Starting watchlist consistency check...")
             
             # Try to determine API URL from environment or use default
-            # In Docker, try localhost:8002 first, then fallback to 8000
-            api_url = os.getenv("API_URL")
+            api_base = (
+                os.getenv("API_BASE_URL")
+                or os.getenv("AWS_BACKEND_URL")
+                or os.getenv("API_URL")
+            )
+            if api_base:
+                base = api_base.rstrip("/")
+                api_url = base + "/api/dashboard" if not base.endswith("/api/dashboard") else base
+            else:
+                api_url = None
             if not api_url:
-                # Try common ports when running inside Docker
-                for port in [8002, 8000]:
+                # Probe localhost:8002 (backend port)
+                for port in [8002]:
                     test_url = f"http://localhost:{port}/api/dashboard"
                     try:
                         response = requests.get(test_url, timeout=2)
@@ -456,7 +466,7 @@ def main():
                             api_url = test_url
                             logger.info(f"Auto-detected API URL: {api_url}")
                             break
-                    except:
+                    except Exception:
                         continue
                 
                 if not api_url:

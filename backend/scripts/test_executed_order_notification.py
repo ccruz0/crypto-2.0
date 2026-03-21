@@ -10,11 +10,20 @@ import json
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Shared env (API_BASE_URL, AWS_BACKEND_URL, API_URL) or local default 8002
+def _get_api_base():
+    return (
+        os.getenv("API_BASE_URL")
+        or os.getenv("AWS_BACKEND_URL")
+        or os.getenv("API_URL")
+        or "http://localhost:8002"
+    )
+
 def test_executed_order_notification():
     """Test different order origin scenarios"""
     
-    # Get API URL from environment or use default
-    api_url = os.getenv("API_URL", "http://localhost:8000")
+    api_url = _get_api_base()
+    print(f"API Base: {api_url}\n")
     
     # Test cases
     test_cases = [

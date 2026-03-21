@@ -98,7 +98,7 @@ If the **Notion task** for the health alert is not created, the backend may be d
 **Cause:** `TELEGRAM_CHAT_ID` is set to a private chat ID (positive, e.g. `839853931`) instead of the channel ID (negative, e.g. `-1001234567890`).
 
 **Routing:** Separate channels for trading vs ops:
-- **HILOVIVO3.0** (trading): `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_TRADING` — signals, orders, reports
+- **ATP Alerts** (trading): `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_ID_TRADING` — signals, orders, reports
 - **AWS_alerts** (ops): `TELEGRAM_CHAT_ID_OPS` — health, anomalies, scheduler
 See [TELEGRAM_CHANNEL_ROUTING.md](TELEGRAM_CHANNEL_ROUTING.md).
 

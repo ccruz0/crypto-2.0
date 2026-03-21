@@ -1,0 +1,24 @@
+diff --git a/backend/app/api/routes_dashboard.py b/backend/app/api/routes_dashboard.py
+index 6d3425d..de91534 100644
+--- a/backend/app/api/routes_dashboard.py
++++ b/backend/app/api/routes_dashboard.py
+@@ -1609,11 +1609,16 @@ def update_watchlist_item_by_symbol(
+                 new_value = payload[field]
+                 
+                 # Handle boolean fields - convert None to False for booleans only
+-                if field in ["trade_enabled", "trade_on_margin", "alert_enabled", 
+-                            "buy_alert_enabled", "sell_alert_enabled", "sold", 
++                if field in ["trade_enabled", "trade_on_margin", "alert_enabled",
++                            "buy_alert_enabled", "sell_alert_enabled", "sold",
+                             "skip_sl_tp_reminder"]:
+                     new_value = bool(new_value) if new_value is not None else False
+-                
++
++                # Guard: do not allow purchase_price to be set to null when item has a value
++                # (prevents frontend reset from clearing DB; see purchase_price investigation)
++                if field == "purchase_price" and new_value is None and old_value is not None:
++                    continue  # Preserve existing purchase_price; do not overwrite with null
++
+                 # CRITICAL: For trade_amount_usd, allow None/null explicitly (no default)
+                 # Only update if value actually changed
+                 if old_value != new_value:

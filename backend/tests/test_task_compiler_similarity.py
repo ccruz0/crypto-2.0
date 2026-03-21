@@ -136,18 +136,22 @@ class TestFindSimilarTask:
 
 
 class TestCreateTaskFromTelegramIntentReuse:
-    """create_task_from_telegram_intent returns reused and does not create when similar exists."""
+    """create_task_from_telegram_intent returns reused and merges new input when similar exists."""
 
+    @patch("app.services.task_compiler.update_notion_task_priority", return_value=True)
     @patch("app.services.task_compiler.update_notion_task_status")
+    @patch("app.services.task_compiler.append_telegram_input_to_task", return_value=True)
     @patch("app.services.task_compiler.create_notion_task")
     @patch("app.services.task_compiler.find_similar_task")
     @patch("app.services.task_compiler.notion_is_configured", return_value=True)
-    def test_reused_response_has_reused_true_and_no_create(
+    def test_reused_response_merges_input_and_no_create(
         self,
         _mock_configured: object,
         mock_find: object,
         mock_create: object,
+        mock_append: object,
         _mock_update_status: object,
+        _mock_update_priority: object,
     ) -> None:
         mock_find.return_value = {
             "id": "existing-id",
@@ -158,9 +162,39 @@ class TestCreateTaskFromTelegramIntentReuse:
         result = create_task_from_telegram_intent("investigate alerts not working", "Carlos")
         assert result.get("ok") is True
         assert result.get("reused") is True
+        assert result.get("input_merged") is True
         assert result.get("task_id") == "existing-id"
         assert result.get("title") == "Investigate alerts not working"
         mock_create.assert_not_called()
+        mock_append.assert_called_once_with("existing-id", "investigate alerts not working", "Carlos")
+
+    @patch("app.services.task_compiler.update_notion_task_priority", return_value=True)
+    @patch("app.services.task_compiler.update_notion_task_status")
+    @patch("app.services.task_compiler.append_telegram_input_to_task", return_value=False)
+    @patch("app.services.task_compiler.create_notion_task")
+    @patch("app.services.task_compiler.find_similar_task")
+    @patch("app.services.task_compiler.notion_is_configured", return_value=True)
+    def test_reused_when_append_fails_still_returns_ok_input_merged_false(
+        self,
+        _mock_configured: object,
+        mock_find: object,
+        mock_create: object,
+        mock_append: object,
+        _mock_update_status: object,
+        _mock_update_priority: object,
+    ) -> None:
+        mock_find.return_value = {
+            "id": "existing-id",
+            "task": "Fix purchase_price discrepancy",
+            "status": "needs-revision",
+            "type": "Bug",
+        }
+        result = create_task_from_telegram_intent("fix purchase_price across trading system", "Carlos")
+        assert result.get("ok") is True
+        assert result.get("reused") is True
+        assert result.get("input_merged") is False
+        mock_create.assert_not_called()
+        mock_append.assert_called_once()
 
     @patch("app.services.task_compiler.create_notion_task")
     @patch("app.services.task_compiler.find_similar_task", return_value=None)

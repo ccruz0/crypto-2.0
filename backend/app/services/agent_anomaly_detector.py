@@ -168,7 +168,7 @@ def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> Non
 
 
 def _notify_telegram(message: str) -> bool:
-    """Send ops alert. Suppressed in quiet mode (only deploy and critical go to Telegram)."""
+    """Send to Claw (task-system). Anomaly detector creates Notion tasks. Suppressed in quiet mode."""
     try:
         from app.services.agent_telegram_policy import is_quiet_mode
         if is_quiet_mode():
@@ -177,8 +177,9 @@ def _notify_telegram(message: str) -> bool:
     except Exception:
         pass
     try:
-        from app.services.telegram_notifier import telegram_notifier
-        return telegram_notifier.send_message(message, chat_destination="ops")
+        from app.services.claw_telegram import send_claw_message
+        sent, _ = send_claw_message(message, message_type="TASK", source_module="agent_anomaly_detector")
+        return sent
     except Exception as e:
         logger.debug("agent_anomaly_detector: telegram notification failed (non-fatal) %s", e)
         return False

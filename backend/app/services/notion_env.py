@@ -204,26 +204,20 @@ def check_notion_health_transition_and_alert() -> None:
     )
     _last_health_ok = current_ok
 
-    try:
-        from app.services.telegram_notifier import telegram_notifier
-    except Exception:
-        return
-
     if not current_ok:
         # Degraded: send at most one alert per NOTION_DEGRADED_ALERT_COOLDOWN_MINUTES
         now = datetime.now(timezone.utc)
         if _last_degraded_alert_at is not None:
             if (now - _last_degraded_alert_at) < timedelta(minutes=NOTION_DEGRADED_ALERT_COOLDOWN_MINUTES):
                 return
-        if not getattr(telegram_notifier, "enabled", False):
-            return
         msg = (
             "⚠️ Notion integration degraded on LAB\n"
             f"env_ok={health.get('env_ok')} env_source={health.get('env_source') or '?'}\n"
             f"last_error={str(health.get('last_error') or '')[:200]}"
         )
         try:
-            telegram_notifier.send_message(msg, chat_destination="ops")
+            from app.services.claw_telegram import send_claw_message
+            send_claw_message(msg, message_type="ERROR", source_module="notion_env")
             _last_degraded_alert_at = now
             logger.info("notion_health_alert sent degraded")
         except Exception as e:
@@ -232,10 +226,9 @@ def check_notion_health_transition_and_alert() -> None:
 
     # Healthy: if we just recovered, send one recovery alert
     if previous is False:
-        if not getattr(telegram_notifier, "enabled", False):
-            return
         try:
-            telegram_notifier.send_message("✅ Notion integration recovered", chat_destination="ops")
+            from app.services.claw_telegram import send_claw_message
+            send_claw_message("✅ Notion integration recovered", message_type="TASK", source_module="notion_env")
             logger.info("notion_health_alert sent recovered")
         except Exception as e:
             logger.warning("notion_health_alert recovered send failed: %s", e)

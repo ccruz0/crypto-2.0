@@ -552,7 +552,7 @@ def run_revalidate_patching_playbook(
       - No prior recovery_revalidate_patching_attempt for this task
 
     Action: Call advance_ready_for_patch_task once (re-runs validation).
-    If validation passes → advance to ready-for-deploy.
+    If validation passes → advance to release-candidate-ready.
     If validation fails → task stays in patching, existing escalation applies.
 
     Retry rule: Max 1 recovery attempt per task (enforced via activity log).
@@ -598,8 +598,8 @@ def run_revalidate_patching_playbook(
             final_status = r.get("final_status", "")
             summary = r.get("summary", "")
 
-            # Map to outcome: passed if advanced to ready-for-deploy
-            advanced = final_status == "ready-for-deploy"
+            # Map to outcome: passed if advanced to release-candidate-ready
+            advanced = final_status in ("release-candidate-ready", "ready-for-deploy")
             outcome = "passed" if advanced else ("failed" if not ok else "no_advance")
 
             _log_recovery_event(
@@ -681,24 +681,46 @@ def artifact_exists_for_task(task_id: str, min_size: int = 200) -> bool:
     return False
 
 
+def artifact_and_sidecar_exist_for_task(task_id: str, min_size: int = 200) -> tuple[bool, str]:
+    """
+    True if artifact AND sidecar both exist and artifact meets min_size.
+    Returns (ok, reason) for structured logging.
+    """
+    for md_path, sidecar_path in _get_artifact_paths(task_id):
+        if not md_path.exists():
+            continue
+        try:
+            if md_path.stat().st_size < min_size:
+                return False, f"artifact_too_small path={md_path} size={md_path.stat().st_size}"
+        except OSError:
+            continue
+        if not sidecar_path.exists():
+            return False, f"sidecar_missing path={sidecar_path}"
+        try:
+            data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            sections = data.get("sections") if isinstance(data, dict) else None
+            if not sections or not isinstance(sections, dict):
+                return False, f"sidecar_empty_or_invalid path={sidecar_path}"
+        except Exception as e:
+            return False, f"sidecar_unreadable path={sidecar_path} err={e}"
+        return True, "ok"
+    return False, "artifact_missing"
+
+
 def _get_artifact_paths(task_id: str) -> list[tuple[Path, Path]]:
     """Return list of (md_path, sidecar_path) for each artifact config.
 
-    Uses get_writable_bug_investigations_dir() for bug-investigations so recovery
-    looks in the same path as apply/validate (repo or fallback when docs/ not writable).
+    Uses get_writable_dir_for_subdir() so recovery looks in the same canonical path
+    as apply/validate (repo or fallback when docs/ not writable).
     """
     task_id = (task_id or "").strip()
     if not task_id:
         return []
     try:
-        from app.services._paths import workspace_root, get_writable_bug_investigations_dir
-        root = workspace_root()
+        from app.services._paths import get_writable_dir_for_subdir
         out: list[tuple[Path, Path]] = []
         for subdir, prefix in _ARTIFACT_CONFIGS:
-            if subdir == "docs/agents/bug-investigations":
-                base = get_writable_bug_investigations_dir()
-            else:
-                base = root / subdir
+            base = get_writable_dir_for_subdir(subdir)
             md_path = base / f"{prefix}-{task_id}.md"
             sidecar_path = base / f"{prefix}-{task_id}.sections.json"
             out.append((md_path, sidecar_path))

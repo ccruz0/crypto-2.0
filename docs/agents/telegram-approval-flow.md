@@ -8,14 +8,15 @@ Implementation: `backend/app/services/agent_telegram_approval.py` and callback h
 
 ## Two approval flows
 
-### Extended lifecycle (bug, strategy-patch, etc.) — 2 approvals
+### Extended lifecycle (bug, strategy-patch, etc.) — 1 approval
 
-Tasks with `manual_only=True` (e.g. bug investigation, strategy-patch) use the **extended lifecycle**. The scheduler runs execution directly; no pre-execution approval is sent. The operator receives **two** approval messages:
+Tasks with `manual_only=True` (e.g. bug investigation, strategy-patch) use the **extended lifecycle**. The scheduler runs execution directly; no pre-execution approval is sent. OpenClaw iterates internally (investigating → patching → verifying → re-iterating if needed) until either all acceptance checks pass or a real blocker is reached.
 
-1. **Investigation approval** — After OpenClaw analysis completes. Message includes: TASK, ROOT CAUSE, PROPOSED CHANGE, FILES AFFECTED, BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED. Buttons: **Approve**, **Reject**, **View Report**.
-2. **Deploy approval** — After patch validation passes. Message includes: TASK, CHANGE SUMMARY, FILES CHANGED, TEST STATUS, BENEFITS, RISKS, SCOPE, RISK CLASSIFICATION, ACTION REQUESTED. Buttons: **Approve Deploy**, **Reject**, **Smoke Check**, **View Report**.
+**Single approval** — Only when the task reaches **release-candidate-ready** (all acceptance checks passed). Message includes: VERSION, PROBLEMS SOLVED, IMPROVEMENTS, FILES CHANGED, VALIDATION EVIDENCE, KNOWN RISKS, and a clear approve/reject prompt. Buttons: **Approve Deploy**, **Reject**, **Smoke Check**, **View Report**.
 
-See [TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md](TELEGRAM_APPROVAL_UX_IMPROVEMENTS.md) for details and examples.
+No approval during investigation, patching, verification, or re-iteration. Blocker notifications (clearly marked) are allowed for real blockers only.
+
+See [NOTIFICATION_POLICY_SINGLE_APPROVAL.md](NOTIFICATION_POLICY_SINGLE_APPROVAL.md) for the full policy.
 
 ### Legacy flow (non–manual_only) — 1 approval
 

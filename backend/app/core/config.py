@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: Optional[str] = None  # Deprecated: use TELEGRAM_CHAT_ID_AWS or TELEGRAM_CHAT_ID_LOCAL
     TELEGRAM_CHAT_ID_AWS: Optional[str] = None  # AWS production channel (trading)
     TELEGRAM_CHAT_ID_LOCAL: Optional[str] = None  # Local development channel (not used for sending)
-    TELEGRAM_CHAT_ID_TRADING: Optional[str] = None  # HILOVIVO3.0: signals, orders, reports
+    TELEGRAM_CHAT_ID_TRADING: Optional[str] = None  # ATP Alerts: signals, orders, reports
     TELEGRAM_CHAT_ID_OPS: Optional[str] = None  # AWS_alerts: health, anomalies, scheduler
     # ATP Control (@ATP_control_bot): tasks, investigations, approvals, needs revision, agent logs
     TELEGRAM_ATP_CONTROL_BOT_TOKEN: Optional[str] = None

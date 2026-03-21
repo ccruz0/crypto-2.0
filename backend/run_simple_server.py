@@ -41,4 +41,5 @@ def test_config():
     return {"message": "Config router is working"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Port 8002 aligns with main backend (gunicorn/uvicorn)
+    uvicorn.run(app, host="127.0.0.1", port=8002)

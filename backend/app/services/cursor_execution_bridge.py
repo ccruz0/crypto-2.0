@@ -721,6 +721,7 @@ def run_bridge_phase2(
     → create_patch_pr (if create_pr=True and tests pass).
     When ingest=True (default), feeds results to record_test_result and Notion.
     """
+    _log_event("cursor_bridge_started", task_id=task_id, details={"ingest": ingest, "create_pr": create_pr})
     phase1 = run_bridge_phase1(task_id=task_id, prompt=prompt)
     if not phase1.get("ok"):
         return phase1
@@ -771,5 +772,16 @@ def run_bridge_phase2(
                 )
             except Exception as e:
                 logger.debug("cursor_bridge: Notion PR link update failed: %s", e)
+
+    if overall_ok:
+        _log_event("cursor_bridge_succeeded", task_id=task_id, details={
+            "diff_path": str(diff_path) if diff_path else None,
+            "tests_ok": tests_ok,
+        })
+    else:
+        _log_event("cursor_bridge_failed", task_id=task_id, details={
+            "invoke_ok": invoke_ok,
+            "tests_ok": tests_ok,
+        })
 
     return result

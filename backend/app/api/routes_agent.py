@@ -73,6 +73,7 @@ def agent_status() -> dict[str, Any]:
         "patching", "Patching",
     ])
     awaiting_deploy = _count_tasks_by_statuses([
+        "release-candidate-ready", "Release Candidate Ready",
         "ready-for-deploy", "Ready for Deploy",
         "awaiting-deploy-approval", "Awaiting Deploy Approval",
     ])
@@ -163,7 +164,7 @@ def agent_ops_active_tasks() -> dict[str, Any]:
         )
         deploying = get_tasks_by_status(["deploying", "Deploying"], max_results=10)
         awaiting = get_tasks_by_status(
-            ["ready-for-deploy", "Ready for Deploy", "awaiting-deploy-approval", "Awaiting Deploy Approval"],
+            ["release-candidate-ready", "Release Candidate Ready", "ready-for-deploy", "Ready for Deploy", "awaiting-deploy-approval", "Awaiting Deploy Approval"],
             max_results=10,
         )
 

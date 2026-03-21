@@ -9,6 +9,7 @@ def _clear_telegram_env(monkeypatch) -> None:
         "TELEGRAM_CHAT_ID_AWS",
         "TELEGRAM_BOT_TOKEN_LOCAL",
         "TELEGRAM_CHAT_ID_LOCAL",
+        "TELEGRAM_CHAT_ID_TRADING",
         "TELEGRAM_AUTH_USER_ID",
         "TELEGRAM_AUTH_USER_ID_AWS",
     ):
@@ -116,6 +117,40 @@ def test_refresh_config_blocks_when_kill_switch_raises(monkeypatch):
 
     assert cfg["enabled"] is False
     assert any(r.startswith("kill_switch_error:") for r in cfg["block_reasons"])
+
+
+def test_trading_alerts_routed_to_telegram_chat_id_trading(monkeypatch):
+    """Trading alerts must be routed to TELEGRAM_CHAT_ID_TRADING (ATP Alerts channel)."""
+    from unittest.mock import patch, MagicMock
+    from app.services import telegram_notifier as tg
+
+    _clear_telegram_env(monkeypatch)
+    monkeypatch.setenv("RUN_TELEGRAM", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_AWS", "token-aws")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID_TRADING", "-1003820753438")  # ATP Alerts
+
+    monkeypatch.setattr(tg, "getRuntimeEnv", lambda: "aws")
+    monkeypatch.setattr(tg, "_get_telegram_kill_switch_status", lambda env: True)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(tg, "http_post") as mock_http_post:
+        mock_http_post.return_value = mock_response
+
+        notifier = tg.TelegramNotifier()
+        result = notifier.send_message(
+            "Test trading alert",
+            origin="AWS",
+            chat_destination="trading",
+        )
+
+    assert result is True
+    mock_http_post.assert_called_once()
+    call_args = mock_http_post.call_args
+    payload = call_args[1]["json"]
+    assert payload["chat_id"] == "-1003820753438"
 
 
 def test_refresh_config_aws_does_not_block_when_using_aws_creds_even_if_local_present(monkeypatch):

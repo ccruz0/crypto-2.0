@@ -67,7 +67,7 @@ def send_daily_summary_if_enabled(
         return False
     issues = issues or []
     try:
-        from app.services.telegram_notifier import telegram_notifier
+        from app.services.claw_telegram import send_claw_message
         lines = [
             "<b>Daily agent summary</b>",
             "",
@@ -80,8 +80,8 @@ def send_daily_summary_if_enabled(
             for i in issues[:10]:
                 lines.append(f"• {str(i)[:150]}")
         msg = "\n".join(lines)
-        if getattr(telegram_notifier, "send_message", None):
-            return telegram_notifier.send_message(msg, chat_destination="ops")
+        sent, _ = send_claw_message(msg, message_type="TASK", source_module="agent_telegram_policy")
+        return sent
     except Exception as e:
         logger.debug("agent_telegram_policy: daily summary failed %s", e)
     return False
