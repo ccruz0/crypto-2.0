@@ -43,6 +43,25 @@ MAX_RETRIES = 3
 # In-memory state (per process). Key: task_id, value: timestamp (alert) or retry count
 _last_alert_sent: dict[str, float] = {}
 _retry_count: dict[str, int] = {}
+# When user clicks Re-investigate but Notion write fails: suppress stuck-alert spam
+_reinvestigate_failed_at: dict[str, float] = {}
+REINVESTIGATE_FAILED_SUPPRESS_MINUTES = 90
+
+
+def record_reinvestigate_failed(task_id: str) -> None:
+    """Record that user attempted Re-investigate but Notion write failed. Suppresses stuck-alert spam."""
+    tid = (task_id or "").strip()
+    if tid:
+        import time
+        _reinvestigate_failed_at[tid] = time.time()
+
+
+def _recently_failed_reinvestigate(task_id: str, now_ts: float) -> bool:
+    """True if user attempted Re-investigate for this task and it failed within suppress window."""
+    ts = _reinvestigate_failed_at.get((task_id or "").strip())
+    if ts is None:
+        return False
+    return (now_ts - ts) < (REINVESTIGATE_FAILED_SUPPRESS_MINUTES * 60)
 
 
 def _parse_notion_ts(ts: str) -> datetime | None:
@@ -256,8 +275,13 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         return
 
     # Cooldown: send at most one "stuck" alert per task per ALERT_COOLDOWN_MINUTES
+    # Suppress if user recently clicked Re-investigate but Notion write failed (avoid spam)
     last_alert = _last_alert_sent.get(task_id)
-    send_alert = last_alert is None or (now.timestamp() - last_alert) >= (ALERT_COOLDOWN_MINUTES * 60)
+    now_ts = now.timestamp()
+    send_alert = (
+        (last_alert is None or (now_ts - last_alert) >= (ALERT_COOLDOWN_MINUTES * 60))
+        and not _recently_failed_reinvestigate(task_id, now_ts)
+    )
     minutes_stuck = _minutes_stuck(task, now)
 
     _log_event(
@@ -294,7 +318,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             logger.warning("task_health_monitor: investigation recovery failed task_id=%s %s", task_id[:12], e)
         if send_alert:
             _send_stuck_alert(task, minutes_stuck)
-            _last_alert_sent[task_id] = now.timestamp()
+            _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
         _log_event(
             "auto_transition",
@@ -333,7 +357,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             pass
         if send_alert:
             _send_stuck_alert(task, minutes_stuck)
-            _last_alert_sent[task_id] = now.timestamp()
+            _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
 
     elif status == "testing":
@@ -349,7 +373,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
             logger.warning("task_health_monitor: testing comment failed task_id=%s %s", task_id[:12], e)
         if send_alert:
             _send_stuck_alert(task, minutes_stuck)
-            _last_alert_sent[task_id] = now.timestamp()
+            _last_alert_sent[task_id] = now_ts
         _retry_count[task_id] = retries + 1
         _log_event("stuck_task_recovered", task_id=task_id, task_title=task_title, details={"action": "comment_only_testing"})
 

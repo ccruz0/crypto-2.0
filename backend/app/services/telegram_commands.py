@@ -6139,30 +6139,15 @@ def _handle_extended_approval_callback(
             send_command_response(chat_id, "❌ Re-investigate module unavailable.")
             return
 
-        # Fetch task from Notion; ignore if already running
+        # Fetch task from Notion
         task = get_notion_task_by_id(task_id) if task_id else None
         current_status = (task.get("status") or "").strip().lower() if task else ""
-        if current_status in ("investigating", "in-progress"):
-            logger.info(
-                "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (already running)",
-                task_id, current_status,
-            )
-            send_command_response(
-                chat_id,
-                f"⏳ Task <code>{task_id[:12]}</code> is already being investigated (status: {current_status}).",
-            )
-            try:
-                from app.services.agent_activity_log import log_agent_event
-                log_agent_event(
-                    "reinvestigate_skipped",
-                    task_id=task_id,
-                    details={"reason": "already_running", "status": current_status, "source": "telegram"},
-                )
-            except Exception:
-                pass
-            return
-
-        if task and current_status not in ("needs-revision", "needs revision", "ready-for-investigation", "blocked"):
+        # Allow Re-investigate from investigating/in-progress (stuck recovery) and from needs-revision/blocked
+        eligible_statuses = (
+            "needs-revision", "needs revision", "ready-for-investigation", "blocked",
+            "investigating", "in-progress",
+        )
+        if task and current_status not in eligible_statuses:
             logger.info(
                 "[TG][EXT_APPROVAL] reinvestigate skipped task_id=%s status=%s (not eligible)",
                 task_id, current_status,
@@ -6170,7 +6155,7 @@ def _handle_extended_approval_callback(
             send_command_response(
                 chat_id,
                 f"⚠️ Task <code>{task_id[:12]}</code> is in status <b>{current_status or 'unknown'}</b>. "
-                "Re-investigate applies to: Needs Revision, Ready for Investigation, Blocked.",
+                "Re-investigate applies to: Needs Revision, Ready for Investigation, Blocked, Investigating, In Progress.",
             )
             return
 
@@ -6196,8 +6181,21 @@ def _handle_extended_approval_callback(
                 "The scheduler will re-run the investigation (next cycle, typically within 5 min).",
             )
         else:
+            logger.warning(
+                "[TG][EXT_APPROVAL] reinvestigate Notion write failed task_id=%s current_status=%s "
+                "target_status=ready-for-investigation",
+                task_id[:12] if task_id else "?",
+                current_status,
+            )
+            try:
+                from app.services.task_health_monitor import record_reinvestigate_failed
+                record_reinvestigate_failed(task_id)
+            except Exception:
+                pass
             _edit_approval_card(chat_id, message_id,
-                                f"⚠️ Re-investigate by {who} but Notion status update failed.", task_id)
+                                f"⚠️ Re-investigate by {who} but Notion status update failed.\n\n"
+                                f"Task stayed in <b>{current_status or 'unknown'}</b>. "
+                                "Check logs for notion_write_failure. Retry when Notion is reachable.", task_id)
         try:
             from app.services.agent_activity_log import log_agent_event
             log_agent_event(

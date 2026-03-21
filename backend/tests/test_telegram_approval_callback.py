@@ -75,10 +75,23 @@ def _install_stubs():
         "execute_prepared_task_from_telegram_decision": _mock(return_value={"executed": True, "execution_result": {"final_status": "ok"}}),
         "record_approval": _mock(return_value=True), "record_denial": _mock(return_value=True),
         "get_pending_approvals": _mock(return_value=[]),
+        "clear_task_approval_record": _mock(),
+        "get_openclaw_report_for_task": _mock(return_value=None),
         "PREFIX_APPROVE": "agent_approve:", "PREFIX_DENY": "agent_deny:",
         "PREFIX_SUMMARY": "agent_summary:", "PREFIX_EXECUTE": "agent_execute:",
+        "PREFIX_APPROVE_PATCH": "patch_approve:", "PREFIX_APPROVE_DEPLOY": "deploy_approve:",
+        "PREFIX_REJECT": "task_reject:", "PREFIX_VIEW_REPORT": "view_report:",
+        "PREFIX_SMOKE_CHECK": "smoke_check:", "PREFIX_REINVESTIGATE": "reinvestigate:",
+        "PREFIX_RUN_CURSOR_BRIDGE": "run_cursor_bridge:",
     })
     _stub("app.services.agent_activity_log", {"log_agent_event": _mock(), "get_recent_agent_events": _mock(return_value=[])})
+    _stub("app.services.task_compiler", {
+        "create_task_from_telegram_intent": _mock(return_value={
+            "ok": True, "title": "Test", "type": "Investigation", "status": "Planned",
+            "priority": 50, "priority_label": "medium", "reused": False,
+        }),
+        "ERROR_NOTION_NOT_CONFIGURED": "Notion is not configured",
+    })
 
 
 _install_stubs()
@@ -98,6 +111,21 @@ def _make_callback_update(callback_data, chat_id="12345", user_id="12345"):
             "data": callback_data,
             "from": {"id": int(user_id), "username": "testuser"},
             "message": {"message_id": 42 + _COUNTER, "chat": {"id": int(chat_id)}},
+        },
+    }
+
+
+def _make_text_update(text: str, chat_id: str = "12345", user_id: str = "12345"):
+    """Build a text message update (no callback_query)."""
+    global _COUNTER
+    _COUNTER += 1
+    return {
+        "update_id": 10000 + _COUNTER,
+        "message": {
+            "message_id": 50 + _COUNTER,
+            "text": text,
+            "chat": {"id": int(chat_id), "type": "private"},
+            "from": {"id": int(user_id), "username": "testuser", "first_name": "Test"},
         },
     }
 
@@ -147,3 +175,109 @@ class TestApprovalCallbackRouting:
             tc.handle_telegram_update(_make_callback_update("totally_unknown:xyz"), db=None)
             all_msg = " ".join(str(c) for c in mock_send.call_args_list)
             assert "Unknown command" in all_msg
+
+
+class TestReinvestigateCallbackRouting:
+    """Re-investigate callback routes to extended approval handler."""
+
+    def test_reinvestigate_routes_to_extended_handler(self):
+        with patch.object(tc, "_handle_extended_approval_callback") as mock_ext, \
+             patch.object(tc, "http_post", return_value=MagicMock(status_code=200, json=lambda: {"ok": True})):
+            tc.handle_telegram_update(
+                _make_callback_update("reinvestigate:31cb1837-03fe-8045-b8a8-e27cca1198e0"),
+                db=None,
+            )
+            mock_ext.assert_called_once()
+            call_kw = mock_ext.call_args
+            assert call_kw[0][4] == "reinvestigate"  # action
+            assert "31cb1837-03fe-8045-b8a8-e27cca1198e0" in call_kw[0][3]  # callback_data
+
+    def test_reinvestigate_callback_data_format(self):
+        """reinvestigate:<task_id> format is used (callback_data max 64 bytes)."""
+        task_id = "31cb1837-03fe-8045-b8a8-e27cca1198e0"
+        callback_data = f"reinvestigate:{task_id}"
+        assert len(callback_data) <= 64, "Telegram callback_data limit is 64 bytes"
+        assert callback_data.startswith("reinvestigate:")
+
+    def test_reinvestigate_notion_success_updates_status_and_confirms(self):
+        """Re-investigate with successful Notion write shows success message."""
+        task_id = "31cb1837-03fe-8045-b8a8-e27cca1198e0"
+        task = {"id": task_id, "status": "blocked", "task": "Test task"}
+        with patch("app.services.notion_task_reader.get_notion_task_by_id", return_value=task), \
+             patch("app.services.notion_tasks.update_notion_task_status", return_value=True), \
+             patch.object(tc, "_edit_approval_card") as mock_edit, \
+             patch.object(tc, "send_command_response") as mock_send, \
+             patch.object(tc, "http_post", return_value=MagicMock(status_code=200, json=lambda: {"ok": True})):
+            tc.handle_telegram_update(
+                _make_callback_update(f"reinvestigate:{task_id}"),
+                db=None,
+            )
+            mock_edit.assert_called()
+            edit_msg = mock_edit.call_args[0][2]  # result_text (chat_id, message_id, result_text, task_id)
+            assert "ready-for-investigation" in edit_msg
+            assert "Notion status update failed" not in edit_msg
+            send_msgs = " ".join(str(c[0][1]) for c in mock_send.call_args_list if len(c[0]) > 1)
+            assert "Re-investigation started" in send_msgs or "ready-for-investigation" in edit_msg
+
+    def test_reinvestigate_notion_failure_shows_error_and_records_for_spam_suppression(self):
+        """Re-investigate with failed Notion write shows error, records for stuck-alert suppression."""
+        task_id = "31cb1837-03fe-8045-b8a8-e27cca1198e0"
+        task = {"id": task_id, "status": "blocked", "task": "Test task"}
+        with patch("app.services.notion_task_reader.get_notion_task_by_id", return_value=task), \
+             patch("app.services.notion_tasks.update_notion_task_status", return_value=False), \
+             patch("app.services.task_health_monitor.record_reinvestigate_failed") as mock_record, \
+             patch.object(tc, "_edit_approval_card") as mock_edit, \
+             patch.object(tc, "http_post", return_value=MagicMock(status_code=200, json=lambda: {"ok": True})):
+            tc.handle_telegram_update(
+                _make_callback_update(f"reinvestigate:{task_id}"),
+                db=None,
+            )
+            mock_edit.assert_called()
+            edit_msg = mock_edit.call_args[0][2]  # result_text
+            assert "Notion status update failed" in edit_msg
+            assert "blocked" in edit_msg or "unknown" in edit_msg
+            mock_record.assert_called_once_with(task_id)
+
+
+class TestTaskTextRouting:
+    """ /task text command routes to task handler, never to unknown-command."""
+
+    def test_task_foo_routes_to_task_handler_not_unknown(self):
+        """ /task something must NEVER trigger 'Unknown command'."""
+        with patch.object(tc, "send_command_response") as mock_send:
+            tc.handle_telegram_update(
+                _make_text_update("/task Critical: Telegram task command is failing in production"),
+                db=None,
+            )
+            calls = mock_send.call_args_list
+            assert len(calls) >= 1, "At least one response"
+            all_msg = " ".join(str(c[0][1]) for c in calls if len(c[0]) > 1)
+            assert "Unknown command" not in all_msg, "/task must never reach unknown-command branch"
+            assert "Task created" in all_msg or "Create task" in all_msg or "Matched existing" in all_msg
+
+    def test_task_at_botname_routes_to_task_handler(self):
+        with patch.object(tc, "send_command_response") as mock_send:
+            tc.handle_telegram_update(
+                _make_text_update("/task@ATP_control_bot Fix order mismatch"),
+                db=None,
+            )
+            calls = mock_send.call_args_list
+            assert len(calls) >= 1
+            all_msg = " ".join(str(c[0][1]) for c in calls if len(c[0]) > 1)
+            assert "Unknown command" not in all_msg
+
+    def test_unknown_command_still_returns_unknown(self):
+        with patch.object(tc, "send_command_response") as mock_send:
+            tc.handle_telegram_update(
+                _make_text_update("/nonexistent_command"),
+                db=None,
+            )
+            all_msg = " ".join(str(c) for c in mock_send.call_args_list)
+            assert "Unknown command" in all_msg
+
+    def test_help_still_works(self):
+        with patch.object(tc, "send_command_response") as mock_send, \
+             patch.object(tc, "send_help_message") as mock_help:
+            mock_help.return_value = True
+            tc.handle_telegram_update(_make_text_update("/help"), db=None)
+            mock_help.assert_called_once()

@@ -10,7 +10,7 @@ Enforces:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -68,6 +68,42 @@ class TestUpdateNotionTaskStatusNeedsRevisionGuard:
                     needs_revision_metadata={"verify_summary": "Output does not address task"},
                 )
         assert ok is True
+
+
+class TestUpdateNotionTaskStatusPayloadFallback:
+    """Re-investigate flow: update_notion_task_status tries rich_text → select → status (native)."""
+
+    def test_ready_for_investigation_succeeds_via_status_payload_when_others_fail(self):
+        """When rich_text and select return 400, native status payload succeeds (Notion Kanban Status)."""
+        with patch.object(nt, "_get_config", return_value=("fake-key", "fake-db")):
+            with patch("app.services.notion_tasks.httpx") as mock_httpx:
+                mock_client = mock_httpx.Client.return_value.__enter__.return_value
+                patch_calls = []
+
+                def capture_patch(*args, **kwargs):
+                    resp = MagicMock()
+                    json_payload = kwargs.get("json", {})
+                    props = json_payload.get("properties", {}).get("Status", {})
+                    # Only status-update calls have properties.Status; _append_page_comment has children
+                    if "properties" in json_payload:
+                        patch_calls.append(props)
+                    if "status" in props:
+                        resp.status_code = 200
+                        resp.text = ""
+                    else:
+                        resp.status_code = 400
+                        resp.text = '{"code":"validation_error","message":"invalid"}'
+                    return resp
+
+                mock_client.patch.side_effect = capture_patch
+                ok = nt.update_notion_task_status(
+                    "31cb1837-03fe-8045-b8a8-e27cca1198e0",
+                    "ready-for-investigation",
+                    append_comment="Re-investigate approved",
+                )
+        assert ok is True
+        assert len(patch_calls) >= 3, "Should try rich_text, select, then status"
+        assert "status" in patch_calls[-1], "Third attempt must use native status payload"
 
 
 class TestSafeTransitionToNeedsRevision:

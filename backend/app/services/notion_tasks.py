@@ -918,19 +918,50 @@ def update_notion_task_status(
     }
 
     # Keep compatibility with current writer behavior: Status is written as rich_text.
-    # For Notion DBs configured with Select for Status, we try a minimal fallback.
+    # For Notion DBs: try rich_text → select → status (native Kanban) in order.
+    # Notion's native Status property (Kanban) requires {"status": {"name": "..."}}, not select/rich_text.
     payload_rich_text: dict[str, Any] = {
         "properties": {
             "Status": {"rich_text": _rich_text(normalized_status)},
         }
     }
-    # Notion Select options are human-readable (e.g. "Ready for Patch"); map internal → display
     status_display = notion_status_to_display(normalized_status)
     payload_select: dict[str, Any] = {
         "properties": {
             "Status": {"select": {"name": status_display}},
         }
     }
+    payload_status: dict[str, Any] = {
+        "properties": {
+            "Status": {"status": {"name": status_display}},
+        }
+    }
+
+    response = None
+    final_response = None
+    payloads_tried: list[str] = []
+
+    def _log_failure(
+        *,
+        task_id: str,
+        target_status: str,
+        page_id: str,
+        notion_property: str = "Status",
+        http_code: int | None = None,
+        err_body: str = "",
+        payloads: list[str] | None = None,
+    ) -> None:
+        logger.error(
+            "notion_write_failure task_id=%s target_status=%s page_id=%s notion_property=%s "
+            "http_status=%s raw_error_body=%r payloads_tried=%s",
+            task_id[:12] if task_id else "?",
+            target_status,
+            page_id[:12] if page_id else "?",
+            notion_property,
+            http_code,
+            err_body[:300] if err_body else "",
+            payloads or [],
+        )
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -939,16 +970,26 @@ def update_notion_task_status(
                 json=payload_rich_text,
                 headers=headers,
             )
-
-            # Fallback: if Status is a Select in the Notion schema, retry with select payload.
-            if response.status_code != 200:
+            payloads_tried.append("rich_text")
+            if response.status_code == 200:
+                final_response = response
+            else:
                 response2 = client.patch(
                     f"{NOTION_API_BASE}/pages/{normalized_page_id}",
                     json=payload_select,
                     headers=headers,
                 )
-            else:
-                response2 = None
+                payloads_tried.append("select")
+                if response2.status_code == 200:
+                    final_response = response2
+                else:
+                    response3 = client.patch(
+                        f"{NOTION_API_BASE}/pages/{normalized_page_id}",
+                        json=payload_status,
+                        headers=headers,
+                    )
+                    payloads_tried.append("status")
+                    final_response = response3
 
     except httpx.TimeoutException as e:
         logger.warning(
@@ -976,18 +1017,15 @@ def update_notion_task_status(
         )
         return False
 
-    final_response = response if response.status_code == 200 else (response2 or response)
-    if final_response.status_code != 200:
-        try:
-            err_body = (final_response.text or "")[:500]
-        except Exception:
-            err_body = ""
-        logger.error(
-            "Notion status update API error page_id=%s status=%s http=%d body=%s",
-            normalized_page_id,
-            normalized_status,
-            final_response.status_code,
-            err_body,
+    if final_response is None or final_response.status_code != 200:
+        err_body = (final_response.text or "")[:500] if final_response else ""
+        _log_failure(
+            task_id=normalized_page_id,
+            target_status=normalized_status,
+            page_id=normalized_page_id,
+            http_code=final_response.status_code if final_response else None,
+            err_body=err_body,
+            payloads=payloads_tried,
         )
         return False
 
