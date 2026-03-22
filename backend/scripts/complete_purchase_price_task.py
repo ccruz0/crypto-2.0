@@ -58,9 +58,14 @@ def main():
         print(f"Notion update failed: {e}")
         results["error"] = str(e)
 
-    # 2. Check/generate handoff
+    # 2. Check/generate handoff (writable dir matches backend get_writable_cursor_handoffs_dir)
     root = Path(__file__).resolve().parents[2]
-    handoff_path = root / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{TASK_ID}.md"
+    try:
+        from app.services._paths import get_writable_cursor_handoffs_dir
+
+        handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{TASK_ID}.md"
+    except Exception:
+        handoff_path = root / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{TASK_ID}.md"
     results["handoff_path"] = str(handoff_path)
 
     if handoff_path.exists():

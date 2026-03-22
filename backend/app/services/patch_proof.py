@@ -59,7 +59,9 @@ def handoff_exists_for_task(task_id: str) -> bool:
     task_id = (task_id or "").strip()
     if not task_id:
         return False
-    handoff_path = _workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
+    from app.services._paths import get_writable_cursor_handoffs_dir
+
+    handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
     return handoff_path.exists()
 
 

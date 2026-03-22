@@ -15,6 +15,10 @@ The resolved path is cached after first call.
 
 Bug investigations: ``get_writable_bug_investigations_dir()`` returns a path
 that is writable (repo docs/ or ``AGENT_BUG_INVESTIGATIONS_DIR`` / ``/tmp/agent-bug-investigations``).
+
+Cursor handoffs: ``get_writable_cursor_handoffs_dir()`` matches the same pattern (repo
+``docs/agents/cursor-handoffs`` or ``AGENT_CURSOR_HANDOFFS_DIR`` / ``/tmp/agent-cursor-handoffs``).
+Required when ``./docs`` is bind-mounted from the host with root-only permissions.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _bug_investigations_dir: Optional[Path] = None
+_cursor_handoffs_dir: Optional[Path] = None
 
 
 @lru_cache(maxsize=1)
@@ -86,14 +91,92 @@ def get_writable_bug_investigations_dir() -> Path:
         return _bug_investigations_dir
 
 
+def get_writable_cursor_handoffs_dir() -> Path:
+    """Return a writable directory for Cursor bridge handoff markdown files.
+
+    Tries ``<workspace_root>/docs/agents/cursor-handoffs`` first (same layout as dev).
+    If that path is not writable (common in production: ``./docs`` bind-mounted from
+    the host with root-owned files), falls back to ``AGENT_CURSOR_HANDOFFS_DIR`` or
+    ``/tmp/agent-cursor-handoffs``.
+
+    Must be used by ``save_cursor_handoff``, ``_cursor_handoff_path``, and any
+    code that checks for ``cursor-handoff-{task_id}.md`` so lookup always matches writes.
+    """
+    global _cursor_handoffs_dir
+    if _cursor_handoffs_dir is not None:
+        return _cursor_handoffs_dir
+
+    root = workspace_root()
+    candidate = root / "docs" / "agents" / "cursor-handoffs"
+    explicit = (os.environ.get("AGENT_CURSOR_HANDOFFS_DIR") or "").strip()
+    fallback = Path(explicit) if explicit else Path("/tmp/agent-cursor-handoffs")
+
+    def _log_resolution(chosen: Path, *, used_fallback: bool, err: Exception | None = None) -> None:
+        exists = chosen.is_dir()
+        writable = False
+        try:
+            if exists:
+                probe = chosen / ".write_probe"
+                probe.write_text("", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+                writable = True
+        except OSError:
+            writable = False
+        logger.info(
+            "cursor_handoffs_dir: effective=%s exists=%s writable=%s workspace_candidate=%s "
+            "used_fallback=%s err=%s",
+            chosen,
+            exists,
+            writable,
+            candidate,
+            used_fallback,
+            err,
+        )
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        _cursor_handoffs_dir = candidate
+        _log_resolution(_cursor_handoffs_dir, used_fallback=False)
+        return _cursor_handoffs_dir
+    except (OSError, PermissionError) as e:
+        logger.warning(
+            "cursor_handoffs_dir: repo path %s not writable (%s), using fallback %s",
+            candidate,
+            e,
+            fallback,
+        )
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            probe = fallback / ".write_probe"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            _cursor_handoffs_dir = fallback
+            _log_resolution(_cursor_handoffs_dir, used_fallback=True, err=e)
+            return _cursor_handoffs_dir
+        except (OSError, PermissionError) as e2:
+            logger.error(
+                "cursor_handoffs_dir: fallback %s also not writable: %s",
+                fallback,
+                e2,
+            )
+            _log_resolution(fallback, used_fallback=True, err=e2)
+            raise
+
+
 def get_writable_dir_for_subdir(save_subdir: str) -> Path:
     """
     Return a writable directory for artifact subdirs. Single canonical path resolution.
     - bug-investigations: uses get_writable_bug_investigations_dir (repo or fallback)
+    - cursor-handoffs: uses get_writable_cursor_handoffs_dir (repo or fallback)
     - telegram-alerts, execution-state, etc.: try repo first; fallback to AGENT_ARTIFACTS_DIR/subdir
     """
     if save_subdir == "docs/agents/bug-investigations":
         return get_writable_bug_investigations_dir()
+    if save_subdir == "docs/agents/cursor-handoffs":
+        return get_writable_cursor_handoffs_dir()
     root = workspace_root()
     candidate = root / save_subdir
     base_fallback = Path(os.environ.get("AGENT_ARTIFACTS_DIR", "/tmp/agent-artifacts"))

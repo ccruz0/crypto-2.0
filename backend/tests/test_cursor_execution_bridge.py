@@ -126,26 +126,32 @@ class TestEnsureHandoffForBridge:
     """Handoff file is created or validated before phase 1 reads it."""
 
     def test_ensure_ok_when_file_already_exists(self, tmp_path):
-        root = tmp_path
-        p = root / "docs" / "agents" / "cursor-handoffs" / "cursor-handoff-abc.md"
-        p.parent.mkdir(parents=True)
+        handoff_dir = tmp_path / "cursor-handoffs"
+        handoff_dir.mkdir(parents=True)
+        p = handoff_dir / "cursor-handoff-abc.md"
         p.write_text("# existing", encoding="utf-8")
-        with patch("app.services.cursor_execution_bridge._workspace_root", return_value=root):
+        with patch(
+            "app.services.cursor_execution_bridge._handoffs_dir_for_bridge",
+            return_value=handoff_dir,
+        ):
             from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
             ok, err = ensure_handoff_file_for_bridge("abc")
             assert ok is True
             assert err == ""
 
     def test_ensure_generates_when_missing(self, tmp_path):
-        root = tmp_path
+        handoff_dir = tmp_path / "cursor-handoffs"
 
         def _fake_generate(prepared_task):
-            out = root / "docs" / "agents" / "cursor-handoffs" / "cursor-handoff-t1.md"
+            out = handoff_dir / "cursor-handoff-t1.md"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("# auto prompt", encoding="utf-8")
             return {"success": True, "path": str(out), "prompt": "# auto prompt"}
 
-        with patch("app.services.cursor_execution_bridge._workspace_root", return_value=root):
+        with patch(
+            "app.services.cursor_execution_bridge._handoffs_dir_for_bridge",
+            return_value=handoff_dir,
+        ):
             with patch(
                 "app.services.notion_task_reader.get_notion_task_by_id",
                 return_value={"id": "t1", "task": "My task"},
@@ -158,7 +164,7 @@ class TestEnsureHandoffForBridge:
                     ok, err = ensure_handoff_file_for_bridge("t1")
                     assert ok is True
                     assert err == ""
-                    written = root / "docs/agents/cursor-handoffs/cursor-handoff-t1.md"
+                    written = handoff_dir / "cursor-handoff-t1.md"
                     assert written.exists()
                     assert written.read_text(encoding="utf-8") == "# auto prompt"
 

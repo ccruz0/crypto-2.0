@@ -1497,6 +1497,10 @@ def list_watchlist_items(db: Session = Depends(get_db)):
     except Exception as e:
         log.error(f"[DASHBOARD_STATE_DEBUG] response_status=500 error={str(e)}", exc_info=True)
         log.exception("Error fetching dashboard items from watchlist_items table")
+        try:
+            db.rollback()
+        except Exception as rb_err:
+            log.debug(f"rollback after watchlist list error: {rb_err}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

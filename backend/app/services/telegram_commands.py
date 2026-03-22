@@ -5933,8 +5933,8 @@ def _handle_extended_approval_callback(
             extra_rows = []
             try:
                 from app.services.agent_telegram_approval import PREFIX_RUN_CURSOR_BRIDGE
-                from app.services._paths import workspace_root
-                handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
+                from app.services._paths import get_writable_cursor_handoffs_dir
+                handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
                 if handoff_path.exists():
                     extra_rows = [[{"text": "🛠️ Run Cursor Bridge", "callback_data": f"{PREFIX_RUN_CURSOR_BRIDGE}{task_id}"}]]
             except Exception:

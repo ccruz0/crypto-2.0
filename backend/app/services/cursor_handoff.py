@@ -33,11 +33,6 @@ _CURSOR_CONSTRAINTS = (
 )
 
 
-def _repo_root() -> Path:
-    from app.services._paths import workspace_root
-    return workspace_root()
-
-
 def _section_text(sections: dict[str, Any], key: str, fallback: str = "") -> str:
     """Return a section value as a trimmed string, or *fallback* if absent/N-A."""
     raw = sections.get(key)
@@ -168,15 +163,16 @@ def build_cursor_handoff_prompt(
 # Persistence
 # ------------------------------------------------------------------
 
-_HANDOFF_SUBDIR = "docs/agents/cursor-handoffs"
-
-
 def save_cursor_handoff(
     task_id: str,
     prompt: str,
     title: str = "",
 ) -> Path | None:
-    """Write the handoff prompt to ``docs/agents/cursor-handoffs/``.
+    """Write the handoff prompt under the writable cursor-handoffs directory.
+
+    Resolution matches ``get_writable_cursor_handoffs_dir()`` (repo path or
+    ``AGENT_CURSOR_HANDOFFS_DIR`` / ``/tmp/agent-cursor-handoffs`` when the repo
+    tree is not writable).
 
     Returns the path on success, ``None`` on failure.  Never raises.
     """
@@ -185,9 +181,25 @@ def save_cursor_handoff(
         return None
 
     try:
-        root = _repo_root()
-        out_dir = root / _HANDOFF_SUBDIR
-        out_dir.mkdir(parents=True, exist_ok=True)
+        from app.services._paths import get_writable_cursor_handoffs_dir
+
+        out_dir = get_writable_cursor_handoffs_dir()
+        exists = out_dir.is_dir()
+        writable = False
+        try:
+            probe = out_dir / ".write_probe_save"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            writable = True
+        except OSError:
+            writable = False
+        logger.info(
+            "save_cursor_handoff: dir=%s exists=%s writable=%s task_id=%s",
+            out_dir,
+            exists,
+            writable,
+            task_id,
+        )
 
         filename = f"cursor-handoff-{task_id}.md"
         path = out_dir / filename
@@ -214,7 +226,12 @@ def save_cursor_handoff(
         return path
 
     except Exception as e:
-        logger.warning("save_cursor_handoff failed task_id=%s: %s", task_id, e)
+        logger.warning(
+            "save_cursor_handoff failed task_id=%s err=%s err_type=%s",
+            task_id,
+            e,
+            type(e).__name__,
+        )
         return None
 
 

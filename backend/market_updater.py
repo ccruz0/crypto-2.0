@@ -904,6 +904,11 @@ async def update_market_data():
                             logger.info("✅ Synced watchlist to TradeSignal")
                         except Exception as sync_error:
                             logger.warning(f"Error syncing watchlist to TradeSignal: {sync_error}")
+                            # Clear aborted transaction so the session can be reused (avoids PendingRollbackError)
+                            try:
+                                db.rollback()
+                            except Exception as rb_err:
+                                logger.debug(f"Rollback after watchlist sync failure: {rb_err}")
                 except Exception as db_error:
                     db.rollback()
                     logger.error(f"Error saving to database: {db_error}", exc_info=True)

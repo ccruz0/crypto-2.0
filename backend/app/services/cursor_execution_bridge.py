@@ -21,6 +21,7 @@ Env vars:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -29,9 +30,17 @@ import shutil
 import subprocess
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
+
+try:
+    import fcntl
+
+    _HAS_FCNTL = True
+except ImportError:  # Windows (non-production)
+    fcntl = None  # type: ignore[assignment]
+    _HAS_FCNTL = False
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,64 @@ _AGENT_ACTIVITY_LOG_FILE = "agent_activity.jsonl"
 def _workspace_root() -> Path:
     from app.services._paths import workspace_root
     return workspace_root()
+
+
+def _handoffs_dir_for_bridge() -> Path:
+    """Writable cursor-handoffs directory (must match ``save_cursor_handoff``)."""
+    from app.services._paths import get_writable_cursor_handoffs_dir
+    return get_writable_cursor_handoffs_dir()
+
+
+@contextlib.contextmanager
+def _cursor_bridge_phase2_lock(task_id: str) -> Iterator[bool]:
+    """
+    Serialize Cursor bridge phase-2 runs per task_id across gunicorn workers (fcntl file lock).
+
+    Yields True if the lock was acquired; False if another process is already running
+    the bridge for this task (non-blocking). Caller should skip work when False.
+    """
+    if not _HAS_FCNTL or fcntl is None:
+        yield True
+        return
+
+    tid = (task_id or "").strip()
+    lock_root = Path((os.environ.get("CURSOR_BRIDGE_LOCK_DIR") or "").strip() or "/tmp/cursor-bridge-locks")
+    try:
+        lock_root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning("cursor_bridge: lock dir mkdir failed %s: %s", lock_root, e)
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", tid)[:120] if tid else "unknown"
+    lock_path = lock_root / f"{safe}.lock"
+    f = None
+    acquired = False
+    try:
+        f = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            logger.info(
+                "CursorBridge: concurrent run skipped (lock held) task_id=%s lock=%s",
+                tid,
+                lock_path,
+            )
+            yield False
+            return
+        yield True
+    except OSError as e:
+        logger.warning("cursor_bridge: lock acquire failed task_id=%s: %s", tid, e)
+        yield True
+    finally:
+        if acquired and f is not None:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        if f is not None:
+            try:
+                f.close()
+            except OSError:
+                pass
 
 
 def _staging_root() -> Path:
@@ -175,6 +242,18 @@ def may_execute_cursor_bridge(task_id: str, *, context: str) -> tuple[bool, str]
     )
 
 
+def _path_is_writable_dir(path: Path) -> bool:
+    try:
+        if not path.is_dir():
+            return False
+        probe = path / ".write_probe_diag"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def get_bridge_diagnostics() -> dict[str, Any]:
     """
     Return readiness diagnostics for the Cursor bridge (no side effects).
@@ -183,7 +262,11 @@ def get_bridge_diagnostics() -> dict[str, Any]:
     """
     cli = _cursor_cli_path()
     staging_root = _staging_root()
-    handoff_dir = _workspace_root() / "docs" / "agents" / "cursor-handoffs"
+    try:
+        handoff_dir = _handoffs_dir_for_bridge()
+    except Exception as e:
+        handoff_dir = _workspace_root() / "docs" / "agents" / "cursor-handoffs"
+        logger.debug("get_bridge_diagnostics: handoff dir fallback: %s", e)
 
     # Check if cursor/npx is available
     cursor_found = False
@@ -221,7 +304,9 @@ def get_bridge_diagnostics() -> dict[str, Any]:
         "staging_root_writable": staging_writable,
         "staging_dir_count": _count_staging_dirs(),
         "max_staging_dirs": _MAX_STAGING_DIRS,
+        "handoff_dir": str(handoff_dir),
         "handoff_dir_exists": handoff_dir.is_dir(),
+        "handoff_dir_writable": _path_is_writable_dir(handoff_dir),
         "github_token_set": bool((os.environ.get("GITHUB_TOKEN") or "").strip()),
         "ready": is_bridge_enabled() and cursor_found and staging_writable,
     }
@@ -691,7 +776,7 @@ def ingest_bridge_results(
 
 def _cursor_handoff_path(task_id: str) -> Path:
     tid = (task_id or "").strip()
-    return _workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{tid}.md"
+    return _handoffs_dir_for_bridge() / f"cursor-handoff-{tid}.md"
 
 
 def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
@@ -709,7 +794,24 @@ def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
         return False, "empty task_id"
 
     path = _cursor_handoff_path(tid)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir = path.parent
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(
+            "CursorBridge: handoff dir mkdir failed path=%s err=%s",
+            out_dir,
+            e,
+        )
+    dir_exists = out_dir.is_dir()
+    dir_writable = _path_is_writable_dir(out_dir)
+    logger.info(
+        "CursorBridge: handoff path=%s dir=%s exists=%s writable=%s",
+        path,
+        out_dir,
+        dir_exists,
+        dir_writable,
+    )
 
     if path.exists():
         logger.info("CursorBridge: handoff ready path=%s", path)
@@ -741,9 +843,13 @@ def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
 
         result = generate_cursor_handoff(prepared_task)
         if not result.get("success"):
+            err_detail = (
+                result.get("path")
+                or "save failed — check logs for save_cursor_handoff (Permission denied etc.)"
+            )
             return False, (
                 f"handoff auto-generation failed for task_id={tid} "
-                f"(generate_cursor_handoff returned success=False)"
+                f"(generate_cursor_handoff returned success=False; detail={err_detail})"
             )
         if not path.exists():
             return False, (
@@ -939,107 +1045,115 @@ def run_bridge_phase2(
     if ctx not in ("api", "scheduler", "telegram"):
         ctx = "api"
 
-    logger.info("CursorBridge: patch detected task_id=%s context=%s", task_id, ctx)
-    _log_event("cursor_bridge_started", task_id=task_id, details={
-        "ingest": ingest, "create_pr": create_pr, "execution_context": ctx,
-    })
-    phase1 = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=ctx)
-    if not phase1.get("ok"):
-        if ctx == "scheduler":
-            _notify_cursor_bridge_failure(
-                "Cursor bridge: apply failed",
-                f"task_id={task_id[:24]}… error={str(phase1.get('error', ''))[:400]}",
-            )
-        return phase1
-
-    staging_path_str = phase1.get("staging_path", "")
-    staging_path = Path(staging_path_str) if staging_path_str else None
-    if not staging_path or not staging_path.exists():
-        return {**phase1, "diff_path": None, "tests": None, "ingest": None, "pr": None}
-
-    diff_path = capture_diff(staging_path, task_id)
-    tests = run_tests_in_staging(staging_path, task_id=task_id)
-
-    invoke_ok = phase1.get("invoke", {}).get("success", False)
-    tests_ok = tests.get("all_ok", False)
-
-    if invoke_ok and not tests_ok:
-        logger.warning(
-            "CursorBridge: tests failed — rolling back workspace diff and staging task_id=%s",
-            task_id,
-        )
-        if diff_path and diff_path.exists():
-            try:
-                diff_path.unlink()
-            except OSError as e:
-                logger.warning("cursor_bridge: rollback diff unlink failed task_id=%s: %s", task_id, e)
-        cleanup_staging(task_id)
-        diff_path = None
-        _log_event("cursor_bridge_rollback_tests_failed", task_id=task_id, details={
-            "backend_ok": tests.get("backend_ok"),
-            "frontend_ok": tests.get("frontend_ok"),
+    with _cursor_bridge_phase2_lock(task_id) as lock_ok:
+        if not lock_ok:
+            return {
+                "ok": False,
+                "error": "cursor bridge already running for this task (duplicate request skipped)",
+                "task_id": task_id,
+                "duplicate_skipped": True,
+            }
+        logger.info("CursorBridge: patch detected task_id=%s context=%s", task_id, ctx)
+        _log_event("cursor_bridge_started", task_id=task_id, details={
+            "ingest": ingest, "create_pr": create_pr, "execution_context": ctx,
         })
-        _notify_cursor_bridge_failure(
-            "Cursor bridge: tests failed (rolled back diff)",
-            f"task_id={task_id[:24]}… backend_ok={tests.get('backend_ok')} frontend_ok={tests.get('frontend_ok')}",
-        )
-
-    overall_ok = invoke_ok and tests_ok
-
-    result: dict[str, Any] = {
-        **phase1,
-        "ok": overall_ok,
-        "diff_path": str(diff_path) if diff_path else None,
-        "tests": tests,
-        "invoke_ok": invoke_ok,
-        "tests_ok": tests_ok,
-    }
-
-    if ingest:
-        dp = Path(diff_path) if diff_path else None
-        ingest_result = ingest_bridge_results(
-            task_id,
-            invoke_ok=invoke_ok,
-            tests_ok=tests_ok,
-            diff_path=dp,
-            tests=tests,
-            current_status=current_status,
-        )
-        result["ingest"] = ingest_result
-
-    if create_pr and tests_ok and diff_path:
-        pr_result = create_patch_pr(staging_path, task_id)
-        result["pr"] = pr_result
-        if pr_result.get("ok") and pr_result.get("pr_url"):
-            try:
-                from app.services.notion_tasks import update_notion_task_metadata
-                update_notion_task_metadata(
-                    task_id,
-                    {"cursor_patch_url": pr_result["pr_url"]},
-                    append_comment=f"[Cursor bridge] PR created: {pr_result['pr_url']}",
+        phase1 = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=ctx)
+        if not phase1.get("ok"):
+            if ctx == "scheduler":
+                _notify_cursor_bridge_failure(
+                    "Cursor bridge: apply failed",
+                    f"task_id={task_id[:24]}… error={str(phase1.get('error', ''))[:400]}",
                 )
-            except Exception as e:
-                logger.debug("cursor_bridge: Notion PR link update failed: %s", e)
+            return phase1
 
-    if overall_ok:
-        logger.info("CursorBridge: deploy success (release candidate path) task_id=%s", task_id)
-        _log_event("cursor_bridge_succeeded", task_id=task_id, details={
+        staging_path_str = phase1.get("staging_path", "")
+        staging_path = Path(staging_path_str) if staging_path_str else None
+        if not staging_path or not staging_path.exists():
+            return {**phase1, "diff_path": None, "tests": None, "ingest": None, "pr": None}
+
+        diff_path = capture_diff(staging_path, task_id)
+        tests = run_tests_in_staging(staging_path, task_id=task_id)
+
+        invoke_ok = phase1.get("invoke", {}).get("success", False)
+        tests_ok = tests.get("all_ok", False)
+
+        if invoke_ok and not tests_ok:
+            logger.warning(
+                "CursorBridge: tests failed — rolling back workspace diff and staging task_id=%s",
+                task_id,
+            )
+            if diff_path and diff_path.exists():
+                try:
+                    diff_path.unlink()
+                except OSError as e:
+                    logger.warning("cursor_bridge: rollback diff unlink failed task_id=%s: %s", task_id, e)
+            cleanup_staging(task_id)
+            diff_path = None
+            _log_event("cursor_bridge_rollback_tests_failed", task_id=task_id, details={
+                "backend_ok": tests.get("backend_ok"),
+                "frontend_ok": tests.get("frontend_ok"),
+            })
+            _notify_cursor_bridge_failure(
+                "Cursor bridge: tests failed (rolled back diff)",
+                f"task_id={task_id[:24]}… backend_ok={tests.get('backend_ok')} frontend_ok={tests.get('frontend_ok')}",
+            )
+
+        overall_ok = invoke_ok and tests_ok
+
+        result: dict[str, Any] = {
+            **phase1,
+            "ok": overall_ok,
             "diff_path": str(diff_path) if diff_path else None,
-            "tests_ok": tests_ok,
-        })
-    else:
-        logger.warning(
-            "CursorBridge: deploy failure (bridge did not complete) task_id=%s invoke_ok=%s tests_ok=%s",
-            task_id, invoke_ok, tests_ok,
-        )
-        _log_event("cursor_bridge_failed", task_id=task_id, details={
+            "tests": tests,
             "invoke_ok": invoke_ok,
             "tests_ok": tests_ok,
-        })
-        if ctx == "scheduler" and not (invoke_ok and not tests_ok):
-            _notify_cursor_bridge_failure(
-                "Cursor bridge: incomplete",
-                f"task_id={task_id[:24]}… invoke_ok={invoke_ok} tests_ok={tests_ok}",
-            )
+        }
 
-    return result
+        if ingest:
+            dp = Path(diff_path) if diff_path else None
+            ingest_result = ingest_bridge_results(
+                task_id,
+                invoke_ok=invoke_ok,
+                tests_ok=tests_ok,
+                diff_path=dp,
+                tests=tests,
+                current_status=current_status,
+            )
+            result["ingest"] = ingest_result
+
+        if create_pr and tests_ok and diff_path:
+            pr_result = create_patch_pr(staging_path, task_id)
+            result["pr"] = pr_result
+            if pr_result.get("ok") and pr_result.get("pr_url"):
+                try:
+                    from app.services.notion_tasks import update_notion_task_metadata
+                    update_notion_task_metadata(
+                        task_id,
+                        {"cursor_patch_url": pr_result["pr_url"]},
+                        append_comment=f"[Cursor bridge] PR created: {pr_result['pr_url']}",
+                    )
+                except Exception as e:
+                    logger.debug("cursor_bridge: Notion PR link update failed: %s", e)
+
+        if overall_ok:
+            logger.info("CursorBridge: deploy success (release candidate path) task_id=%s", task_id)
+            _log_event("cursor_bridge_succeeded", task_id=task_id, details={
+                "diff_path": str(diff_path) if diff_path else None,
+                "tests_ok": tests_ok,
+            })
+        else:
+            logger.warning(
+                "CursorBridge: deploy failure (bridge did not complete) task_id=%s invoke_ok=%s tests_ok=%s",
+                task_id, invoke_ok, tests_ok,
+            )
+            _log_event("cursor_bridge_failed", task_id=task_id, details={
+                "invoke_ok": invoke_ok,
+                "tests_ok": tests_ok,
+            })
+            if ctx == "scheduler" and not (invoke_ok and not tests_ok):
+                _notify_cursor_bridge_failure(
+                    "Cursor bridge: incomplete",
+                    f"task_id={task_id[:24]}… invoke_ok={invoke_ok} tests_ok={tests_ok}",
+                )
+
+        return result

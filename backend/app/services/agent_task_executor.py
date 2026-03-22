@@ -1613,8 +1613,8 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         except Exception:
             pass
         try:
-            from app.services._paths import workspace_root
-            handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
+            from app.services._paths import get_writable_cursor_handoffs_dir
+            handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
             _need_bridge, _bridge_reason = cursor_bridge_required_for_task(task, task_id)
             _approval_ok = (not is_bridge_require_approval()) or task_has_patch_approval(task_id)
             # Ensure handoff exists when bridge is needed; auto-generate if missing
