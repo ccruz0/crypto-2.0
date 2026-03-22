@@ -51,8 +51,8 @@ GIT_FETCH_CMD="${GIT_PULL_PREFIX}git fetch origin main && git reset --hard origi
 export GIT_FETCH_CMD
 export SKIP_REBUILD
 export NO_CACHE
-PARAMS_FILE="$(mktemp)"
-python3 - <<'PY' > "$PARAMS_FILE"
+# AWS CLI expects: --parameters 'commands=["a","b"]' (see `aws ssm send-command help` examples)
+PARAMS="commands=$(python3 <<'PY'
 import json, os
 git = os.environ["GIT_FETCH_CMD"]
 stack = (
@@ -65,15 +65,15 @@ cmds = [
     git,
     stack,
 ]
-print(json.dumps({"commands": cmds}))
+print(json.dumps(cmds), end="")
 PY
-trap 'rm -f "$PARAMS_FILE"' EXIT
+)"
 
 COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters "file://$PARAMS_FILE" \
+  --parameters "$PARAMS" \
   --timeout-seconds 900 \
   --query 'Command.CommandId' --output text 2>&1)
 
