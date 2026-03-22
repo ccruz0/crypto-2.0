@@ -65,4 +65,33 @@ Expect `200`.
 | Duplicate replies | [DUPLICATE_TELEGRAM_POLLERS_FIX.md](DUPLICATE_TELEGRAM_POLLERS_FIX.md) |
 | Wrong bot answering | Which token is polling (`[TG][CONFIG]`, `token_source`) |
 
+---
+
+## 6. Deploy latest `main` (after you push)
+
+**Option A — from your laptop (AWS CLI + SSM):**
+
+- **Backend:** `./scripts/deploy_production_via_ssm.sh`  
+  - Faster recycle: `SKIP_REBUILD=1 ./scripts/deploy_production_via_ssm.sh`  
+  - Stale image issues: `NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh`  
+  - Long builds: `MAX_WAIT_ITERATIONS=900` (see script header).
+- **Frontend** (separate submodule image): `./deploy_frontend_ssm.sh`  
+  - That script `git pull`s inside `frontend/` and rebuilds **`frontend-aws`**.
+
+**Option B — on the EC2 host (repo root),** if you shell in:
+
+```bash
+export HOME=/home/ubuntu
+git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true
+cd /home/ubuntu/automated-trading-platform
+git fetch origin && git reset --hard origin/main
+git submodule update --init --recursive
+docker compose --profile aws build backend-aws frontend-aws
+docker compose --profile aws up -d backend-aws frontend-aws
+```
+
+Then run **§1–§4** again.
+
+---
+
 See also: [TELEGRAM_TASK_COMMAND_DEBUG.md](TELEGRAM_TASK_COMMAND_DEBUG.md), [TELEGRAM_TASK_INTAKE.md](TELEGRAM_TASK_INTAKE.md).
