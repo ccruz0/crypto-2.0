@@ -9,8 +9,13 @@ set -euo pipefail
 REPO_ROOT="$(pwd)"
 export COMPOSE_PROFILES=aws
 
-if ! docker compose --profile aws config --services 2>/dev/null | grep -q '^db$'; then
+_compose_ec=0
+_compose_svc_out="$(docker compose --profile aws config --services 2>&1)" || _compose_ec=$?
+if ! printf '%s\n' "$_compose_svc_out" | grep -q '^db$'; then
   echo "ERROR: db service not in compose aws profile (cwd=$REPO_ROOT)" >&2
+  echo "docker compose --profile aws config --services (exit=${_compose_ec}):" >&2
+  echo "$_compose_svc_out" >&2
+  docker compose version 2>&1 || true
   exit 1
 fi
 
@@ -27,8 +32,10 @@ for _i in $(seq 1 40); do
     break
   fi
   if [[ "${_st}" == "unhealthy" ]]; then
-    echo "==> postgres is unhealthy — logs:" >&2
-    docker logs postgres_hardened --tail 100 2>&1 || true
+    echo "==> postgres is unhealthy — compose logs + inspect:" >&2
+    docker compose --profile aws logs db --tail 120 2>&1 || true
+    docker logs postgres_hardened --tail 80 2>&1 || true
+    docker inspect postgres_hardened --format '{{.State.Status}} {{.State.Error}}' 2>&1 || true
     exit 1
   fi
   sleep 3
