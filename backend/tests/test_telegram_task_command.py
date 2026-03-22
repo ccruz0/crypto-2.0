@@ -119,8 +119,7 @@ def test_task_never_returns_unknown_command(monkeypatch):
     monkeypatch.setenv("TELEGRAM_AUTH_USER_ID", "12345")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     import app.services.telegram_commands as tc_mod
-    if "12345" not in tc_mod.AUTHORIZED_USER_IDS:
-        tc_mod.AUTHORIZED_USER_IDS.add("12345")
+
     handle_telegram_update = tc_mod.handle_telegram_update
 
     variants = [

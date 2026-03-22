@@ -254,8 +254,13 @@ async def startup_event():
         missing = []
         if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
             missing.append("TELEGRAM_BOT_TOKEN")
-        if not (os.getenv("TELEGRAM_CHAT_ID") or "").strip():
-            missing.append("TELEGRAM_CHAT_ID")
+        _tg_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+        _tg_auth = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
+        _tg_atp = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+        if not _tg_chat and not _tg_auth and not _tg_atp:
+            missing.append(
+                "TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID or TELEGRAM_ATP_CONTROL_CHAT_ID"
+            )
         if missing:
             raise RuntimeError(
                 "Missing required AWS env vars: " + ", ".join(missing)

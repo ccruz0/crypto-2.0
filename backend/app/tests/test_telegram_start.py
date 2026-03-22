@@ -44,61 +44,57 @@ def test_start_command_parsing_in_groups():
 # Test authorization in groups
 def test_authorization_in_group():
     """Test that authorization works in groups using user_id"""
-    from app.services.telegram_commands import _is_authorized, AUTH_CHAT_ID, AUTHORIZED_USER_IDS
-    
+    from app.services.telegram_commands import _is_authorized
+
     # Simulate group message
     chat_id = "-1001234567890"  # Group chat ID (negative)
     user_id = "123456789"  # User ID (positive)
-    
-    # Mock the authorization setup
-    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
-         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
-        # In groups, user_id should match AUTHORIZED_USER_IDS
-        is_authorized = _is_authorized(chat_id, user_id)
-        assert is_authorized == True
+
+    with patch.dict(os.environ, {"TELEGRAM_AUTH_USER_ID": "123456789"}, clear=False):
+        assert _is_authorized(chat_id, user_id) is True
 
 def test_authorization_in_private_chat():
     """Test that authorization works in private chats using chat_id"""
     from app.services.telegram_commands import _is_authorized
-    
-    # Simulate private chat
-    chat_id = "123456789"  # Private chat ID (same as user_id)
+
+    chat_id = "123456789"
     user_id = "123456789"
-    
-    # Mock the authorization setup
-    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
-         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
-        # In private chats, chat_id should match AUTHORIZED_USER_IDS
-        is_authorized = _is_authorized(chat_id, user_id)
-        assert is_authorized == True
+
+    with patch.dict(os.environ, {"TELEGRAM_AUTH_USER_ID": "123456789"}, clear=False):
+        assert _is_authorized(chat_id, user_id) is True
 
 def test_authorization_denied():
     """Test that unauthorized users are denied"""
     from app.services.telegram_commands import _is_authorized
-    
+
     chat_id = "999999999"
     user_id = "999999999"
-    
-    # Mock the authorization setup
-    with patch('app.services.telegram_commands.AUTH_CHAT_ID', None), \
-         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', {'123456789'}):
-        # Unauthorized user should be denied
-        is_authorized = _is_authorized(chat_id, user_id)
-        assert is_authorized == False
+
+    with patch.dict(os.environ, {"TELEGRAM_AUTH_USER_ID": "123456789"}, clear=False):
+        assert _is_authorized(chat_id, user_id) is False
 
 def test_authorization_with_channel_id():
-    """Test that channel ID authorization works"""
+    """Test that channel ID authorization works via TELEGRAM_CHAT_ID"""
     from app.services.telegram_commands import _is_authorized
-    
-    # Simulate channel interaction
-    chat_id = "-1001234567890"  # Channel ID
+
+    chat_id = "-1001234567890"
     user_id = "123456789"
-    
-    # Mock: channel ID matches AUTH_CHAT_ID
-    with patch('app.services.telegram_commands.AUTH_CHAT_ID', '-1001234567890'), \
-         patch('app.services.telegram_commands.AUTHORIZED_USER_IDS', set()):
-        is_authorized = _is_authorized(chat_id, user_id)
-        assert is_authorized == True
+
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": "-1001234567890"}, clear=False):
+        assert _is_authorized(chat_id, user_id) is True
+
+
+def test_authorization_comma_separated_control_chat_ids():
+    """Comma-separated TELEGRAM_ATP_CONTROL_CHAT_ID must match each group id."""
+    from app.services.telegram_commands import _is_authorized
+
+    with patch.dict(
+        os.environ,
+        {"TELEGRAM_ATP_CONTROL_CHAT_ID": "-1001111111111,-1002222222222"},
+        clear=False,
+    ):
+        assert _is_authorized("-1002222222222", "12345") is True
+        assert _is_authorized("-1009999999999", "12345") is False
 
 # Test webhook deletion
 def test_webhook_deletion_on_startup():
@@ -185,27 +181,27 @@ def test_welcome_message_has_keyboard():
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
         mock_post.return_value = mock_response
-        
+
         from app.services.telegram_commands import send_welcome_message
-        from app.utils.http_client import http_get, http_post
-        
+
+        mock_db = MagicMock()
         with patch.dict(os.environ, {
             'TELEGRAM_BOT_TOKEN': 'test_token',
             'TELEGRAM_CHAT_ID': '123456789'
         }):
             with patch('app.services.telegram_commands.TELEGRAM_ENABLED', True), \
                  patch('app.services.telegram_commands.BOT_TOKEN', 'test_token'):
-                result = send_welcome_message("123456789")
-        
-        assert result == True
+                result = send_welcome_message("123456789", db=mock_db)
+
+        assert result is True
         assert mock_post.called
-        
+
         # Check that reply_markup (keyboard) was sent
         call_args = mock_post.call_args
         payload = call_args[1]['json']
         assert 'reply_markup' in payload
-        assert 'keyboard' in payload['reply_markup']
-        assert len(payload['reply_markup']['keyboard']) > 0
+        assert 'inline_keyboard' in payload['reply_markup']
+        assert len(payload['reply_markup']['inline_keyboard']) > 0
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

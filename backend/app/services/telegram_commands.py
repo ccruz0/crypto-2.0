@@ -27,6 +27,33 @@ from app.utils.telegram_token_loader import get_telegram_token, get_telegram_tok
 logger = logging.getLogger(__name__)
 
 
+def _split_telegram_id_list(raw: Optional[str]) -> set[str]:
+    """
+    Parse TELEGRAM_* env values that may list multiple numeric IDs.
+
+    Supports comma, semicolon, space, and newlines. Fixes production misconfiguration
+    where TELEGRAM_CHAT_ID="-100111,-100222" was stored as one string and never
+    matched incoming chat_id.
+    """
+    if not raw or not str(raw).strip():
+        return set()
+    out: set[str] = set()
+    for chunk in re.split(r"[,;\s\n]+", str(raw).strip()):
+        tid = chunk.strip()
+        if tid:
+            out.add(tid)
+    return out
+
+
+def _telegram_auth_env_configured() -> bool:
+    """True if any auth env is non-empty (otherwise _is_authorized allows all)."""
+    return bool(
+        (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+        or (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
+        or (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+    )
+
+
 def _to_float(v: Any) -> float:
     """Convert ORM Column or value to float for type checker and runtime."""
     if v is None:
@@ -59,38 +86,27 @@ _env_bot_token_dev = get_telegram_token_dev()
 _env_auth_user_ids = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
 # TELEGRAM_CHAT_ID_TRADING: ATP Alerts — alerts-only (signals, orders, reports). NOT used for commands.
 _env_chat_id_trading = (os.getenv("TELEGRAM_CHAT_ID_TRADING") or "").strip()
-# TELEGRAM_CHAT_ID: Primary channel ID; also used as single authorized chat when TELEGRAM_AUTH_USER_ID unset
-AUTH_CHAT_ID = _env_chat_id or None
+# TELEGRAM_ATP_CONTROL_CHAT_ID raw (may be comma-separated — use _split_telegram_id_list for matching)
+_env_atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+# Primary control chat: first ID in TELEGRAM_CHAT_ID (backward compat for callers expecting one id)
+AUTH_CHAT_ID = (_env_chat_id.split(",")[0].strip() if _env_chat_id else None) or None
 BOT_TOKEN = _env_bot_token or None
 BOT_TOKEN_DEV = _env_bot_token_dev or None
 
-# Parse authorized user IDs (support comma or space separated)
-AUTHORIZED_USER_IDS = set()
-if _env_auth_user_ids:
-    # Split by comma or space, strip whitespace
-    for user_id in _env_auth_user_ids.replace(",", " ").split():
-        user_id = user_id.strip()
-        if user_id:
-            AUTHORIZED_USER_IDS.add(user_id)
-            logger.info(f"[TG][AUTH] Added authorized user ID: {user_id}")
-elif AUTH_CHAT_ID:
-    # Fallback: if no TELEGRAM_AUTH_USER_ID is set, use TELEGRAM_CHAT_ID as authorized chat
-    # This allows backward compatibility but note: TELEGRAM_CHAT_ID is typically a channel ID
-    AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-    logger.info(f"[TG][AUTH] Using TELEGRAM_CHAT_ID as authorized chat (backward compatibility): {AUTH_CHAT_ID}")
-if AUTH_CHAT_ID and str(AUTH_CHAT_ID) not in AUTHORIZED_USER_IDS:
-    # Always allow AUTH_CHAT_ID (TELEGRAM_CHAT_ID) even when TELEGRAM_AUTH_USER_ID is set
-    # Enables both primary channel and additional channels in TELEGRAM_AUTH_USER_ID
-    AUTHORIZED_USER_IDS.add(str(AUTH_CHAT_ID))
-# TELEGRAM_ATP_CONTROL_CHAT_ID: ATP Control Alerts channel — allow commands from this channel
-_env_atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
-if _env_atp_control_chat:
-    AUTHORIZED_USER_IDS.add(_env_atp_control_chat)
-    logger.info(f"[TG][AUTH] Added ATP Control channel: {_env_atp_control_chat}")
+# Union of all parsed IDs (startup logging / diagnostics only — runtime auth uses _is_authorized)
+AUTHORIZED_USER_IDS: set[str] = set()
+AUTHORIZED_USER_IDS |= _split_telegram_id_list(_env_auth_user_ids)
+AUTHORIZED_USER_IDS |= _split_telegram_id_list(_env_chat_id)
+AUTHORIZED_USER_IDS |= _split_telegram_id_list(_env_atp_control_chat)
+if AUTHORIZED_USER_IDS:
+    logger.info(
+        "[TG][AUTH] authorized_id_count=%s (from TELEGRAM_AUTH_USER_ID + TELEGRAM_CHAT_ID + TELEGRAM_ATP_CONTROL_CHAT_ID)",
+        len(AUTHORIZED_USER_IDS),
+    )
 # ATP Alerts (TELEGRAM_CHAT_ID_TRADING) is alerts-only — do NOT add to command auth.
 # Commands must go to ATP Control (TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID).
 
-TELEGRAM_ENABLED = bool(BOT_TOKEN and (AUTH_CHAT_ID or AUTHORIZED_USER_IDS))
+TELEGRAM_ENABLED = bool(BOT_TOKEN and _telegram_auth_env_configured())
 # Set to True when startup diagnostics get 401 (token invalid); disables polling/commands without crashing
 _telegram_startup_401: bool = False
 
@@ -150,56 +166,58 @@ def _get_effective_bot_token() -> Optional[str]:
 def _is_authorized(chat_id: str, user_id: str) -> bool:
     """
     Check if a user/chat is authorized to use bot commands.
-    
-    Authorization rules:
-    1. If chat_id matches AUTH_CHAT_ID (channel/group ID), allow
-    2. If user_id is in AUTHORIZED_USER_IDS, allow
-    3. If chat_id is in AUTHORIZED_USER_IDS (for private chats, channels, supergroups), allow
-    4. If chat_id matches TELEGRAM_ATP_CONTROL_CHAT_ID (runtime check for ATP Control Alerts channel), allow
-    
+
+    Uses **runtime** env parsing so comma-separated TELEGRAM_CHAT_ID /
+    TELEGRAM_ATP_CONTROL_CHAT_ID / TELEGRAM_AUTH_USER_ID lists work without redeploying
+    code (process may still need restart to pick up new env).
+
+    Rules:
+    - chat_id in TELEGRAM_CHAT_ID list → allow (ATP Control / primary control chats)
+    - chat_id in TELEGRAM_ATP_CONTROL_CHAT_ID list → allow (ATP Control Alerts group)
+    - user_id or chat_id in TELEGRAM_AUTH_USER_ID list → allow (operator user id or extra chats)
+
     Args:
-        chat_id: Telegram chat ID (can be user ID for private chats, or channel/group ID)
-        user_id: Telegram user ID (from message.from.id)
-    
-    Returns:
-        True if authorized, False otherwise
+        chat_id: Telegram chat ID (group/channel/private)
+        user_id: Telegram user ID (message.from.id); may be empty for some channel posts
     """
-    if not AUTH_CHAT_ID and not AUTHORIZED_USER_IDS:
-        # No authorization configured - allow all (for development)
+    if not _telegram_auth_env_configured():
+        # No TELEGRAM_* auth env — allow all (local dev)
         return True
-    
+
     chat_id_str = str(chat_id).strip() if chat_id else ""
     user_id_str = str(user_id).strip() if user_id else ""
-    auth_chat_id_str = str(AUTH_CHAT_ID).strip() if AUTH_CHAT_ID else ""
-    
-    # Check if chat_id matches channel/group ID
-    if auth_chat_id_str and chat_id_str == auth_chat_id_str:
-        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=AUTH_CHAT_ID", chat_id_str)
+
+    control_chats = _split_telegram_id_list(os.getenv("TELEGRAM_CHAT_ID"))
+    atp_control_chats = _split_telegram_id_list(os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID"))
+    auth_entries = _split_telegram_id_list(os.getenv("TELEGRAM_AUTH_USER_ID"))
+
+    if chat_id_str and chat_id_str in control_chats:
+        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=TELEGRAM_CHAT_ID", chat_id_str)
         return True
-    
-    # Check if user_id is in authorized user IDs
-    if user_id_str and user_id_str in AUTHORIZED_USER_IDS:
-        logger.info("[TG][AUTH] ALLOW chat_id=%s user_id=%s reason=user_in_authorized", chat_id_str, user_id_str)
-        return True
-    
-    # Check if chat_id is in authorized user IDs (for private chats, channels, supergroups)
-    if chat_id_str and chat_id_str in AUTHORIZED_USER_IDS:
-        logger.info("[TG][AUTH] ALLOW chat_id=%s reason=chat_in_authorized", chat_id_str)
-        return True
-    
-    # Runtime check: TELEGRAM_ATP_CONTROL_CHAT_ID (ATP Control Alerts channel)
-    # Handles env loaded after module import and ensures channel/supergroup IDs (-100...) are authorized
-    _atp_control = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
-    if _atp_control and chat_id_str == _atp_control:
+    if chat_id_str and chat_id_str in atp_control_chats:
         logger.info("[TG][AUTH] ALLOW chat_id=%s reason=TELEGRAM_ATP_CONTROL_CHAT_ID", chat_id_str)
         return True
-    
+    if user_id_str and user_id_str in auth_entries:
+        logger.info(
+            "[TG][AUTH] ALLOW chat_id=%s user_id=%s reason=TELEGRAM_AUTH_USER_ID(user)",
+            chat_id_str,
+            user_id_str,
+        )
+        return True
+    if chat_id_str and chat_id_str in auth_entries:
+        logger.info(
+            "[TG][AUTH] ALLOW chat_id=%s reason=TELEGRAM_AUTH_USER_ID(chat)",
+            chat_id_str,
+        )
+        return True
+
     logger.info(
-        "[TG][AUTH] DENY chat_id=%s user_id=%s authorized_ids=%s atp_control_env=%s",
+        "[TG][AUTH] DENY chat_id=%s user_id=%s control_chats=%s atp_control_chats=%s auth_entries=%s",
         chat_id_str or "N/A",
         user_id_str or "N/A",
-        ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
-        _atp_control or "(not set)",
+        ",".join(sorted(control_chats)) if control_chats else "none",
+        ",".join(sorted(atp_control_chats)) if atp_control_chats else "none",
+        ",".join(sorted(auth_entries)) if auth_entries else "none",
     )
     return False
 
@@ -4381,6 +4399,18 @@ def _handle_task_command(
     normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
     intent_text = normalized_cmd
     token_source = get_telegram_token_source()
+    _uid = str((from_user or {}).get("id", "") or "").strip()
+    _un = str((from_user or {}).get("username", "") or "").strip()
+    logger.info(
+        "[TG][TASK][INTAKE] handler=_handle_task_command update_id=%s chat_id=%s user_id=%s username=%s "
+        "token_source=%s normalized_cmd=%r",
+        update_id,
+        chat_id,
+        _uid or "(empty)",
+        _un or "(empty)",
+        token_source,
+        (normalized_cmd or "")[:120],
+    )
     logger.info(
         "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
         raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
@@ -5133,7 +5163,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     chat_type = chat.get("type", "unknown")
     chat_title = chat.get("title", "") or ""
     from_user = message.get("from", {}) or {}
+    # Channel/supergroup posts may omit "from"; anonymous channel admins use sender_chat
+    sender_chat = message.get("sender_chat") or {}
     user_id = str(from_user.get("id", "")) if from_user else ""
+    if not user_id and sender_chat:
+        user_id = str(sender_chat.get("id", "")).strip()
     sender_id = user_id or chat_id
 
     # Defensive text extraction: message.text, message.caption, edited_message.text
@@ -5160,25 +5194,33 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     )
 
     # Auth
+    _token_src = get_telegram_token_source()
     auth_ok = _is_authorized(chat_id, user_id)
-    auth_reason = "chat_id or user_id authorized" if auth_ok else "not in AUTHORIZED_USER_IDS"
+    auth_reason = "chat_id or user_id authorized" if auth_ok else "not_in_configured_lists"
     logger.info(
-        "[TG][AUTH] decision=%s reason=%s",
-        "ALLOW" if auth_ok else "DENY", auth_reason,
+        "[TG][AUTH] decision=%s reason=%s token_source=%s chat_id=%s user_id=%s",
+        "ALLOW" if auth_ok else "DENY",
+        auth_reason,
+        _token_src,
+        chat_id,
+        user_id or "(empty)",
     )
     if not auth_ok:
         # Diagnostic: log incoming chat metadata for authorization troubleshooting
         chat_username = chat.get("username", "") or ""
-        _atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
         logger.warning(
             "[TG][AUTH][DENY] chat_id=%s chat_type=%s chat_title=%s chat_username=%s "
-            "TELEGRAM_ATP_CONTROL_CHAT_ID=%s AUTHORIZED_USER_IDS=%s",
+            "user_id=%s token_source=%s TELEGRAM_CHAT_ID(raw)=%s TELEGRAM_ATP_CONTROL_CHAT_ID(raw)=%s "
+            "TELEGRAM_AUTH_USER_ID(set)=%s",
             chat_id,
             chat_type,
             chat_title or "(empty)",
             chat_username or "(empty)",
-            _atp_control_chat or "(not set)",
-            ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
+            user_id or "(empty)",
+            _token_src,
+            (os.getenv("TELEGRAM_CHAT_ID") or "(not set)")[:120],
+            (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "(not set)")[:120],
+            "yes" if (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip() else "no",
         )
         if _env_chat_id_trading and chat_id == str(_env_chat_id_trading):
             deny_msg = "ATP Alerts is alerts-only. Use ATP Control for /task commands."
