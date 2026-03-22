@@ -11,6 +11,13 @@ Four distinct channels. See `docs/audits/TELEGRAM_ROUTING_AUDIT.md` for full aud
 | **ATP Control** (dev/tasks) | @ATP_control_bot | TELEGRAM_ATP_CONTROL_* | Tasks, approvals, investigations |
 | **Claw** (commands) | @Claw_cruz_bot | (reply to user) | /task /help, OpenClaw responses |
 
+### /task and OpenClaw (production pitfall)
+
+- **`/task` must be handled by `backend-aws`** (`create_notion_task_from_telegram_direct`). It must **not** go to OpenClaw’s agent, which mounts the ATP repo **read-only** at `~/.openclaw/workspace/atp` and may reply with “edit failed / read-only filesystem”.
+- **Cause:** Telegram delivers updates to **one** consumer per bot token. If `backend-aws` polls `TELEGRAM_BOT_TOKEN` (trading bot) while you message **@ATP_control_bot**, the platform never sees `/task`; OpenClaw (or another host) that holds **TELEGRAM_ATP_CONTROL_BOT_TOKEN** may answer instead.
+- **Fix (code):** On AWS, `get_telegram_token()` **prefers `TELEGRAM_ATP_CONTROL_BOT_TOKEN` for polling** when set, while `telegram_notifier` still uses `TELEGRAM_BOT_TOKEN` for ATP Alerts / channel posts.
+- **Ops:** Ensure **only one** process polls the ATP Control bot. If OpenClaw is registered for the same token (webhook or polling), disable it there or use a **separate** bot for OpenClaw — otherwise expect **409 getUpdates conflict** on the backend.
+
 ## Variables de entorno
 
 ```bash

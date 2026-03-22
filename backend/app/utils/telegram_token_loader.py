@@ -176,14 +176,15 @@ def get_telegram_token() -> Optional[str]:
 
     Priority:
     0. FORCE_TELEGRAM_TOKEN_PROMPT=true → always prompt (ignores env)
-    1. TELEGRAM_BOT_TOKEN
-    2. TELEGRAM_BOT_TOKEN_DEV
-    3. TELEGRAM_ATP_CONTROL_BOT_TOKEN (ATP Control /task /help channel)
-    4. TELEGRAM_CLAW_BOT_TOKEN (Claw fallback)
-    5. Interactive popup (tkinter → prompt_toolkit → terminal)
+    1. AWS + TELEGRAM_ATP_CONTROL_BOT_TOKEN → use for polling (commands go to @ATP_control_bot)
+    2. TELEGRAM_BOT_TOKEN
+    3. TELEGRAM_BOT_TOKEN_DEV
+    4. TELEGRAM_ATP_CONTROL_BOT_TOKEN (non-AWS: when TELEGRAM_BOT_TOKEN not set)
+    5. TELEGRAM_CLAW_BOT_TOKEN (Claw fallback)
+    6. Interactive popup (tkinter → prompt_toolkit → terminal)
 
-    ATP Control fallback ensures /task works when deploy sets TELEGRAM_ATP_CONTROL_* but not
-    TELEGRAM_BOT_TOKEN (e.g. SSM atp_control_bot_token only).
+    On AWS, ATP Control is preferred over TELEGRAM_BOT_TOKEN so /task updates reach backend-aws
+    instead of only the trading bot. Trading alerts still use TELEGRAM_BOT_TOKEN via telegram_notifier.
     """
     force_prompt = os.getenv("FORCE_TELEGRAM_TOKEN_PROMPT", "false").lower() == "true"
     if force_prompt:
@@ -194,6 +195,23 @@ def get_telegram_token() -> Optional[str]:
         else:
             logger.warning("[TG] No token provided - Telegram disabled")
         return token
+
+    # AWS PROD: /task and other commands are sent to @ATP_control_bot. If we poll TELEGRAM_BOT_TOKEN
+    # (trading/alerts bot) instead, those updates never reach backend-aws — another consumer (e.g.
+    # OpenClaw on LAB with the ATP Control token) may answer /task and try read-only workspace edits.
+    try:
+        from app.core.runtime import is_aws_runtime
+
+        if is_aws_runtime():
+            atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
+            if atp:
+                logger.info(
+                    "[TG][CONFIG] AWS polling token=TELEGRAM_ATP_CONTROL_BOT_TOKEN "
+                    "(commands /task go to this bot; TELEGRAM_BOT_TOKEN is for trading sends)"
+                )
+                return atp
+    except Exception:
+        pass
 
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if token:
@@ -235,6 +253,13 @@ def get_telegram_token_source() -> str:
     Return which env var provided the active polling token (for audit logging).
     Matches the priority in get_telegram_token().
     """
+    try:
+        from app.core.runtime import is_aws_runtime
+
+        if is_aws_runtime() and (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip():
+            return "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
+    except Exception:
+        pass
     if (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
         return "TELEGRAM_BOT_TOKEN"
     if (os.getenv("TELEGRAM_BOT_TOKEN_DEV") or "").strip():
