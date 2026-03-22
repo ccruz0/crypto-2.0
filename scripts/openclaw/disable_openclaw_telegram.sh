@@ -45,10 +45,11 @@ PYEOF
 
 cd "$REPO"
 if docker ps -q -f name=openclaw 2>/dev/null | grep -q .; then
-  docker compose -f docker-compose.openclaw.yml up -d openclaw 2>/dev/null || \
-  docker compose -f docker-compose.openclaw.yml restart openclaw 2>/dev/null || \
+  # restart does not apply new compose `environment:` overrides; must recreate
+  docker compose -f docker-compose.openclaw.yml up -d --force-recreate --no-deps openclaw 2>/dev/null || \
+  docker compose -f docker-compose.openclaw.yml up -d --no-deps openclaw 2>/dev/null || \
   docker restart openclaw 2>/dev/null || true
-  echo "Restarted / recreated OpenClaw (compose applies cleared TELEGRAM_* env)."
+  echo "Recreated OpenClaw (compose clears TELEGRAM_* from env_file)."
 else
   echo "OpenClaw container not running; config updated for next start."
 fi
