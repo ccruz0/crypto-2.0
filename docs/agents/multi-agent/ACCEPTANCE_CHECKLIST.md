@@ -78,9 +78,9 @@ If commands in ATP Control produce no response:
 | # | Check | Action |
 |---|-------|--------|
 | 6.1 | **ATP Control** | Use a private group or direct chat — not HILOVIVO3.0. See [ATP_CONTROL_SETUP.md](../ATP_CONTROL_SETUP.md) |
-| 6.2 | **Authorization** | Add your group chat ID or user ID to `TELEGRAM_AUTH_USER_ID` or `TELEGRAM_CHAT_ID` |
+| 6.2 | **Authorization** | Add group/user IDs to `TELEGRAM_AUTH_USER_ID`, `TELEGRAM_CHAT_ID`, or `TELEGRAM_ATP_CONTROL_CHAT_ID` (comma-separated lists supported). See [TELEGRAM_TASK_INTAKE.md](../../runbooks/TELEGRAM_TASK_INTAKE.md) |
 | 6.3 | **Bot token** | AWS: `TELEGRAM_BOT_TOKEN` must be set. Local: `TELEGRAM_BOT_TOKEN_DEV` required (or polling is skipped) |
-| 6.4 | **Logs** | Check for `[TG][CHAT] chat_id=... chat_type=...` and `[TG][AUTH] decision=ALLOW` |
+| 6.4 | **Logs** | Check `[TG][CHAT]`, `[TG][AUTH] decision=ALLOW\|DENY`, `[TG][TASK][INTAKE]` for `/task` |
 
 ---
 
