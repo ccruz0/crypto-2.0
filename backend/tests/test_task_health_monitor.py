@@ -136,11 +136,14 @@ class TestHandleStuckTask:
         def capture_alert(task, minutes_stuck, **kwargs):
             alerts.append((task.get("id"), minutes_stuck))
 
-        with patch("app.services.notion_tasks.update_notion_task_status"):
-            with patch.object(thm, "_send_stuck_alert", side_effect=capture_alert):
-                with patch.object(thm, "_log_event"):
-                    thm.handle_stuck_task(t, now)
-                    thm.handle_stuck_task(t, now)  # same task again immediately
+        # Mock DB so retry count/alert state are clean (avoids stale DB from prior runs)
+        with patch.object(thm, "_get_stuck_retry_count_db", return_value=0):
+            with patch.object(thm, "_get_stuck_alert_last_sent_db", return_value=None):
+                with patch("app.services.notion_tasks.update_notion_task_status"):
+                    with patch.object(thm, "_send_stuck_alert", side_effect=capture_alert):
+                        with patch.object(thm, "_log_event"):
+                            thm.handle_stuck_task(t, now)
+                            thm.handle_stuck_task(t, now)  # same task again immediately
         # Should have sent alert only once (second call is within cooldown)
         assert len(alerts) == 1
         assert alerts[0][0] == "cooldown-1"

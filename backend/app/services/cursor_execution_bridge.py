@@ -126,7 +126,7 @@ def task_has_patch_approval(task_id: str, *, max_lines: int = 100_000) -> bool:
     if not variants_n:
         return False
     try:
-        path = _repo_root() / _AGENT_ACTIVITY_LOG_DIR / _AGENT_ACTIVITY_LOG_FILE
+        path = _workspace_root() / _AGENT_ACTIVITY_LOG_DIR / _AGENT_ACTIVITY_LOG_FILE
         if not path.exists():
             return False
         buf: deque[str] = deque(maxlen=max(1000, max_lines))
@@ -786,10 +786,17 @@ def run_bridge_phase1(
         handoff_path = _cursor_handoff_path(task_id)
         ok_handoff, handoff_err = ensure_handoff_file_for_bridge(task_id)
         if not ok_handoff:
+            err_msg = handoff_err or f"handoff file not found: {handoff_path}"
+            logger.warning(
+                "cursor_bridge: handoff missing/failed task_id=%s path=%s error=%s",
+                task_id, handoff_path, err_msg[:200],
+            )
+            _log_event("cursor_bridge_handoff_missing", task_id=task_id, details={"error": err_msg[:300]})
             return {
                 "ok": False,
-                "error": handoff_err or f"handoff file not found: {handoff_path}",
+                "error": err_msg,
                 "task_id": task_id,
+                "failure_point": "handoff_missing_or_auto_gen_failed",
             }
         prompt = handoff_path.read_text(encoding="utf-8")
 

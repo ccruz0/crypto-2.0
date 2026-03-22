@@ -42,7 +42,10 @@ MAX_AUTO_REINVESTIGATE = 2
 # Max recovery attempts (legacy name); after this we move to Blocked
 MAX_RETRIES = 3
 
-# In-memory state (per process). Key: task_id, value: timestamp (alert) or retry count
+# DB-backed keys (TradingSettings). Survives restarts, shared across workers.
+_STUCK_ALERT_KEY_PREFIX = "agent_stuck_alert:"
+_STUCK_RETRY_KEY_PREFIX = "agent_stuck_retry:"
+# In-memory fallback when DB unavailable; also used for same-cycle dedup
 _last_alert_sent: dict[str, float] = {}
 _retry_count: dict[str, int] = {}
 # When user clicks Re-investigate but Notion write fails: suppress stuck-alert spam
@@ -52,6 +55,143 @@ REINVESTIGATE_FAILED_SUPPRESS_MINUTES = 90
 _decomposed_parents: set[str] = set()
 # Parent -> child task ids (for aggregation when children complete)
 _parent_child_map: dict[str, list[str]] = {}
+
+
+def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
+    """Read last stuck-alert timestamp from DB. Returns Unix timestamp or None."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return None
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if not row or not row.setting_value:
+            return None
+        dt = datetime.fromisoformat(row.setting_value.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+    except Exception as e:
+        logger.debug("task_health_monitor: _get_stuck_alert_last_sent_db failed: %s", e)
+        return None
+    finally:
+        db.close()
+
+
+def _set_stuck_alert_last_sent_db(task_id: str, ts: float) -> None:
+    """Write last stuck-alert timestamp to DB."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+        from datetime import datetime, timezone
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
+        value = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            row.setting_value = value
+        else:
+            db.add(TradingSettings(setting_key=key, setting_value=value))
+        db.commit()
+    except Exception as e:
+        logger.debug("task_health_monitor: _set_stuck_alert_last_sent_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _get_stuck_retry_count_db(task_id: str) -> int:
+    """Read retry count from DB. Returns 0 if not found."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return 0
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if not row or not row.setting_value:
+            return 0
+        return int(row.setting_value)
+    except (ValueError, TypeError):
+        return 0
+    except Exception as e:
+        logger.debug("task_health_monitor: _get_stuck_retry_count_db failed: %s", e)
+        return 0
+    finally:
+        db.close()
+
+
+def _set_stuck_retry_count_db(task_id: str, count: int) -> None:
+    """Write retry count to DB."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            row.setting_value = str(count)
+        else:
+            db.add(TradingSettings(setting_key=key, setting_value=str(count)))
+        db.commit()
+    except Exception as e:
+        logger.debug("task_health_monitor: _set_stuck_retry_count_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _clear_stuck_retry_count_db(task_id: str) -> None:
+    """Clear retry count when task is blocked or decomposed."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            db.delete(row)
+            db.commit()
+    except Exception as e:
+        logger.debug("task_health_monitor: _clear_stuck_retry_count_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _clear_stuck_alert_db(task_id: str) -> None:
+    """Clear alert timestamp when task is blocked or decomposed."""
+    try:
+        from app.database import SessionLocal
+        from app.models.trading_settings import TradingSettings
+    except Exception:
+        return
+    db = SessionLocal()
+    try:
+        key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
+        row = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()
+        if row:
+            db.delete(row)
+            db.commit()
+    except Exception as e:
+        logger.debug("task_health_monitor: _clear_stuck_alert_db failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 def record_reinvestigate_failed(task_id: str) -> None:
@@ -264,7 +404,9 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
     task_title = (task.get("task") or "(untitled)")[:200]
     status = (task.get("status") or "").strip().lower()
 
-    retries = _retry_count.get(task_id, 0)
+    # Retry count: DB is source of truth (survives restarts); in-memory is cache
+    retries = max(_retry_count.get(task_id, 0), _get_stuck_retry_count_db(task_id))
+    _retry_count[task_id] = retries
     already_decomposed = task_id in _decomposed_parents
 
     # At retry limit: decompose if eligible, else block
@@ -294,6 +436,8 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
                         _send_decomposition_alert(task, child_count=result["child_count"])
                     _retry_count.pop(task_id, None)
                     _last_alert_sent.pop(task_id, None)
+                    _clear_stuck_retry_count_db(task_id)
+                    _clear_stuck_alert_db(task_id)
                     return
         except Exception as e:
             logger.warning("task_health_monitor: decomposition failed task_id=%s %s", task_id[:12], e)
@@ -338,12 +482,20 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         # Reset retry count so we don't keep updating the same task
         _retry_count.pop(task_id, None)
         _last_alert_sent.pop(task_id, None)
+        _clear_stuck_retry_count_db(task_id)
+        _clear_stuck_alert_db(task_id)
         return
 
     # Cooldown: send at most one "stuck" alert per task per ALERT_COOLDOWN_MINUTES
+    # DB-backed dedup: prevents duplicate alerts across workers/restarts
     # Suppress if user recently clicked Re-investigate but Notion write failed (avoid spam)
-    last_alert = _last_alert_sent.get(task_id)
     now_ts = now.timestamp()
+    last_alert_mem = _last_alert_sent.get(task_id)
+    last_alert_db = _get_stuck_alert_last_sent_db(task_id)
+    last_alert = max(
+        (last_alert_mem or 0),
+        (last_alert_db or 0),
+    ) if (last_alert_mem or last_alert_db) else None
     send_alert = (
         (last_alert is None or (now_ts - last_alert) >= (ALERT_COOLDOWN_MINUTES * 60))
         and not _recently_failed_reinvestigate(task_id, now_ts)
@@ -385,7 +537,9 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         if send_alert:
             _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
+            _set_stuck_alert_last_sent_db(task_id, now_ts)
         _retry_count[task_id] = retries + 1
+        _set_stuck_retry_count_db(task_id, retries + 1)
         _log_event(
             "auto_transition",
             task_id=task_id,
@@ -431,7 +585,9 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         if send_alert:
             _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
+            _set_stuck_alert_last_sent_db(task_id, now_ts)
         _retry_count[task_id] = retries + 1
+        _set_stuck_retry_count_db(task_id, retries + 1)
 
     elif status == "testing":
         # Case 3: Testing stuck — add comment; no direct "re-run validation" API, so just comment and retry count
@@ -447,7 +603,9 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
         if send_alert:
             _send_stuck_alert(task, minutes_stuck, retry_attempt=retries + 1)
             _last_alert_sent[task_id] = now_ts
+            _set_stuck_alert_last_sent_db(task_id, now_ts)
         _retry_count[task_id] = retries + 1
+        _set_stuck_retry_count_db(task_id, retries + 1)
         _log_event("stuck_task_recovered", task_id=task_id, task_title=task_title, details={"action": "comment_only_testing"})
 
 

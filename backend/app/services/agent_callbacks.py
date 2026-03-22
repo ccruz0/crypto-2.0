@@ -769,6 +769,44 @@ _OPENCLAW_FALLBACK_MARKERS = (
     "quota exceeded",
 )
 
+# Retryable errors: do NOT use template fallback — task stays in-progress for retry
+_RETRYABLE_LLM_ERROR_MARKERS = (
+    "rate limit",
+    "429",
+    "too many requests",
+    "payment required",
+    "402",
+    "insufficient credit",
+    "quota exceeded",
+    "low balance",
+    "timeout",
+    "connection failed",
+    "connection refused",
+    "503",
+    "502",
+    "504",
+    "service unavailable",
+    "model not available",
+    "model not found",
+)
+
+# Generic investigation output: lacks actionable root cause
+_GENERIC_INVESTIGATION_MARKERS = (
+    "further investigation needed",
+    "further investigation required",
+    "unable to determine",
+    "could not determine",
+    "unclear at this time",
+    "requires manual investigation",
+    "check the logs",
+    "review the logs",
+    "see logs for",
+    "consult the documentation",
+    "insufficient information",
+    "more information needed",
+    "additional information required",
+)
+
 _MIN_INVESTIGATION_CONTENT_CHARS = 200
 # Agent output: require all 9 sections and longer body
 _MIN_AGENT_BODY_CHARS = 500
@@ -957,6 +995,15 @@ def _apply_via_openclaw(
             "openclaw_fallback reason=openclaw_error error=%s task_id=%s use_agent_schema=%s",
             last_error, task_id, use_agent_schema,
         )
+        # Retryable errors (rate limit, timeout, etc.): do NOT use fallback — task stays in-progress for retry
+        last_err_lower = (last_error or "").lower()
+        is_retryable = any(m in last_err_lower for m in _RETRYABLE_LLM_ERROR_MARKERS)
+        if is_retryable:
+            logger.info(
+                "openclaw_fallback retryable_error task_id=%s — NOT using fallback, task will retry next cycle",
+                task_id,
+            )
+            return {"success": False, "summary": last_error, "retryable": True}
         if fallback_fn:
             logger.info("openclaw_fallback using template fallback task_id=%s", task_id)
             return fallback_fn(prepared_task)
@@ -1117,6 +1164,35 @@ def _validate_openclaw_note(
                 "success": False,
                 "summary": f"investigation contains fallback/error marker: '{marker}'",
             }
+
+    # Generic output gate: Root Cause must have actionable content, not filler
+    try:
+        from app.services.openclaw_client import parse_all_markdown_sections
+        sections = parse_all_markdown_sections(content)
+        root_cause = (sections.get("Root Cause") or "").strip()
+        if root_cause:
+            rc_lower = root_cause.lower()
+            if any(m in rc_lower for m in _GENERIC_INVESTIGATION_MARKERS):
+                # Check if Root Cause is ONLY generic filler (no file/function/code path)
+                has_concrete = any(
+                    x in root_cause for x in (".py", "backend/", "frontend/", "def ", "class ", "line ", ":", "/")
+                )
+                if not has_concrete or len(root_cause) < 80:
+                    logger.warning(
+                        "openclaw_note_validation: FAILED — generic Root Cause (no actionable evidence) "
+                        "task_id=%s path=%s",
+                        task_id, note_path,
+                    )
+                    return {
+                        "success": False,
+                        "summary": (
+                            "Root Cause lacks actionable evidence. Include exact failing code path, "
+                            "module/function, and direct connection between evidence and conclusion. "
+                            "Avoid generic phrases like 'further investigation needed' or 'check logs'."
+                        ),
+                    }
+    except Exception as e:
+        logger.debug("openclaw_note_validation: generic-output check failed task_id=%s: %s", task_id, e)
 
     try:
         from app.services.openclaw_client import AGENT_OUTPUT_SECTIONS, INVESTIGATION_SECTIONS

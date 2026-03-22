@@ -39,3 +39,7 @@ test-signing:
 
 test-local-signing:
 	PYTHONPATH=backend python3 -m pytest -q backend/tests/test_crypto_com_trade_signing.py
+
+# Task lifecycle hardening validation (use venv for deps)
+test-lifecycle-hardening:
+	PYTHONPATH=backend .venv/bin/python -m pytest backend/tests/test_task_lifecycle_hardening.py backend/tests/test_task_health_monitor.py backend/tests/test_task_status_transition.py backend/tests/test_telegram_approval_callback.py backend/tests/test_cursor_execution_bridge.py -v --tb=short

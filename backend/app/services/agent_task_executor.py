@@ -134,28 +134,29 @@ def _run_callback(
     prepared_task: dict[str, Any],
     fn: PreparedTaskCallback,
     label: str,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """
-    Run an optional callback with prepared_task. Return (success, summary).
-    If fn is None, returns (False, "not provided").
-    If fn raises, returns (False, str(exception)).
-    If fn returns a dict, expect keys "success" (bool) and optionally "summary" (str).
+    Run an optional callback with prepared_task. Return (success, summary, retryable).
+    If fn is None, returns (False, "not provided", False).
+    If fn raises, returns (False, str(exception), False).
+    If fn returns a dict, expect keys "success" (bool), optionally "summary" (str), "retryable" (bool).
     If fn returns a bool, that is success and summary is "".
     """
     if fn is None:
-        return False, "not provided"
+        return False, "not provided", False
     try:
         out = fn(prepared_task)
         if isinstance(out, dict):
             success = bool(out.get("success"))
             summary = str(out.get("summary") or "").strip() or ("ok" if success else "failed")
-            return success, summary
+            retryable = bool(out.get("retryable", False))
+            return success, summary, retryable
         if isinstance(out, bool):
-            return out, "ok" if out else "failed"
-        return False, str(out)
+            return out, "ok" if out else "failed", False
+        return False, str(out), False
     except Exception as e:
         logger.exception("%s callback failed: %s", label, e)
-        return False, str(e)
+        return False, str(e), False
 
 
 def summarize_execution_result(success: bool, summary: str | None = None) -> str:
@@ -1057,16 +1058,32 @@ def execute_prepared_notion_task(
         logger.debug("log_agent_event(execution_started) failed: %s", e)
 
     # ----- Step 1: apply
-    apply_ok, apply_summary = _run_callback(prepared_task, apply_change_fn, "apply_change")
+    apply_ok, apply_summary, apply_retryable = _run_callback(prepared_task, apply_change_fn, "apply_change")
     if not apply_ok:
         try:
             from app.services.agent_activity_log import log_agent_event
-            log_agent_event("execution_failed", task_id=task_id, task_title=task_title, details={"stage": "apply", "summary": apply_summary})
+            log_agent_event("execution_failed", task_id=task_id, task_title=task_title, details={"stage": "apply", "summary": apply_summary, "retryable": apply_retryable})
         except Exception as e:
             logger.debug("log_agent_event(execution_failed/apply) failed: %s", e)
         msg = summarize_execution_result(False, apply_summary)
         _append_notion_page_comment(task_id, f"[{executed_at}] {msg}")
-        logger.warning("execute_prepared_notion_task: apply failed task_id=%s summary=%s", task_id, apply_summary)
+        logger.warning("execute_prepared_notion_task: apply failed task_id=%s summary=%s retryable=%s", task_id, apply_summary, apply_retryable)
+        # Retryable LLM failures: move to ready-for-investigation so scheduler can retry
+        if apply_retryable:
+            try:
+                from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION, update_notion_task_status
+                update_notion_task_status(
+                    task_id,
+                    TASK_STATUS_READY_FOR_INVESTIGATION,
+                    append_comment=f"[{executed_at}] LLM temporary failure (rate limit/timeout). Moved to ready-for-investigation for retry.",
+                )
+                return result(
+                    True, False, apply_summary,
+                    False, False, False, "", False, False, "",
+                    "ready-for-investigation", False,
+                )
+            except Exception as e:
+                logger.warning("execute_prepared_notion_task: move to ready-for-investigation failed: %s", e)
         return result(
             True, False, apply_summary,
             False, False, False, "", False, False, "",
@@ -1307,7 +1324,7 @@ def execute_prepared_notion_task(
     validation_ok = False
     validation_summary = ""
     if validate_fn is not None:
-        validation_ok, validation_summary = _run_callback(prepared_task, validate_fn, "validate")
+        validation_ok, validation_summary, _ = _run_callback(prepared_task, validate_fn, "validate")
         if not validation_ok:
             try:
                 from app.services.agent_activity_log import log_agent_event
@@ -1429,7 +1446,7 @@ def execute_prepared_notion_task(
             update_notion_deploy_progress(task_id, 0)
         except Exception:
             pass
-        deployment_ok, deployment_summary = _run_callback(prepared_task, deploy_fn, "deploy")
+        deployment_ok, deployment_summary, _ = _run_callback(prepared_task, deploy_fn, "deploy")
         if not deployment_ok:
             try:
                 from app.services.agent_activity_log import log_agent_event
@@ -1565,6 +1582,9 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         task_id, task_title, current_status,
     )
 
+    # --- 1b. Infer repo_area early (used by cursor bridge and release approval) ---
+    repo_area = infer_repo_area_for_task(task)
+
     # --- 2. Move to patching (skip if already there) ---
     if current_status == "patching":
         logger.info("advance_ready_for_patch_task: already in patching, skipping status move task_id=%s", task_id)
@@ -1597,6 +1617,20 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             handoff_path = workspace_root() / "docs" / "agents" / "cursor-handoffs" / f"cursor-handoff-{task_id}.md"
             _need_bridge, _bridge_reason = cursor_bridge_required_for_task(task, task_id)
             _approval_ok = (not is_bridge_require_approval()) or task_has_patch_approval(task_id)
+            # Ensure handoff exists when bridge is needed; auto-generate if missing
+            if _need_bridge and not handoff_path.exists():
+                from app.services.cursor_execution_bridge import ensure_handoff_file_for_bridge
+                ok_handoff, handoff_err = ensure_handoff_file_for_bridge(task_id)
+                if not ok_handoff:
+                    logger.warning(
+                        "advance_ready_for_patch_task: handoff missing, auto-gen failed task_id=%s: %s",
+                        task_id, handoff_err,
+                    )
+                    _append_notion_page_comment(
+                        task_id,
+                        f"[{ts}] Cursor handoff required but missing and auto-generation failed: {handoff_err}. "
+                        "Use 'Run Cursor Bridge' in Telegram after creating handoff manually, or re-run investigation.",
+                    )
             if (
                 handoff_path.exists()
                 and is_bridge_enabled()
@@ -1707,7 +1741,6 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             pass
 
     # --- 3. Reconstruct a minimal prepared_task for callback selection ---
-    repo_area = infer_repo_area_for_task(task)
     prepared_task: dict[str, Any] = {
         "task": task,
         "repo_area": repo_area,
@@ -1734,7 +1767,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         return _result(True, "validation", "no validate_fn available", "patching")
 
     # --- 5. Run validation ---
-    val_ok, val_summary = _run_callback(prepared_task, validate_fn, "validate")
+    val_ok, val_summary, _ = _run_callback(prepared_task, validate_fn, "validate")
 
     try:
         from app.services.agent_activity_log import log_agent_event
@@ -1775,7 +1808,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     verify_fn = callback_selection.get("verify_solution_fn")
     if verify_enabled and verify_fn is not None:
         logger.info("verification_started task_id=%s", task_id[:12] if task_id else "?")
-        verify_ok, verify_summary = _run_callback(prepared_task, verify_fn, "verify_solution")
+        verify_ok, verify_summary, _ = _run_callback(prepared_task, verify_fn, "verify_solution")
         if not verify_ok:
             # Distinguish: verification unavailable (env/config/error) vs verification failed (bad solution)
             _s = (verify_summary or "").lower()
