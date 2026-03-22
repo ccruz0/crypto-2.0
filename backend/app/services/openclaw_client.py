@@ -55,7 +55,11 @@ _FALLBACK_DELAY_S = 2
 
 
 def _model_chain() -> list[str]:
-    """Ordered list of models to try: first is primary (cheap-first when OPENCLAW_CHEAP_FIRST_MODE=true)."""
+    """Ordered list of models to try (``OPENCLAW_MODEL_CHAIN`` or PRIMARY + FALLBACK_*).
+
+    Operators should order the chain cheap→expensive for cost control. ``OPENCLAW_CHEAP_FIRST_MODE``
+    does **not** reorder models; it is logged only (see ``_cheap_first_mode``).
+    """
     chain_raw = (os.environ.get("OPENCLAW_MODEL_CHAIN") or "").strip()
     if chain_raw:
         return [m.strip() for m in chain_raw.split(",") if m.strip()]
@@ -69,6 +73,7 @@ def _model_chain() -> list[str]:
 
 
 def _cheap_first_mode() -> bool:
+    """Telemetry only: reflects ``OPENCLAW_CHEAP_FIRST_MODE`` for logs. Does not change routing."""
     raw = (os.environ.get("OPENCLAW_CHEAP_FIRST_MODE") or "true").strip().lower()
     return raw in ("1", "true", "yes")
 
@@ -95,6 +100,41 @@ def _verification_max_chars() -> int:
         except ValueError:
             pass
     return 8000
+
+
+def _task_details_max_chars() -> int:
+    """Max chars for task details/symptom in prompts. Default 8000."""
+    raw = (os.environ.get("OPENCLAW_TASK_DETAILS_MAX_CHARS") or "").strip()
+    if raw:
+        try:
+            n = int(raw)
+            return max(500, min(n, 50000))
+        except ValueError:
+            pass
+    return 8000
+
+
+def _truncate_task_text(text: str, *, max_chars: int | None = None) -> str:
+    """Truncate long Notion task text for prompts (cost control)."""
+    m = max_chars if max_chars is not None else _task_details_max_chars()
+    t = (text or "").strip()
+    if len(t) <= m:
+        return t
+    return t[:m] + "\n…(truncated)"
+
+
+def _optional_max_output_tokens() -> int | None:
+    """If ``OPENCLAW_MAX_OUTPUT_TOKENS`` is set to a positive int, pass through to the gateway."""
+    raw = (os.environ.get("OPENCLAW_MAX_OUTPUT_TOKENS") or "").strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+        if n <= 0:
+            return None
+        return min(n, 128_000)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -124,33 +164,35 @@ def get_apply_model_chain_override(
     prepared_task: dict[str, Any],
     save_subdir: str,
 ) -> list[str] | None:
-    """If task type or save_subdir matches cheap types and cheap chain is configured, return that chain; else None.
+    """If cheap chain is configured and the task matches, return it; else None.
 
-    Uses OPENCLAW_CHEAP_TASK_TYPES for task type match (case-insensitive).
-    Fallback: save_subdir containing 'generated-notes' or 'triage' is treated as cheap when types are empty.
-    Bug investigations (bug-investigations) never use cheap chain.
+    - ``OPENCLAW_CHEAP_TASK_TYPES`` non-empty: match Notion task ``type`` (case-insensitive), or
+      match ``save_subdir`` containing ``generated-notes`` or ``triage``.
+    - ``OPENCLAW_CHEAP_TASK_TYPES`` empty: match **only** by ``save_subdir`` (``generated-notes`` /
+      ``triage``), so operators can rely on path routing with ``OPENCLAW_CHEAP_MODEL_CHAIN`` alone.
+    - ``bug-investigations`` never uses the cheap chain.
     """
     chain = _cheap_task_model_chain()
     if not chain:
         return None
-    types = _cheap_task_types()
-    if not types:
-        return None
 
-    # Never use cheap chain for bug investigations
     if "bug-investigations" in save_subdir:
         return None
 
-    # Match on Notion task type
+    types = _cheap_task_types()
     task = (prepared_task or {}).get("task") or {}
     task_type = str(task.get("type") or "").strip().lower()
-    if task_type and task_type in types:
-        return chain
+    subdir_cheap = "generated-notes" in save_subdir or "triage" in save_subdir
 
-    # Fallback: route by save_subdir (doc/monitoring callbacks)
-    if "generated-notes" in save_subdir or "triage" in save_subdir:
-        return chain
+    if types:
+        if task_type and task_type in types:
+            return chain
+        if subdir_cheap:
+            return chain
+        return None
 
+    if subdir_cheap:
+        return chain
     return None
 
 
@@ -200,6 +242,9 @@ def _post_one(
         body["user"] = f"notion-task-{task_id}"
     if instructions:
         body["instructions"] = instructions
+    _max_out = _optional_max_output_tokens()
+    if _max_out is not None:
+        body["max_output_tokens"] = _max_out
 
     timeout_s = _timeout()
     try:
@@ -728,13 +773,15 @@ def _fetch_atp_runtime_context() -> str:
 def _task_metadata_block(prepared_task: dict[str, Any]) -> str:
     task = (prepared_task or {}).get("task") or {}
     repo_area = (prepared_task or {}).get("repo_area") or {}
+    details_raw = str(task.get("details") or "")
+    details_line = _truncate_task_text(details_raw)
     lines = [
         f"Task: {task.get('task', 'Untitled')}",
         f"Notion ID: {task.get('id', '')}",
         f"Type: {task.get('type', '')}",
         f"Priority: {task.get('priority', '')}",
         f"Project: {task.get('project', '')}",
-        f"Details: {task.get('details', '')}",
+        f"Details: {details_line}",
         f"Area: {repo_area.get('area_name', '')}",
     ]
     likely = repo_area.get("likely_files") or []
@@ -756,7 +803,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     """
     meta = _task_metadata_block(prepared_task)
     task = (prepared_task or {}).get("task") or {}
-    symptom = (task.get("details") or task.get("task") or "").strip()
+    symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
 
     user_prompt = ""
@@ -845,7 +892,7 @@ def build_telegram_alerts_prompt(prepared_task: dict[str, Any]) -> tuple[str, st
     """Build prompt for Telegram and Alerts agent (multi-agent operator)."""
     meta = _task_metadata_block(prepared_task)
     task = (prepared_task or {}).get("task") or {}
-    symptom = (task.get("details") or task.get("task") or "").strip()
+    symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
 
     user_prompt = ""
@@ -889,7 +936,7 @@ def build_execution_state_prompt(prepared_task: dict[str, Any]) -> tuple[str, st
     """Build prompt for Execution and State agent (multi-agent operator)."""
     meta = _task_metadata_block(prepared_task)
     task = (prepared_task or {}).get("task") or {}
-    symptom = (task.get("details") or task.get("task") or "").strip()
+    symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
 
     user_prompt = ""
@@ -971,10 +1018,12 @@ def verify_solution_against_task(
         )
 
     max_chars = _verification_max_chars()
+    title_v = _truncate_task_text(str(task_title), max_chars=2000)
+    details_v = _truncate_task_text(str(task_details))
     prompt = (
         f"TASK:\n"
-        f"Title: {task_title}\n"
-        f"Details: {task_details}\n\n"
+        f"Title: {title_v}\n"
+        f"Details: {details_v}\n\n"
         f"GENERATED OUTPUT:\n"
         f"---\n{generated_output[:max_chars]}\n---\n\n"
         f"Does this output address the problem stated in the task?{feedback_block}"
