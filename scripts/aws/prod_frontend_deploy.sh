@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
-# Run on PROD (EC2) from repo root after `cd` to automated-trading-platform (or crypto-2.0).
-# Pulls latest main, updates frontend submodule if present, rebuilds and restarts frontend-aws.
+# Run on PROD (EC2) from repo root **after** git is already on the desired commit.
+# Resets frontend-aws container state, rebuilds, and starts frontend-aws.
 #
-# Used by deploy_frontend_ssm.sh (SSM).
+# Git fetch/reset is done by deploy_frontend_ssm.sh (SSM) before this runs so the
+# script file exists on first rollout.
 
 set -euo pipefail
 
-export HOME="${HOME:-/home/ubuntu}"
 export COMPOSE_PROFILES=aws
-
-for _d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do
-  git config --global --add safe.directory "$_d" 2>/dev/null || true
-done
 
 REPO_ROOT="$(pwd)"
 _compose_ec=0
@@ -22,14 +18,6 @@ if [[ ! -f docker-compose.yml ]] || ! printf '%s\n' "$_compose_svc_out" | grep -
   echo "$_compose_svc_out" >&2
   exit 1
 fi
-
-echo "==> git: fetch main + reset to FETCH_HEAD"
-rm -f .git/refs/remotes/origin/main 2>/dev/null || true
-git fetch origin main
-git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main
-
-echo "==> git submodule update (if .gitmodules present)"
-git submodule update --init --recursive 2>/dev/null || true
 
 echo "==> reset frontend-aws container (stale recreate / missing id)"
 docker compose --profile aws stop frontend-aws 2>/dev/null || true

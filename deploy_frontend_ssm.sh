@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Deploy frontend-aws on PROD via AWS SSM (parity with scripts/deploy_production_via_ssm.sh).
 #
+# Runs git fetch/reset + submodule update on the host first, then
+# scripts/aws/prod_frontend_deploy.sh (so new deploy scripts appear before bash runs them).
+#
 # Usage:
 #   ./deploy_frontend_ssm.sh
 #   MAX_WAIT_ITERATIONS=900 ./deploy_frontend_ssm.sh
@@ -17,6 +20,10 @@ REGION="${AWS_REGION:-ap-southeast-1}"
 MAX_WAIT_ITERATIONS="${MAX_WAIT_ITERATIONS:-600}"
 export AWS_REGION="$REGION"
 
+GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
+GIT_SYNC_CMD="${GIT_PULL_PREFIX}cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1; rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main; git submodule update --init --recursive 2>/dev/null || true"
+export GIT_SYNC_CMD
+
 echo "=== Deploy frontend-aws via SSM (instance $INSTANCE_ID) ==="
 echo ""
 
@@ -32,10 +39,11 @@ if [[ "$STATUS" != "Online" ]]; then
 fi
 
 PARAMS="commands=$(python3 <<'PY'
-import json
+import json, os
+sync = os.environ["GIT_SYNC_CMD"]
 cmds = [
     "set -e",
-    "export HOME=/home/ubuntu",
+    sync,
     "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
     "bash scripts/aws/prod_frontend_deploy.sh",
 ]
