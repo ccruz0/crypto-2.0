@@ -88,10 +88,27 @@ cd /home/ubuntu/automated-trading-platform
 sudo bash scripts/openclaw/enable_openclaw_telegram.sh
 ```
 
+## Disable Telegram (409 / duplicate poller vs PROD)
+
+If PROD `backend-aws` polls `TELEGRAM_ATP_CONTROL_BOT_TOKEN` for @ATP_control_bot, OpenClaw must **not** use that same token (polling or webhook). Symptoms: backend logs `Another poller is active`, HTTP 409 on `getUpdates`, `/task` still creates Notion rows but Telegram also shows OpenClaw/read-only replies or duplicate “Unknown command”.
+
+1. **Pull latest** on LAB so `docker-compose.openclaw.yml` strips `TELEGRAM_*` inside the OpenClaw container.
+2. **Disable channel in config and restart:**
+   ```bash
+   # From Mac:
+   ./scripts/openclaw/disable_openclaw_telegram_via_ssm.sh
+   ```
+   Or on LAB: `sudo bash scripts/openclaw/disable_openclaw_telegram.sh`
+3. **Verify:** `docker exec openclaw printenv TELEGRAM_BOT_TOKEN | wc -c` (should be ~1: newline only). `docker logs openclaw --tail 50` should not show Telegram polling errors.
+
+To use Telegram with OpenClaw again, use a **different** BotFather bot than PROD ATP Control; see warnings in `enable_openclaw_telegram.sh`.
+
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
 | `scripts/openclaw/enable_openclaw_telegram.sh` | Run on LAB: add Telegram config, ensure token, restart |
 | `scripts/openclaw/enable_openclaw_telegram_via_ssm.sh` | Run from Mac: invokes enable script on LAB via SSM |
+| `scripts/openclaw/disable_openclaw_telegram.sh` | Run on LAB: disable `channels.telegram`, restart OpenClaw |
+| `scripts/openclaw/disable_openclaw_telegram_via_ssm.sh` | Run from Mac: disable Telegram on LAB via SSM |
 | `scripts/openclaw/merge_telegram_config.py` | Python helper to merge channels.telegram into config |

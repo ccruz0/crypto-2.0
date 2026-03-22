@@ -1,4 +1,9 @@
 {
+  "channels": {
+    "telegram": {
+      "enabled": false
+    }
+  },
   "plugins": {
     "entries": {
       "openclaw-tavily": {

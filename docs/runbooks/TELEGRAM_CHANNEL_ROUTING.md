@@ -18,6 +18,14 @@ Four distinct channels. See `docs/audits/TELEGRAM_ROUTING_AUDIT.md` for full aud
 - **Fix (code):** On AWS, `get_telegram_token()` **prefers `TELEGRAM_ATP_CONTROL_BOT_TOKEN` for polling** when set, while `telegram_notifier` still uses `TELEGRAM_BOT_TOKEN` for ATP Alerts / channel posts.
 - **Ops:** Ensure **only one** process polls the ATP Control bot. If OpenClaw is registered for the same token (webhook or polling), disable it there or use a **separate** bot for OpenClaw — otherwise expect **409 getUpdates conflict** on the backend.
 
+### OpenClaw on LAB (duplicate consumer)
+
+- **Intended sole poller for `/task` → Notion:** `backend-aws` on PROD with `TELEGRAM_ATP_CONTROL_BOT_TOKEN` and `RUN_TELEGRAM_POLLER=true`.
+- **Duplicate source:** OpenClaw on LAB used to load `secrets/runtime.env` (often containing prod `TELEGRAM_*`) and could enable `channels.telegram` with the same token → second `getUpdates` client → 409, stray OpenClaw/read-only messages, extra “Unknown command”.
+- **Fix (repo):** `docker-compose.openclaw.yml` sets empty `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ATP_CONTROL_BOT_TOKEN`, and related vars so the OpenClaw container does not see those tokens even if `runtime.env` has them.
+- **Fix (LAB state):** Run `scripts/openclaw/disable_openclaw_telegram.sh` (or `disable_openclaw_telegram_via_ssm.sh` from Mac) to set `channels.telegram.enabled: false` in `/opt/openclaw/home-data/openclaw.json` and restart OpenClaw.
+- **Re-enable OpenClaw Telegram only** with a **dedicated** LAB bot token — never the PROD ATP Control token while PROD polls it.
+
 ## Variables de entorno
 
 ```bash

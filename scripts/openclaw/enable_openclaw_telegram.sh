@@ -5,6 +5,13 @@
 # 3. Restarts OpenClaw container
 #
 # Run on LAB (via SSM or SSH). From Mac: use enable_openclaw_telegram_via_ssm.sh
+#
+# CRITICAL — Do NOT use the same bot token as PROD @ATP_control_bot while backend-aws
+# polls TELEGRAM_ATP_CONTROL_BOT_TOKEN. Two getUpdates consumers → HTTP 409, "Another poller
+# is active", duplicate replies (OpenClaw read-only workspace + backend /task). For OpenClaw
+# on LAB use a dedicated BotFather bot, or keep Telegram disabled (see disable_openclaw_telegram.sh).
+# docker-compose.openclaw.yml clears TELEGRAM_* in the container so OpenClaw does not inherit
+# prod tokens from secrets/runtime.env unless you override compose (not recommended).
 
 set -e
 
