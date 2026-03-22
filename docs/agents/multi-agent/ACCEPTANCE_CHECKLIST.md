@@ -1,6 +1,6 @@
 # Acceptance Checklist — Agent Run
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Date:** 2026-03-22
 
 A run is **good** only if all items below pass. Use this after each validation run.
@@ -15,6 +15,8 @@ A run is **good** only if all items below pass. Use this after each validation r
 | **`/investigate`**, **`/agent`** (when they register a task) | May use **`create_task_from_telegram_intent`** (compile + Notion + pipeline hooks). Agent execution is separate (scheduler / OpenClaw as configured). |
 
 **Prod smoke:** see [TELEGRAM_TASK_PROD_VERIFICATION.md](../../runbooks/TELEGRAM_TASK_PROD_VERIFICATION.md).
+
+**Prod deploy (SSM, no SSH):** after merging to `main`, use [PROD_DEPLOY_WHEN_SSH_FAILS.md](../../runbooks/PROD_DEPLOY_WHEN_SSH_FAILS.md) — backend `./scripts/deploy_production_via_ssm.sh`, frontend `./deploy_frontend_ssm.sh`.
 
 ---
 
