@@ -35,12 +35,14 @@ sudo find /var/lib/docker/containers/ -name "*-json.log" -type f \
 echo "Vacuuming journal logs (keep 5d)..."
 sudo journalctl --vacuum-time=5d 2>/dev/null || true
 
-# 7. Application log files
-if [ -d ~/automated-trading-platform ]; then
-  echo "Cleaning app logs (>5MB or >5 days)..."
-  find ~/automated-trading-platform -maxdepth 4 -type f -name "*.log" -size +5M -delete 2>/dev/null || true
-  find ~/automated-trading-platform -maxdepth 4 -type f -name "*.log" -mtime +5 -delete 2>/dev/null || true
-fi
+# 7. Application log files (PROD may use automated-trading-platform or crypto-2.0 clone path)
+for _app_root in "$HOME/automated-trading-platform" "$HOME/crypto-2.0"; do
+  if [ -d "$_app_root" ]; then
+    echo "Cleaning app logs in $_app_root (>5MB or >5 days)..."
+    find "$_app_root" -maxdepth 4 -type f -name "*.log" -size +5M -delete 2>/dev/null || true
+    find "$_app_root" -maxdepth 4 -type f -name "*.log" -mtime +5 -delete 2>/dev/null || true
+  fi
+done
 
 # 8. apt cache
 echo "Cleaning apt cache..."
