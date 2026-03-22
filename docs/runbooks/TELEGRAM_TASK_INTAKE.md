@@ -35,9 +35,17 @@ Only **one** token is active per process. Use **`TELEGRAM_BOT_TOKEN` = ATP Contr
 
 Configure the **OpenClaw gateway** (or Cursor bridge) to use the production API base URL, **or** use **ATP Control** bot + backend poller for `/task` instead of Claw.
 
+## Backend `/task` path (ATP Control → `backend-aws`)
+
+| Flow | What runs |
+|------|-----------|
+| **`/task &lt;description&gt;`** | **`create_notion_task_from_telegram_direct`** only: parses text → **`notion_tasks.create_notion_task`**. **No OpenClaw, no LLM, no** `compile_task_from_intent` / similarity merge. |
+| **`/investigate`**, agent flows that register work | May still use **`create_task_from_telegram_intent`** (full pipeline: compile, optional similar-task merge, Notion). |
+
 ## Log lines
 
 - `[TG][CONFIG] command_intake` — masked token, chat ids
-- `[TG][AUTH] decision=ALLOW|DENY` — `token_source`, `chat_id`, `user_id`
-- `[TG][TASK][INTAKE]` — `/task` handler, user, `token_source`
-- `create_task_from_telegram_intent` — Notion task result
+- `[TG][AUTH] decision=ALLOW|DENY` — `token_source`, `chat_id`, actor/user ids
+- `[TG][TASK][INTAKE]` / `[TG][TASK] intake` — `/task` handler
+- `[TG][TASK] notion_create_attempt` | `notion_create_success` | `notion_create_failure` — direct Notion write
+- `notion_sync_failed` / `Notion task created` — Notion API (see `notion_tasks.py`)

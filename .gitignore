@@ -97,3 +97,9 @@ yarn-error.log*
 # local scratch
 /docs/_scratch/
 .telegram_key
+
+# Local env / Telegram debug dumps (never commit)
+.env.claw_atp
+tmp/telegram_updates.json
+tmp/telegram_updates_sample.json
+tmp/*.json

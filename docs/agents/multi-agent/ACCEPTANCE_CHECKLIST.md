@@ -1,9 +1,20 @@
 # Acceptance Checklist — Agent Run
 
-**Version:** 1.0  
-**Date:** 2026-03-15
+**Version:** 1.1  
+**Date:** 2026-03-22
 
 A run is **good** only if all items below pass. Use this after each validation run.
+
+---
+
+## 0. Telegram `/task` vs agent-heavy commands
+
+| Command | Backend behavior (ATP Control bot → `backend-aws`) |
+|---------|------------------------------------------------------|
+| **`/task &lt;text&gt;`** | **Direct Notion write only** (`create_notion_task_from_telegram_direct` → `create_notion_task`). **No OpenClaw, no LLM** in this path. |
+| **`/investigate`**, **`/agent`** (when they register a task) | May use **`create_task_from_telegram_intent`** (compile + Notion + pipeline hooks). Agent execution is separate (scheduler / OpenClaw as configured). |
+
+**Prod smoke:** see [TELEGRAM_TASK_PROD_VERIFICATION.md](../../runbooks/TELEGRAM_TASK_PROD_VERIFICATION.md).
 
 ---
 
@@ -80,7 +91,7 @@ If commands in ATP Control produce no response:
 | 6.1 | **ATP Control** | Use a private group or direct chat — not HILOVIVO3.0. See [ATP_CONTROL_SETUP.md](../ATP_CONTROL_SETUP.md) |
 | 6.2 | **Authorization** | Add group/user IDs to `TELEGRAM_AUTH_USER_ID`, `TELEGRAM_CHAT_ID`, or `TELEGRAM_ATP_CONTROL_CHAT_ID` (comma-separated lists supported). See [TELEGRAM_TASK_INTAKE.md](../../runbooks/TELEGRAM_TASK_INTAKE.md) |
 | 6.3 | **Bot token** | AWS: `TELEGRAM_BOT_TOKEN` must be set. Local: `TELEGRAM_BOT_TOKEN_DEV` required (or polling is skipped) |
-| 6.4 | **Logs** | Check `[TG][CHAT]`, `[TG][AUTH] decision=ALLOW\|DENY`, `[TG][TASK][INTAKE]` for `/task` |
+| 6.4 | **Logs** | Check `[TG][CHAT]`, `[TG][AUTH] decision=ALLOW\|DENY`, `[TG][TASK] intake`, `[TG][TASK] notion_create_*` for `/task` |
 
 ---
 

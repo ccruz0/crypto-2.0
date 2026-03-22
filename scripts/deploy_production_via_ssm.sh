@@ -10,6 +10,7 @@
 #   ./scripts/deploy_production_via_ssm.sh
 #   SKIP_REBUILD=1 ./scripts/deploy_production_via_ssm.sh   # pull + restart only (faster)
 #   NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh        # force --no-cache rebuild (fix stale /task)
+#   MAX_WAIT_ITERATIONS=900 ./scripts/deploy_production_via_ssm.sh  # longer local poll (default 600)
 #
 # Requires: AWS CLI, SSM agent on PROD (PingStatus Online).
 
@@ -22,6 +23,8 @@ INSTANCE_ID="${ATP_INSTANCE_ID:-i-087953603011543c5}"
 REGION="${AWS_REGION:-ap-southeast-1}"
 SKIP_REBUILD="${SKIP_REBUILD:-0}"
 NO_CACHE="${NO_CACHE:-0}"
+# Local poll limit (SSM command timeout is 600s; builds often need 3–5+ minutes)
+MAX_WAIT_ITERATIONS="${MAX_WAIT_ITERATIONS:-600}"
 export AWS_REGION="$REGION"
 
 echo "=== Deploy PROD via SSM (instance $INSTANCE_ID) ==="
@@ -65,8 +68,8 @@ if [[ -z "$COMMAND_ID" || "$COMMAND_ID" == Error* ]]; then
   exit 1
 fi
 
-echo "Command ID: $COMMAND_ID (waiting up to ~120s)..."
-for i in $(seq 1 120); do
+echo "Command ID: $COMMAND_ID (waiting up to ~${MAX_WAIT_ITERATIONS}s for SSM/docker)..."
+for i in $(seq 1 "$MAX_WAIT_ITERATIONS"); do
   S=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$REGION" --query 'Status' --output text 2>/dev/null || echo "Pending")
   if [[ "$S" == "Success" ]]; then
     echo ""
@@ -84,5 +87,5 @@ for i in $(seq 1 120); do
   fi
   sleep 1
 done
-echo "Timeout waiting for command."
+echo "Timeout waiting for command (after ${MAX_WAIT_ITERATIONS}s). Check: aws ssm get-command-invocation --command-id $COMMAND_ID --instance-id $INSTANCE_ID --region $REGION"
 exit 1
