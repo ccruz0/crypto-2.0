@@ -65,6 +65,8 @@ Expect `200`.
 | Duplicate replies | [DUPLICATE_TELEGRAM_POLLERS_FIX.md](DUPLICATE_TELEGRAM_POLLERS_FIX.md) |
 | Wrong bot answering | Which token is polling (`[TG][CONFIG]`, `token_source`) |
 | SSM deploy: `No such container` on **Recreate** | Stale Compose state vs removed container. `scripts/aws/prod_stack_up.sh` stops + `rm`s `backend-aws` before `up`; pull latest and rerun `./scripts/deploy_production_via_ssm.sh`, or on host: `docker compose --profile aws stop backend-aws && docker compose --profile aws rm -f backend-aws && docker compose --profile aws up -d --remove-orphans backend-aws` |
+| SSM deploy: `cannot lock ref refs/remotes/origin/main` | Loose remote ref out of sync. Deploy script removes `.git/refs/remotes/origin/main` before `git fetch` + `reset --hard FETCH_HEAD`. On host: `rm -f .git/refs/remotes/origin/main && git fetch origin main && git reset --hard FETCH_HEAD` |
+| SSM deploy: `ERROR: db service not in compose aws profile` | Usually `docker compose` failed (wrong cwd, bad compose file). Script now prints compose stderr; fix git/checkout first or run `docker compose --profile aws config --services` on the host. |
 
 ---
 
