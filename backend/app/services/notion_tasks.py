@@ -18,6 +18,7 @@ Environment variables:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import socket
@@ -196,6 +197,130 @@ def notion_status_from_display(display_or_internal: str) -> str:
     if s in ALLOWED_TASK_STATUSES:
         return s
     return NOTION_STATUS_DISPLAY_TO_INTERNAL.get(s, s.lower())
+
+
+# ---------------------------------------------------------------------------
+# Project / Type / Priority — Notion Select display names (AI Task System schema)
+# ---------------------------------------------------------------------------
+# Reader (_extract_plain_text) accepts select or rich_text; writers must match DB column types.
+# See docs/agents/NOTION_SELECT_OPTIONS.md and notion-ai-task-system-schema.md.
+
+NOTION_PRIORITY_INTERNAL_TO_DISPLAY: dict[str, str] = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+}
+
+NOTION_TYPE_INTERNAL_TO_DISPLAY: dict[str, str] = {
+    "investigation": "Investigation",
+    "bug": "Bug",
+    "bugfix": "Bugfix",
+    "monitoring": "Monitoring",
+    "improvement": "Improvement",
+    "strategy": "Strategy",
+    "automation": "Automation",
+    "infrastructure": "Infrastructure",
+    "patch": "Patch",
+    "deploy": "Deploy",
+    "content": "Content",
+    "feature": "Feature",
+    "incident": "Monitoring",
+}
+
+NOTION_PROJECT_INTERNAL_TO_DISPLAY: dict[str, str] = {
+    "operations": "Operations",
+    "infrastructure": "Infrastructure",
+    "backend": "Backend",
+    "automation": "Automation",
+    "docs": "Docs",
+    "trading-bot": "Trading-bot",
+}
+
+
+def notion_priority_to_display(priority_internal: str) -> str:
+    """Map inferred/caller priority (lowercase) to Notion Select option name."""
+    s = (priority_internal or "").strip().lower()
+    if not s:
+        return "Medium"
+    return NOTION_PRIORITY_INTERNAL_TO_DISPLAY.get(s, s[:1].upper() + s[1:].lower())
+
+
+def notion_type_to_display(type_value: str) -> str:
+    """Map task type string to Notion Type Select option name."""
+    raw = (type_value or "").strip()
+    if not raw:
+        return "Investigation"
+    key = raw.lower().replace(" ", "-")
+    if key in NOTION_TYPE_INTERNAL_TO_DISPLAY:
+        return NOTION_TYPE_INTERNAL_TO_DISPLAY[key]
+    # Preserve values that already look like Notion labels (Patch, Bug, …)
+    if raw != raw.lower():
+        return raw
+    return raw[:1].upper() + raw[1:].lower()
+
+
+def notion_project_to_display(project_value: str) -> str:
+    """Map project string to Notion Project Select option name."""
+    raw = (project_value or "").strip()
+    if not raw:
+        return "Operations"
+    key = raw.lower().replace(" ", "-")
+    if key in NOTION_PROJECT_INTERNAL_TO_DISPLAY:
+        return NOTION_PROJECT_INTERNAL_TO_DISPLAY[key]
+    if any(ch.isupper() for ch in raw[1:]) or (" " in raw and raw[0:1].isupper()):
+        return raw
+    return raw[:1].upper() + raw[1:].lower() if " " not in raw else raw.title()
+
+
+def _summarize_notion_create_error(status_code: int, err_body: str) -> str:
+    """
+    Turn Notion API error JSON into a short operator-facing string (e.g. Telegram).
+    Surfaces validation_error property names when present.
+    """
+    snippet = (err_body or "").strip()
+    if status_code != 400:
+        return f"HTTP {status_code}" + (f": {snippet[:500]}" if snippet else "")
+
+    messages: list[str] = []
+    try:
+        data = json.loads(snippet) if snippet else {}
+    except json.JSONDecodeError:
+        return f"HTTP 400: {snippet[:500]}" if snippet else "HTTP 400: validation_error"
+
+    top = (data.get("message") or "").strip()
+    if top:
+        messages.append(top)
+
+    nested = data.get("body") if isinstance(data.get("body"), dict) else None
+    if nested:
+        inner_msg = (nested.get("message") or "").strip()
+        if inner_msg and inner_msg not in messages:
+            messages.append(inner_msg)
+        errs = nested.get("errors")
+    else:
+        errs = data.get("errors")
+
+    if isinstance(errs, list):
+        for item in errs:
+            if not isinstance(item, dict):
+                continue
+            m = (item.get("message") or "").strip()
+            path = item.get("path")
+            prop_hint = ""
+            if isinstance(path, list) and len(path) >= 2 and path[0] == "properties":
+                prop_hint = str(path[1])
+            if m:
+                if prop_hint and prop_hint not in m:
+                    messages.append(f"{prop_hint}: {m}")
+                else:
+                    messages.append(m)
+
+    if not messages:
+        return f"HTTP 400: {snippet[:500]}" if snippet else "HTTP 400: validation_error"
+
+    return "Notion validation: " + " | ".join(messages[:6])
+
 
 # ---------------------------------------------------------------------------
 # Task metadata fields (extended — best-effort; optional in Notion DB schema)
@@ -501,13 +626,14 @@ def create_notion_task(
 
     Args:
         title: Task title (maps to "Task" in Notion).
-        project: Project name (maps to "Project").
-        type: Task type (maps to "Type").
-        priority: Priority (maps to "Priority"). If None or empty, inferred from type/title/details.
+        project: Project label (maps to "Project" as Notion Select `name`).
+        type: Task type (maps to "Type" as Notion Select `name`).
+        priority: Priority (maps to "Priority" as Notion Select `name`). If None or empty, inferred.
         details: Optional description/details (maps to "Details").
         github_link: Optional URL (maps to "GitHub Link").
         status: Status; default "planned".
-        source: Source of the task; default "openclaw".
+        source: Source of the task (maps to "Source" as rich text; default "openclaw").
+        priority_score: If set, applied after create via PATCH (skips silently if the property is absent).
 
     Returns:
         The Notion page object as a dict if successful, None otherwise.
@@ -582,8 +708,8 @@ def create_notion_task(
         max_caller_len = 2000 - len(suffix) - 3  # leave room for "..."
         enriched_details = (caller_details[:max_caller_len].rstrip() + "..." + suffix)
 
-    # Property keys must match the Notion database schema.
-    # Status: use Select when we have a known status so pickup (reader filter by Status Select) finds the task.
+    # Property keys must match the Notion database schema (AI Task System).
+    # Project, Type, Priority are Select columns in production; Status is Select when known.
     status_internal = (status or "").strip().lower()
     if status_internal in NOTION_STATUS_INTERNAL_TO_DISPLAY:
         status_display = notion_status_to_display(status)
@@ -591,11 +717,15 @@ def create_notion_task(
     else:
         properties_status = {"rich_text": _rich_text(status)}
 
+    project_display = notion_project_to_display(project)
+    type_display = notion_type_to_display(type)
+    priority_display = notion_priority_to_display(resolved_priority)
+
     properties = {
         "Task": {"title": _title(title)},
-        "Project": {"rich_text": _rich_text(project)},
-        "Type": {"rich_text": _rich_text(type)},
-        "Priority": {"rich_text": _rich_text(resolved_priority)},
+        "Project": {"select": {"name": project_display}},
+        "Type": {"select": {"name": type_display}},
+        "Priority": {"select": {"name": priority_display}},
         "Status": properties_status,
         "Source": {"rich_text": _rich_text(source)},
         "Details": {"rich_text": _rich_text(enriched_details)},
@@ -610,10 +740,8 @@ def create_notion_task(
         display = "Strict" if mode.lower() == "strict" else "Normal"
         properties["Execution Mode"] = {"select": {"name": display}}
 
-    # Priority Score: optional 0–100 number for scheduler ordering (property "Priority Score" in Notion)
-    if priority_score is not None:
-        value = max(0, min(100, int(priority_score)))
-        properties["Priority Score"] = {"number": value}
+    # Priority Score is not sent on page create: many AI Task System DBs omit this property
+    # (Notion returns 400 "is not a property that exists"). When set, patch after create — best-effort.
 
     payload: dict[str, Any] = {
         "parent": {"database_id": database_id, "type": "database_id"},
@@ -651,9 +779,14 @@ def create_notion_task(
             data.get("id", ""),
             title,
         )
+        page_id = str(data.get("id") or "").strip()
+        if page_id and priority_score is not None:
+            try:
+                update_notion_task_priority(page_id, int(priority_score))
+            except Exception:
+                pass
         # Best-effort: write optional versioning fields when schema supports them.
         if version_metadata:
-            page_id = str(data.get("id") or "").strip()
             if page_id:
                 update_notion_task_version_metadata(
                     page_id=page_id,
@@ -666,7 +799,7 @@ def create_notion_task(
         err_body = response.text
     except Exception:
         err_body = ""
-    err_summary = f"HTTP {response.status_code}: {(err_body[:400] if err_body else '')}"
+    err_summary = _summarize_notion_create_error(response.status_code, err_body)
     _set_last_notion_create_failure(err_summary)
     logger.error(
         "notion_sync_failed status=%d body=%s title=%r",

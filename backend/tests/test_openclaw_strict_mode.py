@@ -699,9 +699,53 @@ class TestPatchTaskPickupEligibility:
             mock_client.post.assert_called_once()
             call_args = mock_client.post.call_args
             body = call_args[1]["json"]
-            status_prop = body.get("properties", {}).get("Status", {})
+            props = body.get("properties", {})
+            status_prop = props.get("Status", {})
             assert "select" in status_prop
             assert status_prop["select"].get("name") == "Planned"
+            assert props.get("Project", {}).get("select", {}).get("name") == "Operations"
+            assert props.get("Type", {}).get("select", {}).get("name") == "Patch"
+            assert props.get("Priority", {}).get("select", {}).get("name") == "Medium"
+            assert "Priority Score" not in props
+
+    def test_create_notion_task_http400_sets_readable_validation_summary(self):
+        """Notion validation_error body is summarized for Telegram (property names when present)."""
+        from app.services.notion_tasks import (
+            clear_last_notion_create_failure,
+            create_notion_task,
+            get_last_notion_create_failure,
+        )
+
+        err_json = (
+            '{"object":"error","status":400,"code":"validation_error",'
+            '"message":"body failed validation","errors":['
+            '{"message":"Project is expected to be select.","path":["properties","Project"]}'
+            "]}"
+        )
+        with (
+            patch("app.services.notion_tasks._get_config", return_value=("test-key", "test-db-id")),
+            patch("app.services.notion_tasks._dedup_prune_and_check", return_value=False),
+            patch("app.services.notion_tasks.httpx") as mock_httpx,
+        ):
+            mock_client = mock_httpx.Client.return_value.__enter__.return_value
+            mock_resp = mock_client.post.return_value
+            mock_resp.status_code = 400
+            mock_resp.text = err_json
+
+            clear_last_notion_create_failure()
+            out = create_notion_task(
+                title="t",
+                project="Operations",
+                type="Bug",
+                details="d",
+                status="planned",
+                source="test",
+            )
+
+        assert out is None
+        summary = get_last_notion_create_failure()
+        assert "Project" in summary
+        assert "select" in summary.lower()
 
     def test_patch_task_eligible_when_in_pickable_list(self):
         """When get_high_priority_pending_tasks returns a Patch task (planned), prepare_next_notion_task selects it."""
