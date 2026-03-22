@@ -1071,7 +1071,7 @@ def execute_prepared_notion_task(
         # Retryable LLM failures: move to ready-for-investigation so scheduler can retry
         if apply_retryable:
             try:
-                from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION, update_notion_task_status
+                from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION
                 update_notion_task_status(
                     task_id,
                     TASK_STATUS_READY_FOR_INVESTIGATION,

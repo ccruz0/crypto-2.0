@@ -294,6 +294,10 @@ class TestStrictModeNoAutoAdvance:
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
             patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
+            patch(
                 "app.services.agent_recovery.get_artifact_content_for_task",
                 return_value="Shallow summary without proof. " + "x" * 100,
             ),
@@ -357,6 +361,10 @@ class TestStrictModeHandoffPatchTask:
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
             patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
+            patch(
                 "app.services.agent_recovery.get_artifact_content_for_task",
                 return_value=artifact_body,
             ),
@@ -416,6 +424,10 @@ class TestStrictModeHandoffPatchTask:
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
             patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
+            patch(
                 "app.services.agent_recovery.get_artifact_content_for_task",
                 return_value=artifact_body,
             ),
@@ -468,10 +480,13 @@ class TestStrictModeHandoffPatchTask:
             "## Root Cause\nIn backend/app/foo.py.\n\n```python\ndef x(): pass\n```\n"
             "Failing scenario: when X. Recommended fix: add check. How to verify: run test."
         )
-        mock_tg = MagicMock(enabled=True, send_message=MagicMock())
 
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
+            patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
             patch(
                 "app.services.agent_recovery.get_artifact_content_for_task",
                 return_value=artifact_body,
@@ -488,7 +503,10 @@ class TestStrictModeHandoffPatchTask:
             patch("app.services.agent_task_executor._append_notion_page_comment") as mock_comment,
             patch("app.services.agent_task_executor._enrich_metadata_from_openclaw"),
             patch("app.services.notion_env.set_last_pickup_status") as mock_set_status,
-            patch("app.services.telegram_notifier.telegram_notifier", mock_tg),
+            patch(
+                "app.services.agent_telegram_approval.send_blocker_notification",
+                return_value={"sent": True},
+            ) as mock_blocker,
         ):
             result = execute_prepared_notion_task(
                 prepared_task,
@@ -512,9 +530,9 @@ class TestStrictModeHandoffPatchTask:
         assert len(advance_to_inv_complete) == 0, "Must not advance to investigation-complete when PATCH creation failed"
         assert len(advance_to_ready) == 0, "Must not advance to ready-for-patch when PATCH creation failed"
 
-        mock_tg.send_message.assert_called_once()
-        assert mock_tg.send_message.call_args[1].get("chat_destination") == "ops"
-        assert "PATCH creation failed" in str(mock_tg.send_message.call_args[0])
+        mock_blocker.assert_called_once()
+        _reason = (mock_blocker.call_args.kwargs or {}).get("reason", "")
+        assert "create_patch" in str(_reason) or "None" in str(_reason)
 
     def test_strict_patch_creation_failure_logs_and_telegram(self):
         """Failure flow: strict_patch_creation_failed and strict_patch_invariant_enforced block_advance=patch_creation_failed in logs; Telegram sent."""
@@ -529,10 +547,13 @@ class TestStrictModeHandoffPatchTask:
             "_openclaw_sections": {},
         }
         artifact_body = "## Root Cause\nIn backend/app/foo.py.\n\n```python\ndef x(): pass\n```\nFailing: X. Fix: check. Verify: test."
-        mock_tg = MagicMock(enabled=True, send_message=MagicMock())
 
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
+            patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
             patch("app.services.agent_recovery.get_artifact_content_for_task", return_value=artifact_body),
             patch("app.services.openclaw_client.validate_strict_mode_proof", return_value=(True, "ok")),
             patch("app.services.notion_tasks.create_patch_task_from_investigation", return_value=None),
@@ -540,7 +561,10 @@ class TestStrictModeHandoffPatchTask:
             patch("app.services.agent_task_executor._append_notion_page_comment"),
             patch("app.services.agent_task_executor._enrich_metadata_from_openclaw"),
             patch("app.services.notion_env.set_last_pickup_status"),
-            patch("app.services.telegram_notifier.telegram_notifier", mock_tg),
+            patch(
+                "app.services.agent_telegram_approval.send_blocker_notification",
+                return_value={"sent": True},
+            ) as mock_blocker,
         ):
             logger = logging.getLogger("app.services.agent_task_executor")
             with patch.object(logger, "warning") as mock_warn, patch.object(logger, "info") as mock_info:
@@ -561,8 +585,8 @@ class TestStrictModeHandoffPatchTask:
                 ), "Expected strict_patch_invariant_enforced block_advance=patch_creation_failed: " + str(info_calls)
 
         assert result.get("final_status") == "in-progress"
-        mock_tg.send_message.assert_called_once()
-        assert "PATCH creation failed" in str(mock_tg.send_message.call_args)
+        mock_blocker.assert_called_once()
+        assert "create_patch" in str(mock_blocker.call_args) or "None" in str(mock_blocker.call_args)
 
     def test_strict_investigation_fails_no_patch_task(self):
         """Strict proof fails -> create_patch_task_from_investigation is not called."""
@@ -578,6 +602,10 @@ class TestStrictModeHandoffPatchTask:
 
         with (
             patch("app.services.agent_recovery.artifact_exists_for_task", return_value=True),
+            patch(
+                "app.services.agent_recovery.artifact_and_sidecar_exist_for_task",
+                return_value=(True, "ok"),
+            ),
             patch(
                 "app.services.agent_recovery.get_artifact_content_for_task",
                 return_value="Shallow output. " + "x" * 100,

@@ -182,7 +182,8 @@ echo "OPENCLAW_VERIFICATION_PRIMARY_MODEL=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
 # Task-type routing: doc/monitoring use cheap chain; bug tasks use main chain
 echo "OPENCLAW_CHEAP_TASK_TYPES=doc,documentation,monitoring,triage" >> "$RUNTIME_ENV"
 echo "OPENCLAW_CHEAP_MODEL_CHAIN=openai/gpt-4o-mini" >> "$RUNTIME_ENV"
-# Optional caps (not written by default): OPENCLAW_TASK_DETAILS_MAX_CHARS, OPENCLAW_MAX_OUTPUT_TOKENS — see secrets/runtime.env.example
+# Gateway supports max_output_tokens on POST /v1/responses (best-effort; see docs.openclaw.ai gateway OpenResponses)
+echo "OPENCLAW_MAX_OUTPUT_TOKENS=8192" >> "$RUNTIME_ENV"
 
 # Notion (AI Task System): from SSM or fallback; if primary but Notion not in SSM (e.g. LAB), append from .env.aws when present
 if [[ -n "$NOTION_API_KEY_VAL" ]]; then

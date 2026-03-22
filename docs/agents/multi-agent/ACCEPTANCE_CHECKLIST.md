@@ -95,6 +95,18 @@ If commands in ATP Control produce no response:
 
 ---
 
+## 7. OpenClaw cost and gateway (ATP backend)
+
+| # | Check | Pass? |
+|---|-------|-------|
+| 7.1 | Gateway accepts `max_output_tokens` on `POST /v1/responses` (see [OpenResponses API](https://docs.openclaw.ai/gateway/openresponses-http-api); best-effort cap) | ☐ |
+| 7.2 | PROD `runtime.env` includes `OPENCLAW_MAX_OUTPUT_TOKENS` when using `scripts/aws/render_runtime_env.sh` (default 8192) | ☐ |
+| 7.3 | Cheap chain active for doc/monitoring: `OPENCLAW_CHEAP_MODEL_CHAIN` + `OPENCLAW_CHEAP_TASK_TYPES` (or subdir-only routing if types empty) | ☐ |
+| 7.4 | Verification uses cheaper model: `OPENCLAW_VERIFICATION_PRIMARY_MODEL` or `OPENCLAW_VERIFICATION_MODEL_CHAIN` | ☐ |
+| 7.5 | Logs show `openclaw_apply_cost` / `model_used` when gateway returns usage (spend visibility) | ☐ |
+
+---
+
 ## Summary
 
 - **Pass:** All checked items pass.
