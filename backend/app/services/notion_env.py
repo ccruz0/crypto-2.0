@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 SSM_NOTION_API_KEY_LAB = "/automated-trading-platform/lab/notion/api_key"
 NOTION_TASK_DB_DEFAULT = "eb90cfa139f94724a8b476315908510a"
 
+
+def get_notion_task_db_id() -> str:
+    """
+    Database ID for the AI Task System Notion database.
+
+    Accepts NOTION_TASK_DB (canonical) or NOTION_TASKS_DB (common ops typo).
+    """
+    return (os.environ.get("NOTION_TASK_DB") or os.environ.get("NOTION_TASKS_DB") or "").strip()
+
 # Debounce: max one degraded alert per 30 minutes
 NOTION_DEGRADED_ALERT_COOLDOWN_MINUTES = 30
 
@@ -53,7 +62,7 @@ def check_notion_env() -> tuple[bool, str]:
     Returns (ok: bool, source: str). Does not log secret values.
     """
     key = (os.environ.get("NOTION_API_KEY") or "").strip()
-    db = (os.environ.get("NOTION_TASK_DB") or "").strip()
+    db = get_notion_task_db_id()
     if key and db:
         # Heuristic: if we just set from SSM it won't have a file source
         return True, _notion_env_source if _notion_env_source != "unknown" else "env"
@@ -87,7 +96,7 @@ def try_repair_notion_env_from_ssm() -> bool:
 
     api_key = value.strip()
     os.environ["NOTION_API_KEY"] = api_key
-    if not (os.environ.get("NOTION_TASK_DB") or "").strip():
+    if not get_notion_task_db_id():
         os.environ["NOTION_TASK_DB"] = NOTION_TASK_DB_DEFAULT
 
     _notion_env_source = "ssm_repair"
@@ -146,7 +155,7 @@ def validate_notion_env_at_startup() -> None:
     """
     global _notion_degraded, _notion_env_source
     key = (os.environ.get("NOTION_API_KEY") or "").strip()
-    db = (os.environ.get("NOTION_TASK_DB") or "").strip()
+    db = get_notion_task_db_id()
     if key and db:
         _notion_degraded = False
         _notion_env_source = "runtime.env"  # assume rendered

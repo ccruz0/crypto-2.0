@@ -222,6 +222,41 @@ def _is_authorized(chat_id: str, user_id: str) -> bool:
     return False
 
 
+def _resolve_actor_user_id(
+    from_user: Optional[dict],
+    sender_chat: Optional[dict],
+    chat_id: str,
+) -> str:
+    """
+    Single source of truth for "who is acting" for Telegram command auth.
+
+    Prefer message/callback ``from.id``, then ``sender_chat.id`` (channels / anonymous
+    admins), then private-chat fallback (positive numeric ``chat_id`` == user id).
+    """
+    if from_user and from_user.get("id") is not None:
+        return str(from_user.get("id")).strip()
+    sc = sender_chat or {}
+    if sc.get("id") is not None:
+        return str(sc.get("id")).strip()
+    cid = str(chat_id or "").strip()
+    if cid.isdigit() and not cid.startswith("-"):
+        return cid
+    return ""
+
+
+def _telegram_authorize(chat_id: str, actor_user_id: str) -> bool:
+    """Same allow/deny rule for messages, menus, and callback queries."""
+    return _is_authorized(chat_id, actor_user_id)
+
+
+def _authorize_with_resolved_actor(chat_id: str, actor_user_id: Optional[str]) -> bool:
+    """If actor is missing, fall back to private-chat id only (same as resolver)."""
+    aid = (actor_user_id or "").strip()
+    if not aid:
+        aid = _resolve_actor_user_id(None, None, chat_id)
+    return _telegram_authorize(chat_id, aid)
+
+
 def _acquire_poller_lock(db: Session) -> bool:
     """Acquire PostgreSQL advisory lock for single poller enforcement.
     Returns True if lock acquired, False if another poller is active.
@@ -1239,7 +1274,11 @@ def _setup_custom_keyboard(chat_id: str) -> bool:
         return False
 
 
-def send_welcome_message(chat_id: str, db: Optional[Session] = None) -> bool:
+def send_welcome_message(
+    chat_id: str,
+    db: Optional[Session] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Send welcome message - shows main menu (same as /start)"""
     if not TELEGRAM_ENABLED:
         return False
@@ -1247,7 +1286,7 @@ def send_welcome_message(chat_id: str, db: Optional[Session] = None) -> bool:
         # Just show the main menu (same as /start command)
         # This avoids duplication and provides consistent experience
         logger.info(f"[TG] Sending welcome message (main menu) to chat_id={chat_id}")
-        return show_main_menu(chat_id, db)
+        return show_main_menu(chat_id, db, actor_user_id=actor_user_id)
     except Exception as e:
         logger.error(f"[TG][ERROR] Failed to send welcome message: {e}", exc_info=True)
         return False
@@ -1408,7 +1447,11 @@ ATP Alerts = alerts-only. Claw = OpenClaw-native only.
     return send_command_response(chat_id, message)
 
 
-def show_main_menu(chat_id: str, db: Optional[Session] = None) -> bool:
+def show_main_menu(
+    chat_id: str,
+    db: Optional[Session] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Show main menu with buttons matching dashboard layout - Reference Specification v1.0
     
     Menu structure (exact order per specification):
@@ -1423,10 +1466,7 @@ def show_main_menu(chat_id: str, db: Optional[Session] = None) -> bool:
     if db is None:
         return False
     try:
-        # Authorization check - use helper function
-        # Note: For menu display, we need user_id but it's not available here
-        # So we check chat_id only (works for private chats where chat_id == user_id)
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] show_main_menu: chat_id={chat_id} not authorized")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
@@ -2976,11 +3016,15 @@ def show_open_orders_menu(chat_id: str, db: Optional[Session] = None, message_id
         return send_command_response(chat_id, f"❌ Error showing open orders menu: {str(e)}")
 
 
-def show_expected_tp_menu(chat_id: str, db: Optional[Session] = None, message_id: Optional[int] = None) -> bool:
+def show_expected_tp_menu(
+    chat_id: str,
+    db: Optional[Session] = None,
+    message_id: Optional[int] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Show expected take profit sub-menu with options"""
     try:
-        # Authorization check - use helper function
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] show_expected_tp_menu: chat_id={chat_id} not authorized")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
@@ -3125,10 +3169,14 @@ def _format_scheduler_health_for_console() -> str:
     return "\n".join(lines)
 
 
-def show_agent_console(chat_id: str, message_id: Optional[int] = None) -> bool:
+def show_agent_console(
+    chat_id: str,
+    message_id: Optional[int] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Show a compact agent console with scheduler health, recent activity, approvals, and failures."""
     try:
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] show_agent_console: chat_id={chat_id} not authorized")
             send_command_response(chat_id, "⛔ Not authorized")
             return False
@@ -3151,10 +3199,14 @@ def show_agent_console(chat_id: str, message_id: Optional[int] = None) -> bool:
         return send_command_response(chat_id, f"❌ Error showing agent console: {str(e)}")
 
 
-def send_recent_agent_activity(chat_id: str, limit: int = 5) -> bool:
+def send_recent_agent_activity(
+    chat_id: str,
+    limit: int = 5,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Send a compact recent activity summary from the agent activity log."""
     try:
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] send_recent_agent_activity: chat_id={chat_id} not authorized")
             return send_command_response(chat_id, "⛔ Not authorized")
 
@@ -3176,10 +3228,14 @@ def send_recent_agent_activity(chat_id: str, limit: int = 5) -> bool:
         return send_command_response(chat_id, f"❌ Error reading agent activity: {str(e)}")
 
 
-def send_pending_agent_approvals(chat_id: str, message_id: Optional[int] = None) -> bool:
+def send_pending_agent_approvals(
+    chat_id: str,
+    message_id: Optional[int] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Send (or edit to) pending approval list with a clickable row per item (agent_detail:<task_id>)."""
     try:
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] send_pending_agent_approvals: chat_id={chat_id} not authorized")
             return send_command_response(chat_id, "⛔ Not authorized")
 
@@ -3211,10 +3267,15 @@ def send_pending_agent_approvals(chat_id: str, message_id: Optional[int] = None)
         return send_command_response(chat_id, f"❌ Error reading pending approvals: {str(e)}")
 
 
-def send_approval_request_detail(chat_id: str, task_id: str, message_id: Optional[int] = None) -> bool:
+def send_approval_request_detail(
+    chat_id: str,
+    task_id: str,
+    message_id: Optional[int] = None,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Fetch approval detail and send (or edit to) a Telegram-friendly detail view with Approve / Deny / Back to Pending."""
     try:
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] send_approval_request_detail: chat_id={chat_id} not authorized")
             return send_command_response(chat_id, "⛔ Not authorized")
 
@@ -3345,10 +3406,14 @@ def _format_execution_result_message(result: dict) -> str:
     return "\n".join(lines)
 
 
-def send_recent_agent_failures(chat_id: str, limit: int = 5) -> bool:
+def send_recent_agent_failures(
+    chat_id: str,
+    limit: int = 5,
+    actor_user_id: Optional[str] = None,
+) -> bool:
     """Send recent failure-like activity events for fast Telegram triage."""
     try:
-        if not _is_authorized(chat_id, chat_id):
+        if not _authorize_with_resolved_actor(chat_id, actor_user_id):
             logger.warning(f"[TG][DENY] send_recent_agent_failures: chat_id={chat_id} not authorized")
             return send_command_response(chat_id, "⛔ Not authorized")
 
@@ -4382,6 +4447,15 @@ def handle_kill_command(chat_id: str, text: str, db: Optional[Session] = None) -
         return send_command_response(chat_id, f"❌ Error executing kill command: {str(e)}")
 
 
+def _telegram_text_is_task_command(text: str, raw_command: str, cmd_token: str) -> bool:
+    """True if the user message is /task (safety net when router misses after text mutations)."""
+    for s in ((text or ""), (raw_command or ""), (cmd_token or "")):
+        sl = (s or "").strip().lower()
+        if sl == "/task" or sl.startswith("/task ") or sl.startswith("/task@"):
+            return True
+    return False
+
+
 def _handle_task_command(
     chat_id: str,
     text: str,
@@ -4412,6 +4486,12 @@ def _handle_task_command(
         (normalized_cmd or "")[:120],
     )
     logger.info(
+        "[TG][TASK] intake update_id=%s chat_id=%s preview=%r",
+        update_id,
+        chat_id,
+        (normalized_cmd or "")[:200],
+    )
+    logger.info(
         "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
         raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
     )
@@ -4434,69 +4514,84 @@ def _handle_task_command(
     except Exception as repair_err:
         logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
     try:
+        # Direct Notion insert only — no compile/similarity pipeline, no OpenClaw, no LLM, no agent execution.
         from app.services.task_compiler import (
-            create_task_from_telegram_intent,
+            create_notion_task_from_telegram_direct,
             ERROR_NOTION_NOT_CONFIGURED,
         )
-        result = create_task_from_telegram_intent(intent_text, telegram_user)
-        logger.info(
-            "[TG][TASK][DEBUG] create_task_from_telegram_intent result ok=%s error=%s fallback_stored=%s update_id=%s",
-            result.get("ok"), result.get("error"), result.get("fallback_stored"), update_id,
-        )
+
+        logger.info("[TG][TASK] notion_create_attempt update_id=%s chat_id=%s", update_id, chat_id)
+        result = create_notion_task_from_telegram_direct(intent_text, telegram_user)
+
         if result.get("ok"):
-            priority = result.get("priority")
-            priority_label = result.get("priority_label") or ""
-            priority_line = f"Priority: {priority}/100 ({priority_label})\n" if priority is not None else ""
-            if result.get("reused"):
-                input_merged = result.get("input_merged", False)
-                merge_line = (
-                    "Your new instruction was added to the task history.\n"
-                    "Notion record updated.\n\n"
-                    if input_merged
-                    else "⚠️ Could not append to task history (Notion update failed).\n\n"
+            if result.get("dedup_cooldown"):
+                logger.info(
+                    "[TG][TASK] notion_create_success update_id=%s dedup_cooldown=true title=%r",
+                    update_id,
+                    (result.get("title") or "")[:80],
                 )
                 msg = (
-                    "✅ <b>Matched existing task</b>\n\n"
-                    f"Title: {result.get('title', '')}\n"
-                    f"Status: {result.get('status', '')}\n"
-                    f"{priority_line}\n"
-                    f"{merge_line}"
-                    "The system will continue working on this task."
+                    "✅ <b>Task already recorded</b>\n\n"
+                    "The same task was just created (deduplication window). "
+                    "Check your Notion AI Task System database."
                 )
-            else:
-                msg = (
-                    "✅ <b>Task created</b>\n\n"
-                    f"Title: {result.get('title', '')}\n"
-                    f"Type: {result.get('type', 'Investigation')}\n"
-                    f"Status: {result.get('status', 'Planned')}\n"
-                    f"{priority_line}"
-                    "Execution Mode: Strict\n\nThe system will automatically process it."
+                ok = send_response(chat_id, msg)
+                logger.info(
+                    "[TG][TASK] handler=task success=dedup_cooldown update_id=%s chat_id=%s ok=%s",
+                    update_id, chat_id, ok,
                 )
+                return bool(ok)
+
+            tid = (result.get("task_id") or "").strip()
+            logger.info(
+                "[TG][TASK] notion_create_success update_id=%s task_id=%s title=%r dry_run=%s",
+                update_id,
+                tid[:20] if tid else "",
+                (result.get("title") or "")[:80],
+                bool(result.get("dry_run")),
+            )
+            msg = (
+                "✅ <b>Task created in Notion</b>\n\n"
+                f"<b>Title:</b> {result.get('title', '')}\n"
+                f"<b>Type:</b> {result.get('type', 'Investigation')}\n"
+                f"<b>Status:</b> {result.get('status', 'Planned')}\n"
+                f"<b>Notion page:</b> <code>{tid}</code>\n\n"
+                "<i>No agent or model was run — this is a direct Notion write only.</i>"
+            )
             ok = send_response(chat_id, msg)
             logger.info(
-                "[TG][TASK] handler=task success update_id=%s chat_id=%s ok=%s reused=%s",
-                update_id, chat_id, ok, result.get("reused", False),
+                "[TG][TASK] handler=task success update_id=%s chat_id=%s ok=%s",
+                update_id, chat_id, ok,
             )
             return bool(ok)
+
         err = result.get("error", "Unknown error")
+        logger.warning(
+            "[TG][TASK] notion_create_failure update_id=%s chat_id=%s error=%r",
+            update_id,
+            chat_id,
+            (err or "")[:300],
+        )
         if err == ERROR_NOTION_NOT_CONFIGURED:
             msg = (
                 "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
                 "Set NOTION_API_KEY and NOTION_TASK_DB in .env (local) or SSM (AWS). "
                 "The system is still operational, but task tracking is disabled."
             )
-        elif result.get("fallback_stored"):
-            msg = "Notion unavailable. Task stored locally and will be synced automatically."
         else:
-            msg = f"❌ Task creation failed: {err}"
+            msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
         ok = send_response(chat_id, msg)
         logger.info(
-            "[TG][TASK][DEBUG] user_facing_message=%r update_id=%s chat_id=%s ok=%s",
-            msg[:80], update_id, chat_id, ok,
+            "[TG][TASK] user_facing_error update_id=%s chat_id=%s ok=%s",
+            update_id, chat_id, ok,
         )
         return bool(ok)
     except Exception as e:
-        logger.exception("[TG][TASK] handler=task failed update_id=%s chat_id=%s: %s", update_id, chat_id, e)
+        logger.exception(
+            "[TG][TASK] notion_create_failure update_id=%s chat_id=%s",
+            update_id,
+            chat_id,
+        )
         ok = send_response(chat_id, f"❌ Error: {str(e)[:200]}")
         logger.info("[TG][TASK] handler=task exception update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
         return bool(ok)
@@ -4687,21 +4782,26 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         chat = message.get("chat", {})
         # Get chat ID from the message (group/channel), not from the user who clicked
         chat_id = str(chat.get("id", ""))
+        sender_chat_cb = message.get("sender_chat") or {}
+        actor_user_id = _resolve_actor_user_id(from_user, sender_chat_cb, chat_id)
+        # Clicker id for audit / approval records (always callback_query.from when present)
         user_id = str(from_user.get("id", ""))
         username = from_user.get("username", "N/A")
         message_id = message.get("message_id")
-        logger.info(f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, user_id={user_id}, username={username}, message_id={message_id}")
+        logger.info(
+            f"[TG][CALLBACK] Processing callback_data='{callback_data}' from chat_id={chat_id}, "
+            f"actor_user_id={actor_user_id}, clicker_user_id={user_id}, username={username}, message_id={message_id}"
+        )
         
-        # Only authorized chat (group/channel) or user - use helper function
-        if not _is_authorized(chat_id, user_id):
+        if not _telegram_authorize(chat_id, actor_user_id):
             _chat_type = chat.get("type", "unknown")
             _chat_title = chat.get("title", "") or "(empty)"
             _chat_username = chat.get("username", "") or "(empty)"
             _atp_control_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
             logger.warning(
                 "[TG][AUTH][DENY] callback chat_id=%s chat_type=%s chat_title=%s chat_username=%s "
-                "user_id=%s TELEGRAM_ATP_CONTROL_CHAT_ID=%s AUTHORIZED_USER_IDS=%s",
-                chat_id, _chat_type, _chat_title, _chat_username, user_id,
+                "actor_user_id=%s TELEGRAM_ATP_CONTROL_CHAT_ID=%s AUTHORIZED_USER_IDS=%s",
+                chat_id, _chat_type, _chat_title, _chat_username, actor_user_id,
                 _atp_control_chat or "(not set)",
                 ",".join(sorted(AUTHORIZED_USER_IDS)) if AUTHORIZED_USER_IDS else "none",
             )
@@ -4951,7 +5051,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif callback_data == "menu:main":
             # Show main menu
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:main' to show_main_menu, chat_id={chat_id}")
-            show_main_menu(chat_id, db)
+            show_main_menu(chat_id, db, actor_user_id=actor_user_id)
         elif callback_data.startswith("cmd:"):
             # Handle command shortcuts from menu
             cmd = callback_data.replace("cmd:", "")
@@ -5025,7 +5125,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif callback_data == "menu:expected_tp":
             # Show expected take profit sub-menu
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:expected_tp' to show_expected_tp_menu, chat_id={chat_id}, message_id={message_id}")
-            show_expected_tp_menu(chat_id, db, message_id)
+            show_expected_tp_menu(chat_id, db, message_id, actor_user_id=actor_user_id)
         elif callback_data == "menu:executed_orders":
             # Show executed orders sub-menu
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:executed_orders' to show_executed_orders_menu, chat_id={chat_id}, message_id={message_id}")
@@ -5051,7 +5151,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             show_kill_switch_menu(chat_id, db, message_id)
         elif callback_data == "menu:agent":
             logger.info(f"[TG][MENU] ✅ Routing callback_data='menu:agent' to show_agent_console, chat_id={chat_id}, message_id={message_id}")
-            show_agent_console(chat_id, message_id)
+            show_agent_console(chat_id, message_id, actor_user_id=actor_user_id)
         elif callback_data.startswith("kill:"):
             # Handle kill switch actions
             action = callback_data.replace("kill:", "")
@@ -5068,16 +5168,16 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 # Refresh menu to show updated status
                 show_kill_switch_menu(chat_id, db, message_id)
         elif callback_data == "agent:main":
-            show_agent_console(chat_id, message_id)
+            show_agent_console(chat_id, message_id, actor_user_id=actor_user_id)
         elif callback_data == "agent:recent":
-            send_recent_agent_activity(chat_id)
+            send_recent_agent_activity(chat_id, actor_user_id=actor_user_id)
         elif callback_data == "agent:pending":
-            send_pending_agent_approvals(chat_id, message_id)
+            send_pending_agent_approvals(chat_id, message_id, actor_user_id=actor_user_id)
         elif callback_data.startswith("agent_detail:"):
             _task_id = callback_data.replace("agent_detail:", "", 1).strip()
-            send_approval_request_detail(chat_id, _task_id, message_id)
+            send_approval_request_detail(chat_id, _task_id, message_id, actor_user_id=actor_user_id)
         elif callback_data == "agent_back_pending":
-            send_pending_agent_approvals(chat_id, message_id)
+            send_pending_agent_approvals(chat_id, message_id, actor_user_id=actor_user_id)
         elif callback_data.startswith("agent_execute:"):
             _task_id = callback_data.replace("agent_execute:", "", 1).strip()
             from app.services.agent_telegram_approval import (
@@ -5102,7 +5202,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 ])
                 _send_or_edit_menu(chat_id, msg, keyboard, message_id)
         elif callback_data == "agent:failures":
-            send_recent_agent_failures(chat_id)
+            send_recent_agent_failures(chat_id, actor_user_id=actor_user_id)
         elif callback_data.startswith("setting:"):
             # Handle settings menu callbacks (e.g., setting:min_price_change_pct:select_strategy)
             _handle_setting_callback(chat_id, callback_data, callback_query.get("message", {}).get("message_id"), db)
@@ -5165,10 +5265,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     from_user = message.get("from", {}) or {}
     # Channel/supergroup posts may omit "from"; anonymous channel admins use sender_chat
     sender_chat = message.get("sender_chat") or {}
-    user_id = str(from_user.get("id", "")) if from_user else ""
-    if not user_id and sender_chat:
-        user_id = str(sender_chat.get("id", "")).strip()
-    sender_id = user_id or chat_id
+    actor_user_id = _resolve_actor_user_id(from_user, sender_chat, chat_id)
+    sender_id = actor_user_id or chat_id
 
     # Defensive text extraction: message.text, message.caption, edited_message.text
     edited_msg = update.get("edited_message") or {}
@@ -5193,30 +5291,30 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         update_id, chat_id, chat_type, sender_id, (text or "")[:60],
     )
 
-    # Auth
+    # Auth (same resolver + rule as callback_query and menu helpers)
     _token_src = get_telegram_token_source()
-    auth_ok = _is_authorized(chat_id, user_id)
-    auth_reason = "chat_id or user_id authorized" if auth_ok else "not_in_configured_lists"
+    auth_ok = _telegram_authorize(chat_id, actor_user_id)
+    auth_reason = "chat_id or actor authorized" if auth_ok else "not_in_configured_lists"
     logger.info(
-        "[TG][AUTH] decision=%s reason=%s token_source=%s chat_id=%s user_id=%s",
+        "[TG][AUTH] decision=%s reason=%s token_source=%s chat_id=%s actor_user_id=%s",
         "ALLOW" if auth_ok else "DENY",
         auth_reason,
         _token_src,
         chat_id,
-        user_id or "(empty)",
+        actor_user_id or "(empty)",
     )
     if not auth_ok:
         # Diagnostic: log incoming chat metadata for authorization troubleshooting
         chat_username = chat.get("username", "") or ""
         logger.warning(
             "[TG][AUTH][DENY] chat_id=%s chat_type=%s chat_title=%s chat_username=%s "
-            "user_id=%s token_source=%s TELEGRAM_CHAT_ID(raw)=%s TELEGRAM_ATP_CONTROL_CHAT_ID(raw)=%s "
+            "actor_user_id=%s token_source=%s TELEGRAM_CHAT_ID(raw)=%s TELEGRAM_ATP_CONTROL_CHAT_ID(raw)=%s "
             "TELEGRAM_AUTH_USER_ID(set)=%s",
             chat_id,
             chat_type,
             chat_title or "(empty)",
             chat_username or "(empty)",
-            user_id or "(empty)",
+            actor_user_id or "(empty)",
             _token_src,
             (os.getenv("TELEGRAM_CHAT_ID") or "(not set)")[:120],
             (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "(not set)")[:120],
@@ -5249,23 +5347,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     if text and any(c in text for c in _ZW):
         text = "".join(c for c in text if c not in _ZW).strip()
 
-    # Extract cmd token and args for logging; do NOT drop args
-    parts = (text or "").split(None, 1)
-    cmd_token = (parts[0] or "").strip()
-    args = (parts[1] or "").strip() if len(parts) > 1 else ""
-    logger.info(
-        "[TG][CMD] telegram_command_detected update_id=%s chat_id=%s cmd_token=%s args_len=%s",
-        update_id, chat_id, (cmd_token or "")[:50], len(args or ""),
-    )
-    logger.info(
-        "[TG][CMD] raw_command=%s normalized_command=%s args=%s",
-        (raw_command or "")[:80], (cmd_token or "")[:40], (args or "")[:60],
-    )
-
-    if not text and raw_command and str(raw_command).strip().startswith("/"):
-        text = str(raw_command).strip()
-        logger.warning("[TG][CMD] Restored text from raw_command: %s", text[:50])
-    
     # DEDUPLICATION: Prevent duplicate text commands when multiple instances (local/AWS) process same command
     # Use update_id for most reliable deduplication (already checked above, but add command-level check as backup)
     # This prevents the same /start command from being processed by both local and AWS instances
@@ -5310,6 +5391,26 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         text = "/menu"
     elif text == "❓ Help" or text == "Help":
         text = "/help"
+
+    # Restore command text if pipeline left it empty (edge cases)
+    if not (text or "").strip():
+        cand = (raw_command or "").strip() or (raw_text or "").strip()
+        if cand.startswith("/"):
+            text = cand
+            logger.warning("[TG][CMD] Restored text from raw_command/raw_text preview=%s", text[:80])
+
+    # Cmd token + args after keyboard mapping and restore (avoids stale cmd_token, e.g. Menu -> /menu)
+    parts = (text or "").split(None, 1)
+    cmd_token = (parts[0] or "").strip()
+    args = (parts[1] or "").strip() if len(parts) > 1 else ""
+    logger.info(
+        "[TG][CMD] telegram_command_detected update_id=%s chat_id=%s cmd_token=%s args_len=%s",
+        update_id, chat_id, (cmd_token or "")[:50], len(args or ""),
+    )
+    logger.info(
+        "[TG][CMD] raw_command=%s normalized_command=%s args=%s",
+        (raw_command or "")[:80], (cmd_token or "")[:40], (args or "")[:60],
+    )
     
     # Check if user is entering a value for a pending strategy setting
     # Try to parse as number - if successful, check if there's a pending strategy selection
@@ -5380,7 +5481,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             try:
                 # CRITICAL: /start should ALWAYS show main menu, not any other menu
                 logger.info(f"[TG][CMD][START] Showing main menu to chat_id={chat_id} (forcing main menu)")
-                menu_result = show_main_menu(chat_id, db)
+                menu_result = show_main_menu(chat_id, db, actor_user_id=actor_user_id)
                 logger.info(f"[TG][CMD][START] Main menu result: {menu_result}")
                 if menu_result:
                     logger.info(f"[TG][CMD][START] ✅ /start command processed successfully for chat_id={chat_id}")
@@ -5393,7 +5494,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 logger.info("[TG][REPLY] success=%s handler=start", ok)
         elif text.startswith("/menu"):
             logger.info("[TG][HANDLER] handler=menu executing")
-            ok = show_main_menu(chat_id, db)
+            ok = show_main_menu(chat_id, db, actor_user_id=actor_user_id)
             logger.info("[TG][REPLY] success=%s handler=menu", ok)
         elif text.startswith("/investigate"):
             logger.info("[TG][HANDLER] handler=investigate executing")
@@ -5479,7 +5580,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif text.startswith("/kill"):
             handle_kill_command(chat_id, text, db)
         elif text.startswith("/agent"):
-            show_agent_console(chat_id)
+            show_agent_console(chat_id, actor_user_id=actor_user_id)
         elif text.startswith("/"):
             # /task is dispatched above; this branch is for other unknown commands
             if handler_name == "task":
@@ -5492,12 +5593,28 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
                 )
             else:
-                logger.warning(
-                    "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
-                    update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
-                )
-                logger.info("[TG][HANDLER] handler=unknown executing")
-                ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
+                if _telegram_text_is_task_command(text, raw_command, cmd_token):
+                    logger.warning(
+                        "[TG][TASK][GUARD] unknown-slash branch -> _handle_task_command update_id=%s chat_id=%s",
+                        update_id, chat_id,
+                    )
+                    try:
+                        ok = _handle_task_command(
+                            chat_id, text, args, from_user, send_command_response, update_id,
+                        )
+                    except Exception as task_err:
+                        logger.exception(
+                            "[TG][TASK][GUARD] handler failed update_id=%s chat_id=%s: %s",
+                            update_id, chat_id, task_err,
+                        )
+                        ok = send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
+                else:
+                    logger.warning(
+                        "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s command=%s text_len=%s text_repr=%s",
+                        update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
+                    )
+                    logger.info("[TG][HANDLER] handler=unknown executing")
+                    ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
             if handler_name == "task":
@@ -5509,6 +5626,21 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     chat_id,
                     "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
                 )
+            elif _telegram_text_is_task_command(text, raw_command, cmd_token):
+                logger.warning(
+                    "[TG][TASK][GUARD] non-slash fallback -> _handle_task_command update_id=%s chat_id=%s",
+                    update_id, chat_id,
+                )
+                try:
+                    ok = _handle_task_command(
+                        chat_id, text, args, from_user, send_command_response, update_id,
+                    )
+                except Exception as task_err:
+                    logger.exception(
+                        "[TG][TASK][GUARD] handler failed update_id=%s chat_id=%s: %s",
+                        update_id, chat_id, task_err,
+                    )
+                    ok = send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
             else:
                 logger.warning(
                     "[TG][UNKNOWN] telegram_unknown_command update_id=%s chat_id=%s fallback text_repr=%s",
@@ -5670,7 +5802,9 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
                     # If bot was added to group, send welcome message (main menu)
                     if new_status == "member" or new_status == "administrator":
                         logger.info(f"[TG] Bot added to group {chat_id}, sending welcome message")
-                        send_welcome_message(chat_id, db)
+                        _from_member = my_chat_member.get("from") or {}
+                        _welcome_actor = _resolve_actor_user_id(_from_member, None, chat_id)
+                        send_welcome_message(chat_id, db, actor_user_id=_welcome_actor)
                     # Update ID to skip this update
                     _save_last_update_id(db, update_id)
                     LAST_UPDATE_ID = update_id

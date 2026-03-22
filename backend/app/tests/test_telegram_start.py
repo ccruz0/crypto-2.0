@@ -96,6 +96,38 @@ def test_authorization_comma_separated_control_chat_ids():
         assert _is_authorized("-1002222222222", "12345") is True
         assert _is_authorized("-1009999999999", "12345") is False
 
+
+def test_resolve_actor_user_id_prefers_from_over_sender_chat():
+    from app.services.telegram_commands import _resolve_actor_user_id
+
+    assert _resolve_actor_user_id({"id": 111}, {"id": 222}, "-100") == "111"
+
+
+def test_resolve_actor_user_id_uses_sender_chat_when_no_from():
+    from app.services.telegram_commands import _resolve_actor_user_id
+
+    assert _resolve_actor_user_id(None, {"id": 222}, "-100") == "222"
+    assert _resolve_actor_user_id({}, {"id": 222}, "-100") == "222"
+
+
+def test_resolve_actor_user_id_private_chat_fallback():
+    from app.services.telegram_commands import _resolve_actor_user_id
+
+    assert _resolve_actor_user_id(None, None, "123456789") == "123456789"
+
+
+def test_telegram_authorize_matches_is_authorized_for_group_user():
+    """Unified path must match _is_authorized(chat, actor) for TELEGRAM_AUTH_USER_ID."""
+    from app.services.telegram_commands import _is_authorized, _telegram_authorize, _resolve_actor_user_id
+
+    chat_id = "-1001234567890"
+    from_user = {"id": 999888777}
+
+    with patch.dict(os.environ, {"TELEGRAM_AUTH_USER_ID": "999888777"}, clear=False):
+        actor = _resolve_actor_user_id(from_user, None, chat_id)
+        assert actor == "999888777"
+        assert _telegram_authorize(chat_id, actor) == _is_authorized(chat_id, actor)
+
 # Test webhook deletion
 def test_webhook_deletion_on_startup():
     """Test that webhook deletion is called on startup"""

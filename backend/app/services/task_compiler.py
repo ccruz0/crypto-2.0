@@ -22,7 +22,9 @@ from app.services.notion_tasks import (
     ALLOWED_TASK_STATUSES,
     TERMINAL_STATUSES,
     append_telegram_input_to_task,
+    clear_last_notion_create_failure,
     create_notion_task,
+    get_last_notion_create_failure,
     notion_is_configured,
     notion_status_to_display,
     update_notion_task_priority,
@@ -624,6 +626,32 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
         priority_score=priority_score,
     )
 
+    if page and page.get("dedup_skipped"):
+        logger.info(
+            "notion_task_dedup_cooldown_skip title=%r (not an API failure; same signature recently created)",
+            (task.get("title") or "")[:80],
+        )
+        try:
+            from app.services.agent_activity_log import log_agent_event
+            log_agent_event(
+                "notion_sync_skipped_dedup_cooldown",
+                task_title=(task.get("title") or "")[:80],
+                details={"source": "telegram"},
+            )
+        except Exception:
+            pass
+        status_display = notion_status_to_display(task_status)
+        return {
+            "ok": True,
+            "dedup_cooldown": True,
+            "task_id": "",
+            "title": (task.get("title") or "").strip(),
+            "status": status_display,
+            "type": (task.get("type") or DEFAULT_TYPE).strip(),
+            "priority": priority_score,
+            "priority_label": task_priority_label,
+        }
+
     if not page or page.get("dry_run"):
         if page and page.get("dry_run"):
             logger.info("notion_task_created dry_run=True task_id=dry-run-fake-id")
@@ -636,7 +664,10 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
                 "priority": priority_score,
                 "priority_label": task_priority_label,
             }
-        logger.error("notion_task_creation_failed create_notion_task returned None (dedup or API error) title=%r", (task.get("title") or "")[:50])
+        logger.error(
+            "notion_task_creation_failed create_notion_task returned None (API error or blocked) title=%r",
+            (task.get("title") or "")[:50],
+        )
         try:
             from app.services.agent_activity_log import log_agent_event
             log_agent_event(
@@ -676,6 +707,74 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
         "type": (task.get("type") or DEFAULT_TYPE).strip(),
         "priority": priority_score,
         "priority_label": task_priority_label,
+    }
+
+
+def create_notion_task_from_telegram_direct(description: str, source: str) -> dict[str, Any]:
+    """
+    Minimal Telegram /task path: single Notion API create only.
+
+    Does not use OpenClaw, LLMs, compile_task_from_intent, find_similar_task,
+    or agent_activity_log. Only validates text + notion_is_configured + create_notion_task.
+    """
+    desc = (description or "").strip()
+    if not desc:
+        return {"ok": False, "error": "empty_description"}
+
+    if not notion_is_configured():
+        logger.error("notion_preflight_failed NOTION_API_KEY or NOTION_TASK_DB missing (direct /task)")
+        return {"ok": False, "error": ERROR_NOTION_NOT_CONFIGURED}
+
+    title = (desc.split("\n")[0] or "").strip()[:200] or "Telegram task"
+    details_body = desc[:15000]
+    src = (source or "").strip() or DEFAULT_SOURCE
+
+    clear_last_notion_create_failure()
+    try:
+        page = create_notion_task(
+            title=title,
+            project=DEFAULT_PROJECT,
+            type=DEFAULT_TYPE,
+            details=details_body,
+            status="planned",
+            source=src,
+            execution_mode=DEFAULT_EXECUTION_MODE,
+            priority_score=50,
+        )
+    except Exception as ex:
+        logger.exception("create_notion_task_from_telegram_direct: create_notion_task raised: %s", ex)
+        return {"ok": False, "error": str(ex)[:500]}
+
+    if page and page.get("dedup_skipped"):
+        return {"ok": True, "dedup_cooldown": True, "title": title}
+    if page and page.get("dry_run"):
+        return {
+            "ok": True,
+            "task_id": page.get("id"),
+            "title": title,
+            "status": "Planned",
+            "type": DEFAULT_TYPE,
+            "priority": 50,
+            "priority_label": "medium",
+            "reused": False,
+            "dry_run": True,
+        }
+    if not page:
+        detail = (get_last_notion_create_failure() or "").strip()
+        if not detail:
+            detail = "Notion API did not return a page (see notion_sync_failed in logs)"
+        return {"ok": False, "error": detail}
+
+    tid = (page.get("id") or "").strip()
+    return {
+        "ok": True,
+        "task_id": tid,
+        "title": title,
+        "status": "Planned",
+        "type": DEFAULT_TYPE,
+        "priority": 50,
+        "priority_label": "medium",
+        "reused": False,
     }
 
 

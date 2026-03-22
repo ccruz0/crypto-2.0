@@ -51,7 +51,7 @@ def _get_config() -> tuple[str, str]:
     2) app.core.config.settings (loads from .env)
     """
     api_key = (os.environ.get("NOTION_API_KEY") or "").strip()
-    database_id = (os.environ.get("NOTION_TASK_DB") or "").strip()
+    database_id = (os.environ.get("NOTION_TASK_DB") or os.environ.get("NOTION_TASKS_DB") or "").strip()
     if api_key and database_id:
         return api_key, database_id
     try:
@@ -61,7 +61,9 @@ def _get_config() -> tuple[str, str]:
     if not api_key:
         api_key = (getattr(settings, "NOTION_API_KEY", None) or "").strip()
     if not database_id:
-        database_id = (getattr(settings, "NOTION_TASK_DB", None) or "").strip()
+        database_id = (
+            getattr(settings, "NOTION_TASK_DB", None) or getattr(settings, "NOTION_TASKS_DB", None) or ""
+        ).strip()
     return api_key, database_id
 
 

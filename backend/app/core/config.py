@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     ALPACA_SECRET_KEY: Optional[str] = None
     NOTION_API_KEY: Optional[str] = None
     NOTION_TASK_DB: Optional[str] = None
+    # Ops typo alias; code prefers NOTION_TASK_DB when both set
+    NOTION_TASKS_DB: Optional[str] = None
 
     # OpenClaw integration (AI agent via HTTP API)
     OPENCLAW_API_URL: Optional[str] = None

@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
+# Last create failure (for Telegram /task direct path; cleared each create attempt)
+_LAST_NOTION_CREATE_FAILURE: str = ""
+
+
+def clear_last_notion_create_failure() -> None:
+    global _LAST_NOTION_CREATE_FAILURE
+    _LAST_NOTION_CREATE_FAILURE = ""
+
+
+def get_last_notion_create_failure() -> str:
+    return _LAST_NOTION_CREATE_FAILURE
+
+
+def _set_last_notion_create_failure(msg: str) -> None:
+    global _LAST_NOTION_CREATE_FAILURE
+    _LAST_NOTION_CREATE_FAILURE = (msg or "")[:800]
+
+
 # Default values for new tasks
 DEFAULT_STATUS = "planned"
 DEFAULT_SOURCE = "openclaw"
@@ -265,7 +283,7 @@ def _get_config() -> tuple[str, str]:
     2) app.core.config.settings (loads from .env)
     """
     api_key = (os.environ.get("NOTION_API_KEY") or "").strip()
-    database_id = (os.environ.get("NOTION_TASK_DB") or "").strip()
+    database_id = (os.environ.get("NOTION_TASK_DB") or os.environ.get("NOTION_TASKS_DB") or "").strip()
     if api_key and database_id:
         return api_key, database_id
     try:
@@ -275,7 +293,9 @@ def _get_config() -> tuple[str, str]:
     if not api_key:
         api_key = (getattr(settings, "NOTION_API_KEY", None) or "").strip()
     if not database_id:
-        database_id = (getattr(settings, "NOTION_TASK_DB", None) or "").strip()
+        database_id = (
+            getattr(settings, "NOTION_TASK_DB", None) or getattr(settings, "NOTION_TASKS_DB", None) or ""
+        ).strip()
     return api_key, database_id
 
 
@@ -512,12 +532,16 @@ def create_notion_task(
         logger.info("dry_run skip create_notion_task title=%s project=%s type=%s", (title or "")[:50], project, type)
         return {"id": "dry-run-fake-id", "url": None, "dry_run": True}
 
+    clear_last_notion_create_failure()
+
     api_key, database_id = _get_config()
     if not api_key:
         logger.warning("Notion integration skipped: NOTION_API_KEY not set")
+        _set_last_notion_create_failure("NOTION_API_KEY not set")
         return None
     if not database_id:
         logger.warning("Notion integration skipped: NOTION_TASK_DB not set")
+        _set_last_notion_create_failure("NOTION_TASK_DB (or NOTION_TASKS_DB) not set")
         return None
 
     cooldown_sec = _get_cooldown_seconds()
@@ -530,7 +554,8 @@ def create_notion_task(
                 project,
                 type,
             )
-            return None
+            # Truthy sentinel so callers distinguish cooldown from API failure / missing config
+            return {"id": None, "url": None, "dedup_skipped": True}
 
     # Resolve priority: use caller value if provided, otherwise infer and log.
     if priority and priority.strip():
@@ -610,9 +635,11 @@ def create_notion_task(
             )
     except httpx.TimeoutException as e:
         logger.exception("Notion API request timed out: %s", e)
+        _set_last_notion_create_failure(f"timeout: {e!s}")
         return None
     except httpx.RequestError as e:
         logger.exception("Notion API request failed: %s", e)
+        _set_last_notion_create_failure(f"request_error: {e!s}")
         return None
 
     if response.status_code == 200:
@@ -639,6 +666,8 @@ def create_notion_task(
         err_body = response.text
     except Exception:
         err_body = ""
+    err_summary = f"HTTP {response.status_code}: {(err_body[:400] if err_body else '')}"
+    _set_last_notion_create_failure(err_summary)
     logger.error(
         "notion_sync_failed status=%d body=%s title=%r",
         response.status_code,
