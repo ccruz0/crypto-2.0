@@ -64,6 +64,7 @@ Expect `200`.
 | HTTP 401/403 in logs | Notion integration token; DB shared with integration |
 | Duplicate replies | [DUPLICATE_TELEGRAM_POLLERS_FIX.md](DUPLICATE_TELEGRAM_POLLERS_FIX.md) |
 | Wrong bot answering | Which token is polling (`[TG][CONFIG]`, `token_source`) |
+| SSM deploy: `No such container` on **Recreate** | Stale Compose state vs removed container. `scripts/aws/prod_stack_up.sh` stops + `rm`s `backend-aws` before `up`; pull latest and rerun `./scripts/deploy_production_via_ssm.sh`, or on host: `docker compose --profile aws stop backend-aws && docker compose --profile aws rm -f backend-aws && docker compose --profile aws up -d --remove-orphans backend-aws` |
 
 ---
 

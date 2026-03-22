@@ -46,21 +46,35 @@ fi
 
 # Git pull fix: SSM runs without HOME; repo may have dubious ownership. Ensure git works.
 GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
-# Commands as JSON array (SSM RunShellScript runs them in sequence). Path: same as fix_telegram_anomalies_via_ssm.sh
-if [[ "$SKIP_REBUILD" == "1" ]]; then
-  PARAMS='commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","'"$GIT_PULL_PREFIX"'git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true","docker compose --profile aws up -d backend-aws","sleep 5","docker compose --profile aws ps backend-aws","curl -sS -o /dev/null -w \"%{http_code}\" --connect-timeout 5 http://localhost:8002/api/health || echo 000"]'
-elif [[ "$NO_CACHE" == "1" ]]; then
-  PARAMS='commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","'"$GIT_PULL_PREFIX"'git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true","docker compose --profile aws build --no-cache backend-aws 2>/dev/null || true","docker compose --profile aws up -d backend-aws","sleep 5","docker compose --profile aws ps backend-aws","curl -sS -o /dev/null -w \"%{http_code}\" --connect-timeout 5 http://localhost:8002/api/health || echo 000"]'
-else
-  PARAMS='commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","'"$GIT_PULL_PREFIX"'git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true","docker compose --profile aws build backend-aws 2>/dev/null || true","docker compose --profile aws up -d backend-aws","sleep 5","docker compose --profile aws ps backend-aws","curl -sS -o /dev/null -w \"%{http_code}\" --connect-timeout 5 http://localhost:8002/api/health || echo 000"]'
-fi
+GIT_FETCH_CMD="${GIT_PULL_PREFIX}git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true"
+# DB must be healthy before backend-aws (see prior: postgres_hardened unhealthy blocked compose).
+export GIT_FETCH_CMD
+export SKIP_REBUILD
+export NO_CACHE
+PARAMS_FILE="$(mktemp)"
+python3 - <<'PY' > "$PARAMS_FILE"
+import json, os
+git = os.environ["GIT_FETCH_CMD"]
+stack = (
+    f'SKIP_REBUILD={os.environ.get("SKIP_REBUILD", "0")} '
+    f'NO_CACHE={os.environ.get("NO_CACHE", "0")} bash scripts/aws/prod_stack_up.sh'
+)
+cmds = [
+    "set -e",
+    "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
+    git,
+    stack,
+]
+print(json.dumps({"commands": cmds}))
+PY
+trap 'rm -f "$PARAMS_FILE"' EXIT
 
 COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters "$PARAMS" \
-  --timeout-seconds 600 \
+  --parameters "file://$PARAMS_FILE" \
+  --timeout-seconds 900 \
   --query 'Command.CommandId' --output text 2>&1)
 
 if [[ -z "$COMMAND_ID" || "$COMMAND_ID" == Error* ]]; then
