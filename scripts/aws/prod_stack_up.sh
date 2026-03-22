@@ -24,6 +24,8 @@ docker compose --profile aws up -d db
 
 echo "==> wait for postgres_hardened healthy (max ~120s)"
 _db_ok=0
+# First pg_isready checks can briefly report unhealthy during init; don't bail until grace elapsed.
+_DB_UNHEALTHY_GRACE_ITER="${DB_HEALTH_UNHEALTHY_GRACE_ITER:-18}"
 for _i in $(seq 1 40); do
   _st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-health{{end}}' postgres_hardened 2>/dev/null || echo missing)"
   echo "   [${_i}] health=${_st}"
@@ -31,12 +33,15 @@ for _i in $(seq 1 40); do
     _db_ok=1
     break
   fi
-  if [[ "${_st}" == "unhealthy" ]]; then
-    echo "==> postgres is unhealthy — compose logs + inspect:" >&2
+  if [[ "${_st}" == "unhealthy" ]] && [[ "${_i}" -ge "${_DB_UNHEALTHY_GRACE_ITER}" ]]; then
+    echo "==> postgres is unhealthy (after ${_i}*3s) — compose logs + inspect:" >&2
     docker compose --profile aws logs db --tail 120 2>&1 || true
     docker logs postgres_hardened --tail 80 2>&1 || true
     docker inspect postgres_hardened --format '{{.State.Status}} {{.State.Error}}' 2>&1 || true
     exit 1
+  fi
+  if [[ "${_st}" == "unhealthy" ]] && [[ "${_i}" -lt "${_DB_UNHEALTHY_GRACE_ITER}" ]]; then
+    echo "   (unhealthy within grace window, waiting for recovery...)" >&2
   fi
   sleep 3
 done
