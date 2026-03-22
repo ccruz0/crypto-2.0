@@ -57,7 +57,7 @@ SKIP_REBUILD="${SKIP_REBUILD:-0}"
 NO_CACHE="${NO_CACHE:-0}"
 
 # Compose can reference a removed container ID ("Recreate ... No such container: <id>").
-# Stop + rm the service so the next up creates a fresh container (db stays up).
+# Stop + rm backend-aws only; db/postgres is not touched.
 _prod_reset_backend_aws() {
   echo "==> reset backend-aws container state (avoid stale recreate / missing container id)"
   docker compose --profile aws stop backend-aws 2>/dev/null || true
