@@ -7,6 +7,7 @@
 #   ATP_REPO_PATH   — force repo root (default: detect)
 #   OPENCLAW_PORT   — host port (default: 8080)
 #   SKIP_SYSTEMD    — if 1, skip systemctl and use compose/docker only
+#   OPENCLAW_LAB_DOCKER_PRUNE=1 — run `docker image prune -af` before compose (frees disk; removes unused images)
 set -euo pipefail
 
 OPENCLAW_PORT="${OPENCLAW_PORT:-8080}"
@@ -61,6 +62,20 @@ docker_check() {
     fail "docker daemon not reachable (permission or docker not running). As root this usually means: sudo systemctl start docker"
   fi
   ok "Docker daemon reachable ($(docker info --format '{{.ServerVersion}}' 2>/dev/null || echo unknown))"
+}
+
+disk_report() {
+  echo "--- df -h / /var/lib/docker  ---"
+  df -h / 2>/dev/null || true
+  df -h /var/lib/docker 2>/dev/null || true
+}
+
+maybe_prune_images() {
+  if [[ "${OPENCLAW_LAB_DOCKER_PRUNE:-0}" != "1" ]]; then
+    return 0
+  fi
+  log "OPENCLAW_LAB_DOCKER_PRUNE=1: docker image prune -af"
+  docker image prune -af 2>/dev/null || true
 }
 
 compose_file() {
@@ -121,18 +136,44 @@ start_via_systemd() {
 }
 
 start_via_compose() {
-  local cf
+  local cf img hb
   cf="$(compose_file)" || fail "No $COMPOSE_REL found under detected repo"
+  # SSM agent IPC can time out if this function produces no stdout for ~90–120s (e.g. long docker pull).
+  ( while sleep 20; do echo "[openclaw-lab-repair] compose pull/build still running..."; done ) &
+  hb=$!
+  trap 'kill "$hb" 2>/dev/null || true' RETURN
   mkdir -p "$REPO/secrets" /opt/openclaw/home-data 2>/dev/null || true
   touch "$REPO/secrets/runtime.env" 2>/dev/null || true
   mkdir -p /home/ubuntu/secrets 2>/dev/null || true
   touch /home/ubuntu/secrets/openclaw_token 2>/dev/null || true
   chmod 600 /home/ubuntu/secrets/openclaw_token 2>/dev/null || true
   chown -R ubuntu:ubuntu "$REPO" /opt/openclaw /home/ubuntu/secrets 2>/dev/null || true
-  log "docker compose up -d (root) using: $cf"
-  (cd "$REPO" && docker compose -f "$cf" up -d)
-  docker compose -f "$cf" ps -a 2>/dev/null || true
-  method_used="docker_compose:$cf"
+
+  img="${OPENCLAW_REPAIR_IMAGE:-ghcr.io/ccruz0/openclaw:latest}"
+  log "Compose: pull service openclaw then up --no-build (image=$img) file=$cf"
+  # Pull streams huge progress lines; SSM Run Command can hit IPC timeouts if we write it all to the session pipe.
+  local clog=/tmp/openclaw-lab-compose-repair.log
+  : >"$clog"
+  if ! (
+    cd "$REPO" && OPENCLAW_IMAGE="$img" docker compose -p openclaw-lab -f "$cf" pull openclaw >>"$clog" 2>&1 &&
+    OPENCLAW_IMAGE="$img" docker compose -p openclaw-lab -f "$cf" up -d --no-build >>"$clog" 2>&1
+  ); then
+    log "Quick compose (prebuilt image) failed; trying full build + up (slow; logs: $clog)"
+    tail -40 "$clog" || true
+    if ! (cd "$REPO" && docker compose -p openclaw-lab -f "$cf" up -d >>"$clog" 2>&1); then
+      tail -80 "$clog" || true
+      if grep -qi 'no space left on device' "$clog" 2>/dev/null; then
+        log "Disk full while pulling/building. Free space (df), run docker image prune / system prune, or grow the LAB EBS volume. Re-run with OPENCLAW_LAB_DOCKER_PRUNE=1 after backup if safe."
+      fi
+      return 1
+    fi
+    method_used="docker_compose:$cf (full build)"
+  else
+    method_used="docker_compose:$cf (image $img)"
+  fi
+  echo "--- tail $clog ---"
+  tail -40 "$clog" || true
+  docker compose -p openclaw-lab -f "$cf" ps -a 2>/dev/null || true
 }
 
 start_via_docker_start() {
@@ -149,6 +190,8 @@ echo "======== OpenClaw LAB repair ========="
 echo "HOST=$(hostname -f 2>/dev/null || hostname) DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 docker_check
+disk_report
+maybe_prune_images
 
 if detect_repo; then
   ok "Repo root: $REPO"
@@ -192,6 +235,7 @@ if [[ "$need_start" -eq 1 ]]; then
   waited=0
   while [[ "$waited" -lt 360 ]]; do
     has_port_listener && break
+    echo "[openclaw-lab-repair] waiting for :${OPENCLAW_PORT} (${waited}s)..."
     sleep 5
     waited=$((waited + 5))
   done

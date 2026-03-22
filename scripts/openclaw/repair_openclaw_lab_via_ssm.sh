@@ -15,8 +15,8 @@
 #   OPENCLAW_PORT (default 8080)
 #   SKIP_GIT_PULL=1   — do not pull before repair
 #   SKIP_PROD_CURL=1  — skip validation from PROD via SSM
-#   OPENCLAW_SSM_EMBED_REPAIR=1 — pipe this repo’s repair_openclaw_lab_on_instance.sh via base64
-#       (use when LAB does not yet have the script after a merge; avoids chicken-and-egg with git pull)
+#   OPENCLAW_SSM_EMBED_REPAIR=1 — ship repair_openclaw_lab_on_instance.sh via chunked base64 (no git pull needed)
+#   SSM_TIMEOUT_SECONDS (default 1800), SSM_LAB_WAIT_SECONDS (default 1800), SSM_PROD_WAIT_SECONDS (default 90)
 set -euo pipefail
 
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
@@ -89,25 +89,36 @@ SCRIPT_ON_LAB="$REPO/scripts/openclaw/repair_openclaw_lab_on_instance.sh"
 LOCAL_SCRIPT="$REPO_ROOT/scripts/openclaw/repair_openclaw_lab_on_instance.sh"
 
 build_lab_params_embedded() {
-  SCRIPT_PATH="$LOCAL_SCRIPT" REPO="$REPO" PORT="$PORT" GIT_PULL="${GIT_PULL:-0}" python3 <<'PY'
+  SCRIPT_PATH="$LOCAL_SCRIPT" REPO="$REPO" PORT="$PORT" GIT_PULL="${GIT_PULL:-0}" PRUNE="${OPENCLAW_LAB_DOCKER_PRUNE:-0}" python3 <<'PY'
 import base64, json, os
 from pathlib import Path
 
 repo = os.environ["REPO"]
 port = os.environ["PORT"]
+prune = os.environ.get("PRUNE", "0")
 b64 = base64.b64encode(Path(os.environ["SCRIPT_PATH"]).read_bytes()).decode("ascii")
-parts = [
-    "set -euo pipefail",
-    f"export ATP_REPO_PATH={repo} OPENCLAW_PORT={port}",
+commands = [
+    "set -eu",
+    "rm -f /tmp/openclaw_lab_repair.b64 /tmp/openclaw_lab_repair.sh",
+    ": > /tmp/openclaw_lab_repair.b64",
 ]
+step = 900
+for i in range(0, len(b64), step):
+    chunk = b64[i : i + step]
+    commands.append("printf %s >> /tmp/openclaw_lab_repair.b64 " + json.dumps(chunk))
+commands.extend(
+    [
+        "base64 -d /tmp/openclaw_lab_repair.b64 > /tmp/openclaw_lab_repair.sh",
+        "chmod +x /tmp/openclaw_lab_repair.sh",
+        f"export ATP_REPO_PATH={repo} OPENCLAW_PORT={port} OPENCLAW_LAB_DOCKER_PRUNE={prune}",
+    ]
+)
 if os.environ.get("GIT_PULL") == "1":
-    parts.append(
+    commands.append(
         f'sudo -u ubuntu bash -lc "cd {repo} && git fetch origin main && git checkout main && git pull origin main" || true'
     )
-parts.append(f"echo {b64} | base64 -d | bash")
-inner = "; ".join(parts)
-cmd = "bash -lc " + json.dumps(inner)
-print(json.dumps({"commands": [cmd]}))
+commands.append("bash /tmp/openclaw_lab_repair.sh")
+print(json.dumps({"commands": commands}))
 PY
 }
 
@@ -126,7 +137,7 @@ elif [[ "${SKIP_GIT_PULL:-0}" == "1" ]]; then
   LAB_PARAMS=$(cat <<EOF
 {
   "commands": [
-    "bash -lc 'set -euo pipefail; export ATP_REPO_PATH=$REPO OPENCLAW_PORT=$PORT; bash $SCRIPT_ON_LAB'"
+    "bash -lc 'set -euo pipefail; export ATP_REPO_PATH=$REPO OPENCLAW_PORT=$PORT OPENCLAW_LAB_DOCKER_PRUNE=${OPENCLAW_LAB_DOCKER_PRUNE:-0}; bash $SCRIPT_ON_LAB'"
   ]
 }
 EOF
@@ -135,7 +146,7 @@ else
   LAB_PARAMS=$(cat <<EOF
 {
   "commands": [
-    "bash -lc 'set -euo pipefail; export ATP_REPO_PATH=$REPO OPENCLAW_PORT=$PORT; sudo -u ubuntu bash -lc \"cd $REPO && git fetch origin main && git checkout main && git pull origin main\" || true; bash $SCRIPT_ON_LAB'"
+    "bash -lc 'set -euo pipefail; export ATP_REPO_PATH=$REPO OPENCLAW_PORT=$PORT OPENCLAW_LAB_DOCKER_PRUNE=${OPENCLAW_LAB_DOCKER_PRUNE:-0}; sudo -u ubuntu bash -lc \"cd $REPO && git fetch origin main && git checkout main && git pull origin main\" || true; bash $SCRIPT_ON_LAB'"
   ]
 }
 EOF
