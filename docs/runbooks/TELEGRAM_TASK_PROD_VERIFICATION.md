@@ -79,7 +79,7 @@ Expect `200`.
   - Stale image issues: `NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh`  
   - Long builds: `MAX_WAIT_ITERATIONS=900` (see script header).
 - **Frontend:** `./deploy_frontend_ssm.sh`  
-  - Runs **`scripts/aws/prod_frontend_deploy.sh`** on the host: `git fetch`/`reset`, optional **submodule update**, reset **`frontend-aws`** container, **`docker compose` build + up** (900s SSM timeout, polls like backend deploy).
+  - SSM runs **`git fetch`/`reset` + submodule update first**, then **`scripts/aws/prod_frontend_deploy.sh`** (reset **`frontend-aws`**, **`docker compose` build + up`). 900s SSM timeout; polls like backend deploy.
 
 **Option B — on the EC2 host (repo root),** if you shell in:
 

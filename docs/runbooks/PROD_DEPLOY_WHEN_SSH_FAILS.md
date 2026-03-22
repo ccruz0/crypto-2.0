@@ -54,14 +54,25 @@ When **SSM PingStatus is Online**, deploy with:
 
 This script:
 
-- Verifies SSM is Online; exits with instructions if not.
-- Runs on the server: `git pull origin main`, optional rebuild of `backend-aws`, `docker compose --profile aws up -d backend-aws`, and a local health check.
+- Verifies SSM is **Online**; exits with instructions if not.
+- On the server: `git fetch` / `reset` (repairs broken `refs/remotes/origin/main` when needed), then **`scripts/aws/prod_stack_up.sh`** — brings **`db`** up, waits for **`postgres_hardened`** healthy (with a short grace window for transient “unhealthy”), optionally rebuilds **`backend-aws`**, **resets `backend-aws` container state** (avoids Docker “No such container” on recreate), **`docker compose up -d --remove-orphans backend-aws`**, local health curl on port 8002.
 
 **Faster deploy (pull + restart only, no rebuild):**
 
 ```bash
 SKIP_REBUILD=1 ./scripts/deploy_production_via_ssm.sh
 ```
+
+**Force clean backend image:** `NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh`  
+**Long local poll during SSM:** `MAX_WAIT_ITERATIONS=900 ./scripts/deploy_production_via_ssm.sh`
+
+**Frontend (`frontend-aws`):** from repo root:
+
+```bash
+./deploy_frontend_ssm.sh
+```
+
+That runs **git sync first**, then **`scripts/aws/prod_frontend_deploy.sh`** (reset container + build + up). **`deploy_frontend_via_ssm.sh`** forwards to the same script.
 
 **Requirements:** AWS CLI configured (e.g. profile or env); no SSH key or secrets needed in the script.
 
