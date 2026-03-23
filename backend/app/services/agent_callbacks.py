@@ -19,8 +19,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-logger = logging.getLogger(__name__)
+from app.services.agent_execution_policy import (
+    ATTR_SAFE_LAB_APPLY,
+    GOVERNANCE_ACTION_CLASS_KEY,
+    GOV_CLASS_PATCH_PREP,
+    GOV_CLASS_PROD_MUTATION,
+)
+from app.services import path_guard
 
+logger = logging.getLogger(__name__)
 
 CallbackFn = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -47,7 +54,7 @@ def _safe_task_title(prepared_task: dict[str, Any]) -> str:
 
 
 def _ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
+    path_guard.safe_mkdir_lab(p, context="agent_callbacks:_ensure_dir")
 
 
 def _preflight_writable_artifact_dir(artifact_dir: Path, task_id: str = "") -> tuple[bool, str]:
@@ -56,10 +63,20 @@ def _preflight_writable_artifact_dir(artifact_dir: Path, task_id: str = "") -> t
     Returns (ok, error_msg). Use to fail fast with a clear message.
     """
     try:
+        path_guard.assert_writable_lab_path(artifact_dir, context="agent_callbacks:preflight_dir")
         probe = artifact_dir / ".artifact_write_probe"
-        probe.write_text("", encoding="utf-8")
+        path_guard.safe_write_text(probe, "", context="agent_callbacks:preflight_probe")
         probe.unlink(missing_ok=True)
         return True, ""
+    except path_guard.PathGuardViolation as e:
+        msg = f"Artifact path blocked by path guard: {artifact_dir} — {e}"
+        logger.warning(
+            "preflight_path_guard_blocked task_id=%s path=%s err=%s",
+            task_id[:12] if task_id else "?",
+            artifact_dir,
+            e,
+        )
+        return False, msg
     except (OSError, PermissionError) as e:
         msg = f"Artifact dir not writable: {artifact_dir} — {e}"
         logger.warning("preflight_writable_check_failed task_id=%s path=%s err=%s", task_id[:12] if task_id else "?", artifact_dir, e)
@@ -72,7 +89,7 @@ def _write_if_missing(path: Path, contents: str) -> bool:
     """
     if path.exists():
         return False
-    path.write_text(contents, encoding="utf-8")
+    path_guard.safe_write_text(path, contents, context="agent_callbacks:write_if_missing")
     return True
 
 
@@ -82,15 +99,17 @@ def _append_line_if_missing(path: Path, line: str) -> bool:
     Creates the file if needed. Returns True if it appended or created, else False.
     """
     if not path.exists():
-        path.write_text(line.rstrip() + "\n", encoding="utf-8")
+        path_guard.safe_write_text(path, line.rstrip() + "\n", encoding="utf-8", context="agent_callbacks:append_create")
         return True
     existing = path.read_text(encoding="utf-8")
     if line in existing:
         return False
-    with path.open("a", encoding="utf-8") as f:
-        if not existing.endswith("\n"):
-            f.write("\n")
-        f.write(line.rstrip() + "\n")
+    chunk = (
+        ("\n" if existing and not existing.endswith("\n") else "")
+        + line.rstrip()
+        + "\n"
+    )
+    path_guard.safe_append_text(path, chunk, context="agent_callbacks:append_line")
     return True
 
 
@@ -691,9 +710,10 @@ def apply_bug_investigation_task(prepared_task: dict[str, Any]) -> dict[str, Any
             "sections_complete": sections_complete,
         }
         try:
-            sidecar_path.write_text(
+            path_guard.safe_write_text(
+                sidecar_path,
                 json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+                context="agent_callbacks:bug_sidecar",
             )
             logger.info("sidecar_write_succeeded task_id=%s path=%s", task_id[:12] if task_id else "?", sidecar_path)
         except Exception as e:
@@ -1045,7 +1065,7 @@ def _apply_via_openclaw(
     )
 
     try:
-        note_path.write_text(note_contents, encoding="utf-8")
+        path_guard.safe_write_text(note_path, note_contents, context="agent_callbacks:openclaw_note_md")
         logger.info("artifact_write_succeeded task_id=%s path=%s chars=%d", task_id[:12] if task_id else "?", note_path, len(note_contents))
     except Exception as e:
         logger.warning("artifact_write_failed task_id=%s path=%s err=%s", task_id[:12] if task_id else "?", note_path, e)
@@ -1090,9 +1110,10 @@ def _apply_via_openclaw(
         "sections_complete": sections_complete,
     }
     try:
-        sidecar_path.write_text(
+        path_guard.safe_write_text(
+            sidecar_path,
             json.dumps(sidecar_data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+            context="agent_callbacks:openclaw_sidecar",
         )
         logger.info("sidecar_write_succeeded task_id=%s path=%s", task_id[:12] if task_id else "?", sidecar_path)
     except Exception as e:
@@ -1335,6 +1356,8 @@ def _make_openclaw_callback(
             prepared_task, prompt_builder_fn, save_subdir, file_prefix, fallback_fn,
             use_agent_schema=use_agent_schema,
         )
+
+    setattr(_apply, ATTR_SAFE_LAB_APPLY, True)
     return _apply
 
 
@@ -1386,7 +1409,7 @@ def _verify_openclaw_solution(
     # Check for stored feedback (from previous failed verification)
     root = _repo_root()
     feedback_dir = root / "docs" / "agents" / "verification-feedback"
-    feedback_dir.mkdir(parents=True, exist_ok=True)
+    path_guard.safe_mkdir_lab(feedback_dir, context="agent_callbacks:verification_feedback_dir")
     prev_feedback_path = feedback_dir / f"{task_id}.txt"
     prev_feedback = prev_feedback_path.read_text(encoding="utf-8").strip() if prev_feedback_path.exists() else None
 
@@ -1416,7 +1439,11 @@ def _verify_openclaw_solution(
 
     # FAIL: actual content failure — write feedback for next iteration
     try:
-        (feedback_dir / f"{task_id}.txt").write_text(reason or "Output does not address task requirements", encoding="utf-8")
+        path_guard.safe_write_text(
+            feedback_dir / f"{task_id}.txt",
+            reason or "Output does not address task requirements",
+            context="agent_callbacks:verification_feedback",
+        )
     except Exception as e:
         logger.warning("Could not write verification feedback for task %s: %s", task_id, e)
 
@@ -1478,6 +1505,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "verify_solution_fn": _make_openclaw_verifier("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
+            GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
             "selection_reason": f"bug investigation task (Notion Type raw={_task_type_raw!r} normalized={_task_type!r} — explicit match; approval-gated)",
         }
 
@@ -1517,6 +1545,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "verify_solution_fn": _make_openclaw_verifier(save_subdir, file_prefix),
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
                 "selection_reason": "Telegram and Alerts agent (multi-agent operator; approval-gated)",
             }
         if agent_id == AGENT_EXECUTION_STATE:
@@ -1539,6 +1568,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "verify_solution_fn": _make_openclaw_verifier(save_subdir, file_prefix),
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
                 "selection_reason": "Execution and State agent (multi-agent operator; approval-gated)",
             }
         if agent_id is not None:
@@ -1565,6 +1595,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
             "verify_solution_fn": _make_openclaw_verifier("docs/agents/generated-notes", "notion-task"),
             "deploy_fn": None,
+            GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
             "selection_reason": "documentation task (OpenClaw AI analysis with template fallback)",
         }
 
@@ -1579,6 +1610,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "validate_fn": _make_openclaw_validator("docs/runbooks/triage", "notion-triage"),
             "verify_solution_fn": _make_openclaw_verifier("docs/runbooks/triage", "notion-triage"),
             "deploy_fn": None,
+            GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
             "selection_reason": "monitoring triage task (OpenClaw AI analysis with template fallback)",
         }
 
@@ -1599,6 +1631,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
             "verify_solution_fn": _make_openclaw_verifier("docs/agents/bug-investigations", "notion-bug"),
             "deploy_fn": None,
             "manual_only": True,
+            GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
             "selection_reason": "bug investigation task (keyword heuristic match; approval-gated)",
         }
 
@@ -1628,6 +1661,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "validate_fn": validate_profile_setting_analysis_task,
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PROD_MUTATION,
                 "selection_reason": "profile-setting-analysis task (analysis-only per-symbol/profile/side proposal; approval-gated)",
             }
         except Exception as e:
@@ -1664,6 +1698,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "validate_fn": validate_strategy_patch_task,
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PROD_MUTATION,
                 "selection_reason": "strategy-patch task (controlled allowlisted business-logic tuning; approval-gated manual execution only)",
             }
     except Exception as e:
@@ -1680,6 +1715,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "validate_fn": validate_signal_performance_analysis_task,
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
                 "selection_reason": "signal-performance-analysis task (analysis-only historical outcome proposal; approval-gated)",
             }
         except Exception as e:
@@ -1696,6 +1732,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 "validate_fn": validate_strategy_analysis_task,
                 "deploy_fn": None,
                 "manual_only": True,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
                 "selection_reason": "strategy-analysis task (analysis-only proposal for alert/signal/threshold tuning; requires approval gate)",
             }
         except Exception as e:
@@ -1717,6 +1754,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
                 ),
                 "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
                 "deploy_fn": None,
+                GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
                 "selection_reason": "generic OpenClaw analysis (no specific callback matched)",
             }
     except Exception as e:
@@ -1734,3 +1772,7 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         "selection_reason": "no safe default callbacks for this task type/area",
     }
 
+
+setattr(apply_bug_investigation_task, ATTR_SAFE_LAB_APPLY, True)
+setattr(apply_documentation_task, ATTR_SAFE_LAB_APPLY, True)
+setattr(apply_monitoring_triage_task, ATTR_SAFE_LAB_APPLY, True)

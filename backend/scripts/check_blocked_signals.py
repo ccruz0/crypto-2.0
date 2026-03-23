@@ -10,14 +10,14 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.config_loader import load_config
 
 def check_blocked_signals():
     """Check for signals that were blocked due to price change threshold"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     
     try:
         print("🔍 Checking for blocked signals in the last hour...")

@@ -7,11 +7,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.portfolio_cache import get_portfolio_summary, update_portfolio_cache
-from app.core.database import SessionLocal
+from app.database import create_db_session
 import time
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check current cache status
         print("📊 Verificando estado actual de la caché...")

@@ -28,10 +28,10 @@ os.environ['LIVE_TRADING'] = 'true'
 sys.path.insert(0, backend_dir)
 
 # Check database for LIVE_TRADING status first
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.utils.live_trading import get_live_trading_status
 
-db = SessionLocal()
+db = create_db_session()
 try:
     live_trading_status = get_live_trading_status(db)
     if live_trading_status:

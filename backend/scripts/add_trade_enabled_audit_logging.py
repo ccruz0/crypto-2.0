@@ -18,11 +18,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text
-from app.database import SessionLocal
+from app.database import create_db_session
 
 def check_database_triggers():
     """Check for database triggers that might modify trade_enabled"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check PostgreSQL triggers
         result = db.execute(text("""
@@ -72,7 +72,7 @@ def check_database_triggers():
 
 def check_current_state():
     """Check current state of trade_enabled coins"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Count from watchlist_items
         result = db.execute(text("""

@@ -18,17 +18,9 @@ from datetime import datetime, timezone
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 
-# Database connection
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://trader:traderpass@localhost:5432/atp"
-)
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+from app.database import create_db_session
 
 
 def set_force_next_signal(db, symbol: str, strategy_key: str, side: str, enabled: bool = True):
@@ -199,7 +191,7 @@ def main():
     print(f"Side: {side}")
     print()
     
-    db = SessionLocal()
+    db = create_db_session()
     start_time = datetime.now(timezone.utc)
     
     try:

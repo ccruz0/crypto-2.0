@@ -11,11 +11,11 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 try:
-    from app.database import SessionLocal
+    from app.database import create_db_session
     from app.models.market_price import MarketData
     from sqlalchemy import func, desc
     
-    db = SessionLocal()
+    db = create_db_session()
     
     print("=" * 80)
     print("MarketData Calculation Diagnostic")

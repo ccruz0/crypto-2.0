@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 import sys
 sys.path.insert(0, "/app")
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from datetime import datetime, timedelta, timezone
 
-db = SessionLocal()
+db = create_db_session()
 try:
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     yesterday_start = today - timedelta(days=1)

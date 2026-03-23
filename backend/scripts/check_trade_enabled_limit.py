@@ -9,13 +9,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text, inspect
-from app.database import SessionLocal, engine
+from app.database import create_db_session, engine
 from app.models.watchlist import WatchlistItem
 from app.models.watchlist_master import WatchlistMaster
 
 def check_database_constraints():
     """Check for database-level constraints or triggers"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check if we're using PostgreSQL or SQLite
         dialect = engine.dialect.name

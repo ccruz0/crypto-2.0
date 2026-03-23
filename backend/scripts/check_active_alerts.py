@@ -6,11 +6,11 @@ import os
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all non-deleted items
         all_items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()

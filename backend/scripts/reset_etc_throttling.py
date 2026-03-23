@@ -11,12 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from sqlalchemy import text
 
 def reset_etc_throttling():
     """Reset throttling state for ETC_USDT SELL"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     
     try:
         symbol = "ETC_USDT"

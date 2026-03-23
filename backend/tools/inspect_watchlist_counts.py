@@ -13,12 +13,12 @@ import os
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Count watchlist_items
         total_watchlist_items = db.query(WatchlistItem).count()

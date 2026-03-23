@@ -8,13 +8,13 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from sqlalchemy import or_
 
 def check_xrp_orders():
     """Check all XRP orders in the database"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check for XRP orders with different symbol variants
         symbol_variants = ['XRP', 'XRP_USDT', 'XRP_USD']

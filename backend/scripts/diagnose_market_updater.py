@@ -17,7 +17,7 @@ import subprocess
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.market_price import MarketPrice, MarketData
 from app.models.watchlist import WatchlistItem
 
@@ -87,7 +87,7 @@ def check_database_data(symbol: str = "BTC_USDT"):
     print(f"2. VERIFICANDO DATOS EN BASE DE DATOS para {symbol}")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Verificar MarketPrice
         market_price = db.query(MarketPrice).filter(
@@ -169,7 +169,7 @@ def compare_with_crypto_com(symbol: str = "BTC_USDT"):
     print(f"✅ Precio desde Crypto.com: ${crypto_com['price']:,.2f}")
     
     # Obtener datos de la BD
-    db = SessionLocal()
+    db = create_db_session()
     try:
         market_price = db.query(MarketPrice).filter(
             MarketPrice.symbol == symbol
@@ -199,7 +199,7 @@ def check_all_symbols():
     print("4. ESTADÍSTICAS GENERALES")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Contar MarketPrice entries
         market_price_count = db.query(MarketPrice).count()

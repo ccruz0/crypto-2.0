@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.signal_throttle import SignalThrottleState
 import logging
@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol = 'BTC_USDT'  # Test with BTC_USDT
         

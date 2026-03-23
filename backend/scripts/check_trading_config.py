@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.trading_settings import TradingSettings
 from app.utils.live_trading import get_live_trading_status
 from app.services.brokers.crypto_com_trade import trade_client
@@ -23,7 +23,7 @@ def check_live_trading():
     print("=" * 70)
     
     # Check database
-    db = SessionLocal()
+    db = create_db_session()
     try:
         setting = db.query(TradingSettings).filter(
             TradingSettings.setting_key == "LIVE_TRADING"

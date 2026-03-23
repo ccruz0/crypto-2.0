@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketData
 from app.models.telegram_message import TelegramMessage
@@ -27,7 +27,7 @@ def simulate_price_test():
     print("PRICE MOVEMENT ALERT SIMULATION (DRY RUN)")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Fetch a pair from DB
         item = db.query(WatchlistItem).filter(

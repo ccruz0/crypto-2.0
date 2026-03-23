@@ -20,7 +20,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.signal_throttle import SignalThrottleState
 import logging
@@ -30,6 +30,21 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _write_watchlist_report_md(path: Path, markdown_content: str) -> None:
+    """Write under docs/ via path_guard; /tmp fallback stays unguarded (operational)."""
+    from app.services._paths import workspace_root
+
+    try:
+        path.resolve().relative_to((workspace_root() / "docs").resolve())
+    except ValueError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(markdown_content, encoding="utf-8")
+        return
+    from app.services import path_guard
+
+    path_guard.safe_write_text(path, markdown_content, context="watchlist_consistency:report")
 
 
 def is_running_in_docker() -> bool:
@@ -441,14 +456,12 @@ def generate_markdown_report(report_data: dict) -> str:
 def main():
     """Main function"""
     try:
-        if SessionLocal is None:
-            logger.error(
-                "Database is not available (SessionLocal is None). "
-                "Check DATABASE_URL and that the engine initialized successfully."
-            )
+        try:
+            db = create_db_session()
+        except RuntimeError as e:
+            logger.error("Database is not available: %s", e)
             print("\n❌ Error: database not configured or engine failed to start.")
             return 1
-        db: Session = SessionLocal()
         try:
             logger.info("Starting watchlist consistency check...")
             
@@ -519,15 +532,13 @@ def main():
             
             # Write latest report
             latest_report_path = docs_dir / "watchlist_consistency_report_latest.md"
-            with open(latest_report_path, 'w') as f:
-                f.write(markdown_content)
+            _write_watchlist_report_md(latest_report_path, markdown_content)
             logger.info(f"Report written to {latest_report_path}")
             
             # Write dated report
             date_str = datetime.now().strftime("%Y%m%d")
             dated_report_path = docs_dir / f"watchlist_consistency_report_{date_str}.md"
-            with open(dated_report_path, 'w') as f:
-                f.write(markdown_content)
+            _write_watchlist_report_md(dated_report_path, markdown_content)
             logger.info(f"Report written to {dated_report_path}")
             
             # Print summary

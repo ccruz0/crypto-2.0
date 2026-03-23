@@ -17,6 +17,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.agent_execution_policy import (
+    GOVERNANCE_ACTION_CLASS_KEY,
+    GOV_CLASS_PATCH_PREP,
+    GOV_CLASS_PROD_MUTATION,
+)
+
 logger = logging.getLogger(__name__)
 
 # Callback data format (stable, short)
@@ -135,6 +141,7 @@ def _serialize_prepared_bundle(prepared_bundle: dict[str, Any]) -> str:
     callback_selection = (prepared_bundle or {}).get("callback_selection") or {}
     selection_reason = str(callback_selection.get("selection_reason") or "").strip()
     versioning = _extract_versioning_from_bundle(prepared_bundle)
+    gov_raw = str(callback_selection.get(GOVERNANCE_ACTION_CLASS_KEY) or "").strip().lower()
     payload = {
         "prepared_task": prepared_task,
         "approval": approval,
@@ -142,6 +149,38 @@ def _serialize_prepared_bundle(prepared_bundle: dict[str, Any]) -> str:
         "selection_reason": selection_reason,
         "versioning": versioning,
     }
+    if gov_raw in (GOV_CLASS_PATCH_PREP, GOV_CLASS_PROD_MUTATION):
+        payload["governance_action_class"] = gov_raw
+    try:
+        from app.core.environment import getRuntimeEnv
+        from app.services.agent_bundle_identity import (
+            build_bundle_identity_dict,
+            compute_bundle_fingerprint,
+            log_bundle_fingerprint_created,
+        )
+        from app.services.agent_execution_policy import governance_agent_enforcement_context_active
+
+        ident = build_bundle_identity_dict(
+            prepared_task if isinstance(prepared_task, dict) else {},
+            callback_selection if isinstance(callback_selection, dict) else {},
+        )
+        fp = compute_bundle_fingerprint(ident)
+        payload["bundle_identity"] = ident
+        payload["bundle_fingerprint"] = fp
+        task_obj = ((prepared_task or {}).get("task") or {}) if isinstance(prepared_task, dict) else {}
+        tid = str(task_obj.get("id") or "").strip()
+        if tid:
+            log_bundle_fingerprint_created(
+                notion_task_id=tid,
+                fingerprint=fp,
+                identity=ident,
+                manifest_id=None,
+                environment=getRuntimeEnv(),
+                enforcement_active=governance_agent_enforcement_context_active(),
+                log_context="serialize_prepared_bundle",
+            )
+    except Exception as e:
+        logger.debug("bundle fingerprint at serialize skipped: %s", e)
     try:
         return json.dumps(payload, default=str)
     except (TypeError, ValueError) as e:
@@ -149,14 +188,18 @@ def _serialize_prepared_bundle(prepared_bundle: dict[str, Any]) -> str:
         return "{}"
 
 
-def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
+def _deserialize_prepared_bundle(
+    json_str: str | None,
+    *,
+    execution_load: bool = False,
+) -> dict[str, Any] | None:
     """
     Reconstruct a full prepared_bundle from stored JSON. Callbacks are re-selected via
     select_default_callbacks_for_task(prepared_task) since they cannot be serialized.
 
-    Before re-selecting, the task's ``type`` field is refreshed from Notion to
-    ensure callback selection uses the current property value — not a stale
-    value that may have been parsed by an older version of _extract_plain_text.
+    When ``execution_load`` is True and ``bundle_fingerprint`` is present on the JSON,
+    Notion task type refresh is skipped so callback routing matches the approved snapshot
+    (reduces re-selection drift). Legacy rows without a fingerprint keep the refresh behavior.
     """
     if not (json_str or "").strip():
         return None
@@ -169,6 +212,9 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
     if not prepared_task:
         return None
 
+    stored_fp = str(data.get("bundle_fingerprint") or "").strip()
+    skip_notion_refresh = bool(execution_load and stored_fp)
+
     # --- Refresh task type from Notion before callback re-selection --------
     # The stored prepared_task may contain a stale or empty ``type`` if it was
     # serialized before a parser fix.  A single Notion page read ensures the
@@ -177,7 +223,7 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
     stored_type = (task_obj.get("type") or "").strip()
     task_id = (task_obj.get("id") or "").strip()
 
-    if task_id:
+    if task_id and not skip_notion_refresh:
         try:
             from app.services.notion_task_reader import get_notion_task_by_id
             fresh_task = get_notion_task_by_id(task_id)
@@ -208,12 +254,24 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
                 "task_id=%s stored_type=%r — proceeding with stored value: %s",
                 task_id[:12], stored_type, e,
             )
+    elif skip_notion_refresh:
+        logger.info(
+            "_deserialize_prepared_bundle: skipping Notion type refresh (execution_load + bundle_fingerprint) "
+            "task_id=%s",
+            task_id[:12] if task_id else "?",
+        )
 
     effective_type = (task_obj.get("type") or "").strip()
 
     try:
         from app.services.agent_callbacks import select_default_callbacks_for_task
         callback_selection = select_default_callbacks_for_task(prepared_task)
+        sg = str(data.get("governance_action_class") or "").strip().lower()
+        if sg in (GOV_CLASS_PATCH_PREP, GOV_CLASS_PROD_MUTATION):
+            cur = str(callback_selection.get(GOVERNANCE_ACTION_CLASS_KEY) or "").strip().lower()
+            if not cur:
+                callback_selection = dict(callback_selection)
+                callback_selection[GOVERNANCE_ACTION_CLASS_KEY] = sg
         logger.info(
             "_deserialize_prepared_bundle: CALLBACK RE-SELECTION task_id=%s "
             "stored_type=%r effective_type=%r manual_only=%s "
@@ -228,13 +286,19 @@ def _deserialize_prepared_bundle(json_str: str | None) -> dict[str, Any] | None:
     except Exception as e:
         logger.error("_deserialize_prepared_bundle: callback re-selection FAILED %s", e, exc_info=True)
         callback_selection = {"apply_change_fn": None, "validate_fn": None, "deploy_fn": None, "selection_reason": data.get("selection_reason", "")}
-    return {
+    out: dict[str, Any] = {
         "prepared_task": prepared_task,
         "callback_selection": callback_selection,
         "approval": data.get("approval") or {},
         "approval_summary": (data.get("approval_summary") or "").strip(),
         "versioning": data.get("versioning") or (prepared_task.get("versioning") or {}),
     }
+    if stored_fp:
+        out["bundle_fingerprint_approved"] = stored_fp
+    frozen_identity = data.get("bundle_identity")
+    if isinstance(frozen_identity, dict):
+        out["bundle_identity_approved"] = frozen_identity
+    return out
 
 
 def _extract_versioning_from_bundle(prepared_bundle: dict[str, Any] | None) -> dict[str, Any]:
@@ -245,6 +309,51 @@ def _extract_versioning_from_bundle(prepared_bundle: dict[str, Any] | None) -> d
     prepared_task = bundle.get("prepared_task") or {}
     fallback = prepared_task.get("versioning") or {}
     return fallback if isinstance(fallback, dict) else {}
+
+
+def _governance_metadata_conflicts_block_approval_on_enforce(
+    *,
+    bundle_json: str | None = None,
+    bundle: dict[str, Any] | None = None,
+    log_context: str = "record_approval_preflight",
+) -> bool:
+    """
+    When ATP_GOVERNANCE_AGENT_ENFORCE on AWS, return True if callback metadata is contradictory
+    (so approval must not be recorded).
+    """
+    try:
+        from app.core.environment import getRuntimeEnv
+        from app.services.agent_execution_policy import (
+            log_governance_classification_conflict,
+            validate_governance_classification_inputs,
+        )
+        from app.services.governance_agent_bridge import governance_agent_enforce_production
+
+        if not governance_agent_enforce_production():
+            return False
+        resolved: dict[str, Any] | None = bundle
+        if resolved is None and (bundle_json or "").strip():
+            resolved = _deserialize_prepared_bundle(bundle_json)
+        if not resolved:
+            return False
+        cb = resolved.get("callback_selection") or {}
+        v = validate_governance_classification_inputs(cb)
+        if not v.is_conflicting:
+            return False
+        log_governance_classification_conflict(
+            validation=v,
+            selection_reason=str(cb.get("selection_reason") or ""),
+            callback_module=str(v.details.get("callback_module") or ""),
+            callback_name=str(v.details.get("callback_name") or ""),
+            enforcement_active=True,
+            environment=getRuntimeEnv(),
+            log_context=log_context,
+            resolution="blocked_record_approval",
+        )
+        return True
+    except Exception as e:
+        logger.warning("_governance_metadata_conflicts_block_approval_on_enforce failed: %s", e)
+        return False
 
 
 def _format_what_will_happen(selection_reason: str, callback_selection: dict[str, Any] | None) -> str:
@@ -336,6 +445,88 @@ def send_task_approval_request(
     except Exception:
         pass
 
+    # AWS + agent enforce: ensure governance_tasks row early so timeline APIs and visibility emissions
+    # can correlate before manifest creation or classification gates (no manifest, no approval).
+    try:
+        from app.database import SessionLocal
+        from app.services.governance_agent_bridge import (
+            ensure_notion_governance_task_stub,
+            governance_agent_enforce_production,
+            infer_governance_risk_for_notion_agent,
+        )
+
+        if governance_agent_enforce_production():
+            prepared_pt0 = (prepared_bundle or {}).get("prepared_task") or {}
+            g_risk0 = infer_governance_risk_for_notion_agent(
+                task=prepared_pt0.get("task") or {},
+                repo_area=prepared_pt0.get("repo_area") or {},
+                sections=prepared_pt0.get("_openclaw_sections") or {},
+            )
+            gdb_early = SessionLocal()
+            if gdb_early is not None:
+                try:
+                    ensure_notion_governance_task_stub(
+                        gdb_early,
+                        task_id,
+                        title=title,
+                        risk_level=g_risk0,
+                        actor_id="telegram_approval_request",
+                    )
+                    gdb_early.commit()
+                except Exception as _early_gov_e:
+                    logger.warning(
+                        "send_task_approval_request: early governance task stub failed task_id=%s err=%s",
+                        task_id[:12] if task_id else "?",
+                        _early_gov_e,
+                    )
+                    try:
+                        gdb_early.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        gdb_early.close()
+                    except Exception:
+                        pass
+    except Exception:
+        logger.debug("send_task_approval_request: early governance stub skipped", exc_info=True)
+
+    # Block Telegram send on AWS + agent enforce when callback metadata is self-contradictory.
+    try:
+        from app.core.environment import getRuntimeEnv
+        from app.services.agent_execution_policy import (
+            log_governance_classification_conflict,
+            validate_governance_classification_inputs,
+        )
+        from app.services.governance_agent_bridge import governance_agent_enforce_production
+
+        if governance_agent_enforce_production():
+            _v = validate_governance_classification_inputs(callback_selection)
+            if _v.is_conflicting:
+                log_governance_classification_conflict(
+                    validation=_v,
+                    selection_reason=selection_reason,
+                    callback_module=str(_v.details.get("callback_module") or ""),
+                    callback_name=str(_v.details.get("callback_name") or ""),
+                    enforcement_active=True,
+                    environment=getRuntimeEnv(),
+                    log_context="send_task_approval_request_preflight",
+                    resolution="blocked_send_task_approval",
+                )
+                return {
+                    "sent": False,
+                    "chat_id": target_chat,
+                    "task_id": task_id,
+                    "message_id": None,
+                    "summary": "governance_classification_conflict",
+                }
+    except Exception as _preflight_err:
+        logger.warning(
+            "send_task_approval_request: classification preflight failed task_id=%s err=%s",
+            task_id[:12] if task_id else "?",
+            _preflight_err,
+        )
+
     # Build message (structured format for clarity)
     rl = (risk_level or "").strip().lower()
     if "high" in rl:
@@ -396,6 +587,14 @@ def send_task_approval_request(
 
     requested_at_iso = _utc_now_iso()
     bundle_json = _serialize_prepared_bundle(prepared_bundle)
+    try:
+        _meta = json.loads(bundle_json)
+        if _meta.get("bundle_fingerprint"):
+            prepared_bundle["bundle_fingerprint_approved"] = _meta["bundle_fingerprint"]
+        if isinstance(_meta.get("bundle_identity"), dict):
+            prepared_bundle["bundle_identity_approved"] = _meta["bundle_identity"]
+    except Exception:
+        pass
 
     # Persist to DB first (source of truth)
     db = _get_db_session()
@@ -431,6 +630,123 @@ def send_task_approval_request(
                 db.close()
             except Exception:
                 pass
+
+    # AWS + ATP_GOVERNANCE_AGENT_ENFORCE: bind prod_mutation execution approval to a governance manifest.
+    try:
+        from app.services.agent_execution_policy import (
+            ActionClass,
+            GovernanceClassificationConflictError,
+            classify_callback_action,
+        )
+        from app.services.governance_agent_bridge import (
+            ensure_agent_execute_prepared_manifest,
+            governance_agent_enforce_production,
+            notion_to_governance_task_id,
+        )
+
+        if governance_agent_enforce_production():
+            prepared_pt = prepared_bundle.get("prepared_task") or {}
+            try:
+                _action_cls = classify_callback_action(
+                    callback_selection, prepared_pt, log_context="send_task_approval_request"
+                )
+            except GovernanceClassificationConflictError as _gce:
+                logger.error(
+                    "send_task_approval_request BLOCKED task_id=%s governance_classification_conflict type=%s",
+                    task_id[:12] if task_id else "?",
+                    _gce.conflict_type,
+                )
+                return {
+                    "sent": False,
+                    "chat_id": target_chat,
+                    "task_id": task_id,
+                    "message_id": None,
+                    "summary": "governance_classification_conflict",
+                }
+            if _action_cls == ActionClass.PROD_MUTATION:
+                from app.database import SessionLocal
+
+                gdb = SessionLocal()
+                if gdb is None:
+                    logger.error(
+                        "send_task_approval_request BLOCKED task_id=%s reason=governance_db_unavailable",
+                        task_id[:12] if task_id else "?",
+                    )
+                    return {
+                        "sent": False,
+                        "chat_id": target_chat,
+                        "task_id": task_id,
+                        "message_id": None,
+                        "summary": "governance_db_unavailable",
+                    }
+                try:
+                    _mid = ensure_agent_execute_prepared_manifest(
+                        gdb,
+                        task_id,
+                        prepared_task=prepared_pt,
+                        callback_selection=callback_selection,
+                        title=title,
+                        task=(prepared_pt.get("task") or {}),
+                        repo_area=prepared_pt.get("repo_area") or {},
+                        sections=(prepared_pt.get("_openclaw_sections") or {}),
+                    )
+                    if not _mid:
+                        gdb.rollback()
+                        logger.error(
+                            "send_task_approval_request BLOCKED task_id=%s reason=governance_execute_manifest_failed",
+                            task_id[:12] if task_id else "?",
+                        )
+                        return {
+                            "sent": False,
+                            "chat_id": target_chat,
+                            "task_id": task_id,
+                            "message_id": None,
+                            "summary": "governance_execute_manifest_failed",
+                        }
+                    gdb.commit()
+                    from app.services.governance_refs import agent_approval_governance_note_lines
+
+                    gov_note = agent_approval_governance_note_lines(
+                        governance_task_id=notion_to_governance_task_id(task_id),
+                        notion_page_id=task_id,
+                        manifest_id=_mid,
+                    )
+                    idx = max(0, len(lines) - 2)
+                    lines[idx:idx] = gov_note
+                    text = "\n".join(lines)
+                    if len(text) > TELEGRAM_TEXT_LIMIT:
+                        text = text[: TELEGRAM_TEXT_LIMIT - 3] + "..."
+                except Exception as _ge:
+                    logger.exception(
+                        "send_task_approval_request governance ensure failed task_id=%s",
+                        task_id[:12] if task_id else "?",
+                    )
+                    gdb.rollback()
+                    return {
+                        "sent": False,
+                        "chat_id": target_chat,
+                        "task_id": task_id,
+                        "message_id": None,
+                        "summary": "governance_execute_manifest_failed",
+                    }
+                finally:
+                    try:
+                        gdb.close()
+                    except Exception:
+                        pass
+    except Exception as _imp_err:
+        logger.exception(
+            "send_task_approval_request governance import failed task_id=%s err=%s",
+            task_id[:12] if task_id else "?",
+            _imp_err,
+        )
+        return {
+            "sent": False,
+            "chat_id": target_chat,
+            "task_id": task_id,
+            "message_id": None,
+            "summary": "governance_import_failed",
+        }
 
     # Cache in memory for same-process fast path
     with _STORE_LOCK:
@@ -557,6 +873,11 @@ def record_approval(task_id: str, user_id: str, username: str = "") -> bool:
             from app.models.agent_approval_state import AgentApprovalState
             row = db.query(AgentApprovalState).filter_by(task_id=task_id).first()
             if row and (row.status or "").lower() == "pending":
+                if _governance_metadata_conflicts_block_approval_on_enforce(
+                    bundle_json=row.prepared_bundle_json,
+                    log_context="record_approval_db_preflight",
+                ):
+                    return False
                 row.status = "approved"
                 row.approved_by = who
                 row.decision_at = now
@@ -584,6 +905,11 @@ def record_approval(task_id: str, user_id: str, username: str = "") -> bool:
             entry = _APPROVAL_STORE.get(task_id)
             if not entry or entry.get("status") != "pending":
                 return False
+            if _governance_metadata_conflicts_block_approval_on_enforce(
+                bundle=entry.get("prepared_bundle"),
+                log_context="record_approval_memory_preflight",
+            ):
+                return False
             entry["status"] = "approved"
             entry["approved_by"] = who
             entry["decision_at"] = _utc_now_iso()
@@ -605,6 +931,76 @@ def record_approval(task_id: str, user_id: str, username: str = "") -> bool:
                     },
                     append_comment=f"Version approved by {who}: v{proposed}",
                 )
+            # AWS + agent enforce: Telegram Approve must approve the execution manifest digest too.
+            try:
+                from app.services.agent_execution_policy import (
+                    ActionClass,
+                    GovernanceClassificationConflictError,
+                    classify_callback_action,
+                )
+                from app.services.governance_agent_bridge import (
+                    get_execute_manifest_id,
+                    governance_agent_enforce_production,
+                )
+                from app.services.governance_service import approve_manifest
+
+                _cls_approve = None
+                if governance_agent_enforce_production() and prepared_bundle:
+                    try:
+                        _cls_approve = classify_callback_action(
+                            prepared_bundle.get("callback_selection") or {},
+                            prepared_bundle.get("prepared_task") or {},
+                            log_context="record_approval",
+                        )
+                    except GovernanceClassificationConflictError as _gce_ra:
+                        logger.error(
+                            "record_approval: governance_classification_conflict after commit task_id=%s type=%s",
+                            task_id[:12] if task_id else "?",
+                            _gce_ra.conflict_type,
+                        )
+
+                if (
+                    governance_agent_enforce_production()
+                    and prepared_bundle
+                    and _cls_approve == ActionClass.PROD_MUTATION
+                ):
+                    from app.database import SessionLocal
+
+                    gdb = SessionLocal()
+                    if gdb is None:
+                        logger.error(
+                            "record_approval: governance DB unavailable task_id=%s",
+                            task_id[:12] if task_id else "?",
+                        )
+                    else:
+                        try:
+                            mid = get_execute_manifest_id(gdb, task_id)
+                            if mid:
+                                approve_manifest(
+                                    gdb,
+                                    manifest_id=mid,
+                                    approved_by=who,
+                                    actor_type="human",
+                                    actor_id=who,
+                                    environment="prod",
+                                )
+                                gdb.commit()
+                            else:
+                                logger.warning(
+                                    "record_approval: no execution manifest id (enforce on) task_id=%s",
+                                    task_id[:12] if task_id else "?",
+                                )
+                                gdb.rollback()
+                        except Exception as ge:
+                            logger.warning("record_approval: approve_manifest failed %s", ge)
+                            gdb.rollback()
+                        finally:
+                            try:
+                                gdb.close()
+                            except Exception:
+                                pass
+            except Exception as ge:
+                logger.warning("record_approval: governance execution manifest approve block failed %s", ge)
         except Exception as e:
             logger.debug("agent_telegram_approval: version approved metadata update failed %s", e)
     try:
@@ -1141,7 +1537,7 @@ def load_prepared_bundle_for_execution(task_id: str) -> dict[str, Any] | None:
             from app.models.agent_approval_state import AgentApprovalState
             row = db.query(AgentApprovalState).filter_by(task_id=task_id).first()
             if row and (row.status or "").lower() == "approved" and (row.prepared_bundle_json or "").strip():
-                bundle = _deserialize_prepared_bundle(row.prepared_bundle_json)
+                bundle = _deserialize_prepared_bundle(row.prepared_bundle_json, execution_load=True)
                 if bundle:
                     return bundle
             elif row and (row.status or "").lower() != "approved":
@@ -2405,6 +2801,90 @@ def _send_release_candidate_or_deploy_approval(
             sections, task=task, repo_area=repo_area,
             verification_unavailable_reason=verification_unavailable_reason,
         )
+
+    # AWS + ATP_GOVERNANCE_AGENT_ENFORCE: bind release-candidate Telegram to a governance manifest (digest) before send.
+    if use_release_candidate_format:
+        try:
+            from app.services.governance_agent_bridge import (
+                ensure_agent_deploy_manifest,
+                governance_agent_enforce_production,
+            )
+            if governance_agent_enforce_production():
+                from app.database import SessionLocal
+
+                _gdb = SessionLocal()
+                if _gdb is None:
+                    logger.error(
+                        "send_release_candidate_approval BLOCKED task_id=%s reason=governance_db_unavailable",
+                        task_id[:12] if task_id else "?",
+                    )
+                    return {
+                        "sent": False,
+                        "chat_id": target_chat,
+                        "task_id": task_id,
+                        "message_id": None,
+                        "skipped": "governance_db_unavailable",
+                    }
+                try:
+                    _mid = ensure_agent_deploy_manifest(
+                        _gdb,
+                        task_id,
+                        title=title,
+                        task=task,
+                        repo_area=repo_area,
+                        sections=sections,
+                    )
+                    if not _mid:
+                        _gdb.rollback()
+                        logger.error(
+                            "send_release_candidate_approval BLOCKED task_id=%s reason=governance_manifest_failed",
+                            task_id[:12] if task_id else "?",
+                        )
+                        return {
+                            "sent": False,
+                            "chat_id": target_chat,
+                            "task_id": task_id,
+                            "message_id": None,
+                            "skipped": "governance_manifest_failed",
+                        }
+                    _gdb.commit()
+                    text = (
+                        text
+                        + f"\n\n<i>Governance</i> <code>{_mid}</code>\n"
+                        "<i>Approve Deploy approves this manifest digest; execution uses governance_executor.</i>"
+                    )
+                except Exception as _ge:
+                    logger.exception(
+                        "send_release_candidate_approval governance ensure failed task_id=%s",
+                        task_id[:12] if task_id else "?",
+                    )
+                    _gdb.rollback()
+                    return {
+                        "sent": False,
+                        "chat_id": target_chat,
+                        "task_id": task_id,
+                        "message_id": None,
+                        "skipped": "governance_manifest_failed",
+                    }
+                finally:
+                    try:
+                        _gdb.close()
+                    except Exception:
+                        pass
+        except Exception as _imp_err:
+            logger.exception(
+                "send_release_candidate_approval governance import failed task_id=%s err=%s",
+                task_id[:12] if task_id else "?",
+                _imp_err,
+            )
+            return {
+                "sent": False,
+                "chat_id": target_chat,
+                "task_id": task_id,
+                "message_id": None,
+                "skipped": "governance_import_failed",
+            }
+
     if len(text) > TELEGRAM_TEXT_LIMIT:
         text = text[: TELEGRAM_TEXT_LIMIT - 3] + "..."
 

@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from datetime import datetime, timezone
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     symbol = sys.argv[1] if len(sys.argv) > 1 else "AAVE_USDT"
     symbol = symbol.upper()
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         simulate_alert_diagnosis(db, symbol)
     finally:

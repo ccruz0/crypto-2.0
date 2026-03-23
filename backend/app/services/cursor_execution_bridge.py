@@ -17,6 +17,11 @@ Env vars:
       When unset or false, no scheduler auto-run (production default); use Telegram or API.
   GITHUB_TOKEN          — For PR creation (requires repo scope)
   GITHUB_REPOSITORY     — owner/repo (default: ccruz0/crypto-2.0)
+
+LAB vs staging writes:
+  Persisted artifacts under the ATP workspace ``docs/`` (e.g. ``capture_diff`` → ``docs/agents/patches/``)
+  use ``path_guard`` so OpenClaw/LAB policy applies. Git/Cursor/pytest/npm subprocess calls run in the
+  **staging** tree only (``ATP_STAGING_ROOT``); they are not a substitute for guarded writes into ``docs/``.
 """
 
 from __future__ import annotations
@@ -247,7 +252,7 @@ def _path_is_writable_dir(path: Path) -> bool:
         if not path.is_dir():
             return False
         probe = path / ".write_probe_diag"
-        probe.write_text("", encoding="utf-8")
+        probe.write_text("", encoding="utf-8")  # pg-audit-ignore: staging-dir writability probe (not repo artifact)
         probe.unlink(missing_ok=True)
         return True
     except OSError:
@@ -288,7 +293,7 @@ def get_bridge_diagnostics() -> dict[str, Any]:
     try:
         staging_root.mkdir(parents=True, exist_ok=True)
         test_file = staging_root / ".bridge_diag_write_test"
-        test_file.write_text("ok")
+        test_file.write_text("ok")  # pg-audit-ignore: staging-root writability probe
         test_file.unlink()
         staging_writable = True
     except Exception:
@@ -545,10 +550,12 @@ def capture_diff(staging_path: Path, task_id: str) -> Path | None:
             _log_event("cursor_bridge_diff_empty", task_id=task_id, details={})
             return None
 
+        from app.services import path_guard
+
         out_dir = _workspace_root() / _PATCHES_SUBDIR
-        out_dir.mkdir(parents=True, exist_ok=True)
+        path_guard.safe_mkdir_lab(out_dir, context="cursor_execution_bridge:patches_dir")
         diff_path = out_dir / f"{task_id}.diff"
-        diff_path.write_text(diff_content, encoding="utf-8")
+        path_guard.safe_write_text(diff_path, diff_content, context="cursor_execution_bridge:diff")
 
         logger.info("cursor_bridge: diff captured task_id=%s path=%s len=%d", task_id, diff_path, len(diff_content))
         _log_event("cursor_bridge_diff_captured", task_id=task_id, details={

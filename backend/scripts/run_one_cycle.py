@@ -16,7 +16,7 @@ import logging
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.services.signal_monitor import signal_monitor_service
 
 logging.basicConfig(
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 async def run_one_cycle():
     """Run one evaluation cycle"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         logger.info("🔄 Running one evaluation cycle...")
         await signal_monitor_service.monitor_signals(db)

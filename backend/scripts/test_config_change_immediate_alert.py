@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.signal_throttle import SignalThrottleState
 import logging
@@ -22,7 +22,7 @@ def main():
     import sys
     symbol = sys.argv[1] if len(sys.argv) > 1 else 'TON_USDT'
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         
         print(f"\n🧪 Probando evaluación inmediata de alertas después de cambio de configuración...\n")

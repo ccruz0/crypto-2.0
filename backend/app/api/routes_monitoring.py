@@ -2785,6 +2785,9 @@ async def restart_backend():
     import subprocess
     import sys
     import os
+
+    from app.services.governance_enforcement import raise_if_backend_restart_blocked
+    raise_if_backend_restart_blocked()
     
     try:
         # Set status to restarting

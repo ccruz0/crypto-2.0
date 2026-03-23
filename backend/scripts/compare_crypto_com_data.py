@@ -13,7 +13,7 @@ from datetime import datetime
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice, MarketData
 
@@ -88,7 +88,7 @@ def calculate_rsi(prices: list, period: int = 14) -> float:
 
 def get_dashboard_data(symbol: str) -> dict:
     """Obtener datos del dashboard desde la base de datos"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Buscar en watchlist
         watchlist_item = db.query(WatchlistItem).filter(

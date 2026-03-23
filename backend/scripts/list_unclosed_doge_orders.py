@@ -12,13 +12,13 @@ from decimal import Decimal
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from sqlalchemy import func, or_
 
 def list_unclosed_doge_orders():
     """List all DOGE BUY orders that were filled but not fully sold using FIFO matching"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Find all filled BUY orders for DOGE (oldest first for FIFO)

@@ -31,7 +31,7 @@ if env_file.exists():
 os.environ['LIVE_TRADING'] = 'true'
 sys.path.insert(0, backend_dir)
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.models.trading_settings import TradingSettings
 from app.services.exchange_sync import ExchangeSyncService
@@ -100,7 +100,7 @@ def create_or_find_order(db):
     return order
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Step 1: Enable live trading
         logger.info("=" * 60)

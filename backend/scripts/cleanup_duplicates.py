@@ -9,13 +9,13 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from sqlalchemy import func
 
 def cleanup_duplicates():
     """Remove duplicate watchlist entries, keeping only the most recent one per symbol"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find duplicates grouped by symbol
         duplicates_query = db.query(

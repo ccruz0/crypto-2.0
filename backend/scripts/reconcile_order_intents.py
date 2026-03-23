@@ -14,12 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def main() -> int:
     grace_minutes = int(os.environ.get("RECONCILE_GRACE_MINUTES", "5"))
-    from app.database import SessionLocal
+    from app.database import create_db_session
     from app.services.order_intent_reconciliation import run_reconciliation
 
-    if SessionLocal is None:
+    try:
+        db = create_db_session()
+    except RuntimeError:
         return 1
-    db = SessionLocal()
     try:
         _marked, unresolved = run_reconciliation(db, grace_minutes=grace_minutes)
         return 0 if unresolved == 0 else 1

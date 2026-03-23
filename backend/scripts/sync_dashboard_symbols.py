@@ -9,7 +9,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from sqlalchemy.exc import IntegrityError
 
@@ -49,7 +49,7 @@ DASHBOARD_SYMBOLS = {
 
 def sync_dashboard_symbols():
     """Create missing symbols from dashboard in backend"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("=" * 80)
         print("🔄 SINCRONIZACIÓN: Dashboard → Backend")

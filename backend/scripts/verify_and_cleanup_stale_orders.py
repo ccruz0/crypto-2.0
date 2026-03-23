@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from datetime import datetime, timezone
@@ -21,7 +21,7 @@ def verify_and_cleanup_stale_orders(symbol: str = None, dry_run: bool = False):
         symbol: Optional symbol to check (e.g., "BTC_USDT"). If None, checks all symbols.
         dry_run: If True, only shows what would be changed without making changes.
     """
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all active orders from database
         query = db.query(ExchangeOrder).filter(

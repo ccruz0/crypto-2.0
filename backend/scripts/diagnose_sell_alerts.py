@@ -20,7 +20,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice, MarketData
 from app.services.signal_evaluator import evaluate_signal_for_symbol
@@ -31,7 +31,7 @@ import json
 
 def check_sell_alert_configuration():
     """Check sell_alert_enabled flags for all watchlist items"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         print("=" * 80)
         print("SELL ALERT CONFIGURATION CHECK")
@@ -63,7 +63,7 @@ def check_sell_alert_configuration():
 
 def check_current_signals(symbols: list = None):
     """Check current sell signals for symbols"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         print("\n" + "=" * 80)
         print("CURRENT SELL SIGNAL ANALYSIS")

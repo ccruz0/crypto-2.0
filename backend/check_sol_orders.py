@@ -5,11 +5,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 
 def check_sol_orders():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol = "SOL_USDT"
         

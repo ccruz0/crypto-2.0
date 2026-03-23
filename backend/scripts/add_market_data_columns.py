@@ -8,12 +8,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal, engine
+from app.database import create_db_session, engine
 from sqlalchemy import text, inspect
 
 def add_market_data_columns():
     """Add missing columns to market_data table"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check which columns exist
         inspector = inspect(engine)

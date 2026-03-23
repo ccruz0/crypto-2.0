@@ -17,6 +17,8 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+from app.services import path_guard
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -788,7 +790,7 @@ def _try_regenerate_from_raw_content(md_path: Path, task_id: str, title: str) ->
         if not has_content:
             return False
         content = _rebuild_markdown_from_sections(task_id, title, sections)
-        md_path.write_text(content, encoding="utf-8")
+        path_guard.safe_write_text(md_path, content, context="agent_recovery:regenerate_from_raw")
         logger.info(
             "agent_recovery: regenerated artifact from raw content task_id=%s path=%s",
             task_id,
@@ -896,8 +898,7 @@ def _try_regenerate_from_sections(
 
     content = _rebuild_markdown_from_sections(task_id, title, sections)
     try:
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(content, encoding="utf-8")
+        path_guard.safe_write_text(md_path, content, context="agent_recovery:regenerate_from_sidecar")
         logger.info(
             "agent_recovery: regenerated artifact from sections task_id=%s path=%s",
             task_id,

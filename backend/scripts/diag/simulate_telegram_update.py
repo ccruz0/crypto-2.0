@@ -86,10 +86,10 @@ def main():
     if "TELEGRAM_AUTH_USER_ID" not in os.environ:
         os.environ["TELEGRAM_AUTH_USER_ID"] = "839853931"
 
-    from app.database import SessionLocal
+    from app.database import create_db_session
     from app.services.telegram_commands import handle_telegram_update
 
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("Calling handle_telegram_update with payload:")
         print(json.dumps(payload, indent=2)[:1500])

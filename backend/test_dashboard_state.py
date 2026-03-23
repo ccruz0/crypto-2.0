@@ -13,13 +13,13 @@ def test_dashboard_state():
     """Test the dashboard state endpoint"""
     try:
         from app.api.routes_dashboard import get_dashboard_state
-        from app.database import SessionLocal
+        from app.database import create_db_session
         
         print("=" * 60)
         print("Testing Dashboard State Endpoint")
         print("=" * 60)
         
-        db = SessionLocal()
+        db = create_db_session()
         try:
             result = get_dashboard_state(db=db)
             

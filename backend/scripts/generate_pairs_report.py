@@ -38,10 +38,10 @@ def get_database_pairs():
     
     try:
         sys.path.insert(0, str(REPO_ROOT / 'backend'))
-        from app.database import SessionLocal
+        from app.database import create_db_session
         from app.models.watchlist import WatchlistItem
         
-        db = SessionLocal()
+        db = create_db_session()
         items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
         pairs = [normalize_pair(item.symbol) for item in items]
         db.close()

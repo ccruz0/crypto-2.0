@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketData
 from app.services.config_loader import get_strategy_rules
 from app.services.strategy_profiles import resolve_strategy_profile
 
-db = SessionLocal()
+db = create_db_session()
 # Handle both cases: with and without is_deleted column
 try:
     if hasattr(WatchlistItem, 'is_deleted'):

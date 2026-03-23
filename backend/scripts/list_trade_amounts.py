@@ -8,12 +8,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def list_trade_amounts():
     """Lista todos los valores de trade_amount_usd"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all watchlist items
         items = db.query(WatchlistItem).filter(

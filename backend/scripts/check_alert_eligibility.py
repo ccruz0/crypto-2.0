@@ -11,7 +11,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.order_position_service import count_open_positions_for_symbol
 from app.services.trading_signals import calculate_trading_signals
@@ -96,7 +96,7 @@ def main():
     print("=" * 100)
     print()
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all watchlist items with alert_enabled=True
         watchlist_items = (

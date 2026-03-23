@@ -22,7 +22,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.signal_order_orchestrator import create_order_intent, update_order_intent_status
 from app.api.routes_monitoring import add_telegram_message, update_telegram_message_decision_trace
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 
 def run_e2e_test(symbol: str = None, dry_run: bool = True):
     """Run E2E test: create signals, order_intents, and decision traces."""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         # Select a test symbol
         test_item = None

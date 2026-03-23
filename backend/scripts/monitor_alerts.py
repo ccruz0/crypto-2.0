@@ -7,27 +7,22 @@ This script monitors the database for new alerts and checks if orders were creat
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
-# Database connection
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://trader:traderpass@localhost:5432/atp"
-)
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+from app.database import create_db_session, exit_2_if_missing_schema_tables
 
 
 def get_recent_alerts(db, minutes: int = 5) -> list:
     """Get recent alerts from telegram_messages."""
+    # Bound cutoff (portable SQLite + Postgres); INTERVAL + :bind inside literal never worked here.
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     query = text("""
         SELECT 
             id,
@@ -42,7 +37,7 @@ def get_recent_alerts(db, minutes: int = 5) -> list:
             exchange_error_snippet,
             timestamp
         FROM telegram_messages
-        WHERE timestamp >= NOW() - INTERVAL ':minutes minutes'
+        WHERE timestamp >= :cutoff
             AND (
                 message LIKE '%BUY SIGNAL%' 
                 OR message LIKE '%SELL SIGNAL%'
@@ -53,7 +48,7 @@ def get_recent_alerts(db, minutes: int = 5) -> list:
         LIMIT 50
     """)
     
-    result = db.execute(query, {"minutes": minutes})
+    result = db.execute(query, {"cutoff": cutoff})
     return [dict(row._mapping) for row in result]
 
 
@@ -137,12 +132,22 @@ def main():
     print(f"Monitoring alerts from the last 5 minutes")
     print("=" * 80)
     
-    db = SessionLocal()
+    db = create_db_session()
     last_checked_ids = set()
     
     try:
         while True:
-            alerts = get_recent_alerts(db, minutes=5)
+            try:
+                alerts = get_recent_alerts(db, minutes=5)
+            except OperationalError as e:
+                exit_2_if_missing_schema_tables(
+                    e,
+                    table_names=("telegram_messages",),
+                    stderr_message=(
+                        "Connected to the app database, but table `telegram_messages` is missing. "
+                        "Run migrations or set DATABASE_URL to a migrated instance."
+                    ),
+                )
             
             for alert in alerts:
                 alert_id = alert['id']

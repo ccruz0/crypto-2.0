@@ -4,13 +4,13 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.services.exchange_sync import ExchangeSyncService
 from sqlalchemy import or_
 from datetime import datetime, timedelta, timezone
 
-db = SessionLocal()
+db = create_db_session()
 exchange_sync = ExchangeSyncService()
 
 try:

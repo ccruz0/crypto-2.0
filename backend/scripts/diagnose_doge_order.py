@@ -16,7 +16,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.trade_signal import TradeSignal
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 def diagnose_doge_order():
     """Diagnose why DOGE_USDT didn't create an order"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         symbol = "DOGE_USDT"

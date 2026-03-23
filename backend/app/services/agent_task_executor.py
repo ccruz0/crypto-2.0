@@ -42,6 +42,57 @@ from app.services.agent_versioning import (
 logger = logging.getLogger(__name__)
 
 
+def _maybe_ensure_notion_governance_task_after_claim(*, page_id: str, task: dict[str, Any], repo_area: dict[str, Any]) -> None:
+    """
+    When agent governance enforce is on (AWS), ensure ``gov-notion-<page_id>`` exists after a successful
+    Notion claim. Visibility / timeline only — no manifests or approval.
+    """
+    pid = (page_id or "").strip()
+    if not pid:
+        return
+    try:
+        from app.database import SessionLocal
+        from app.services.governance_agent_bridge import (
+            ensure_notion_governance_task_stub,
+            governance_agent_enforce_production,
+            infer_governance_risk_for_notion_agent,
+        )
+
+        if not governance_agent_enforce_production():
+            return
+        g_risk = infer_governance_risk_for_notion_agent(
+            task=task or {},
+            repo_area=repo_area or {},
+            sections={},
+        )
+        ttitle = str((task or {}).get("task") or "").strip()[:500] or None
+        gdb = SessionLocal()
+        if gdb is None:
+            return
+        try:
+            ensure_notion_governance_task_stub(
+                gdb,
+                pid,
+                title=ttitle,
+                risk_level=g_risk,
+                actor_id="notion_task_prepare",
+            )
+            gdb.commit()
+        except Exception as e:
+            logger.warning("notion prepare: governance task stub failed task_id=%s err=%s", pid[:12], e)
+            try:
+                gdb.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                gdb.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("notion prepare: governance stub skipped", exc_info=True)
+
+
 def _get_approval_gate():
     """Lazy import to avoid circular dependency."""
     from app.services.agent_approval import build_approval_summary, requires_human_approval
@@ -55,6 +106,265 @@ def _get_callbacks_selector():
 
 # Type alias for optional callbacks: (prepared_task: dict) -> bool | dict
 PreparedTaskCallback = Optional[Callable[[dict[str, Any]], bool | dict[str, Any]]]
+
+
+def _governance_execute_fail_shape(
+    executed_at: str,
+    task_id: str,
+    task_title: str,
+    *,
+    summary: str,
+    final_status: str = "in-progress",
+    governance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Structured failure when execute_prepared_notion_task is stopped by governance (same keys as result())."""
+    out: dict[str, Any] = {
+        "executed_at": executed_at,
+        "task_id": task_id,
+        "task_title": task_title,
+        "apply": {"attempted": False, "success": False, "summary": summary},
+        "testing": {"status_updated": False},
+        "validation": {"attempted": False, "success": False, "summary": ""},
+        "deployment": {"attempted": False, "success": False, "summary": ""},
+        "final_status": final_status,
+        "success": False,
+    }
+    if governance:
+        out["governance"] = governance
+    return out
+
+
+def _maybe_run_execute_prepared_through_governance(
+    *,
+    prepared_task: dict[str, Any],
+    executed_at: str,
+    task_id: str,
+    task_title: str,
+) -> dict[str, Any] | None:
+    """
+    When ATP_GOVERNANCE_AGENT_ENFORCE + AWS and callback class is prod_mutation, run the pipeline
+    only via governance_executor. Returns a finished result dict, or None to continue inline.
+    """
+    if (prepared_task or {}).get("_governance_pipeline_internal"):
+        return None
+
+    from app.services.agent_execution_policy import (
+        ActionClass,
+        GovernanceClassificationConflictError,
+        classify_callback_action,
+    )
+    from app.services.governance_agent_bridge import (
+        build_execute_prepared_manifest_commands,
+        ensure_agent_execute_prepared_manifest,
+        get_execute_manifest_id,
+        governance_agent_enforce_production,
+        log_governance_bypass_legacy_execute_path,
+        notion_to_governance_task_id,
+    )
+
+    cb_sel = (prepared_task or {}).get("_callback_selection_for_governance") or {}
+    try:
+        action_class = classify_callback_action(cb_sel, prepared_task, log_context="execute_prepared_gate")
+    except GovernanceClassificationConflictError as gce:
+        logger.error(
+            "execute_prepared_notion_task: governance classification conflict task_id=%s type=%s",
+            task_id,
+            gce.conflict_type,
+        )
+        try:
+            from app.database import SessionLocal
+            from app.services.governance_agent_bridge import notion_to_governance_task_id
+            from app.services.governance_service import emit_visibility_error_if_governance_task_exists
+
+            vdb = SessionLocal()
+            if vdb is not None:
+                try:
+                    gov_tid = notion_to_governance_task_id(task_id)
+                    if emit_visibility_error_if_governance_task_exists(
+                        vdb,
+                        governance_task_id=gov_tid,
+                        phase="execute_prepared_gate",
+                        message=f"classification conflict: {gce.conflict_type} — fix callback metadata",
+                        signal_hint="classification_conflict",
+                        conflict_type=gce.conflict_type,
+                        classification_details=gce.details,
+                    ):
+                        vdb.commit()
+                    else:
+                        vdb.rollback()
+                except Exception:
+                    try:
+                        vdb.rollback()
+                    except Exception:
+                        pass
+                    logger.debug(
+                        "emit_visibility_error_if_governance_task_exists(classification_conflict) failed",
+                        exc_info=True,
+                    )
+                finally:
+                    try:
+                        vdb.close()
+                    except Exception:
+                        pass
+        except Exception:
+            logger.debug(
+                "governance visibility session (classification_conflict) skipped",
+                exc_info=True,
+            )
+        return _governance_execute_fail_shape(
+            executed_at,
+            task_id,
+            task_title,
+            summary=f"governance classification conflict: {gce.conflict_type} — fix callback metadata",
+            governance={
+                "error": "classification_conflict",
+                "conflict_type": gce.conflict_type,
+                "details": gce.details,
+                "enforce": governance_agent_enforce_production(),
+            },
+        )
+    enforce = governance_agent_enforce_production()
+
+    if enforce and action_class == ActionClass.PROD_MUTATION:
+        from app.database import SessionLocal
+        from app.services.governance_executor import execute_governed_manifest
+        from app.services.governance_service import is_manifest_approved_and_valid
+
+        gdb = SessionLocal()
+        if gdb is None:
+            return _governance_execute_fail_shape(
+                executed_at,
+                task_id,
+                task_title,
+                summary="governance: database session unavailable (enforce mode)",
+                governance={"error": "db_unavailable", "enforce": True},
+            )
+
+        gov_tid = notion_to_governance_task_id(task_id)
+        commands = build_execute_prepared_manifest_commands(prepared_task, cb_sel)
+
+        try:
+            mid = get_execute_manifest_id(gdb, task_id)
+            if not mid:
+                mid = ensure_agent_execute_prepared_manifest(
+                    gdb,
+                    task_id,
+                    prepared_task=prepared_task,
+                    callback_selection=cb_sel,
+                    title=task_title,
+                )
+                if not mid:
+                    gdb.rollback()
+                    return _governance_execute_fail_shape(
+                        executed_at,
+                        task_id,
+                        task_title,
+                        summary="governance: could not create execution manifest (enforce mode)",
+                        governance={"error": "manifest_create_failed", "enforce": True},
+                    )
+
+            ok, reason = is_manifest_approved_and_valid(gdb, mid, expected_commands=commands)
+            if not ok:
+                _append_notion_page_comment(
+                    task_id,
+                    f"[{executed_at}] Governance: PROD execution blocked — {reason}. "
+                    "Approve the agent task in Telegram (execution manifest must be approved).",
+                )
+                try:
+                    from app.services.agent_activity_log import log_agent_event
+
+                    log_agent_event(
+                        "governance_execution_blocked",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={"reason": reason, "manifest_id": mid},
+                    )
+                except Exception as e:
+                    logger.debug("log_agent_event(governance_execution_blocked) failed: %s", e)
+                try:
+                    from app.services.governance_service import emit_visibility_error_if_governance_task_exists
+
+                    emit_visibility_error_if_governance_task_exists(
+                        gdb,
+                        governance_task_id=gov_tid,
+                        phase="execute_prepared_gate",
+                        message=f"governance blocked: {reason}",
+                        signal_hint="blocked",
+                        manifest_id=mid,
+                        block_reason=str(reason or "")[:2000],
+                    )
+                except Exception as e:
+                    logger.debug("emit_visibility_error_if_governance_task_exists(blocked) failed: %s", e)
+                gdb.commit()
+                return _governance_execute_fail_shape(
+                    executed_at,
+                    task_id,
+                    task_title,
+                    summary=f"governance blocked: {reason}",
+                    governance={"blocked": True, "reason": reason, "manifest_id": mid, "enforce": True},
+                )
+
+            ex = execute_governed_manifest(
+                gdb,
+                task_id=gov_tid,
+                manifest_id=mid,
+                actor_type="system",
+                actor_id="execute_prepared_pipeline",
+            )
+            gdb.commit()
+
+            if not ex.get("success"):
+                err = ex.get("error") or "governance executor failed"
+                return _governance_execute_fail_shape(
+                    executed_at,
+                    task_id,
+                    task_title,
+                    summary=f"governance executor: {err}",
+                    governance={"executed": False, "error": err, "manifest_id": mid, "enforce": True},
+                )
+
+            inner = ex.get("agent_execute_prepared_pipeline_result")
+            if isinstance(inner, dict):
+                merged = dict(inner)
+                gmeta = dict(merged.get("governance") or {}) if isinstance(merged.get("governance"), dict) else {}
+                gmeta.update({"executed_via": "governance_executor", "manifest_id": mid})
+                merged["governance"] = gmeta
+                return merged
+
+            return _governance_execute_fail_shape(
+                executed_at,
+                task_id,
+                task_title,
+                summary="governance: executor returned no pipeline result",
+                governance={"error": "missing_inner_result", "manifest_id": mid, "enforce": True},
+            )
+        except Exception as e:
+            logger.exception("execute_prepared_notion_task: governance gate failed task_id=%s", task_id)
+            try:
+                gdb.rollback()
+            except Exception:
+                pass
+            return _governance_execute_fail_shape(
+                executed_at,
+                task_id,
+                task_title,
+                summary=f"governance error: {e}",
+                governance={"error": str(e), "enforce": True},
+            )
+        finally:
+            try:
+                gdb.close()
+            except Exception:
+                pass
+
+    if action_class == ActionClass.PROD_MUTATION and not enforce:
+        log_governance_bypass_legacy_execute_path(
+            path="execute_prepared_notion_task",
+            reason="ATP_GOVERNANCE_AGENT_ENFORCE off or ENVIRONMENT not aws",
+            task_id=task_id,
+            extra={"action_class": action_class.value},
+        )
+    return None
 
 
 def _utc_now_iso() -> str:
@@ -622,6 +932,8 @@ def prepare_next_notion_task(
 
     logger.info("Claimed Notion task id=%s status=in-progress", page_id)
 
+    _maybe_ensure_notion_governance_task_after_claim(page_id=page_id, task=task, repo_area=repo_area)
+
     appended = _append_notion_page_comment(page_id, plan_text)
     result["claim"]["plan_appended"] = bool(appended)
 
@@ -687,6 +999,7 @@ def prepare_task_by_id(task_id: str) -> dict[str, Any] | None:
         logger.warning("prepare_task_by_id: failed to claim task_id=%s", page_id)
         result["claim"]["error"] = "status_update_failed"
         return result
+    _maybe_ensure_notion_governance_task_after_claim(page_id=page_id, task=task, repo_area=repo_area)
     appended = _append_notion_page_comment(page_id, plan_text)
     result["claim"]["plan_appended"] = bool(appended)
     try:
@@ -781,12 +1094,20 @@ def prepare_task_with_approval_check(
         except Exception as e:
             logger.debug("log_agent_event(version_proposed) failed: %s", e)
 
+    try:
+        from app.services.agent_bundle_identity import build_bundle_identity_dict, compute_bundle_fingerprint
+
+        _fp = compute_bundle_fingerprint(build_bundle_identity_dict(prepared, callback_selection))
+    except Exception:
+        _fp = ""
+
     return {
         "prepared_task": prepared,
         "callback_selection": callback_selection,
         "approval": approval,
         "approval_summary": approval_summary,
         "versioning": versioning,
+        **({"bundle_fingerprint_approved": _fp} if _fp else {}),
     }
 
 
@@ -850,6 +1171,111 @@ def execute_prepared_task_if_approved(
         except Exception as e:
             logger.error("execute_prepared_task_if_approved: re-selection raised %s task_id=%s", e, task_id)
 
+    # Approved bundle identity: fail closed on drift when agent governance enforce is on (AWS).
+    approved_fp = str((prepared_bundle or {}).get("bundle_fingerprint_approved") or "").strip()
+    if approved_fp:
+        try:
+            from app.core.environment import getRuntimeEnv
+            from app.services.agent_bundle_identity import (
+                build_bundle_identity_dict,
+                log_bundle_drift_detected,
+                log_bundle_fingerprint_verified,
+                verify_bundle_fingerprint,
+            )
+            from app.services.agent_execution_policy import GOVERNANCE_ACTION_CLASS_KEY
+            from app.services.governance_agent_bridge import governance_agent_enforce_production
+
+            enforce_prod = governance_agent_enforce_production()
+            ok_drift, exp_fp, cur_fp = verify_bundle_fingerprint(
+                approved_fp, prepared_task, callback_selection
+            )
+            apply_fn0 = callback_selection.get("apply_change_fn")
+            cm = str(getattr(apply_fn0, "__module__", "") or "") if callable(apply_fn0) else ""
+            cn = str(getattr(apply_fn0, "__name__", "") or "") if callable(apply_fn0) else ""
+            gov_c = str(callback_selection.get(GOVERNANCE_ACTION_CLASS_KEY) or "")
+            if ok_drift:
+                log_bundle_fingerprint_verified(
+                    notion_task_id=task_id,
+                    fingerprint=approved_fp,
+                    manifest_id="",
+                    environment=getRuntimeEnv(),
+                    enforcement_active=enforce_prod,
+                    log_context="execute_prepared_task_if_approved",
+                )
+            else:
+                log_bundle_drift_detected(
+                    notion_task_id=task_id,
+                    approved_fingerprint=exp_fp or "",
+                    current_fingerprint=cur_fp or "",
+                    manifest_id="",
+                    governance_action_class=gov_c,
+                    callback_module=cm,
+                    callback_name=cn,
+                    environment=getRuntimeEnv(),
+                    enforcement_active=enforce_prod,
+                    log_context="execute_prepared_task_if_approved",
+                    blocked=enforce_prod,
+                )
+                if enforce_prod:
+                    try:
+                        from app.database import SessionLocal
+                        from app.services.governance_agent_bridge import notion_to_governance_task_id
+                        from app.services.governance_service import emit_visibility_error_if_governance_task_exists
+
+                        vdb = SessionLocal()
+                        if vdb is not None:
+                            try:
+                                gov_tid = notion_to_governance_task_id(task_id)
+                                if emit_visibility_error_if_governance_task_exists(
+                                    vdb,
+                                    governance_task_id=gov_tid,
+                                    phase="execute_prepared_task_if_approved",
+                                    message="governance bundle identity drift — callback pack changed since approval",
+                                    signal_hint="drift",
+                                    approved_fingerprint=exp_fp,
+                                    current_fingerprint=cur_fp,
+                                ):
+                                    vdb.commit()
+                                else:
+                                    vdb.rollback()
+                            except Exception:
+                                try:
+                                    vdb.rollback()
+                                except Exception:
+                                    pass
+                                logger.debug(
+                                    "emit_visibility_error_if_governance_task_exists(drift) failed",
+                                    exc_info=True,
+                                )
+                            finally:
+                                try:
+                                    vdb.close()
+                                except Exception:
+                                    pass
+                    except Exception:
+                        logger.debug(
+                            "governance visibility session (drift) skipped",
+                            exc_info=True,
+                        )
+                    return {
+                        "executed_at": _utc_now_iso(),
+                        "task_id": task_id,
+                        "task_title": task_title,
+                        "approval_required": bool(approval.get("required")),
+                        "approval_granted": True,
+                        "execution_skipped": True,
+                        "reason": "governance bundle identity drift — callback pack changed since approval; re-approve the task",
+                        "execution_result": None,
+                        "governance": {
+                            "error": "bundle_drift",
+                            "approved_fingerprint": exp_fp,
+                            "current_fingerprint": cur_fp,
+                            "enforce": True,
+                        },
+                    }
+        except Exception as e:
+            logger.warning("execute_prepared_task_if_approved: bundle fingerprint verify failed task_id=%s err=%s", task_id, e)
+
     approval_required = bool(approval.get("required"))
     manual_only = bool(callback_selection.get("manual_only"))
 
@@ -905,6 +1331,9 @@ def execute_prepared_task_if_approved(
     _cb_manual_only = bool(callback_selection.get("manual_only"))
     if _cb_manual_only and prepared_task:
         prepared_task["_use_extended_lifecycle"] = True
+
+    if prepared_task is not None:
+        prepared_task["_callback_selection_for_governance"] = dict(callback_selection or {})
 
     _task_type_for_log = str(((prepared_task or {}).get("task") or {}).get("type") or "")
     logger.info(
@@ -1046,6 +1475,15 @@ def execute_prepared_notion_task(
             False, False, False, "", False, False, "",
             "in-progress", False,
         )
+
+    gov_out = _maybe_run_execute_prepared_through_governance(
+        prepared_task=prepared_task,
+        executed_at=executed_at,
+        task_id=task_id,
+        task_title=task_title,
+    )
+    if gov_out is not None:
+        return gov_out
 
     logger.info("execute_prepared_notion_task: starting task_id=%s task_title=%r", task_id, task_title)
     use_extended_lifecycle = bool((prepared_task or {}).get("_use_extended_lifecycle"))

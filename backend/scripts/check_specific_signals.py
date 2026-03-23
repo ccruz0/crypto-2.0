@@ -16,14 +16,14 @@ sys.path.insert(0, str(backend_path))
 from app.services.config_loader import get_strategy_rules
 from app.services.strategy_profiles import resolve_strategy_profile
 from app.services.trading_signals import should_trigger_buy_signal
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice, MarketData
 
 symbols_to_check = ["FIL_USDT", "SUI_USDT", "UNI_USDT", "DOT_USDT"]
 
 def check_signals():
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print(f"\n{'='*80}")

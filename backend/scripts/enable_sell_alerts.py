@@ -16,11 +16,11 @@ sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from app.database import SessionLocal
+from app.database import create_db_session
 
 def enable_sell_alerts():
     """Enable sell_alert_enabled for all symbols with alert_enabled=True"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         print("=" * 80)
         print("ENABLING SELL ALERTS")

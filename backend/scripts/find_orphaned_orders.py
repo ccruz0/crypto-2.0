@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from datetime import datetime, timezone
@@ -24,7 +24,7 @@ def find_orphaned_orders(dry_run: bool = True):
     Args:
         dry_run: If True, only shows what would be cancelled without making changes.
     """
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find all active SL/TP orders
         active_sl_tp = db.query(ExchangeOrder).filter(

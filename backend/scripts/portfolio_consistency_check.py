@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 
 def main() -> int:
     threshold_pct = float(os.environ.get("DRIFT_THRESHOLD_PCT", "1.0"))
-    from app.database import SessionLocal
+    from app.database import create_db_session
     from app.services.portfolio_cache import get_portfolio_summary
     from app.services.brokers.crypto_com_trade import trade_client
 
-    if SessionLocal is None:
+    try:
+        db = create_db_session()
+    except RuntimeError:
         print("FAIL")
         return 1
-    db = SessionLocal()
     try:
         summary = get_portfolio_summary(db)
         dashboard_net = float(summary.get("total_usd") or 0.0)

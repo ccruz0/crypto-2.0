@@ -16,7 +16,7 @@ from pathlib import Path
 backend_root = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_root))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.config_loader import CONFIG_PATH, load_config, save_config
 import logging
@@ -54,7 +54,7 @@ def update_trading_config():
 def update_database_watchlist():
     """Update all watchlist items in database to have sl_tp_mode='conservative'."""
     try:
-        db = SessionLocal()
+        db = create_db_session()
         updated_count = 0
         
         try:

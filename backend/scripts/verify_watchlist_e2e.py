@@ -23,7 +23,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 import logging
 
@@ -422,7 +422,7 @@ def main():
         
         logger.info(f"Write tests enabled: {write_test_enabled} (set E2E_WRITE_TEST=1 to enable)")
         
-        db: Session = SessionLocal()
+        db: Session = create_db_session()
         try:
             # Test 1: Verify specific symbols mentioned in issue (read-only)
             logger.info("\n" + "=" * 60)

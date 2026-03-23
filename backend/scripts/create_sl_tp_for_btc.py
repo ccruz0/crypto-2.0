@@ -9,7 +9,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.models.watchlist import WatchlistItem
 from app.models.trading_settings import TradingSettings
@@ -47,7 +47,7 @@ def set_live_trading(db, enabled: bool):
 
 def create_sl_tp_for_order(order_id: str, sl_percentage=2.0, tp_percentage=2.0):
     """Create SL/TP orders for a specific order ID"""
-    db = SessionLocal()
+    db = create_db_session()
     live_trading_was_enabled = None
     
     try:
@@ -309,7 +309,7 @@ def create_sl_tp_for_order(order_id: str, sl_percentage=2.0, tp_percentage=2.0):
 
 def create_sl_tp_for_btc(sl_percentage=2.0, tp_percentage=2.0):
     """Create SL/TP orders for the most recent filled BTC order (backward compatibility)"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol = "BTC_USDT"
         logger.info(f"Finding most recent filled BTC order...")

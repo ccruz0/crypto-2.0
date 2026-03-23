@@ -5,16 +5,17 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.telegram_message import TelegramMessage
 from app.api.routes_monitoring import add_telegram_message
 
 
 def main():
-    if SessionLocal is None:
-        print("SessionLocal is None; database not available.")
+    try:
+        db = create_db_session()
+    except RuntimeError as e:
+        print(f"Database not available: {e}")
         sys.exit(1)
-    db = SessionLocal()
     try:
         message_id = add_telegram_message(
             "[TEST] persist check",

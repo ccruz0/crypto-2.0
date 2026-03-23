@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.telegram_message import TelegramMessage
 from app.models.watchlist import WatchlistItem
 from app.services.alert_emitter import emit_alert
@@ -49,7 +49,7 @@ def verify_alert_pipeline(symbol: str = "BTC_USDT") -> bool:
     logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
     logger.info("")
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Step 1: Get watchlist item
         watchlist_item = db.query(WatchlistItem).filter(

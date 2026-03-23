@@ -25,6 +25,7 @@ except AttributeError:
     FillEventDedup = None
 from app.models.dedup_events_week5 import DedupEventWeek5
 from app.models.agent_approval_state import AgentApprovalState
+from app.models.governance_models import GovernanceEvent, GovernanceManifest, GovernanceTask
 
 __all__ = [
     "WatchlistItem",
@@ -50,6 +51,9 @@ __all__ = [
     "FillEventDedup",
     "DedupEventWeek5",
     "AgentApprovalState",
+    "GovernanceTask",
+    "GovernanceEvent",
+    "GovernanceManifest",
 ]
 
 

@@ -6210,7 +6210,149 @@ def _handle_extended_approval_callback(
             _edit_approval_card(chat_id, message_id,
                                 f"⚠️ Deploy approved by {who} but Notion status update failed.", task_id)
 
-        # --- Apply any prepared strategy patch (prod mutation deferred until approval) ---
+        # --- PROD mutation: governance manifest + executor (AWS + ATP_GOVERNANCE_AGENT_ENFORCE) ---
+        # Legacy path below applies strategy patch + triggers GitHub dispatch directly.
+        # When enforced, Telegram approval must approve the exact governance manifest digest; execution
+        # runs only via governance_executor (agent_deploy_bundle). See governance_agent_bridge.py.
+        deploy_result: dict = {}
+        _gov_agent_enforce = False
+        try:
+            from app.services.governance_agent_bridge import (
+                get_deploy_manifest_id,
+                governance_agent_enforce_production,
+                notion_to_governance_task_id,
+            )
+            from app.services.governance_service import approve_manifest
+            from app.services.governance_executor import execute_governed_manifest
+
+            _gov_agent_enforce = governance_agent_enforce_production()
+        except ImportError as _gov_imp:
+            logger.error("[TG][EXT_APPROVAL] governance import failed: %s", _gov_imp)
+
+        if _gov_agent_enforce:
+            from app.database import SessionLocal as _GovSessionLocal
+
+            if _GovSessionLocal is None:
+                send_command_response(
+                    chat_id,
+                    "❌ <b>Governance</b>\n\nDatabase unavailable — cannot approve manifest. Try again.",
+                )
+                return
+            gdb = _GovSessionLocal()
+            try:
+                mid = get_deploy_manifest_id(gdb, task_id)
+                if not mid:
+                    send_command_response(
+                        chat_id,
+                        "❌ <b>Governance</b>\n\nNo deploy manifest for this task. "
+                        "Re-run release-candidate approval (scheduler) so a digest-bound manifest is created, then approve again.",
+                    )
+                    return
+                try:
+                    approve_manifest(
+                        gdb,
+                        manifest_id=mid,
+                        approved_by=who,
+                        actor_type="human",
+                        actor_id=who,
+                        environment="prod",
+                    )
+                except ValueError as appr_err:
+                    logger.warning(
+                        "[TG][EXT_APPROVAL] governance approve_manifest failed task_id=%s: %s",
+                        task_id,
+                        appr_err,
+                    )
+                    send_command_response(
+                        chat_id,
+                        f"❌ <b>Governance</b>\n\nManifest approval failed: <code>{str(appr_err)[:300]}</code>",
+                    )
+                    gdb.rollback()
+                    return
+
+                gov_tid = notion_to_governance_task_id(task_id)
+                exec_out = execute_governed_manifest(
+                    gdb,
+                    task_id=gov_tid,
+                    manifest_id=mid,
+                    actor_type="human",
+                    actor_id=who,
+                )
+                gdb.commit()
+
+                ad = exec_out.get("agent_deploy_bundle") or {}
+                deploy_result = ad.get("deploy_workflow") or {}
+                _steps = exec_out.get("steps") or []
+                _last_msg = (_steps[-1].get("message") if _steps else "") or ""
+                if exec_out.get("success"):
+                    try:
+                        from app.services.notion_tasks import update_notion_deploy_progress
+                        update_notion_deploy_progress(task_id, 20)
+                    except Exception:
+                        pass
+                    logger.info(
+                        "[TG][EXT_APPROVAL] governed deploy ok task_id=%s manifest_id=%s",
+                        task_id,
+                        mid,
+                    )
+                    send_command_response(
+                        chat_id,
+                        f"⚙️ <b>Deploy triggered (governed)</b>\n\n"
+                        f"{deploy_result.get('summary', _last_msg)}\n\n"
+                        f"<code>manifest {mid}</code>\n\n"
+                        f"Use <b>Smoke Check</b> after ~5 min.",
+                    )
+                else:
+                    err = exec_out.get("error") or "governed execution failed"
+                    logger.error(
+                        "[TG][EXT_APPROVAL] governed deploy FAILED task_id=%s err=%s",
+                        task_id,
+                        err,
+                    )
+                    send_command_response(
+                        chat_id,
+                        f"⚠️ <b>Governed deploy failed</b>\n\n"
+                        f"<code>{str(err)[:400]}</code>\n\n"
+                        f"Task may be in <b>deploying</b>; check governance_events and logs.",
+                    )
+            except Exception as gov_exc:
+                logger.exception(
+                    "[TG][EXT_APPROVAL] governed deploy raised task_id=%s: %s",
+                    task_id,
+                    gov_exc,
+                )
+                try:
+                    gdb.rollback()
+                except Exception:
+                    pass
+                send_command_response(
+                    chat_id,
+                    f"⚠️ <b>Governance error</b>\n\n<code>{str(gov_exc)[:300]}</code>",
+                )
+            finally:
+                try:
+                    gdb.close()
+                except Exception:
+                    pass
+
+            try:
+                from app.services.agent_activity_log import log_agent_event
+                log_agent_event(
+                    "deploy_approved",
+                    task_id=task_id,
+                    details={
+                        "approved_by": who,
+                        "notion_updated": ok,
+                        "governed": True,
+                        "deploy_triggered": bool(deploy_result.get("ok")),
+                        "deploy_summary": deploy_result.get("summary", ""),
+                    },
+                )
+            except Exception:
+                pass
+            return
+
+        # --- Legacy: apply strategy patch + GitHub dispatch (no governance agent enforcement) ---
         try:
             from app.services.agent_strategy_patch import apply_prepared_strategy_patch_after_approval
             patch_result = apply_prepared_strategy_patch_after_approval(task_id)
@@ -6225,8 +6367,6 @@ def _handle_extended_approval_callback(
                 task_id, patch_exc,
             )
 
-        # --- Trigger real deployment via GitHub Actions ---
-        deploy_result: dict = {}
         try:
             from app.services.deploy_trigger import trigger_deploy_workflow
             deploy_result = trigger_deploy_workflow(task_id=task_id, triggered_by=who)
@@ -6276,6 +6416,7 @@ def _handle_extended_approval_callback(
             log_agent_event("deploy_approved", task_id=task_id, details={
                 "approved_by": who,
                 "notion_updated": ok,
+                "governed": False,
                 "deploy_triggered": deploy_result.get("ok", False),
                 "deploy_summary": deploy_result.get("summary", ""),
             })

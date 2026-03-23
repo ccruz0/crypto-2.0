@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Fix UNI sell_alert_enabled and add missing columns if needed"""
-from app.database import SessionLocal, engine
+from app.database import create_db_session, engine
 from sqlalchemy import text
 from app.models.watchlist import WatchlistItem
 
-db = SessionLocal()
+db = create_db_session()
 try:
     # Check if columns exist and add them if needed
     result = db.execute(text("""

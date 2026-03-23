@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketData, MarketPrice
 from app.services.trading_signals import calculate_trading_signals
@@ -183,7 +183,7 @@ def main():
     print("WATCHLIST RUNTIME AUDIT")
     print("="*60)
     
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Test special symbols

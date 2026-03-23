@@ -1,6 +1,8 @@
 # Path Guard — CI security gate for protected paths.
 # PRs that touch protected paths (trading, secrets, deploy) ALWAYS fail; no label bypass.
 # See: docs/openclaw/ARCHITECTURE.md §8, docs/openclaw/LABEL_BYPASS_AUDIT_REPORT.md
+#
+# (Separate workflow) LAB filesystem write bypass audit: lab-path-guard-audit.yml + path_guard_audit.py
 name: Path Guard
 
 on:

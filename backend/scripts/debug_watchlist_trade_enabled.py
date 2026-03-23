@@ -8,7 +8,7 @@ import sys
 import logging
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.watchlist_selector import get_canonical_watchlist_item, select_preferred_watchlist_item
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def debug_watchlist_trade_enabled(symbol: str):
     """Check trade_enabled for a symbol, showing all rows and canonical selection."""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         symbol_upper = symbol.upper()
         logger.info(f"Checking trade_enabled for {symbol_upper}")

@@ -13,17 +13,19 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+from unittest.mock import patch
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.signal_evaluator import evaluate_signal_for_symbol
 from app.services.throttle_gatekeeper import enforce_throttle
 from app.services.alert_emitter import emit_alert
 from app.services.signal_throttle import record_signal_event
+from app.services import path_guard
 import logging
 
 # Configure logging
@@ -34,43 +36,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Mock Telegram sending for local testing
-original_send_buy_signal = None
-original_send_sell_signal = None
+
+def _mock_send_buy_signal(*args: Any, **kwargs: Any) -> bool:
+    logger.info("[MOCK_TELEGRAM] BUY alert would be sent (dry-run mode)")
+    return True
 
 
-def mock_telegram_send():
-    """Mock Telegram sending to avoid actual API calls during testing."""
-    global original_send_buy_signal, original_send_sell_signal
-    
-    from app.services import telegram_notifier
-    
-    def mock_send_buy_signal(*args, **kwargs):
-        logger.info("[MOCK_TELEGRAM] BUY alert would be sent (dry-run mode)")
-        return True
-    
-    def mock_send_sell_signal(*args, **kwargs):
-        logger.info("[MOCK_TELEGRAM] SELL alert would be sent (dry-run mode)")
-        return True
-    
-    original_send_buy_signal = telegram_notifier.send_buy_signal
-    original_send_sell_signal = telegram_notifier.send_sell_signal
-    
-    telegram_notifier.send_buy_signal = mock_send_buy_signal
-    telegram_notifier.send_sell_signal = mock_send_sell_signal
-    
-    logger.info("✅ Telegram sending mocked for dry-run testing")
-
-
-def restore_telegram_send():
-    """Restore original Telegram sending functions."""
-    global original_send_buy_signal, original_send_sell_signal
-    
-    if original_send_buy_signal and original_send_sell_signal:
-        from app.services import telegram_notifier
-        telegram_notifier.send_buy_signal = original_send_buy_signal
-        telegram_notifier.send_sell_signal = original_send_sell_signal
-        logger.info("✅ Telegram sending restored")
+def _mock_send_sell_signal(*args: Any, **kwargs: Any) -> bool:
+    logger.info("[MOCK_TELEGRAM] SELL alert would be sent (dry-run mode)")
+    return True
 
 
 class TickResult:
@@ -276,15 +250,16 @@ def run_stress_test() -> List[TickResult]:
     logger.info("  Tick 4: Enough time + enough % move → must be ALLOWED")
     logger.info("")
     
-    # Initialize database
-    db = SessionLocal()
+    # Scripts: use create_db_session() so a missing engine fails with a clear error (not NoneType())
+    db = create_db_session()
     try:
-        
+        from app.services.telegram_notifier import telegram_notifier as notifier
+
         # Get or create BTC watchlist item
         watchlist_item = db.query(WatchlistItem).filter(
             WatchlistItem.symbol == "BTC_USDT"
         ).first()
-        
+
         if not watchlist_item:
             logger.warning("BTC_USDT not in watchlist, creating test entry...")
             watchlist_item = WatchlistItem(
@@ -298,77 +273,78 @@ def run_stress_test() -> List[TickResult]:
             )
             db.add(watchlist_item)
             db.commit()
-        
-        # Ensure alert is enabled
-        watchlist_item.alert_enabled = True
-        watchlist_item.buy_alert_enabled = True
-        watchlist_item.min_price_change_pct = 1.0
-        watchlist_item.alert_cooldown_minutes = 5.0
+
+        # Classic declarative models: pyright treats Column[] as attribute types; setattr avoids noise
+        setattr(watchlist_item, "alert_enabled", True)
+        setattr(watchlist_item, "buy_alert_enabled", True)
+        setattr(watchlist_item, "min_price_change_pct", 1.0)
+        setattr(watchlist_item, "alert_cooldown_minutes", 5.0)
         db.commit()
-        
-        # Mock Telegram sending
-        mock_telegram_send()
-        
-        # Base time for elapsed calculations
-        base_time = datetime.now(timezone.utc)
-        
-        # Clear any existing throttle state for clean test
-        from app.models.signal_throttle import SignalThrottleState
-        from app.services.signal_throttle import build_strategy_key
-        strategy_key = build_strategy_key(
-            strategy_type="swing",
-            risk_approach="conservative",
-        )
-        db.query(SignalThrottleState).filter(
-            SignalThrottleState.symbol == "BTC_USDT",
-            SignalThrottleState.strategy_key == strategy_key,
-            SignalThrottleState.side == "BUY",
-        ).delete()
-        db.commit()
-        
-        results: List[TickResult] = []
-        
-        # Tick 1: First alert (should be allowed)
-        logger.info("🔄 Running Tick 1...")
-        tick1_time = base_time
-        tick1_price = 50000.0
-        result1 = simulate_btc_tick(db, 1, tick1_price, base_time, tick1_time, watchlist_item)
-        results.append(result1)
-        logger.info(result1.to_line())
-        logger.info("")
-        
-        # Tick 2: 10 seconds later, same price (should be blocked)
-        logger.info("🔄 Running Tick 2...")
-        tick2_time = base_time + timedelta(seconds=10)
-        tick2_price = 50000.0  # Same price, 0% change
-        result2 = simulate_btc_tick(db, 2, tick2_price, base_time, tick2_time, watchlist_item)
-        results.append(result2)
-        logger.info(result2.to_line())
-        logger.info("")
-        
-        # Tick 3: 30 seconds later (40 total), still same price (should be blocked)
-        logger.info("🔄 Running Tick 3...")
-        tick3_time = base_time + timedelta(seconds=40)
-        tick3_price = 50010.0  # 0.02% change, still < 1%
-        result3 = simulate_btc_tick(db, 3, tick3_price, base_time, tick3_time, watchlist_item)
-        results.append(result3)
-        logger.info(result3.to_line())
-        logger.info("")
-        
-        # Tick 4: 6 minutes later (enough time), 2% price change (should be allowed)
-        logger.info("🔄 Running Tick 4...")
-        tick4_time = base_time + timedelta(minutes=6)
-        tick4_price = 51000.0  # 2% change from tick1
-        result4 = simulate_btc_tick(db, 4, tick4_price, base_time, tick4_time, watchlist_item)
-        results.append(result4)
-        logger.info(result4.to_line())
-        logger.info("")
-        
-        # Restore Telegram sending
-        restore_telegram_send()
-        
-        return results
-        
+
+        # Patch notifier methods for this run only (no manual restore / global state)
+        with patch.object(notifier, "send_buy_signal", _mock_send_buy_signal), patch.object(
+            notifier, "send_sell_signal", _mock_send_sell_signal
+        ):
+            logger.info("✅ Telegram send_buy/send_sell patched (dry-run)")
+
+            # Base time for elapsed calculations
+            base_time = datetime.now(timezone.utc)
+
+            # Clear any existing throttle state for clean test
+            from app.models.signal_throttle import SignalThrottleState
+            from app.services.signal_throttle import build_strategy_key
+
+            strategy_key = build_strategy_key(
+                strategy_type="swing",
+                risk_approach="conservative",
+            )
+            db.query(SignalThrottleState).filter(
+                SignalThrottleState.symbol == "BTC_USDT",
+                SignalThrottleState.strategy_key == strategy_key,
+                SignalThrottleState.side == "BUY",
+            ).delete()
+            db.commit()
+
+            results: List[TickResult] = []
+
+            # Tick 1: First alert (should be allowed)
+            logger.info("🔄 Running Tick 1...")
+            tick1_time = base_time
+            tick1_price = 50000.0
+            result1 = simulate_btc_tick(db, 1, tick1_price, base_time, tick1_time, watchlist_item)
+            results.append(result1)
+            logger.info(result1.to_line())
+            logger.info("")
+
+            # Tick 2: 10 seconds later, same price (should be blocked)
+            logger.info("🔄 Running Tick 2...")
+            tick2_time = base_time + timedelta(seconds=10)
+            tick2_price = 50000.0  # Same price, 0% change
+            result2 = simulate_btc_tick(db, 2, tick2_price, base_time, tick2_time, watchlist_item)
+            results.append(result2)
+            logger.info(result2.to_line())
+            logger.info("")
+
+            # Tick 3: 30 seconds later (40 total), still same price (should be blocked)
+            logger.info("🔄 Running Tick 3...")
+            tick3_time = base_time + timedelta(seconds=40)
+            tick3_price = 50010.0  # 0.02% change, still < 1%
+            result3 = simulate_btc_tick(db, 3, tick3_price, base_time, tick3_time, watchlist_item)
+            results.append(result3)
+            logger.info(result3.to_line())
+            logger.info("")
+
+            # Tick 4: 6 minutes later (enough time), 2% price change (should be allowed)
+            logger.info("🔄 Running Tick 4...")
+            tick4_time = base_time + timedelta(minutes=6)
+            tick4_price = 51000.0  # 2% change from tick1
+            result4 = simulate_btc_tick(db, 4, tick4_price, base_time, tick4_time, watchlist_item)
+            results.append(result4)
+            logger.info(result4.to_line())
+            logger.info("")
+
+            return results
+
     finally:
         db.close()
 
@@ -458,10 +434,9 @@ def main():
         # Generate report
         report = generate_report(results)
         
-        # Write report
+        # Write report (LAB docs path — path_guard)
         report_path = Path(__file__).parent.parent / "docs" / "monitoring" / "BTC_THROTTLE_STRESS_LOG.md"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(report)
+        path_guard.safe_write_text(report_path, report, context="debug_btc_throttle:stress_report")
         
         logger.info("")
         logger.info("=" * 80)

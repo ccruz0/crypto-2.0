@@ -21,7 +21,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 import logging
 
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def test_null_trade_amount_usd(api_url: str = "http://localhost:8002/api/dashboard"):
     """Test that NULL trade_amount_usd in DB returns null in API (not 10)"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         # Create test item with NULL trade_amount_usd
         test_symbol = "TEST_NULL_USD"
@@ -110,7 +110,7 @@ def test_null_trade_amount_usd(api_url: str = "http://localhost:8002/api/dashboa
 
 def test_exact_value_trade_amount_usd(api_url: str = "http://localhost:8002/api/dashboard"):
     """Test that trade_amount_usd = 10.0 in DB returns exactly 10.0 in API (not 11)"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         # Create test item with trade_amount_usd = 10.0
         test_symbol = "TEST_10_USD"

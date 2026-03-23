@@ -11,13 +11,13 @@ from pathlib import Path
 backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from sqlalchemy import and_, or_
 
 def check_orders_sl_tp():
     """Check orders created today and their SL/TP status"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Get today's date range (UTC)

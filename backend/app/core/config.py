@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     OPENCLAW_API_URL: Optional[str] = None
     OPENCLAW_API_TOKEN: Optional[str] = None
     OPENCLAW_TIMEOUT_SECONDS: Optional[int] = None
+    # Governance API (optional; falls back to OPENCLAW_API_TOKEN for Bearer auth)
+    GOVERNANCE_API_TOKEN: Optional[str] = None
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

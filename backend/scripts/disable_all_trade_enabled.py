@@ -13,13 +13,13 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from sqlalchemy import update
 
 def disable_all_trade_enabled():
     """Desactiva trade_enabled para todas las monedas en la watchlist"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all watchlist items
         all_items = db.query(WatchlistItem).filter(

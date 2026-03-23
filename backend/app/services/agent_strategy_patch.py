@@ -20,6 +20,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_execution_policy import ATTR_PROD_MUTATION
 from app.services.agent_versioning import build_version_summary
 
 logger = logging.getLogger(__name__)
@@ -673,3 +674,5 @@ def validate_strategy_patch_task(prepared_task: dict[str, Any]) -> dict[str, Any
             pass
         return {"success": False, "summary": str(e)}
 
+
+setattr(apply_strategy_patch_task, ATTR_PROD_MUTATION, True)

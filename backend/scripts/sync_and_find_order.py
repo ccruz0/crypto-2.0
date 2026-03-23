@@ -8,7 +8,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.services.exchange_sync import exchange_sync_service
 from app.services.brokers.crypto_com_trade import trade_client
 from app.utils.live_trading import get_live_trading_status
@@ -24,7 +24,7 @@ trade_client.live_trading = True
 
 def sync_and_find_order(order_id: str):
     """Sync orders and find the specific order"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check LIVE_TRADING status
         live_status = get_live_trading_status(db)

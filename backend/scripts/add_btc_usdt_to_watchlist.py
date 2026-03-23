@@ -11,7 +11,7 @@ from pathlib import Path
 backend_root = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_root))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.config_loader import load_config
 import logging
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def add_btc_usdt_to_watchlist():
     """Add BTC_USDT to watchlist if it doesn't exist."""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         symbol = "BTC_USDT"

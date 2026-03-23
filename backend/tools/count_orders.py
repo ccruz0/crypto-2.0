@@ -2,29 +2,31 @@
 """Script to count orders in the database"""
 import os
 import sys
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
-# Add backend directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+# Add backend/ to path so `app` resolves (tools/ lives under backend/)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from app.database import create_db_session, exit_2_if_missing_schema_tables
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
-from app.core.config import settings
 
-# Determine database URL
-DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL)
-if not DATABASE_URL:
-    print("Error: DATABASE_URL not set.")
-    sys.exit(1)
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def count_orders():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Total orders
-        total_orders = db.query(ExchangeOrder).count()
+        try:
+            total_orders = db.query(ExchangeOrder).count()
+        except OperationalError as e:
+            exit_2_if_missing_schema_tables(
+                e,
+                table_names=("exchange_orders",),
+                stderr_message=(
+                    "Connected to the app database, but table `exchange_orders` is missing. "
+                    "Run migrations against this DATABASE_URL or point DATABASE_URL at a migrated instance."
+                ),
+            )
         
         # Orders by status
         orders_by_status = db.query(

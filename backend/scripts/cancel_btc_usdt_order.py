@@ -4,12 +4,12 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from datetime import datetime, timezone
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Buscar órdenes BTC_USDT BUY LIMIT activas
         orders = db.query(ExchangeOrder).filter(

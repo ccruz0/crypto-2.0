@@ -109,16 +109,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from app.database import SessionLocal
+    from app.database import create_db_session
 
-    if SessionLocal is None:
+    try:
+        db = create_db_session()
+    except RuntimeError as e:
         if args.json:
-            print(json.dumps({"match": False, "error": "Database not available (SessionLocal is None)"}))
+            print(json.dumps({"match": False, "error": str(e)}))
         else:
-            print("ERROR: Database not available (SessionLocal is None)")
+            print(f"ERROR: Database not available: {e}")
         return 1
-
-    db = SessionLocal()
     try:
         if args.live:
             if not args.json:

@@ -9,7 +9,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from sqlalchemy import or_, text
@@ -19,24 +19,23 @@ def check_order_sl_tp(order_id: str):
     db = None
     order = None
     
-    # Try to connect to database (with timeout handling)
-    if SessionLocal is None:
-        print("⚠️  Database not available (SessionLocal is None)")
+    # Try to connect to database (create_db_session raises RuntimeError if engine missing)
+    db = None
+    try:
+        db = create_db_session()
+        db.execute(text("SELECT 1"))
+    except RuntimeError:
+        print("⚠️  Database not available (engine not configured)")
         print("   Will check exchange API only...\n")
-    else:
-        try:
-            db = SessionLocal()
-            # Test connection with a simple query
-            db.execute(text("SELECT 1"))
-        except Exception as db_error:
-            print(f"⚠️  Could not connect to database: {db_error}")
-            print("   Will check exchange API only...\n")
-            if db:
-                try:
-                    db.close()
-                except:
-                    pass
-                db = None
+    except Exception as db_error:
+        print(f"⚠️  Could not connect to database: {db_error}")
+        print("   Will check exchange API only...\n")
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+            db = None
     
     try:
         # Find the order in database (if DB available)

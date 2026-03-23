@@ -29,7 +29,7 @@ sys.path.insert(0, str(backend_dir))
 import logging
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.models.signal_throttle import SignalThrottleState
@@ -553,7 +553,7 @@ def run_audit(since_hours: int = 168, symbols: Optional[List[str]] = None, mode:
     # Try to get database connection, but continue even if it fails
     db = None
     try:
-        db = SessionLocal()
+        db = create_db_session()
     except Exception as db_err:
         logger.warning(f"Could not connect to database: {db_err}")
         logger.info("Continuing with global checks only (no database-dependent checks)")

@@ -14,13 +14,13 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from collections import defaultdict
 
 def fix_duplicates():
     """Fix duplicate pairs in watchlist."""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Get all non-deleted items

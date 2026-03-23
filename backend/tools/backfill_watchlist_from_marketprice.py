@@ -18,7 +18,7 @@ import os
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice
 
@@ -45,7 +45,7 @@ def should_exclude_symbol(symbol: str, price: float) -> bool:
     return False
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("=" * 60)
         print("WATCHLIST BACKFILL FROM MARKETPRICE")

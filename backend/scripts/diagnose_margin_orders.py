@@ -11,14 +11,14 @@ Checks:
 import sys
 sys.path.insert(0, '/app')
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.services.brokers.crypto_com_trade import trade_client
 import json
 from datetime import datetime, timedelta, timezone
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("=" * 80)
         print("MARGIN ORDER DIAGNOSTIC REPORT")

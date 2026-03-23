@@ -3,10 +3,10 @@ import sys
 import os
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, "/app")
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 
-db = SessionLocal()
+db = create_db_session()
 try:
     # Check last 7 days to find recent TP orders
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

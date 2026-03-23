@@ -24,7 +24,7 @@ from collections import defaultdict
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.telegram_message import TelegramMessage
 from app.models.market_price import MarketData
@@ -65,7 +65,7 @@ def task1_validate_db_state(results: SmokeTestResults) -> bool:
     print("TASK 1: Validate DB State (Watchlist Duplicates - DRY RUN)")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all non-deleted items
         all_items = db.query(WatchlistItem).filter(
@@ -137,7 +137,7 @@ def task2_validate_toggle_flow(results: SmokeTestResults) -> bool:
     print("TASK 2: Validate Backend Toggle Flow")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get 3 random pairs (or use specific ones: NEAR_USDT, ADA_USDT, SOL_USDT)
         test_symbols = ["NEAR_USDT", "ADA_USDT", "SOL_USDT"]
@@ -296,7 +296,7 @@ def task3_validate_monitoring(results: SmokeTestResults) -> bool:
     print("TASK 3: Validate Monitoring Table")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Query last 50 entries from telegram_messages (Monitoring table)
         messages = db.query(TelegramMessage).order_by(
@@ -386,7 +386,7 @@ def task6_validate_frontend_integration(results: SmokeTestResults) -> bool:
     print("TASK 6: Validate Frontend Integration")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print(f"\n📡 Testing GET /api/dashboard endpoint...")
         

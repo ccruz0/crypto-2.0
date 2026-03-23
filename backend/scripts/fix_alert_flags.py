@@ -4,12 +4,12 @@ One-off script to ensure all alert-enabled watchlist rows also have buy/sell fla
 """
 from collections import defaultdict
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 
 def fix_alert_flags() -> None:
-    session = SessionLocal()
+    session = create_db_session()
     updated = 0
     per_symbol = defaultdict(int)
     try:

@@ -4,13 +4,13 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.trading_settings import TradingSettings
 from app.services.signal_monitor import signal_monitor_service
 
 def activate_live_trading():
     """Activate LIVE_TRADING temporarily"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         setting = db.query(TradingSettings).filter(
             TradingSettings.setting_key == "LIVE_TRADING"

@@ -15,7 +15,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketData
 from app.models.telegram_message import TelegramMessage
@@ -29,7 +29,7 @@ def test_position_limit_alert_behavior():
     print("POSITION LIMIT ALERT BEHAVIOR TEST")
     print("="*80)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find a watchlist item with high exposure
         # Look for items that might already have high portfolio value

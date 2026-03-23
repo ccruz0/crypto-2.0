@@ -6,11 +6,11 @@ This ensures no coins are hidden from the dashboard.
 import sys
 sys.path.insert(0, '/app')
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print("="*80)

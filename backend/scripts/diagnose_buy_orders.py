@@ -5,7 +5,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.signal_monitor import SignalMonitorService
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, func
 
 def diagnose_buy_orders():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get all watchlist items with alert_enabled = true
         watchlist_items = db.query(WatchlistItem).filter(

@@ -10,12 +10,12 @@ import os
 backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, backend_root)
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def check_margin_setting(symbol: str):
     """Check if margin trading is enabled for a symbol."""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Query watchlist item
         item = db.query(WatchlistItem).filter(

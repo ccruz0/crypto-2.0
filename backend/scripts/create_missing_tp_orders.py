@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.models.watchlist import WatchlistItem
 from app.services.tp_sl_order_creator import create_take_profit_order
@@ -55,7 +55,7 @@ def calculate_tp_price(filled_price: float, watchlist_item: WatchlistItem) -> fl
 
 def create_missing_tp_orders():
     """Create missing TP orders for BUY orders that have SL but no active TP"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find recent filled BUY orders
         recent_threshold = datetime.now(timezone.utc) - timedelta(days=2)

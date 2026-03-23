@@ -9,7 +9,7 @@ BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.database import SessionLocal  # noqa: E402
+from app.database import create_db_session  # noqa: E402
 from app.services.watchlist_selector import cleanup_watchlist_duplicates  # noqa: E402
 
 
@@ -43,7 +43,7 @@ def main():
             "Use soft-delete defaults unless you are certain there are no references."
         )
 
-    session = SessionLocal()
+    session = create_db_session()
     try:
         summary = cleanup_watchlist_duplicates(
             session,

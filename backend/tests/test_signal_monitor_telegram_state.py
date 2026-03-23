@@ -1,5 +1,7 @@
 def test_signal_monitor_uses_refreshed_telegram_runtime_config(monkeypatch):
-    from app.services import signal_monitor as sm
+    import importlib
+
+    sm = importlib.import_module("app.services.signal_monitor")
 
     class DummyTelegramNotifier:
         def __init__(self):

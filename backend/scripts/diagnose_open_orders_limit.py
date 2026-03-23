@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.services.order_position_service import count_open_positions_for_symbol, count_total_open_positions
@@ -22,7 +22,7 @@ def diagnose_open_orders_limit(symbol: str = "AAVE"):
     Args:
         symbol: Symbol to check (e.g., "AAVE", "AAVE_USDT")
     """
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol_upper = symbol.upper()
         

@@ -6,14 +6,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.signal_throttle import SignalThrottleState
 from app.services.strategy_profiles import resolve_strategy_profile
 from app.services.signal_throttle import build_strategy_key, should_emit_signal, SignalThrottleConfig, fetch_signal_states
 from app.models.watchlist import WatchlistItem
 from datetime import datetime, timezone
 
-db = SessionLocal()
+db = create_db_session()
 try:
     symbol = 'BTC_USDT'
     

@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.signal_throttle import fetch_signal_states, build_strategy_key
 from app.services.strategy_profiles import resolve_strategy_profile
@@ -83,7 +83,7 @@ def format_price(price: Optional[float]) -> str:
 
 def diagnose_trx_sell_alert():
     """Main diagnostic function."""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     
     try:
         print("=" * 80)

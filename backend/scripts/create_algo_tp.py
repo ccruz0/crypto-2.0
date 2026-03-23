@@ -8,7 +8,7 @@ import os
 # Add the parent directory to the path so we can import from app
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.services.portfolio_cache import get_portfolio_summary
 from app.services.expected_take_profit import get_expected_take_profit_summary
 from app.services.tp_sl_order_creator import create_take_profit_order
@@ -16,7 +16,7 @@ from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusE
 from app.utils.live_trading import get_live_trading_status
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get live trading status
         live_trading = get_live_trading_status(db)

@@ -8,11 +8,11 @@ from datetime import datetime, timezone, timedelta
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get yesterday's date range (UTC)
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

@@ -18,13 +18,13 @@ from pathlib import Path
 backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.telegram_message import TelegramMessage
 from sqlalchemy import and_
 
 def fix_blocked_portfolio_alerts():
     """Update old portfolio alert blocks to order_skipped"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find messages with the old blocked portfolio alert pattern
         old_messages = db.query(TelegramMessage).filter(

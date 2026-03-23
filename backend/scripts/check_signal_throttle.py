@@ -13,7 +13,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.signal_throttle import SignalThrottleState
 from app.services.strategy_profiles import StrategyType, RiskApproach
 from app.services.signal_throttle import build_strategy_key
@@ -31,7 +31,7 @@ def check_signal_throttle(symbol: str, strategy_type: str = "swing", risk_approa
     except KeyError:
         strategy_key = f"{strategy_type.lower()}:{risk_approach.lower()}"
     
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         # Get all throttle states for this symbol
         states = (

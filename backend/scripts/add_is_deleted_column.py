@@ -8,12 +8,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal, engine
+from app.database import create_db_session, engine
 from sqlalchemy import text
 
 def add_is_deleted_column():
     """Add is_deleted column to watchlist_items table if it doesn't exist"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Check if column exists
         result = db.execute(text("""

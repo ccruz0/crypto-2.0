@@ -19,7 +19,7 @@ sys.path.insert(0, str(backend_path))
 
 from app.services.config_loader import get_strategy_rules, load_config
 from app.services.strategy_profiles import resolve_strategy_profile, StrategyType, RiskApproach
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_data import MarketData
 from app.models.market_price import MarketPrice
@@ -27,7 +27,7 @@ from app.services.trading_signals import should_trigger_buy_signal
 
 def check_signal_compliance():
     """Check if signals comply with strategy parameters."""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Get all watchlist items with alert_enabled

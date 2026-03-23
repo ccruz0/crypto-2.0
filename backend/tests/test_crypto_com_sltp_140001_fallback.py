@@ -2,16 +2,11 @@
 Tests for Crypto.com SL/TP 140001 handling: one-shot fallback to create-order-list.
 Mocks HTTP layer; no real network. Asserts structured error and no param leakage in logs.
 """
-import sys
 import logging
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 
 import pytest
-
-# Allow running in environments where live_trading_gate is not installed (e.g. minimal pytest container)
-if "app.services.live_trading_gate" not in sys.modules:
-    sys.modules["app.services.live_trading_gate"] = MagicMock()
 
 # Minimal instrument meta for formatting (quantity_decimals required by normalize_quantity)
 _FAKE_INST_META = {

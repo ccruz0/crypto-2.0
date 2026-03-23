@@ -2876,21 +2876,55 @@ class CryptoComTradeClient:
         existing_sl_order_id: Optional[str] = None,
         existing_tp_order_id: Optional[str] = None,
         max_variants_per_order: int = 220,
+        dry_run: bool = True,
     ) -> dict:
         """
         Failure-only fallback: attempt SL and/or TP creation with many format variations.
-        Keeps the success-path unchanged by being invoked only after a normal attempt fails.
+
+        Intended for use **after** a normal SL/TP attempt fails (no current in-repo callers; kept for
+        ops/runbooks and future wiring).
+
+        **Mutation contract** (same as ``place_stop_loss_order`` / ``place_take_profit_order``):
+        ``actual_dry_run = dry_run or not self.live_trading``. In dry-run, returns immediately with
+        ``dry_run: True`` and **no** HTTP. ``require_mutation_allowed_for_broker`` runs only on the
+        real-mutation path, immediately before ``_create_order_try_variants``.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("create_stop_loss_take_profit_with_variations", instrument_name)
         entry_side = (side or "").strip().upper()
         if entry_side not in ("BUY", "SELL"):
             raise ValueError("side must be BUY or SELL (entry side)")
 
-        closing_side = "SELL" if entry_side == "BUY" else "BUY"
-        variants = self._build_sltp_variant_grid(max_variants=int(max_variants_per_order))
+        self._refresh_runtime_flags()
+        actual_dry_run = dry_run or not self.live_trading
 
         jsonl_path = f"/tmp/sltp_variants_{correlation_id}.jsonl"
+        closing_side = "SELL" if entry_side == "BUY" else "BUY"
+
+        need_sl = stop_loss_price is not None and not existing_sl_order_id
+        need_tp = take_profit_price is not None and not existing_tp_order_id
+
+        if actual_dry_run:
+            sl_ok = bool(existing_sl_order_id) if not need_sl else False
+            tp_ok = bool(existing_tp_order_id) if not need_tp else False
+            return {
+                "correlation_id": correlation_id,
+                "jsonl_path": jsonl_path,
+                "ok_sl": sl_ok,
+                "ok_tp": tp_ok,
+                "sl_order_id": existing_sl_order_id,
+                "tp_order_id": existing_tp_order_id,
+                "sl_variant_id": None,
+                "tp_variant_id": None,
+                "sl_attempts": 0,
+                "tp_attempts": 0,
+                "sl_errors": [],
+                "tp_errors": [],
+                "dry_run": True,
+            }
+
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("create_stop_loss_take_profit_with_variations", instrument_name)
+
+        variants = self._build_sltp_variant_grid(max_variants=int(max_variants_per_order))
 
         # SL (STOP_LIMIT)
         sl_result = {
@@ -3505,8 +3539,6 @@ class CryptoComTradeClient:
         
         The 'leverage' parameter alone indicates this is a margin order.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("place_market_order", symbol)
         skip = require_aws_or_skip("place_market_order")
         if skip:
             return {"order_id": None, **skip}
@@ -3606,6 +3638,9 @@ class CryptoComTradeClient:
                 "created_time": int(time.time() * 1000)
             }
         
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("place_market_order", symbol)
+
         # Risk guard: block unsafe trades before constructing payload
         try:
             from app.services.risk_guard import check_trade_allowed, RiskViolationError
@@ -4161,8 +4196,6 @@ class CryptoComTradeClient:
         trade_on_margin_from_watchlist: bool = True,
     ) -> dict:
         """Place limit order"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("place_limit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
         
@@ -4179,6 +4212,9 @@ class CryptoComTradeClient:
                 "created_time": int(time.time() * 1000)
             }
         
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("place_limit_order", symbol)
+
         try:
             from app.services.risk_guard import check_trade_allowed, RiskViolationError
             summary = self.get_account_summary()
@@ -4538,8 +4574,6 @@ class CryptoComTradeClient:
         For trigger/conditional orders, uses Advanced Order Management API endpoint.
         If order_type is not provided, attempts to determine it from order detail.
         """
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("cancel_order", None)
         skip = require_aws_or_skip("cancel_order")
         if skip:
             return {"order_id": order_id, "skipped": True, "reason": skip.get("reason", "")}
@@ -4548,6 +4582,9 @@ class CryptoComTradeClient:
             logger.info(f"DRY_RUN: cancel_order - {order_id}")
             return {"order_id": order_id, "status": "CANCELLED"}
         
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("cancel_order", None)
+
         # Use advanced cancel only for OTO/OTOCO orders; standard cancel for single conditional orders
         detail = self._get_order_detail_summary(order_id)
         if self._is_advanced_oto_order(detail):
@@ -4635,8 +4672,6 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place stop loss order (STOP_LIMIT)"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("place_stop_loss_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
 
@@ -4654,6 +4689,9 @@ class CryptoComTradeClient:
                 "created_time": int(time.time() * 1000)
             }
         
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("place_stop_loss_order", symbol)
+
         method = "private/create-order"
         inst_meta = self._get_instrument_metadata(symbol)
         if not inst_meta:
@@ -5413,8 +5451,6 @@ class CryptoComTradeClient:
         source: str = "unknown"  # "auto" or "manual" to track the source
     ) -> dict:
         """Place take profit order (TAKE_PROFIT_LIMIT)"""
-        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
-        require_mutation_allowed_for_broker("place_take_profit_order", symbol)
         self._refresh_runtime_flags()
         actual_dry_run = dry_run or not self.live_trading
 
@@ -5431,6 +5467,9 @@ class CryptoComTradeClient:
                 "created_time": int(time.time() * 1000)
             }
         
+        from app.services.live_trading_gate import require_mutation_allowed_for_broker  # pyright: ignore[reportMissingImports]
+        require_mutation_allowed_for_broker("place_take_profit_order", symbol)
+
         method = "private/create-order"
         inst_meta = self._get_instrument_metadata(symbol)
         if not inst_meta:

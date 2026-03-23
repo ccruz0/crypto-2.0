@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.watchlist_master import WatchlistMaster
 
@@ -32,7 +32,7 @@ def set_trade_amount(symbol: str, amount_usd: float, exchange: str = "CRYPTO_COM
         print(f"Error: amount_usd must be positive, got {amount_usd}")
         return False
 
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Update watchlist_items
         items = db.query(WatchlistItem).filter(

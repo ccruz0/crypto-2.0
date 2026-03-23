@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check MarketData for symbols"""
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.market_price import MarketData
 
-db = SessionLocal()
+db = create_db_session()
 symbols = ['ALGO_USDT', 'BTC_USDT', 'SOL_USDT', 'DOGE_USDT']
 
 for symbol in symbols:

@@ -5,11 +5,11 @@ Script to check SOL_USDT status in watchlist and verify conditions for automatic
 import sys
 sys.path.insert(0, '/app')
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         symbol = "SOL_USDT"

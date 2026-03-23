@@ -12,12 +12,12 @@ from datetime import datetime, timezone, timedelta
 backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 
 def check_sell_orders():
     """Check for new SELL orders and their SL/TP status"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Check for SELL orders filled in the last 5 minutes

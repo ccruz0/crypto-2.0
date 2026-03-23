@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Set DIAG_SYMBOL before importing signal_monitor
 os.environ["DIAG_SYMBOL"] = os.getenv("DIAG_SYMBOL", "ETH_USDT").upper()
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.signal_monitor import signal_monitor_service
 from app.services.signal_throttle import (
@@ -333,7 +333,7 @@ def extract_trace_snippets():
 
 async def run_one_evaluation_cycle():
     """Run one evaluation cycle"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         await signal_monitor_service.monitor_signals(db)
     finally:
@@ -367,7 +367,7 @@ def main():
     logger.info(f"🔍 THROTTLE RESET DIAGNOSTIC - {DIAG_SYMBOL}")
     logger.info("=" * 80)
     
-    db = SessionLocal()
+    db = create_db_session()
     item_was_created = False
     try:
         # Ensure watchlist item exists (seed if needed)

@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from sqlalchemy import or_
@@ -16,7 +16,7 @@ from app.services.strategy_profiles import resolve_strategy_profile
 from app.services.order_position_service import count_open_positions_for_symbol, calculate_portfolio_value_for_symbol
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Buscar LDO en todas las variantes posibles
         symbols = ["LDO_USDT", "LDO_USD", "LDO"]

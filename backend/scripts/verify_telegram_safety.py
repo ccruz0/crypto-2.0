@@ -21,7 +21,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from app.core.environment import getRuntimeEnv
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.trading_settings import TradingSettings
 from app.core.config import Settings
 
@@ -148,7 +148,7 @@ def main():
     print("3. KILL SWITCH CHECK")
     print("-" * 70)
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         kill_switch_exists, kill_switch_enabled = get_kill_switch_status(runtime_env, db)
         setting_key = f"tg_enabled_{runtime_env}"

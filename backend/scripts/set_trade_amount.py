@@ -9,7 +9,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 import logging
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def set_trade_amount(symbol: str, amount_usd: float):
     """Set trade_amount_usd for a specific symbol."""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol = symbol.upper()
         

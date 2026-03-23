@@ -7,10 +7,10 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.sl_tp_checker import sl_tp_checker_service
-from app.database import SessionLocal
+from app.database import create_db_session
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("🔍 Revisando posiciones sin TP/SL...")
         print("="*70)

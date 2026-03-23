@@ -13,12 +13,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def set_xrp_purchase_price():
     """Set manual purchase price for XRP"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Try different symbol variants
         symbol_variants = ['XRP_USDT', 'XRP_USD', 'XRP']

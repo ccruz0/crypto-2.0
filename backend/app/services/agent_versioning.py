@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services import path_guard
+
 logger = logging.getLogger(__name__)
 
 VERSION_STATUS_PROPOSED = "proposed"
@@ -172,7 +174,7 @@ def _append_release_changelog(
     Append a lightweight release entry into docs/releases/CHANGELOG.md.
     """
     path = _repo_root() / "docs" / "releases" / "CHANGELOG.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path_guard.safe_mkdir_lab(path.parent, context="agent_versioning:changelog_parent")
 
     if not path.exists():
         header = (
@@ -187,7 +189,7 @@ def _append_release_changelog(
             "- `Change Summary` (rich text)\n"
             "\n"
         )
-        path.write_text(header, encoding="utf-8")
+        path_guard.safe_write_text(path, header, context="agent_versioning:changelog_header")
 
     date_str = _utc_date()
     block = (
@@ -200,8 +202,7 @@ def _append_release_changelog(
         "- Validation note: recorded in task execution summary and Notion release comment.\n\n"
     )
     try:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(block)
+        path_guard.safe_append_text(path, block, context="agent_versioning:changelog_append")
         return True
     except Exception as e:
         logger.warning("agent_versioning: changelog append failed %s", e)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Script para verificar trade_enabled directamente desde la base de datos"""
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
-db = SessionLocal()
+db = create_db_session()
 try:
     items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).order_by(WatchlistItem.symbol).all()
     print(f"📊 Encontradas {len(items)} monedas")

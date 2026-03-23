@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.trading_signals import calculate_trading_signals
 from app.services.strategy_profiles import resolve_strategy_profile
@@ -105,24 +105,20 @@ def get_ratio_label(ratio: float) -> str:
         return "🔴 MUY CERCA SELL"
 
 def main():
-    # Check if SessionLocal is available
-    if SessionLocal is None:
+    try:
+        db = create_db_session()
+    except RuntimeError as db_err:
         print("=" * 100)
         print("❌ ERROR DE CONEXIÓN A LA BASE DE DATOS")
         print("=" * 100)
-        print("\nNo se pudo inicializar la conexión a la base de datos.")
+        print(f"\n{db_err}")
         print("\n💡 SOLUCIONES:")
         print("   1. Inicia Docker y la base de datos:")
         print("      cd /Users/carloscruz/automated-trading-platform")
         print("      docker-compose up -d db")
         print("\n   2. O verifica que la base de datos esté corriendo y accesible")
         print("   3. Verifica la variable DATABASE_URL en el archivo .env")
-        print("\n   DATABASE_URL actual: postgresql://trader:...@172.19.0.3:5432/atp")
-        print("   (Esta IP es de Docker - asegúrate de que Docker esté corriendo)")
         return
-    
-    try:
-        db = SessionLocal()
     except Exception as db_err:
         print("=" * 100)
         print("❌ ERROR DE CONEXIÓN A LA BASE DE DATOS")

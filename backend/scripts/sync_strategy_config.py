@@ -21,13 +21,13 @@ def main():
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     args = parser.parse_args()
 
-    from app.database import SessionLocal
+    from app.database import create_db_session
     from app.models.watchlist import WatchlistItem
     from app.services.config_loader import load_config, save_config
     from app.services.strategy_profiles import resolve_strategy_profile
     from app.services.signal_throttle import build_strategy_key
 
-    db = SessionLocal()
+    db = create_db_session()
     try:
         items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
         cfg = load_config()

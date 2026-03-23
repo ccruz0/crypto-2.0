@@ -1,0 +1,32 @@
+# LAB filesystem bypass audit — static scan for raw writes + risky subprocess in LAB-enforced services.
+# Fails only on error-level hits in path_guard_audit.LAB_ENFORCED (writes + shell=True / os.system / …).
+# See docs/governance/PATH_GUARD_DESIGN.md. Does NOT scan scripts by default.
+#
+# Distinct from path-guard.yml, which blocks PRs that touch a fixed list of protected paths.
+name: LAB path guard audit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lab-path-guard-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run path_guard_audit (LAB-enforced services only)
+        working-directory: backend
+        run: |
+          python scripts/path_guard_audit.py --fail-on-lab-bypass --ci

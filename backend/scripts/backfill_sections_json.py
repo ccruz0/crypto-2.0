@@ -21,6 +21,15 @@ import sys
 from pathlib import Path
 
 
+def _path_guard():
+    root = _repo_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from app.services import path_guard
+
+    return path_guard
+
+
 def _parse_all_markdown_sections(text: str) -> dict[str, str]:
     """Extract ALL ## Section Name -> content. Mirrors openclaw_client.parse_all_markdown_sections."""
     result: dict[str, str] = {}
@@ -133,9 +142,11 @@ def main() -> int:
                 else:
                     data["sections"] = parsed
                     data["source"] = data.get("source", "openclaw") + "+backfill"
-                    sidecar.write_text(
+                    pg = _path_guard()
+                    pg.safe_write_text(
+                        sidecar,
                         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8",
+                        context="backfill_sections_json:sidecar",
                     )
                     print(f"UPDATED {sidecar.relative_to(project_root)}: {len(parsed)} sections")
                     updated += 1

@@ -14,7 +14,7 @@ from collections import defaultdict
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.brokers.crypto_com_trade import trade_client
 from app.utils.live_trading import get_live_trading_status
@@ -168,7 +168,7 @@ def main():
     
     args = parser.parse_args()
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         live_trading = get_live_trading_status(db)
         dry_run = not (args.live and live_trading)

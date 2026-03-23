@@ -9,13 +9,13 @@ from datetime import datetime, timedelta, timezone
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderRoleEnum
 from sqlalchemy import and_, or_
 
 def verify_ldo_tp_sl_cancellation():
     """Verify that all TP orders for LDO executed yesterday had their SL orders cancelled"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Calculate yesterday's date range (UTC)

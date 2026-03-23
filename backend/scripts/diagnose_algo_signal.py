@@ -9,7 +9,7 @@ from pathlib import Path
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.strategy_profiles import resolve_strategy_profile, StrategyType, RiskApproach
 from app.services.config_loader import get_strategy_rules
@@ -18,7 +18,7 @@ from app.models.market_price import MarketData
 
 def main():
     symbol = "ALGO_USDT"
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print(f"\n{'='*60}")

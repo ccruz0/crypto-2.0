@@ -11,14 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from sqlalchemy import text
 from app.services.signal_throttle import set_force_next_signal, build_strategy_key
 from app.services.strategy_profiles import resolve_strategy_profile
 
 def reset_ton_throttling():
     """Reset throttling state for TON_USDT SELL"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     
     try:
         symbol = "TON_USDT"

@@ -1,3 +1,24 @@
+"""
+Telegram notification service (singleton + ``TelegramNotifier`` class).
+
+**Calling alerts:** import the global instance, not the module by mistake::
+
+    from app.services.telegram_notifier import telegram_notifier
+    telegram_notifier.send_buy_signal(...)
+
+    # Equivalent (re-exported from ``app.services``)::
+    from app.services import telegram_notifier
+    telegram_notifier.send_buy_signal(...)
+
+**Tests / patching module symbols:** ``app.services`` re-exports the singleton as ``telegram_notifier``,
+so ``import app.services.telegram_notifier as m`` is the **instance**, not the module. Use::
+
+    import importlib
+    m = importlib.import_module("app.services.telegram_notifier")
+    monkeypatch.setattr(m, "getRuntimeEnv", ...)
+
+See docs/development/ATP_NOTIFIER_AND_DB_PATTERNS.md.
+"""
 import os
 import logging
 import inspect

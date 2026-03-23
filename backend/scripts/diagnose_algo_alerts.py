@@ -7,14 +7,14 @@ from datetime import datetime, timezone, timedelta
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from sqlalchemy import or_
 from app.services.signal_throttle import fetch_signal_states, build_strategy_key
 from app.services.strategy_profiles import resolve_strategy_profile
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbol = "ALGO_USDT"
         print("=" * 80)

@@ -10,7 +10,7 @@ import json
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 def fetch_frontend_data():
@@ -35,12 +35,7 @@ def fetch_frontend_data():
 
 def get_backend_data() -> list[WatchlistItem]:
     """Get all watchlist items from backend database"""
-    if SessionLocal is None:
-        raise RuntimeError(
-            "Database is unavailable (SessionLocal is None). "
-            "Check DATABASE_URL and that the engine started successfully."
-        )
-    db = SessionLocal()
+    db = create_db_session()
     try:
         items = db.query(WatchlistItem).filter(WatchlistItem.is_deleted == False).all()
         return list(items)

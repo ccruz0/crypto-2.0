@@ -1,11 +1,14 @@
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.core.environment import is_local
 import os
+import sys
 import logging
 import socket
+from typing import Sequence
 from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
@@ -105,6 +108,49 @@ else:
 Base = declarative_base()
 
 
+def create_db_session() -> Session:
+    """
+    Open a new SQLAlchemy session for scripts, CLIs, and one-off jobs.
+
+    Raises:
+        RuntimeError: If ``SessionLocal`` is None (engine creation failed or DB URL missing).
+            Prefer this over bare ``SessionLocal()`` in scripts so failures are explicit.
+
+    Note:
+        FastAPI routes should keep using ``get_db()``, which yields ``None`` when the DB is
+        unavailable so handlers can degrade gracefully.
+    """
+    if SessionLocal is None:
+        raise RuntimeError(
+            "Database is not configured: SessionLocal is None (engine missing or failed to "
+            "initialize). Set DATABASE_URL or use the local SQLite fallback. "
+            "Use app.database.create_db_session() in scripts instead of calling SessionLocal() "
+            "directly. See docs/development/ATP_NOTIFIER_AND_DB_PATTERNS.md."
+        )
+    return SessionLocal()
+
+
+def exit_2_if_missing_schema_tables(
+    exc: OperationalError,
+    *,
+    table_names: Sequence[str],
+    stderr_message: str,
+) -> None:
+    """
+    For scripts/CLIs: if ``exc`` looks like a missing-table failure, print ``stderr_message`` to
+    stderr and ``sys.exit(2)``. Otherwise re-raise ``exc``.
+
+    Matches the common SQLite message (``no such table``) or any of ``table_names`` appearing in
+    the error text (covers PostgreSQL ``relation \"...\" does not exist`` when the name is present).
+    """
+    err_lower = str(exc).lower()
+    names_lower = [n.lower() for n in table_names]
+    if "no such table" not in err_lower and not any(n in err_lower for n in names_lower):
+        raise exc
+    print(stderr_message, file=sys.stderr)
+    sys.exit(2)
+
+
 def test_database_connection() -> tuple[bool, str]:
     """
     Test database connection and return (success, message).
@@ -196,6 +242,23 @@ def ensure_optional_columns(db_engine=None):
             logger.info(f"[BOOT] {agent_approval_table} table OK")
     except Exception as table_err:
         logger.error(f"Error ensuring {agent_approval_table} table exists: {table_err}", exc_info=True)
+
+    # Governance tables (tasks, events, manifests) — see backend/migrations/20260322_create_governance_tables.sql
+    try:
+        from app.models.governance_models import GovernanceEvent, GovernanceManifest, GovernanceTask
+
+        for model, tname in [
+            (GovernanceTask, "governance_tasks"),
+            (GovernanceEvent, "governance_events"),
+            (GovernanceManifest, "governance_manifests"),
+        ]:
+            tbl = getattr(model, "__table__", None)
+            if tbl and not table_exists(engine_to_use, tname):
+                logger.warning("Table %s does not exist - creating (governance)", tname)
+                Base.metadata.create_all(bind=engine_to_use, tables=[tbl])
+                logger.info("[BOOT] Created table %s", tname)
+    except Exception as gov_err:
+        logger.warning("Could not ensure governance tables: %s", gov_err)
 
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"

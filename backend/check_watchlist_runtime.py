@@ -5,13 +5,13 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.watchlist_selector import get_canonical_watchlist_item
 import json
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         symbols = ["ALGO_USDT", "LDO_USDT", "TON_USDT"]
         print("="*60)

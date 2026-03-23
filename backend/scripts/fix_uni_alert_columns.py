@@ -4,11 +4,11 @@ import sys
 import os
 sys.path.insert(0, '/app')
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from sqlalchemy import text
 from app.models.watchlist import WatchlistItem
 
-db = SessionLocal()
+db = create_db_session()
 try:
     # Check if columns exist
     result = db.execute(text("""

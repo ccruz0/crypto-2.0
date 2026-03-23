@@ -155,7 +155,9 @@ def test_place_order_from_signal_normalizes_symbol(monkeypatch):
             captured["side"] = side
             return {"order_id": "test_order", "status": "NEW", "avg_price": 1.0, "quantity": 1.0}
 
-        from app.services import signal_monitor as signal_monitor_module
+        import importlib
+
+        signal_monitor_module = importlib.import_module("app.services.signal_monitor")
         monkeypatch.setattr(signal_monitor_module.trade_client, "place_market_order", fake_place_market_order)
 
         service = SignalMonitorService()

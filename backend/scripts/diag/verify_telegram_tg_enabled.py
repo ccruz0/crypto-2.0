@@ -22,7 +22,7 @@ from pathlib import Path
 backend_dir = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.trading_settings import TradingSettings
 
 
@@ -31,11 +31,11 @@ def main():
     parser.add_argument("--set-true", action="store_true", help="Set tg_enabled_aws to 'true' if missing or false")
     args = parser.parse_args()
 
-    if SessionLocal is None:
-        print("❌ SessionLocal not available (DATABASE_URL not set?)")
+    try:
+        db = create_db_session()
+    except RuntimeError as e:
+        print(f"❌ Database not available: {e}")
         sys.exit(1)
-
-    db = SessionLocal()
     try:
         for env in ("aws", "local"):
             key = f"tg_enabled_{env}"

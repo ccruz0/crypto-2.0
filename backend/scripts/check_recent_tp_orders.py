@@ -3,11 +3,11 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from datetime import datetime, timedelta, timezone
 
-db = SessionLocal()
+db = create_db_session()
 try:
     # Buscar órdenes TP creadas en las últimas 10 minutos
     recent_time = datetime.now(timezone.utc) - timedelta(minutes=10)

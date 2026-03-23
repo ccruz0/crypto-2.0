@@ -11,7 +11,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.models.market_price import MarketPrice, MarketData
 from app.services.signal_evaluator import evaluate_signal_for_symbol
@@ -19,7 +19,7 @@ from app.services.strategy_profiles import resolve_strategy_profile
 
 def check_btc_usd_sell_alert():
     """Check BTC_USD sell alert configuration and signal status"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         symbol = "BTC_USD"
         

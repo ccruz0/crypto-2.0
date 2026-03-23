@@ -10,13 +10,13 @@ from pathlib import Path
 backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from sqlalchemy import and_
 
 def check_specific_order(order_id: str):
     """Check a specific order and its SL/TP status"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print(f"\n🔍 Checking order: {order_id}\n")

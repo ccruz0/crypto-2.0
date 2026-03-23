@@ -6,12 +6,12 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from sqlalchemy import or_
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Query all ALGO-related rows
         algo_items = db.query(WatchlistItem).filter(

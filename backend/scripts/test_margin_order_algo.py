@@ -16,7 +16,7 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.services.brokers.crypto_com_trade import trade_client
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 
 logging.basicConfig(
@@ -32,7 +32,7 @@ DESIRED_LEVERAGE = 2  # Start with 2x as bot does
 
 def get_desired_notional():
     """Get the desired notional from the watchlist item for ALGO_USDT"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         watchlist_item = db.query(WatchlistItem).filter(
             WatchlistItem.symbol == DESIRED_SYMBOL

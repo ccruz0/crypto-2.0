@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.services.sl_tp_checker import sl_tp_checker_service
 from app.services.tp_sl_order_creator import create_take_profit_order
 from app.services.portfolio_cache import get_crypto_prices
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 from app.utils.live_trading import get_live_trading_status
 from datetime import datetime, timezone
@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def main():
-    db = SessionLocal()
+    db = create_db_session()
     try:
         print("🔍 Identificando posiciones sin TP...")
         print("="*70)

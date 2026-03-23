@@ -9,10 +9,11 @@ import contextlib
 
 
 class TestWritableHandoffDir:
-    def test_save_and_bridge_path_match(self, tmp_path):
+    def test_save_and_bridge_path_match(self, tmp_path, monkeypatch):
         """save_cursor_handoff and _cursor_handoff_path must use the same directory."""
         d = tmp_path / "h"
         d.mkdir()
+        monkeypatch.setenv("ATP_PATH_GUARD_EXTRA_ALLOWED_PREFIXES", str(d.resolve()))
         with patch("app.services._paths.get_writable_cursor_handoffs_dir", return_value=d):
             from app.services.cursor_handoff import save_cursor_handoff
             from app.services.cursor_execution_bridge import _cursor_handoff_path
@@ -22,13 +23,14 @@ class TestWritableHandoffDir:
             assert out == d / "cursor-handoff-task-a.md"
             assert _cursor_handoff_path("task-a") == out
 
-    def test_save_surfaces_permission_error_in_logs(self, tmp_path, caplog):
+    def test_save_surfaces_permission_error_in_logs(self, tmp_path, caplog, monkeypatch):
         """When write fails, warning includes exception type (e.g. PermissionError)."""
         import logging
 
         caplog.set_level(logging.WARNING)
         d = tmp_path / "ro"
         d.mkdir()
+        monkeypatch.setenv("ATP_PATH_GUARD_EXTRA_ALLOWED_PREFIXES", str(d.resolve()))
 
         def _boom(*a, **kw):
             raise PermissionError(13, "denied")

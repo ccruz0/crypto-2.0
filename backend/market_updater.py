@@ -11,7 +11,7 @@ import os
 import time
 import requests
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 # Add backend to path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -22,6 +22,26 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _orm_float(value: Any, default: float = 0.0) -> float:
+    """Coerce SQLAlchemy ORM numeric attributes to float.
+
+    Class-level columns are typed as ``Column[...]`` in stubs; on instances the
+    values are numeric. Using ``Any`` here satisfies the type checker.
+    """
+    if value is None:
+        return default
+    return float(value)
+
+
+def _orm_updated_at_iso(mp: Any) -> Optional[str]:
+    """Format ``updated_at`` for JSON without truthiness on ``Column[datetime]``."""
+    if mp is None:
+        return None
+    dt = getattr(mp, "updated_at", None)
+    return dt.isoformat() if dt is not None else None
+
 
 FETCH_SYMBOL_LIMIT = 50  # Increased from 10 to 50 to process more symbols
 _non_custom_offset = 0
@@ -53,7 +73,7 @@ from market_cache_storage import save_cache_to_storage
 
 # Import database models and session
 try:
-    from app.database import SessionLocal, Base, engine
+    from app.database import Base, engine, create_db_session
     from app.models.market_price import MarketPrice, MarketData
     from sqlalchemy import func
     # Only create MarketPrice and MarketData tables, not all tables
@@ -79,7 +99,7 @@ _heartbeat_gauge = None
 _last_heartbeat = [time.time()]
 
 try:
-    from prometheus_client import Gauge, start_http_server
+    from prometheus_client import Gauge, start_http_server  # pyright: ignore[reportMissingImports]
     _heartbeat_gauge = Gauge(
         "market_updater_heartbeat_age_seconds",
         "Seconds since last successful market data update",
@@ -398,7 +418,7 @@ async def update_market_data():
         # This ensures ALL non-deleted watchlist coins are updated, even if they don't have prices yet
         if DB_AVAILABLE:
             try:
-                db = SessionLocal()
+                db = create_db_session()
                 from app.models.watchlist import WatchlistItem
                 
                 # Get all non-deleted watchlist items (this is the source of truth)
@@ -410,14 +430,16 @@ async def update_market_data():
                 
                 # Get existing MarketPrice entries for reference
                 market_prices = db.query(MarketPrice).all()
-                market_price_map = {mp.symbol: mp for mp in market_prices}
+                market_price_map: Dict[str, MarketPrice] = {
+                    cast(str, mp.symbol): mp for mp in market_prices
+                }
                 
                 # Build coins list from watchlist_items (not just MarketPrice)
                 coins = []
                 existing_symbols_set = set()
                 
                 for idx, item in enumerate(watchlist_items):
-                    symbol = item.symbol
+                    symbol = cast(str, item.symbol)
                     existing_symbols_set.add(symbol)
                     
                     # Get MarketPrice data if available
@@ -435,9 +457,9 @@ async def update_market_data():
                         "instrument_name": symbol,
                         "base_currency": base_currency,
                         "quote_currency": quote_currency,
-                        "volume_24h": float(mp.volume_24h) if mp and mp.volume_24h else 0.0,
+                        "volume_24h": _orm_float(getattr(mp, "volume_24h", None)) if mp else 0.0,
                         "rank": idx + 1,
-                        "updated_at": mp.updated_at.isoformat() if mp and mp.updated_at else None,
+                        "updated_at": _orm_updated_at_iso(mp),
                         "is_custom": True,  # All watchlist coins are user-tracked
                     })
                 
@@ -454,9 +476,9 @@ async def update_market_data():
                             "instrument_name": symbol,
                             "base_currency": base_currency,
                             "quote_currency": quote_currency,
-                            "volume_24h": float(mp.volume_24h) if mp and mp.volume_24h else 0.0,
+                            "volume_24h": _orm_float(getattr(mp, "volume_24h", None)) if mp else 0.0,
                             "rank": len(coins) + 1,
-                            "updated_at": mp.updated_at.isoformat() if mp and mp.updated_at else None,
+                            "updated_at": _orm_updated_at_iso(mp),
                             "is_custom": False,
                         })
                 
@@ -529,24 +551,26 @@ async def update_market_data():
         existing_indicators: Dict[str, Dict[str, float]] = {}
         if DB_AVAILABLE:
             try:
-                db = SessionLocal()
+                db = create_db_session()
                 try:
                     market_prices = db.query(MarketPrice).all()
                     for mp in market_prices:
-                        existing_prices[mp.symbol] = mp.price or 0.0
-                        existing_volumes[mp.symbol] = mp.volume_24h or 0.0
+                        sym = cast(str, mp.symbol)
+                        existing_prices[sym] = _orm_float(mp.price)
+                        existing_volumes[sym] = _orm_float(mp.volume_24h)
                     market_data_rows = db.query(MarketData).all()
                     for md in market_data_rows:
-                        existing_indicators[md.symbol] = {
-                            "rsi": float(md.rsi) if md.rsi is not None else 50.0,
-                            "ma50": float(md.ma50) if md.ma50 is not None else float(md.price or 0.0),
-                            "ma200": float(md.ma200) if md.ma200 is not None else float(md.price or 0.0),
-                            "ema10": float(md.ema10) if md.ema10 is not None else float(md.price or 0.0),
-                            "ma10w": float(md.ma10w) if md.ma10w is not None else float(md.price or 0.0),
-                            "atr": float(md.atr) if md.atr is not None else float((md.price or 0.0) * 0.02),
-                            "volume_24h": float(md.volume_24h) if md.volume_24h is not None else 0.0,
-                            "avg_volume": float(md.avg_volume) if md.avg_volume is not None else 0.0,
-                            "volume_ratio": float(md.volume_ratio) if md.volume_ratio is not None else 0.0,
+                        sym = cast(str, md.symbol)
+                        existing_indicators[sym] = {
+                            "rsi": _orm_float(md.rsi, 50.0),
+                            "ma50": _orm_float(md.ma50, _orm_float(md.price)),
+                            "ma200": _orm_float(md.ma200, _orm_float(md.price)),
+                            "ema10": _orm_float(md.ema10, _orm_float(md.price)),
+                            "ma10w": _orm_float(md.ma10w, _orm_float(md.price)),
+                            "atr": _orm_float(md.atr, _orm_float(md.price) * 0.02),
+                            "volume_24h": _orm_float(md.volume_24h),
+                            "avg_volume": _orm_float(md.avg_volume),
+                            "volume_ratio": _orm_float(md.volume_ratio),
                         }
                 finally:
                     db.close()
@@ -771,7 +795,7 @@ async def update_market_data():
         # Save to database if available
         if DB_AVAILABLE:
             try:
-                db = SessionLocal()
+                db = create_db_session()
                 try:
                     for coin in enriched_coins:
                         symbol = coin["instrument_name"]
@@ -786,10 +810,10 @@ async def update_market_data():
                         # Update or insert MarketPrice
                         market_price = db.query(MarketPrice).filter(MarketPrice.symbol == symbol).first()
                         if market_price:
-                            market_price.price = price
-                            market_price.source = source
-                            market_price.volume_24h = coin.get("volume_24h")
-                            market_price.updated_at = func.now()
+                            setattr(market_price, "price", price)
+                            setattr(market_price, "source", source)
+                            setattr(market_price, "volume_24h", coin.get("volume_24h"))
+                            setattr(market_price, "updated_at", func.now())
                         else:
                             market_price = MarketPrice(
                                 symbol=symbol,
@@ -803,21 +827,29 @@ async def update_market_data():
                         # Update or insert MarketData
                         market_data = db.query(MarketData).filter(MarketData.symbol == symbol).first()
                         if market_data:
-                            market_data.price = price
-                            market_data.rsi = coin.get("rsi")
-                            market_data.atr = coin.get("atr")
-                            market_data.ma50 = coin.get("ma50")
-                            market_data.ma200 = coin.get("ma200")
-                            market_data.ema10 = coin.get("ema10")
-                            market_data.ma10w = coin.get("ma10w")
-                            market_data.volume_24h = coin.get("volume_24h")
-                            market_data.current_volume = coin.get("current_volume")
-                            market_data.avg_volume = coin.get("avg_volume")
-                            market_data.volume_ratio = coin.get("volume_ratio")
-                            market_data.res_up = price * 1.02 if price > 0 else None
-                            market_data.res_down = price * 0.98 if price > 0 else None
-                            market_data.source = source
-                            market_data.updated_at = func.now()
+                            setattr(market_data, "price", price)
+                            setattr(market_data, "rsi", coin.get("rsi"))
+                            setattr(market_data, "atr", coin.get("atr"))
+                            setattr(market_data, "ma50", coin.get("ma50"))
+                            setattr(market_data, "ma200", coin.get("ma200"))
+                            setattr(market_data, "ema10", coin.get("ema10"))
+                            setattr(market_data, "ma10w", coin.get("ma10w"))
+                            setattr(market_data, "volume_24h", coin.get("volume_24h"))
+                            setattr(market_data, "current_volume", coin.get("current_volume"))
+                            setattr(market_data, "avg_volume", coin.get("avg_volume"))
+                            setattr(market_data, "volume_ratio", coin.get("volume_ratio"))
+                            setattr(
+                                market_data,
+                                "res_up",
+                                price * 1.02 if price > 0 else None,
+                            )
+                            setattr(
+                                market_data,
+                                "res_down",
+                                price * 0.98 if price > 0 else None,
+                            )
+                            setattr(market_data, "source", source)
+                            setattr(market_data, "updated_at", func.now())
                         else:
                             market_data = MarketData(
                                 symbol=symbol,
@@ -967,7 +999,7 @@ async def run_updater():
                 
                 # Check for stale data and log warning if ALL symbols are stale
                 try:
-                    db = SessionLocal()
+                    db = create_db_session()
                     try:
                         from app.models.market_price import MarketPrice
                         from datetime import datetime, timedelta, timezone

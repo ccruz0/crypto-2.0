@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.utils.live_trading import get_live_trading_status
 from app.services.brokers.crypto_com_trade import trade_client
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 
 def check_live_trading_status():
     """Check if LIVE_TRADING is enabled"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         live_trading = get_live_trading_status(db)
         return live_trading
@@ -27,7 +27,7 @@ def check_live_trading_status():
 
 def check_order_ids():
     """Check if order IDs look like dry_run IDs"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Get recent executed orders
         recent_orders = db.query(ExchangeOrder).filter(

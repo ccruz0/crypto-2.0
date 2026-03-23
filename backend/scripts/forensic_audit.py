@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Tuple, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.telegram_message import TelegramMessage
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.models.watchlist import WatchlistItem
@@ -464,7 +464,7 @@ def print_audit_report(audit_result: Dict[str, Any]):
 
 def main():
     """Main entry point"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         audit_result = run_forensic_audit(db, hours=12)
         print_audit_report(audit_result)

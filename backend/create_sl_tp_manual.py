@@ -11,13 +11,13 @@ from pathlib import Path
 backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.exchange_sync import ExchangeSyncService
 
 def create_sl_tp_for_order(order_id: str, force: bool = False):
     """Manually create SL/TP for a filled order"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         # Find the order

@@ -22,10 +22,10 @@ def mask(s: str) -> str:
 def main():
     print("=== tg_enabled_aws (DB) ===")
     try:
-        from app.database import SessionLocal
+        from app.database import create_db_session
         from app.models.trading_settings import TradingSettings
 
-        db = SessionLocal()
+        db = create_db_session()
         for env in ("aws", "local"):
             key = f"tg_enabled_{env}"
             s = db.query(TradingSettings).filter(TradingSettings.setting_key == key).first()

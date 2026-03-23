@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 
 def format_decimal(value):
@@ -28,7 +28,7 @@ def format_datetime(dt):
 
 def check_recent_ldo_orders():
     """Check recent LDO orders"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Look for orders executed in the last 24 hours
         now = datetime.now(timezone.utc)

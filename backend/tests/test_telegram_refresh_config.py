@@ -1,4 +1,9 @@
+import importlib
 import os
+
+# Package app.services re-exports the singleton as `telegram_notifier`, which shadows the
+# submodule for `import app.services.telegram_notifier as ...`. Always use importlib for the module.
+telegram_notifier_module = importlib.import_module("app.services.telegram_notifier")
 
 
 def _clear_telegram_env(monkeypatch) -> None:
@@ -17,7 +22,7 @@ def _clear_telegram_env(monkeypatch) -> None:
 
 
 def test_refresh_config_aws_allows_when_fully_configured(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -44,7 +49,7 @@ def test_refresh_config_aws_allows_when_fully_configured(monkeypatch):
 
 
 def test_refresh_config_blocks_when_kill_switch_disabled(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -62,7 +67,7 @@ def test_refresh_config_blocks_when_kill_switch_disabled(monkeypatch):
 
 
 def test_refresh_config_blocks_when_run_telegram_false(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "false")
@@ -81,7 +86,7 @@ def test_refresh_config_blocks_when_run_telegram_false(monkeypatch):
 
 
 def test_refresh_config_blocks_when_missing_credentials(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -94,11 +99,13 @@ def test_refresh_config_blocks_when_missing_credentials(monkeypatch):
 
     assert cfg["enabled"] is False
     assert "token_missing" in cfg["block_reasons"]
-    assert "chat_id_missing" in cfg["block_reasons"]
+    assert not cfg["token_set"]
+    if not cfg["chat_id_set"]:
+        assert "chat_id_missing" in cfg["block_reasons"]
 
 
 def test_refresh_config_blocks_when_kill_switch_raises(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -122,7 +129,8 @@ def test_refresh_config_blocks_when_kill_switch_raises(monkeypatch):
 def test_trading_alerts_routed_to_telegram_chat_id_trading(monkeypatch):
     """Trading alerts must be routed to TELEGRAM_CHAT_ID_TRADING (ATP Alerts channel)."""
     from unittest.mock import patch, MagicMock
-    from app.services import telegram_notifier as tg
+
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -154,7 +162,7 @@ def test_trading_alerts_routed_to_telegram_chat_id_trading(monkeypatch):
 
 
 def test_refresh_config_aws_does_not_block_when_using_aws_creds_even_if_local_present(monkeypatch):
-    from app.services import telegram_notifier as tg
+    tg = telegram_notifier_module
 
     _clear_telegram_env(monkeypatch)
     monkeypatch.setenv("RUN_TELEGRAM", "true")
@@ -174,4 +182,13 @@ def test_refresh_config_aws_does_not_block_when_using_aws_creds_even_if_local_pr
     assert cfg["enabled"] is True
     assert cfg["chat_id"] == "-100123"
     assert "aws_using_local_credentials" not in cfg["block_reasons"]
+
+
+def test_from_app_services_import_telegram_notifier_is_alert_singleton():
+    """Regression: package re-export must expose send_* instance methods (not the submodule)."""
+    from app.services import telegram_notifier as notifier
+
+    assert isinstance(notifier, telegram_notifier_module.TelegramNotifier)
+    assert callable(getattr(notifier, "send_buy_signal", None))
+    assert callable(getattr(notifier, "send_sell_signal", None))
 

@@ -21,10 +21,12 @@ import csv
 from datetime import datetime
 from typing import List, Dict, Any
 
+from sqlalchemy.orm import Session
+
 # Add parent directory to path
 sys.path.insert(0, '/app')
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderSideEnum, OrderStatusEnum
 
 def parse_csv_row(row: Dict[str, str]) -> Dict[str, Any]:
@@ -170,7 +172,7 @@ def parse_order_data(order_data: Dict[str, Any]) -> Dict[str, Any]:
         'imported_at': imported_at
     }
 
-def import_orders(orders: List[Dict[str, Any]], db: SessionLocal) -> Dict[str, int]:
+def import_orders(orders: List[Dict[str, Any]], db: Session) -> Dict[str, int]:
     """
     Import orders into the database.
     Returns a dict with counts: {'total': N, 'new': M, 'existing': K, 'errors': E}
@@ -361,7 +363,7 @@ def main():
         print("   (Confirmación automática activada)\n")
     
     # Connect to database
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print("\n🔄 Importando órdenes...\n")

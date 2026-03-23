@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 import logging
 
@@ -153,7 +153,7 @@ def main():
     
     args = parser.parse_args()
     
-    db = SessionLocal()
+    db = create_db_session()
     try:
         if args.all:
             sl_pct = float(args.all[0])

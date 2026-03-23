@@ -181,6 +181,7 @@ def save_cursor_handoff(
         return None
 
     try:
+        from app.services import path_guard
         from app.services._paths import get_writable_cursor_handoffs_dir
 
         out_dir = get_writable_cursor_handoffs_dir()
@@ -188,7 +189,7 @@ def save_cursor_handoff(
         writable = False
         try:
             probe = out_dir / ".write_probe_save"
-            probe.write_text("", encoding="utf-8")
+            path_guard.safe_write_text(probe, "", context="cursor_handoff:probe")
             probe.unlink(missing_ok=True)
             writable = True
         except OSError:
@@ -203,24 +204,23 @@ def save_cursor_handoff(
 
         filename = f"cursor-handoff-{task_id}.md"
         path = out_dir / filename
-        path.write_text(prompt, encoding="utf-8")
+        path_guard.safe_write_text(path, prompt, context="cursor_handoff:handoff_md")
 
         idx_path = out_dir / "README.md"
         idx_line = f"- [{title or task_id}]({filename})"
         if not idx_path.exists():
-            idx_path.write_text(
+            path_guard.safe_write_text(
+                idx_path,
                 "# Cursor implementation handoffs\n\n"
                 "Generated prompts for Cursor-driven patching.\n\n"
                 + idx_line + "\n",
-                encoding="utf-8",
+                context="cursor_handoff:readme_init",
             )
         else:
             existing = idx_path.read_text(encoding="utf-8")
             if idx_line not in existing:
-                with idx_path.open("a", encoding="utf-8") as f:
-                    if not existing.endswith("\n"):
-                        f.write("\n")
-                    f.write(idx_line + "\n")
+                chunk = ("" if existing.endswith("\n") else "\n") + idx_line + "\n"
+                path_guard.safe_append_text(idx_path, chunk, context="cursor_handoff:readme_append")
 
         logger.info("Cursor handoff saved task_id=%s path=%s", task_id, path)
         return path

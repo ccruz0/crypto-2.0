@@ -16,7 +16,7 @@ import logging
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.watchlist_selector import get_canonical_watchlist_item, select_preferred_watchlist_item
 
@@ -97,7 +97,7 @@ def verify_symbol(symbol: str, db: Session) -> Dict[str, Any]:
 
 def main():
     """Main verification function."""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     try:
         symbols_to_check: List[str] = []
         

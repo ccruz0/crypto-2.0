@@ -8,13 +8,13 @@ import os
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, "/app")
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.exchange_sync import ExchangeSyncService
 
 def fix_uncancelled_sl_orders():
     """Fix uncancelled SL orders for TP orders executed yesterday"""
-    db = SessionLocal()
+    db = create_db_session()
     sync_service = ExchangeSyncService()
     
     try:

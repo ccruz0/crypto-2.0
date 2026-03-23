@@ -11,7 +11,7 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from datetime import datetime
 
@@ -29,7 +29,7 @@ def format_datetime(dt):
 
 def check_order_origin(order_id: str):
     """Check the origin of an order by querying the database"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         # Find the order
         order = db.query(ExchangeOrder).filter(

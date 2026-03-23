@@ -9,7 +9,7 @@ import os
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum, OrderSideEnum
 from app.services.exchange_sync import exchange_sync_service
 import logging
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def create_sl_tp_for_last_order(symbol: str = "SOL_USDT"):
     """Create SL/TP orders for the last filled order of a symbol"""
-    db = SessionLocal()
+    db = create_db_session()
     try:
         logger.info(f"Creating SL/TP for last order of {symbol}")
         

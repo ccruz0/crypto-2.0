@@ -10,7 +10,7 @@ from pathlib import Path
 backend_path = Path(__file__).parent
 sys.path.insert(0, str(backend_path))
 
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 from app.services.exchange_sync import ExchangeSyncService
 from app.services.brokers.crypto_com_trade import trade_client
@@ -18,7 +18,7 @@ from sqlalchemy import and_
 
 def sync_and_check_order(order_id: str):
     """Sync order from exchange and check/create SL/TP"""
-    db = SessionLocal()
+    db = create_db_session()
     
     try:
         print(f"\n🔄 Syncing order {order_id} from exchange...\n")

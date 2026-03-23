@@ -11,14 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import create_db_session
 from app.models.watchlist import WatchlistItem
 from app.services.signal_throttle import fetch_signal_states
 from datetime import datetime, timezone
 
 def check_etc_configuration():
     """Check ETC_USDT configuration and identify issues"""
-    db: Session = SessionLocal()
+    db: Session = create_db_session()
     
     try:
         symbol = "ETC_USDT"
