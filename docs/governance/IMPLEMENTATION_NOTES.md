@@ -19,6 +19,7 @@
 - **Enforcement** (`backend/app/services/governance_enforcement.py`): blocks `POST /api/monitoring/backend/restart` when `ATP_GOVERNANCE_ENFORCE=true` and `ENVIRONMENT=aws`.
 - **Telegram** (`backend/app/services/governance_telegram.py`): short summaries on awaiting approval, approve/deny, completed/failed (Claw channel; respects `RUN_TELEGRAM`).
 - **Agent bridge** (`backend/app/services/governance_agent_bridge.py`): ties **release-candidate deploy** and **`execute_prepared_notion_task` (prod_mutation only)** to governance tasks/manifests when `ATP_GOVERNANCE_AGENT_ENFORCE=true` on AWS.
+- **Read-only control-plane UI** (`frontend/src/app/governance/task/page.tsx`, `frontend/src/lib/governanceTaskView.ts`): `/governance/task` — resolve + timeline, **signal** filters, **Important only**, jump-to-latest (with filter auto-adjust for signal targets), **Copy** / links, and per-row **expand** for **`compact_payload`** / **`links`** / **`payload_ref`** (no writes, no extra API). See [CONTROL_PLANE_TASK_VIEW.md](./CONTROL_PLANE_TASK_VIEW.md).
 
 ## Why separate from `agent_approval_states`
 

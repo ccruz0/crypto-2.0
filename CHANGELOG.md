@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Governance control-plane task page — timeline row details
+
+- **`/governance/task`**: each timeline row has a read-only **expand/collapse** control (`+` / `−`) showing **`payload_ref`**, **`links`** (key/value), **`environment`**, **`actor`**, and pretty-printed **`compact_payload`** (with **Copy** for ref and JSON). Multiple rows can be open. Collapsed rows still show a one-line **`payload_ref`** under **links / ids** when expanded details are hidden. No API or mutation changes.
+
 ### Fixed
 
 #### Open Orders Detail: BUY-Based Positions Only

@@ -126,7 +126,7 @@ Legacy or partially governed work may show `timeline_scope: partial` or empty `t
 
 - **Route:** `/governance/task` (Next.js app).
 - **Flow:** operator enters a single lookup string and a **Bearer token** (same as `GOVERNANCE_API_TOKEN` / `OPENCLAW_API_TOKEN` used for curl). The browser calls **`GET /api/governance/resolve`** with `task_id`, then `notion_page_id`, then `manifest_id` until one returns **200** (404 tries the next). It then loads **`GET /api/governance/tasks/{governance_task_id}/timeline`** and renders header, **coverage** flags, **manifests**, **agent_bundle**, and **timeline** (read-only; no mutations).
-- **Usability:** **Copy** buttons for governance task id, Notion page id, manifest ids, digest / bundle fingerprint prefixes, and timeline URL; **quick links** for `source_ref` when it is already `https://…`, else an **inferred Notion URL** from the page id; **timeline JSON** link + copy (new tab usually **401** without Bearer—use **Copy** + curl). Timeline table includes **actor** (`type · id`), **signal** column and row tint driven by API **`signal`** / **`signal_counts`** (not client string matching). Clearer **empty** and **error** states (401 / 404 hints). **Enter** submits lookup.
+- **Usability:** **Copy** buttons for governance task id, Notion page id, manifest ids, digest / bundle fingerprint prefixes, and timeline URL; **quick links** for `source_ref` when it is already `https://…`, else an **inferred Notion URL** from the page id; **timeline JSON** link + copy (new tab usually **401** without Bearer—use **Copy** + curl). Timeline table includes **actor** (`type · id`), **signal** column and row tint driven by API **`signal`** / **`signal_counts`** (not client-side string matching on summaries). Each row has **+** / **−** to **expand read-only details**: **`payload_ref`**, **`links`** (manifest id, digest prefix, bundle fingerprint prefix when present), **`environment`**, **`actor`**, and pretty-printed **`compact_payload`** (includes **`signal_hint`** when the backend included it). **Copy** on `payload_ref` and full JSON. Multiple rows may stay open; collapsed rows still show **`payload_ref`** as a single line under **links / ids** when the row is collapsed. Clearer **empty** and **error** states (401 / 404 hints). **Enter** submits lookup.
 - **Timeline filtering (client-only):** operators can restrict rows by API **`signal`**: **All**, **Failed**, **Drift**, **Class conflict**, **Blocked**. Filters apply only in the browser; the timeline API response is unchanged. **Important only** shows rows where **`signal`** is non-null. **Summary chips** (from **`signal_counts`**) are clickable: click applies that signal filter; click again clears back to **All**. When no rows match, the UI shows a short message (e.g. “No drift events in this task”). Coverage / manifests / agent bundle sections are **not** hidden by filters.
 - **Quick navigation:** after load, a **Quick navigation** strip provides anchor links to **Task**, **Manifests**, **Agent bundle**, and **Timeline**, plus **Jump to latest** buttons for the newest manifest row (by **`created_at`**, lexicographic ISO) and the **most recent** timeline row per signal (**last row** in the API order — ascending time — is treated as latest). **Signal jump** actions (**Failed**, **Blocked**, **Drift**, **Class conflict**) first set the timeline **Signal** filter to that signal and turn **Important only** **on**, so the target row is **visible**, then **scroll** and briefly **highlight** it. **Manifest** jump does not change timeline filters (the manifests table is never hidden by those filters). Buttons are **disabled** when there is nothing to jump to (e.g. no manifests, no failed events).
 - **Token storage:** `sessionStorage` for the tab only (`atp_governance_task_view_bearer`); not a server-side secret.
@@ -142,6 +142,29 @@ Legacy or partially governed work may show `timeline_scope: partial` or empty `t
 5. Set timeline filters to something that would hide failed rows (e.g. **Drift** only), then use **Jump to latest → Failed**: confirm **Signal** switches to **Failed**, **Important only** is on, the row scrolls into view, and the highlight appears.
 6. With multiple manifests, confirm **Jump to latest → Manifest** targets the row with the latest **`created_at`** when set.
 7. Confirm **coverage** and empty sections still render when timeline is empty or filters exclude every row.
+8. Expand a timeline row (**+**): confirm **compact_payload**, **links**, and **payload_ref** appear; **Copy** on JSON; collapse (**−**) and confirm filters/jumps still work.
+
+### What to inspect first (operators)
+
+1. **Coverage** strip — scope (`full` / `partial` / `governed_only`) and `has_events` / `has_manifests`.
+2. **signal_counts** chips — quick density of **failed** / **blocked** / **drift** / **classification_conflict**.
+3. **Expanded row** — **`signal_hint`** inside **compact_payload** when present; **links.manifest_id** / **manifest_digest_prefix** for manifest correlation.
+4. **Manifests** table vs **timeline** decisions — approval status and digest prefix alignment.
+
+### Smoke test checklist (backend + frontend)
+
+**Backend (after deploy)** — from an environment with DB + token:
+
+- `GET /api/health` (or host health per [deploy runbook](../runbooks/deploy.md)).
+- `GET /api/governance/resolve?notion_page_id=<known_page_or_skip>` with `Authorization: Bearer …` — expect **200** or **404** (not **5xx**).
+- `GET /api/governance/tasks/<gov-notion-…>/timeline` with Bearer — expect **200** JSON with `timeline`, `signal_counts`, `coverage`; spot-check `timeline[].signal` and `compact_payload` on at least one event.
+
+**Frontend (after deploy)**
+
+- Open `/governance/task`, paste Bearer, load a known task — resolve + timeline render without console errors.
+- Toggle **Signal** filter and **Important only**; use **Jump to latest → Failed** (if events exist); expand one row and verify details.
+
+**Limits:** expand shows only fields returned by the timeline API (truncated **compact_payload** per backend); full raw `payload_json` is not loaded on this page — use SQL or a future events API if needed.
 
 ## Implementation
 
