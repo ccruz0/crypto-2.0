@@ -148,6 +148,8 @@ _GET_UPDATES_409_LAST_WARN_TS = 0.0  # Rate-limit high-signal duplicate poller w
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
 CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
+PROCESSED_CALLBACK_LOGICAL_KEYS: Dict[str, float] = {}  # {"cb:<id>" or "data_user:<data>:<uid>": ts}
+CALLBACK_LOGICAL_KEY_TTL = 15.0  # short TTL to collapse duplicate logical callback events
 # CRITICAL: Track processed text commands to prevent duplicates when multiple instances (local/AWS) process same command
 PROCESSED_TEXT_COMMANDS: Dict[str, float] = {}  # {chat_id:command: timestamp}
 TEXT_COMMAND_TTL = 3.0  # 3 seconds - ignore duplicate text commands within this window
@@ -192,6 +194,38 @@ def _mark_update_id_seen_runtime(update_id: int) -> bool:
             stale = [k for k, ts in PROCESSED_UPDATE_IDS_RUNTIME.items() if ts < cutoff]
             for k in stale:
                 PROCESSED_UPDATE_IDS_RUNTIME.pop(k, None)
+    return False
+
+
+def _is_duplicate_callback_logical_event(callback_id: str, callback_data: str, user_id: str) -> bool:
+    """
+    Logical callback deduplication.
+    Priority key: callback_query.id
+    Fallback key: callback_data + from_user.id
+    """
+    now = time.time()
+    callback_id = (callback_id or "").strip()
+    callback_data = (callback_data or "").strip()
+    user_id = (user_id or "").strip()
+    keys: list[str] = []
+    if callback_id:
+        keys.append(f"cb:{callback_id}")
+    if callback_data and user_id:
+        keys.append(f"data_user:{callback_data}:{user_id}")
+    if not keys:
+        return False
+    # Clean stale entries opportunistically.
+    if len(PROCESSED_CALLBACK_LOGICAL_KEYS) > 3000:
+        cutoff = now - CALLBACK_LOGICAL_KEY_TTL
+        stale = [k for k, ts in PROCESSED_CALLBACK_LOGICAL_KEYS.items() if ts < cutoff]
+        for k in stale:
+            PROCESSED_CALLBACK_LOGICAL_KEYS.pop(k, None)
+    for k in keys:
+        ts = PROCESSED_CALLBACK_LOGICAL_KEYS.get(k)
+        if ts and (now - ts) < CALLBACK_LOGICAL_KEY_TTL:
+            return True
+    for k in keys:
+        PROCESSED_CALLBACK_LOGICAL_KEYS[k] = now
     return False
 
 
@@ -4797,9 +4831,28 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
     if callback_query:
+        callback_query_id = str(callback_query.get("id", "") or "").strip()
+        callback_data = str(callback_query.get("data", "") or "").strip()
+        from_user = callback_query.get("from", {}) or {}
+        callback_user_id = str(from_user.get("id", "") or "").strip()
+        logger.info(
+            "[TG][CALLBACK][ENTRY] update_id=%s callback_id=%s user_id=%s data=%s",
+            update_id,
+            callback_query_id or "(empty)",
+            callback_user_id or "(empty)",
+            callback_data[:120],
+        )
+        if _is_duplicate_callback_logical_event(callback_query_id, callback_data, callback_user_id):
+            logger.info(
+                "[TG][DEDUP][CALLBACK] skipped duplicate callback_id=%s user_id=%s data=%s",
+                callback_query_id or "(empty)",
+                callback_user_id or "(empty)",
+                callback_data[:120],
+            )
+            return
+
         logger.info("[TG][ROUTE] update_id=%s selected=callback_query", update_id)
         callback_query_id = callback_query.get("id")
-        callback_data = str(callback_query.get("data", "") or "").strip()
         
         # DEDUPLICATION LEVEL 1: Check if this callback_query_id was already processed
         # This prevents duplicate processing when multiple workers handle the same update
