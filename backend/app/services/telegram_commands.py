@@ -4770,6 +4770,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
     if callback_query:
+        logger.info("[TG][ROUTE] update_id=%s selected=callback_query", update_id)
         callback_query_id = callback_query.get("id")
         callback_data = str(callback_query.get("data", "") or "").strip()
         
@@ -5418,10 +5419,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             # Callback payloads are never command text; swallow safely.
             return
         
+        logger.info("[TG][ROUTE] update_id=%s completed=callback_query", update_id)
         return
     
     # Strict single-path routing: callback updates must never reach message parser.
     if update.get("callback_query"):
+        logger.info("[TG][ROUTE] update_id=%s selected=callback_query_guard_return", update_id)
         return
     message = update.get("message")
     if not message:
@@ -5430,6 +5433,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         return
     raw_text = (message.get("text") or "").strip()
     if not raw_text:
+        return
+    if not raw_text.startswith("/"):
+        logger.info(
+            "[TG][ROUTE] update_id=%s selected=message_non_command_ignored text_preview=%s",
+            update_id,
+            raw_text[:80],
+        )
         return
 
     chat = message.get("chat", {})
