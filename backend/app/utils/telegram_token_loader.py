@@ -206,9 +206,12 @@ def get_telegram_token() -> Optional[str]:
             # AWS poller must use a single token source to avoid drift during rotations.
             atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
             if atp:
+                suffix = atp[-6:] if len(atp) >= 6 else atp
                 logger.info(
                     "[TG][CONFIG] AWS polling token=TELEGRAM_ATP_CONTROL_BOT_TOKEN "
-                    "(commands /task go to this bot; TELEGRAM_BOT_TOKEN is for trading sends)"
+                    "(masked_suffix=***%s; commands /task go to this bot; "
+                    "TELEGRAM_BOT_TOKEN is for trading sends)",
+                    suffix,
                 )
                 return atp
             logger.warning("[TG][CONFIG] AWS runtime missing TELEGRAM_ATP_CONTROL_BOT_TOKEN; polling token unavailable")
