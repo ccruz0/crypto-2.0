@@ -5244,18 +5244,21 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 send_command_response(chat_id, f"❌ Error processing {_action}: {str(ext_err)[:200]}")
         else:
             logger.warning(f"[TG] Unknown callback_data: {callback_data}")
-            send_command_response(chat_id, f"❓ Unknown command: {callback_data}")
+            # Callback payloads are never command text; swallow safely.
+            return
         
         return
     
-    # Handle regular message (groups/supergroups) or channel_post (channels like ATP Alerts)
-    message = (
-        update.get("message")
-        or update.get("edited_message")
-        or update.get("channel_post")
-        or update.get("edited_channel_post")
-    )
+    # Strict single-path routing: callback updates must never reach message parser.
+    if update.get("callback_query"):
+        return
+    message = update.get("message")
     if not message:
+        return
+    if not isinstance(message.get("text"), str):
+        return
+    raw_text = (message.get("text") or "").strip()
+    if not raw_text:
         return
 
     chat = message.get("chat", {})
@@ -5268,16 +5271,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     actor_user_id = _resolve_actor_user_id(from_user, sender_chat, chat_id)
     sender_id = actor_user_id or chat_id
 
-    # Defensive text extraction: message.text, message.caption, edited_message.text
-    edited_msg = update.get("edited_message") or {}
-    raw_text = (
-        message.get("text")
-        or message.get("caption")
-        or edited_msg.get("text")
-        or edited_msg.get("caption")
-        or ""
-    )
-    text = (raw_text or "").strip()
+    text = raw_text
     logger.info(
         "telegram_update_received update_id=%s chat_id=%s text=%s",
         update_id, chat_id, (text or "")[:120],
