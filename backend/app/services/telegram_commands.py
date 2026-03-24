@@ -4690,10 +4690,6 @@ def _handle_task_command(
         chat_id,
         (normalized_cmd or "")[:200],
     )
-    logger.info(
-        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
-        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
-    )
     if not intent_text:
         logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
         ok = send_response(
@@ -4747,21 +4743,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
-    try:
-        raw_json = json.dumps(update, default=str)[:2000]
-        logger.info("[TG][RAW_UPDATE] %s", raw_json)
-    except Exception as e:
-        logger.warning("[TG][RAW_UPDATE] failed to serialize: %s", e)
-    _trace_cb = update.get("callback_query") or {}
-    _trace_msg = update.get("message") or {}
-    logger.info(
-        "[TG][TRACE] fn=handle_telegram_update stage=entry update_id=%s callback_id=%s callback_data=%s message_text=%s",
-        update_id,
-        str(_trace_cb.get("id", "") or ""),
-        str(_trace_cb.get("data", "") or "")[:120],
-        str(_trace_msg.get("text", "") or "")[:120],
-    )
-
     msg_obj = update.get("message") or update.get("edited_message")
     channel_obj = update.get("channel_post") or update.get("edited_channel_post")
     obj = msg_obj or channel_obj
@@ -4889,12 +4870,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # Handle callback_query (button clicks)
     callback_query = update.get("callback_query")
     if callback_query:
-        logger.info(
-            "[TG][TRACE] fn=handle_telegram_update stage=callback_branch_enter update_id=%s callback_id=%s callback_data=%s",
-            update_id,
-            str(callback_query.get("id", "") or ""),
-            str(callback_query.get("data", "") or "")[:120],
-        )
         callback_query_id = str(callback_query.get("id", "") or "").strip()
         callback_data = str(callback_query.get("data", "") or "").strip()
         from_user = callback_query.get("from", {}) or {}
@@ -4912,11 +4887,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 callback_query_id or "(empty)",
                 callback_user_id or "(empty)",
                 callback_data[:120],
-            )
-            logger.info(
-                "[TG][TRACE] fn=handle_telegram_update stage=callback_branch_exit reason=dedup_skip update_id=%s callback_id=%s",
-                update_id,
-                callback_query_id or "(empty)",
             )
             return
 
@@ -5105,7 +5075,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 from app.services.notion_env import try_repair_notion_env_from_ssm
                 if not notion_is_configured():
                     repaired = try_repair_notion_env_from_ssm()
-                    logger.info("[TG][TASK][DEBUG] notion_preflight repaired=%s update_id=%s", repaired, update_id)
+                    logger.info("[TG][TASK] notion_preflight repaired=%s update_id=%s", repaired, update_id)
             except Exception as repair_err:
                 logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
 
@@ -5565,20 +5535,9 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 send_command_response(chat_id, f"❌ Error processing {_action}: {str(ext_err)[:200]}")
         else:
             logger.warning(f"[TG] Unknown callback_data: {callback_data}")
-            logger.warning(
-                "[TG][TRACE] fn=handle_telegram_update stage=unknown_callback_response update_id=%s callback_id=%s callback_data=%s",
-                update_id,
-                callback_query_id or "(empty)",
-                callback_data[:120],
-            )
             # Callback payloads are never command text; swallow safely.
             return
-        
-        logger.info(
-            "[TG][TRACE] fn=handle_telegram_update stage=callback_branch_exit reason=completed update_id=%s callback_id=%s",
-            update_id,
-            callback_query_id or "(empty)",
-        )
+
         logger.info("[TG][ROUTE] update_id=%s completed=callback_query", update_id)
         return
     
@@ -5589,11 +5548,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     message = update.get("message")
     if not message:
         return
-    logger.info(
-        "[TG][TRACE] fn=handle_telegram_update stage=message_branch_enter update_id=%s message_text=%s",
-        update_id,
-        str(message.get("text", "") or "")[:120],
-    )
     if not isinstance(message.get("text"), str):
         return
     raw_text = (message.get("text") or "").strip()
@@ -5605,18 +5559,9 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             update_id,
             raw_text[:80],
         )
-        logger.info(
-            "[TG][TRACE] fn=handle_telegram_update stage=message_branch_exit reason=non_command_ignored update_id=%s message_text=%s",
-            update_id,
-            raw_text[:120],
-        )
         return
     if raw_text.startswith("task_project:"):
-        logger.warning(
-            "[TG][TRACE] fn=handle_telegram_update stage=ignore_callback_like_message update_id=%s text=%s",
-            update_id,
-            raw_text[:120],
-        )
+        logger.warning("[TG] Ignoring callback-like text message update_id=%s text=%s", update_id, raw_text[:120])
         return
 
     chat = message.get("chat", {})
@@ -5966,12 +5911,6 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         update_id, chat_id, (cmd_token or "")[:40], len(text or ""), repr((text or "")[:80]),
                     )
                     logger.info("[TG][HANDLER] handler=unknown executing")
-                    logger.warning(
-                        "[TG][TRACE] fn=handle_telegram_update stage=send_unknown_help update_id=%s branch=unknown_slash cmd_token=%s text=%s",
-                        update_id,
-                        (cmd_token or "")[:40],
-                        (text or "")[:120],
-                    )
                     ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
@@ -6005,18 +5944,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     update_id, chat_id, repr((text or "")[:80]),
                 )
                 logger.info("[TG][HANDLER] handler=fallback executing")
-                logger.warning(
-                    "[TG][TRACE] fn=handle_telegram_update stage=send_unknown_help update_id=%s branch=fallback_non_slash text=%s",
-                    update_id,
-                    (text or "")[:120],
-                )
                 ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=fallback", ok)
-        logger.info(
-            "[TG][TRACE] fn=handle_telegram_update stage=message_branch_exit reason=completed update_id=%s text=%s",
-            update_id,
-            (text or "")[:120],
-        )
     except Exception as e:
         logger.exception("[TG][ERROR] %s", e)
         ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")

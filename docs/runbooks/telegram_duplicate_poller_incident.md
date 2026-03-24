@@ -88,6 +88,8 @@ Implemented in `backend/app/services/telegram_commands.py`:
 - Rate limiting/dedup:
   - in-memory keyed cooldown via `_POLLER_CONFLICT_ALERT_LAST_TS`
   - configurable by `TELEGRAM_POLLER_ALERT_COOLDOWN_SECONDS` (default `600`, minimum `60`).
+- Post-incident cleanup:
+  - temporary investigation-only trace logs were removed; only operational `[TG]` startup/poller/error/alert logs remain.
 
 ### 9.2 LAB poller hard guard (fail-safe)
 
