@@ -261,6 +261,10 @@ def _runtime_agent_runs_dir(repo_path: Path) -> Path:
     for candidate in candidates:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_probe"
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("ok")
+            probe.unlink(missing_ok=True)
             return candidate
         except OSError:
             continue
