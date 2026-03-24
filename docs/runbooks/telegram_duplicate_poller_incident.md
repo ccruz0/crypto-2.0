@@ -66,6 +66,7 @@ Post-resolution result: no recurring `409`, no duplicate-poller warnings, and cl
 - Add alerting on `getUpdates conflict (409)` and duplicate-poller warning patterns.
 - Keep one canonical poller service enabled; disable polling explicitly elsewhere.
 - Add/maintain a poller uniqueness health signal (startup/runtime check) to detect multi-consumer drift quickly.
+- Keep automated regression coverage for LAB poller blocking in `backend/tests/test_telegram_poller_lab_guard.py`.
 
 ## 9. Preventive Controls Implemented
 
