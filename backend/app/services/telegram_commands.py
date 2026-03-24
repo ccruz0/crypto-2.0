@@ -4698,6 +4698,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
     update_id = update.get("update_id", 0)
+    def _trace_return(reason: str) -> None:
+        logger.warning(
+            "[TG][TRACE_RETURN] fn=handle_telegram_update update_id=%s reason=%s",
+            update_id,
+            reason,
+        )
     try:
         raw_json = json.dumps(update, default=str)[:2000]
         logger.info("[TG][RAW_UPDATE] %s", raw_json)
@@ -4778,6 +4784,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     cid = (obj or {}).get("chat", {}).get("id")
                     if cid:
                         send_command_response(str(cid), "⏳ Already processed. Try again in a moment.")
+                _trace_return("dedup_table_skip_duplicate")
                 return
             logger.info("[TG][DEDUP] update_id=%s action=process", update_id)
             import random
@@ -4804,6 +4811,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         cid = (obj or {}).get("chat", {}).get("id")
                         if cid:
                             send_command_response(str(cid), "⏳ Already processed.")
+                    _trace_return("dedup_legacy_skip_duplicate")
                     return
                 db.add(TelegramMessage(symbol=update_marker, message="update_deduplication", blocked=False, order_skipped=False))
                 db.commit()
@@ -4818,6 +4826,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     cid = (obj or {}).get("chat", {}).get("id")
                     if cid:
                         send_command_response(str(cid), "⏳ Already processed.")
+                _trace_return("dedup_in_memory_skip_duplicate")
                 return
             handle_telegram_update.processed_update_ids.add(update_id)
             if len(handle_telegram_update.processed_update_ids) > 1000:
@@ -4832,6 +4841,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 cid = (obj or {}).get("chat", {}).get("id")
                 if cid:
                     send_command_response(str(cid), "⏳ Already processed.")
+            _trace_return("dedup_no_db_skip_duplicate")
             return
         handle_telegram_update.processed_update_ids.add(update_id)
         if len(handle_telegram_update.processed_update_ids) > 1000:
@@ -4869,6 +4879,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 update_id,
                 callback_query_id or "(empty)",
             )
+            _trace_return("callback_dedup_logical_event")
             return
 
         logger.info("[TG][ROUTE] update_id=%s selected=callback_query", update_id)
@@ -4878,6 +4889,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         # This prevents duplicate processing when multiple workers handle the same update
         if callback_query_id and callback_query_id in PROCESSED_CALLBACK_IDS:
             logger.debug(f"[TG] Skipping duplicate callback_query_id={callback_query_id}")
+            _trace_return("callback_dedup_id_skip")
             return
         
         # DEDUPLICATION LEVEL 2: Check if this callback_data was recently processed
@@ -4898,6 +4910,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                                 http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
                         except:
                             pass
+                    _trace_return("callback_dedup_data_skip")
                     return
             # Mark this callback_data as processed
             PROCESSED_CALLBACK_DATA[callback_data] = now
@@ -4942,6 +4955,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 send_command_response(chat_id, "⛔ Not authorized")
             except:
                 pass
+            _trace_return("callback_auth_denied")
             return
         
         # Mark this callback as processed BEFORE processing to prevent race conditions
@@ -5010,6 +5024,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     logger.debug(f"[TG][CALLBACK] Could not send loading message: {e}")
         
         if callback_data == "noop":
+            _trace_return("callback_noop")
             return
         # CRITICAL: Handle task_project FIRST and return — never fall through to unknown-command
         _cb_stripped = (callback_data or "").strip()
@@ -5019,6 +5034,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             if project_key not in valid_projects:
                 logger.warning("[TG][TASK] invalid_project_selection chat_id=%s user_id=%s project_key=%s", chat_id, user_id, project_key)
                 send_command_response(chat_id, "❌ Invalid project selection. Please choose one option from the menu.")
+                _trace_return("task_project_invalid_selection")
                 return
 
             pending_key = _task_pending_selection_key(chat_id, user_id)
@@ -5026,6 +5042,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             if not pending:
                 logger.info("[TG][TASK] project_selection_missing_pending chat_id=%s user_id=%s", chat_id, user_id)
                 send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _trace_return("task_project_pending_missing")
                 return
 
             created_at = float(pending.get("created_at") or 0.0)
@@ -5033,12 +5050,14 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
                 logger.info("[TG][TASK] project_selection_expired chat_id=%s user_id=%s", chat_id, user_id)
                 send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _trace_return("task_project_pending_expired")
                 return
 
             initiating_user_id = str(pending.get("initiating_user_id") or "").strip()
             if initiating_user_id and initiating_user_id != user_id:
                 logger.info("[TG][TASK] project_selection_wrong_user chat_id=%s initiating_user_id=%s user_id=%s", chat_id, initiating_user_id, user_id)
                 send_command_response(chat_id, "⛔ Only the user who started this /task can select the project.")
+                _trace_return("task_project_wrong_user")
                 return
 
             intent_text = str(pending.get("description") or "").strip()
@@ -5046,6 +5065,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             if not intent_text:
                 PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
                 send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _trace_return("task_project_intent_empty")
                 return
 
             project_label = _task_project_label(project_key)
@@ -5079,6 +5099,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             "Check your Notion AI Task System database."
                         )
                         send_command_response(chat_id, msg)
+                        _trace_return("task_project_dedup_cooldown")
                         return
 
                     tid = (result.get("task_id") or "").strip()
@@ -5523,6 +5544,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 callback_data[:120],
             )
             # Callback payloads are never command text; swallow safely.
+            _trace_return("callback_unknown_swallowed")
             return
         
         logger.info(
@@ -5531,14 +5553,17 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             callback_query_id or "(empty)",
         )
         logger.info("[TG][ROUTE] update_id=%s completed=callback_query", update_id)
+        _trace_return("callback_branch_completed")
         return
     
     # Strict single-path routing: callback updates must never reach message parser.
     if update.get("callback_query"):
         logger.info("[TG][ROUTE] update_id=%s selected=callback_query_guard_return", update_id)
+        _trace_return("callback_guard_return")
         return
     message = update.get("message")
     if not message:
+        _trace_return("message_missing")
         return
     logger.info(
         "[TG][TRACE] fn=handle_telegram_update stage=message_branch_enter update_id=%s message_text=%s",
@@ -5546,9 +5571,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         str(message.get("text", "") or "")[:120],
     )
     if not isinstance(message.get("text"), str):
+        _trace_return("message_text_not_string")
         return
     raw_text = (message.get("text") or "").strip()
     if not raw_text:
+        _trace_return("message_text_empty")
         return
     if not raw_text.startswith("/"):
         logger.info(
@@ -5561,6 +5588,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             update_id,
             raw_text[:120],
         )
+        _trace_return("message_non_command_ignored")
+        return
+    if raw_text.startswith("task_project:"):
+        logger.warning(
+            "[TG][TRACE] fn=handle_telegram_update stage=ignore_callback_like_message update_id=%s text=%s",
+            update_id,
+            raw_text[:120],
+        )
+        _trace_return("message_callback_like_payload_ignored")
         return
 
     chat = message.get("chat", {})
@@ -5622,6 +5658,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             deny_msg = "⛔ Not authorized"
         reply_ok = send_command_response(chat_id, deny_msg)
         logger.info("[TG][REPLY] success=%s handler=deny", reply_ok)
+        _trace_return("message_auth_denied")
         return
 
     raw_command = text
@@ -5659,6 +5696,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     update_id, chat_id, text[:40], now - last_processed,
                 )
                 send_command_response(chat_id, "⏳ Command already processed. Wait a moment and try again.")
+                _trace_return("message_command_dedup_skip")
                 return
         # Mark this command as processed
         PROCESSED_TEXT_COMMANDS[command_key] = now
@@ -5670,6 +5708,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     # If waiting for a manual input, process it first
     if PENDING_VALUE_INPUTS.get(chat_id) and db:
         if _handle_pending_value_message(chat_id, text, db):
+            _trace_return("message_pending_value_consumed")
             return
     
     # Handle custom keyboard button presses
@@ -5724,11 +5763,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         logger.info("[TG][ROUTER] selected_handler=empty_text")
         ok = send_command_response(chat_id, "📋 Send a command (e.g. /help)")
         logger.info("[TG][REPLY] success=%s handler=empty_text", ok)
+        _trace_return("message_router_empty_text")
         return
     if not text.startswith("/"):
         logger.info("[TG][ROUTER] selected_handler=non_command")
         ok = send_command_response(chat_id, "❓ Send a command (e.g. /help)")
         logger.info("[TG][REPLY] success=%s handler=non_command", ok)
+        _trace_return("message_router_non_command")
         return
 
     # Explicit router: /start, /help, /runtime-check, /investigate, /task, /agent, else unknown
@@ -5769,6 +5810,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             logger.exception("[TG][TASK] handler failed update_id=%s chat_id=%s: %s", update_id, chat_id, task_err)
             send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
         logger.info("[TG][TASK] handler end update_id=%s chat_id=%s", update_id, chat_id)
+        _trace_return("message_task_handler_completed")
         return
 
     try:
@@ -5916,6 +5958,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         (cmd_token or "")[:40],
                         (text or "")[:120],
                     )
+                    logger.warning(
+                        "[TG][TRACE] fn=handle_telegram_update stage=before_unknown_response update_id=%s variant=unknown_slash text=%s",
+                        update_id,
+                        (text or "")[:120],
+                    )
                     ok = send_command_response(chat_id, "❓ Unknown command. Use /help.")
             logger.info("[TG][REPLY] success=%s handler=unknown", ok)
         else:
@@ -5951,6 +5998,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 logger.info("[TG][HANDLER] handler=fallback executing")
                 logger.warning(
                     "[TG][TRACE] fn=handle_telegram_update stage=send_unknown_help update_id=%s branch=fallback_non_slash text=%s",
+                    update_id,
+                    (text or "")[:120],
+                )
+                logger.warning(
+                    "[TG][TRACE] fn=handle_telegram_update stage=before_unknown_response update_id=%s variant=fallback_non_slash text=%s",
                     update_id,
                     (text or "")[:120],
                 )
