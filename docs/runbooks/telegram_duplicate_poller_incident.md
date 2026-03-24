@@ -161,3 +161,4 @@ Use a controlled test runtime with duplicate consumer simulation and check for:
 - Never reuse ATP Control PROD token outside PROD poller runtime.
 - LAB/OpenClaw config must keep ATP Control token fields empty or isolated from production token.
 - Token diagnostics/logging must only expose source names and masked suffixes.
+- PROD token rotation/update paths must update both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ATP_CONTROL_BOT_TOKEN` together in `secrets/runtime.env`.

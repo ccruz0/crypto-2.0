@@ -76,17 +76,24 @@ if os.path.isfile(RUNTIME_ENV):
 
 updated = []
 found = False
+found_bot = False
+found_atp_control = False
 for line in lines:
     if line.startswith("TELEGRAM_BOT_TOKEN="):
         updated.append("TELEGRAM_BOT_TOKEN=" + token + "\n")
-        found = True
+        found_bot = True
+    elif line.startswith("TELEGRAM_ATP_CONTROL_BOT_TOKEN="):
+        updated.append("TELEGRAM_ATP_CONTROL_BOT_TOKEN=" + token + "\n")
+        found_atp_control = True
     else:
         updated.append(line)
 
-if not found:
+if not found_bot:
     if updated and not updated[-1].endswith("\n"):
         updated.append("\n")
     updated.append("TELEGRAM_BOT_TOKEN=" + token + "\n")
+if not found_atp_control:
+    updated.append("TELEGRAM_ATP_CONTROL_BOT_TOKEN=" + token + "\n")
 
 with open(RUNTIME_ENV, "w", encoding="utf-8") as f:
     f.writelines(updated)
