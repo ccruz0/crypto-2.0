@@ -9,6 +9,7 @@ import time
 import tempfile
 import sys
 import json
+from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple, cast
 from datetime import datetime, timedelta
 from copy import deepcopy
@@ -141,6 +142,8 @@ PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent 
 _POLLER_LOCK_ACQUIRED = False  # Track if this process has the poller lock
 _POLLER_STARTUP_LOGGED = False  # One-time log when this process becomes the active poller
 _NO_UPDATE_COUNT = 0  # Track consecutive cycles with no updates
+_GET_UPDATES_409_STREAK = 0  # Consecutive getUpdates HTTP 409 conflicts
+_GET_UPDATES_409_LAST_WARN_TS = 0.0  # Rate-limit high-signal duplicate poller warnings
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
 CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
@@ -150,6 +153,15 @@ TEXT_COMMAND_TTL = 3.0  # 3 seconds - ignore duplicate text commands within this
 WATCHLIST_PAGE_SIZE = 9
 MAX_SYMBOLS_PER_ROW = 3
 PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
+PENDING_TASK_PROJECT_SELECTION: Dict[str, Dict[str, Any]] = {}
+PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS = 600
+TASK_PROJECT_OPTIONS: List[Tuple[str, str]] = [
+    ("atp", "ATP"),
+    ("rahyang", "Rahyang"),
+    ("peluqueria", "Peluquería"),
+    ("hilo_vivo", "Hilo Vivo"),
+    ("other", "Other"),
+]
 
 
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
@@ -161,6 +173,50 @@ def _get_effective_bot_token() -> Optional[str]:
     if not is_aws_runtime() and BOT_TOKEN_DEV:
         return BOT_TOKEN_DEV
     return BOT_TOKEN
+
+
+def _masked_token_suffix(token: Optional[str]) -> str:
+    """Return a safe masked token suffix for diagnostics (never full token)."""
+    if not token:
+        return "(none)"
+    token = str(token)
+    if len(token) <= 6:
+        return "***" + token[-2:]
+    return "***" + token[-6:]
+
+
+def _resolve_operator_token_source(token_actual: Optional[str]) -> str:
+    """Env var name that corresponds to the token used for getUpdates in this process."""
+    t_act = (token_actual or "").strip()
+    dev = (BOT_TOKEN_DEV or "").strip()
+    if not is_aws_runtime() and dev and t_act == dev:
+        return "TELEGRAM_BOT_TOKEN_DEV"
+    return get_telegram_token_source()
+
+
+def _duplicate_poller_operator_kv(token_actual: Optional[str] = None) -> str:
+    """Key=value bundle for duplicate-poller diagnostics (no full secrets)."""
+    try:
+        hostname = os.uname().nodename
+    except AttributeError:
+        hostname = os.getenv("HOSTNAME", "?")
+    runtime_origin = os.getenv("RUNTIME_ORIGIN") or os.getenv("ENVIRONMENT") or "unknown"
+    service = (
+        os.getenv("SERVICE_ROLE")
+        or os.getenv("COMPOSE_SERVICE")
+        or os.getenv("SERVICE_NAME")
+        or ("backend-aws" if is_aws_runtime() else "backend")
+    )
+    run_raw = (os.getenv("RUN_TELEGRAM_POLLER") or "").strip()
+    if not run_raw:
+        run_raw = "(unset)"
+    eff = token_actual if token_actual is not None else _get_effective_bot_token()
+    tsrc = _resolve_operator_token_source(eff)
+    tsuf = _masked_token_suffix(eff)
+    return (
+        f"hostname={hostname} runtime_origin={runtime_origin} service={service} "
+        f"run_telegram_poller={run_raw} token_source={tsrc} token_suffix={tsuf}"
+    )
 
 
 def _is_authorized(chat_id: str, user_id: str) -> bool:
@@ -287,7 +343,10 @@ def _acquire_poller_lock(db: Session) -> bool:
                 )
             return True
         else:
-            logger.warning("[TG] Another poller is active, cannot acquire lock")
+            logger.warning(
+                "[TG][ALERT] duplicate_telegram_poller_suspected reason=advisory_lock_busy %s",
+                _duplicate_poller_operator_kv(),
+            )
             return False
     except Exception as e:
         logger.error(f"[TG] Error acquiring poller lock: {e}")
@@ -1096,6 +1155,7 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
     NOTE: Lock acquisition is handled by the caller (process_telegram_commands).
     This function assumes the lock is already held.
     """
+    global _GET_UPDATES_409_STREAK, _GET_UPDATES_409_LAST_WARN_TS
     if _telegram_startup_401:
         return []
     # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
@@ -1148,6 +1208,7 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         
         data = response.json()
         if data.get("ok"):
+            _GET_UPDATES_409_STREAK = 0
             return data.get("result", [])
         return []
     except requests_exceptions.Timeout:
@@ -1158,14 +1219,27 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         if status == 409:
             # 409 conflict - another client is polling or webhook is active
             # Indicates duplicate Telegram consumers (multiple processes using same token)
+            _GET_UPDATES_409_STREAK += 1
             logger.warning(
-                "[TG] getUpdates conflict (409) - Another webhook or polling client is active. "
-                "Possible duplicate pollers. Run backend/scripts/diag/detect_telegram_consumers.sh to investigate."
+                "[TG][ALERT] duplicate_telegram_poller_suspected reason=getUpdates_409 conflict_streak=%s %s "
+                "(Another webhook or long-poll client may be active; run backend/scripts/diag/detect_telegram_consumers.sh)",
+                _GET_UPDATES_409_STREAK,
+                _duplicate_poller_operator_kv(token_to_use),
             )
+            now = time.time()
+            if _GET_UPDATES_409_STREAK >= 3 and (now - _GET_UPDATES_409_LAST_WARN_TS) >= 60:
+                _GET_UPDATES_409_LAST_WARN_TS = now
+                logger.error(
+                    "[TG][ALERT] duplicate_telegram_poller_suspected_escalated reason=getUpdates_409 conflict_streak=%s %s",
+                    _GET_UPDATES_409_STREAK,
+                    _duplicate_poller_operator_kv(token_to_use),
+                )
             return []
+        _GET_UPDATES_409_STREAK = 0
         logger.error(f"[TG] getUpdates HTTP error: {http_err}")
         return []
     except Exception as e:
+        _GET_UPDATES_409_STREAK = 0
         logger.error(f"[TG] getUpdates failed: {e}")
         return []
 
@@ -4456,6 +4530,23 @@ def _telegram_text_is_task_command(text: str, raw_command: str, cmd_token: str) 
     return False
 
 
+def _task_project_selection_keyboard() -> Dict[str, Any]:
+    rows = [[{"text": label, "callback_data": f"task_project:{key}"}] for key, label in TASK_PROJECT_OPTIONS]
+    return _build_keyboard(rows)
+
+
+def _task_project_label(project_key: str) -> str:
+    key = (project_key or "").strip().lower()
+    for k, label in TASK_PROJECT_OPTIONS:
+        if k == key:
+            return label
+    return "Other"
+
+
+def _task_pending_selection_key(chat_id: str, user_id: str) -> str:
+    return f"{(chat_id or '').strip()}:{(user_id or '').strip()}"
+
+
 def _handle_task_command(
     chat_id: str,
     text: str,
@@ -4465,10 +4556,8 @@ def _handle_task_command(
     update_id: int = 0,
 ) -> bool:
     """
-    Canonical handler for /task. Single path: extract intent, create task, send one response.
-    Never falls through to unknown-command.
+    Canonical handler for /task. Requires project selection before creating Notion task.
     """
-    # High-signal debug logging for /task (proves production uses updated code)
     raw_text = (text or "").strip()
     normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
     intent_text = normalized_cmd
@@ -4503,98 +4592,45 @@ def _handle_task_command(
         )
         logger.info("[TG][TASK] handler=task success=usage update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
         return bool(ok)
+
+    initiating_user_id = str((from_user or {}).get("id", "") or "").strip()
+    if not initiating_user_id:
+        ok = send_response(chat_id, "❌ Could not identify Telegram user. Please try /task again from your own account.")
+        logger.warning("[TG][TASK] missing_initiating_user update_id=%s chat_id=%s", update_id, chat_id)
+        return bool(ok)
+
     telegram_user = (from_user.get("username") or from_user.get("first_name") or "").strip() or "Carlos"
-    # Best-effort: try SSM repair when Notion missing (LAB can recover from SSM)
-    try:
-        from app.services.notion_tasks import notion_is_configured
-        from app.services.notion_env import try_repair_notion_env_from_ssm
-        if not notion_is_configured():
-            repaired = try_repair_notion_env_from_ssm()
-            logger.info("[TG][TASK][DEBUG] notion_preflight repaired=%s update_id=%s", repaired, update_id)
-    except Exception as repair_err:
-        logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
-    try:
-        # Direct Notion insert only — no compile/similarity pipeline, no OpenClaw, no LLM, no agent execution.
-        from app.services.task_compiler import (
-            create_notion_task_from_telegram_direct,
-            ERROR_NOTION_NOT_CONFIGURED,
-        )
 
-        logger.info("[TG][TASK] notion_create_attempt update_id=%s chat_id=%s", update_id, chat_id)
-        result = create_notion_task_from_telegram_direct(intent_text, telegram_user)
+    now_ts = time.time()
+    for key, payload in list(PENDING_TASK_PROJECT_SELECTION.items()):
+        created = float(payload.get("created_at") or 0.0)
+        if not created or (now_ts - created) > PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS:
+            PENDING_TASK_PROJECT_SELECTION.pop(key, None)
 
-        if result.get("ok"):
-            if result.get("dedup_cooldown"):
-                logger.info(
-                    "[TG][TASK] notion_create_success update_id=%s dedup_cooldown=true title=%r",
-                    update_id,
-                    (result.get("title") or "")[:80],
-                )
-                msg = (
-                    "✅ <b>Task already recorded</b>\n\n"
-                    "The same task was just created (deduplication window). "
-                    "Check your Notion AI Task System database."
-                )
-                ok = send_response(chat_id, msg)
-                logger.info(
-                    "[TG][TASK] handler=task success=dedup_cooldown update_id=%s chat_id=%s ok=%s",
-                    update_id, chat_id, ok,
-                )
-                return bool(ok)
+    pending_key = _task_pending_selection_key(chat_id, initiating_user_id)
+    PENDING_TASK_PROJECT_SELECTION[pending_key] = {
+        "description": intent_text,
+        "telegram_user": telegram_user,
+        "initiating_user_id": initiating_user_id,
+        "created_at": now_ts,
+    }
 
-            tid = (result.get("task_id") or "").strip()
-            logger.info(
-                "[TG][TASK] notion_create_success update_id=%s task_id=%s title=%r dry_run=%s",
-                update_id,
-                tid[:20] if tid else "",
-                (result.get("title") or "")[:80],
-                bool(result.get("dry_run")),
-            )
-            msg = (
-                "✅ <b>Task created in Notion</b>\n\n"
-                f"<b>Title:</b> {result.get('title', '')}\n"
-                f"<b>Type:</b> {result.get('type', 'Investigation')}\n"
-                f"<b>Status:</b> {result.get('status', 'Planned')}\n"
-                f"<b>Notion page:</b> <code>{tid}</code>\n\n"
-                "<i>No agent or model was run — this is a direct Notion write only.</i>"
-            )
-            ok = send_response(chat_id, msg)
-            logger.info(
-                "[TG][TASK] handler=task success update_id=%s chat_id=%s ok=%s",
-                update_id, chat_id, ok,
-            )
-            return bool(ok)
+    logger.info(
+        "[TG][TASK] awaiting_project_selection update_id=%s chat_id=%s user_id=%s desc_len=%s",
+        update_id,
+        chat_id,
+        initiating_user_id,
+        len(intent_text),
+    )
 
-        err = result.get("error", "Unknown error")
-        logger.warning(
-            "[TG][TASK] notion_create_failure update_id=%s chat_id=%s error=%r",
-            update_id,
-            chat_id,
-            (err or "")[:300],
-        )
-        if err == ERROR_NOTION_NOT_CONFIGURED:
-            msg = (
-                "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
-                "Set NOTION_API_KEY and NOTION_TASK_DB in .env (local) or SSM (AWS). "
-                "The system is still operational, but task tracking is disabled."
-            )
-        else:
-            msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
-        ok = send_response(chat_id, msg)
-        logger.info(
-            "[TG][TASK] user_facing_error update_id=%s chat_id=%s ok=%s",
-            update_id, chat_id, ok,
-        )
-        return bool(ok)
-    except Exception as e:
-        logger.exception(
-            "[TG][TASK] notion_create_failure update_id=%s chat_id=%s",
-            update_id,
-            chat_id,
-        )
-        ok = send_response(chat_id, f"❌ Error: {str(e)[:200]}")
-        logger.info("[TG][TASK] handler=task exception update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
-        return bool(ok)
+    ok = _send_or_edit_menu(
+        chat_id,
+        "📋 <b>Create task from Telegram</b>\n\nSelect project:",
+        _task_project_selection_keyboard(),
+        None,
+    )
+    logger.info("[TG][TASK] project_selector_sent update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
+    return bool(ok)
 
 
 def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
@@ -4628,12 +4664,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
 
     # Determine update type and extract key info for logging
     update_type = "unknown"
-    message = (
-        update.get("message")
-        or update.get("edited_message")
-        or update.get("channel_post")
-        or update.get("edited_channel_post")
-    )
+    message = update.get("message")
     
     if callback_query:
         update_type = "callback_query"
@@ -4646,8 +4677,8 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         chat_id = str(chat.get("id", ""))
         logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type}, callback_data='{callback_data}', username={username}, user_id={user_id}, chat_id={chat_id}")
     elif message:
-        update_type = "channel_post" if (update.get("channel_post") or update.get("edited_channel_post")) else "message"
-        text = (message.get("text") or message.get("caption") or "").strip()
+        update_type = "message"
+        text = (message.get("text") or "").strip()
         chat = message.get("chat", {})
         chat_id = str(chat.get("id", ""))
         chat_type = chat.get("type", "unknown")
@@ -4740,7 +4771,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     callback_query = update.get("callback_query")
     if callback_query:
         callback_query_id = callback_query.get("id")
-        callback_data = callback_query.get("data", "")
+        callback_data = str(callback_query.get("data", "") or "").strip()
         
         # DEDUPLICATION LEVEL 1: Check if this callback_query_id was already processed
         # This prevents duplicate processing when multiple workers handle the same update
@@ -4879,9 +4910,134 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         if callback_data == "noop":
             return
+        # CRITICAL: Handle task_project FIRST and return — never fall through to unknown-command
+        _cb_stripped = (callback_data or "").strip()
+        if _cb_stripped.startswith("task_project:"):
+            project_key = _cb_stripped.replace("task_project:", "", 1).strip().lower()
+            valid_projects = {k for k, _ in TASK_PROJECT_OPTIONS}
+            if project_key not in valid_projects:
+                logger.warning("[TG][TASK] invalid_project_selection chat_id=%s user_id=%s project_key=%s", chat_id, user_id, project_key)
+                send_command_response(chat_id, "❌ Invalid project selection. Please choose one option from the menu.")
+                return
+
+            pending_key = _task_pending_selection_key(chat_id, user_id)
+            pending = PENDING_TASK_PROJECT_SELECTION.get(pending_key)
+            if not pending:
+                logger.info("[TG][TASK] project_selection_missing_pending chat_id=%s user_id=%s", chat_id, user_id)
+                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                return
+
+            created_at = float(pending.get("created_at") or 0.0)
+            if not created_at or (time.time() - created_at) > PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS:
+                PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
+                logger.info("[TG][TASK] project_selection_expired chat_id=%s user_id=%s", chat_id, user_id)
+                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                return
+
+            initiating_user_id = str(pending.get("initiating_user_id") or "").strip()
+            if initiating_user_id and initiating_user_id != user_id:
+                logger.info("[TG][TASK] project_selection_wrong_user chat_id=%s initiating_user_id=%s user_id=%s", chat_id, initiating_user_id, user_id)
+                send_command_response(chat_id, "⛔ Only the user who started this /task can select the project.")
+                return
+
+            intent_text = str(pending.get("description") or "").strip()
+            telegram_user = str(pending.get("telegram_user") or "").strip() or "Carlos"
+            if not intent_text:
+                PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
+                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                return
+
+            project_label = _task_project_label(project_key)
+            logger.info("[TG][TASK] project_selected project=%s user_id=%s", project_label, user_id)
+
+            try:
+                from app.services.notion_tasks import notion_is_configured
+                from app.services.notion_env import try_repair_notion_env_from_ssm
+                if not notion_is_configured():
+                    repaired = try_repair_notion_env_from_ssm()
+                    logger.info("[TG][TASK][DEBUG] notion_preflight repaired=%s update_id=%s", repaired, update_id)
+            except Exception as repair_err:
+                logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
+
+            try:
+                from app.services.task_compiler import (
+                    create_notion_task_from_telegram_direct,
+                    ERROR_NOTION_NOT_CONFIGURED,
+                )
+
+                logger.info("[TG][TASK] notion_create_attempt update_id=%s chat_id=%s project=%s", update_id, chat_id, project_label)
+                result = create_notion_task_from_telegram_direct(intent_text, telegram_user, project=project_label)
+
+                if result.get("ok"):
+                    PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
+                    if result.get("dedup_cooldown"):
+                        msg = (
+                            "✅ <b>Task already recorded</b>\n\n"
+                            f"<b>Project:</b> {project_label}\n"
+                            "The same task was just created (deduplication window). "
+                            "Check your Notion AI Task System database."
+                        )
+                        send_command_response(chat_id, msg)
+                        return
+
+                    tid = (result.get("task_id") or "").strip()
+                    launch_info = {"accepted": False, "task_id": "", "run_dir": "", "status": "not-started", "error": ""}
+                    try:
+                        from app.services.autonomous_runner_launcher import launch_autonomous_runner
+                        launch_info = launch_autonomous_runner(
+                            project=project_label,
+                            repo_path=str(Path(__file__).resolve().parents[2]),
+                            title=str(result.get("title") or intent_text[:120] or "Telegram task"),
+                            details=intent_text,
+                            env="prod",
+                            max_iterations=3,
+                            notion_page_id=tid,
+                            telegram_chat_hint=chat_id,
+                        )
+                    except Exception as launch_err:
+                        logger.warning("[TG][TASK] autonomous runner launch failed task_id=%s err=%s", tid[:12], launch_err)
+                        launch_info = {"accepted": False, "task_id": "", "run_dir": "", "status": "launch_error", "error": str(launch_err)}
+
+                    msg = (
+                        "✅ <b>Task created in Notion</b>\n\n"
+                        f"<b>Project:</b> {project_label}\n"
+                        f"<b>Title:</b> {result.get('title', '')}\n"
+                        f"<b>Type:</b> {result.get('type', 'Investigation')}\n"
+                        f"<b>Status:</b> {result.get('status', 'Planned')}\n"
+                        f"<b>Notion page:</b> <code>{tid}</code>\n"
+                        f"<b>Runner:</b> {'started' if launch_info.get('accepted') else launch_info.get('status', 'not started')}\n\n"
+                        + (
+                            "<i>Autonomous runner launched in background.</i>"
+                            if launch_info.get("accepted")
+                            else (
+                                f"<i>Runner already active: task_id={(launch_info.get('task_id') or '-')}, "
+                                f"run={(launch_info.get('run_dir') or '-')[-80:]}</i>"
+                                if launch_info.get("status") == "already_running"
+                                else f"<i>Runner launch failed: {(launch_info.get('error') or 'unknown')[:160]}</i>"
+                            )
+                        )
+                    )
+                    send_command_response(chat_id, msg)
+                    return
+
+                err = result.get("error", "Unknown error")
+                if err == ERROR_NOTION_NOT_CONFIGURED:
+                    msg = (
+                        "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
+                        "Set NOTION_API_KEY and NOTION_TASK_DB in .env (local) or SSM (AWS). "
+                        "The system is still operational, but task tracking is disabled."
+                    )
+                else:
+                    msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
+                send_command_response(chat_id, msg)
+                return
+            except Exception as e:
+                logger.exception("[TG][TASK] notion_create_failure update_id=%s chat_id=%s", update_id, chat_id)
+                send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                return
+            return
         elif callback_data == "atp_run_full_fix" or (callback_data or "").strip().startswith("atp_run_full_fix"):
             # Manual "Run full fix now" from ATP health alert: write trigger file; health script runs full_fix_market_data.sh on next run
-            # Accept "atp_run_full_fix" even with trailing space/timestamp (e.g. "atp_run_full_fix 10:35")
             trigger_path = os.environ.get("ATP_TRIGGER_FULL_FIX_PATH", "/app/logs/trigger_full_fix")
             try:
                 os.makedirs(os.path.dirname(trigger_path), exist_ok=True)
@@ -5221,6 +5377,21 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             except Exception as approval_err:
                 logger.error(f"[TG][APPROVAL] Error handling {_action} callback: {approval_err}", exc_info=True)
                 send_command_response(chat_id, f"❌ Error processing {_action}: {str(approval_err)[:200]}")
+        elif callback_data.startswith("rc_approve:") or callback_data.startswith("rc_reject:"):
+            _action = "rc_approve" if callback_data.startswith("rc_approve:") else "rc_reject"
+            logger.info(f"[TG][RC_APPROVAL] Routing callback_data='{callback_data}' action={_action} chat_id={chat_id} user_id={user_id}")
+            try:
+                _handle_release_candidate_decision_callback(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    username=username,
+                    callback_data=callback_data,
+                    action=_action,
+                    message_id=message_id,
+                )
+            except Exception as rc_err:
+                logger.error(f"[TG][RC_APPROVAL] Error handling {_action} callback: {rc_err}", exc_info=True)
+                send_command_response(chat_id, f"❌ Error processing {_action}: {str(rc_err)[:200]}")
         elif callback_data.startswith("patch_approve:") or callback_data.startswith("deploy_approve:") or callback_data.startswith("task_reject:") or callback_data.startswith("view_report:") or callback_data.startswith("smoke_check:") or callback_data.startswith("reinvestigate:") or callback_data.startswith("run_cursor_bridge:"):
             if callback_data.startswith("patch_approve:"):
                 _action = "approve_patch"
@@ -5653,11 +5824,25 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
 
-    # CANARY GUARD: Only one instance should poll (backend-aws). Canary skips to avoid lock contention.
-    run_poller = (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in ("1", "true", "yes", "on")
+    global _POLLER_STARTUP_LOGGED
+    # EXPLICIT OPT-IN: only poll when RUN_TELEGRAM_POLLER is explicitly true.
+    run_poller_raw = (os.getenv("RUN_TELEGRAM_POLLER") or "").strip()
+    run_poller = run_poller_raw.lower() in ("1", "true", "yes", "on")
     if not run_poller:
-        logger.debug("[TG] RUN_TELEGRAM_POLLER=false, skipping (canary/standby instance)")
+        logger.debug("[TG] Poller disabled: RUN_TELEGRAM_POLLER=%r (requires explicit true)", run_poller_raw)
         return
+
+    if not _POLLER_STARTUP_LOGGED:
+        _POLLER_STARTUP_LOGGED = True
+        logger.info(
+            "[TG][POLLER_STARTUP] service=%s hostname=%s runtime_origin=%s token_source=%s token_suffix=%s run_telegram_poller=%s",
+            os.getenv("SERVICE_ROLE") or os.getenv("COMPOSE_SERVICE") or os.getenv("HOSTNAME") or "unknown",
+            os.getenv("HOSTNAME") or "unknown",
+            os.getenv("RUNTIME_ORIGIN") or os.getenv("ENVIRONMENT") or "unknown",
+            get_telegram_token_source(),
+            _masked_token_suffix(_get_effective_bot_token()),
+            run_poller_raw,
+        )
 
     # RUNTIME GUARD: Local runtime requires DEV token to avoid 409 conflicts
     if not is_aws_runtime():
@@ -5698,7 +5883,6 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
         # If lock cannot be acquired, another poller is active - skip this cycle
         if not _acquire_poller_lock(db):
-            logger.warning("[TG] Another poller is active, cannot acquire lock")
             return
         
         try:
@@ -6033,6 +6217,90 @@ def _check_deploy_test_gate(task_id: str) -> tuple[bool, str]:
         return True, f"tests passed ({test_status_raw[:80]})"
 
     return False, f"unrecognised test status: {test_status_raw[:80]}"
+
+
+def _handle_release_candidate_decision_callback(
+    chat_id: str,
+    user_id: str,
+    username: str,
+    callback_data: str,
+    action: str,
+    message_id: Optional[int] = None,
+) -> None:
+    """
+    Handle MVP v10 release-candidate decisions:
+      rc_approve:<launch_id>
+      rc_reject:<launch_id>
+    """
+    launch_id = ""
+    if callback_data.startswith("rc_approve:"):
+        launch_id = callback_data[len("rc_approve:"):].strip()
+    elif callback_data.startswith("rc_reject:"):
+        launch_id = callback_data[len("rc_reject:"):].strip()
+    if not launch_id:
+        send_command_response(chat_id, "❌ Invalid release-candidate callback.")
+        return
+
+    who = username or user_id or "unknown"
+    def _close_rc_card(text: str) -> None:
+        if message_id is None:
+            return
+        try:
+            _edit_menu_message(chat_id, message_id, text, {"inline_keyboard": []})
+        except Exception:
+            pass
+    try:
+        from app.services.autonomous_runner_launcher import approve_release_candidate, reject_release_candidate
+
+        repo_path = str(Path(__file__).resolve().parents[2])
+        if action == "rc_approve":
+            out = approve_release_candidate(
+                repo_path=repo_path,
+                launch_id=launch_id,
+                approver=who,
+                note="Approved from Telegram release-candidate card.",
+            )
+            if out.get("ok"):
+                _close_rc_card(
+                    f"✅ <b>Release candidate approved</b>\n"
+                    f"By: {who}\n"
+                    f"launch_id=<code>{launch_id}</code>\n"
+                    "Deploy has been requested; follow-up deploy status alerts will be sent."
+                )
+                send_command_response(
+                    chat_id,
+                    f"✅ <b>Release candidate approved</b> by {who}\n"
+                    f"launch_id=<code>{launch_id}</code>\n"
+                    "Status recorded. Deploy requested; waiting for deploy result.",
+                )
+            else:
+                send_command_response(chat_id, f"❌ Approval failed: {out.get('error') or 'unknown'}")
+            return
+
+        out = reject_release_candidate(
+            repo_path=repo_path,
+            launch_id=launch_id,
+            approver=who,
+            note="Rejected from Telegram release-candidate card.",
+        )
+        if out.get("ok"):
+            _close_rc_card(
+                f"❌ <b>Release candidate rejected</b>\n"
+                f"By: {who}\n"
+                f"launch_id=<code>{launch_id}</code>\n"
+                "Decision recorded. Deploy will not run."
+            )
+            send_command_response(
+                chat_id,
+                f"❌ <b>Release candidate rejected</b> by {who}\n"
+                f"launch_id=<code>{launch_id}</code>\n"
+                "Status recorded. No deploy executed.",
+            )
+        else:
+            send_command_response(chat_id, f"❌ Rejection failed: {out.get('error') or 'unknown'}")
+    except Exception as e:
+        logger.error("[TG][RC_APPROVAL] callback failed launch_id=%s err=%s", launch_id, e, exc_info=True)
+        send_command_response(chat_id, f"❌ Release-candidate decision failed: {str(e)[:180]}")
 
 
 def _handle_extended_approval_callback(
