@@ -9,6 +9,7 @@ import time
 import tempfile
 import sys
 import json
+import threading
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple, cast
 from datetime import datetime, timedelta
@@ -150,6 +151,9 @@ CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within thi
 # CRITICAL: Track processed text commands to prevent duplicates when multiple instances (local/AWS) process same command
 PROCESSED_TEXT_COMMANDS: Dict[str, float] = {}  # {chat_id:command: timestamp}
 TEXT_COMMAND_TTL = 3.0  # 3 seconds - ignore duplicate text commands within this window
+PROCESSED_UPDATE_IDS_RUNTIME: Dict[int, float] = {}  # {update_id: last_seen_ts}
+_PROCESSED_UPDATE_IDS_RUNTIME_LOCK = threading.Lock()
+UPDATE_ID_TTL_SECONDS = 600.0
 WATCHLIST_PAGE_SIZE = 9
 MAX_SYMBOLS_PER_ROW = 3
 PENDING_VALUE_INPUTS: Dict[str, Dict[str, Any]] = {}
@@ -166,6 +170,29 @@ TASK_PROJECT_OPTIONS: List[Tuple[str, str]] = [
 
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
+
+
+def _mark_update_id_seen_runtime(update_id: int) -> bool:
+    """
+    Runtime-level deduplication across polling loop invocations.
+
+    Returns True if this update_id was already seen recently (duplicate).
+    Returns False and marks it as seen otherwise.
+    """
+    if update_id <= 0:
+        return False
+    now = time.time()
+    with _PROCESSED_UPDATE_IDS_RUNTIME_LOCK:
+        prev = PROCESSED_UPDATE_IDS_RUNTIME.get(update_id)
+        if prev and (now - prev) < UPDATE_ID_TTL_SECONDS:
+            return True
+        PROCESSED_UPDATE_IDS_RUNTIME[update_id] = now
+        if len(PROCESSED_UPDATE_IDS_RUNTIME) > 5000:
+            cutoff = now - UPDATE_ID_TTL_SECONDS
+            stale = [k for k, ts in PROCESSED_UPDATE_IDS_RUNTIME.items() if ts < cutoff]
+            for k in stale:
+                PROCESSED_UPDATE_IDS_RUNTIME.pop(k, None)
+    return False
 
 
 def _get_effective_bot_token() -> Optional[str]:
@@ -5951,6 +5978,12 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
             
             for update in updates:
                 update_id = update.get("update_id", 0)
+                if _mark_update_id_seen_runtime(int(update_id or 0)):
+                    logger.warning("[TG][DEDUP][RUNTIME] update_id=%s action=skip_duplicate_recent", update_id)
+                    _save_last_update_id(db, update_id)
+                    LAST_UPDATE_ID = update_id
+                    logger.info("[TG][EXIT] update_id=%s status=duplicate_skipped", update_id)
+                    continue
                 message = (
                     update.get("message")
                     or update.get("edited_message")
@@ -6006,11 +6039,19 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
                 
                 # Process update immediately
                 try:
+                    handler_type = (
+                        "callback_query"
+                        if callback_query
+                        else ("message" if message else ("my_chat_member" if my_chat_member else "other"))
+                    )
+                    logger.info("[TG][ENTRY] update_id=%s handler_type=%s", update_id, handler_type)
                     logger.info(f"[TG] Calling handle_telegram_update for update_id={update_id}")
                     handle_telegram_update(update, db)
                     logger.info(f"[TG] Successfully processed update_id={update_id}")
+                    logger.info("[TG][EXIT] update_id=%s status=processed", update_id)
                 except Exception as handle_error:
                     logger.error(f"[TG] Error handling update {update_id}: {handle_error}", exc_info=True)
+                    logger.info("[TG][EXIT] update_id=%s status=error", update_id)
                 
                 # Update last processed ID in DB
                 _save_last_update_id(db, update_id)
