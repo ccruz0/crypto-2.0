@@ -176,11 +176,11 @@ def get_telegram_token() -> Optional[str]:
 
     Priority:
     0. FORCE_TELEGRAM_TOKEN_PROMPT=true → always prompt (ignores env)
-    1. AWS + TELEGRAM_ATP_CONTROL_BOT_TOKEN → use for polling (commands go to @ATP_control_bot)
-    2. TELEGRAM_BOT_TOKEN
-    3. TELEGRAM_BOT_TOKEN_DEV
+    1. AWS + TELEGRAM_ATP_CONTROL_BOT_TOKEN → single source for polling in PROD
+    2. TELEGRAM_BOT_TOKEN (non-AWS)
+    3. TELEGRAM_BOT_TOKEN_DEV (non-AWS)
     4. TELEGRAM_ATP_CONTROL_BOT_TOKEN (non-AWS: when TELEGRAM_BOT_TOKEN not set)
-    5. TELEGRAM_CLAW_BOT_TOKEN (Claw fallback)
+    5. TELEGRAM_CLAW_BOT_TOKEN (non-AWS fallback)
     6. Interactive popup (tkinter → prompt_toolkit → terminal)
 
     On AWS, ATP Control is preferred over TELEGRAM_BOT_TOKEN so /task updates reach backend-aws
@@ -203,6 +203,7 @@ def get_telegram_token() -> Optional[str]:
         from app.core.runtime import is_aws_runtime
 
         if is_aws_runtime():
+            # AWS poller must use a single token source to avoid drift during rotations.
             atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
             if atp:
                 logger.info(
@@ -210,6 +211,8 @@ def get_telegram_token() -> Optional[str]:
                     "(commands /task go to this bot; TELEGRAM_BOT_TOKEN is for trading sends)"
                 )
                 return atp
+            logger.warning("[TG][CONFIG] AWS runtime missing TELEGRAM_ATP_CONTROL_BOT_TOKEN; polling token unavailable")
+            return None
     except Exception:
         pass
 

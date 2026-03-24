@@ -31,6 +31,20 @@ def test_get_telegram_token_source_aws_atp_first():
             assert ttl.get_telegram_token_source() == "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
 
 
+def test_get_telegram_token_aws_does_not_fallback_to_telegram_bot_token():
+    from app.utils import telegram_token_loader as ttl
+
+    env = {
+        "TELEGRAM_BOT_TOKEN": "111:AAA",
+        "FORCE_TELEGRAM_TOKEN_PROMPT": "false",
+    }
+    with patch.dict("os.environ", env, clear=False):
+        with patch("app.core.runtime.is_aws_runtime", return_value=True):
+            with patch.object(ttl, "_get_token_interactive", return_value=None):
+                tok = ttl.get_telegram_token()
+    assert tok is None
+
+
 def test_get_telegram_token_non_aws_still_prefers_primary_bot_token():
     from app.utils import telegram_token_loader as ttl
 
