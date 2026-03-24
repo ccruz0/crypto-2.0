@@ -30,6 +30,9 @@ services:
       - TELEGRAM_BOT_TOKEN=
       - TELEGRAM_BOT_TOKEN_AWS=
       - TELEGRAM_ATP_CONTROL_BOT_TOKEN=
+      - RUN_TELEGRAM_POLLER=false
+      # Fail-safe: block LAB poller unless manually and explicitly overridden.
+      - ALLOW_LAB_TELEGRAM_POLLER=false
       - TELEGRAM_CLAW_BOT_TOKEN=
       - TELEGRAM_BOT_TOKEN_DEV=
       - TELEGRAM_BOT_TOKEN_LOCAL=

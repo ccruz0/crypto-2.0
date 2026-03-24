@@ -145,6 +145,7 @@ _POLLER_STARTUP_LOGGED = False  # One-time log when this process becomes the act
 _NO_UPDATE_COUNT = 0  # Track consecutive cycles with no updates
 _GET_UPDATES_409_STREAK = 0  # Consecutive getUpdates HTTP 409 conflicts
 _GET_UPDATES_409_LAST_WARN_TS = 0.0  # Rate-limit high-signal duplicate poller warnings
+_POLLER_CONFLICT_ALERT_LAST_TS: Dict[str, float] = {}  # in-memory dedup for ops alerts
 # CRITICAL: Track processed callbacks by data+timestamp to prevent duplicates across multiple chats
 PROCESSED_CALLBACK_DATA: Dict[str, float] = {}  # {callback_data: timestamp}
 CALLBACK_DATA_TTL = 5.0  # 5 seconds - ignore duplicate callback data within this window
@@ -280,6 +281,51 @@ def _duplicate_poller_operator_kv(token_actual: Optional[str] = None) -> str:
     )
 
 
+def _is_truthy(raw: Optional[str]) -> bool:
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_lab_runtime() -> bool:
+    """Detect LAB context from runtime/env metadata (fail-safe check)."""
+    candidates = [
+        os.getenv("RUNTIME_ORIGIN"),
+        os.getenv("ENVIRONMENT"),
+        os.getenv("APP_ENV"),
+        os.getenv("SERVICE_ROLE"),
+        os.getenv("SERVICE_NAME"),
+        os.getenv("COMPOSE_PROJECT_NAME"),
+    ]
+    blob = " ".join((c or "").lower() for c in candidates)
+    return "lab" in blob
+
+
+def _emit_duplicate_poller_ops_alert(reason: str, token_actual: Optional[str] = None) -> None:
+    """Send a short ops alert for duplicate poller conflicts with cooldown dedup."""
+    try:
+        cooldown_seconds = int(os.getenv("TELEGRAM_POLLER_ALERT_COOLDOWN_SECONDS", "600"))
+    except ValueError:
+        cooldown_seconds = 600
+    cooldown_seconds = max(cooldown_seconds, 60)
+    key = f"duplicate_poller:{reason}"
+    now = time.time()
+    last_ts = _POLLER_CONFLICT_ALERT_LAST_TS.get(key, 0.0)
+    if (now - last_ts) < cooldown_seconds:
+        return
+    _POLLER_CONFLICT_ALERT_LAST_TS[key] = now
+
+    operator_kv = _duplicate_poller_operator_kv(token_actual)
+    message = (
+        "🚨 <b>Telegram Poller Conflict</b>\n"
+        f"<b>reason:</b> {reason}\n"
+        f"<b>details:</b> <code>{operator_kv}</code>\n"
+        "<b>action:</b> run <code>backend/scripts/diag/detect_telegram_consumers.sh</code>"
+    )
+    try:
+        telegram_notifier.send_message(message, origin="AWS" if is_aws_runtime() else None, chat_destination="ops")
+    except Exception as exc:
+        logger.warning("[TG][ALERT] failed to send duplicate poller ops alert reason=%s err=%s", reason, exc)
+
+
 def _is_authorized(chat_id: str, user_id: str) -> bool:
     """
     Check if a user/chat is authorized to use bot commands.
@@ -408,6 +454,8 @@ def _acquire_poller_lock(db: Session) -> bool:
                 "[TG][ALERT] duplicate_telegram_poller_suspected reason=advisory_lock_busy %s",
                 _duplicate_poller_operator_kv(),
             )
+            logger.warning("[TG] Another poller is active, cannot acquire lock")
+            _emit_duplicate_poller_ops_alert("advisory_lock_busy")
             return False
     except Exception as e:
         logger.error(f"[TG] Error acquiring poller lock: {e}")
@@ -1287,6 +1335,7 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
                 _GET_UPDATES_409_STREAK,
                 _duplicate_poller_operator_kv(token_to_use),
             )
+            _emit_duplicate_poller_ops_alert("getUpdates_409", token_to_use)
             now = time.time()
             if _GET_UPDATES_409_STREAK >= 3 and (now - _GET_UPDATES_409_LAST_WARN_TS) >= 60:
                 _GET_UPDATES_409_LAST_WARN_TS = now
@@ -5985,6 +6034,23 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
     if not run_poller:
         logger.debug("[TG] Poller disabled: RUN_TELEGRAM_POLLER=%r (requires explicit true)", run_poller_raw)
         return
+
+    # LAB hard guard: deny poller by default even if RUN_TELEGRAM_POLLER=true.
+    # Requires explicit ALLOW_LAB_TELEGRAM_POLLER=true override.
+    if _is_lab_runtime():
+        allow_lab_raw = (os.getenv("ALLOW_LAB_TELEGRAM_POLLER") or "").strip()
+        if not _is_truthy(allow_lab_raw):
+            logger.warning(
+                "[TG][GUARD] Poller blocked in LAB runtime (RUN_TELEGRAM_POLLER=%s, "
+                "ALLOW_LAB_TELEGRAM_POLLER=%r required for explicit override)",
+                run_poller_raw,
+                allow_lab_raw,
+            )
+            return
+        logger.warning(
+            "[TG][GUARD] LAB poller override active: ALLOW_LAB_TELEGRAM_POLLER=%r",
+            allow_lab_raw,
+        )
 
     if not _POLLER_STARTUP_LOGGED:
         _POLLER_STARTUP_LOGGED = True
