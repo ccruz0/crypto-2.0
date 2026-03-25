@@ -829,6 +829,7 @@ _AGENT_CRITICAL_MIN_CHARS = 15  # Excluding "N/A"
 
 _OPENCLAW_MAX_RETRIES = 1
 _OPENCLAW_RETRY_DELAY_S = 5
+_OPENCLAW_FAILURE_PREVIEW_CHARS = 800
 
 # Cost-control switch for automatic OpenClaw execution.
 # Defaults:
@@ -947,6 +948,13 @@ def _call_openclaw_once(
     use_sections = sections if sections is not None else INVESTIGATION_SECTIONS
     found_sections = [s for s in use_sections if f"## {s}" in content]
     if not found_sections and len(content.strip()) < _MIN_INVESTIGATION_CONTENT_CHARS:
+        preview = content.strip()[:_OPENCLAW_FAILURE_PREVIEW_CHARS].replace("\n", "\\n")
+        logger.warning(
+            "openclaw_validation_failed_raw task_id=%s response_len=%d preview=%r",
+            task_id,
+            len(content.strip()),
+            preview,
+        )
         return None, (
             f"OpenClaw response lacks structured sections and is too short "
             f"({len(content.strip())} chars)"
