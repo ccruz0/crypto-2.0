@@ -830,6 +830,25 @@ _AGENT_CRITICAL_MIN_CHARS = 15  # Excluding "N/A"
 _OPENCLAW_MAX_RETRIES = 1
 _OPENCLAW_RETRY_DELAY_S = 5
 
+# Cost-control switch for automatic OpenClaw execution.
+# Defaults:
+# - AWS runtime: disabled (safe)
+# - non-AWS runtime: enabled
+ENV_OPENCLAW_AUTO_EXECUTION_ENABLED = "ATP_OPENCLAW_AUTO_EXECUTION_ENABLED"
+
+
+def _openclaw_auto_execution_enabled() -> bool:
+    raw = (os.environ.get(ENV_OPENCLAW_AUTO_EXECUTION_ENABLED) or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    try:
+        from app.core.runtime import is_aws_runtime
+        return not bool(is_aws_runtime())
+    except Exception:
+        return True
+
 
 def _verification_fail_max_attempts() -> int:
     raw = (os.environ.get("ATP_VERIFICATION_FAIL_MAX_ATTEMPTS") or "").strip()
@@ -930,6 +949,22 @@ def _apply_via_openclaw(
     """Send a task to OpenClaw for AI analysis, save the result, fall back to template on failure."""
     task_id = _safe_task_id(prepared_task)
     title = _safe_task_title(prepared_task) or "Untitled"
+
+    if not _openclaw_auto_execution_enabled():
+        logger.info(
+            "openclaw_cost_control_skip task_id=%s title=%r env=%s -- automatic OpenClaw execution disabled",
+            task_id,
+            title[:120],
+            ENV_OPENCLAW_AUTO_EXECUTION_ENABLED,
+        )
+        return {
+            "success": False,
+            "summary": (
+                "OpenClaw auto-execution disabled by cost-control "
+                f"({ENV_OPENCLAW_AUTO_EXECUTION_ENABLED})"
+            ),
+            "retryable": True,
+        }
 
     try:
         from app.services.openclaw_client import is_openclaw_configured, send_to_openclaw
