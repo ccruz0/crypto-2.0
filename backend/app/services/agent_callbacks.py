@@ -858,6 +858,16 @@ def _openclaw_allowed_task_ids() -> set[str]:
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
+def _task_allows_openclaw(prepared_task: dict[str, Any]) -> bool:
+    task = (prepared_task or {}).get("task") or {}
+    raw = task.get("allow_openclaw")
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "y", "approved", "allow", "allowed")
+
+
 def _verification_fail_max_attempts() -> int:
     raw = (os.environ.get("ATP_VERIFICATION_FAIL_MAX_ATTEMPTS") or "").strip()
     try:
@@ -960,7 +970,12 @@ def _apply_via_openclaw(
 
     if not _openclaw_auto_execution_enabled():
         allowed_task_ids = _openclaw_allowed_task_ids()
-        if task_id and task_id in allowed_task_ids:
+        if _task_allows_openclaw(prepared_task):
+            logger.info(
+                "openclaw_cost_control_notion_approved task_id=%s field=Allow OpenClaw -- allowing execution while global auto-execution is disabled",
+                task_id,
+            )
+        elif task_id and task_id in allowed_task_ids:
             logger.info(
                 "openclaw_cost_control_allowlisted task_id=%s env=%s -- allowing execution while global auto-execution is disabled",
                 task_id,

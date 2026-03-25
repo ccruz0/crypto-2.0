@@ -121,6 +121,14 @@ def _extract_url(prop_value: Any) -> str:
     return (prop_value.get("url") or "").strip()
 
 
+def _extract_bool_like(prop_value: Any) -> bool:
+    """Extract bool flag from checkbox or text/select-like property."""
+    if isinstance(prop_value, dict) and "checkbox" in prop_value:
+        return bool(prop_value.get("checkbox"))
+    text = _extract_plain_text(prop_value).strip().lower()
+    return text in ("1", "true", "yes", "y", "approved", "allow", "allowed")
+
+
 def _extract_priority_score(props: dict[str, Any]) -> int:
     """Extract Priority Score (0–100 number) from Notion props. Returns 0 if missing or invalid."""
     for name in ("Priority Score", "priority_score", "PriorityScore"):
@@ -257,6 +265,12 @@ def _parse_page(page: dict[str, Any]) -> dict[str, Any]:
         "revision_count": _prop_text("Revision Count", "revision_count"),
         "revision_reason": _prop_text("Revision Reason", "revision_reason"),
         "blocker_reason": _prop_text("Blocker Reason", "blocker_reason"),
+        # Per-task OpenClaw approval gate (checkbox preferred, text/select fallback)
+        "allow_openclaw": _extract_bool_like(
+            props.get("Allow OpenClaw")
+            or props.get("allow_openclaw")
+            or props.get("AllowOpenClaw")
+        ),
         # Strict execution mode: "normal" (default) or "strict" — blocks ready-for-patch until proof exists
         "execution_mode": _extract_execution_mode_from_props(props),
         # Priority Score: 0–100 number for scheduler ordering (optional property "Priority Score")
