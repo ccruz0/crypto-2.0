@@ -149,6 +149,7 @@ def _clear_anomaly_incident(anomaly_type: str) -> None:
 ANOMALY_SOURCE = "monitoring"
 ANOMALY_STATUS = "planned"
 ANOMALY_PROJECT = "Operations"
+_ANOMALY_TASK_DEDUP_WINDOW_MINUTES_DEFAULT = 60
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +158,61 @@ ANOMALY_PROJECT = "Operations"
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _anomaly_task_dedup_window_minutes() -> int:
+    """Read anomaly task dedup window from env; default 60 minutes."""
+    raw = (os.environ.get("ANOMALY_TASK_DEDUP_WINDOW_MINUTES") or "").strip()
+    if raw:
+        try:
+            # Keep within requested operational range (30-60) by default,
+            # but allow up to 24h for emergency tuning.
+            return max(30, min(1440, int(raw)))
+        except ValueError:
+            pass
+    return _ANOMALY_TASK_DEDUP_WINDOW_MINUTES_DEFAULT
+
+
+def _parse_iso_ts(value: str) -> datetime | None:
+    v = (value or "").strip()
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_active_anomaly_task(anomaly_name: str) -> dict[str, Any] | None:
+    """
+    Return an active anomaly task for the same anomaly type within dedup window.
+
+    Active statuses: Planned, In Progress, Ready for Investigation, Patching.
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: get_tasks_by_status import failed: %s", e)
+        return None
+
+    statuses = ["planned", "in-progress", "ready-for-investigation", "patching"]
+    tasks = get_tasks_by_status(statuses, max_results=200)
+    if not tasks:
+        return None
+
+    needle = f"anomaly type: {anomaly_name}".lower()
+    now = _utc_now()
+    window = timedelta(minutes=_anomaly_task_dedup_window_minutes())
+
+    for task in tasks:
+        details = str(task.get("details") or "")
+        if needle not in details.lower():
+            continue
+        ts = _parse_iso_ts(str(task.get("last_edited_time") or "")) or _parse_iso_ts(str(task.get("created_time") or ""))
+        if ts is not None and now - ts > window:
+            continue
+        return task
+    return None
 
 
 def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> None:
@@ -187,11 +243,28 @@ def _notify_telegram(message: str) -> bool:
 
 def _create_anomaly_task(
     title: str,
+    anomaly_name: str,
     anomaly_type: str,
     details: str,
     priority: Optional[str] = None,
 ) -> dict[str, Any] | None:
     """Create a Notion task for a detected anomaly and log the event."""
+    existing = _find_active_anomaly_task(anomaly_name)
+    if existing:
+        existing_id = str(existing.get("id") or "")
+        logger.info(
+            "anomaly_task_deduplicated anomaly=%s existing_task_id=%s title=%r",
+            anomaly_name,
+            existing_id[:12],
+            str(existing.get("task") or "")[:120],
+        )
+        _log_event("anomaly_task_deduplicated", details={
+            "anomaly_type": anomaly_name,
+            "existing_task_id": existing_id,
+            "existing_status": str(existing.get("status") or ""),
+        })
+        return None
+
     try:
         from app.services.notion_tasks import create_notion_task
         result = create_notion_task(
@@ -543,6 +616,7 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                     notion_type = _anomaly_type_to_notion_type(anomaly_type)
                     task = _create_anomaly_task(
                         title=title,
+                        anomaly_name=anomaly_type,
                         anomaly_type=notion_type,
                         details=details,
                     )
@@ -567,6 +641,7 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                 notion_type = _anomaly_type_to_notion_type(anomaly_type)
                 task = _create_anomaly_task(
                     title=title,
+                    anomaly_name=anomaly_type,
                     anomaly_type=notion_type,
                     details=details,
                 )
