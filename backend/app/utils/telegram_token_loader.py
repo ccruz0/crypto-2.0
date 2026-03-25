@@ -1,7 +1,9 @@
 """
 Secure Telegram bot token loading.
 
-Priority: TELEGRAM_BOT_TOKEN → TELEGRAM_BOT_TOKEN_DEV → interactive popup.
+Architecture: docs/architecture/telegram.md (PROD-only polling; AWS uses
+TELEGRAM_ATP_CONTROL_BOT_TOKEN for getUpdates; TELEGRAM_BOT_TOKEN is outbound/alerts).
+
 Never logs or persists the full token.
 """
 

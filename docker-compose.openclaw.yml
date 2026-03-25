@@ -24,9 +24,9 @@ services:
       # Optional: for Tavily web search. Create via: bash scripts/setup_tavily_key.sh
       - secrets/runtime.env
     environment:
-      # Telegram: PROD backend-aws must be the sole getUpdates consumer for @ATP_control_bot.
-      # secrets/runtime.env often mirrors prod and includes TELEGRAM_*; OpenClaw would otherwise
-      # poll the same token → HTTP 409 / "Another poller is active". Use UI/API for OpenClaw; do not bridge prod task bot here.
+      # Telegram: PRODUCTION ONLY — see docs/architecture/telegram.md. OpenClaw is LAB: no prod tokens, no poller.
+      - RUN_TELEGRAM=false
+      # secrets/runtime.env may mirror prod; force-strip Telegram so LAB cannot poll or use prod bots.
       - TELEGRAM_BOT_TOKEN=
       - TELEGRAM_BOT_TOKEN_AWS=
       - TELEGRAM_ATP_CONTROL_BOT_TOKEN=
