@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Edit — Secret Console</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>Edit secret</h1>
+    <p class="meta"><a href="/">← Back</a> · AWS region: <code>{{ region }}</code></p>
+  </header>
+
+  <section class="card">
+    <form method="post" action="/save" class="form-grid">
+      <input type="hidden" name="secret_id" value="{{ secret.id }}" />
+      <label>Name <input name="name" required value="{{ secret.name }}" /></label>
+      <label>Environment
+        <select name="environment">
+          <option value="lab" {% if secret.environment == 'lab' %}selected{% endif %}>lab</option>
+          <option value="prod" {% if secret.environment == 'prod' %}selected{% endif %}>prod</option>
+        </select>
+      </label>
+      <label>Category <input name="category" placeholder="e.g. telegram" value="{{ secret.category or '' }}" /></label>
+      <label class="full">Description <input name="description" placeholder="Optional" value="{{ secret.description or '' }}" /></label>
+      <label class="full">Notes <textarea name="notes" rows="2" placeholder="Optional">{{ secret.notes or '' }}</textarea></label>
+      <label class="full">Value <textarea name="value" rows="5" placeholder="Leave empty to keep current">{{ secret.value }}</textarea></label>
+      <p class="hint full">Leave value empty to keep the existing secret unchanged.</p>
+      <div class="actions full">
+        <button type="submit" formaction="/save">Save</button>
+        <button type="submit" formaction="/save-and-sync" class="secondary">Save + sync to AWS</button>
+        <button type="submit" formaction="/sync/{{ secret.id }}" class="secondary">Sync to AWS only</button>
+        <button type="submit" formaction="/apply/{{ secret.id }}" class="secondary">Apply</button>
+        <button type="submit" formaction="/verify/{{ secret.id }}" class="ghost">Verify</button>
+      </div>
+    </form>
+    <form method="post" action="/delete/{{ secret.id }}" class="danger-zone" onsubmit="return confirm('Delete this secret from local store?');">
+      <button type="submit" class="danger">Delete locally</button>
+    </form>
+  </section>
+</body>
+</html>

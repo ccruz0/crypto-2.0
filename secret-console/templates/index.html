@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Secret Console</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>Secret Console</h1>
+    <p class="meta">Central vault · Local store: <code>{{ data_dir }}</code> · AWS region: <code>{{ region }}</code></p>
+    <p class="meta catalog-meta">Catalog: <strong>{{ catalog_count }}</strong> documented secrets (metadata only). Values live in encrypted local storage or AWS.</p>
+  </header>
+
+  {% if notice %}
+  <div class="notice" role="status">{{ notice }}</div>
+  {% endif %}
+
+  <section class="card" id="add-secret">
+    <h2>Add secret</h2>
+    <p class="hint full">Custom name (dot notation recommended), value, environment, optional category and notes. Saved encrypted locally; use Sync / Apply / Verify per row.</p>
+    <form method="post" action="/save" class="form-grid">
+      <input type="hidden" name="secret_id" value="" />
+      <label>Name <input name="name" required placeholder="e.g. notion.api_key" value="{{ prefill.name }}" /></label>
+      <label>Environment
+        <select name="environment">
+          <option value="lab" {% if prefill.environment == 'lab' %}selected{% endif %}>lab</option>
+          <option value="prod" {% if prefill.environment != 'lab' %}selected{% endif %}>prod</option>
+        </select>
+      </label>
+      <label>Category <input name="category" placeholder="e.g. telegram, notion" value="{{ prefill.category }}" /></label>
+      <label class="full">Description (optional) <input name="description" placeholder="Short note for this entry" value="{{ prefill.description }}" /></label>
+      <label class="full">Notes (optional) <textarea name="notes" rows="2" placeholder="Rotation hints, owners, links to runbooks">{{ prefill.notes }}</textarea></label>
+      <label class="full">Value <textarea name="value" rows="3" placeholder="Secret value" required></textarea></label>
+      <div class="actions full">
+        <button type="submit" formaction="/save">Save to vault</button>
+        <button type="submit" formaction="/save-and-sync" class="secondary">Save + sync to AWS</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Vault &amp; catalog</h2>
+    <form method="get" action="/" class="filter-grid">
+      <label>Search
+        <input name="q" placeholder="name, notes, description..." value="{{ filters.q }}" />
+      </label>
+      <label>Environment
+        <select name="env">
+          <option value="">all</option>
+          <option value="lab" {% if filters.env == 'lab' %}selected{% endif %}>lab</option>
+          <option value="prod" {% if filters.env == 'prod' %}selected{% endif %}>prod</option>
+        </select>
+      </label>
+      <label>Category
+        <select name="category">
+          <option value="">all</option>
+          {% for c in categories %}
+          <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="">all</option>
+          <option value="in-vault" {% if filters.status == 'in-vault' %}selected{% endif %}>In vault</option>
+          <option value="missing" {% if filters.status == 'missing' %}selected{% endif %}>Missing</option>
+          <option value="seeded" {% if filters.status == 'seeded' %}selected{% endif %}>Seeded</option>
+          <option value="custom" {% if filters.status == 'custom' %}selected{% endif %}>Custom</option>
+          <option value="apply-ready" {% if filters.status == 'apply-ready' %}selected{% endif %}>Apply ready</option>
+          <option value="verify-ready" {% if filters.status == 'verify-ready' %}selected{% endif %}>Verify ready</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button type="submit" class="small">Filter</button>
+        <a href="/" class="btn link small">Reset</a>
+      </div>
+    </form>
+    <p class="muted tiny result-count">Results: {{ result_count }} / {{ total_count }}</p>
+    {% if not vault_rows %}
+    <p class="empty">No rows.</p>
+    {% else %}
+    <div class="table-wrap vault-table-wrap">
+      <table class="vault-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Env</th>
+            <th>Category</th>
+            <th>Value</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in vault_rows %}
+          <tr data-id="{{ row.id or '' }}" data-in-vault="{{ '1' if row.in_vault else '0' }}">
+            <td>
+              <code class="name-code" title="{{ row.description }}">{{ row.name }}</code>
+              {% if row.expected_target and row.expected_target != '—' %}
+              <div class="target-hint" title="{{ row.expected_target }}">Target</div>
+              {% endif %}
+            </td>
+            <td>{{ row.environment }}</td>
+            <td><span class="tag">{{ row.category }}</span></td>
+            <td class="value-cell">
+              <span class="masked js-masked" data-id="{{ row.id or '' }}">{{ row.value_masked }}</span>
+              <span class="revealed js-revealed" hidden></span>
+              <div class="badges">
+                {% for b in row.badges %}
+                <span class="badge">{{ b }}</span>
+                {% endfor %}
+              </div>
+            </td>
+            <td class="muted">{% if row.last_updated %}{{ row.last_updated }}{% else %}—{% endif %}</td>
+            <td class="actions-cell">
+              {% if row.id and row.has_value %}
+              <button type="button" class="ghost small js-reveal" data-id="{{ row.id }}">Reveal</button>
+              <button type="button" class="ghost small js-copy" data-id="{{ row.id }}">Copy</button>
+              {% elif row.id and not row.has_value %}
+              <span class="muted tiny">empty</span>
+              {% endif %}
+              {% if row.add_href %}
+              <a class="btn link small" href="{{ row.add_href }}">Add to vault</a>
+              {% endif %}
+              {% if row.id %}
+              <a class="btn link small" href="/edit/{{ row.id }}">Edit</a>
+              <form class="inline" method="post" action="/sync/{{ row.id }}"><button type="submit" class="small">Sync</button></form>
+              <form class="inline" method="post" action="/apply/{{ row.id }}"><button type="submit" class="secondary small">Apply</button></form>
+              <form class="inline" method="post" action="/verify/{{ row.id }}"><button type="submit" class="ghost small">Verify</button></form>
+              <button type="button" class="ghost small js-fetch-aws" data-id="{{ row.id }}">From AWS</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p id="aws-fetch-result" class="fetch-result" hidden></p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Bulk import</h2>
+    <p class="hint full">Paste one per line as <code>NAME=VALUE</code>. Empty lines and <code># comments</code> are ignored.</p>
+    <form method="post" action="/bulk-import" class="form-grid">
+      <label>Environment
+        <select name="environment">
+          <option value="lab">lab</option>
+          <option value="prod" selected>prod</option>
+        </select>
+      </label>
+      <label>Category (optional)
+        <input name="category" placeholder="e.g. telegram" />
+      </label>
+      <label class="full">Lines
+        <textarea name="blob" rows="8" placeholder="notion.api_key=...\nnotion.task_database_id=..."></textarea>
+      </label>
+      <div class="actions full">
+        <button type="submit">Import</button>
+      </div>
+    </form>
+  </section>
+
+  <script>
+    (function () {
+      var revealTimers = {};
+
+      function clearReveal(id) {
+        var row = document.querySelector('tr[data-id="' + id + '"]');
+        if (!row) return;
+        var masked = row.querySelector(".js-masked");
+        var revealed = row.querySelector(".js-revealed");
+        if (masked) masked.hidden = false;
+        if (revealed) { revealed.hidden = true; revealed.textContent = ""; }
+      }
+
+      document.querySelectorAll(".js-reveal").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-id");
+          if (!id) return;
+          var row = document.querySelector('tr[data-id="' + id + '"]');
+          if (!row) return;
+          var masked = row.querySelector(".js-masked");
+          var revealed = row.querySelector(".js-revealed");
+          if (!revealed || !masked) return;
+          if (!revealed.hidden && revealed.textContent) {
+            if (revealTimers[id]) {
+              clearTimeout(revealTimers[id]);
+              revealTimers[id] = null;
+            }
+            clearReveal(id);
+            btn.textContent = "Reveal";
+            return;
+          }
+          fetch("/api/secrets/" + encodeURIComponent(id) + "/value")
+            .then(function (r) {
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return r.json();
+            })
+            .then(function (j) {
+              if (!j.ok || j.value === undefined) throw new Error("bad response");
+              revealed.textContent = j.value;
+              revealed.hidden = false;
+              masked.hidden = true;
+              btn.textContent = "Hide";
+              if (revealTimers[id]) clearTimeout(revealTimers[id]);
+              revealTimers[id] = setTimeout(function () {
+                clearReveal(id);
+                btn.textContent = "Reveal";
+                revealTimers[id] = null;
+              }, 45000);
+            })
+            .catch(function (e) {
+              alert("Reveal failed: " + e);
+            });
+        });
+      });
+
+      document.querySelectorAll(".js-copy").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-id");
+          if (!id) return;
+          fetch("/api/secrets/" + encodeURIComponent(id) + "/value")
+            .then(function (r) {
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return r.json();
+            })
+            .then(function (j) {
+              if (!j.ok || j.value === undefined) throw new Error("bad response");
+              return navigator.clipboard.writeText(j.value);
+            })
+            .then(function () {
+              var t = btn.textContent;
+              btn.textContent = "Copied";
+              setTimeout(function () { btn.textContent = t; }, 1500);
+            })
+            .catch(function (e) {
+              alert("Copy failed: " + e);
+            });
+        });
+      });
+
+      document.querySelectorAll(".js-fetch-aws").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-id");
+          var out = document.getElementById("aws-fetch-result");
+          out.hidden = false;
+          out.textContent = "Loading…";
+          fetch("/api/secrets/" + encodeURIComponent(id) + "/from-aws")
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (x) {
+              if (!x.ok) {
+                out.textContent = "AWS: " + (x.j.error || x.j.detail || "error") + " — " + (x.j.parameter_name || "");
+                return;
+              }
+              out.textContent = "AWS preview: " + x.j.preview + " (len " + x.j.length + ") — " + x.j.parameter_name;
+            })
+            .catch(function (e) {
+              out.textContent = "Request failed: " + e;
+            });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
