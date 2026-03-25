@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # Mask length for display (e.g. "AAHaawKlho")
 MASK_LENGTH = 10
+
+# AWS ATP polling token INFO: log once per process (get_telegram_token may be called often).
+_TOKEN_LOGGED = False
+_TOKEN_LOG_LOCK = threading.Lock()
 
 
 def mask_token(token: Optional[str]) -> str:
@@ -206,13 +211,17 @@ def get_telegram_token() -> Optional[str]:
             # AWS poller must use a single token source to avoid drift during rotations.
             atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
             if atp:
-                suffix = atp[-6:] if len(atp) >= 6 else atp
-                logger.info(
-                    "[TG][CONFIG] AWS polling token=TELEGRAM_ATP_CONTROL_BOT_TOKEN "
-                    "(masked_suffix=***%s; commands /task go to this bot; "
-                    "TELEGRAM_BOT_TOKEN is for trading sends)",
-                    suffix,
-                )
+                global _TOKEN_LOGGED
+                with _TOKEN_LOG_LOCK:
+                    if not _TOKEN_LOGGED:
+                        suffix = atp[-6:] if len(atp) >= 6 else atp
+                        logger.info(
+                            "[TG][CONFIG] AWS polling token=TELEGRAM_ATP_CONTROL_BOT_TOKEN "
+                            "(masked_suffix=***%s; commands /task go to this bot; "
+                            "TELEGRAM_BOT_TOKEN is for trading sends)",
+                            suffix,
+                        )
+                        _TOKEN_LOGGED = True
                 return atp
             logger.warning("[TG][CONFIG] AWS runtime missing TELEGRAM_ATP_CONTROL_BOT_TOKEN; polling token unavailable")
             return None
