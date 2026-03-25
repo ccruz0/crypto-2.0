@@ -307,6 +307,105 @@ def _cleanup_duplicate_anomaly_tasks() -> int:
     return closed_count
 
 
+def run_anomaly_bulk_cleanup(*, dry_run: bool = True) -> dict[str, Any]:
+    """
+    One-time bulk cleanup for historical anomaly duplicates.
+
+    - Targets only tasks with explicit details marker: "Anomaly type: <type>".
+    - Scans only active statuses: planned, in-progress, ready-for-investigation, patching.
+    - Keeps one canonical task per anomaly type (furthest status, newest timestamp tie-break).
+    - Closes the rest to rejected (unless dry_run=True).
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+        from app.services.notion_tasks import update_notion_task_status
+    except Exception as e:
+        return {"ok": False, "error": f"import failed: {e}", "dry_run": dry_run}
+
+    statuses = ["planned", "in-progress", "ready-for-investigation", "patching"]
+    tasks = get_tasks_by_status(statuses, max_results=500)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        anomaly_name = _extract_anomaly_type_from_details(str(task.get("details") or ""))
+        if not anomaly_name:
+            continue
+        grouped.setdefault(anomaly_name, []).append(task)
+
+    closed_count = 0
+    would_close_count = 0
+    remaining_active_by_type: dict[str, int] = {}
+    for anomaly_name, same_type_tasks in grouped.items():
+        if len(same_type_tasks) <= 1:
+            remaining_active_by_type[anomaly_name] = len(same_type_tasks)
+            continue
+
+        def _sort_key(t: dict[str, Any]) -> tuple[int, float]:
+            status_rank = _status_rank_for_cleanup(str(t.get("status") or ""))
+            ts = _parse_iso_ts(str(t.get("last_edited_time") or "")) or _parse_iso_ts(str(t.get("created_time") or ""))
+            ts_epoch = ts.timestamp() if ts else 0.0
+            return status_rank, ts_epoch
+
+        ordered = sorted(same_type_tasks, key=_sort_key, reverse=True)
+        keep = ordered[0]
+        keep_id = str(keep.get("id") or "")
+
+        for dup in ordered[1:]:
+            dup_id = str(dup.get("id") or "")
+            if not dup_id:
+                continue
+            would_close_count += 1
+            if dry_run:
+                logger.info(
+                    "anomaly_bulk_cleanup_closed anomaly=%s closed_task_id=%s kept_task_id=%s dry_run=true",
+                    anomaly_name,
+                    dup_id[:12],
+                    keep_id[:12],
+                )
+                continue
+
+            comment = "Closed as duplicate during anomaly dedup cleanup"
+            if keep_id:
+                comment += f" (kept task: {keep_id})"
+            ok = update_notion_task_status(dup_id, "rejected", append_comment=comment)
+            if ok:
+                closed_count += 1
+                logger.info(
+                    "anomaly_bulk_cleanup_closed anomaly=%s closed_task_id=%s kept_task_id=%s",
+                    anomaly_name,
+                    dup_id[:12],
+                    keep_id[:12],
+                )
+                _log_event("anomaly_bulk_cleanup_closed", details={
+                    "anomaly_type": anomaly_name,
+                    "closed_task_id": dup_id,
+                    "kept_task_id": keep_id,
+                })
+
+        remaining_active_by_type[anomaly_name] = 1
+
+    logger.info(
+        "anomaly_bulk_cleanup_done dry_run=%s closed=%d would_close=%d types=%d",
+        dry_run,
+        closed_count,
+        would_close_count,
+        len(grouped),
+    )
+    _log_event("anomaly_bulk_cleanup_done", details={
+        "dry_run": dry_run,
+        "closed": closed_count,
+        "would_close": would_close_count,
+        "types": len(grouped),
+    })
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "closed": closed_count,
+        "would_close": would_close_count,
+        "active_types": len(grouped),
+        "remaining_active_by_type": remaining_active_by_type,
+    }
+
+
 def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> None:
     try:
         from app.services.agent_activity_log import log_agent_event
