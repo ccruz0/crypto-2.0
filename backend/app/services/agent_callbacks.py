@@ -835,6 +835,7 @@ _OPENCLAW_RETRY_DELAY_S = 5
 # - AWS runtime: disabled (safe)
 # - non-AWS runtime: enabled
 ENV_OPENCLAW_AUTO_EXECUTION_ENABLED = "ATP_OPENCLAW_AUTO_EXECUTION_ENABLED"
+ENV_OPENCLAW_ALLOWED_TASK_IDS = "ATP_OPENCLAW_ALLOWED_TASK_IDS"
 
 
 def _openclaw_auto_execution_enabled() -> bool:
@@ -848,6 +849,13 @@ def _openclaw_auto_execution_enabled() -> bool:
         return not bool(is_aws_runtime())
     except Exception:
         return True
+
+
+def _openclaw_allowed_task_ids() -> set[str]:
+    raw = (os.environ.get(ENV_OPENCLAW_ALLOWED_TASK_IDS) or "").strip()
+    if not raw:
+        return set()
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def _verification_fail_max_attempts() -> int:
@@ -951,20 +959,28 @@ def _apply_via_openclaw(
     title = _safe_task_title(prepared_task) or "Untitled"
 
     if not _openclaw_auto_execution_enabled():
-        logger.info(
-            "openclaw_cost_control_skip task_id=%s title=%r env=%s -- automatic OpenClaw execution disabled",
-            task_id,
-            title[:120],
-            ENV_OPENCLAW_AUTO_EXECUTION_ENABLED,
-        )
-        return {
-            "success": False,
-            "summary": (
-                "OpenClaw auto-execution disabled by cost-control "
-                f"({ENV_OPENCLAW_AUTO_EXECUTION_ENABLED})"
-            ),
-            "retryable": False,
-        }
+        allowed_task_ids = _openclaw_allowed_task_ids()
+        if task_id and task_id in allowed_task_ids:
+            logger.info(
+                "openclaw_cost_control_allowlisted task_id=%s env=%s -- allowing execution while global auto-execution is disabled",
+                task_id,
+                ENV_OPENCLAW_ALLOWED_TASK_IDS,
+            )
+        else:
+            logger.info(
+                "openclaw_cost_control_skip task_id=%s title=%r env=%s -- automatic OpenClaw execution disabled",
+                task_id,
+                title[:120],
+                ENV_OPENCLAW_AUTO_EXECUTION_ENABLED,
+            )
+            return {
+                "success": False,
+                "summary": (
+                    "OpenClaw auto-execution disabled by cost-control "
+                    f"({ENV_OPENCLAW_AUTO_EXECUTION_ENABLED})"
+                ),
+                "retryable": False,
+            }
 
     try:
         from app.services.openclaw_client import is_openclaw_configured, send_to_openclaw
