@@ -963,7 +963,7 @@ def _apply_via_openclaw(
                 "OpenClaw auto-execution disabled by cost-control "
                 f"({ENV_OPENCLAW_AUTO_EXECUTION_ENABLED})"
             ),
-            "retryable": True,
+            "retryable": False,
         }
 
     try:
