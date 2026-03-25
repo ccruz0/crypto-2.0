@@ -8,7 +8,6 @@ import math
 import time
 import tempfile
 import sys
-import traceback
 import json
 from typing import Optional, Dict, List, Any, Tuple, cast
 from datetime import datetime, timedelta
@@ -4512,174 +4511,71 @@ def _handle_task_command(
     Canonical handler for /task. Single path: extract intent, request project, then create task on callback.
     Never falls through to unknown-command.
     """
+    raw_text = (text or "").strip()
+    normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
+    intent_text = normalized_cmd
+    token_source = get_telegram_token_source()
+    _uid = _resolve_actor_user_id(from_user or {}, sender_chat, chat_id)
+    _un = str((from_user or {}).get("username", "") or "").strip()
     logger.info(
-        "[TG][TASK][STEP] enter _handle_task_command update_id=%s chat_id=%s args_len=%s text_len=%s",
+        "[TG][TASK][INTAKE] handler=_handle_task_command update_id=%s chat_id=%s user_id=%s username=%s "
+        "token_source=%s normalized_cmd=%r",
         update_id,
         chat_id,
-        len(args or ""),
-        len((text or "")),
+        _uid or "(empty)",
+        _un or "(empty)",
+        token_source,
+        (normalized_cmd or "")[:120],
     )
-    try:
-        raw_text = (text or "").strip()
-        args_stripped = (args or "").strip()
-        normalized_cmd = args_stripped or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
-        intent_text = normalized_cmd
-        token_source = get_telegram_token_source()
-        logger.info(
-            "[TG][TASK][STEP] parsed args_stripped_len=%s raw_text_preview=%r normalized_preview=%r intent_len=%s",
-            len(args_stripped),
-            (raw_text or "")[:200],
-            (normalized_cmd or "")[:200],
-            len(intent_text or ""),
-        )
-        logger.info(
-            "[TG][TASK][STEP] resolve_actor before _resolve_actor_user_id sender_chat=%s",
-            bool(sender_chat),
-        )
-        _uid = _resolve_actor_user_id(from_user or {}, sender_chat, chat_id)
-        _un = str((from_user or {}).get("username", "") or "").strip()
-        logger.info(
-            "[TG][TASK][STEP] actor resolved _uid=%r username=%r",
-            _uid or "(empty)",
-            _un or "(empty)",
-        )
-        logger.info(
-            "[TG][TASK][INTAKE] handler=_handle_task_command update_id=%s chat_id=%s user_id=%s username=%s "
-            "token_source=%s normalized_cmd=%r",
-            update_id,
-            chat_id,
-            _uid or "(empty)",
-            _un or "(empty)",
-            token_source,
-            (normalized_cmd or "")[:120],
-        )
-        logger.info(
-            "[TG][TASK] intake update_id=%s chat_id=%s preview=%r",
-            update_id,
-            chat_id,
-            (normalized_cmd or "")[:200],
-        )
-        logger.info(
-            "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
-            raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
-        )
-        if not intent_text:
-            logger.info(
-                "[TG][TASK][STEP] branch=usage_only reason=intent_text_empty args_repr=%r raw_text_repr=%r "
-                "update_id=%s chat_id=%s",
-                (args or "")[:300],
-                (raw_text or "")[:300],
-                update_id,
-                chat_id,
-            )
-            logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
-            ok = send_response(
-                chat_id,
-                "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
-            )
-            logger.info(
-                "[TG][TASK][STEP] send_response usage_only ok=%s update_id=%s chat_id=%s",
-                ok,
-                update_id,
-                chat_id,
-            )
-            logger.info("[TG][TASK] handler=task success=usage update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
-            logger.info(
-                "[TG][TASK][STEP] exit _handle_task_command return=%s update_id=%s chat_id=%s",
-                bool(ok),
-                update_id,
-                chat_id,
-            )
-            return bool(ok)
-
-        telegram_user = (
-            ((from_user or {}).get("username") or (from_user or {}).get("first_name") or "").strip() or "Carlos"
-        )
-        logger.info(
-            "[TG][TASK][STEP] telegram_user built=%r update_id=%s chat_id=%s",
-            telegram_user,
-            update_id,
-            chat_id,
-        )
-        pending_key = _task_pending_selection_key(chat_id)
-        logger.info(
-            "[TG][TASK][STEP] pending_key=%r update_id=%s chat_id=%s",
-            pending_key,
-            update_id,
-            chat_id,
-        )
-        logger.info(
-            "[TG][TASK][STEP] pending store begin pending_key=%r update_id=%s chat_id=%s",
-            pending_key,
-            update_id,
-            chat_id,
-        )
-        PENDING_TASK_PROJECT_SELECTION[pending_key] = {
-            "description": intent_text,
-            "telegram_user": telegram_user,
-            "initiating_user_id": _uid,
-            "created_at": time.time(),
-        }
-        logger.info(
-            "[TG][TASK][STEP] pending store done pending_key=%r update_id=%s chat_id=%s",
-            pending_key,
-            update_id,
-            chat_id,
-        )
-        logger.info(
-            "[TG][TASK][PENDING] action=store pending_key=%r initiating_user_id=%r update_id=%s chat_id=%s",
-            pending_key,
-            _uid or "(empty)",
-            update_id,
-            chat_id,
-        )
-        logger.info(
-            "[TG][TASK][STEP] build inline keyboard before send_response update_id=%s chat_id=%s",
-            update_id,
-            chat_id,
-        )
-        _kbd = _task_project_selection_keyboard()
-        logger.info(
-            "[TG][TASK][STEP] inline keyboard built update_id=%s chat_id=%s",
-            update_id,
-            chat_id,
-        )
+    logger.info(
+        "[TG][TASK] intake update_id=%s chat_id=%s preview=%r",
+        update_id,
+        chat_id,
+        (normalized_cmd or "")[:200],
+    )
+    logger.info(
+        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
+        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
+    )
+    if not intent_text:
+        logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
         ok = send_response(
             chat_id,
-            "📋 <b>Create task from Telegram</b>\n\nSelect project:",
-            _kbd,
+            "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
         )
-        logger.info(
-            "[TG][TASK][STEP] send_response project_keyboard ok=%s update_id=%s chat_id=%s",
-            ok,
-            update_id,
-            chat_id,
-        )
-        logger.info(
-            "[TG][TASK] awaiting_project_selection update_id=%s chat_id=%s ok=%s",
-            update_id,
-            chat_id,
-            ok,
-        )
-        logger.info(
-            "[TG][TASK][STEP] exit _handle_task_command return=%s update_id=%s chat_id=%s",
-            bool(ok),
-            update_id,
-            chat_id,
-        )
+        logger.info("[TG][TASK] handler=task success=usage update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
         return bool(ok)
-    except Exception as e:
-        logger.error(
-            "[TG][TASK][FATAL] _handle_task_command exception type=%s msg=%r update_id=%s chat_id=%s\n%s",
-            type(e).__name__,
-            str(e),
-            update_id,
-            chat_id,
-            traceback.format_exc(),
-        )
-        raise
 
-
+    telegram_user = (
+        ((from_user or {}).get("username") or (from_user or {}).get("first_name") or "").strip() or "Carlos"
+    )
+    pending_key = _task_pending_selection_key(chat_id)
+    PENDING_TASK_PROJECT_SELECTION[pending_key] = {
+        "description": intent_text,
+        "telegram_user": telegram_user,
+        "initiating_user_id": _uid,
+        "created_at": time.time(),
+    }
+    logger.info(
+        "[TG][TASK][PENDING] action=store pending_key=%r initiating_user_id=%r update_id=%s chat_id=%s",
+        pending_key,
+        _uid or "(empty)",
+        update_id,
+        chat_id,
+    )
+    logger.info("[TG][TASK][STEP] before_send_command_response")
+    ok = _send_menu_message(
+        chat_id,
+        "📋 <b>Create task from Telegram</b>\n\nSelect project:",
+        _task_project_selection_keyboard(),
+    )
+    logger.info(
+        "[TG][TASK] awaiting_project_selection update_id=%s chat_id=%s ok=%s",
+        update_id,
+        chat_id,
+        ok,
+    )
+    return bool(ok)
 def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     """Handle a single Telegram update (messages and callback queries)"""
     global PROCESSED_TEXT_COMMANDS, PROCESSED_CALLBACK_DATA, PROCESSED_CALLBACK_IDS
