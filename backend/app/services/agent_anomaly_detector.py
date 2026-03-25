@@ -215,6 +215,98 @@ def _find_active_anomaly_task(anomaly_name: str) -> dict[str, Any] | None:
     return None
 
 
+def _extract_anomaly_type_from_details(details: str) -> str:
+    """Extract anomaly type marker from task details."""
+    for line in (details or "").splitlines():
+        s = line.strip()
+        if s.lower().startswith("anomaly type:"):
+            return s.split(":", 1)[1].strip().lower()
+    return ""
+
+
+def _status_rank_for_cleanup(status: str) -> int:
+    # Higher rank = further along in active lifecycle.
+    s = (status or "").strip().lower()
+    if s == "patching":
+        return 4
+    if s == "in-progress":
+        return 3
+    if s == "ready-for-investigation":
+        return 2
+    if s == "planned":
+        return 1
+    return 0
+
+
+def _cleanup_duplicate_anomaly_tasks() -> int:
+    """
+    Close duplicate active anomaly tasks, keeping one canonical task per anomaly type.
+
+    Rule:
+    - Only tasks with explicit details marker "Anomaly type: <type>" are considered.
+    - Active statuses scanned: planned, in-progress, ready-for-investigation, patching.
+    - Keep canonical task by (furthest status rank, newest timestamp).
+    - Close others as rejected with a dedup comment referencing kept task id.
+    """
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+        from app.services.notion_tasks import update_notion_task_status
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: duplicate cleanup imports failed: %s", e)
+        return 0
+
+    statuses = ["planned", "in-progress", "ready-for-investigation", "patching"]
+    tasks = get_tasks_by_status(statuses, max_results=500)
+    if not tasks:
+        return 0
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        anomaly_name = _extract_anomaly_type_from_details(str(task.get("details") or ""))
+        if not anomaly_name:
+            continue  # never touch non-anomaly tasks
+        grouped.setdefault(anomaly_name, []).append(task)
+
+    closed_count = 0
+    for anomaly_name, same_type_tasks in grouped.items():
+        if len(same_type_tasks) <= 1:
+            continue
+
+        def _sort_key(t: dict[str, Any]) -> tuple[int, float]:
+            status_rank = _status_rank_for_cleanup(str(t.get("status") or ""))
+            ts = _parse_iso_ts(str(t.get("last_edited_time") or "")) or _parse_iso_ts(str(t.get("created_time") or ""))
+            ts_epoch = ts.timestamp() if ts else 0.0
+            return status_rank, ts_epoch
+
+        ordered = sorted(same_type_tasks, key=_sort_key, reverse=True)
+        keep = ordered[0]
+        keep_id = str(keep.get("id") or "")
+
+        for dup in ordered[1:]:
+            dup_id = str(dup.get("id") or "")
+            if not dup_id:
+                continue
+            comment = "Closed as duplicate during anomaly dedup cleanup"
+            if keep_id:
+                comment += f" (kept task: {keep_id})"
+            ok = update_notion_task_status(dup_id, "rejected", append_comment=comment)
+            if ok:
+                closed_count += 1
+                logger.info(
+                    "anomaly_duplicate_cleanup_closed anomaly=%s closed_task_id=%s kept_task_id=%s",
+                    anomaly_name,
+                    dup_id[:12],
+                    keep_id[:12],
+                )
+                _log_event("anomaly_duplicate_cleanup_closed", details={
+                    "anomaly_type": anomaly_name,
+                    "closed_task_id": dup_id,
+                    "kept_task_id": keep_id,
+                })
+
+    return closed_count
+
+
 def _log_event(event_type: str, *, details: dict[str, Any] | None = None) -> None:
     try:
         from app.services.agent_activity_log import log_agent_event
@@ -576,6 +668,12 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
     """
     logger.info("anomaly_detection_cycle_start ts=%s", _utc_now().isoformat())
     _log_event("anomaly_detection_cycle_started")
+    try:
+        closed = _cleanup_duplicate_anomaly_tasks()
+        if closed:
+            logger.info("anomaly_duplicate_cleanup_done closed=%d", closed)
+    except Exception as e:
+        logger.warning("anomaly_duplicate_cleanup failed: %s", e)
 
     anomalies_found: list[dict[str, Any]] = []
     tasks_created: list[dict[str, Any]] = []
