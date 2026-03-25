@@ -4901,13 +4901,20 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         
         # DEDUPLICATION LEVEL 2: Check if this callback_data was recently processed
         # This prevents the same action from being processed multiple times across different chats
-        # (e.g., when both Hilovivo-alerts and Hilovivo-alerts-local receive the same callback)
-        if callback_data and callback_data != "noop":
+        # (e.g., when both Hilovivo-alerts and Hilovivo-alerts-local receive the same callback).
+        # Exclude task_project:* — data is identical for every user/chat; global dedup would ACK but
+        # skip task creation and user confirmation (silent failure for legitimate clicks).
+        _cb_for_callback_dedup = (callback_data or "").strip()
+        if _cb_for_callback_dedup and _cb_for_callback_dedup != "noop" and not _cb_for_callback_dedup.startswith("task_project:"):
             now = time.time()
-            if callback_data in PROCESSED_CALLBACK_DATA:
-                last_processed = PROCESSED_CALLBACK_DATA[callback_data]
+            if _cb_for_callback_dedup in PROCESSED_CALLBACK_DATA:
+                last_processed = PROCESSED_CALLBACK_DATA[_cb_for_callback_dedup]
                 if now - last_processed < CALLBACK_DATA_TTL:
-                    logger.debug(f"[TG] Skipping duplicate callback_data={callback_data} (processed {now - last_processed:.2f}s ago)")
+                    logger.info(
+                        "[TG][CALLBACK][DEDUP] skip duplicate callback_data=%r age_s=%.2f",
+                        _cb_for_callback_dedup[:120],
+                        now - last_processed,
+                    )
                     # Still answer the callback to remove loading state
                     if callback_query_id:
                         try:
@@ -4915,11 +4922,11 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             if token:
                                 url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
                                 http_post(url, json={"callback_query_id": callback_query_id}, timeout=5, calling_module="telegram_commands")
-                        except:
+                        except Exception:
                             pass
                     return
             # Mark this callback_data as processed
-            PROCESSED_CALLBACK_DATA[callback_data] = now
+            PROCESSED_CALLBACK_DATA[_cb_for_callback_dedup] = now
             # Clean up old entries (keep only last 1000)
             if len(PROCESSED_CALLBACK_DATA) > 1000:
                 cutoff_time = now - CALLBACK_DATA_TTL
@@ -5068,6 +5075,14 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 return
 
             project_label = _task_project_label(project_key)
+            _pk = _task_pending_selection_key(chat_id, user_id)
+            logger.info(
+                "[TG][TASK][CALLBACK] entry update_id=%s pending_key=%s project_key=%s project_label=%s",
+                update_id,
+                _pk,
+                project_key,
+                project_label,
+            )
             logger.info("[TG][TASK] project_selected project=%s user_id=%s", project_label, user_id)
 
             try:
@@ -5085,8 +5100,24 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     ERROR_NOTION_NOT_CONFIGURED,
                 )
 
-                logger.info("[TG][TASK] notion_create_attempt update_id=%s chat_id=%s project=%s", update_id, chat_id, project_label)
+                logger.info(
+                    "[TG][TASK] before_notion_create update_id=%s chat_id=%s pending_key=%s project=%s intent_len=%s",
+                    update_id,
+                    chat_id,
+                    _pk,
+                    project_label,
+                    len(intent_text),
+                )
                 result = create_notion_task_from_telegram_direct(intent_text, telegram_user, project=project_label)
+                _tid = (result.get("task_id") or "").strip()
+                logger.info(
+                    "[TG][TASK] after_notion_create update_id=%s ok=%s dedup_cooldown=%s task_id_prefix=%s err_prefix=%r",
+                    update_id,
+                    bool(result.get("ok")),
+                    bool(result.get("dedup_cooldown")),
+                    (_tid[:12] + "…") if len(_tid) > 12 else (_tid or "(none)"),
+                    (str(result.get("error") or "")[:120]),
+                )
 
                 if result.get("ok"):
                     PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
@@ -5097,7 +5128,9 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             "The same task was just created (deduplication window). "
                             "Check your Notion AI Task System database."
                         )
-                        send_command_response(chat_id, msg)
+                        logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=dedup_cooldown chat_id=%s", update_id, chat_id)
+                        _ok = send_command_response(chat_id, msg)
+                        logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=dedup_cooldown ok=%s", update_id, _ok)
                         return
 
                     tid = (result.get("task_id") or "").strip()
@@ -5137,7 +5170,9 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             )
                         )
                     )
-                    send_command_response(chat_id, msg)
+                    logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=task_created chat_id=%s", update_id, chat_id)
+                    _ok = send_command_response(chat_id, msg)
+                    logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=task_created ok=%s", update_id, _ok)
                     return
 
                 err = result.get("error", "Unknown error")
@@ -5149,11 +5184,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     )
                 else:
                     msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
-                send_command_response(chat_id, msg)
+                logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=notion_error chat_id=%s", update_id, chat_id)
+                _ok = send_command_response(chat_id, msg)
+                logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=notion_error ok=%s", update_id, _ok)
                 return
             except Exception as e:
                 logger.exception("[TG][TASK] notion_create_failure update_id=%s chat_id=%s", update_id, chat_id)
-                send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=exception chat_id=%s", update_id, chat_id)
+                _ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=exception ok=%s", update_id, _ok)
                 return
             return
         elif callback_data == "atp_run_full_fix" or (callback_data or "").strip().startswith("atp_run_full_fix"):
