@@ -5015,9 +5015,12 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 from app.services.task_compiler import (
                     create_notion_task_from_telegram_direct,
                     ERROR_NOTION_NOT_CONFIGURED,
+                    DEFAULT_SOURCE,
                 )
 
-                result = create_notion_task_from_telegram_direct(intent_text, telegram_user, project=project_label)
+                # Use pipeline-default source so scheduler auto-promotion (Planned -> Ready for Investigation)
+                # picks up Telegram-created Investigation tasks.
+                result = create_notion_task_from_telegram_direct(intent_text, DEFAULT_SOURCE, project=project_label)
 
                 if result.get("ok"):
                     if result.get("dedup_cooldown"):
