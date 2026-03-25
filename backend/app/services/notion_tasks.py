@@ -1214,8 +1214,9 @@ def update_notion_task_status(
     return True
 
 
-# Default source names for auto-promotion of new Investigation tasks (Planned → Ready for Investigation)
-DEFAULT_AUTO_PROMOTE_SOURCES = ("Carlos",)
+# Default source names for auto-promotion of new Investigation tasks (Planned → Ready for Investigation).
+# Keep legacy Telegram source ("ccruz0") so pre-fix tasks don't remain stuck in Planned.
+DEFAULT_AUTO_PROMOTE_SOURCES = ("Carlos", "ccruz0")
 
 
 def _get_auto_promote_source_names() -> tuple[str, ...]:
