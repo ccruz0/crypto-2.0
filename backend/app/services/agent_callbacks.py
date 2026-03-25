@@ -1258,8 +1258,8 @@ def _validate_openclaw_note(
     # Generic output gate: Root Cause must have actionable content, not filler
     try:
         from app.services.openclaw_client import parse_all_markdown_sections
-        sections = parse_all_markdown_sections(content)
-        root_cause = (sections.get("Root Cause") or "").strip()
+        parsed_sections = parse_all_markdown_sections(content)
+        root_cause = (parsed_sections.get("Root Cause") or "").strip()
         if root_cause:
             rc_lower = root_cause.lower()
             if any(m in rc_lower for m in _GENERIC_INVESTIGATION_MARKERS):
@@ -1319,6 +1319,10 @@ def _validate_openclaw_note(
                 ),
             }
     elif not found_sections:
+        logger.info(
+            "openclaw_note_validation: no sections matched task_id=%s expected=%d",
+            task_id, len(use_sections),
+        )
         # Accept fallback template format (apply_bug_investigation_task) when OpenClaw sections missing
         _fallback_sections = ("Inferred area", "Affected modules", "Relevant docs", "Bug details", "Investigation checklist")
         fallback_found = [s for s in _fallback_sections if f"## {s}" in content]
