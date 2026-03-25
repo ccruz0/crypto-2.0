@@ -19,7 +19,7 @@ We already have:
 - Notion task intake + prioritization (`notion_task_reader.py`)
 - Claiming + preparation plan (`prepare_next_notion_task`)
 - Controlled execution with injected callbacks (`execute_prepared_notion_task`)
-- Safe status transitions (`planned → in-progress → testing → deployed`)
+- Safe status transitions aligned to canonical lifecycle (`planned → in-progress → investigation-complete → ready-for-patch → patching → awaiting-deploy-approval → deploying → done/blocked`)
 
 This step connects **real callbacks** for a narrow, low-risk subset of tasks so the workflow can prove itself end-to-end without risking production trading behavior.
 

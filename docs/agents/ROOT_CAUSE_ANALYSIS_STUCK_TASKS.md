@@ -57,7 +57,8 @@ Tasks get stuck because:
 
 From `docs/agents/task-system.md` and `docs/agents/task-execution-flow.md`:
 
-- **Legacy:** planned → in-progress → testing → deployed
+- **Legacy (non-canonical):** planned → in-progress → testing → deployed
+- **Canonical:** Telegram → planned → in-progress → investigation → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke → done/blocked
 - **Extended:** backlog → ready-for-investigation → investigating → investigation-complete → ready-for-patch → patching → testing → awaiting-deploy-approval → deploying → done
 
 Documentation expects:

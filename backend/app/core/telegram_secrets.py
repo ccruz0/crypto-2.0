@@ -7,8 +7,12 @@ Algorithm must match scripts/setup_telegram_token.py (HMAC-SHA256 keystream + op
 import base64
 import hmac
 import hashlib
+import logging
 import os
+import re
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 IV_LEN = 16
 KEY_LEN = 32
@@ -62,6 +66,28 @@ def _load_key(key_path: str) -> Optional[bytes]:
     return None
 
 
+def _looks_like_placeholder_token(token: str) -> bool:
+    t = (token or "").strip()
+    if not t:
+        return False
+    if "YOUR_PRODUCTION" in t or "your_production" in t.lower():
+        return True
+    if t.upper() in ("CHANGE_ME", "CHANGE-ME", "CHANGEME"):
+        return True
+    return False
+
+
+def _looks_like_telegram_bot_token(token: str) -> bool:
+    """Shape check only (digits:secret); never logs the token."""
+    t = (token or "").strip()
+    if len(t) < 40 or ":" not in t:
+        return False
+    left, _, right = t.partition(":")
+    if not left.isdigit() or not right:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", right))
+
+
 def resolve_telegram_token_from_env() -> Optional[str]:
     """
     If TELEGRAM_BOT_TOKEN is set, return it. Else if TELEGRAM_BOT_TOKEN_ENCRYPTED
@@ -70,7 +96,23 @@ def resolve_telegram_token_from_env() -> Optional[str]:
     """
     plain = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     if plain:
-        return plain
+        if _looks_like_placeholder_token(plain):
+            logger.warning(
+                "[TG][CONFIG] TELEGRAM_BOT_TOKEN appears to be a placeholder; "
+                "use a real token or TELEGRAM_BOT_TOKEN_ENCRYPTED + TELEGRAM_KEY_FILE"
+            )
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+            os.environ.pop("TELEGRAM_BOT_TOKEN_AWS", None)
+            plain = ""
+        elif not _looks_like_telegram_bot_token(plain):
+            logger.warning(
+                "[TG][CONFIG] TELEGRAM_BOT_TOKEN has invalid shape (expected 123456789:AA...); ignoring"
+            )
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+            os.environ.pop("TELEGRAM_BOT_TOKEN_AWS", None)
+            plain = ""
+        if plain:
+            return plain
     encrypted_b64 = (os.environ.get("TELEGRAM_BOT_TOKEN_ENCRYPTED") or "").strip()
     if not encrypted_b64:
         return None
@@ -84,6 +126,13 @@ def resolve_telegram_token_from_env() -> Optional[str]:
     try:
         blob = base64.b64decode(encrypted_b64)
         raw = _decrypt_blob(blob, key)
-        return raw.decode("utf-8")
+        decoded = raw.decode("utf-8").strip()
+        if not _looks_like_telegram_bot_token(decoded):
+            logger.warning(
+                "[TG][CONFIG] Decrypted TELEGRAM_BOT_TOKEN_ENCRYPTED is not a valid bot token shape; "
+                "check TELEGRAM_KEY_FILE matches the key used to encrypt (or use plaintext token in runtime.env)"
+            )
+            return None
+        return decoded
     except Exception:
         return None

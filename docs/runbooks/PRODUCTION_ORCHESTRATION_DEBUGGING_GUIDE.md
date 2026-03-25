@@ -35,7 +35,7 @@ planned
 Legacy (non-bug) tasks follow the shorter path:
 
 ```
-in-progress → testing → deployed
+Legacy path: in-progress → testing → deployed (canonical path uses investigation/patch/deploy/smoke gates)
 ```
 
 The lifecycle is determined by `manual_only` in callback selection. If `manual_only=True`, the extended lifecycle is used.

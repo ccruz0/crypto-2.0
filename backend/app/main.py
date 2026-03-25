@@ -253,8 +253,10 @@ async def startup_event():
     run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower() in ("1", "true", "yes", "on")
     if is_aws() and run_telegram:
         missing = []
-        if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
-            missing.append("TELEGRAM_BOT_TOKEN")
+        _tg_bot = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        _tg_atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
+        if not _tg_bot and not _tg_atp:
+            missing.append("TELEGRAM_BOT_TOKEN or TELEGRAM_ATP_CONTROL_BOT_TOKEN")
         _tg_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
         _tg_auth = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
         _tg_atp = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
@@ -353,7 +355,15 @@ async def startup_event():
                 def init_db():
                     try:
                         import app.models  # noqa: F401 - ensure all models registered before create_all
-                        _Base.metadata.create_all(bind=_engine)
+                        try:
+                            _Base.metadata.create_all(bind=_engine)
+                        except Exception as create_all_err:
+                            # Partial schema (e.g. orphan index ix_order_intents_signal_id) must not skip
+                            # ensure_optional_columns — Telegram poller needs telegram_state and repair paths.
+                            logger.warning(
+                                "create_all raised %s; continuing with ensure_optional_columns",
+                                create_all_err,
+                            )
                         if ensure_optional_columns:
                             ensure_optional_columns(_engine)
                         logger.info("Database tables initialized (including optional columns)")

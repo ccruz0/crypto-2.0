@@ -2,25 +2,33 @@
 
 **When to use:** You want to run **any Notion task** from the AI Task System all the way to Cursor (apply code), validation, deploy approval, deployment, and task closure (done).
 
-This runbook walks the **extended lifecycle** used for bug/investigation tasks: from **planned** through **investigation** → **patch approval** → **Cursor Bridge** → **deploy approval** → **deploy** → **smoke check** → **done**.
+This runbook is the **canonical ATP lifecycle** reference.
+
+Canonical flow:
+`Telegram intake → Notion planned → claim in-progress → investigation/artifact → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke → done/blocked`
 
 ---
 
-## Flow overview
+## Flow overview (canonical)
 
 | Stage | Status(es) | Who / What |
 |-------|------------|-------------|
+| 0. Intake | Telegram `/task` → `planned` | Telegram + backend direct Notion create |
 | 1. Pick & claim | `planned` → `in-progress` | Backend scheduler or manual (Notion + API) |
 | 2. Investigate / prepare | `in-progress` | OpenClaw or you: analysis, triage, plan |
-| 3. Investigation complete | → `investigation-complete` | Backend after apply step; sends Telegram approval |
-| 4. Patch approved | → `ready-for-patch` | You approve in Telegram (or API) |
+| 3. Investigation complete | → `investigation-complete` | Backend after apply step; sends patch approval |
+| 4. Patch approved | → `ready-for-patch` | You approve in Telegram (extended callback flow) |
 | 5. Cursor handoff | — | Backend writes `docs/agents/cursor-handoffs/cursor-handoff-{task_id}.md` |
-| 6. Run Cursor Bridge | `ready-for-patch` → `patching` → `awaiting-deploy-approval` | Telegram **"🛠️ Run Cursor Bridge"** or **POST /api/agent/cursor-bridge/run** |
-| 7. Deploy approved | → `deploying` | You approve deploy in Telegram |
-| 8. Deploy | — | Backend triggers GitHub Actions deploy workflow |
-| 9. Smoke check | → `done` or `blocked` | GitHub webhook or Telegram **Smoke Check** button |
+| 6. Patch execution | `ready-for-patch` → `patching` → `awaiting-deploy-approval` | Telegram **"🛠️ Run Cursor Bridge"** or **POST /api/agent/cursor-bridge/run** |
+| 7. Deploy approved | → `deploying` | You approve deploy in Telegram (extended callback flow) |
+| 8. Deploy | — | Backend triggers GitHub Actions deploy workflow (governed or legacy dispatch path) |
+| 9. Smoke check | `deploying` → `done` or `blocked` | GitHub webhook or Telegram **Smoke Check** button |
 
-**Legacy (non-bug) path:** `in-progress` → `testing` → `deployed` (no Cursor Bridge; apply/validate/deploy via executor callbacks only).
+### Legacy notes
+
+- `agent_approve:*` / `agent_deny:*` / `agent_summary:*` callback family is legacy and not the canonical approval path.
+- `deployed` is a legacy terminal alias; canonical terminal success state is `done`.
+- Older docs that mention `in-progress → testing → deployed` should be treated as compatibility behavior, not the primary operational flow.
 
 ---
 

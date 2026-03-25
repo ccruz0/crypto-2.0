@@ -4,16 +4,29 @@ How agents should interpret and execute tasks: lifecycle, planning, validation, 
 
 ---
 
-## Task lifecycle
+## Task lifecycle (canonical)
 
-Tasks move through clear states. Use these when planning or reporting work:
+The canonical ATP lifecycle is:
+
+`Telegram intake → planned → in-progress → investigation/artifact → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke check → done/blocked`
+
+Use these statuses when planning, reporting, and operating tasks:
 
 | State | Meaning |
 |-------|---------|
-| **planned** | Task is defined and scoped; not yet started. |
-| **in-progress** | Work has started; code or docs are being changed. |
-| **testing** | Changes are done; running tests or manual verification. |
-| **deployed** | Changes are merged and deployed to production (or explicitly not deployed with reason). |
+| **planned** | Task is created and queued in Notion. |
+| **in-progress** | Task has been claimed and investigation/implementation started. |
+| **investigation-complete** | Investigation/artifact is complete and waiting for patch approval. |
+| **ready-for-patch** | Human patch approval granted; task can enter patching flow. |
+| **patching** | Patch is being applied/validated (Cursor Bridge or equivalent flow). |
+| **awaiting-deploy-approval** | Patch/testing phase completed; waiting for deploy approval. |
+| **deploying** | Deployment has been approved and triggered. |
+| **done** | Deploy + smoke check succeeded; task closed successfully. |
+| **blocked** | Task cannot progress (including failed smoke check). |
+
+Legacy aliases still exist in code and old tasks, but are not canonical:
+- `deployed` is a legacy terminal alias (use `done` for canonical closure).
+- `agent_*` Telegram approval callbacks are legacy approval flow.
 
 Agents should:
 - Set or report task state when starting, finishing, or deploying.
@@ -28,20 +41,29 @@ When a task is tracked in Notion (AI Task System DB), agents should update the N
 - `update_notion_task_status(page_id, status, append_comment=None) -> bool`
 - `advance_notion_task_status(page_id, current_status) -> bool`
 
-**Allowed statuses (current lifecycle):** `planned`, `in-progress`, `testing`, `deployed`.
+**Canonical statuses for operations:** `planned`, `in-progress`, `investigation-complete`, `ready-for-patch`, `patching`, `awaiting-deploy-approval`, `deploying`, `done`, `blocked`.
+
+**Legacy statuses (still present for compatibility):** `testing`, `deployed`, and older intermediate aliases.
 
 ### When to move a task
 
 - **planned → in-progress**
-  - When the agent commits to working on the task and is about to start investigating/planning in-repo.
-  - Recommended: append a short comment describing intent and immediate next steps.
+  - Scheduler/executor claims task and starts investigation.
 
-- **in-progress → testing**
-  - After changes are implemented and you are starting validation (tests, lint, manual checks, runbook verification).
+- **in-progress → investigation-complete**
+  - Investigation/artifact produced and ready for human patch decision.
 
-- **testing → deployed**
-  - Only after validations pass and the change is merged + deployed (or explicitly deployed via runbook).
-  - Do not mark `deployed` if validation is incomplete or deployment hasn’t happened.
+- **investigation-complete → ready-for-patch**
+  - Human patch approval received (Telegram extended approval flow).
+
+- **ready-for-patch → patching → awaiting-deploy-approval**
+  - Patch execution/validation pipeline runs and reaches deploy gate.
+
+- **awaiting-deploy-approval → deploying**
+  - Human deploy approval received (Telegram extended approval flow).
+
+- **deploying → done / blocked**
+  - Smoke check determines final terminal state.
 
 ### Minimal usage example
 
@@ -71,14 +93,17 @@ See: [task-preparation-flow.md](task-preparation-flow.md) and `backend/app/servi
 
 ---
 
-## Task execution (apply → testing → validate → deployed)
+## Task execution (canonical path)
 
-After preparation, agents run the **controlled execution flow** with injected functions (no hardcoded edits in the executor):
+After preparation, agents run the controlled execution flow with injected functions:
 
-- **Apply** — Run `apply_change_fn(prepared_task)`; on success, move task to **testing** and append execution summary.
-- **Validate** — Run `validate_fn(prepared_task)` if provided. If not provided, the task stays in **testing** and is never marked **deployed**.
-- **Deploy** — Optionally run `deploy_fn(prepared_task)` only after validation succeeds.
-- **Deployed** — Move to **deployed** only when validation (and optional deploy) succeed. Failed validation or failed deploy leaves the task in **testing**.
+- **Apply / investigate** — Run `apply_change_fn(prepared_task)` and produce investigation or patch artifacts.
+- **Patch gate** — Human patch approval moves task to `ready-for-patch`.
+- **Patch execution** — Move through `patching` to `awaiting-deploy-approval`.
+- **Deploy gate** — Human deploy approval moves task to `deploying`.
+- **Smoke gate** — Smoke check sets terminal state to `done` or `blocked`.
+
+Legacy behavior (`testing` → `deployed`) remains for compatibility but is not canonical for new operational flow.
 
 See: [task-execution-flow.md](task-execution-flow.md) and `execute_prepared_notion_task()` in `backend/app/services/agent_task_executor.py`.
 
@@ -176,7 +201,7 @@ When a task involves “check status” or “debug production”, start with he
 
 ## Summary for agents
 
-- **Lifecycle**: planned → in-progress → testing → deployed.
+- **Canonical lifecycle**: Telegram intake → planned → in-progress → investigation/artifact → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke → done/blocked.
 - **Plan**: Read system map and context; scope one objective; check decision log; update docs if behavior or procedures change.
 - **Validate**: Tests, lint, deploy runbook, post-deploy check; update runbooks when adding procedures.
 - **Observe**: Backend/frontend logs on EC2; `/api/health`; dashboard diagnostic script; runbooks and monitoring docs.

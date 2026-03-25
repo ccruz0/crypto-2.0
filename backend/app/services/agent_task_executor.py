@@ -18,9 +18,12 @@ Execution (execute_prepared_notion_task):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import httpx
@@ -40,6 +43,61 @@ from app.services.agent_versioning import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _patching_fingerprint_state_path(task_id: str) -> Path:
+    from app.services._paths import get_writable_cursor_handoffs_dir
+    state_dir = get_writable_cursor_handoffs_dir() / ".patching-state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / f"{task_id}.json"
+
+
+def _safe_patching_fingerprint(task: dict[str, Any], task_id: str) -> str:
+    handoff_exists = False
+    handoff_size = 0
+    handoff_mtime_ns = 0
+    try:
+        from app.services._paths import get_writable_cursor_handoffs_dir
+        handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
+        if handoff_path.exists():
+            handoff_exists = True
+            st = handoff_path.stat()
+            handoff_size = int(getattr(st, "st_size", 0) or 0)
+            handoff_mtime_ns = int(getattr(st, "st_mtime_ns", 0) or 0)
+    except Exception:
+        pass
+
+    payload = {
+        "status": str((task or {}).get("status") or ""),
+        "last_edited_time": str((task or {}).get("last_edited_time") or ""),
+        "test_status": str((task or {}).get("test_status") or ""),
+        "revision_reason": str((task or {}).get("revision_reason") or ""),
+        "openclaw_report_url": str((task or {}).get("openclaw_report_url") or ""),
+        "handoff_exists": handoff_exists,
+        "handoff_size": handoff_size,
+        "handoff_mtime_ns": handoff_mtime_ns,
+    }
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _load_patching_state(path: Path) -> dict[str, Any]:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _store_patching_state(path: Path, *, fingerprint: str, checked_at: str) -> None:
+    try:
+        path.write_text(
+            json.dumps({"fingerprint": fingerprint, "checked_at": checked_at}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _maybe_ensure_notion_governance_task_after_claim(*, page_id: str, task: dict[str, Any], repo_area: dict[str, Any]) -> None:
@@ -2020,6 +2078,20 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         task_id, task_title, current_status,
     )
 
+    fp_now: str | None = None
+    fp_state_path: Path | None = None
+    if current_status == "patching":
+        fp_now = _safe_patching_fingerprint(task, task_id)
+        fp_state_path = _patching_fingerprint_state_path(task_id)
+        fp_state = _load_patching_state(fp_state_path)
+        fp_prev = str(fp_state.get("fingerprint") or "").strip()
+        if fp_prev and fp_prev == fp_now:
+            logger.info(
+                "advance_ready_for_patch_task: no_delta_skip task_id=%s status=patching",
+                task_id,
+            )
+            return _result(True, "patching_no_delta", "skipped: unchanged patching task", "patching")
+
     # --- 1b. Infer repo_area early (used by cursor bridge and release approval) ---
     repo_area = infer_repo_area_for_task(task)
 
@@ -2126,6 +2198,8 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
                             log_agent_event("cursor_bridge_auto_success", task_id=task_id, task_title=task_title, details={"bridge_ok": True})
                         except Exception:
                             pass
+                        if fp_now and fp_state_path is not None:
+                            _store_patching_state(fp_state_path, fingerprint=fp_now, checked_at=ts)
                         return _result(True, "cursor_bridge", "bridge apply + tests passed", "release-candidate-ready")
                 else:
                     err = bridge_result.get("error") or ""
@@ -2507,5 +2581,7 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    if fp_now and fp_state_path is not None:
+        _store_patching_state(fp_state_path, fingerprint=fp_now, checked_at=ts)
     return _result(True, "release_candidate_approval_sent", val_summary, "release-candidate-ready")
 

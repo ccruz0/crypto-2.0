@@ -224,12 +224,25 @@ def ensure_optional_columns(db_engine=None):
     try:
         from app.models.watchlist import WatchlistItem
         from app.models.telegram_message import TelegramMessage
+        from app.models.telegram_state import TelegramState
         from app.models.signal_throttle import SignalThrottleState
         from app.models.order_intent import OrderIntent
         from app.models.agent_approval_state import AgentApprovalState
     except Exception as import_err:
         logger.warning(f"Cannot load models to verify optional columns: {import_err}")
         return
+
+    # Telegram polling offset persistence (required when create_all fails partway)
+    telegram_state_table = getattr(getattr(TelegramState, "__table__", None), "name", None) or "telegram_state"
+    try:
+        if not table_exists(engine_to_use, telegram_state_table):
+            logger.warning("Table %s does not exist - creating it", telegram_state_table)
+            Base.metadata.create_all(bind=engine_to_use, tables=[TelegramState.__table__])
+            logger.info("[BOOT] Created table %s", telegram_state_table)
+        else:
+            logger.info("[BOOT] %s table OK", telegram_state_table)
+    except Exception as table_err:
+        logger.error("Error ensuring %s table exists: %s", telegram_state_table, table_err, exc_info=True)
 
     # Ensure agent_approval_states exists (required for Telegram approval flow and scheduler)
     agent_approval_table = getattr(getattr(AgentApprovalState, "__table__", None), "name", None) or "agent_approval_states"

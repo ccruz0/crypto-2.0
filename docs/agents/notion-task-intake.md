@@ -66,7 +66,7 @@ Before implementing a task, the agent **must** use the repo’s documentation:
 
 1. **[docs/architecture/system-map.md](../architecture/system-map.md)** — Components, APIs, data flow, dependencies.
 2. **[docs/agents/context.md](context.md)** — Purpose of the project, critical modules, where docs and config live.
-3. **[docs/agents/task-system.md](task-system.md)** — Task lifecycle (planned → in-progress → testing → deployed), how to plan and validate.
+3. **[docs/agents/task-system.md](task-system.md)** — Canonical ATP lifecycle and practical status transitions (planned → in-progress → investigation-complete → ready-for-patch → patching → awaiting-deploy-approval → deploying → done/blocked).
 4. **[docs/decision-log/README.md](../decision-log/README.md)** — Past decisions; avoid re-proposing something already decided against.
 
 **GitHub is the single source of truth** for code and technical docs. Notion is the project/task layer. Always prefer `/docs` and the main README over external or chat-only context.
@@ -92,7 +92,9 @@ Agents should update task status in Notion to reflect real work progress. Use:
 - `update_notion_task_status(page_id, status, append_comment=None) -> bool`
 - `advance_notion_task_status(page_id, current_status) -> bool`
 
-**Allowed statuses:** `planned`, `in-progress`, `testing`, `deployed`.
+**Canonical statuses:** `planned`, `in-progress`, `investigation-complete`, `ready-for-patch`, `patching`, `awaiting-deploy-approval`, `deploying`, `done`, `blocked`.
+
+**Legacy aliases:** `testing` and `deployed` remain for compatibility only and are not canonical targets for new operational docs.
 
 ### When to move to in-progress
 
@@ -102,18 +104,18 @@ Move **planned → in-progress** when:
 
 Recommended: add a short `append_comment` describing what you’re doing next.
 
-### When to move to testing
+### Canonical move sequence
 
-Move **in-progress → testing** when:
-- Implementation work is complete and you are starting validation (tests/lint/manual checks/runbook verification).
+Use the canonical sequence for ATP tasks:
 
-### When to move to deployed
+- **planned → in-progress** (task claimed)
+- **in-progress → investigation-complete** (investigation/artifact ready)
+- **investigation-complete → ready-for-patch** (patch approval)
+- **ready-for-patch → patching → awaiting-deploy-approval** (patch execution + validation)
+- **awaiting-deploy-approval → deploying** (deploy approval)
+- **deploying → done / blocked** (smoke gate)
 
-Move **testing → deployed** only when:
-- Validations pass, and
-- The change is merged and deployed to production (or deployed via the official runbook flow).
-
-Reminder: **Do not set `deployed`** if deployment hasn’t happened yet or checks are incomplete.
+Legacy note: `in-progress → testing → deployed` is compatibility behavior and should not be used as the canonical operational lifecycle in documentation.
 
 ---
 
@@ -124,7 +126,7 @@ Reminder: **Do not set `deployed`** if deployment hasn’t happened yet or check
 3. Consult **system-map**, **context**, **task-system**, **decision-log** before planning.
 4. Choose the next task (usually highest priority) and set it to **in-progress** when you commit to working it.
 5. Plan work (one objective per task; follow `docs/agents/task-system.md`).
-6. Execute in a later step (code changes, tests, runbooks); advance status to **testing** and then **deployed** only after validations + deployment.
+6. Execute in later steps (investigation/artifact, patching, deploy approval, smoke); advance status along the canonical lifecycle to **done** or **blocked**.
 
 ---
 

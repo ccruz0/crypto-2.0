@@ -1011,6 +1011,7 @@ def verify_solution_against_task(
 
     feedback_block = ""
     if previous_feedback:
+        previous_feedback = previous_feedback[:400]
         feedback_block = (
             f"\n\nPrevious verification feedback (the output failed this check):\n"
             f"{previous_feedback}\n\n"

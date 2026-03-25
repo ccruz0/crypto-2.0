@@ -710,7 +710,7 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
     }
 
 
-def create_notion_task_from_telegram_direct(description: str, source: str) -> dict[str, Any]:
+def create_notion_task_from_telegram_direct(description: str, source: str, project: str | None = None) -> dict[str, Any]:
     """
     Minimal Telegram /task path: single Notion API create only.
 
@@ -728,12 +728,13 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
     title = (desc.split("\n")[0] or "").strip()[:200] or "Telegram task"
     details_body = desc[:15000]
     src = (source or "").strip() or DEFAULT_SOURCE
+    project_name = (project or "").strip() or DEFAULT_PROJECT
 
     clear_last_notion_create_failure()
     try:
         page = create_notion_task(
             title=title,
-            project=DEFAULT_PROJECT,
+            project=project_name,
             type=DEFAULT_TYPE,
             details=details_body,
             status="planned",
@@ -746,7 +747,7 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
         return {"ok": False, "error": str(ex)[:500]}
 
     if page and page.get("dedup_skipped"):
-        return {"ok": True, "dedup_cooldown": True, "title": title}
+        return {"ok": True, "dedup_cooldown": True, "title": title, "project": project_name}
     if page and page.get("dry_run"):
         return {
             "ok": True,
@@ -758,6 +759,7 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
             "priority_label": "medium",
             "reused": False,
             "dry_run": True,
+            "project": project_name,
         }
     if not page:
         detail = (get_last_notion_create_failure() or "").strip()
@@ -775,6 +777,7 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
         "priority": 50,
         "priority_label": "medium",
         "reused": False,
+        "project": project_name,
     }
 
 

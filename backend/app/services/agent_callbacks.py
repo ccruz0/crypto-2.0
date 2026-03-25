@@ -11,6 +11,7 @@ All functions return structured dicts (success/summary) and avoid raising where 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -791,23 +792,16 @@ _OPENCLAW_FALLBACK_MARKERS = (
 
 # Retryable errors: do NOT use template fallback — task stays in-progress for retry
 _RETRYABLE_LLM_ERROR_MARKERS = (
-    "rate limit",
+    "timeout",
     "429",
     "too many requests",
-    "payment required",
-    "402",
-    "insufficient credit",
-    "quota exceeded",
-    "low balance",
-    "timeout",
-    "connection failed",
-    "connection refused",
-    "503",
     "502",
+    "503",
     "504",
-    "service unavailable",
-    "model not available",
-    "model not found",
+    "connection reset",
+    "connection refused",
+    "temporary upstream failure",
+    "upstream failure",
 )
 
 # Generic investigation output: lacks actionable root cause
@@ -835,6 +829,51 @@ _AGENT_CRITICAL_MIN_CHARS = 15  # Excluding "N/A"
 
 _OPENCLAW_MAX_RETRIES = 1
 _OPENCLAW_RETRY_DELAY_S = 5
+
+
+def _verification_fail_max_attempts() -> int:
+    raw = (os.environ.get("ATP_VERIFICATION_FAIL_MAX_ATTEMPTS") or "").strip()
+    try:
+        n = int(raw) if raw else 3
+    except (TypeError, ValueError):
+        n = 3
+    return max(1, min(n, 20))
+
+
+def _task_token_budget_limit() -> int:
+    raw = (os.environ.get("ATP_TASK_TOKEN_BUDGET") or "").strip()
+    try:
+        n = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        n = 0
+    return max(0, min(n, 10_000_000))
+
+
+def _is_transient_openclaw_error(msg: str) -> bool:
+    m = (msg or "").lower()
+    transient_markers = (
+        "timeout",
+        "429",
+        "http 429",
+        "502",
+        "http 502",
+        "503",
+        "http 503",
+        "504",
+        "http 504",
+        "connection reset",
+        "connection refused",
+        "temporary upstream failure",
+        "upstream failure",
+    )
+    return any(x in m for x in transient_markers)
+
+
+def _verification_verdict_cache_path(task_id: str) -> Path:
+    root = _repo_root()
+    cache_dir = root / "docs" / "agents" / "verification-feedback"
+    path_guard.safe_mkdir_lab(cache_dir, context="agent_callbacks:verification_feedback_dir")
+    return cache_dir / f"{task_id}.verdict.json"
 
 
 def _call_openclaw_once(
@@ -947,6 +986,7 @@ def _apply_via_openclaw(
         try:
             prev_feedback = feedback_path.read_text(encoding="utf-8").strip()
             if prev_feedback:
+                prev_feedback = prev_feedback[:400]
                 user_prompt += (
                     f"\n\n---\n\n"
                     f"**Previous attempt failed solution verification.**\n"
@@ -974,6 +1014,8 @@ def _apply_via_openclaw(
     last_error = ""
     result: dict[str, Any] | None = None
     max_attempts = 1 + _OPENCLAW_MAX_RETRIES
+    token_budget = _task_token_budget_limit()
+    token_spent = 0
 
     call_sections: Optional[tuple[str, ...]] = None
     if use_agent_schema:
@@ -997,18 +1039,45 @@ def _apply_via_openclaw(
             sections=call_sections,
         )
         if result is not None:
+            usage = result.get("usage") if isinstance(result, dict) else None
+            if isinstance(usage, dict):
+                try:
+                    token_spent += int(usage.get("total_tokens") or 0)
+                except (TypeError, ValueError):
+                    pass
+            if token_budget > 0 and token_spent >= token_budget:
+                last_error = f"token budget exhausted ({token_spent}/{token_budget})"
+                logger.warning(
+                    "OpenClaw attempt %d/%d blocked for task %s: %s",
+                    attempt, max_attempts, task_id, last_error,
+                )
+                result = None
             break
-        if attempt < max_attempts:
+        if token_budget > 0 and token_spent >= token_budget:
+            last_error = f"token budget exhausted ({token_spent}/{token_budget})"
+            logger.warning(
+                "OpenClaw attempt %d/%d blocked for task %s: %s",
+                attempt, max_attempts, task_id, last_error,
+            )
+            break
+        if attempt < max_attempts and _is_transient_openclaw_error(last_error):
             logger.warning(
                 "OpenClaw attempt %d/%d failed for task %s: %s — retrying in %ds",
                 attempt, max_attempts, task_id, last_error, _OPENCLAW_RETRY_DELAY_S,
             )
             time.sleep(_OPENCLAW_RETRY_DELAY_S)
         else:
-            logger.warning(
-                "OpenClaw attempt %d/%d failed for task %s: %s — no retries left",
-                attempt, max_attempts, task_id, last_error,
-            )
+            if attempt < max_attempts:
+                logger.warning(
+                    "OpenClaw attempt %d/%d failed for task %s: %s — non-transient, no retry",
+                    attempt, max_attempts, task_id, last_error,
+                )
+            else:
+                logger.warning(
+                    "OpenClaw attempt %d/%d failed for task %s: %s — no retries left",
+                    attempt, max_attempts, task_id, last_error,
+                )
+            break
 
     if result is None:
         logger.warning(
@@ -1413,6 +1482,37 @@ def _verify_openclaw_solution(
     prev_feedback_path = feedback_dir / f"{task_id}.txt"
     prev_feedback = prev_feedback_path.read_text(encoding="utf-8").strip() if prev_feedback_path.exists() else None
 
+    body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    fail_max_attempts = _verification_fail_max_attempts()
+    verdict_cache_path = _verification_verdict_cache_path(task_id)
+    cached_verdict: dict[str, Any] = {}
+    if verdict_cache_path.exists():
+        try:
+            cached_verdict = json.loads(verdict_cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            cached_verdict = {}
+
+    cached_hash = str(cached_verdict.get("body_hash") or "").strip()
+    cached_verdict_value = str(cached_verdict.get("verdict") or "").strip().upper()
+    cached_reason = str(cached_verdict.get("reason") or "").strip()
+    try:
+        cached_fail_attempts = int(cached_verdict.get("fail_attempts") or 0)
+    except (TypeError, ValueError):
+        cached_fail_attempts = 0
+
+    if cached_hash == body_hash and cached_verdict_value == "PASS":
+        return {
+            "success": True,
+            "summary": f"Solution verified (cached): {cached_reason or 'addresses task requirements'}",
+        }
+
+    if cached_hash == body_hash and cached_verdict_value == "FAIL" and cached_fail_attempts >= fail_max_attempts:
+        return {
+            "success": False,
+            "summary": f"Solution does not address requirements (unchanged output): {cached_reason or 'verification failed'}",
+            "verification_feedback": cached_reason or "verification failed",
+        }
+
     try:
         from app.services.openclaw_client import verify_solution_against_task
         passed, reason = verify_solution_against_task(
@@ -1425,6 +1525,24 @@ def _verify_openclaw_solution(
         return {"success": False, "summary": f"verification error: {e}"}
 
     if passed:
+        try:
+            path_guard.safe_write_text(
+                verdict_cache_path,
+                json.dumps(
+                    {
+                        "task_id": task_id,
+                        "body_hash": body_hash,
+                        "verdict": "PASS",
+                        "reason": reason or "addresses task requirements",
+                        "fail_attempts": 0,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ) + "\n",
+                context="agent_callbacks:verification_verdict_cache_pass",
+            )
+        except Exception as cache_err:
+            logger.debug("verification verdict cache write failed task_id=%s: %s", task_id, cache_err)
         return {"success": True, "summary": f"Solution verified: {reason or 'addresses task requirements'}"}
 
     # Unavailable: environment/config issue — do NOT write feedback (not investigative failure)
@@ -1446,6 +1564,29 @@ def _verify_openclaw_solution(
         )
     except Exception as e:
         logger.warning("Could not write verification feedback for task %s: %s", task_id, e)
+
+    fail_attempts = 1
+    if cached_hash == body_hash and cached_verdict_value == "FAIL":
+        fail_attempts = cached_fail_attempts + 1
+
+    try:
+        path_guard.safe_write_text(
+            verdict_cache_path,
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "body_hash": body_hash,
+                    "verdict": "FAIL",
+                    "reason": reason or "output does not address task requirements",
+                    "fail_attempts": fail_attempts,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ) + "\n",
+            context="agent_callbacks:verification_verdict_cache_fail",
+        )
+    except Exception as cache_err:
+        logger.debug("verification verdict cache write failed task_id=%s: %s", task_id, cache_err)
 
     return {
         "success": False,

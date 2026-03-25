@@ -19,12 +19,12 @@ This directory exists so agents can understand the system, know what not to brea
 | Document | Use |
 |----------|-----|
 | [**context.md**](context.md) | What the project does, main components, **critical modules to never break**, where docs and config live. |
-| [**task-system.md**](task-system.md) | Task lifecycle (planned → in-progress → testing → deployed), how to plan work, how to validate changes, where logs and monitoring are. |
+| [**task-system.md**](task-system.md) | Canonical ATP lifecycle (Telegram → planned → in-progress → investigation → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke → done/blocked), plus planning/validation guidance. |
 | [**notion-task-intake.md**](notion-task-intake.md) | How to read pending Notion tasks and turn them into actionable work; priority order; safe execution; use of system-map, context, task-system, decision-log. |
 | [**task-preparation-flow.md**](task-preparation-flow.md) | How the agent selects the next task, infers repo area, claims it (planned → in-progress), and appends a plan. |
-| [**task-execution-flow.md**](task-execution-flow.md) | Controlled execution: apply → testing → validate → deployed; injected callbacks; when status moves and why deployed requires validation. |
+| [**task-execution-flow.md**](task-execution-flow.md) | Controlled execution aligned to canonical lifecycle, with injected callbacks and approval/deploy gates. |
 | [**human-approval-gate.md**](human-approval-gate.md) | When execution may run automatically (low-risk) vs when human approval is required; trading/order/runtime/deploy blocked by default. |
-| [**telegram-approval-flow.md**](telegram-approval-flow.md) | Approve or deny agent task execution from Telegram (inline buttons); authorized users only; in-memory state limitation. |
+| [**telegram-approval-flow.md**](telegram-approval-flow.md) | Canonical Telegram approval callbacks (patch/deploy/smoke) and legacy callback notes. |
 | [**telegram-agent-console.md**](telegram-agent-console.md) | Read-only Telegram console for recent activity, pending approvals, and recent failures. |
 | [**callback-selection.md**](callback-selection.md) | Which task types get which callbacks; documentation and monitoring triage as first safe pack. |
 | [**strategy-analysis-callback.md**](strategy-analysis-callback.md) | Analysis-only callback for strategy/signal/alert improvement proposals with version metadata. |

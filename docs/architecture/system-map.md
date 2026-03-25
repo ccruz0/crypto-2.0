@@ -40,6 +40,21 @@
 
 ---
 
+
+## ATP Task Lifecycle (canonical)
+
+For ATP task orchestration, the canonical lifecycle is:
+
+`Telegram intake → Notion planned → claim in-progress → investigation/artifact → investigation-complete → patch approval → patching → awaiting-deploy-approval → deploy approval → deploying → smoke → done/blocked`
+
+Operational source of truth: `docs/runbooks/NOTION_TASK_TO_CURSOR_AND_DEPLOY.md` and `docs/agents/task-system.md`.
+
+Legacy notes:
+- `agent_*` Telegram approvals are legacy callback family.
+- `deployed` is a legacy terminal alias; canonical success terminal state is `done`.
+
+---
+
 ## External APIs
 
 | API | Purpose | Config / notes |
