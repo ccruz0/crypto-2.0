@@ -591,10 +591,15 @@ def _generate_cursor_handoff(prepared_task: dict[str, Any], task_id: str) -> Non
     Only runs when OpenClaw structured sections are available on the
     prepared_task.  Failures are logged and silently ignored.
     """
-    sections = (prepared_task or {}).get("_openclaw_sections") or {}
-    if not sections or not task_id:
+    if not task_id:
         return
     try:
+        sections = (prepared_task or {}).get("_openclaw_sections") or {}
+        if not sections:
+            logger.info(
+                "Cursor handoff: _openclaw_sections missing in-memory task_id=%s; attempting sidecar fallback",
+                task_id,
+            )
         from app.services.cursor_handoff import generate_cursor_handoff
         result = generate_cursor_handoff(prepared_task)
         if result.get("success"):
