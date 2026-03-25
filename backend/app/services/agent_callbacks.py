@@ -1100,6 +1100,26 @@ def _apply_via_openclaw(
 
     content = result.get("content") or ""
 
+    # Bug-investigation path: OpenClaw sometimes returns plain prose/apology text
+    # without any "## ..." sections. In that case, use the deterministic bug
+    # template fallback so validation has a structured artifact to evaluate.
+    if (not use_agent_schema) and file_prefix == "notion-bug" and fallback_fn is not None:
+        try:
+            from app.services.openclaw_client import INVESTIGATION_SECTIONS
+            inv_sections = INVESTIGATION_SECTIONS
+        except ImportError:
+            inv_sections = (
+                "Task Summary", "Root Cause", "Risk Level", "Affected Components",
+                "Affected Files", "Recommended Fix", "Testing Plan", "Notes",
+            )
+        structured_found = [s for s in inv_sections if f"## {s}" in content]
+        if not structured_found:
+            logger.warning(
+                "openclaw_apply_unstructured_output task_id=%s save_subdir=%s -- using fallback template",
+                task_id, save_subdir,
+            )
+            return fallback_fn(prepared_task)
+
     # Parse structured sections (gracefully returns None values for missing ones)
     try:
         from app.services.openclaw_client import (
