@@ -4514,36 +4514,26 @@ def _handle_task_command(
     raw_text = (text or "").strip()
     normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
     intent_text = normalized_cmd
-    token_source = get_telegram_token_source()
     _uid = _resolve_actor_user_id(from_user or {}, sender_chat, chat_id)
-    _un = str((from_user or {}).get("username", "") or "").strip()
     logger.info(
-        "[TG][TASK][INTAKE] handler=_handle_task_command update_id=%s chat_id=%s user_id=%s username=%s "
-        "token_source=%s normalized_cmd=%r",
+        "[TG][TASK] intake update_id=%s chat_id=%s user_id=%s intent_len=%s preview=%r",
         update_id,
         chat_id,
         _uid or "(empty)",
-        _un or "(empty)",
-        token_source,
-        (normalized_cmd or "")[:120],
-    )
-    logger.info(
-        "[TG][TASK] intake update_id=%s chat_id=%s preview=%r",
-        update_id,
-        chat_id,
+        len(intent_text or ""),
         (normalized_cmd or "")[:200],
     )
-    logger.info(
-        "[TG][TASK][DEBUG] raw_text=%r normalized_cmd=%r handler=_handle_task_command update_id=%s chat_id=%s token_source=%s",
-        raw_text[:100], (normalized_cmd or "")[:80], update_id, chat_id, token_source,
-    )
     if not intent_text:
-        logger.info("[TG][TASK] handler=task usage_only update_id=%s chat_id=%s", update_id, chat_id)
         ok = send_response(
             chat_id,
             "📋 <b>Create task from Telegram</b>\n\nUse: <code>/task &lt;description&gt;</code>\n\nExample: /task Investigate why dashboard position size does not match runtime order size",
         )
-        logger.info("[TG][TASK] handler=task success=usage update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
+        logger.info(
+            "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=usage_help",
+            update_id,
+            chat_id,
+            ok,
+        )
         return bool(ok)
 
     telegram_user = (
@@ -4556,21 +4546,13 @@ def _handle_task_command(
         "initiating_user_id": _uid,
         "created_at": time.time(),
     }
-    logger.info(
-        "[TG][TASK][PENDING] action=store pending_key=%r initiating_user_id=%r update_id=%s chat_id=%s",
-        pending_key,
-        _uid or "(empty)",
-        update_id,
-        chat_id,
-    )
-    logger.info("[TG][TASK][STEP] before_send_command_response")
     ok = _send_menu_message(
         chat_id,
         "📋 <b>Create task from Telegram</b>\n\nSelect project:",
         _task_project_selection_keyboard(),
     )
     logger.info(
-        "[TG][TASK] awaiting_project_selection update_id=%s chat_id=%s ok=%s",
+        "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=project_keyboard",
         update_id,
         chat_id,
         ok,
@@ -4927,45 +4909,46 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         elif callback_data.startswith("task_project:"):
             project_key = (callback_data.split(":", 1)[1] if ":" in callback_data else "").strip().lower()
             pending_key = _task_pending_selection_key(chat_id)
-            logger.info(
-                "[TG][TASK][PENDING] action=retrieve pending_key=%r clicker_user_id=%r update_id=%s chat_id=%s "
-                "callback_data=%r",
-                pending_key,
-                user_id or "(empty)",
-                update_id,
-                chat_id,
-                callback_data,
-            )
             pending_task = PENDING_TASK_PROJECT_SELECTION.get(pending_key)
             if not pending_task:
                 logger.warning(
-                    "[TG][TASK][PENDING] action=missing pending_key=%r update_id=%s chat_id=%s "
-                    "known_keys_sample=%r",
-                    pending_key,
+                    "[TG][TASK] callback pending_missing update_id=%s chat_id=%s known_keys_sample=%r",
                     update_id,
                     chat_id,
                     list(PENDING_TASK_PROJECT_SELECTION.keys())[:20],
                 )
-                send_command_response(
+                ok = send_command_response(
                     chat_id,
                     "⚠️ No pending /task description found. Please send /task <description> again.",
+                )
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=callback_no_pending",
+                    update_id,
+                    chat_id,
+                    ok,
                 )
                 return
             owner_user_id = str(pending_task.get("initiating_user_id") or "").strip()
             if owner_user_id and user_id and owner_user_id != user_id:
-                logger.info(
-                    "[TG][TASK][PENDING] action=deny_wrong_user pending_key=%r owner=%r clicker=%r",
-                    pending_key,
+                logger.warning(
+                    "[TG][TASK] callback wrong_user update_id=%s chat_id=%s owner=%s clicker=%s",
+                    update_id,
+                    chat_id,
                     owner_user_id,
-                    user_id,
+                    user_id or "(empty)",
                 )
-                send_command_response(chat_id, "⛔ Only the user who started this /task can select the project.")
+                ok = send_command_response(chat_id, "⛔ Only the user who started this /task can select the project.")
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=callback_wrong_user",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
             logger.info(
-                "[TG][TASK][PENDING] action=hit pending_key=%r initiating_user_id=%r clicker_user_id=%r project_key=%r",
-                pending_key,
-                owner_user_id or "(empty)",
-                user_id or "(empty)",
+                "[TG][TASK] callback update_id=%s chat_id=%s project_key=%s",
+                update_id,
+                chat_id,
                 project_key,
             )
             try:
@@ -4975,19 +4958,45 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             if created_at <= 0.0 or (time.time() - created_at) > PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS:
                 PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
                 logger.warning(
-                    "[TG][TASK][PENDING] action=expired pending_key=%r age_sec=%r ttl=%s",
-                    pending_key,
+                    "[TG][TASK] callback expired update_id=%s chat_id=%s age_sec=%s ttl=%s",
+                    update_id,
+                    chat_id,
                     (time.time() - created_at) if created_at > 0 else None,
                     PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS,
                 )
-                send_command_response(chat_id, "⏱️ Project selection expired. Please send /task <description> again.")
+                ok = send_command_response(
+                    chat_id, "⏱️ Project selection expired. Please send /task <description> again."
+                )
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=callback_expired",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
             if project_key not in {k for k, _ in TASK_PROJECT_OPTIONS}:
-                send_command_response(chat_id, "❌ Invalid project selection. Please send /task <description> again.")
+                ok = send_command_response(
+                    chat_id, "❌ Invalid project selection. Please send /task <description> again."
+                )
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=callback_invalid_project",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
             pending_task = PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
             if not pending_task:
-                send_command_response(chat_id, "⚠️ No pending /task description found. Please send /task <description> again.")
+                ok = send_command_response(
+                    chat_id,
+                    "⚠️ No pending /task description found. Please send /task <description> again.",
+                )
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=callback_pending_race",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
 
             intent_text = str(pending_task.get("description") or "").strip()
@@ -4998,8 +5007,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 from app.services.notion_tasks import notion_is_configured
                 from app.services.notion_env import try_repair_notion_env_from_ssm
                 if not notion_is_configured():
-                    repaired = try_repair_notion_env_from_ssm()
-                    logger.info("[TG][TASK][DEBUG] notion_preflight repaired=%s update_id=%s", repaired, update_id)
+                    try_repair_notion_env_from_ssm()
             except Exception as repair_err:
                 logger.debug("[TG][TASK] notion repair attempt failed: %s", repair_err)
 
@@ -5009,25 +5017,38 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     ERROR_NOTION_NOT_CONFIGURED,
                 )
 
-                logger.info(
-                    "[TG][TASK] notion_create_attempt update_id=%s chat_id=%s project=%s",
-                    update_id,
-                    chat_id,
-                    project_label,
-                )
                 result = create_notion_task_from_telegram_direct(intent_text, telegram_user, project=project_label)
 
                 if result.get("ok"):
                     if result.get("dedup_cooldown"):
+                        logger.info(
+                            "[TG][TASK] notion_create ok update_id=%s chat_id=%s project=%s dedup=1",
+                            update_id,
+                            chat_id,
+                            project_label,
+                        )
                         msg = (
                             "✅ <b>Task already recorded</b>\n\n"
                             "The same task was just created (deduplication window). "
                             "Check your Notion AI Task System database."
                         )
-                        send_command_response(chat_id, msg)
+                        ok = send_command_response(chat_id, msg)
+                        logger.info(
+                            "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=notion_confirmation_dedup",
+                            update_id,
+                            chat_id,
+                            ok,
+                        )
                         return
 
                     tid = (result.get("task_id") or "").strip()
+                    logger.info(
+                        "[TG][TASK] notion_create ok update_id=%s chat_id=%s project=%s task_id=%s",
+                        update_id,
+                        chat_id,
+                        project_label,
+                        tid or "(empty)",
+                    )
                     msg = (
                         "✅ <b>Task created in Notion</b>\n\n"
                         f"<b>Project:</b> {result.get('project', project_label)}\n"
@@ -5037,10 +5058,23 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         f"<b>Notion page:</b> <code>{tid}</code>\n\n"
                         "<i>No agent or model was run — this is a direct Notion write only.</i>"
                     )
-                    send_command_response(chat_id, msg)
+                    ok = send_command_response(chat_id, msg)
+                    logger.info(
+                        "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=notion_confirmation",
+                        update_id,
+                        chat_id,
+                        ok,
+                    )
                     return
 
                 err = result.get("error", "Unknown error")
+                logger.warning(
+                    "[TG][TASK] notion_create fail update_id=%s chat_id=%s project=%s error=%s",
+                    update_id,
+                    chat_id,
+                    project_label,
+                    err,
+                )
                 if err == ERROR_NOTION_NOT_CONFIGURED:
                     msg = (
                         "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
@@ -5049,7 +5083,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     )
                 else:
                     msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
-                send_command_response(chat_id, msg)
+                ok = send_command_response(chat_id, msg)
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=notion_error_user_message",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
             except Exception as e:
                 logger.exception(
@@ -5057,7 +5097,13 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     update_id,
                     chat_id,
                 )
-                send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                logger.info(
+                    "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=notion_exception_user_message",
+                    update_id,
+                    chat_id,
+                    ok,
+                )
                 return
         elif callback_data.startswith("wl:coin:"):
             parts = callback_data.split(":")
@@ -5590,18 +5636,19 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
 
     # CRITICAL: /task has one canonical handler. Dispatch first, never fall through to unknown.
     if handler_name == "task":
-        logger.info(
-            "[TG][TASK] handler=task path=_handle_task_command update_id=%s chat_id=%s token_source=%s",
-            update_id, chat_id, token_source,
-        )
         try:
             _handle_task_command(
                 chat_id, text, args, from_user, send_command_response, update_id, sender_chat=sender_chat,
             )
         except Exception as task_err:
             logger.exception("[TG][TASK] handler failed update_id=%s chat_id=%s: %s", update_id, chat_id, task_err)
-            send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
-        logger.info("[TG][TASK] handler end update_id=%s chat_id=%s", update_id, chat_id)
+            ok = send_command_response(chat_id, f"❌ Task error: {str(task_err)[:200]}")
+            logger.info(
+                "[TG][TASK] reply update_id=%s chat_id=%s ok=%s context=handler_exception",
+                update_id,
+                chat_id,
+                ok,
+            )
         return
 
     try:
