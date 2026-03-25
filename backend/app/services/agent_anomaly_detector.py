@@ -375,6 +375,21 @@ def detect_signal_quality_degradation() -> dict[str, Any] | None:
 _SCHEDULER_EXPECTED_INTERVAL_MINUTES = 15
 
 
+def _scheduler_inactivity_threshold_minutes() -> int:
+    """
+    Compute inactivity threshold from scheduler interval.
+
+    Uses max(15, 3x interval) to avoid false positives when cycles are busy/noisy.
+    """
+    try:
+        from app.services.agent_scheduler import _get_scheduler_interval
+
+        interval_sec = int(_get_scheduler_interval())
+        return max(_SCHEDULER_EXPECTED_INTERVAL_MINUTES, int((interval_sec * 3) / 60))
+    except Exception:
+        return _SCHEDULER_EXPECTED_INTERVAL_MINUTES
+
+
 def detect_scheduler_inactivity() -> dict[str, Any] | None:
     """
     Check agent activity log for recent scheduler_cycle_started events.
@@ -388,12 +403,14 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
         logger.debug("detect_scheduler_inactivity: import failed %s", e)
         return None
 
-    events = get_recent_agent_events(limit=100)
+    # Large window: high-volume logs can push heartbeat events out of small tails.
+    events = get_recent_agent_events(limit=2000)
+    expected_interval_minutes = _scheduler_inactivity_threshold_minutes()
     if not events:
         return {
             "anomaly": "scheduler_inactivity",
             "reason": "no activity events found at all",
-            "expected_interval_minutes": _SCHEDULER_EXPECTED_INTERVAL_MINUTES,
+            "expected_interval_minutes": expected_interval_minutes,
             "last_cycle_at": None,
             "detected_at": _utc_now().isoformat(),
         }
@@ -415,7 +432,7 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
         return {
             "anomaly": "scheduler_inactivity",
             "reason": "no scheduler cycle events in recent activity log",
-            "expected_interval_minutes": _SCHEDULER_EXPECTED_INTERVAL_MINUTES,
+            "expected_interval_minutes": expected_interval_minutes,
             "last_cycle_at": None,
             "detected_at": _utc_now().isoformat(),
         }
@@ -428,13 +445,13 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
 
     now = _utc_now()
     gap = now - latest_ts
-    if gap <= timedelta(minutes=_SCHEDULER_EXPECTED_INTERVAL_MINUTES):
+    if gap <= timedelta(minutes=expected_interval_minutes):
         return None
 
     return {
         "anomaly": "scheduler_inactivity",
         "reason": "scheduler cycle not seen within expected interval",
-        "expected_interval_minutes": _SCHEDULER_EXPECTED_INTERVAL_MINUTES,
+        "expected_interval_minutes": expected_interval_minutes,
         "gap_minutes": round(gap.total_seconds() / 60, 1),
         "last_cycle_at": latest_ts_str,
         "detected_at": _utc_now().isoformat(),
@@ -517,23 +534,24 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
 
             title = _build_task_title(result)
             details = _build_task_details(result)
-            notion_type = _anomaly_type_to_notion_type(anomaly_type)
 
-            task = _create_anomaly_task(
-                title=title,
-                anomaly_type=notion_type,
-                details=details,
-            )
-            if task:
-                tasks_created.append({
-                    "notion_page_id": task.get("id", ""),
-                    "title": title,
-                    "anomaly": anomaly_type,
-                })
-
-            # Scheduler inactivity: one alert per incident; no resend until recovered
+            # Scheduler inactivity: one task+alert per incident; no resend until recovered.
+            # (Previously only Telegram was deduped; Notion tasks were still recreated each cycle.)
             if anomaly_type == "scheduler_inactivity":
-                if _should_send_anomaly_telegram(anomaly_type):
+                should_emit_incident = _should_send_anomaly_telegram(anomaly_type)
+                if should_emit_incident:
+                    notion_type = _anomaly_type_to_notion_type(anomaly_type)
+                    task = _create_anomaly_task(
+                        title=title,
+                        anomaly_type=notion_type,
+                        details=details,
+                    )
+                    if task:
+                        tasks_created.append({
+                            "notion_page_id": task.get("id", ""),
+                            "title": title,
+                            "anomaly": anomaly_type,
+                        })
                     _notify_telegram(
                         f"🔍 <b>Anomaly detected</b>: {title}\n"
                         f"Type: {anomaly_type}\n"
@@ -542,21 +560,34 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                     _record_anomaly_alert_sent(anomaly_type)
                 else:
                     logger.info(
-                        "scheduler_inactivity_alert_suppressed (already sent for this incident; will alert again when scheduler recovers)"
+                        "scheduler_inactivity_incident_suppressed (task+alert already sent; will emit again when scheduler recovers)"
                     )
                     _log_event("scheduler_inactivity_alert_suppressed", details={"anomaly": anomaly_type})
-            elif _should_send_anomaly_telegram(anomaly_type):
-                _notify_telegram(
-                    f"🔍 <b>Anomaly detected</b>: {title}\n"
-                    f"Type: {anomaly_type}\n"
-                    f"Details: {details[:300]}"
-                )
-                _record_anomaly_alert_sent(anomaly_type)
             else:
-                logger.debug(
-                    "anomaly_detection: throttled Telegram for %s (cooldown active)",
-                    anomaly_type,
+                notion_type = _anomaly_type_to_notion_type(anomaly_type)
+                task = _create_anomaly_task(
+                    title=title,
+                    anomaly_type=notion_type,
+                    details=details,
                 )
+                if task:
+                    tasks_created.append({
+                        "notion_page_id": task.get("id", ""),
+                        "title": title,
+                        "anomaly": anomaly_type,
+                    })
+                if _should_send_anomaly_telegram(anomaly_type):
+                    _notify_telegram(
+                        f"🔍 <b>Anomaly detected</b>: {title}\n"
+                        f"Type: {anomaly_type}\n"
+                        f"Details: {details[:300]}"
+                    )
+                    _record_anomaly_alert_sent(anomaly_type)
+                else:
+                    logger.debug(
+                        "anomaly_detection: throttled Telegram for %s (cooldown active)",
+                        anomaly_type,
+                    )
         except Exception as e:
             logger.warning("anomaly_detection: detector %s failed: %s", detector_name, e)
             errors.append(f"{detector_name}: {e}")
