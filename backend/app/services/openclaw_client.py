@@ -391,6 +391,17 @@ _STRUCTURED_OUTPUT_INSTRUCTION = (
     "and code blocks within each section."
 )
 
+_INVESTIGATION_MIN_SECTIONS_INSTRUCTION = (
+    "\n\nMANDATORY minimum sections (must all be present exactly):\n"
+    "## Summary\n"
+    "## Root Cause\n"
+    "## Fix\n"
+    "## Next Steps\n\n"
+    "Do NOT return short answers.\n"
+    "Do NOT return a single sentence.\n"
+    "Output must be at least 300 characters."
+)
+
 _SECTION_HEADING_RE = re.compile(
     r"^##\s+(" + "|".join(re.escape(s) for s in INVESTIGATION_SECTIONS) + r")\s*$",
     re.MULTILINE,
@@ -820,6 +831,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"4. Note any risks or side effects of the fix.\n"
         f"5. Summarize your findings in the structured report format below."
         f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
+        f"{_INVESTIGATION_MIN_SECTIONS_INSTRUCTION}"
     )
     instructions = (
         "You are an expert software engineer investigating a bug in a Python/FastAPI "

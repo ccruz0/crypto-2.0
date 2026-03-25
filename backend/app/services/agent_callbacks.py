@@ -830,6 +830,18 @@ _AGENT_CRITICAL_MIN_CHARS = 15  # Excluding "N/A"
 _OPENCLAW_MAX_RETRIES = 1
 _OPENCLAW_RETRY_DELAY_S = 5
 _OPENCLAW_FAILURE_PREVIEW_CHARS = 800
+_OPENCLAW_QUALITY_RETRY_APPEND = (
+    "\n\nIMPORTANT: Your previous response was invalid.\n"
+    "It did not satisfy the required structured format and minimum length.\n"
+    "Retry now and strictly follow these mandatory sections:\n"
+    "## Summary\n"
+    "## Root Cause\n"
+    "## Fix\n"
+    "## Next Steps\n"
+    "Do NOT return short answers.\n"
+    "Do NOT return a single sentence.\n"
+    "Output must be at least 300 characters."
+)
 
 # Cost-control switch for automatic OpenClaw execution.
 # Defaults:
@@ -947,17 +959,18 @@ def _call_openclaw_once(
     from app.services.openclaw_client import INVESTIGATION_SECTIONS
     use_sections = sections if sections is not None else INVESTIGATION_SECTIONS
     found_sections = [s for s in use_sections if f"## {s}" in content]
-    if not found_sections and len(content.strip()) < _MIN_INVESTIGATION_CONTENT_CHARS:
+    body_len = len(content.strip())
+    if not found_sections or body_len < _MIN_INVESTIGATION_CONTENT_CHARS:
         preview = content.strip()[:_OPENCLAW_FAILURE_PREVIEW_CHARS].replace("\n", "\\n")
         logger.warning(
             "openclaw_validation_failed_raw task_id=%s response_len=%d preview=%r",
             task_id,
-            len(content.strip()),
+            body_len,
             preview,
         )
         return None, (
-            f"OpenClaw response lacks structured sections and is too short "
-            f"({len(content.strip())} chars)"
+            f"OpenClaw quality gate failed (has_sections={bool(found_sections)} "
+            f"len={body_len} min={_MIN_INVESTIGATION_CONTENT_CHARS})"
         )
 
     return result, ""
@@ -1090,6 +1103,7 @@ def _apply_via_openclaw(
     max_attempts = 1 + _OPENCLAW_MAX_RETRIES
     token_budget = _task_token_budget_limit()
     token_spent = 0
+    retry_prompt_used = False
 
     call_sections: Optional[tuple[str, ...]] = None
     if use_agent_schema:
@@ -1134,7 +1148,16 @@ def _apply_via_openclaw(
                 attempt, max_attempts, task_id, last_error,
             )
             break
-        if attempt < max_attempts and _is_transient_openclaw_error(last_error):
+        is_quality_failure = "quality gate failed" in (last_error or "").lower()
+        if attempt < max_attempts and is_quality_failure and not retry_prompt_used:
+            logger.warning(
+                "OpenClaw attempt %d/%d failed for task %s: %s — retrying once with stricter structure prompt",
+                attempt, max_attempts, task_id, last_error,
+            )
+            user_prompt = f"{user_prompt}{_OPENCLAW_QUALITY_RETRY_APPEND}"
+            retry_prompt_used = True
+            time.sleep(_OPENCLAW_RETRY_DELAY_S)
+        elif attempt < max_attempts and _is_transient_openclaw_error(last_error):
             logger.warning(
                 "OpenClaw attempt %d/%d failed for task %s: %s — retrying in %ds",
                 attempt, max_attempts, task_id, last_error, _OPENCLAW_RETRY_DELAY_S,
