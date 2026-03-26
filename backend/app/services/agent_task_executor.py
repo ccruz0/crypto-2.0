@@ -2435,6 +2435,50 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         from app.services.patch_proof import cursor_bridge_required_for_task
         bridge_required, bridge_reason = cursor_bridge_required_for_task(task, task_id)
         if bridge_required:
+            # Late bridge attempt: when a code-fix task already has a handoff but no proof,
+            # do one safe bridge run here to avoid a patching dead-end when auto-run is off.
+            if bridge_reason == "code_fix_handoff_exists_no_patch":
+                try:
+                    from app.services.cursor_execution_bridge import (
+                        is_bridge_enabled,
+                        is_bridge_require_approval,
+                        run_bridge_phase2,
+                        task_has_patch_approval,
+                    )
+                    _approval_ok = (not is_bridge_require_approval()) or task_has_patch_approval(task_id)
+                    if is_bridge_enabled() and _approval_ok:
+                        logger.info(
+                            "advance_ready_for_patch_task: patch_proof_gate late bridge attempt task_id=%s",
+                            task_id,
+                        )
+                        bridge_result = run_bridge_phase2(
+                            task_id=task_id,
+                            ingest=True,
+                            create_pr=False,
+                            current_status="patching",
+                            execution_context="scheduler",
+                        )
+                        if bridge_result.get("ok") and bridge_result.get("tests_ok"):
+                            ingest_res = bridge_result.get("ingest") or {}
+                            if ingest_res.get("gate_result", {}).get("advanced"):
+                                logger.info(
+                                    "advance_ready_for_patch_task: late bridge succeeded task_id=%s",
+                                    task_id,
+                                )
+                                if fp_now and fp_state_path is not None:
+                                    _store_patching_state(fp_state_path, fingerprint=fp_now, checked_at=ts)
+                                return _result(
+                                    True,
+                                    "cursor_bridge",
+                                    "late bridge apply + tests passed",
+                                    "release-candidate-ready",
+                                )
+                except Exception as late_bridge_exc:
+                    logger.warning(
+                        "advance_ready_for_patch_task: late bridge attempt failed task_id=%s: %s",
+                        task_id,
+                        late_bridge_exc,
+                    )
             logger.info(
                 "cursor_bridge_required task_id=%s reason=%s — blocking advance to ready-for-deploy",
                 task_id[:12] if task_id else "?",
