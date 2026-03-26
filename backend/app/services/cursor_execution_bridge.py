@@ -135,6 +135,50 @@ def _cursor_cli_path() -> str:
     return (os.environ.get("CURSOR_CLI_PATH") or "").strip() or _DEFAULT_CURSOR_CLI
 
 
+def _find_mounted_cursor_cli() -> str:
+    """
+    Resolve Cursor CLI from mounted Cursor Server runtime, if present.
+
+    Expected path pattern:
+      /app/.cursor-server/bin/linux-x64/<commit>/bin/remote-cli/cursor
+    """
+    try:
+        base = Path("/app/.cursor-server/bin/linux-x64")
+        if not base.is_dir():
+            return ""
+        for commit_dir in sorted(base.iterdir(), reverse=True):
+            candidate = commit_dir / "bin" / "remote-cli" / "cursor"
+            if candidate.is_file():
+                return str(candidate)
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_cursor_cli_binary() -> str:
+    """
+    Return an executable path/name for Cursor CLI.
+
+    Resolution order:
+    1) CURSOR_CLI_PATH (if absolute/relative path and exists)
+    2) `which <CURSOR_CLI_PATH>` when it is a bare command name
+    3) mounted Cursor Server remote-cli launcher under /app/.cursor-server
+    """
+    cli = _cursor_cli_path()
+    if "/" in cli:
+        return cli if Path(cli).exists() else ""
+    try:
+        r = subprocess.run(["which", cli], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return (r.stdout or "").strip()
+    except Exception:
+        pass
+    mounted = _find_mounted_cursor_cli()
+    if mounted:
+        return mounted
+    return ""
+
+
 def _cursor_timeout() -> int:
     raw = (os.environ.get("CURSOR_CLI_TIMEOUT") or "").strip()
     try:
@@ -273,18 +317,10 @@ def get_bridge_diagnostics() -> dict[str, Any]:
         handoff_dir = _workspace_root() / "docs" / "agents" / "cursor-handoffs"
         logger.debug("get_bridge_diagnostics: handoff dir fallback: %s", e)
 
-    # Check if cursor/npx is available
+    # Check if Cursor CLI is resolvable
     cursor_found = False
     try:
-        if "/" in cli:
-            cursor_found = Path(cli).exists()
-        else:
-            r = subprocess.run(["which", cli], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                cursor_found = True
-            else:
-                r = subprocess.run(["which", "npx"], capture_output=True, text=True, timeout=5)
-                cursor_found = r.returncode == 0
+        cursor_found = bool(_resolve_cursor_cli_binary())
     except Exception:
         pass
 
@@ -443,19 +479,17 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
 
     Returns dict with: success (bool), exit_code (int), output (str), error (str|None).
     """
-    cli = _cursor_cli_path()
+    cli = _resolve_cursor_cli_binary()
     timeout = _cursor_timeout()
 
-    # Build args: [cursor, agent, -p, --output-format, json, prompt]
-    if "/" in cli:
-        args = [cli, "agent", "-p", "--output-format", "json", prompt]
-    else:
-        # Check if cursor is available; fallback to npx cursor
-        which = subprocess.run(["which", cli], capture_output=True, text=True)
-        if which.returncode != 0:
-            args = ["npx", "cursor", "agent", "-p", "--output-format", "json", prompt]
-        else:
-            args = [cli, "agent", "-p", "--output-format", "json", prompt]
+    if not cli:
+        return {
+            "success": False,
+            "exit_code": -1,
+            "output": "",
+            "error": "Cursor CLI not found (checked CURSOR_CLI_PATH/which and /app/.cursor-server mount)",
+        }
+    args = [cli, "agent", "-p", "--output-format", "json", prompt]
 
     logger.info("CursorBridge: applying patch task_id=%s staging=%s", task_id, staging_path)
     logger.info(
