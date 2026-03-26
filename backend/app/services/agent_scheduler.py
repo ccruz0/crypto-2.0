@@ -612,6 +612,7 @@ async def start_agent_scheduler_loop() -> None:
         try:
             result = await loop.run_in_executor(None, run_agent_scheduler_cycle)
             _last_cycle_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            logger.info("scheduler_heartbeat_updated last_cycle_at=%s", _last_cycle_ts)
             _log_event(
                 "scheduler_cycle_completed",
                 details={

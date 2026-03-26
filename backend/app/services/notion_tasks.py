@@ -565,9 +565,18 @@ def notion_is_configured() -> bool:
 
 
 def _get_service_name() -> str:
-    """Read SERVICE_NAME from environment; default 'unknown-service'."""
-    value = (os.environ.get("SERVICE_NAME") or "").strip()
-    return value if value else "unknown-service"
+    """Read service name from env with runtime inference fallback."""
+    value = (os.environ.get("SERVICE_NAME") or os.environ.get("COMPOSE_SERVICE") or "").strip()
+    if value:
+        return value
+    try:
+        from app.core.runtime_identity import get_runtime_identity
+        inferred = str((get_runtime_identity() or {}).get("service") or "").strip()
+        if inferred and inferred != "unknown":
+            return inferred
+    except Exception:
+        pass
+    return "unknown-service"
 
 
 def _get_app_env() -> str:

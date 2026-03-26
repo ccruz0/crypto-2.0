@@ -661,25 +661,66 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
 
     Returns structured metadata if inactivity is detected, None otherwise.
     """
+    expected_interval_minutes = _scheduler_inactivity_threshold_minutes()
+    now = _utc_now()
+
+    # Primary source of truth: scheduler runtime heartbeat state.
+    try:
+        from app.services.agent_scheduler import get_scheduler_state
+        runtime_last_cycle_at = str((get_scheduler_state() or {}).get("last_cycle") or "").strip()
+    except Exception as e:
+        logger.debug("detect_scheduler_inactivity: get_scheduler_state import failed %s", e)
+        runtime_last_cycle_at = ""
+
+    if runtime_last_cycle_at:
+        try:
+            latest_ts = datetime.fromisoformat(runtime_last_cycle_at.replace("Z", "+00:00"))
+            gap = now - latest_ts
+            gap_minutes = round(gap.total_seconds() / 60, 1)
+            is_anomaly = gap > timedelta(minutes=expected_interval_minutes)
+            logger.info(
+                "scheduler_inactivity_eval source=runtime_state anomaly=%s gap_minutes=%s threshold_minutes=%s last_cycle_at=%s",
+                is_anomaly,
+                gap_minutes,
+                expected_interval_minutes,
+                runtime_last_cycle_at,
+            )
+            if not is_anomaly:
+                return None
+            return {
+                "anomaly": "scheduler_inactivity",
+                "reason": "scheduler cycle not seen within expected interval",
+                "expected_interval_minutes": expected_interval_minutes,
+                "gap_minutes": gap_minutes,
+                "last_cycle_at": runtime_last_cycle_at,
+                "detected_at": now.isoformat(),
+            }
+        except (ValueError, TypeError):
+            logger.warning(
+                "detect_scheduler_inactivity: invalid runtime last_cycle_at value=%r",
+                runtime_last_cycle_at,
+            )
+
+    # Fallback source: activity log.
     try:
         from app.services.agent_activity_log import get_recent_agent_events
     except Exception as e:
         logger.debug("detect_scheduler_inactivity: import failed %s", e)
         return None
-
-    # Large window: high-volume logs can push heartbeat events out of small tails.
     events = get_recent_agent_events(limit=2000)
-    expected_interval_minutes = _scheduler_inactivity_threshold_minutes()
     if not events:
+        logger.info(
+            "scheduler_inactivity_eval source=activity_log anomaly=true reason=no_events threshold_minutes=%s",
+            expected_interval_minutes,
+        )
         return {
             "anomaly": "scheduler_inactivity",
             "reason": "no activity events found at all",
             "expected_interval_minutes": expected_interval_minutes,
             "last_cycle_at": None,
-            "detected_at": _utc_now().isoformat(),
+            "detected_at": now.isoformat(),
         }
 
-    # Any of these count as "scheduler ran recently" (heartbeat)
     _SCHEDULER_HEARTBEAT_EVENTS = (
         "scheduler_cycle_started",
         "scheduler_cycle_completed",
@@ -687,39 +728,74 @@ def detect_scheduler_inactivity() -> dict[str, Any] | None:
         "scheduler_auto_executed",
         "scheduler_approval_requested",
     )
-    scheduler_events = [
-        e for e in events
-        if (e.get("event_type") or "") in _SCHEDULER_HEARTBEAT_EVENTS
-    ]
-
+    scheduler_events = [e for e in events if (e.get("event_type") or "") in _SCHEDULER_HEARTBEAT_EVENTS]
     if not scheduler_events:
+        logger.info(
+            "scheduler_inactivity_eval source=activity_log anomaly=true reason=no_heartbeat_events threshold_minutes=%s",
+            expected_interval_minutes,
+        )
         return {
             "anomaly": "scheduler_inactivity",
             "reason": "no scheduler cycle events in recent activity log",
             "expected_interval_minutes": expected_interval_minutes,
             "last_cycle_at": None,
-            "detected_at": _utc_now().isoformat(),
+            "detected_at": now.isoformat(),
         }
-
     latest_ts_str = scheduler_events[0].get("timestamp", "")
     try:
         latest_ts = datetime.fromisoformat(latest_ts_str.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
-
-    now = _utc_now()
     gap = now - latest_ts
-    if gap <= timedelta(minutes=expected_interval_minutes):
+    gap_minutes = round(gap.total_seconds() / 60, 1)
+    is_anomaly = gap > timedelta(minutes=expected_interval_minutes)
+    logger.info(
+        "scheduler_inactivity_eval source=activity_log anomaly=%s gap_minutes=%s threshold_minutes=%s last_cycle_at=%s",
+        is_anomaly,
+        gap_minutes,
+        expected_interval_minutes,
+        latest_ts_str,
+    )
+    if not is_anomaly:
         return None
 
     return {
         "anomaly": "scheduler_inactivity",
         "reason": "scheduler cycle not seen within expected interval",
         "expected_interval_minutes": expected_interval_minutes,
-        "gap_minutes": round(gap.total_seconds() / 60, 1),
+        "gap_minutes": gap_minutes,
         "last_cycle_at": latest_ts_str,
-        "detected_at": _utc_now().isoformat(),
+        "detected_at": now.isoformat(),
     }
+
+
+def _resolve_scheduler_inactivity_anomaly_tasks() -> int:
+    """Mark active scheduler inactivity anomaly tasks as done on recovery."""
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+        from app.services.notion_tasks import update_notion_task_status
+    except Exception as e:
+        logger.debug("resolve_scheduler_inactivity_anomaly_tasks: import failed %s", e)
+        return 0
+
+    statuses = ["planned", "in-progress", "ready-for-investigation", "patching"]
+    tasks = get_tasks_by_status(statuses, max_results=200)
+    if not tasks:
+        return 0
+
+    resolved = 0
+    needle = "anomaly type: scheduler_inactivity"
+    comment = "Auto-resolved: scheduler heartbeat recovered."
+    for task in tasks:
+        task_id = str(task.get("id") or "").strip()
+        details = str(task.get("details") or "")
+        if not task_id or needle not in details.lower():
+            continue
+        if update_notion_task_status(task_id, "done", append_comment=comment):
+            resolved += 1
+    if resolved:
+        logger.info("scheduler_inactivity_recovery_resolved_tasks count=%d", resolved)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +866,7 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                             "Scheduler inactivity anomaly cleared; cycles are running again."
                         )
                         _log_event("scheduler_recovered", details={})
+                    _resolve_scheduler_inactivity_anomaly_tasks()
                     _clear_anomaly_incident(detector_name)
                 else:
                     _clear_anomaly_incident(detector_name)
