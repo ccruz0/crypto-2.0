@@ -282,6 +282,18 @@ def execute_decomposition(parent_task: dict[str, Any]) -> dict[str, Any]:
                 "child_count": len(child_ids),
                 "dedup_skipped": True,
             }
+        # Notion matched Details but parsed tasks lack ids — do not create a second batch of children.
+        logger.warning(
+            "task_decomposition_skipped_duplicate_children_no_ids parent_id=%s matched=%d",
+            parent_id[:12],
+            len(existing_children),
+        )
+        return {
+            "ok": False,
+            "parent_id": parent_id,
+            "child_ids": [],
+            "error": "active subtasks found in Notion but page ids missing",
+        }
 
     children_specs = decompose_task(parent_task)
     if not children_specs:

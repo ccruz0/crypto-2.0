@@ -124,7 +124,8 @@ def _task_status_is_non_terminal_for_operational_dedup(status: str) -> bool:
     """True if a task should still suppress creating another incident with the same incident key."""
     s = (status or "").strip().lower()
     if not s:
-        return False
+        # Missing/unknown status from Notion parse: treat as still open so we do not create duplicates.
+        return True
     if s in TERMINAL_STATUSES:
         return False
     return True
