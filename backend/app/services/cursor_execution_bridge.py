@@ -410,6 +410,16 @@ def provision_staging_workspace(task_id: str) -> Path | None:
     try:
         staging_root.mkdir(parents=True, exist_ok=True)
 
+        # Git's ownership check for local-path clones can require global safe.directory
+        # entries even when `-c safe.directory=...` is provided on clone.
+        for safe_path in (str(root), str(root / ".git")):
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", safe_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
         # Clone from local repo (workspace_root) to get current state
         result = subprocess.run(
             [
