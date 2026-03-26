@@ -73,12 +73,22 @@ if [[ "${SKIP_REBUILD}" == "1" ]]; then
 elif [[ "${NO_CACHE}" == "1" ]]; then
   echo "==> NO_CACHE=1: build --no-cache backend-aws"
   _prod_reset_backend_aws
-  docker compose --profile aws build --no-cache backend-aws 2>/dev/null || true
+  echo "==> starting backend-aws image build (no-cache)"
+  if ! docker compose --profile aws build --no-cache backend-aws; then
+    echo "ERROR: backend-aws image build failed (possible Docker/buildx permission issue). Ensure deploy user can run docker build." >&2
+    exit 1
+  fi
+  echo "==> backend-aws image build succeeded"
   docker compose --profile aws up -d --remove-orphans backend-aws
 else
   echo "==> build backend-aws + up -d"
   _prod_reset_backend_aws
-  docker compose --profile aws build backend-aws 2>/dev/null || true
+  echo "==> starting backend-aws image build"
+  if ! docker compose --profile aws build backend-aws; then
+    echo "ERROR: backend-aws image build failed (possible Docker/buildx permission issue). Ensure deploy user can run docker build." >&2
+    exit 1
+  fi
+  echo "==> backend-aws image build succeeded"
   docker compose --profile aws up -d --remove-orphans backend-aws
 fi
 
