@@ -116,6 +116,123 @@ ALLOWED_TASK_STATUSES = (
 # Terminal statuses (cannot advance further)
 TERMINAL_STATUSES = (TASK_STATUS_DONE, TASK_STATUS_DEPLOYED, TASK_STATUS_REJECTED)
 
+# Written into monitoring incident Details for Notion-backed dedup (survives process restarts / multi-worker).
+OPERATIONAL_INCIDENT_MARKER = "Operational incident:"
+
+
+def _task_status_is_non_terminal_for_operational_dedup(status: str) -> bool:
+    """True if a task should still suppress creating another incident with the same incident key."""
+    s = (status or "").strip().lower()
+    if not s:
+        return False
+    if s in TERMINAL_STATUSES:
+        return False
+    return True
+
+
+def _notion_query_pages_details_contains(
+    database_id: str,
+    api_key: str,
+    contains: str,
+    *,
+    page_size: int = 50,
+    max_pages: int = 4,
+) -> list[dict[str, Any]]:
+    """Query AI Task DB for pages whose Details rich_text contains *contains*. Best-effort; never raises."""
+    if not database_id or not api_key or not (contains or "").strip():
+        return []
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION,
+    }
+    out: list[dict[str, Any]] = []
+    cursor: str | None = None
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            for _ in range(max_pages):
+                payload: dict[str, Any] = {
+                    "page_size": min(page_size, 100),
+                    "filter": {
+                        "property": "Details",
+                        "rich_text": {"contains": contains[:2000]},
+                    },
+                    "sorts": [{"timestamp": "last_edited_time", "direction": "descending"}],
+                }
+                if cursor:
+                    payload["start_cursor"] = cursor
+                resp = client.post(
+                    f"{NOTION_API_BASE}/databases/{database_id}/query",
+                    json=payload,
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.debug(
+                        "notion_query_details_contains failed http=%d body=%s",
+                        resp.status_code,
+                        (resp.text or "")[:240],
+                    )
+                    break
+                data = resp.json()
+                for page in data.get("results") or []:
+                    if isinstance(page, dict):
+                        out.append(page)
+                if not data.get("has_more"):
+                    break
+                cursor = data.get("next_cursor")
+                if not cursor:
+                    break
+    except Exception as e:
+        logger.debug("notion_query_details_contains error: %s", e)
+    return out
+
+
+def _find_active_operational_incident_task(incident_key: str) -> dict[str, Any] | None:
+    """
+    Return a non-terminal task whose Details include ``Operational incident: <key>``.
+
+    Used so recurring /health/system FAIL polls do not create duplicate Notion rows while
+    the first incident is still open (in-memory NOTION_TASK_COOLDOWN_SECONDS is insufficient).
+    """
+    key = (incident_key or "").strip()
+    if not key:
+        return None
+    try:
+        from app.services.notion_task_reader import _parse_page
+    except Exception as e:
+        logger.debug("_find_active_operational_incident_task: _parse_page import failed: %s", e)
+        return None
+
+    api_key, database_id = _get_config()
+    if not api_key or not database_id:
+        return None
+
+    needle = f"{OPERATIONAL_INCIDENT_MARKER} {key}".strip()
+    pages = _notion_query_pages_details_contains(database_id, api_key, needle)
+    for page in pages:
+        try:
+            task = _parse_page(page)
+        except Exception:
+            continue
+        details = str(task.get("details") or "")
+        if needle.lower() not in details.lower():
+            continue
+        st = str(task.get("status") or "")
+        if _task_status_is_non_terminal_for_operational_dedup(st):
+            return task
+    return None
+
+
+def _ensure_operational_incident_details(details: str, incident_key: str) -> str:
+    marker = f"{OPERATIONAL_INCIDENT_MARKER} {incident_key.strip()}".strip()
+    body = (details or "").strip()
+    if marker.lower() in body.lower():
+        return body if body else marker
+    if body:
+        return f"{marker}\n{body}"
+    return marker
+
+
 # Extended lifecycle: ordered forward transitions
 # needs-revision is a back-loop: patching -> needs-revision (when verify fails)
 # needs-revision -> investigating (when user approves re-investigate)
@@ -820,10 +937,15 @@ def create_incident_task(
     details: str = "",
     github_link: Optional[str] = None,
     source: str = "monitoring",
+    *,
+    operational_incident_key: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """
     Create a Notion task for an infrastructure/monitoring incident.
     Uses project="Infrastructure", type="monitoring"; priority is inferred.
+
+    When *operational_incident_key* is set, Details include a stable marker and creation is
+    skipped if a non-terminal task with the same key already exists (Notion-backed dedup).
 
     Example:
         create_incident_task(
@@ -833,11 +955,25 @@ def create_incident_task(
         )
     """
     logger.info("Creating incident task in Notion title=%r", title)
+    enriched_details = details
+    if (operational_incident_key or "").strip():
+        enriched_details = _ensure_operational_incident_details(details, operational_incident_key.strip())
+        existing = _find_active_operational_incident_task(operational_incident_key.strip())
+        if existing:
+            eid = str(existing.get("id") or "").strip()
+            logger.info(
+                "operational_incident_task_deduplicated incident_key=%r existing_id=%s title=%r",
+                operational_incident_key.strip(),
+                eid[:12] if eid else "",
+                (title or "")[:80],
+            )
+            return {"id": eid or None, "url": None, "dedup_reused": True}
+
     return create_notion_task(
         title=title,
         project="Infrastructure",
         type="monitoring",
-        details=details,
+        details=enriched_details,
         github_link=github_link,
         status="planned",
         source=source,

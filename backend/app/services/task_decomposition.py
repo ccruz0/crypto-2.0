@@ -168,6 +168,50 @@ def _default_subtasks_for_title(title: str, details: str) -> list[dict[str, Any]
     return specs[:MAX_CHILD_TASKS_PER_PARENT]
 
 
+def _find_existing_active_subtasks_for_parent(parent_id: str) -> list[dict[str, Any]]:
+    """
+    Return non-terminal child tasks in Notion that reference *parent_id* in [ATP_SUBTASK] details.
+
+    Survives backend restarts (unlike in-memory _decomposed_parents) so we do not create
+    duplicate subtask rows for the same unresolved parent.
+    """
+    pid = (parent_id or "").strip()
+    if len(pid) < 8:
+        return []
+    try:
+        from app.services.notion_tasks import (
+            TERMINAL_STATUSES,
+            _get_config,
+            _notion_query_pages_details_contains,
+        )
+        from app.services.notion_task_reader import _parse_page
+    except ImportError:
+        return []
+
+    api_key, database_id = _get_config()
+    if not api_key or not database_id:
+        return []
+
+    needle = f"parent_task_id: {pid}"
+    pages = _notion_query_pages_details_contains(database_id, api_key, needle)
+    out: list[dict[str, Any]] = []
+    for page in pages:
+        try:
+            task = _parse_page(page)
+        except Exception:
+            continue
+        details = str(task.get("details") or "")
+        if SUBTASK_DETAIL_PREFIX not in details:
+            continue
+        if needle.lower() not in details.lower():
+            continue
+        st = str(task.get("status") or "").strip().lower()
+        if st in TERMINAL_STATUSES:
+            continue
+        out.append(task)
+    return out
+
+
 def decompose_task(parent_task: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Create child task specs from parent. Does NOT persist to Notion; caller does that.
@@ -220,6 +264,24 @@ def execute_decomposition(parent_task: dict[str, Any]) -> dict[str, Any]:
     parent_id = (parent_task.get("id") or "").strip()
     if not parent_id:
         return {"ok": False, "parent_id": "", "child_ids": [], "error": "missing parent id"}
+
+    existing_children = _find_existing_active_subtasks_for_parent(parent_id)
+    if existing_children:
+        child_ids = [str(t.get("id") or "").strip() for t in existing_children if t.get("id")]
+        child_ids = [c for c in child_ids if c]
+        if child_ids:
+            logger.info(
+                "task_decomposition_skipped_duplicate_children parent_id=%s active_children=%d",
+                parent_id[:12],
+                len(child_ids),
+            )
+            return {
+                "ok": True,
+                "parent_id": parent_id,
+                "child_ids": child_ids,
+                "child_count": len(child_ids),
+                "dedup_skipped": True,
+            }
 
     children_specs = decompose_task(parent_task)
     if not children_specs:

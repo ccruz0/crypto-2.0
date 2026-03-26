@@ -40,6 +40,12 @@ def _verify_diagnostics_auth(request: Request) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _operational_incident_slug(label: str) -> str:
+    s = (label or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    return s or "unknown"
+
+
 def _create_notion_incidents_for_health_failure(health: Dict[str, Any]) -> None:
     """
     When system health is FAIL, create Notion incident tasks for each failed component.
@@ -51,40 +57,50 @@ def _create_notion_incidents_for_health_failure(health: Dict[str, Any]) -> None:
         log.debug("Notion tasks not available for health incidents: %s", imp_err)
         return
     if health.get("db_status") == "down":
-        create_incident_task(
+        r = create_incident_task(
             title="Database connectivity check failed",
             details="component=database; db_status=down.",
+            operational_incident_key="database_connectivity",
         )
-        log.info("Monitoring failure triggered Notion incident: Database connectivity check failed")
+        if r and r.get("id") and not r.get("dedup_reused"):
+            log.info("Monitoring failure triggered Notion incident: Database connectivity check failed")
     sm = health.get("signal_monitor") or {}
     if sm.get("status") == "FAIL":
-        create_incident_task(
+        r = create_incident_task(
             title="Trading engine health check failed",
             details="component=signal_monitor; status=FAIL.",
+            operational_incident_key="trading_engine_health",
         )
-        log.info("Monitoring failure triggered Notion incident: Trading engine health check failed")
+        if r and r.get("id") and not r.get("dedup_reused"):
+            log.info("Monitoring failure triggered Notion incident: Trading engine health check failed")
     tg = health.get("telegram") or {}
     if tg.get("status") == "FAIL":
-        create_incident_task(
+        r = create_incident_task(
             title="Telegram delivery check failed",
             details="component=telegram; status=FAIL.",
+            operational_incident_key="telegram_delivery_check",
         )
-        log.info("Monitoring failure triggered Notion incident: Telegram delivery check failed")
+        if r and r.get("id") and not r.get("dedup_reused"):
+            log.info("Monitoring failure triggered Notion incident: Telegram delivery check failed")
     tsys = health.get("trade_system") or {}
     if tsys.get("status") == "FAIL":
-        create_incident_task(
+        r = create_incident_task(
             title="Trade system health check failed",
             details="component=trade_system; status=FAIL.",
+            operational_incident_key="trade_system_health",
         )
-        log.info("Monitoring failure triggered Notion incident: Trade system health check failed")
+        if r and r.get("id") and not r.get("dedup_reused"):
+            log.info("Monitoring failure triggered Notion incident: Trade system health check failed")
     md = health.get("market_data") or {}
     mu = health.get("market_updater") or {}
     if md.get("status") == "FAIL" or mu.get("status") == "FAIL":
-        create_incident_task(
+        r = create_incident_task(
             title="Market data health check failed",
             details=f"market_data={md.get('status')}; market_updater={mu.get('status')}.",
+            operational_incident_key="market_data_health",
         )
-        log.info("Monitoring failure triggered Notion incident: Market data health check failed")
+        if r and r.get("id") and not r.get("dedup_reused"):
+            log.info("Monitoring failure triggered Notion incident: Market data health check failed")
 
 
 @router.get("/health/system", name="get_system_health")
@@ -108,11 +124,13 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
         log.error(f"Error computing system health: {e}", exc_info=True)
         try:
             from app.services.notion_tasks import create_incident_task
-            create_incident_task(
+            r = create_incident_task(
                 title="System health check failed",
                 details=f"Error computing system health: {str(e)[:500]}.",
+                operational_incident_key="system_health_compute_error",
             )
-            log.info("Monitoring failure triggered Notion incident: System health check failed")
+            if r and r.get("id") and not r.get("dedup_reused"):
+                log.info("Monitoring failure triggered Notion incident: System health check failed")
         except Exception as notion_err:
             log.debug("Notion incident creation failed (non-fatal): %s", notion_err)
         return JSONResponse(
@@ -199,10 +217,12 @@ async def create_health_alert_notion_task(payload: Dict[str, Any] = Body(default
         title=title,
         details=details,
         source="atp-health-alert",
+        operational_incident_key=f"atp_health_alert_{_operational_incident_slug(rule)}",
     )
     if result and result.get("id"):
-        log.info("Notion task created for ATP health alert rule=%s id=%s", rule, result.get("id"))
-        return {"ok": True, "notion_task_id": result.get("id")}
+        if not result.get("dedup_reused"):
+            log.info("Notion task created for ATP health alert rule=%s id=%s", rule, result.get("id"))
+        return {"ok": True, "notion_task_id": result.get("id"), "dedup_reused": bool(result.get("dedup_reused"))}
     return {"ok": False, "reason": "skipped_or_failed"}
 
 
