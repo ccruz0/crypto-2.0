@@ -319,8 +319,16 @@ def _check_telegram_health() -> Dict:
         # Telegram is enabled if: RUN_TELEGRAM is true AND kill switch is enabled AND credentials are set
         enabled = enabled_by_env and kill_switch_enabled and bot_token_set and chat_id_set
         
-        # PASS when enabled and working, or when intentionally disabled (RUN_TELEGRAM false)
-        status = "PASS" if enabled else ("PASS" if not enabled_by_env else "FAIL")
+        # Semantics:
+        # - PASS: Telegram is enabled and can run, or intentionally disabled via RUN_TELEGRAM=false
+        # - DISABLED: RUN_TELEGRAM=true but policy kill switch disabled delivery
+        # - FAIL: Telegram expected to run but config is incomplete
+        status = "PASS"
+        if enabled_by_env and not enabled:
+            if not kill_switch_enabled:
+                status = "DISABLED"
+            else:
+                status = "FAIL"
         
         return {
             "status": status,
