@@ -103,6 +103,48 @@ def _create_notion_incidents_for_health_failure(health: Dict[str, Any]) -> None:
             log.info("Monitoring failure triggered Notion incident: Market data health check failed")
 
 
+def _resolve_notion_incidents_for_health_recovery(health: Dict[str, Any]) -> None:
+    """
+    When components recover, close their active operational incidents so a future failure creates a fresh parent.
+    """
+    try:
+        from app.services.notion_tasks import resolve_operational_incident_task
+    except Exception as imp_err:
+        log.debug("Notion tasks not available for health incident recovery: %s", imp_err)
+        return
+
+    if health.get("db_status") != "down":
+        resolve_operational_incident_task(
+            "database_connectivity",
+            resolution_comment="Auto-resolved: database connectivity recovered in /health/system.",
+        )
+    sm = health.get("signal_monitor") or {}
+    if sm.get("status") != "FAIL":
+        resolve_operational_incident_task(
+            "trading_engine_health",
+            resolution_comment="Auto-resolved: trading engine health recovered in /health/system.",
+        )
+    tg = health.get("telegram") or {}
+    if tg.get("status") != "FAIL":
+        resolve_operational_incident_task(
+            "telegram_delivery_check",
+            resolution_comment="Auto-resolved: telegram delivery health recovered in /health/system.",
+        )
+    tsys = health.get("trade_system") or {}
+    if tsys.get("status") != "FAIL":
+        resolve_operational_incident_task(
+            "trade_system_health",
+            resolution_comment="Auto-resolved: trade system health recovered in /health/system.",
+        )
+    md = health.get("market_data") or {}
+    mu = health.get("market_updater") or {}
+    if md.get("status") != "FAIL" and mu.get("status") != "FAIL":
+        resolve_operational_incident_task(
+            "market_data_health",
+            resolution_comment="Auto-resolved: market data + updater recovered in /health/system.",
+        )
+
+
 @router.get("/health/system", name="get_system_health")
 async def get_system_health_endpoint(db: Session = Depends(get_db)):
     """
@@ -119,6 +161,11 @@ async def get_system_health_endpoint(db: Session = Depends(get_db)):
                 _create_notion_incidents_for_health_failure(health)
             except Exception as notion_err:
                 log.debug("Notion incident creation failed (non-fatal): %s", notion_err)
+        else:
+            try:
+                _resolve_notion_incidents_for_health_recovery(health)
+            except Exception as notion_err:
+                log.debug("Notion incident recovery resolution failed (non-fatal): %s", notion_err)
         return JSONResponse(content=health, status_code=status_code, headers=_NO_CACHE_HEADERS)
     except Exception as e:
         log.error(f"Error computing system health: {e}", exc_info=True)

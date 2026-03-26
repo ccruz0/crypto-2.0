@@ -198,18 +198,31 @@ def _find_active_operational_incident_task(incident_key: str) -> dict[str, Any] 
     key = (incident_key or "").strip()
     if not key:
         return None
+    candidates = _find_operational_incident_task_candidates(key)
+    for task in candidates:
+        if bool(task.get("_operational_non_terminal")):
+            return task
+    return None
+
+
+def _find_operational_incident_task_candidates(incident_key: str) -> list[dict[str, Any]]:
+    """Return Notion tasks whose Details include ``Operational incident: <key>`` (active + terminal)."""
+    key = (incident_key or "").strip()
+    if not key:
+        return []
     try:
         from app.services.notion_task_reader import _parse_page
     except Exception as e:
-        logger.debug("_find_active_operational_incident_task: _parse_page import failed: %s", e)
-        return None
+        logger.debug("_find_operational_incident_task_candidates: _parse_page import failed: %s", e)
+        return []
 
     api_key, database_id = _get_config()
     if not api_key or not database_id:
-        return None
+        return []
 
     needle = f"{OPERATIONAL_INCIDENT_MARKER} {key}".strip()
     pages = _notion_query_pages_details_contains(database_id, api_key, needle)
+    out: list[dict[str, Any]] = []
     for page in pages:
         try:
             task = _parse_page(page)
@@ -219,9 +232,9 @@ def _find_active_operational_incident_task(incident_key: str) -> dict[str, Any] 
         if needle.lower() not in details.lower():
             continue
         st = str(task.get("status") or "")
-        if _task_status_is_non_terminal_for_operational_dedup(st):
-            return task
-    return None
+        task["_operational_non_terminal"] = _task_status_is_non_terminal_for_operational_dedup(st)
+        out.append(task)
+    return out
 
 
 def _ensure_operational_incident_details(details: str, incident_key: str) -> str:
@@ -958,17 +971,34 @@ def create_incident_task(
     logger.info("Creating incident task in Notion title=%r", title)
     enriched_details = details
     if (operational_incident_key or "").strip():
-        enriched_details = _ensure_operational_incident_details(details, operational_incident_key.strip())
-        existing = _find_active_operational_incident_task(operational_incident_key.strip())
+        key = operational_incident_key.strip()
+        enriched_details = _ensure_operational_incident_details(details, key)
+        candidates = _find_operational_incident_task_candidates(key)
+        existing = next((t for t in candidates if bool(t.get("_operational_non_terminal"))), None)
+        candidate_brief = [
+            {
+                "id": str(t.get("id") or "")[:12],
+                "status": str(t.get("status") or "")[:40],
+            }
+            for t in candidates[:8]
+        ]
         if existing:
             eid = str(existing.get("id") or "").strip()
             logger.info(
-                "operational_incident_task_deduplicated incident_key=%r existing_id=%s title=%r",
-                operational_incident_key.strip(),
+                "operational_incident_task_deduplicated incident_key=%r existing_id=%s existing_status=%r candidates=%s title=%r",
+                key,
                 eid[:12] if eid else "",
+                str(existing.get("status") or "")[:40],
+                candidate_brief,
                 (title or "")[:80],
             )
             return {"id": eid or None, "url": None, "dedup_reused": True}
+        logger.info(
+            "operational_incident_task_create_new incident_key=%r candidates=%s title=%r",
+            key,
+            candidate_brief,
+            (title or "")[:80],
+        )
 
     return create_notion_task(
         title=title,
@@ -979,6 +1009,38 @@ def create_incident_task(
         status="planned",
         source=source,
     )
+
+
+def resolve_operational_incident_task(
+    incident_key: str,
+    *,
+    resolution_comment: str | None = None,
+) -> dict[str, Any]:
+    """Mark active Notion tasks for an operational incident key as done."""
+    key = (incident_key or "").strip()
+    if not key:
+        return {"ok": False, "resolved_count": 0, "resolved_ids": [], "reason": "empty_key"}
+    candidates = _find_operational_incident_task_candidates(key)
+    active = [t for t in candidates if bool(t.get("_operational_non_terminal")) and str(t.get("id") or "").strip()]
+    resolved_ids: list[str] = []
+    for task in active:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            continue
+        if update_notion_task_status(task_id, TASK_STATUS_DONE, append_comment=resolution_comment):
+            resolved_ids.append(task_id)
+    logger.info(
+        "operational_incident_task_recovery_resolved incident_key=%r active_candidates=%d resolved=%d statuses=%s",
+        key,
+        len(active),
+        len(resolved_ids),
+        [{"id": str(t.get("id") or "")[:12], "status": str(t.get("status") or "")[:40]} for t in candidates[:8]],
+    )
+    return {
+        "ok": True,
+        "resolved_count": len(resolved_ids),
+        "resolved_ids": resolved_ids,
+    }
 
 
 def create_bug_task(
