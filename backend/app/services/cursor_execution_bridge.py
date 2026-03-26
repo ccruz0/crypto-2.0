@@ -376,7 +376,18 @@ def provision_staging_workspace(task_id: str) -> Path | None:
 
         # Clone from local repo (workspace_root) to get current state
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", str(root), str(staging_dir)],
+            [
+                "git",
+                "-c",
+                f"safe.directory={root}",
+                "-c",
+                f"safe.directory={root / '.git'}",
+                "clone",
+                "--depth",
+                "1",
+                str(root),
+                str(staging_dir),
+            ],
             capture_output=True,
             text=True,
             timeout=120,

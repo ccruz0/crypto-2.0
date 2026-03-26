@@ -281,6 +281,8 @@ services:
     volumes:
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./.git:/app/.git:ro
+      - /home/ubuntu/.cursor-server:/app/.cursor-server:ro
       - ./backend/ai_runs:/app/backend/ai_runs
       - ./docs:/app/docs
       - ./logs:/app/logs
