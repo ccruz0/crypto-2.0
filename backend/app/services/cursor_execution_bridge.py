@@ -179,6 +179,24 @@ def _resolve_cursor_cli_binary() -> str:
     return ""
 
 
+def _cursor_api_key() -> str:
+    return (os.environ.get("CURSOR_API_KEY") or "").strip()
+
+
+def _cursor_agent_binary() -> str:
+    # Prefer explicit cursor-agent binary when available (supports --api-key).
+    for p in (Path("/root/.local/bin/cursor-agent"), Path("/home/appuser/.local/bin/cursor-agent")):
+        if p.is_file():
+            return str(p)
+    try:
+        r = subprocess.run(["which", "cursor-agent"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return (r.stdout or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _cursor_timeout() -> int:
     raw = (os.environ.get("CURSOR_CLI_TIMEOUT") or "").strip()
     try:
@@ -489,7 +507,9 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
 
     Returns dict with: success (bool), exit_code (int), output (str), error (str|None).
     """
-    cli = _resolve_cursor_cli_binary()
+    api_key = _cursor_api_key()
+    agent_cli = _cursor_agent_binary() if api_key else ""
+    cli = agent_cli or _resolve_cursor_cli_binary()
     timeout = _cursor_timeout()
 
     if not cli:
@@ -499,7 +519,23 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
             "output": "",
             "error": "Cursor CLI not found (checked CURSOR_CLI_PATH/which and /app/.cursor-server mount)",
         }
-    args = [cli, "agent", "-p", "--output-format", "json", prompt]
+    if not api_key and "/app/.cursor-server/" in cli:
+        return {
+            "success": False,
+            "exit_code": -1,
+            "output": "",
+            "error": (
+                "Cursor non-interactive auth unavailable: CURSOR_API_KEY is not set and in-container cursor-agent is not logged in. "
+                "Set CURSOR_API_KEY in runtime env for headless bridge runs."
+            ),
+        }
+    if "cursor-agent" in Path(cli).name:
+        args = [cli, "-p", "--output-format", "json"]
+        if api_key:
+            args.extend(["--api-key", api_key])
+        args.append(prompt)
+    else:
+        args = [cli, "agent", "-p", "--output-format", "json", prompt]
 
     logger.info("CursorBridge: applying patch task_id=%s staging=%s", task_id, staging_path)
     logger.info(
