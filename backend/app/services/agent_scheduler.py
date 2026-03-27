@@ -773,11 +773,13 @@ async def start_agent_scheduler_loop() -> None:
     global _scheduler_running, _last_cycle_ts
 
     interval = _get_scheduler_interval()
+    auto_retry_cap = _get_auto_retry_cap()
     _scheduler_running = True
     logger.info(
         "agent_scheduler_loop_started interval=%ds",
         interval,
     )
+    logger.info("AUTO_RETRY_CAP_ACTIVE cap=%d", auto_retry_cap)
     _log_event("scheduler_loop_started", details={"interval_seconds": interval})
 
     loop = asyncio.get_running_loop()
