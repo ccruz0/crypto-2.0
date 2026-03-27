@@ -45,6 +45,79 @@ from app.services.agent_versioning import (
 logger = logging.getLogger(__name__)
 
 
+def _strict_reinvestigation_retry_count(task_id: str) -> int:
+    """Count prior strict-mode auto re-investigation retries from activity log."""
+    tid = (task_id or "").strip()
+    if not tid:
+        return 0
+    try:
+        from app.services.agent_activity_log import get_recent_agent_events
+
+        best = 0
+        for ev in get_recent_agent_events(limit=5000):
+            if str(ev.get("task_id") or "").strip() != tid:
+                continue
+            if str(ev.get("event_type") or "").strip() != "strict_mode_reinvestigation_retry":
+                continue
+            details = ev.get("details") or {}
+            try:
+                attempt = int(str(details.get("attempt") or "0"))
+            except Exception:
+                attempt = 0
+            best = max(best, attempt)
+        return max(0, best)
+    except Exception:
+        return 0
+
+
+def _log_strict_reinvestigation_event(
+    event_type: str,
+    task_id: str,
+    task_title: str,
+    details: dict[str, Any],
+) -> None:
+    try:
+        from app.services.agent_activity_log import log_agent_event
+
+        log_agent_event(
+            event_type,
+            task_id=task_id or None,
+            task_title=task_title or None,
+            details=details or {},
+        )
+    except Exception as e:
+        logger.debug("strict reinvestigation log_agent_event failed (non-fatal) %s", e)
+
+
+def _write_strict_reinvestigation_feedback(task_id: str, proof_reason: str) -> None:
+    """Persist strict proof feedback so the next OpenClaw attempt strengthens evidence."""
+    try:
+        from app.services._paths import workspace_root
+
+        root = workspace_root()
+        feedback_dir = root / "docs" / "agents" / "verification-feedback"
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+        feedback_path = feedback_dir / f"{task_id}.txt"
+        msg = (
+            "Strict mode proof failed. Rewrite investigation with stronger, code-grounded evidence.\n\n"
+            f"Missing criteria: {proof_reason}\n\n"
+            "Required fixes:\n"
+            "- Include exact file path and function definition\n"
+            "- Include at least one concrete code block\n"
+            "- Tie root cause directly to file/function/condition\n"
+            "- Provide one explicit failing scenario\n"
+            "- Include precise line/condition reference and validation scenario\n"
+        )
+        feedback_path.write_text(msg, encoding="utf-8")
+    except Exception as e:
+        logger.warning("strict proof feedback write failed task_id=%s err=%s", task_id, e)
+
+
+def _strict_retry_is_scheduled(revision_reason: str) -> bool:
+    rr = (revision_reason or "").strip().lower()
+    return rr.startswith("strict_mode_reinvestigation_retry_scheduled")
+
+
 def _parse_iso_utc(ts: str) -> datetime | None:
     raw = (ts or "").strip()
     if not raw:
@@ -1655,6 +1728,38 @@ def execute_prepared_notion_task(
 
                 latest = get_notion_task_by_id(task_id) or {}
                 latest_status = str(latest.get("status") or "").strip().lower()
+                latest_revision_reason = str(latest.get("revision_reason") or "")
+                strict_mode_active = bool(
+                    isinstance((prepared_task or {}).get("execution_mode"), str)
+                    and str((prepared_task or {}).get("execution_mode")).strip().lower() == "strict"
+                )
+                strict_retry_scheduled = strict_mode_active and _strict_retry_is_scheduled(latest_revision_reason)
+                if strict_retry_scheduled:
+                    logger.warning(
+                        "strict_mode_reinvestigation_retry_failed task_id=%s summary=%s",
+                        task_id[:12] if task_id else "?",
+                        apply_summary[:220] if apply_summary else "?",
+                    )
+                    _log_strict_reinvestigation_event(
+                        "strict_mode_reinvestigation_retry_failed",
+                        task_id,
+                        task_title,
+                        {
+                            "summary": (apply_summary or "")[:500],
+                            "reason": "retryable_apply_failed_while_strict_retry_scheduled",
+                        },
+                    )
+                    _append_notion_page_comment(
+                        task_id,
+                        f"[{executed_at}] Strict mode re-investigation retry failed (transient apply error). "
+                        "Staying in-progress and preserving strict retry sequence for next cycle.",
+                    )
+                    return result(
+                        True, False, apply_summary,
+                        False, False, False, "",
+                        False, False, "",
+                        "in-progress", False,
+                    )
                 protected_statuses = {
                     "ready-for-patch",
                     "patching",
@@ -1800,16 +1905,93 @@ def execute_prepared_notion_task(
                         task_id[:12] if task_id else "?",
                         proof_reason[:200] if proof_reason else "?",
                     )
-                    _append_notion_page_comment(
-                        task_id,
-                        f"[{executed_at}] Strict mode: proof criteria not met — staying in-progress. {proof_reason}",
-                    )
-                    return result(
-                        True, True, apply_summary,
-                        False, False, False, "",
-                        False, False, "",
-                        "in-progress", False,
-                    )
+                    strict_retry_cap = 2
+                    prior_retry_count = _strict_reinvestigation_retry_count(task_id)
+                    if prior_retry_count < strict_retry_cap:
+                        next_attempt = prior_retry_count + 1
+                        _write_strict_reinvestigation_feedback(task_id, proof_reason or "")
+                        logger.info(
+                            "strict_mode_reinvestigation_retry task_id=%s attempt=%d cap=%d reason=%s",
+                            task_id[:12] if task_id else "?",
+                            next_attempt,
+                            strict_retry_cap,
+                            (proof_reason or "")[:220],
+                        )
+                        _log_strict_reinvestigation_event(
+                            "strict_mode_reinvestigation_retry",
+                            task_id,
+                            task_title,
+                            {
+                                "attempt": next_attempt,
+                                "cap": strict_retry_cap,
+                                "reason": (proof_reason or "")[:500],
+                                "mode": "scheduled_next_cycle",
+                            },
+                        )
+                        update_notion_task_metadata(
+                            task_id,
+                            {
+                                "revision_reason": f"strict_mode_reinvestigation_retry_scheduled:{next_attempt}/{strict_retry_cap}",
+                            },
+                        )
+                        _append_notion_page_comment(
+                            task_id,
+                            f"[{executed_at}] Strict mode proof insufficient. Scheduled auto re-investigation "
+                            f"attempt {next_attempt}/{strict_retry_cap} for the next cycle with explicit "
+                            "proof feedback.",
+                        )
+                        return result(
+                            True, True, apply_summary,
+                            False, False, False, "",
+                            False, False, "",
+                            "in-progress", False,
+                        )
+                    if prior_retry_count >= strict_retry_cap:
+                        reason_msg = (
+                            f"Strict mode proof remained insufficient after {prior_retry_count}/"
+                            f"{strict_retry_cap} automatic rewrites. {proof_reason}"
+                        )
+                        logger.warning(
+                            "strict_mode_reinvestigation_blocked task_id=%s attempts=%d cap=%d reason=%s",
+                            task_id[:12] if task_id else "?",
+                            prior_retry_count,
+                            strict_retry_cap,
+                            (proof_reason or "")[:220],
+                        )
+                        _log_strict_reinvestigation_event(
+                            "strict_mode_reinvestigation_blocked",
+                            task_id,
+                            task_title,
+                            {
+                                "attempts": prior_retry_count,
+                                "cap": strict_retry_cap,
+                                "reason": (proof_reason or "")[:500],
+                            },
+                        )
+                        update_notion_task_metadata(
+                            task_id,
+                            {
+                                "blocker_reason": reason_msg[:500],
+                                "revision_reason": "strict_mode_proof_insufficient_after_auto_rewrites",
+                            },
+                        )
+                        update_notion_task_status(
+                            task_id,
+                            "blocked",
+                            append_comment=(
+                                f"[{executed_at}] ⚠️ Strict mode auto re-investigation stopped.\n"
+                                f"Proof remained insufficient after {prior_retry_count}/{strict_retry_cap} "
+                                f"automatic rewrites.\n"
+                                f"Reason: {proof_reason}\n"
+                                "Manual targeted rerun is still allowed."
+                            ),
+                        )
+                        return result(
+                            True, True, apply_summary,
+                            False, False, False, "",
+                            False, False, "",
+                            "blocked", False,
+                        )
                 # Strict proof passed — create Cursor-ready patch task (handoff). Invariant: PATCH MUST exist.
                 logger.info("strict_proof_passed task_id=%s", task_id[:12] if task_id else "?")
                 patch_task = None
