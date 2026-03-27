@@ -45,8 +45,8 @@ prometheus-client==0.20.0
 celery==5.4.0
 redis==5.0.8
 
-# Testing (NOT installed in production Docker image)
-# pytest==7.4.3
+# Testing (required by Cursor Bridge phase-2 backend test gate)
+pytest==7.4.3
 # pytest-asyncio==0.21.1
 # Note: httpx is installed above in HTTP client section
 
