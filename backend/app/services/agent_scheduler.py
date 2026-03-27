@@ -37,6 +37,123 @@ _AUTO_EXECUTE_BLOCKED_KEYWORDS = (
 )
 
 
+def _get_auto_retry_cap() -> int:
+    """
+    Cap for automatic per-task attempts across scheduler loops.
+    Set AGENT_TASK_AUTO_RETRY_CAP=0 to disable the guard.
+    """
+    raw = (os.environ.get("AGENT_TASK_AUTO_RETRY_CAP") or "").strip()
+    if not raw:
+        return 5
+    try:
+        n = int(raw)
+        return max(0, min(100, n))
+    except ValueError:
+        return 5
+
+
+def _parse_attempt_count(raw: Any) -> int:
+    try:
+        return max(0, int(str(raw or "0").strip() or "0"))
+    except Exception:
+        return 0
+
+
+def _record_auto_attempt_or_block(
+    task_id: str,
+    task_title: str,
+    *,
+    attempt_path: str,
+) -> tuple[bool, int, int]:
+    """
+    Increment durable per-task auto-attempt count or block when cap is reached.
+    Returns (allowed, next_or_current_count, cap).
+    """
+    cap = _get_auto_retry_cap()
+    if cap <= 0:
+        return True, 0, cap
+
+    try:
+        from app.services.notion_task_reader import get_notion_task_by_id
+        from app.services.notion_tasks import TASK_STATUS_BLOCKED, update_notion_task_metadata, update_notion_task_status
+
+        latest = get_notion_task_by_id(task_id) or {}
+        status = str(latest.get("status") or "").strip().lower()
+        if status in {"blocked", "done", "deployed", "release-candidate-ready", "ready-for-deploy"}:
+            logger.info(
+                "agent_scheduler: auto_retry_guard skip count increment task_id=%s status=%s path=%s",
+                task_id, status, attempt_path,
+            )
+            return False, _parse_attempt_count(latest.get("revision_count")), cap
+
+        current = _parse_attempt_count(latest.get("revision_count"))
+        if current >= cap:
+            reason = f"auto retry cap exceeded ({current}/{cap}) on path={attempt_path}"
+            logger.warning(
+                "agent_scheduler: auto_retry_cap_reached task_id=%s count=%d cap=%d path=%s",
+                task_id, current, cap, attempt_path,
+            )
+            update_notion_task_status(
+                task_id,
+                TASK_STATUS_BLOCKED,
+                append_comment=(
+                    f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')}Z] "
+                    f"Automatic processing halted: retry cap exceeded ({current}/{cap}) on {attempt_path}. "
+                    "Manual rerun by task ID is required to continue."
+                ),
+            )
+            update_notion_task_metadata(
+                task_id,
+                {
+                    "revision_count": str(current),
+                    "revision_reason": reason,
+                    "blocker_reason": reason,
+                },
+            )
+            _log_event(
+                "scheduler_task_skipped",
+                task_id=task_id,
+                task_title=task_title,
+                details={"reason": "auto_retry_cap_reached", "attempt_count": current, "cap": cap, "path": attempt_path},
+            )
+            return False, current, cap
+
+        nxt = current + 1
+        update_notion_task_metadata(
+            task_id,
+            {
+                "revision_count": str(nxt),
+                "revision_reason": f"auto attempt {nxt}/{cap} on {attempt_path}",
+            },
+        )
+        logger.info(
+            "agent_scheduler: auto_attempt_increment task_id=%s count=%d cap=%d path=%s",
+            task_id, nxt, cap, attempt_path,
+        )
+        return True, nxt, cap
+    except Exception as e:
+        logger.warning("agent_scheduler: auto retry guard failed task_id=%s path=%s err=%s", task_id, attempt_path, e)
+        # Fail-open so healthy execution paths are not blocked by guard errors.
+        return True, 0, cap
+
+
+def _reset_auto_attempt_count(task_id: str, task_title: str, *, path: str) -> None:
+    try:
+        if not task_id:
+            return
+        from app.services.notion_tasks import update_notion_task_metadata
+        update_notion_task_metadata(
+            task_id,
+            {
+                "revision_count": "0",
+                "revision_reason": f"auto attempts reset after success ({path})",
+            },
+        )
+        logger.info("agent_scheduler: auto_attempt_reset task_id=%s path=%s", task_id, path)
+    except Exception as e:
+        logger.debug("agent_scheduler: auto_attempt_reset failed task_id=%s path=%s err=%s", task_id, path, e)
+
+
 def _task_id_from_bundle(prepared_bundle: dict[str, Any]) -> str:
     """Extract task id from prepared bundle."""
     prepared_task = (prepared_bundle or {}).get("prepared_task") or {}
@@ -165,6 +282,8 @@ def run_agent_scheduler_cycle(
 
     If task_id is provided, runs that specific Notion task (must be planned/backlog/ready-for-investigation/blocked).
     """
+    requested_task_id = (task_id or "").strip()
+
     logger.info(
         "scheduler_cycle_start project=%r type_filter=%r task_id=%r ts=%s",
         project,
@@ -258,7 +377,7 @@ def run_agent_scheduler_cycle(
     prepared_bundle = None
     last_error = None
     # Prefer explicit task_id when provided; otherwise use requeued needs-revision task
-    effective_task_id = task_id if (task_id or "").strip() else requeued_task_id
+    effective_task_id = requested_task_id if requested_task_id else requeued_task_id
     for attempt in range(2):  # initial + one retry after repair
         try:
             prepared_bundle = prepare_task_with_approval_check(project=project, type_filter=type_filter, task_id=effective_task_id)
@@ -300,6 +419,7 @@ def run_agent_scheduler_cycle(
 
     task_id = _task_id_from_bundle(prepared_bundle)
     task_title = _task_title_from_bundle(prepared_bundle)
+    is_manual_targeted_run = bool(requested_task_id)
 
     # No execution gate: user decides what matters. System prioritizes and schedules; never skips.
     # Low-priority tasks (backlog) are picked when higher-priority work is done.
@@ -319,6 +439,25 @@ def run_agent_scheduler_cycle(
     callback_selection = (prepared_bundle.get("callback_selection") or {})
     manual_only = bool(callback_selection.get("manual_only"))
 
+    if not is_manual_targeted_run:
+        allowed, count, cap = _record_auto_attempt_or_block(
+            task_id,
+            task_title,
+            attempt_path="scheduler_intake_execute",
+        )
+        if not allowed:
+            logger.info(
+                "agent_scheduler: skipping auto execution due to retry cap task_id=%s count=%d cap=%d",
+                task_id, count, cap,
+            )
+            return {
+                "ok": True,
+                "action": "skipped",
+                "task_id": task_id,
+                "task_title": task_title,
+                "reason": "auto retry cap reached",
+            }
+
     # Extended lifecycle (manual_only) and all approval_required: skip intake approval.
     # Approval is triggered ONLY when task reaches ready-for-patch (single trigger point).
     if manual_only and approval_required:
@@ -330,6 +469,8 @@ def run_agent_scheduler_cycle(
         try:
             from app.services.agent_task_executor import execute_prepared_task_if_approved
             result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+            if result.get("execution_result", {}).get("success"):
+                _reset_auto_attempt_count(task_id, task_title, path="scheduler_intake_execute")
             _log_event(
                 "scheduler_extended_execution_started",
                 task_id=task_id,
@@ -370,6 +511,8 @@ def run_agent_scheduler_cycle(
         try:
             from app.services.agent_task_executor import execute_prepared_task_if_approved
             result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+            if result.get("execution_result", {}).get("success"):
+                _reset_auto_attempt_count(task_id, task_title, path="scheduler_intake_execute")
             _log_event(
                 "scheduler_execution_started",
                 task_id=task_id,
@@ -403,6 +546,8 @@ def run_agent_scheduler_cycle(
         try:
             from app.services.agent_task_executor import execute_prepared_task_if_approved
             result = execute_prepared_task_if_approved(prepared_bundle, approved=True)
+            if result.get("execution_result", {}).get("success"):
+                _reset_auto_attempt_count(task_id, task_title, path="scheduler_intake_execute")
             _log_event("scheduler_auto_executed", task_id=task_id, task_title=task_title, details={"execution_result_success": result.get("execution_result", {}).get("success")})
             return {
                 "ok": True,
@@ -469,10 +614,24 @@ def retry_approved_failed_tasks() -> list[dict[str, Any]]:
     for tid in task_ids:
         logger.info("retry_approved_failed_tasks: retrying task_id=%s", tid)
         _log_event("scheduler_retry_execution", task_id=tid, details={})
+        allowed, count, cap = _record_auto_attempt_or_block(
+            tid,
+            "",
+            attempt_path="retry_approved_failed_tasks",
+        )
+        if not allowed:
+            logger.info(
+                "retry_approved_failed_tasks: skipped task_id=%s reason=auto_retry_cap_reached count=%d cap=%d",
+                tid, count, cap,
+            )
+            results.append({"task_id": tid, "executed": False, "reason": "auto retry cap reached"})
+            continue
         try:
             result = execute_prepared_task_from_telegram_decision(tid)
             executed = result.get("executed", False)
             reason = result.get("reason", "")
+            if executed:
+                _reset_auto_attempt_count(tid, "", path="retry_approved_failed_tasks")
             logger.info(
                 "retry_approved_failed_tasks: task_id=%s executed=%s reason=%s",
                 tid, executed, reason,
@@ -522,8 +681,28 @@ def continue_ready_for_patch_tasks(*, max_tasks: int = 3) -> list[dict[str, Any]
             continue
         logger.info("continue_ready_for_patch_tasks: advancing task_id=%s title=%r", tid, title)
         _log_event("scheduler_patch_continuation", task_id=tid, task_title=title, details={})
+        allowed, count, cap = _record_auto_attempt_or_block(
+            tid,
+            title,
+            attempt_path="continue_ready_for_patch_tasks",
+        )
+        if not allowed:
+            logger.info(
+                "continue_ready_for_patch_tasks: skipped task_id=%s reason=auto_retry_cap_reached count=%d cap=%d",
+                tid, count, cap,
+            )
+            results.append({
+                "task_id": tid,
+                "ok": False,
+                "stage": "retry_cap",
+                "summary": f"auto retry cap reached ({count}/{cap})",
+                "final_status": "blocked",
+            })
+            continue
         try:
             r = advance_ready_for_patch_task(tid)
+            if r.get("ok") and str(r.get("final_status") or "").strip().lower() in {"release-candidate-ready", "ready-for-deploy", "done", "deployed"}:
+                _reset_auto_attempt_count(tid, title, path="continue_ready_for_patch_tasks")
             logger.info(
                 "continue_ready_for_patch_tasks: task_id=%s ok=%s stage=%s final_status=%s",
                 tid, r.get("ok"), r.get("stage"), r.get("final_status"),
