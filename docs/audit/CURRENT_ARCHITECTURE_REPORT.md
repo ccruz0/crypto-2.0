@@ -226,7 +226,7 @@ An automated crypto trading platform that:
 ### Permissions and integrations
 
 - **ATP → OpenClaw:** HTTP POST to `/v1/responses`. Bearer token (OPENCLAW_API_TOKEN).
-- **OpenClaw → ATP:** Mounts ATP repo read-only at `/home/node/.openclaw/workspace/atp`
+- **OpenClaw → ATP:** Mounts ATP repo read-only at `/home/node/.openclaw/workspace` (repo root; tools expect `backend/`, `docs/` here)
 - **OpenClaw → GitHub:** Clone, branch, PR (via PAT/deploy key). No prod secrets.
 - **OpenClaw → Cursor:** ACP default agent (e.g. codex) for sessions
 
@@ -380,7 +380,7 @@ An automated crypto trading platform that:
 ### Blocking dependencies
 
 - **OPENCLAW_API_URL:** Backend must reach OpenClaw. Mac Mini needs stable URL (tunnel, VPN, or dynamic DNS).
-- **ATP repo mount:** OpenClaw expects workspace at `/home/node/.openclaw/workspace/atp`. Mac Mini path would differ.
+- **ATP repo mount:** OpenClaw mounts repo root at `/home/node/.openclaw/workspace` so tool paths (`backend/`, `docs/`) resolve. Mac Mini host path differs.
 - **Token/auth:** gateway token, Basic Auth for /openclaw/ — need to be consistent.
 
 ### Security boundaries

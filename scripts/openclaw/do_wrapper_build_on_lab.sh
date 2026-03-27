@@ -30,7 +30,7 @@ sudo docker run -d --restart unless-stopped -p 8080:18789 \
   -e OPENCLAW_TRUSTED_PROXIES="$OPENCLAW_TRUSTED_PROXIES" \
   -e OPENCLAW_CONFIG_PATH="$OPENCLAW_CONFIG_IN_CONTAINER" \
   -v "$OPENCLAW_HOME_DIR:/home/node/.openclaw" \
-  -v "$REPO:/home/node/.openclaw/workspace/atp:ro" \
+  -v "$REPO:/home/node/.openclaw/workspace:ro" \
   -v "$OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents" \
   --name openclaw openclaw-with-origins:latest
 
