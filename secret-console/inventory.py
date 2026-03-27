@@ -12,7 +12,6 @@ from urllib.parse import urlencode
 
 import mappings
 import storage
-import verify as verify_mod
 
 
 class InventoryEntry(TypedDict):
@@ -124,6 +123,15 @@ def inventory_key(name: str, environment: str) -> tuple[str, str]:
     return (name.strip().lower(), environment.strip().lower())
 
 
+def _masked_preview(value: str, keep: int = 10) -> str:
+    v = value or ""
+    if not v.strip():
+        return "Missing"
+    if len(v) <= keep:
+        return v
+    return f"{v[:keep]}..."
+
+
 def index_records_by_inventory_key(
     records: list[storage.SecretRecord],
 ) -> dict[tuple[str, str], storage.SecretRecord]:
@@ -150,7 +158,7 @@ def build_display_rows(records: list[storage.SecretRecord]) -> list[dict[str, An
             seen_ids.add(rec.id)
         plain = rec.value_plain if rec else ""
         has_value = bool(plain.strip())
-        masked = verify_mod.preview_secret_value(plain) if has_value else None
+        masked = _masked_preview(plain)
         add_q = urlencode(
             {
                 "pf_name": inv["name"],
@@ -184,7 +192,7 @@ def build_display_rows(records: list[storage.SecretRecord]) -> list[dict[str, An
                 "id": rec.id if rec else None,
                 "last_updated": rec.last_updated if rec else "",
                 "has_value": has_value,
-                "value_masked": masked if has_value else "—",
+                "value_masked": masked,
                 "in_vault": in_vault,
                 "seeded": is_seeded,
                 "missing": is_missing,
@@ -203,7 +211,7 @@ def build_display_rows(records: list[storage.SecretRecord]) -> list[dict[str, An
             continue
         plain = rec.value_plain
         has_value = bool(plain.strip())
-        masked = verify_mod.preview_secret_value(plain) if has_value else None
+        masked = _masked_preview(plain)
         is_seeded = False
         in_vault = True
         is_missing = not has_value
@@ -230,7 +238,7 @@ def build_display_rows(records: list[storage.SecretRecord]) -> list[dict[str, An
                 "id": rec.id,
                 "last_updated": rec.last_updated,
                 "has_value": has_value,
-                "value_masked": masked if has_value else "—",
+                "value_masked": masked,
                 "in_vault": in_vault,
                 "seeded": is_seeded,
                 "missing": is_missing,

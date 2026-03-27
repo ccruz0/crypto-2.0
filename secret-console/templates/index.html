@@ -127,7 +127,11 @@
               {% if row.id %}
               <a class="btn link small" href="/edit/{{ row.id }}">Edit</a>
               <form class="inline" method="post" action="/sync/{{ row.id }}"><button type="submit" class="small">Sync</button></form>
+              {% if row.apply_ready %}
               <form class="inline" method="post" action="/apply/{{ row.id }}"><button type="submit" class="secondary small">Apply</button></form>
+              {% else %}
+              <span class="muted tiny">apply n/a</span>
+              {% endif %}
               <form class="inline" method="post" action="/verify/{{ row.id }}"><button type="submit" class="ghost small">Verify</button></form>
               <button type="button" class="ghost small js-fetch-aws" data-id="{{ row.id }}">From AWS</button>
               {% endif %}

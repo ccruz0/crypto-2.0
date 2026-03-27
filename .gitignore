@@ -89,6 +89,7 @@ var/
 venv.bak/
 venv/
 .venv/
+backend/.venv-test-runner/
 runtime-history/
 wheels/
 yarn-debug.log*
