@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Iterator
@@ -233,6 +234,71 @@ def _cursor_timeout() -> int:
         return int(raw) if raw else _DEFAULT_TIMEOUT
     except ValueError:
         return _DEFAULT_TIMEOUT
+
+
+def _resource_exhausted_retries() -> int:
+    raw = (os.environ.get("CURSOR_BRIDGE_RESOURCE_EXHAUSTED_RETRIES") or "").strip()
+    try:
+        n = int(raw) if raw else 2
+    except ValueError:
+        n = 2
+    return max(0, min(n, 5))
+
+
+def _resource_exhausted_backoff_s() -> int:
+    raw = (os.environ.get("CURSOR_BRIDGE_RESOURCE_EXHAUSTED_BACKOFF_S") or "").strip()
+    try:
+        n = int(raw) if raw else 15
+    except ValueError:
+        n = 15
+    return max(1, min(n, 120))
+
+
+def _is_resource_exhausted_error(stderr_text: str) -> bool:
+    s = (stderr_text or "").strip().lower()
+    if not s:
+        return False
+    markers = (
+        "resource_exhausted",
+        "out of usage",
+        "quota exceeded",
+        "rate limit",
+        "too many requests",
+    )
+    return any(m in s for m in markers)
+
+
+@contextlib.contextmanager
+def _cursor_bridge_global_invoke_lock() -> Iterator[bool]:
+    """
+    Serialize Cursor CLI invoke globally per backend instance.
+    Prevents overlapping task invokes from consuming the same API bucket at once.
+    """
+    if not _HAS_FCNTL or fcntl is None:
+        yield True
+        return
+
+    lock_root = Path((os.environ.get("CURSOR_BRIDGE_LOCK_DIR") or "").strip() or "/tmp/cursor-bridge-locks")
+    lock_path = lock_root / "cursor-bridge-global.invoke.lock"
+    f = None
+    try:
+        lock_root.mkdir(parents=True, exist_ok=True)
+        f = open(lock_path, "a+", encoding="utf-8")
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield True
+    except OSError as e:
+        logger.warning("cursor_bridge: global invoke lock failed: %s", e)
+        yield True
+    finally:
+        if f is not None:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                f.close()
+            except OSError:
+                pass
 
 
 def _test_timeout() -> int:
@@ -585,57 +651,82 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
         "prompt_len": len(prompt),
     })
 
-    try:
-        result = subprocess.run(
-            args,
-            cwd=str(staging_path),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = (result.stdout or "").strip()
-        err_out = (result.stderr or "").strip()
-        success = result.returncode == 0
+    retries = _resource_exhausted_retries()
+    base_backoff = _resource_exhausted_backoff_s()
+    max_attempts = 1 + retries
 
-        logger.info(
-            "cursor_bridge: CLI finished task_id=%s success=%s exit_code=%d output_len=%d",
-            task_id, success, result.returncode, len(output),
-        )
-        _log_event(
-            "cursor_bridge_invoke_done" if success else "cursor_bridge_invoke_failed",
-            task_id=task_id,
-            details={
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with _cursor_bridge_global_invoke_lock():
+                result = subprocess.run(
+                    args,
+                    cwd=str(staging_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            output = (result.stdout or "").strip()
+            err_out = (result.stderr or "").strip()
+            success = result.returncode == 0
+
+            logger.info(
+                "cursor_bridge: CLI finished task_id=%s success=%s exit_code=%d output_len=%d attempt=%d/%d",
+                task_id, success, result.returncode, len(output), attempt, max_attempts,
+            )
+            if success:
+                _log_event(
+                    "cursor_bridge_invoke_done",
+                    task_id=task_id,
+                    details={"exit_code": result.returncode, "output_len": len(output), "success": True},
+                )
+                return {
+                    "success": True,
+                    "exit_code": result.returncode,
+                    "output": output,
+                    "error": None,
+                }
+
+            if _is_resource_exhausted_error(err_out) and attempt < max_attempts:
+                wait_s = min(base_backoff * attempt, 120)
+                logger.warning(
+                    "cursor_bridge: resource_exhausted task_id=%s attempt=%d/%d; retrying in %ss",
+                    task_id, attempt, max_attempts, wait_s,
+                )
+                time.sleep(wait_s)
+                continue
+
+            _log_event(
+                "cursor_bridge_invoke_failed",
+                task_id=task_id,
+                details={"exit_code": result.returncode, "output_len": len(output), "success": False},
+            )
+            return {
+                "success": False,
                 "exit_code": result.returncode,
-                "output_len": len(output),
-                "success": success,
-            },
-        )
+                "output": output,
+                "error": err_out,
+            }
 
-        return {
-            "success": success,
-            "exit_code": result.returncode,
-            "output": output,
-            "error": err_out if not success else None,
-        }
+        except subprocess.TimeoutExpired:
+            logger.warning("cursor_bridge: CLI timeout task_id=%s after %ds", task_id, timeout)
+            _log_event("cursor_bridge_invoke_timeout", task_id=task_id, details={"timeout": timeout})
+            return {
+                "success": False,
+                "exit_code": -1,
+                "output": "",
+                "error": f"timeout after {timeout}s",
+            }
+        except Exception as e:
+            logger.exception("cursor_bridge: invoke_cursor_cli failed task_id=%s", task_id)
+            _log_event("cursor_bridge_invoke_error", task_id=task_id, details={"error": str(e)})
+            return {
+                "success": False,
+                "exit_code": -1,
+                "output": "",
+                "error": str(e),
+            }
 
-    except subprocess.TimeoutExpired:
-        logger.warning("cursor_bridge: CLI timeout task_id=%s after %ds", task_id, timeout)
-        _log_event("cursor_bridge_invoke_timeout", task_id=task_id, details={"timeout": timeout})
-        return {
-            "success": False,
-            "exit_code": -1,
-            "output": "",
-            "error": f"timeout after {timeout}s",
-        }
-    except Exception as e:
-        logger.exception("cursor_bridge: invoke_cursor_cli failed task_id=%s", task_id)
-        _log_event("cursor_bridge_invoke_error", task_id=task_id, details={"error": str(e)})
-        return {
-            "success": False,
-            "exit_code": -1,
-            "output": "",
-            "error": str(e),
-        }
+    return {"success": False, "exit_code": -1, "output": "", "error": "invoke failed"}
 
 
 def cleanup_staging(task_id: str) -> bool:
