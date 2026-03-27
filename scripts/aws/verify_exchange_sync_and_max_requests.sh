@@ -3,7 +3,7 @@
 # Exit 0 on pass, non-zero on fail.
 
 set -e
-REPO="${REPO:-/home/ubuntu/automated-trading-platform}"
+REPO="${REPO:-/home/ubuntu/crypto-2.0}"
 cd "$REPO"
 
 echo "=== 1) Repo dir ==="

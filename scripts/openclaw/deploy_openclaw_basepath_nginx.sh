@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy dashboard nginx config to the file nginx actually loads (not sites-available/dashboard).
-# Run on EC2 (PROD) or: ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/automated-trading-platform && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
+# Run on EC2 (PROD) or: ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/crypto-2.0 && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
 #
 # Repo root is detected from this script's path unless you set REPO=...
 set -euo pipefail

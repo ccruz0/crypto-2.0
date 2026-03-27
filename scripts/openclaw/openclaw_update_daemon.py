@@ -16,7 +16,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 CONFIG_PATH = os.environ.get("OPENCLAW_CONFIG_PATH", "/opt/openclaw/home-data/openclaw.json")
-REPO_DIR = os.environ.get("ATP_REPO_PATH", "/home/ubuntu/automated-trading-platform")
+REPO_DIR = os.environ.get("ATP_REPO_PATH", "/home/ubuntu/crypto-2.0")
 COMPOSE_FILE = "docker-compose.openclaw.yml"
 PORT = int(os.environ.get("OPENCLAW_UPDATE_PORT", "19999"))
 HOST = os.environ.get("OPENCLAW_UPDATE_HOST", "0.0.0.0")

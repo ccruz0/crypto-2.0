@@ -6,7 +6,7 @@
 # WARNING: bash <(curl ...) runs remote code without pin; use only for ad-hoc testing, not production.
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/home/ubuntu/automated-trading-platform}"
+REPO_DIR="${REPO_DIR:-/home/ubuntu/crypto-2.0}"
 GIT_REPO_URL="${GIT_REPO_URL:-https://github.com/ccruz0/crypto-2.0.git}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/ccruz0/openclaw:latest}"
 

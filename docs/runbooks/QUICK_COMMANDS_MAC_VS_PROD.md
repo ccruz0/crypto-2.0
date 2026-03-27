@@ -44,7 +44,7 @@ aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 Dentro de la sesión PROD:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0
+cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0
 git pull origin main
 ./scripts/fix_telegram_anomalies.sh
 docker compose --profile aws ps

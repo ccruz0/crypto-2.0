@@ -2,7 +2,7 @@
 # Run ON the dashboard EC2 (nginx for dashboard.hilovivo.com). No Mac path, no SSM.
 #
 # Usage (from repo on the server):
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   git pull origin main
 #   bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
 #

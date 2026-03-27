@@ -18,7 +18,7 @@ All invariants are satisfied. No signals were generated in the last 12 hours, so
 
 **Command**:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws logs --tail=200 backend-aws | grep -i "order_intents\|BOOT"
 ```
 
@@ -36,7 +36,7 @@ docker compose --profile aws logs --tail=200 backend-aws | grep -i "order_intent
 
 **Command**:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws exec -T backend-aws python3 -c "
 import urllib.request, json
 d = json.loads(urllib.request.urlopen('http://localhost:8002/api/diagnostics/recent-signals?hours=12&limit=500').read())

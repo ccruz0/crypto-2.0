@@ -3,7 +3,7 @@
 # Run ON the LAB instance (via SSM or SSH).
 #
 # Usage:
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/install_openclaw_update_daemon.sh
 #
 # After install, the "Update now" button in OpenClaw can trigger updates
@@ -11,7 +11,7 @@
 set -e
 
 # Use current dir if we're in the repo, else default
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 if [[ -f "$(pwd)/scripts/openclaw/install_openclaw_update_daemon.sh" ]]; then
   REPO_ROOT="$(pwd)"
 fi

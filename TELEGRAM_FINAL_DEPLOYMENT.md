@@ -4,19 +4,19 @@
 
 1. **Git Pull (with stash):**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && git stash && git pull'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && git stash && git pull'
    ```
    Result: Updated to commit `93e9cb5`
 
 2. **Container Rebuild:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --build backend-aws'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --build backend-aws'
    ```
    Result: Container rebuilt and started
 
 3. **Log Verification:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E "TELEGRAM"'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep -E "TELEGRAM"'
    ```
 
 ## Single Log Line Proving TELEGRAM_STARTUP

@@ -6,7 +6,7 @@
 
 **Check for diagnostic log markers:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/app/services/signal_monitor.py
 ```
 
@@ -14,7 +14,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/ap
 
 **Check for force diagnostic env var checks:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" /app/app/services/signal_monitor.py
 ```
 
@@ -22,7 +22,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" 
 
 **Check for DRY_RUN guard in _create_sell_order:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -A 5 "should_force_diagnostic" /app/app/services/signal_monitor.py | grep -c "diagnostic_mode"
 ```
 
@@ -32,7 +32,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -A 5 "should_force_diagnost
 
 **Check if env vars are set in container:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) env | grep FORCE_SELL
 ```
 
@@ -47,7 +47,7 @@ FORCE_SELL_DIAGNOSTIC_SYMBOL=TRX_USDT
 
 **Check startup logs:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep -i "DIAGNOSTIC.*enabled\|Force sell diagnostics" | tail -3
 ```
 
@@ -62,7 +62,7 @@ docker compose --profile aws logs backend-aws | grep -i "DIAGNOSTIC.*enabled\|Fo
 
 **Watch logs for diagnostic output (wait ~30 seconds for next cycle):**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*TRX"
 ```
 
@@ -83,7 +83,7 @@ docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*TRX"
 
 **Check that no real orders are placed (should see "DRY_RUN" in all logs):**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "\[DIAGNOSTIC\].*TRX.*DRY_RUN" | tail -5
 ```
 
@@ -91,7 +91,7 @@ docker compose --profile aws logs backend-aws | grep "\[DIAGNOSTIC\].*TRX.*DRY_R
 
 **Verify no real order creation attempts:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "Creating automatic SELL order for TRX_USDT" | tail -5
 ```
 
@@ -102,7 +102,7 @@ docker compose --profile aws logs backend-aws | grep "Creating automatic SELL or
 Run all checks in sequence:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 echo "=== 1. Code Verification ===" && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/app/services/signal_monitor.py && \
 echo "=== 2. Env Vars ===" && \

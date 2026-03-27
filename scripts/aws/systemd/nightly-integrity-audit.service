@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/automated-trading-platform
-ExecStart=/home/ubuntu/automated-trading-platform/scripts/aws/nightly_integrity_audit.sh
-EnvironmentFile=-/home/ubuntu/automated-trading-platform/secrets/runtime.env
+WorkingDirectory=/home/ubuntu/crypto-2.0
+ExecStart=/home/ubuntu/crypto-2.0/scripts/aws/nightly_integrity_audit.sh
+EnvironmentFile=-/home/ubuntu/crypto-2.0/secrets/runtime.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=nightly-integrity-audit

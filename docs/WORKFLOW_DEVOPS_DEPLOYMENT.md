@@ -169,7 +169,7 @@ Common issues to check:
 
 - **Pull latest code:**
   ```bash
-  cd /home/ubuntu/automated-trading-platform
+  cd /home/ubuntu/crypto-2.0
   git pull
   ```
 
@@ -293,7 +293,7 @@ docker compose --profile local logs backend
 ### AWS Deployment
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws down
 docker compose --profile aws pull
 docker compose --profile aws up --build -d

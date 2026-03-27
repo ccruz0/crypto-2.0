@@ -43,9 +43,9 @@ for file in "${FILES[@]}"; do
         
         COPY_COMMANDS="${COPY_COMMANDS}
 echo '📦 Copiando $file...'
-mkdir -p /home/ubuntu/automated-trading-platform/$DIR
-echo '$CONTENT' | base64 -d > /home/ubuntu/automated-trading-platform/$file
-chmod 644 /home/ubuntu/automated-trading-platform/$file
+mkdir -p /home/ubuntu/crypto-2.0/$DIR
+echo '$CONTENT' | base64 -d > /home/ubuntu/crypto-2.0/$file
+chmod 644 /home/ubuntu/crypto-2.0/$file
 "
     fi
 done
@@ -57,7 +57,7 @@ COMMAND_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
     \"set -e\",
-    \"cd /home/ubuntu/automated-trading-platform\",
+    \"cd /home/ubuntu/crypto-2.0\",
     $COPY_COMMANDS
     \"echo ''\",
     \"echo '🔄 Ejecutando migración...'\",

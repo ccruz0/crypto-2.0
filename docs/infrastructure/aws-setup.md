@@ -36,7 +36,7 @@ Production runs on a single EC2 instance. This doc summarizes instance IDs, acce
 ## Project Path on EC2
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 All production commands (docker compose, scripts) assume this path.

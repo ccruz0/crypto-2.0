@@ -125,7 +125,7 @@ aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 On the server:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws logs -f backend-aws
 ```
 
@@ -134,7 +134,7 @@ docker compose --profile aws logs -f backend-aws
 **Fast check (same SSM session):** confirm heartbeats are advancing:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 grep -E "scheduler_loop_started|scheduler_cycle_completed|scheduler_heartbeat_updated|scheduler_inactivity_alert_suppressed|scheduler_recovered" logs/agent_activity.jsonl 2>/dev/null | tail -50
 ```
 

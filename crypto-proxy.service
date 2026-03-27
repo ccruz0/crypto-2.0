@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 User=ubuntu
-WorkingDirectory=/home/ubuntu/automated-trading-platform
+WorkingDirectory=/home/ubuntu/crypto-2.0
 EnvironmentFile=/etc/crypto.env
 Environment=CRYPTO_PROXY_TOKEN=CRYPTO_PROXY_SECURE_TOKEN_2024
-ExecStart=/home/ubuntu/automated-trading-platform/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 127.0.0.1 --port 9000
+ExecStart=/home/ubuntu/crypto-2.0/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 127.0.0.1 --port 9000
 Restart=always
 RestartSec=3
 

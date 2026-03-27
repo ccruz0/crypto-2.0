@@ -98,38 +98,38 @@ docker compose exec backend python scripts/test_position_limit_alert_behavior.py
 
 ### 1. Run Migration on AWS
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/migrate_add_order_skipped.py'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/migrate_add_order_skipped.py'
 ```
 
 **Expected:** Same as local - table created/updated, column added
 
 ### 2. Verify Column on AWS
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db-aws psql -U trader -d atp -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '\''telegram_messages'\'' AND column_name = '\''order_skipped'\'';"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec db-aws psql -U trader -d atp -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '\''telegram_messages'\'' AND column_name = '\''order_skipped'\'';"'
 ```
 
 **Expected:** `order_skipped | boolean`
 
 ### 3. Restart Backend
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ### 4. Check Backend Status
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps backend-aws'
 ```
 
 **Expected:** Status shows "Up" and healthy
 
 ### 5. Run Test Script on AWS
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/test_position_limit_alert_behavior.py'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/test_position_limit_alert_behavior.py'
 ```
 
 ### 6. Check Real Monitoring Rows
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db-aws psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 80) as message FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec db-aws psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 80) as message FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"'
 ```
 
 **Expected for position-limit cases:**

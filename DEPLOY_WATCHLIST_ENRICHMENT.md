@@ -12,7 +12,7 @@
 ### 1. Pull Latest Code (on AWS server)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 ```
 

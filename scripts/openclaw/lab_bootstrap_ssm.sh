@@ -3,7 +3,7 @@
 # Ensures repo, .env.lab, secrets, /opt/openclaw/home-data, compose up, verify 8080.
 set -euo pipefail
 
-REPO="/home/ubuntu/automated-trading-platform"
+REPO="/home/ubuntu/crypto-2.0"
 COMPOSE="$REPO/docker-compose.openclaw.yml"
 LOG(){ echo "[lab_bootstrap] $*"; }
 

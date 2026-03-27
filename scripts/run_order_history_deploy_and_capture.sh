@@ -3,7 +3,7 @@
 # Or copy to EC2 and run: bash run_order_history_deploy_and_capture.sh
 set -e
 REPO="${REPO:-$HOME/automated-trading-platform}"
-cd "$REPO" || cd /home/ubuntu/automated-trading-platform || { echo "❌ No repo"; exit 1; }
+cd "$REPO" || cd /home/ubuntu/crypto-2.0 || { echo "❌ No repo"; exit 1; }
 
 echo "📥 git pull..."
 git pull origin main || true

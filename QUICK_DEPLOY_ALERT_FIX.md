@@ -10,7 +10,7 @@
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/deploy_aws.sh
 ```
 
@@ -30,7 +30,7 @@ This will:
 
 ```bash
 ssh hilovivo-aws << 'EOF'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 docker compose --profile aws build backend-aws
 docker compose --profile aws up -d --force-recreate --no-deps backend-aws
@@ -45,13 +45,13 @@ EOF
 ### 1. Run Database Migration (REQUIRED)
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./RUN_ALERT_FIX_ON_AWS.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./RUN_ALERT_FIX_ON_AWS.sh'
 ```
 
 ### 2. Verify Deployment
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./VERIFY_ALERT_FIX.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./VERIFY_ALERT_FIX.sh'
 ```
 
 ### 3. Check Startup Logs
@@ -72,11 +72,11 @@ After deployment:
 
 ```bash
 # Deploy code
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && bash scripts/deploy_aws.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && bash scripts/deploy_aws.sh'
 
 # Run migration
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./RUN_ALERT_FIX_ON_AWS.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./RUN_ALERT_FIX_ON_AWS.sh'
 
 # Verify
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./VERIFY_ALERT_FIX.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./VERIFY_ALERT_FIX.sh'
 ```

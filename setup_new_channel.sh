@@ -18,7 +18,7 @@ source scripts/ssh_key.sh 2>/dev/null
 echo ""
 echo "🔍 Capturando chat_id del canal nuevo..."
 
-ssh_cmd hilovivo-aws "cd /home/ubuntu/automated-trading-platform && BOT_TOKEN=\$(grep '^TELEGRAM_BOT_TOKEN=' .env.aws | cut -d= -f2) && curl -s \"https://api.telegram.org/bot\${BOT_TOKEN}/getUpdates?offset=-5\" > /tmp/new_channel.json && python3 << 'PYEOF'
+ssh_cmd hilovivo-aws "cd /home/ubuntu/crypto-2.0 && BOT_TOKEN=\$(grep '^TELEGRAM_BOT_TOKEN=' .env.aws | cut -d= -f2) && curl -s \"https://api.telegram.org/bot\${BOT_TOKEN}/getUpdates?offset=-5\" > /tmp/new_channel.json && python3 << 'PYEOF'
 import json
 from datetime import datetime
 
@@ -59,7 +59,7 @@ if data.get('ok'):
         print('📝 Actualizando .env.aws...')
         
         import subprocess
-        result = subprocess.run(['sed', '-i', f's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID={selected_id}|', '/home/ubuntu/automated-trading-platform/.env.aws'])
+        result = subprocess.run(['sed', '-i', f's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID={selected_id}|', '/home/ubuntu/crypto-2.0/.env.aws'])
         
         if result.returncode == 0:
             print(f'✅ Actualizado: TELEGRAM_CHAT_ID={selected_id}')

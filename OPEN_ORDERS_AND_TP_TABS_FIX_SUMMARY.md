@@ -93,10 +93,10 @@ Same deployment process as ExecutedOrdersTab:
 Or manually:
 ```bash
 rsync -avz --exclude 'node_modules' --exclude '.next' \
-  frontend/ ubuntu@54.254.150.31:/home/ubuntu/automated-trading-platform/frontend/
+  frontend/ ubuntu@54.254.150.31:/home/ubuntu/crypto-2.0/frontend/
 
 ssh ubuntu@54.254.150.31
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build frontend-aws
 docker compose --profile aws up -d frontend-aws
 ```

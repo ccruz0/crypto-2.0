@@ -34,7 +34,7 @@ e0a19d1 fix: align WatchlistSignalState with AWS DB schema + audit remediation
 **1. Git (on AWS host)**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git fetch origin main
 git checkout main
 git pull origin main
@@ -46,7 +46,7 @@ Paste output: `_________________________`
 **2. Deploy (do NOT run any migration that creates `watchlist_signal_states`)**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/aws_up_backend.sh
 ```
 
@@ -56,7 +56,7 @@ Paste key lines (runtime.env presence, health):
 **3. Smoke / evidence**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/verify_backend_runtime.sh
 ```
 

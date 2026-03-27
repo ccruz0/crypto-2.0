@@ -53,7 +53,7 @@ Esto elimina los MISMATCH reportados para estos 3 campos en todos los símbolos.
 ssh hilovivo-aws
 
 # 2. Ejecutar script de deploy
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 ./deploy_watchlist_fix.sh
 ```
@@ -61,7 +61,7 @@ git pull origin main
 ### O Deploy Manual
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws up -d backend-aws

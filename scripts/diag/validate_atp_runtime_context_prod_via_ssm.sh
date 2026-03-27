@@ -9,7 +9,7 @@ set -e
 
 INSTANCE_ID="${ATP_INSTANCE_ID:-i-087953603011543c5}"
 REGION="${AWS_REGION:-ap-southeast-1}"
-REPO_PATH="${REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO_PATH="${REPO_PATH:-/home/ubuntu/crypto-2.0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -32,7 +32,7 @@ CMD_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","docker compose --profile aws exec -T backend-aws python -c \"import sys; import boto3; print('BOTO3: ok'); sts=boto3.client('sts'); i=sts.get_caller_identity(); print('AWS:', i.get('Account','?')); from app.services.openclaw_client import _fetch_atp_runtime_context, build_investigation_prompt; r=_fetch_atp_runtime_context(); print('RUNTIME_LEN:', len(r)); print('RUNTIME:', (r[:900] if r else '')[:900]); u,i2=build_investigation_prompt({\"task\":{\"id\":\"v\",\"task\":\"T\",\"details\":\"d\"},\"repo_area\":{}}); print('HAS_RUNTIME:', 'Pre-fetched' in u or 'ATP PROD' in u); print('HAS_FORBID:', 'NEVER run docker' in i2); print('PROMPT:', (u[:600] if u else '')[:600])\""]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","docker compose --profile aws exec -T backend-aws python -c \"import sys; import boto3; print('BOTO3: ok'); sts=boto3.client('sts'); i=sts.get_caller_identity(); print('AWS:', i.get('Account','?')); from app.services.openclaw_client import _fetch_atp_runtime_context, build_investigation_prompt; r=_fetch_atp_runtime_context(); print('RUNTIME_LEN:', len(r)); print('RUNTIME:', (r[:900] if r else '')[:900]); u,i2=build_investigation_prompt({\"task\":{\"id\":\"v\",\"task\":\"T\",\"details\":\"d\"},\"repo_area\":{}}); print('HAS_RUNTIME:', 'Pre-fetched' in u or 'ATP PROD' in u); print('HAS_FORBID:', 'NEVER run docker' in i2); print('PROMPT:', (u[:600] if u else '')[:600])\""]' \
   --timeout-seconds 90 \
   --query 'Command.CommandId' --output text 2>&1)
 

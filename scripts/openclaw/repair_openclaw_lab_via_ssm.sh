@@ -10,7 +10,7 @@
 #   LAB_INSTANCE_ID / OPENCLAW_LAB_INSTANCE_ID  (default i-0d82c172235770a0d)
 #   DASHBOARD_INSTANCE_ID / ATP_INSTANCE_ID     (default i-087953603011543c5)
 #   AWS_REGION (default ap-southeast-1)
-#   ATP_REPO_PATH (default /home/ubuntu/automated-trading-platform)
+#   ATP_REPO_PATH (default /home/ubuntu/crypto-2.0)
 #   LAB_PRIVATE_IP (default 172.31.3.214)
 #   OPENCLAW_PORT (default 8080)
 #   SKIP_GIT_PULL=1   — do not pull before repair
@@ -22,7 +22,7 @@ set -euo pipefail
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-${OPENCLAW_LAB_INSTANCE_ID:-i-0d82c172235770a0d}}"
 DASHBOARD_INSTANCE_ID="${DASHBOARD_INSTANCE_ID:-${ATP_INSTANCE_ID:-i-087953603011543c5}}"
-REPO="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO="${ATP_REPO_PATH:-/home/ubuntu/crypto-2.0}"
 LAB_IP="${LAB_PRIVATE_IP:-172.31.3.214}"
 PORT="${OPENCLAW_PORT:-8080}"
 

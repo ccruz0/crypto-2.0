@@ -69,7 +69,7 @@
 | **secrets/runtime.env** | Set `OPENCLAW_API_URL=http://<macmini-tailscale>:8080` |
 | **Backend restart** | Required after env change |
 | **OPENCLAW_API_TOKEN** | Must match Mac Mini OpenClaw gateway token (same token can be shared with LAB for parallel run) |
-| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/automated-trading-platform`. Mac Mini: e.g. `/Users/<user>/automated-trading-platform` or Docker volume path |
+| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/crypto-2.0`. Mac Mini: e.g. `/Users/<user>/automated-trading-platform` or Docker volume path |
 | **run-atp-command** | No change. OpenClaw (Mac Mini) calls `https://dashboard.hilovivo.com/api/agent/run-atp-command` — public URL, outbound from Mac Mini works |
 | **Nginx /openclaw/** | No change for Phase 1. UI stays on LAB. PROD nginx continues to proxy to LAB for browser access |
 
@@ -89,7 +89,7 @@
 
 1. **Deployment:** `docker-compose.openclaw.yml` or `deploy_openclaw_lab_from_mac.sh` runs `ghcr.io/ccruz0/openclaw:latest` on atp-lab-ssm-clean (172.31.3.214)
 2. **Port:** 8080 (host) → 18789 (container)
-3. **Workspace:** `/home/ubuntu/automated-trading-platform` mounted at `/home/node/.openclaw/workspace/atp:ro`
+3. **Workspace:** `/home/ubuntu/crypto-2.0` mounted at `/home/node/.openclaw/workspace/atp:ro`
 4. **Token:** `/home/ubuntu/secrets/openclaw_token` or `gateway.auth.token` in `openclaw.json`
 5. **UI:** Nginx on PROD proxies `https://dashboard.hilovivo.com/openclaw/` → `http://172.31.3.214:8080/`
 6. **API:** PROD backend sets `OPENCLAW_API_URL=http://172.31.3.214:8080` (or leaves default) and `OPENCLAW_API_TOKEN`; calls POST `/v1/responses`
@@ -148,8 +148,8 @@
 
 | Assumption | LAB | Mac Mini |
 |------------|-----|----------|
-| Host ATP path | `/home/ubuntu/automated-trading-platform` | e.g. `/Users/<user>/automated-trading-platform` |
-| Container mount | `-v /home/ubuntu/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` |
+| Host ATP path | `/home/ubuntu/crypto-2.0` | e.g. `/Users/<user>/automated-trading-platform` |
+| Container mount | `-v /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` |
 | Prompt text | `/home/node/.openclaw/workspace/atp/` | Same — container path is identical |
 
 ### Auth/token handling

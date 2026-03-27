@@ -17,8 +17,8 @@ When prompted, paste your GitHub fine-grained PAT (Contents R/W, Pull requests R
 **Option B — Clone then run (use this if Option A 404s before you push):**
 ```bash
 sudo apt update
-git clone https://github.com/ccruz0/crypto-2.0.git /home/ubuntu/automated-trading-platform
-cd /home/ubuntu/automated-trading-platform && bash scripts/openclaw/install_on_lab.sh
+git clone https://github.com/ccruz0/crypto-2.0.git /home/ubuntu/crypto-2.0
+cd /home/ubuntu/crypto-2.0 && bash scripts/openclaw/install_on_lab.sh
 ```
 If `apt update` fails with "Network is unreachable", run the [apt-over-HTTPS](#on-the-lab-instance-via-ssm--run-in-order) block first.
 
@@ -81,7 +81,7 @@ test -r ~/secrets/openclaw_token && echo "OK: token readable"
 ### Step 3 — .env.lab
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 cp .env.lab.example .env.lab
 chmod 600 .env.lab
 ```
@@ -105,7 +105,7 @@ grep -i token .env.lab
 ### Step 4 — Start OpenClaw
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 docker compose -f docker-compose.openclaw.yml logs -f openclaw
@@ -118,7 +118,7 @@ If you see "image not found", set a valid `OPENCLAW_IMAGE` in `.env.lab` (image 
 ### Step 5 (optional) — Start on reboot
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw

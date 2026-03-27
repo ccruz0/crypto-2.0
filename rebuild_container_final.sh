@@ -18,7 +18,7 @@ echo "📤 Sending rebuild command..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main || true","find backend -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true","find backend -name \"*.pyc\" -delete 2>/dev/null || true","docker compose --profile aws stop backend-aws","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d backend-aws","sleep 20","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=50 backend-aws | grep -i quantity || docker compose --profile aws logs --tail=50 backend-aws"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main || true","find backend -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true","find backend -name \"*.pyc\" -delete 2>/dev/null || true","docker compose --profile aws stop backend-aws","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d backend-aws","sleep 20","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=50 backend-aws | grep -i quantity || docker compose --profile aws logs --tail=50 backend-aws"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)

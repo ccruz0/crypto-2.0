@@ -92,7 +92,7 @@ nc -zv 47.130.143.159 22
 
 ```bash
 ssh -i ~/.ssh/your-key.pem ubuntu@47.130.143.159
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 ### Step 2: Run Diagnostic

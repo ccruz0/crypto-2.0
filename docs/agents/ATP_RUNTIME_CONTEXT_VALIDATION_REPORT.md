@@ -114,7 +114,7 @@ Expect: no new permission-denied lines for investigation flows.
 ## Validation Script (run on PROD or with AWS env)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform/backend   # or your backend path
+cd /home/ubuntu/crypto-2.0/backend   # or your backend path
 source ../.venv/bin/activate
 PYTHONPATH=. python3 -c "
 from app.services.openclaw_client import build_investigation_prompt

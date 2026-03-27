@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test strategy_key in API response
 
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Get API token
 TOKEN=$(docker compose --profile aws exec -T backend-aws python3 -c "

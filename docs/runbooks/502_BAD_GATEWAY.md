@@ -8,7 +8,7 @@ Con SSH al EC2 (por ejemplo `hilovivo-aws` o la IP):
 
 ```bash
 # 1. Ver contenedores
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 
 # 2. Probar backend (puerto 8002)
 ssh hilovivo-aws 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8002/ping_fast'
@@ -17,10 +17,10 @@ ssh hilovivo-aws 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8002/p
 ssh hilovivo-aws 'curl -s -o /dev/null -w "%{http_code}" http://localhost:3000'
 
 # 4. Logs recientes del backend (por si hay crash al arrancar)
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail 80 backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail 80 backend-aws'
 
 # 5. Logs del frontend
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail 40 frontend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail 40 frontend-aws'
 ```
 
 ## Arreglo automático (script 502)
@@ -44,7 +44,7 @@ El script comprueba Docker, backend, frontend y Nginx, y reinicia lo que haga fa
 ```bash
 ssh hilovivo-aws
 
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Ver estado
 docker compose --profile aws ps

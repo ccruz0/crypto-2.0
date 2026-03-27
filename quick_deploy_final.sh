@@ -18,7 +18,7 @@ echo "📤 Deploying latest code..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main","find backend -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true","docker compose --profile aws restart backend-aws","sleep 15","docker compose --profile aws logs --tail=30 backend-aws | grep -E \"(QUANTITY_FORMAT|quantity|Quantity)\" || docker compose --profile aws logs --tail=30 backend-aws"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main","find backend -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true","docker compose --profile aws restart backend-aws","sleep 15","docker compose --profile aws logs --tail=30 backend-aws | grep -E \"(QUANTITY_FORMAT|quantity|Quantity)\" || docker compose --profile aws logs --tail=30 backend-aws"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)

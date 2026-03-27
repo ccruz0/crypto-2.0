@@ -31,7 +31,7 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
+        "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0",
         "echo \"📥 Pulling latest code from git...\"",
         "git pull origin main || git pull || echo \"Git pull failed, continuing with manual update...\"",
         "echo \"🔍 Step 1: Testing nginx configuration...\"",

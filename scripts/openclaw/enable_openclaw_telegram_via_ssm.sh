@@ -7,7 +7,7 @@ set -e
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-i-0d82c172235770a0d}"
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 # LAB repo path (not local Mac path)
-REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/automated-trading-platform}"
+REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/crypto-2.0}"
 
 echo "=== Enabling OpenClaw Telegram on LAB ($LAB_INSTANCE_ID) ==="
 cmd_id=$(aws ssm send-command \

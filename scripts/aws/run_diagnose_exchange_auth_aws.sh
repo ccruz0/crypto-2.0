@@ -11,7 +11,7 @@ set +x 2>/dev/null || true
 
 REMOTE_HOST="${REMOTE_HOST:-hilovivo-aws}"
 SSH_USER="${SSH_USER:-ubuntu}"
-REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/automated-trading-platform}"
+REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/crypto-2.0}"
 CONTAINER_NAME="${CONTAINER_NAME:-backend-aws}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

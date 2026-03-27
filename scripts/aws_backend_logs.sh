@@ -6,7 +6,7 @@ set -euo pipefail
 # Example: bash scripts/aws_backend_logs.sh --tail 200 -f
 
 REMOTE_HOST="hilovivo-aws"
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 
 # Detect backend container name dynamically
 CONTAINER_NAME=$(ssh "$REMOTE_HOST" "cd $REMOTE_PATH && docker ps --format '{{.Names}}' | grep -E 'automated-trading-platform-backend' | head -1")

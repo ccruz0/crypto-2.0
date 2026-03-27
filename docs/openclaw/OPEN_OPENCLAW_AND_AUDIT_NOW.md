@@ -38,7 +38,7 @@ You’ll see:
 On the **LAB** instance:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ls -la docker-compose.openclaw.yml scripts/openclaw || true
 
 sudo docker compose -f docker-compose.openclaw.yml up -d
@@ -50,7 +50,7 @@ curl -sI http://127.0.0.1:8080/ | head -n 5
 If `docker-compose.openclaw.yml` is not found:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 find . -maxdepth 3 -iname "*openclaw*compose*" -o -iname "*openclaw*.yml"
 ```
 
@@ -73,7 +73,7 @@ Pick the **172.*** private IP (e.g. `172.31.3.214`).
 One-liner (on PROD):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && sudo bash scripts/openclaw/point_prod_nginx_to_lab_private_ip.sh
+cd /home/ubuntu/crypto-2.0 && sudo bash scripts/openclaw/point_prod_nginx_to_lab_private_ip.sh
 ```
 
 Or manually: find the site config, set `proxy_pass http://172.31.3.214:8080/;`, then:

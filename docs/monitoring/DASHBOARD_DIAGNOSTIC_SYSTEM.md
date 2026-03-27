@@ -237,10 +237,10 @@ bash scripts/debug_dashboard_remote.sh
 ```bash
 # 1. Make changes locally
 # 2. Copy files to AWS
-scp docker-compose.yml hilovivo-aws:/home/ubuntu/automated-trading-platform/
+scp docker-compose.yml hilovivo-aws:/home/ubuntu/crypto-2.0/
 
 # 3. Restart services
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart'
 
 # 4. Run diagnostics
 bash scripts/debug_dashboard_remote.sh
@@ -285,7 +285,7 @@ If the diagnostic script itself fails:
 1. **SSH connection issue**: Verify SSH config for `hilovivo-aws`
 2. **Permission issue**: Ensure SSH key has access to the server
 3. **Docker not running**: Check if Docker is running on the remote server
-4. **Path issue**: Verify the remote path `/home/ubuntu/automated-trading-platform` exists
+4. **Path issue**: Verify the remote path `/home/ubuntu/crypto-2.0` exists
 
 ## Related Documentation
 

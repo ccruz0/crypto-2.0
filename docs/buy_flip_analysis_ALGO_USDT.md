@@ -16,7 +16,7 @@ bash scripts/debug_strategy_remote.sh ALGO_USDT 30
 
 **Remote command:**
 ```bash
-cd "/home/ubuntu/automated-trading-platform" && python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "30" --container automated-trading-platform-backend-aws-1
+cd "/home/ubuntu/crypto-2.0" && python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "30" --container automated-trading-platform-backend-aws-1
 ```
 
 **Result:**
@@ -87,7 +87,7 @@ Buy Flags:
 - **Remote Host:** hilovivo-aws
 - **Container:** automated-trading-platform-backend-aws-1
 - **Service:** backend-aws
-- **Script Location:** `/home/ubuntu/automated-trading-platform/backend/scripts/debug_strategy.py`
+- **Script Location:** `/home/ubuntu/crypto-2.0/backend/scripts/debug_strategy.py`
 
 ## Notes
 

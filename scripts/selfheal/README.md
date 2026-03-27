@@ -51,8 +51,8 @@ chmod +x scripts/selfheal/verify.sh scripts/selfheal/heal.sh scripts/selfheal/ru
 ### 2) Systemd (timer cada 2 min)
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/selfheal/systemd/atp-selfheal.service /etc/systemd/system/
-sudo cp /home/ubuntu/automated-trading-platform/scripts/selfheal/systemd/atp-selfheal.timer /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/selfheal/systemd/atp-selfheal.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/selfheal/systemd/atp-selfheal.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now atp-selfheal.timer
 sudo systemctl status atp-selfheal.timer --no-pager

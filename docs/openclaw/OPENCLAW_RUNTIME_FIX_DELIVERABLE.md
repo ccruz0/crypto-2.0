@@ -39,7 +39,7 @@ Already applied in the files above.
 
 On LAB:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 # Ensure DOCKER_GROUP_GID matches host: getent group docker  →  docker:x:988:ubuntu
 docker compose -f docker-compose.openclaw.yml build --no-cache openclaw
@@ -60,7 +60,7 @@ OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest ./scripts/openclaw/deploy_openclaw
 ```bash
 aws ssm send-command --instance-ids i-0d82c172235770a0d --region ap-southeast-1 \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main","docker compose -f docker-compose.openclaw.yml build --no-cache openclaw","docker compose -f docker-compose.openclaw.yml up -d openclaw"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main","docker compose -f docker-compose.openclaw.yml build --no-cache openclaw","docker compose -f docker-compose.openclaw.yml up -d openclaw"]' \
   --timeout-seconds 600
 ```
 

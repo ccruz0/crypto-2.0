@@ -22,7 +22,7 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "echo \"Checking if file needs update...\"",
     "grep -n \"from app.models.exchange_order import ExchangeOrder, OrderStatusEnum\" backend/app/services/signal_monitor.py | grep -v \"^16:\" | wc -l",
     "echo \"File checked\""

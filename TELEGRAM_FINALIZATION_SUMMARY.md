@@ -69,17 +69,17 @@ Comprehensive guide including:
 
 ### Quick Health Check
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 200 backend-aws | grep -E "TELEGRAM_SEND|TELEGRAM_RESPONSE|TELEGRAM_SECURITY|TELEGRAM_STARTUP"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 200 backend-aws | grep -E "TELEGRAM_SEND|TELEGRAM_RESPONSE|TELEGRAM_SECURITY|TELEGRAM_STARTUP"'
 ```
 
 ### Verify Configuration
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT" | sort'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT" | sort'
 ```
 
 ### Verify Single Container
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps backend-aws'
 ```
 
 ## Expected Production Logs

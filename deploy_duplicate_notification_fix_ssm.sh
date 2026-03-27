@@ -24,7 +24,7 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform\",
+    \"cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0\",
     \"git pull origin main || echo 'Git pull failed'\",
     \"CONTAINER=\$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker compose ps -q backend 2>/dev/null || docker ps -q --filter 'name=backend')\",
     \"if [ -n \\\"\\\$CONTAINER\\\" ]; then\",

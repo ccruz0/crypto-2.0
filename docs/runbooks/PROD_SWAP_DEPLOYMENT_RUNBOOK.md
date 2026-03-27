@@ -10,7 +10,7 @@ This runbook adds a small swap file (default 2 GB) on the PROD EC2 instance to i
 
 - **PROD must be reachable** via SSM or SSH.
 - **Operator must have sudo access** on the PROD instance.
-- **Repo on PROD** lives at **`/home/ubuntu/automated-trading-platform`**. If you connect via **SSM Session Manager**, you may be `ssm-user`; use the full path or `sudo -u ubuntu -i` before `cd ~/...`.
+- **Repo on PROD** lives at **`/home/ubuntu/crypto-2.0`**. If you connect via **SSM Session Manager**, you may be `ssm-user`; use the full path or `sudo -u ubuntu -i` before `cd ~/...`.
 - **Repo on PROD must be updated** (e.g. `git pull` in the repo root) so that the folder `infra/aws/prod_swap` and the script `setup_swap.sh` exist. If the folder does not exist yet, run the "Update repo on PROD" step first.
 
 ---
@@ -38,7 +38,7 @@ ssh -i "atp-rebuild-2026.pem" ubuntu@ec2-52-220-32-147.ap-southeast-1.compute.am
 If `infra/aws/prod_swap` does not exist on the instance, update the repo first. Use the full path (SSM starts as `ssm-user`; repo is under ubuntu's home):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 ls infra/aws/prod_swap
 ```
@@ -48,7 +48,7 @@ Confirm that `setup_swap.sh` (and optionally `README.md`) are listed.
 ### Run swap setup
 
 ```bash
-cd /home/ubuntu/automated-trading-platform/infra/aws/prod_swap
+cd /home/ubuntu/crypto-2.0/infra/aws/prod_swap
 sudo ./setup_swap.sh
 ```
 

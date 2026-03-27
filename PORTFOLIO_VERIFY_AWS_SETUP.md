@@ -88,7 +88,7 @@ Difference:     $0.02
 ### Add Env Vars to .env.aws on AWS
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   echo "ENABLE_DIAGNOSTICS_ENDPOINTS=1" >> .env.aws && \
   echo "DIAGNOSTICS_API_KEY=eJrAlyoA9SleEMAwRpvISw5qekXAfFoTVMxB6Ja-TUA" >> .env.aws'
 ```
@@ -96,7 +96,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
 ### Restart Backend
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   sudo bash -lc "export ENABLE_DIAGNOSTICS_ENDPOINTS=1 DIAGNOSTICS_API_KEY=\"eJrAlyoA9SleEMAwRpvISw5qekXAfFoTVMxB6Ja-TUA\" && \
   docker compose --profile aws restart backend-aws"'
 ```
@@ -104,7 +104,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
 ### Run Verification Manually
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   curl -s -H "X-Diagnostics-Key: eJrAlyoA9SleEMAwRpvISw5qekXAfFoTVMxB6Ja-TUA" \
   http://localhost:8002/api/diagnostics/portfolio-verify-lite | jq'
 ```

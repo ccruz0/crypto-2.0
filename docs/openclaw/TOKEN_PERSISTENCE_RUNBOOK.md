@@ -11,7 +11,7 @@ Keep a stable `gateway.auth.token` in a persistent file on LAB so the UI token d
 Run on LAB (`i-0d82c172235770a0d`):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/ensure_openclaw_gateway_token.sh
 ```
 
@@ -33,7 +33,7 @@ After this, you should not need to re-paste unless token rotates or browser stor
 ## Optional: rotate token intentionally
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo ROTATE=1 bash scripts/openclaw/ensure_openclaw_gateway_token.sh
 ```
 

@@ -13,7 +13,7 @@ if docker compose exec -T backend-aws python3 check_specific_order.py "$ORDER_ID
 fi
 
 # Fallback: run directly if not in Docker
-cd ~/automated-trading-platform/backend 2>/dev/null || cd /home/ubuntu/automated-trading-platform/backend
+cd ~/automated-trading-platform/backend 2>/dev/null || cd /home/ubuntu/crypto-2.0/backend
 python3 check_specific_order.py "$ORDER_ID"
 
 

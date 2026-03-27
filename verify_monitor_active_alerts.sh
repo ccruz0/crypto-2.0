@@ -25,7 +25,7 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-        \"cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || { echo '❌ Cannot find project directory' && exit 1; }\",
+        \"cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || { echo '❌ Cannot find project directory' && exit 1; }\",
         \"docker compose --profile aws exec -T backend-aws curl -s 'http://localhost:8000/api/monitoring/summary' > /tmp/monitoring_summary.json 2>&1 || curl -s 'http://localhost:8000/api/monitoring/summary' > /tmp/monitoring_summary.json 2>&1\",
         \"python3 - <<'PY'\",
         \"import json\",

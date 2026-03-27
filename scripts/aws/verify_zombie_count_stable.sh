@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Step D — Verification: prove zombie count stops increasing (run on EC2 after deploy).
 # No secrets. Run after applying Python healthcheck fix and recreating backend-aws + market-updater-aws.
-# Usage: cd /home/ubuntu/automated-trading-platform && bash scripts/aws/verify_zombie_count_stable.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && bash scripts/aws/verify_zombie_count_stable.sh
 set -euo pipefail
 
 echo "=== Baseline zombie count ==="

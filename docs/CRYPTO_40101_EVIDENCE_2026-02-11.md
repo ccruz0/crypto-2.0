@@ -2,7 +2,7 @@
 
 ## B.1 Fingerprint (safe)
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git rev-parse HEAD
 git status -sb
 docker compose --profile aws ps

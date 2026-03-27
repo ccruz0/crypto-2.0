@@ -39,7 +39,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","git pull origin main 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/set_watchlist_trade_amount.py BTC_USD 50 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/run_agent_scheduler_cycle.py 2>&1 || true"]' \
+  --parameters 'commands=["set -e","cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","git pull origin main 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/set_watchlist_trade_amount.py BTC_USD 50 2>/dev/null || true","docker compose --profile aws exec -T backend-aws python scripts/run_agent_scheduler_cycle.py 2>&1 || true"]' \
   --timeout-seconds 180 \
   --query 'Command.CommandId' --output text 2>&1)
 

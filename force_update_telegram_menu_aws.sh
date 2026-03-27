@@ -21,7 +21,7 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters commands="
-cd /home/ubuntu/automated-trading-platform || exit 1
+cd /home/ubuntu/crypto-2.0 || exit 1
 export HOME=/home/ubuntu
 
 echo '📥 Pulling latest code from git...'

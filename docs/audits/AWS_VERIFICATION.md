@@ -36,7 +36,7 @@ $ uptime
  10:13:39 up 23 days, 21:55,  2 users,  load average: 0.08, 0.29, 0.27
 
 $ cd ~/automated-trading-platform && pwd
-/home/ubuntu/automated-trading-platform
+/home/ubuntu/crypto-2.0
 
 $ git status --short | wc -l
 23
@@ -51,7 +51,7 @@ origin	https://github.com/ccruz0/crypto-2.0.git (push)
 
 **Findings**:
 - ✅ Correct host: `ip-172-31-31-131`
-- ✅ Correct repository: `/home/ubuntu/automated-trading-platform`
+- ✅ Correct repository: `/home/ubuntu/crypto-2.0`
 - ✅ Git HEAD: `fd44bca06e6ff0ddd3147a46aaa6e89b06a6f580` (matches remediation)
 - ⚠️ 23 uncommitted files (likely `.env*` files, expected for runtime state)
 - ✅ Remote configured correctly: `https://github.com/ccruz0/crypto-2.0.git`
@@ -390,7 +390,7 @@ No process found for port 9000
 
 **Previous Investigation** (from remediation):
 - Process: Python uvicorn service (pid=1633597)
-- Command: `/home/ubuntu/automated-trading-platform/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000`
+- Command: `/home/ubuntu/crypto-2.0/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000`
 - Purpose: Legacy crypto proxy service (not in docker-compose.yml)
 - Status: Running since 2025 (uptime: 116:39)
 

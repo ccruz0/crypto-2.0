@@ -4,7 +4,7 @@
 # Output: PASS/FAIL and evidence to stdout; no secrets.
 set -euo pipefail
 
-REPO_ROOT="${1:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${1:-/home/ubuntu/crypto-2.0}"
 cd "$REPO_ROOT"
 
 echo "=== 1) Git pull main ==="

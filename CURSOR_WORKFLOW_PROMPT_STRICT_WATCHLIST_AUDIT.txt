@@ -52,7 +52,7 @@ Remote host:
 hilovivo-aws
 
 Remote path:
- /home/ubuntu/automated-trading-platform
+ /home/ubuntu/crypto-2.0
 
 Business Rules:
 - docs/monitoring/business_rules_canonical.md

@@ -26,7 +26,7 @@
 ### Option 1: Git Pull on AWS (Recommended)
 ```bash
 # On AWS instance (via SSM or SSH)
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 git checkout 683a137  # Backend commit
 

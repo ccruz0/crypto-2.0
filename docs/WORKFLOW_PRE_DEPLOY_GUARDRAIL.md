@@ -51,7 +51,7 @@ USER REQUEST → RUN GUARDRAIL → CHECK RESULT
 
 **Command:**
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
 ```
 
 **What it checks:**
@@ -97,7 +97,7 @@ sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -
 
 6. **Re-run guardrail on AWS:**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
    ```
 
 7. **Loop until guardrail PASSES:**
@@ -110,8 +110,8 @@ sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -
 
 #### Backend Deploy:
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.aws.yml build backend-aws'"
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.aws.yml up -d backend-aws'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.aws.yml build backend-aws'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.aws.yml up -d backend-aws'"
 ```
 
 #### Frontend Deploy:
@@ -131,7 +131,7 @@ npm run build
 
 1. **Backend container health:**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose ps'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose ps'"
    cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 50
    ```
 
@@ -147,7 +147,7 @@ npm run build
 
 4. **Re-run guardrail (final check):**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python3 -m backend.scripts.assert_no_blocked_alert_regressions'"
    ```
 
 ---

@@ -5,7 +5,7 @@
 # Can be run as a cron job (e.g., every 5 minutes)
 # Can also be run remotely via SSH or locally on the server
 
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 LOG_FILE="/tmp/auto_restart_containers.log"
 
 # Check if running on the server (no SSH needed) or remotely

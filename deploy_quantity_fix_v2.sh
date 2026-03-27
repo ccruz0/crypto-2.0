@@ -18,7 +18,7 @@ echo "📤 Sending deployment command..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main || true","CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || echo \"\")","if [ -n \"$CONTAINER\" ]; then docker restart $CONTAINER; sleep 10; docker logs --tail=20 $CONTAINER; else docker compose --profile aws up -d --build backend-aws; fi"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main || true","CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || echo \"\")","if [ -n \"$CONTAINER\" ]; then docker restart $CONTAINER; sleep 10; docker logs --tail=20 $CONTAINER; else docker compose --profile aws up -d --build backend-aws; fi"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)

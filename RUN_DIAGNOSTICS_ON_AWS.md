@@ -18,7 +18,7 @@ cd ~/automated-trading-platform/backend
 # or
 cd /opt/automated-trading-platform/backend
 # or
-cd /home/ubuntu/automated-trading-platform/backend
+cd /home/ubuntu/crypto-2.0/backend
 ```
 
 ### Step 3: Run Diagnostic Scripts
@@ -71,7 +71,7 @@ The scripts will automatically try to load from:
 2. `$PROJECT_ROOT/.env`
 3. `$HOME/.env.local`
 4. `/opt/automated-trading-platform/.env.local`
-5. `/home/ubuntu/automated-trading-platform/.env.local`
+5. `/home/ubuntu/crypto-2.0/.env.local`
 
 ### Manual Environment Setup
 

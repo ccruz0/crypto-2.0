@@ -161,7 +161,7 @@ Check that all of these are available in signal monitor execution context:
 ### Step 1: Run Diagnostic Script in AWS
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws exec backend-aws python scripts/diagnose_telegram_paths.py'
 ```
 
@@ -175,7 +175,7 @@ docker compose --profile aws exec backend-aws python scripts/diagnose_telegram_p
 Search for diagnostic tags in logs:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_INVOKE\]|\[TELEGRAM_GATEKEEPER\]|\[TELEGRAM_REQUEST\]|\[TELEGRAM_RESPONSE\]" | tail -100'
 ```
 

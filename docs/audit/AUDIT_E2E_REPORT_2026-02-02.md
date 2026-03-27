@@ -65,7 +65,7 @@
 
 | Check | Result |
 |-------|--------|
-| **Path** | `/home/ubuntu/automated-trading-platform` |
+| **Path** | `/home/ubuntu/crypto-2.0` |
 | **Git SHA** | `c9ac75e80f3f91513368248f71ae739916612ba9` |
 | **Git log** | `c9ac75 chore: ignore local scratch docs` |
 | **Git status** | `?? backend/app/models/watchlist_signal_state.py` (untracked on host) |
@@ -220,7 +220,7 @@ Run after each fix stage:
 
 ```bash
 # 1. Compose status
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws ps
 
 # 2. Backend health
@@ -278,7 +278,7 @@ git commit -m "fix: align WatchlistSignalState with AWS DB schema"
 git push
 
 # On AWS (SSH):
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main   # or your branch
 bash scripts/aws/aws_up_backend.sh
 # Or: docker compose --profile aws build --no-cache backend-aws && docker compose --profile aws up -d backend-aws

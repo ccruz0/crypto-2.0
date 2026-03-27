@@ -21,7 +21,7 @@ The backend cannot write the trigger file, so the automated full fix never runs.
 On the EC2 host (or wherever the stack runs), make `./logs` writable by UID 10001:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo mkdir -p logs
 sudo chown 10001:10001 logs
 ```
@@ -38,13 +38,13 @@ docker compose --profile aws restart backend-aws backend-aws-canary
 2. You should see: `✅ Full fix triggered. It will run on the next health check (within ~5 min). You'll get ✅ recovered when health returns.`
 3. On the host, confirm the trigger file was created:
    ```bash
-   ls -la /home/ubuntu/automated-trading-platform/logs/trigger_full_fix
+   ls -la /home/ubuntu/crypto-2.0/logs/trigger_full_fix
    ```
 
 ## One-Liner (SSM or SSH)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && sudo mkdir -p logs && sudo chown 10001:10001 logs
+cd /home/ubuntu/crypto-2.0 && sudo mkdir -p logs && sudo chown 10001:10001 logs
 ```
 
 ## Related

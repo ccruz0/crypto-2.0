@@ -5,7 +5,7 @@
 Run this single command to deploy the fix:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 git pull && \
 docker-compose restart market-updater-aws && \
 echo "✅ Deployment complete! Monitor logs with: docker-compose logs -f market-updater-aws | grep TELEGRAM"
@@ -14,7 +14,7 @@ echo "✅ Deployment complete! Monitor logs with: docker-compose logs -f market-
 Or use the deployment script:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./deploy_telegram_alerts_fix.sh
 ```
 
@@ -27,7 +27,7 @@ cd /home/ubuntu/automated-trading-platform
 ssh -i your-key.pem ubuntu@your-aws-ip
 
 # Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Pull latest changes
 git pull

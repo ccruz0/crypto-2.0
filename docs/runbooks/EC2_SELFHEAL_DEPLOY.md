@@ -7,7 +7,7 @@ Deploy and enable the production self-heal (timer + verify/heal scripts) on EC2 
 ## Prerequisites
 
 - SSH (or SSM) access to the EC2 instance.
-- Repo at `/home/ubuntu/automated-trading-platform` (or set `HOME` accordingly; systemd units assume `ubuntu` user and that path).
+- Repo at `/home/ubuntu/crypto-2.0` (or set `HOME` accordingly; systemd units assume `ubuntu` user and that path).
 
 ---
 
@@ -105,11 +105,11 @@ Expect: `verify.sh` prints PASS and exit=0 when db, market_data, market_updater,
 
 ## If ExecStart fails (203/EXEC)
 
-- **Cause:** Path in the service file does not exist (e.g. repo not at `/home/ubuntu/automated-trading-platform` or scripts missing).
+- **Cause:** Path in the service file does not exist (e.g. repo not at `/home/ubuntu/crypto-2.0` or scripts missing).
 - **Fix:** Ensure repo is at `~/automated-trading-platform` and contains `scripts/selfheal/run.sh`. If you use another path, edit the service file:
 
 ```bash
-sudo sed -i 's|/home/ubuntu/automated-trading-platform|/your/actual/repo/path|g' /etc/systemd/system/atp-selfheal.service
+sudo sed -i 's|/home/ubuntu/crypto-2.0|/your/actual/repo/path|g' /etc/systemd/system/atp-selfheal.service
 sudo systemctl daemon-reload
 sudo systemctl restart atp-selfheal.timer
 ```

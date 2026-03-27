@@ -25,7 +25,7 @@ aws ssm send-command \
   --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters commands="[
-    'cd /home/ubuntu/automated-trading-platform',
+    'cd /home/ubuntu/crypto-2.0',
     'git pull origin main',
     'git checkout 683a137',
     'docker compose --profile aws restart backend-aws',
@@ -54,7 +54,7 @@ aws ssm send-command \
   --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters commands="[
-    'cd /home/ubuntu/automated-trading-platform',
+    'cd /home/ubuntu/crypto-2.0',
     'docker compose --profile aws exec -T backend-aws curl -s http://localhost:8000/api/monitoring/summary > /tmp/monitoring_summary.json',
     'python3 -c \"import json; d=json.load(open(\\\"/tmp/monitoring_summary.json\\\")); print(\\\"active_total:\\\", d.get(\\\"active_total\\\", d.get(\\\"active_alerts\\\", 0))); print(\\\"sent:\\\", d.get(\\\"alert_counts\\\", {}).get(\\\"sent\\\", 0)); print(\\\"blocked:\\\", d.get(\\\"alert_counts\\\", {}).get(\\\"blocked\\\", 0)); print(\\\"failed:\\\", d.get(\\\"alert_counts\\\", {}).get(\\\"failed\\\", 0)); alerts=d.get(\\\"alerts\\\", []); print(\\\"rows:\\\", len(alerts)); [print(f\\\"Row {i}: {a.get(\\\"status_label\\\", a.get(\\\"alert_status\\\", \\\"N/A\\\"))} - {a.get(\\\"symbol\\\", \\\"N/A\\\")}\\\") for i, a in enumerate(alerts[:3], 1)]\"'
   ]" \

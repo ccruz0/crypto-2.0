@@ -34,9 +34,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Determine if running on AWS or locally
-if [ -f "/home/ubuntu/automated-trading-platform/docker-compose.yml" ]; then
+if [ -f "/home/ubuntu/crypto-2.0/docker-compose.yml" ]; then
     # AWS
-    BASE_DIR="/home/ubuntu/automated-trading-platform"
+    BASE_DIR="/home/ubuntu/crypto-2.0"
     API_URL="http://localhost:8002"
     FRONTEND_URL="http://localhost:3000"
     USE_DOCKER=true

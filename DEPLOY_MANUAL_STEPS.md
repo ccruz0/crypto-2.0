@@ -14,7 +14,7 @@ ssh -i ~/.ssh/id_rsa ubuntu@54.254.150.31
 ```bash
 cd ~/automated-trading-platform
 # or
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 ### Step 3: Pull latest changes

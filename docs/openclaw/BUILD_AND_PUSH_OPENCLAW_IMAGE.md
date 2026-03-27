@@ -92,7 +92,7 @@ echo "TOKEN_CON_READ_PACKAGES" | sudo -u ubuntu docker login ghcr.io -u TU_USUAR
 Luego:
 
 ```bash
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d'
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d'
 ```
 
 ---
@@ -112,7 +112,7 @@ OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest
 # Si la imagen es privada, en el LAB primero:
 echo "ghp_yyyy" | sudo -u ubuntu docker login ghcr.io -u ccruz0 --password-stdin
 # Luego
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d'
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d'
 ```
 
 ---

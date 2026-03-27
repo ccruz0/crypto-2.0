@@ -20,7 +20,7 @@ set +x 2>/dev/null || true
 #   You can also set SSH_KEY_PATH and SSH_USER env vars to customize the commands.
 
 REMOTE_HOST="${REMOTE_HOST:-hilovivo-aws}"
-REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/automated-trading-platform}"
+REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/crypto-2.0}"
 SSH_USER="${SSH_USER:-ec2-user}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 

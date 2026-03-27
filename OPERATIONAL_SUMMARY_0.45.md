@@ -60,35 +60,35 @@
 
 All commands use the format:
 - **Local:** `cd /Users/carloscruz/automated-trading-platform && sh -c "..."`
-- **Remote AWS:** `ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c '...'"`
+- **Remote AWS:** `ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c '...'"`
 
 ### Start/Restart Dev Stack
 
 ```bash
 # Start AWS dev stack
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws up -d --build'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws up -d --build'"
 
 # Restart AWS dev stack
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
 ```
 
 ### Check Logs
 
 ```bash
 # All services (last 100 lines, follow)
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs --tail=100 -f'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs --tail=100 -f'"
 
 # Backend only
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs --tail=100 -f backend-aws'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs --tail=100 -f backend-aws'"
 
 # Frontend only
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs --tail=100 -f frontend-aws'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs --tail=100 -f frontend-aws'"
 
 # Market updater
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs --tail=100 -f market-updater'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs --tail=100 -f market-updater'"
 
 # Database
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs --tail=100 -f db'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs --tail=100 -f db'"
 ```
 
 ### Sync Local → AWS
@@ -98,7 +98,7 @@ ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker co
 cd /Users/carloscruz/automated-trading-platform && sh -c "git add . && git commit -m 'Version 0.45: AWS-first development migration' && git push origin main"
 
 # Step 2: Pull and rebuild on AWS
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
 ```
 
 ### Deploy Production
@@ -108,51 +108,51 @@ ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git fetch
 cd /Users/carloscruz/automated-trading-platform && sh -c "git checkout main && git merge develop && git push origin main"
 
 # Step 2: Deploy on AWS
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
 
 # Step 3: Verify deployment
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws ps && curl -s http://localhost:8002/api/health'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws ps && curl -s http://localhost:8002/api/health'"
 ```
 
 ### Migration Commands
 
 ```bash
 # Run database migrations (if needed)
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec backend-aws python -c \"from app.database import engine; from app.models import Base; Base.metadata.create_all(engine)\"'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws exec backend-aws python -c \"from app.database import engine; from app.models import Base; Base.metadata.create_all(engine)\"'"
 
 # Verify database schema
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec db psql -U trader -d atp -c \"\\dt\"'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws exec db psql -U trader -d atp -c \"\\dt\"'"
 ```
 
 ### Diagnostic Commands
 
 ```bash
 # Check service status
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws ps'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws ps'"
 
 # Check running containers
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker ps'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker ps'"
 
 # Check environment variables
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec backend-aws env | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws exec backend-aws env | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
 
 # Check Telegram configuration
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec backend-aws env | grep -i telegram'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws exec backend-aws env | grep -i telegram'"
 
 # Check Telegram initialization
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -20'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -20'"
 
 # Health check - backend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'curl -s http://localhost:8002/api/health'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'curl -s http://localhost:8002/api/health'"
 
 # Health check - frontend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'curl -s http://localhost:3000/ | head -20'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'curl -s http://localhost:3000/ | head -20'"
 
 # Database health
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws exec db pg_isready -U trader'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws exec db pg_isready -U trader'"
 
 # Check Docker Compose configuration
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws config'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws config'"
 ```
 
 ### Verify Local Telegram Disabled
@@ -176,13 +176,13 @@ cd /Users/carloscruz/automated-trading-platform && sh -c "git add . && git commi
 ### 2. Update AWS Codebase to v0.45
 
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git fetch origin && git checkout main && git pull origin main'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git checkout main && git pull origin main'"
 ```
 
 ### 3. Verify AWS Environment Variables
 
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'cat .env.aws | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'cat .env.aws | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
 ```
 
 Should show:
@@ -193,20 +193,20 @@ Should show:
 ### 4. Rebuild AWS Services with v0.45
 
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
 ```
 
 ### 5. Verify Deployment
 
 ```bash
 # Check services are running
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws ps'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws ps'"
 
 # Check backend health
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'curl -s http://localhost:8002/api/health'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'curl -s http://localhost:8002/api/health'"
 
 # Verify Telegram is enabled on AWS
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -10'"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -10'"
 ```
 
 Look for:

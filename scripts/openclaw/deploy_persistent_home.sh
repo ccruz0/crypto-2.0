@@ -41,7 +41,7 @@ COMMAND_ID=$(aws ssm send-command \
     "if [ -f /opt/openclaw/openclaw.json ]; then cp /opt/openclaw/openclaw.json /opt/openclaw/home-data/ && echo \"Copied openclaw.json into home-data\"; else echo \"No /opt/openclaw/openclaw.json found, skipping\"; fi",
     "chown -R 1000:1000 /opt/openclaw/home-data",
     "echo \"=== Stopping old container ===\"",
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose -f docker-compose.openclaw.yml down || true",
     "docker rm -f openclaw 2>/dev/null || true",
     "echo \"=== Starting with persistent home mount ===\"",

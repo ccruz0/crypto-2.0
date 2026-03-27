@@ -13,7 +13,7 @@
 ### 1. Verify TELEGRAM_STARTUP Log (Optional)
 The startup log should appear when the container starts. To locate:
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_STARTUP\]"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_STARTUP\]"'
 ```
 
 Expected format:

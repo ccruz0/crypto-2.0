@@ -9,8 +9,8 @@
 
 | Instance name (AWS Console) | Expected purpose | Domain/URL | Ports / services | How to verify on the machine |
 |----------------------------|------------------|------------|------------------|------------------------------|
-| **atp-rebuild-2026** | **Prod ATP** — Dashboard, backend, nginx, trading, Telegram | https://dashboard.hilovivo.com | nginx 80/443, frontend 127.0.0.1:3000, backend 127.0.0.1:8002, Postgres (internal), market-updater, observability | `cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps`; `ss -tlnp \| grep -E '3000|8002'`; `curl -s http://127.0.0.1:8002/ping_fast`; `sudo nginx -T \| grep -A2 server_name` |
-| **atp-lab-ssm-clean** | **Lab OpenClaw (CLO)** — OpenClaw only; no production secrets | None (no public URL) | OpenClaw container 8080 (or 127.0.0.1:8080) | `cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml ps`; `ss -tlnp \| grep 8080`; `curl -sI http://127.0.0.1:8080/` |
+| **atp-rebuild-2026** | **Prod ATP** — Dashboard, backend, nginx, trading, Telegram | https://dashboard.hilovivo.com | nginx 80/443, frontend 127.0.0.1:3000, backend 127.0.0.1:8002, Postgres (internal), market-updater, observability | `cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps`; `ss -tlnp \| grep -E '3000|8002'`; `curl -s http://127.0.0.1:8002/ping_fast`; `sudo nginx -T \| grep -A2 server_name` |
+| **atp-lab-ssm-clean** | **Lab OpenClaw (CLO)** — OpenClaw only; no production secrets | None (no public URL) | OpenClaw container 8080 (or 127.0.0.1:8080) | `cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml ps`; `ss -tlnp \| grep 8080`; `curl -sI http://127.0.0.1:8080/` |
 | **atp-lab-openclaw** | **Optional LAB** — Same role as atp-lab-ssm-clean if created per RUNBOOK_ARCH_B | None | Same as atp-lab-ssm-clean | Same as above |
 | **crypto 2.0** | **Ignored** — Do not use for PROD or scripts | — | — | N/A |
 
@@ -138,7 +138,7 @@ In “OpenClaw y LAB” (or inventory) add one line:
 **On PROD (atp-rebuild-2026) — via SSM or SSH:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws ps
 ss -tlnp | grep -E '3000|8002'
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8002/ping_fast
@@ -151,7 +151,7 @@ curl -sI https://dashboard.hilovivo.com/openclaw/ | head -5
 **On LAB (atp-lab-ssm-clean) — via SSM:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml ps
 ss -tlnp | grep 8080
 curl -sI http://127.0.0.1:8080/ | head -5

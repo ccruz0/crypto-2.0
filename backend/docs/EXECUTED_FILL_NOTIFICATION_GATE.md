@@ -12,7 +12,7 @@
 ## Deploy on EC2
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git fetch --all
 git reset --hard origin/main
 # Run migration (add execution_notified_at if missing)

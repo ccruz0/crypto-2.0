@@ -108,7 +108,7 @@ Completed a systematic audit and refactor of the trading backend and frontend to
 
 1. **Deploy to AWS:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
      docker compose build backend-aws frontend-aws && \
      docker compose up -d backend-aws frontend-aws'
    ```

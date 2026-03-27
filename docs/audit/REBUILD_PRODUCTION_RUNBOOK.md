@@ -104,7 +104,7 @@ nc -vz <NEW_PUBLIC_IP> 22
 ssh -i <tu-key>.pem ubuntu@<NEW_PUBLIC_IP>
 ```
 
-**Importante:** `cd /home/ubuntu/automated-trading-platform` solo existe **dentro** de la EC2. Ese comando debe ejecutarse **después** de hacer `ssh ubuntu@<IP>`, no en tu Mac.
+**Importante:** `cd /home/ubuntu/crypto-2.0` solo existe **dentro** de la EC2. Ese comando debe ejecutarse **después** de hacer `ssh ubuntu@<IP>`, no en tu Mac.
 
 **Para diagnosticar, responde con:**
 1. ¿La instancia nueva tiene Public IPv4?

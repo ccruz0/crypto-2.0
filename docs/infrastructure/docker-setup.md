@@ -43,7 +43,7 @@ Compose loads multiple env files; production uses `.env`, `.env.aws`, and option
 
 ## Commands (production, on EC2)
 
-All from project root: `/home/ubuntu/automated-trading-platform`.
+All from project root: `/home/ubuntu/crypto-2.0`.
 
 ```bash
 # Status

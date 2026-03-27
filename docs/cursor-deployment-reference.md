@@ -73,7 +73,7 @@ This guide defines the validated, deterministic deployment flow for the Automate
 - Compose status & backend logs:
   ```bash
   ssh -o StrictHostKeyChecking=no ubuntu@175.41.189.249 \
-    'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps && docker compose --profile aws logs --tail=200 backend-aws'
+    'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps && docker compose --profile aws logs --tail=200 backend-aws'
   ```
 - Nginx status & logs:
   ```bash

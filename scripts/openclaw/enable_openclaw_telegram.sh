@@ -15,7 +15,7 @@
 
 set -e
 
-REPO="${REPO:-/home/ubuntu/automated-trading-platform}"
+REPO="${REPO:-/home/ubuntu/crypto-2.0}"
 CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/opt/openclaw/home-data/openclaw.json}"
 RUNTIME_ENV="${REPO}/secrets/runtime.env"
 SSM_BOT_TOKEN="/automated-trading-platform/prod/telegram/bot_token"

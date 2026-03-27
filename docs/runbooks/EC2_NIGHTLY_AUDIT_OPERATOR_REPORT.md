@@ -1,6 +1,6 @@
 # EC2 Nightly Integrity Audit — Operator Report
 
-**Generated:** After merge of PR #5 and push to main. EC2 deployment and validation must be run on the instance (Cursor environment is local; EC2 path `/home/ubuntu/automated-trading-platform` is not available locally).
+**Generated:** After merge of PR #5 and push to main. EC2 deployment and validation must be run on the instance (Cursor environment is local; EC2 path `/home/ubuntu/crypto-2.0` is not available locally).
 
 ---
 
@@ -17,7 +17,7 @@
 Run the following **on the EC2 host** (e.g. SSH into the box, then):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git fetch --all --prune
 git checkout main
 git pull --ff-only origin main
@@ -39,7 +39,7 @@ That script will:
 **One-liner (from repo root on EC2):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && git pull --ff-only origin main && bash scripts/aws/run_nightly_audit_deploy_and_validate.sh
+cd /home/ubuntu/crypto-2.0 && git pull --ff-only origin main && bash scripts/aws/run_nightly_audit_deploy_and_validate.sh
 ```
 
 ---

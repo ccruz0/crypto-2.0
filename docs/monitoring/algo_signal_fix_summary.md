@@ -72,7 +72,7 @@ cd /Users/carloscruz/automated-trading-platform && \
   tail -5
 
 # Verificar estado del watchlist
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   docker compose exec -T backend-aws python3 -c "
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem

@@ -37,12 +37,12 @@
 
 2. **Update AWS Codebase**
    ```bash
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'git fetch origin && git pull origin main'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git pull origin main'"
    ```
 
 3. **Verify AWS Environment Variables**
    ```bash
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'cat .env.aws | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'cat .env.aws | grep -E \"ENVIRONMENT|APP_ENV|RUN_TELEGRAM\"'"
    ```
    Should show:
    - `ENVIRONMENT=aws`
@@ -51,19 +51,19 @@
 
 4. **Rebuild and Start AWS Services**
    ```bash
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws down && docker compose --profile aws up -d --build'"
    ```
 
 5. **Verify Deployment**
    ```bash
    # Check services
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws ps'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws ps'"
    
    # Check Telegram is enabled
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -5'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -5'"
    
    # Health check
-   ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && sh -c 'curl -s http://localhost:8002/api/health'"
+   ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'curl -s http://localhost:8002/api/health'"
    ```
 
 ---

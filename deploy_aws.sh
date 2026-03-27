@@ -30,7 +30,7 @@ set -euo pipefail
 
 # Configuration
 HOST="${HOST:-ubuntu@47.130.143.159}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/automated-trading-platform}"
+REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/crypto-2.0}"
 # Load unified SSH helper
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
 
@@ -158,7 +158,7 @@ info "Files synchronized successfully ✓"
 # Post-sync: Fix permissions for Docker compatibility
 info "Fixing permissions for Docker compatibility..."
 ssh_cmd "$HOST" << 'PERM_FIX'
-  cd /home/ubuntu/automated-trading-platform || exit 1
+  cd /home/ubuntu/crypto-2.0 || exit 1
   # Ensure directories are traversable (755)
   find . -type d ! -perm 755 -exec chmod 755 {} \; 2>/dev/null || true
   # Ensure files are readable (preserve executable bits for scripts)
@@ -177,7 +177,7 @@ PERM_FIX
 info "Deploying services on remote server..."
 ssh_cmd "$HOST" << 'ENDSSH'
     set -euo pipefail
-    cd /home/ubuntu/automated-trading-platform
+    cd /home/ubuntu/crypto-2.0
     
     export COMPOSE_PROFILES=aws
     

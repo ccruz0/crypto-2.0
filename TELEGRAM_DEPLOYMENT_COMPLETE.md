@@ -23,7 +23,7 @@ Telegram alerts are now correctly configured on AWS and working as expected.
 ### AWS Runtime Status
 **Commands Executed:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT"'
 ```
 
 **Result:**
@@ -67,7 +67,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **To locate in logs:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_STARTUP\]"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep -E "\[TELEGRAM_STARTUP\]"'
 ```
 
 Note: The log may appear early in container startup when the module is first imported, or it may be filtered by log level/viewing window.

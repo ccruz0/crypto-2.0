@@ -26,7 +26,7 @@ If any step fails, the script sends a single Telegram message (via `_notify_tele
 From the repo root on EC2:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/nightly_integrity_audit.sh
 ```
 
@@ -56,14 +56,14 @@ sudo systemctl start nightly-integrity-audit.service
 Copy the unit files from the repo into systemd and enable the timer:
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/aws/systemd/nightly-integrity-audit.service /etc/systemd/system/
-sudo cp /home/ubuntu/automated-trading-platform/scripts/aws/systemd/nightly-integrity-audit.timer /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/aws/systemd/nightly-integrity-audit.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/aws/systemd/nightly-integrity-audit.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable nightly-integrity-audit.timer
 sudo systemctl start nightly-integrity-audit.timer
 ```
 
-Ensure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set (e.g. in `secrets/runtime.env`) so failure alerts can be sent. The service uses `EnvironmentFile=-/home/ubuntu/automated-trading-platform/secrets/runtime.env` (the `-` means the file is optional).
+Ensure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set (e.g. in `secrets/runtime.env`) so failure alerts can be sent. The service uses `EnvironmentFile=-/home/ubuntu/crypto-2.0/secrets/runtime.env` (the `-` means the file is optional).
 
 ## What a FAIL alert means
 

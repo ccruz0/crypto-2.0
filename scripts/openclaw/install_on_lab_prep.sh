@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steps 1-3 only: apt HTTPS, Docker+git, clone repo. Run on LAB via SSM; then store PAT and run install_on_lab.sh.
 set -e
-REPO_DIR="${REPO_DIR:-/home/ubuntu/automated-trading-platform}"
+REPO_DIR="${REPO_DIR:-/home/ubuntu/crypto-2.0}"
 GIT_REPO_URL="${GIT_REPO_URL:-https://github.com/ccruz0/crypto-2.0.git}"
 
 echo "=== 1) Apt over HTTPS ==="

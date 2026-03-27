@@ -7,7 +7,7 @@ set -euo pipefail
 
 # Configuration
 SSH_HOST="hilovivo-aws"
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 LOCAL_PATH="/Users/carloscruz/automated-trading-platform"
 LOG_DIR="$HOME/Desktop/atp-502-audit-logs"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)

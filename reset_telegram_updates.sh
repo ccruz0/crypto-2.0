@@ -15,7 +15,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose --profile aws exec backend-aws python3 -c \"import os; import requests; token=os.getenv(\\\"TELEGRAM_BOT_TOKEN\\\"); r=requests.post(f\\\"https://api.telegram.org/bot{token}/deleteWebhook\\\", json={\\\"drop_pending_updates\\\": True}, timeout=5); print(f\\\"Delete webhook: {r.json()}\\\")\""
   ]' \
   --region "$REGION" \
@@ -33,8 +33,8 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
-    "git config --global --add safe.directory /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
+    "git config --global --add safe.directory /home/ubuntu/crypto-2.0",
     "git pull origin main"
   ]' \
   --region "$REGION" \
@@ -51,7 +51,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose --profile aws restart backend-aws"
   ]' \
   --region "$REGION" \
@@ -68,7 +68,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "sleep 5",
     "docker compose --profile aws exec backend-aws python3 -c \"import os; import requests; token=os.getenv(\\\"TELEGRAM_BOT_TOKEN\\\"); r=requests.get(f\\\"https://api.telegram.org/bot{token}/getUpdates?timeout=2\\\", timeout=5); data=r.json(); result=data.get(\\\"result\\\", []); print(f\\\"Pending updates: {len(result)}\\\"); [print(f\\\"  Update {u.get(\\\"update_id\\\")}: {u.get(\\\"message\\\", {}).get(\\\"text\\\", u.get(\\\"callback_query\\\", {}).get(\\\"data\\\", \\\"N/A\\\"))}\\\") for u in result[-10:]]\""
   ]' \

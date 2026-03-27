@@ -158,7 +158,7 @@ This workflow is executed when there are integration issues between frontend and
 - **SSH to AWS:**
   ```bash
   ssh hilovivo-aws
-  cd /home/ubuntu/automated-trading-platform
+  cd /home/ubuntu/crypto-2.0
   ```
 
 - **Check SignalMonitor logs:**
@@ -222,7 +222,7 @@ This workflow is executed when there are integration issues between frontend and
 
 - **Deploy backend fixes:**
   ```bash
-  ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up --build -d backend-aws'
+  ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up --build -d backend-aws'
   ```
 
 - **Deploy frontend fixes:**

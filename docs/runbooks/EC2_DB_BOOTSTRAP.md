@@ -13,7 +13,7 @@ When **market_data** and **market_updater** stay FAIL with `relation "watchlist_
 EC2 may have local copies of `scripts/selfheal/*` that conflict with the repo. Use the repo version and pull:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 # Backup local selfheal if you need it, then replace with repo
 rm -rf scripts/selfheal/heal.sh scripts/selfheal/run.sh scripts/selfheal/verify.sh \
   scripts/selfheal/systemd/atp-selfheal.service scripts/selfheal/systemd/atp-selfheal.timer
@@ -29,7 +29,7 @@ Or move the whole directory aside and pull: `mv scripts/selfheal scripts/selfhea
 If these are missing, you're not deployed. Pull and push from your dev machine so EC2 gets the files.
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git log -1 --oneline
 git status --porcelain
 ls -la scripts/db/bootstrap.sh backend/app/database.py backend/app/api/routes_control.py
@@ -58,7 +58,7 @@ If you see 200, fix is reachable from the internet. Prefer 404/405/401. If expos
 
 ```bash
 # 1) Stop timer
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo systemctl stop atp-selfheal.timer || true
 
 # 2) Pull latest
@@ -125,7 +125,7 @@ Health snapshot failures can trigger a single Telegram message with cooldown. Th
 1. Ensure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set. Prefer **`secrets/runtime.env`** (loaded last so it overrides empty placeholders in `.env`/`.env.aws`). Alternatively use `TELEGRAM_BOT_TOKEN_AWS` / `TELEGRAM_CHAT_ID_AWS` in any of those files.
 2. Install the timer:
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    sudo cp scripts/selfheal/systemd/atp-health-alert.service scripts/selfheal/systemd/atp-health-alert.timer /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now atp-health-alert.timer
@@ -165,7 +165,7 @@ Or from the repo root (with backend env): `python scripts/db/seed_watchlist_from
 ### 1) Stop the timer
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo systemctl stop atp-selfheal.timer || true
 ```
 

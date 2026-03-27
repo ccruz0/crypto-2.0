@@ -37,7 +37,7 @@
 
 ### Bash Script (`scripts/watchlist_consistency_remote.sh`)
 - ✅ POSIX-compliant bash with `set -e`
-- ✅ Changes to project root: `/home/ubuntu/automated-trading-platform`
+- ✅ Changes to project root: `/home/ubuntu/crypto-2.0`
 - ✅ Executes in correct container: `backend-aws`
 - ✅ Correct script path: `python scripts/watchlist_consistency_check.py` from `/app` (container working directory)
 - ✅ Script path logic verified: Script correctly determines backend directory and project root

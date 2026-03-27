@@ -40,7 +40,7 @@ echo "   Connecting and running deploy (key valid 60s)..."
 ssh -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostKeyAlgorithms=+ssh-rsa \
   -i "$KEY_DIR/key" "ubuntu@$PUBLIC_IP" \
-  "cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/automated-trading-platform || exit 1
+  "cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1
    git pull origin main || true
    mkdir -p docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state && sudo chown -R 10001:10001 docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state || true
    docker compose --profile aws down || true

@@ -13,7 +13,7 @@ PROD runtime is healthy (API, nginx, docker, SSM, swap). The working tree on the
 - **Git:** `git pull` failed on PROD because of **local changes** (modified tracked files) and **untracked files** that would be overwritten by merge. The folder `infra/aws/prod_swap` does not yet exist in the PROD working tree.
 - **Repo drift:** The repo on PROD is out of sync with the remote; future deploys that assume a clean tree may conflict or lose local state if not handled carefully.
 
-If you connect via **SSM Session Manager** as `ssm-user`, the repo is under ubuntu’s home: use **`/home/ubuntu/automated-trading-platform`** instead of `~/automated-trading-platform` in the commands below.
+If you connect via **SSM Session Manager** as `ssm-user`, the repo is under ubuntu’s home: use **`/home/ubuntu/crypto-2.0`** instead of `~/automated-trading-platform` in the commands below.
 
 ---
 
@@ -28,7 +28,7 @@ If you connect via **SSM Session Manager** as `ssm-user`, the repo is under ubun
 
 ## 4. Inspection Commands
 
-Run these on the PROD instance (e.g. via SSM or SSH as the user that owns the repo). If `~/automated-trading-platform` does not exist (e.g. you are `ssm-user`), use `cd /home/ubuntu/automated-trading-platform` instead.
+Run these on the PROD instance (e.g. via SSM or SSH as the user that owns the repo). If `~/automated-trading-platform` does not exist (e.g. you are `ssm-user`), use `cd /home/ubuntu/crypto-2.0` instead.
 
 ```bash
 cd ~/automated-trading-platform
@@ -74,7 +74,7 @@ Copy untracked and important modified files to a backup directory outside the re
 
 ### Option D: Fresh clone to a parallel directory for comparison
 
-Clone the same repo to a new directory (e.g. `~/automated-trading-platform-fresh` or `/home/ubuntu/automated-trading-platform-fresh`). Diff against the current working tree to see exactly what is different. No changes to the live repo until you decide; use the fresh clone as reference for a clean state.
+Clone the same repo to a new directory (e.g. `~/automated-trading-platform-fresh` or `/home/ubuntu/crypto-2.0-fresh`). Diff against the current working tree to see exactly what is different. No changes to the live repo until you decide; use the fresh clone as reference for a clean state.
 
 **Recommendation:** Prefer the **lowest-risk path**: inspect first, create a backup of unknown/untracked files (Option C), use a parallel fresh clone for diff (Option D), then decide whether to stash (A), commit to a temp branch (B), or manually merge — without running `git reset --hard` or `git clean -fd` blindly.
 

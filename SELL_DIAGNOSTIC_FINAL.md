@@ -37,7 +37,7 @@ FORCE_SELL_DIAGNOSTIC=1
 ### 1. Verify Current Code on AWS
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/app/services/signal_monitor.py
 ```
 
@@ -46,7 +46,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/ap
 ### 2. Deploy the Patch
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws build --no-cache backend-aws && \
 docker compose --profile aws up -d --force-recreate backend-aws
 ```
@@ -54,7 +54,7 @@ docker compose --profile aws up -d --force-recreate backend-aws
 ### 3. Verify Deployment
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" /app/app/services/signal_monitor.py
 ```
 
@@ -63,7 +63,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" 
 ### 4. Enable Force Diagnostics
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 echo "FORCE_SELL_DIAGNOSTIC_SYMBOL=TRX_USDT" >> .env.aws && \
 docker compose --profile aws restart backend-aws
 ```
@@ -72,7 +72,7 @@ docker compose --profile aws restart backend-aws
 
 **Check startup message:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "DIAGNOSTIC.*enabled" | tail -3
 ```
 
@@ -86,7 +86,7 @@ docker compose --profile aws logs backend-aws | grep "DIAGNOSTIC.*enabled" | tai
 **Wait ~30 seconds for next signal monitor cycle, then:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*TRX"
 ```
 
@@ -127,7 +127,7 @@ docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*TRX"
 ## Disable Diagnostics
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 # Edit .env.aws and remove FORCE_SELL_DIAGNOSTIC_SYMBOL line, then:
 docker compose --profile aws restart backend
 ```

@@ -29,7 +29,7 @@ Si el backend no se reinició automáticamente, ejecuta estos comandos en el ser
 aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # Una vez conectado:
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Detener el backend
 docker-compose --profile aws stop backend
@@ -53,7 +53,7 @@ Para verificar que el fix está activo, ejecuta:
 
 ```bash
 # Verificar que el código tiene el fix
-grep -A 2 "sync_order_history(db" /home/ubuntu/automated-trading-platform/backend/app/services/exchange_sync.py
+grep -A 2 "sync_order_history(db" /home/ubuntu/crypto-2.0/backend/app/services/exchange_sync.py
 
 # Debe mostrar:
 # self.sync_order_history(db, page_size=200, max_pages=10)

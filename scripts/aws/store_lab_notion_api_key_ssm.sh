@@ -37,4 +37,4 @@ aws ssm put-parameter \
   --region "$REGION"
 
 echo "Done. Ensure LAB instance role has ssm:GetParameter for $SSM_NOTION_KEY, then run:"
-echo "  BACKEND=/home/ubuntu/automated-trading-platform LAB_INSTANCE_ID=i-0d82c172235770a0d AWS_REGION=ap-southeast-1 ./scripts/aws/lab_notion_oneliner_ssm.sh"
+echo "  BACKEND=/home/ubuntu/crypto-2.0 LAB_INSTANCE_ID=i-0d82c172235770a0d AWS_REGION=ap-southeast-1 ./scripts/aws/lab_notion_oneliner_ssm.sh"

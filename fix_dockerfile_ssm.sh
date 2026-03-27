@@ -3,7 +3,7 @@
 
 INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
-PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+PROJECT_DIR="/home/ubuntu/crypto-2.0"
 
 # Read Dockerfile and encode to base64
 DOCKERFILE_B64=$(cat backend/Dockerfile | base64)

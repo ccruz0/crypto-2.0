@@ -85,8 +85,8 @@ Expect `200`.
 
 ```bash
 export HOME=/home/ubuntu
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true
-cd /home/ubuntu/automated-trading-platform
+git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true
+cd /home/ubuntu/crypto-2.0
 git fetch origin && git reset --hard origin/main
 git submodule update --init --recursive
 docker compose --profile aws build backend-aws frontend-aws

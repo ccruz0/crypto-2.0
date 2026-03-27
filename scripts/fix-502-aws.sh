@@ -10,7 +10,7 @@ set -e
 # Configuration
 SERVER="${1:-47.130.143.159}"
 EC2_USER="ubuntu"
-REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/automated-trading-platform}"
+REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/crypto-2.0}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -64,7 +64,7 @@ fi
 ssh_cmd "${EC2_USER}@${SERVER}" "export REMOTE_PROJECT_DIR='${REMOTE_PROJECT_DIR}' && bash -s" << 'REMOTE_SCRIPT'
 set -e
 
-PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/automated-trading-platform}"
+PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/ubuntu/crypto-2.0}"
 
 echo ""
 echo "============================================================"

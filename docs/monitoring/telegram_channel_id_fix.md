@@ -55,7 +55,7 @@ Los canales de Telegram tienen IDs **negativos** (ejemplo: `-1001234567890`).
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

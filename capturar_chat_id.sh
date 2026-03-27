@@ -7,7 +7,7 @@ echo ""
 cd /Users/carloscruz/automated-trading-platform
 source scripts/ssh_key.sh 2>/dev/null
 
-ssh_cmd hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'
+ssh_cmd hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'
 import os
 import requests
 import time
@@ -68,7 +68,7 @@ try:
                 print('📝 Actualizando .env.aws...')
                 
                 # Actualizar .env.aws
-                env_file = '/home/ubuntu/automated-trading-platform/.env.aws'
+                env_file = '/home/ubuntu/crypto-2.0/.env.aws'
                 result = subprocess.run(
                     ['sed', '-i', f's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID={selected_id}|', env_file],
                     capture_output=True,

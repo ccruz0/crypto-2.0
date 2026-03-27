@@ -49,8 +49,8 @@ TELEGRAM_AUTH_USER_ID=839853931" "$ENV_FILE"
     grep -E "TELEGRAM_(CHAT_ID|AUTH_USER_ID)" "$ENV_FILE" || echo "  (no encontrado)"
     echo ""
     echo "📤 Para aplicar en AWS, ejecuta:"
-    echo "   scp .env.aws user@aws-server:/home/ubuntu/automated-trading-platform/.env.aws"
-    echo "   ssh user@aws-server 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'"
+    echo "   scp .env.aws user@aws-server:/home/ubuntu/crypto-2.0/.env.aws"
+    echo "   ssh user@aws-server 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'"
     
 elif command -v aws &> /dev/null; then
     echo "📤 Aplicando fix en AWS via SSM..."
@@ -62,7 +62,7 @@ elif command -v aws &> /dev/null; then
       --instance-ids "$INSTANCE_ID" \
       --document-name "AWS-RunShellScript" \
       --parameters "commands=[
-        \"cd /home/ubuntu/automated-trading-platform\",
+        \"cd /home/ubuntu/crypto-2.0\",
         \"cp .env.aws .env.aws.backup.\\$(date +%Y%m%d_%H%M%S)\",
         \"if grep -q '^TELEGRAM_AUTH_USER_ID=' .env.aws; then sed -i '/^TELEGRAM_AUTH_USER_ID=/d' .env.aws; fi\",
         \"if grep -q '^TELEGRAM_CHAT_ID=' .env.aws; then sed -i '/^TELEGRAM_CHAT_ID=/a TELEGRAM_AUTH_USER_ID=839853931' .env.aws; else echo '' >> .env.aws; echo 'TELEGRAM_AUTH_USER_ID=839853931' >> .env.aws; fi\",
@@ -87,7 +87,7 @@ else
     echo ""
     echo "Para aplicar manualmente en AWS:"
     echo "1. ssh hilovivo-aws"
-    echo "2. cd /home/ubuntu/automated-trading-platform"
+    echo "2. cd /home/ubuntu/crypto-2.0"
     echo "3. nano .env.aws"
     echo "4. Agregar: TELEGRAM_AUTH_USER_ID=839853931"
     echo "5. docker compose --profile aws restart backend-aws"

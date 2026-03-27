@@ -147,7 +147,7 @@ You want to see **params including** `start_time` and `end_time` (e.g. `params=[
 **Force the new code into the running container (on EC2):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull --rebase origin main   # or your deploy branch
 git log -1 --oneline
 sudo docker compose --profile aws build --no-cache backend-aws
@@ -473,7 +473,7 @@ When the default get-order-history path (and empty-params, spot-instrument, and 
 **EC2 — rebuild, restart, validate:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull --rebase origin main
 git log -1 --oneline
 sudo docker compose --profile aws build --no-cache backend-aws

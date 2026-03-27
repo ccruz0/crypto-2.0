@@ -150,7 +150,7 @@ DEBUG_DISABLE_SIGNAL_MONITOR = os.getenv("DEBUG_DISABLE_SIGNAL_MONITOR", "false"
 ### Step 1: Check Actual Code in Container
 
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker exec automated-trading-platform-backend-1 grep -A 5 \"DEBUG_DISABLE_SIGNAL_MONITOR\" /app/app/main.py'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker exec automated-trading-platform-backend-1 grep -A 5 \"DEBUG_DISABLE_SIGNAL_MONITOR\" /app/app/main.py'"
 ```
 
 ### Step 2: Check Startup Logs

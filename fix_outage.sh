@@ -4,7 +4,7 @@
 
 set -e
 
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 echo "=========================================="
 echo "OUTAGE FIX SCRIPT"

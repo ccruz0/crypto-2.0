@@ -12,21 +12,21 @@ cd /Users/carloscruz/automated-trading-platform && git push
 
 ### 2. AWS Deployment
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && git pull'
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --build backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && git pull'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --build backend-aws'
 ```
 **Result:** Code pulled, container rebuilt and started
 
 ### 3. Configuration Fix
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && echo "TELEGRAM_CHAT_ID_AWS=839853931" >> .env.aws'
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --force-recreate backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && echo "TELEGRAM_CHAT_ID_AWS=839853931" >> .env.aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --force-recreate backend-aws'
 ```
 **Result:** TELEGRAM_CHAT_ID_AWS added to .env.aws, container recreated
 
 ### 4. Environment Verification
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws env | grep -E "ENVIRONMENT|TELEGRAM" | sort'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws env | grep -E "ENVIRONMENT|TELEGRAM" | sort'
 ```
 **Result:**
 - `ENVIRONMENT=aws` ✅
@@ -47,7 +47,7 @@ ssh hilovivo-aws 'ps aux | grep python | grep -v grep | grep -v docker'
 
 ### 7. Log Verification
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws 2>&1 | grep -E "TELEGRAM_INVOKE|TELEGRAM_REQUEST|E2E_TEST|TEST_ALERT"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws 2>&1 | grep -E "TELEGRAM_INVOKE|TELEGRAM_REQUEST|E2E_TEST|TEST_ALERT"'
 ```
 **Result:** No legacy logs found (cleanup successful) ✅
 

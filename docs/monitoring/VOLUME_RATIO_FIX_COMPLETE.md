@@ -102,19 +102,19 @@ The `volumeMinRatio` value was not persisting after save/reload because:
 ### Rebuild and Restart Backend:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws build backend-aws && docker compose --profile aws up -d backend-aws'"
+cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws build backend-aws && docker compose --profile aws up -d backend-aws'"
 ```
 
 ### Check Backend Logs:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=100 backend-aws | grep -E \"VOLUME|Config file path|Migrating\"'"
+cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=100 backend-aws | grep -E \"VOLUME|Config file path|Migrating\"'"
 ```
 
 ### Verify Config File Has strategy_rules:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python3 /app/check_config.py'"
+cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python3 /app/check_config.py'"
 ```
 
 ## Expected Behavior After Fix

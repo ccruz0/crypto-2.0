@@ -8,7 +8,7 @@ set -euo pipefail
 
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-i-0d82c172235770a0d}"
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
-REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/automated-trading-platform}"
+REPO_ON_LAB="${REPO_ON_LAB:-/home/ubuntu/crypto-2.0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_LOCAL="${SCRIPT_DIR}/disable_openclaw_telegram.sh"

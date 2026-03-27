@@ -60,7 +60,7 @@ if [ "$IS_DOCKER" = true ]; then
 else
     echo "⚠ Cannot check Docker containers (Docker not running or not available)"
     echo "  To check on AWS server, SSH in and run:"
-    echo "  cd /home/ubuntu/automated-trading-platform"
+    echo "  cd /home/ubuntu/crypto-2.0"
     echo "  docker compose ps market-updater-aws"
 fi
 
@@ -122,7 +122,7 @@ PYTHON_SCRIPT
 else
     echo "⚠ Cannot query database (Docker not available)"
     echo "  To check on AWS server, SSH in and run:"
-    echo "  cd /home/ubuntu/automated-trading-platform"
+    echo "  cd /home/ubuntu/crypto-2.0"
     echo "  docker compose exec backend-aws python3 -c 'from app.database import SessionLocal; from app.models.market_price import MarketData; db = SessionLocal(); print(f\"Total: {db.query(MarketData).count()}\"); db.close()'"
 fi
 

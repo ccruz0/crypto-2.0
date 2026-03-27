@@ -20,8 +20,8 @@ El sistema de monitoreo de salud (`health_monitor.sh`) es un servicio que se eje
 - **Monitoreo de Nginx**: Verifica y reinicia Nginx si está caído
 
 ### ✅ Logging Detallado
-- Todos los eventos se registran en `/home/ubuntu/automated-trading-platform/logs/health_monitor.log`
-- Errores se registran en `/home/ubuntu/automated-trading-platform/logs/health_monitor.error.log`
+- Todos los eventos se registran en `/home/ubuntu/crypto-2.0/logs/health_monitor.log`
+- Errores se registran en `/home/ubuntu/crypto-2.0/logs/health_monitor.error.log`
 - Logs incluyen timestamps y niveles de severidad (INFO, WARN, ERROR)
 
 ## Instalación
@@ -47,12 +47,12 @@ ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'sudo systemctl status health_monitor
 
 ### Ver logs en tiempo real:
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/automated-trading-platform/logs/health_monitor.log'
+ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/crypto-2.0/logs/health_monitor.log'
 ```
 
 ### Ver errores:
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/automated-trading-platform/logs/health_monitor.error.log'
+ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/crypto-2.0/logs/health_monitor.error.log'
 ```
 
 ## Configuración
@@ -108,8 +108,8 @@ sudo systemctl enable health_monitor  # Para iniciar en boot
 sudo journalctl -u health_monitor -n 50 --no-pager
 
 # Verificar permisos
-ls -la /home/ubuntu/automated-trading-platform/scripts/health_monitor.sh
-ls -la /home/ubuntu/automated-trading-platform/logs/
+ls -la /home/ubuntu/crypto-2.0/scripts/health_monitor.sh
+ls -la /home/ubuntu/crypto-2.0/logs/
 ```
 
 ### Un servicio sigue fallando:

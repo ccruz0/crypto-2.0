@@ -2,7 +2,7 @@
 # Run on the DASHBOARD host (nginx for dashboard.hilovivo.com).
 # Shows active proxy_pass targets and whether TCP/HTTP to OpenClaw upstream works.
 #
-# Usage: cd /home/ubuntu/automated-trading-platform && ./scripts/openclaw/diagnose_openclaw_prod.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && ./scripts/openclaw/diagnose_openclaw_prod.sh
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -77,7 +77,7 @@ echo "=========================================="
 echo "• 172.31.* / 10.* upstream checks (section 4) must be run ON a host inside the VPC (e.g. this dashboard)."
 echo "    From a laptop, curl to 172.31.x.x will time out — that is normal (private IP, not internet-routable)."
 echo "• If section 3) shows ERR for 3000 and 8002: nginx is up but ATP containers are DOWN on this host."
-echo "    cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d"
+echo "    cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d"
 echo "    Then: ss -lntp | grep -E ':3000|:8002'"
 echo "• If section 4) all ERR: wrong LAB IP, OpenClaw not running on LAB, or SG blocks dashboard→LAB (TCP 8080/8081)."
 echo "    Find LAB private IP in EC2; ensure OpenClaw listens; open SG from this dashboard host's private IP/32 or VPC CIDR."

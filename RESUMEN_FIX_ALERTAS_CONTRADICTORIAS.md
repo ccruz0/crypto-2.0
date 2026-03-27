@@ -55,7 +55,7 @@ Si necesitas verificar manualmente que el fix está desplegado:
 aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # 2. Verificar que el código actualizado está presente
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 grep -A 3 "sync_order_history.*sync_open_orders" backend/app/services/exchange_sync.py
 

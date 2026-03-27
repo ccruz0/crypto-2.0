@@ -60,7 +60,7 @@ bash deploy_formatting_fixes.sh
 
 ```bash
 # On AWS EC2
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 docker compose --profile aws build backend-aws
 docker compose --profile aws restart backend-aws
@@ -114,7 +114,7 @@ docker logs --tail 200 $(docker compose --profile aws ps -q backend-aws) | grep 
 ## Rollback (if needed)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git checkout HEAD~1 -- backend/app/services/brokers/crypto_com_trade.py backend/app/services/tp_sl_order_creator.py backend/app/services/exchange_sync.py
 docker compose --profile aws build backend-aws
 docker compose --profile aws restart backend-aws

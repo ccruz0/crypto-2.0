@@ -19,7 +19,7 @@ ENV_FILES=(
     "$PROJECT_ROOT/.env"
     "$HOME/.env.local"
     "/opt/automated-trading-platform/.env.local"
-    "/home/ubuntu/automated-trading-platform/.env.local"
+    "/home/ubuntu/crypto-2.0/.env.local"
 )
 
 ENV_FILE=""

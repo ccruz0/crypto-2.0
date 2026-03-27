@@ -17,7 +17,7 @@ NC='\033[0m'
 
 # Configuration
 REMOTE_HOST="${REMOTE_HOST:-hilovivo-aws}"
-PROJECT_DIR="${PROJECT_DIR:-/home/ubuntu/automated-trading-platform}"
+PROJECT_DIR="${PROJECT_DIR:-/home/ubuntu/crypto-2.0}"
 
 echo -e "${BLUE}Configuration:${NC}"
 echo "  Remote Host: $REMOTE_HOST"
@@ -57,7 +57,7 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 
 ssh "$REMOTE_HOST" << 'DEPLOY_CODE'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 echo "📥 Pulling latest code..."
 git fetch --all
@@ -110,7 +110,7 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 
 ssh "$REMOTE_HOST" << 'RUN_MIGRATION'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 if [ ! -f "./RUN_ALERT_FIX_ON_AWS.sh" ]; then
     echo "❌ Migration script not found: RUN_ALERT_FIX_ON_AWS.sh"
@@ -147,7 +147,7 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 
 ssh "$REMOTE_HOST" << 'VERIFY'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 if [ ! -f "./VERIFY_ALERT_FIX.sh" ]; then
     echo "⚠️  Verification script not found, running manual checks..."

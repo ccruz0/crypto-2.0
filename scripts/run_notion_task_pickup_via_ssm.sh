@@ -38,7 +38,7 @@ if [[ "$STATUS" == "Online" || "$FORCE" == "force" ]]; then
     --instance-ids "$INSTANCE_ID" \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
-    --parameters "commands=[\"set -e\",\"cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1\",\"git pull origin main 2>/dev/null || true\",\"${TASK_ID_ENV}NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a ./scripts/run_notion_task_pickup.sh\"]" \
+    --parameters "commands=[\"set -e\",\"cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1\",\"git pull origin main 2>/dev/null || true\",\"${TASK_ID_ENV}NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a ./scripts/run_notion_task_pickup.sh\"]" \
     --timeout-seconds 120 \
     --query 'Command.CommandId' --output text 2>&1)
   if [[ -z "$COMMAND_ID" || "$COMMAND_ID" == Error* ]]; then
@@ -77,7 +77,7 @@ echo "If ./scripts/aws/prod_status.sh shows PROD Online, try: $0 force"
 echo ""
 echo "Run the pickup on the server manually:"
 echo "  1. Connect to PROD (EC2 Instance Connect in browser or SSH after opening SG to your IP)."
-echo "  2. cd /home/ubuntu/automated-trading-platform"
+echo "  2. cd /home/ubuntu/crypto-2.0"
 echo "  3. git pull origin main"
 echo "  4. NOTION_TASK_DB=$NOTION_TASK_DB ./scripts/run_notion_task_pickup.sh"
 echo "  5. For a specific task: TASK_ID=<notion-page-id> NOTION_TASK_DB=$NOTION_TASK_DB ./scripts/run_notion_task_pickup.sh"

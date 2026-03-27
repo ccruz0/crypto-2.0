@@ -66,28 +66,28 @@ echo ""
 echo "==================================================================="
 echo "STRATEGY: DEBUG_STRATEGY_FINAL for $SYMBOL (last ${WINDOW_MIN}m)"
 echo "==================================================================="
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep DEBUG_STRATEGY_FINAL | tail -n 50' | convert_to_bali_time || echo "(No strategy logs found)"
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep DEBUG_STRATEGY_FINAL | tail -n 50' | convert_to_bali_time || echo "(No strategy logs found)"
 echo ""
 
 # Section 2: SignalMonitor
 echo "==================================================================="
 echo "SIGNAL MONITOR for $SYMBOL (last ${WINDOW_MIN}m)"
 echo "==================================================================="
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep -E "(SignalMonitor|DEBUG_SIGNAL_MONITOR)" | tail -n 80' | convert_to_bali_time || echo "(No signal monitor logs found)"
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep -E "(SignalMonitor|DEBUG_SIGNAL_MONITOR)" | tail -n 80' | convert_to_bali_time || echo "(No signal monitor logs found)"
 echo ""
 
 # Section 3: Alert helper (ALERT_ logs)
 echo "==================================================================="
 echo "ALERT PIPELINE (ALERT_ logs) for $SYMBOL (last ${WINDOW_MIN}m)"
 echo "==================================================================="
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep ALERT_ | tail -n 80' | convert_to_bali_time || echo "(No alert pipeline logs found)"
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep ALERT_ | tail -n 80' | convert_to_bali_time || echo "(No alert pipeline logs found)"
 echo ""
 
 # Section 4: Telegram logs
 echo "==================================================================="
 echo "TELEGRAM logs for $SYMBOL (last ${WINDOW_MIN}m)"
 echo "==================================================================="
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep -E "(TELEGRAM_SEND|TELEGRAM_ERROR|TELEGRAM)" | tail -n 80' | convert_to_bali_time || echo "(No Telegram logs found)"
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since='"${WINDOW_MIN}"'m 2>&1 | grep "'"$SYMBOL"'" | grep -E "(TELEGRAM_SEND|TELEGRAM_ERROR|TELEGRAM)" | tail -n 80' | convert_to_bali_time || echo "(No Telegram logs found)"
 echo ""
 
 echo "==================================================================="

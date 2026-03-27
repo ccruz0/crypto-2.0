@@ -170,7 +170,7 @@ systemctl is-active amazon-ssm-agent 2>/dev/null || systemctl is-active snap.ama
 systemctl is-active ssh 2>/dev/null || true
 systemctl is-active nginx 2>/dev/null || true
 systemctl is-active docker 2>/dev/null || true
-cd /home/ubuntu/automated-trading-platform 2>/dev/null && docker compose --profile aws ps 2>/dev/null || echo "no compose or dir"
+cd /home/ubuntu/crypto-2.0 2>/dev/null && docker compose --profile aws ps 2>/dev/null || echo "no compose or dir"
 curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:8002/api/health || echo "curl_fail"
 ```
 

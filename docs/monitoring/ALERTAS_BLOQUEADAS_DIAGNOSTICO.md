@@ -96,7 +96,7 @@ El sistema tiene **3 puntos principales** donde las alertas pueden ser bloqueada
 
 ```bash
 cd /Users/carloscruz/automated-trading-platform
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|APP_ENV)"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|APP_ENV)"'
 ```
 
 **Valores esperados:**
@@ -123,7 +123,7 @@ bash scripts/debug_alert_pipeline_remote.sh TON_USDT 30
 ### Paso 3: Verificar Estado del Telegram Notifier
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=10m 2>&1 | grep -E "(Telegram disabled|E2E_TEST_CONFIG|LIVE_ALERT_GATEKEEPER)" | tail -20'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=10m 2>&1 | grep -E "(Telegram disabled|E2E_TEST_CONFIG|LIVE_ALERT_GATEKEEPER)" | tail -20'
 ```
 
 ---
@@ -165,13 +165,13 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose l
 cd /Users/carloscruz/automated-trading-platform
 
 # 1. Ver configuración
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM|APP_ENV)"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM|APP_ENV)"'
 
 # 2. Ver logs del gatekeeper
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=30m 2>&1 | grep -E "LIVE_ALERT_GATEKEEPER" | tail -10'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=30m 2>&1 | grep -E "LIVE_ALERT_GATEKEEPER" | tail -10'
 
 # 3. Ver intentos de envío
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=30m 2>&1 | grep -E "TELEGRAM_SEND|TELEGRAM_ERROR" | tail -10'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=30m 2>&1 | grep -E "TELEGRAM_SEND|TELEGRAM_ERROR" | tail -10'
 
 # 4. Ver decisiones de alertas
 bash scripts/debug_alert_pipeline_remote.sh TON_USDT 30
@@ -258,13 +258,13 @@ Para verificar manualmente la configuración de Telegram:
 
 ```bash
 cd /Users/carloscruz/automated-trading-platform
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose exec -T backend-aws python -c "from app.services.telegram_health import check_telegram_health; check_telegram_health(origin=\"manual_check\")"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec -T backend-aws python -c "from app.services.telegram_health import check_telegram_health; check_telegram_health(origin=\"manual_check\")"'
 ```
 
 Esto emitirá un log `[TELEGRAM_HEALTH]` que puedes verificar en los logs del contenedor:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=1m 2>&1 | grep TELEGRAM_HEALTH'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=1m 2>&1 | grep TELEGRAM_HEALTH'
 ```
 
 ### Interpretación de Resultados
@@ -282,6 +282,6 @@ El workflow de consistencia nocturna (3:00 AM) ahora incluye el health-check de 
 Para ver los logs del último workflow nocturno:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=24h 2>&1 | grep -E "(TELEGRAM_HEALTH|NIGHTLY_CONSISTENCY)" | tail -20'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=24h 2>&1 | grep -E "(TELEGRAM_HEALTH|NIGHTLY_CONSISTENCY)" | tail -20'
 ```
 

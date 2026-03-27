@@ -17,7 +17,7 @@ echo "🚀 Deploying tabs fix to AWS..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY_SCRIPT'
 set -e
 
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 echo "📦 Step 1: Handling git pull blockers..."
 # Move any untracked markdown files that might block git pull

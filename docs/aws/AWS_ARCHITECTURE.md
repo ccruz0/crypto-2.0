@@ -263,14 +263,14 @@ docker compose --profile aws up -d
 ### How We Deploy Today
 
 1. Connect via SSM Session Manager.
-2. `cd /home/ubuntu/automated-trading-platform`
+2. `cd /home/ubuntu/crypto-2.0`
 3. `git fetch origin main && git checkout main && git pull origin main`
 4. `bash scripts/aws/aws_up_backend.sh` (renders runtime.env, deploys backend)
 5. Or: `docker compose --profile aws up -d --build`
 
 ### Recommended CI/CD Path
 
-- **Option A**: GitHub Actions → SSM Send Command (e.g. `aws ssm send-command --instance-ids <id> --document-name "AWS-RunShellScript" --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && git pull && bash scripts/aws/aws_up_backend.sh"]'`)
+- **Option A**: GitHub Actions → SSM Send Command (e.g. `aws ssm send-command --instance-ids <id> --document-name "AWS-RunShellScript" --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && git pull && bash scripts/aws/aws_up_backend.sh"]'`)
 - **Option B**: CodeDeploy with EC2/On-Premises deployment type.
 
 ### Rollback
@@ -290,7 +290,7 @@ bash scripts/aws/aws_up_backend.sh
 1. AWS Console → EC2 → Instances.
 2. Select instance (e.g. atp-rebuild-2026 or atp-lab-ssm-clean).
 3. Connect → Session Manager tab → Connect.
-4. Terminal opens; run `cd /home/ubuntu/automated-trading-platform`.
+4. Terminal opens; run `cd /home/ubuntu/crypto-2.0`.
 
 **CLI alternative:**
 
@@ -301,7 +301,7 @@ aws ssm start-session --target <instance-id> --region ap-southeast-1
 ### How to Restart Services
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws restart backend-aws
 # Or all: docker compose --profile aws restart
 ```

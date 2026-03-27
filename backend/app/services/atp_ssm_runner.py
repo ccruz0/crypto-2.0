@@ -6,7 +6,7 @@ commands on the ATP PROD instance without manual SSH. Uses AWS SSM
 send-command; requires AWS credentials and SSM permissions.
 
 Instance: i-087953603011543c5 (atp-rebuild-2026)
-Project path: /home/ubuntu/automated-trading-platform
+Project path: /home/ubuntu/crypto-2.0
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _ATP_INSTANCE_ID = "i-087953603011543c5"
 _ATP_REGION = "ap-southeast-1"
-_ATP_PROJECT_PATH = "/home/ubuntu/automated-trading-platform"
+_ATP_PROJECT_PATH = "/home/ubuntu/crypto-2.0"
 
 # Allowed subcommand patterns (regex). Applied after stripping "cd ... && " prefix.
 _ALLOWED_SUBCOMMANDS = (

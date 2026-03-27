@@ -9,7 +9,7 @@ Tight order of operations so OpenClaw works at https://dashboard.hilovivo.com/op
 **On the LAB instance** (e.g. via SSM: `aws ssm start-session --target i-0d82c172235770a0d --region ap-southeast-1`):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform   # or your deploy repo path
+cd /home/ubuntu/crypto-2.0   # or your deploy repo path
 docker compose -f docker-compose.openclaw.yml pull openclaw
 docker compose -f docker-compose.openclaw.yml up -d openclaw
 docker ps | grep openclaw

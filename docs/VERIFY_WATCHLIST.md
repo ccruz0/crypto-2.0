@@ -109,7 +109,7 @@ These help verify which code version is running.
 After rebuilding the backend image, verify scripts are included:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws up -d backend-aws
 docker exec $(docker compose --profile aws ps -q backend-aws) sh -lc "ls -la /app/scripts | head -30"
@@ -124,7 +124,7 @@ Run this complete script to verify the fix end-to-end:
 ssh hilovivo-aws '
 set -euo pipefail
 
-REPO="/home/ubuntu/automated-trading-platform"
+REPO="/home/ubuntu/crypto-2.0"
 cd "$REPO"
 
 echo "=============================="
@@ -212,7 +212,7 @@ echo "=============================="
 ssh hilovivo-aws '
 set -euo pipefail
 
-REPO="/home/ubuntu/automated-trading-platform"
+REPO="/home/ubuntu/crypto-2.0"
 cd "$REPO"
 
 echo "=============================="
@@ -244,7 +244,7 @@ docker exec "$CID" sh -lc "test -f /app/scripts/print_api_fingerprints.py && ech
 ssh hilovivo-aws '
 set -euo pipefail
 
-REPO="/home/ubuntu/automated-trading-platform"
+REPO="/home/ubuntu/crypto-2.0"
 cd "$REPO"
 
 echo "=============================="

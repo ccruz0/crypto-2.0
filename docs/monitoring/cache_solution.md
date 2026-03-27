@@ -129,7 +129,7 @@ Si después de todo esto todavía ves JavaScript antiguo:
 1. **Verifica que el frontend se reconstruyó correctamente:**
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    docker logs automated-trading-platform-frontend-aws-1 --tail 20
    ```
 

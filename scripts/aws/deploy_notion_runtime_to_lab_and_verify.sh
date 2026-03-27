@@ -39,8 +39,8 @@ CMD1=$(aws ssm send-command \
   --timeout-seconds 600 \
   --parameters 'commands=[
     "set -e",
-    "sudo chown -R ubuntu:ubuntu /home/ubuntu/automated-trading-platform 2>/dev/null || true",
-    "sudo -u ubuntu bash -c \"export HOME=/home/ubuntu; cd /home/ubuntu/automated-trading-platform && git config --global --add safe.directory /home/ubuntu/automated-trading-platform && git pull origin main && bash scripts/aws/render_runtime_env.sh && docker compose --profile aws up -d backend-aws\"",
+    "sudo chown -R ubuntu:ubuntu /home/ubuntu/crypto-2.0 2>/dev/null || true",
+    "sudo -u ubuntu bash -c \"export HOME=/home/ubuntu; cd /home/ubuntu/crypto-2.0 && git config --global --add safe.directory /home/ubuntu/crypto-2.0 && git pull origin main && bash scripts/aws/render_runtime_env.sh && docker compose --profile aws up -d backend-aws\"",
     "echo === Step 1 done ==="
   ]' \
   --query 'Command.CommandId' --output text)
@@ -61,7 +61,7 @@ CMD2=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --timeout-seconds 60 \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose --profile aws exec -T backend-aws sh -c '\''if [ -n \"$NOTION_API_KEY\" ]; then echo NOTION_API_KEY=present; else echo NOTION_API_KEY=not present; fi'\''",
     "docker compose --profile aws exec -T backend-aws sh -c '\''if [ -n \"$NOTION_TASK_DB\" ]; then echo NOTION_TASK_DB=present; else echo NOTION_TASK_DB=not present; fi'\''",
     "docker compose --profile aws exec -T backend-aws printenv NOTION_TASK_DB"
@@ -82,7 +82,7 @@ CMD3=$(aws ssm send-command \
   --timeout-seconds 300 \
   --parameters 'commands=[
     "set -e",
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "./scripts/run_notion_task_pickup.sh"
   ]' \
   --query 'Command.CommandId' --output text)
@@ -104,7 +104,7 @@ CMD4=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --timeout-seconds 60 \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose --profile aws logs --tail=300 backend-aws"
   ]' \
   --query 'Command.CommandId' --output text)

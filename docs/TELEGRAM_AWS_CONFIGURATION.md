@@ -42,7 +42,7 @@ Telegram alerts are **only enabled on AWS** and must be configured with specific
 
 **On AWS server:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT" | sort'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT" | sort'
 ```
 
 **Expected output:**
@@ -56,7 +56,7 @@ TELEGRAM_CHAT_ID_AWS=<REDACTED_TELEGRAM_CHAT_ID>
 
 **Check exactly one backend container:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps backend-aws'
 ```
 
 **Expected:**
@@ -67,7 +67,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **Check startup configuration (appears once per container start):**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP'
 ```
 
 **Expected format:**
@@ -81,7 +81,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **Check recent Telegram sends:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 200 backend-aws | grep -E "TELEGRAM_SEND|TELEGRAM_RESPONSE|TELEGRAM_SECURITY|TELEGRAM_STARTUP"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 200 backend-aws | grep -E "TELEGRAM_SEND|TELEGRAM_RESPONSE|TELEGRAM_SECURITY|TELEGRAM_STARTUP"'
 ```
 
 **Expected logs (production):**
@@ -100,7 +100,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 **Check for misconfiguration:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep "TELEGRAM_SECURITY"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep "TELEGRAM_SECURITY"'
 ```
 
 **Expected:**
@@ -144,7 +144,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 ssh hilovivo-aws
 
 # 2. Navigate to project
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 3. Pull latest code (if needed)
 git pull
@@ -165,7 +165,7 @@ docker compose --profile aws logs -n 200 backend-aws | grep -E "TELEGRAM_SEND|TE
 ### Quick Restart (if code unchanged)
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ## Troubleshooting

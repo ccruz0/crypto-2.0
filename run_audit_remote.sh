@@ -6,7 +6,7 @@ set -e
 # Configuration
 EC2_HOST="${EC2_HOST:-175.41.189.249}"
 EC2_USER="ubuntu"
-REMOTE_DIR="/home/ubuntu/automated-trading-platform"
+REMOTE_DIR="/home/ubuntu/crypto-2.0"
 
 # Load SSH key configuration
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
@@ -33,7 +33,7 @@ echo ""
 # Run audit
 echo "📊 Running audit..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'AUDIT_SCRIPT'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Find container
 CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker ps -q --filter name=backend-aws | head -1)

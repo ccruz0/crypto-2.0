@@ -9,7 +9,7 @@ The dashboard modal **Set Exchange Credentials** writes `EXCHANGE_CUSTOM_API_KEY
 On EC2:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 docker exec automated-trading-platform-backend-aws-1 sh -lc '
 ls -la /app/secrets/runtime.env

@@ -38,7 +38,7 @@ The token is stored in AWS SSM: `/automated-trading-platform/prod/telegram/bot_t
 
    Or via SSM on EC2:
    ```bash
-   sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && bash scripts/aws/render_runtime_env.sh && docker compose --profile aws restart backend-aws backend-aws-canary'
+   sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && bash scripts/aws/render_runtime_env.sh && docker compose --profile aws restart backend-aws backend-aws-canary'
    ```
 
 ---
@@ -54,13 +54,13 @@ If SSM is not the source, the token may be in `secrets/runtime.env`:
 
 2. Edit (as ubuntu):
    ```bash
-   sudo -u ubuntu nano /home/ubuntu/automated-trading-platform/secrets/runtime.env
+   sudo -u ubuntu nano /home/ubuntu/crypto-2.0/secrets/runtime.env
    ```
    Set `TELEGRAM_BOT_TOKEN=<ATP_control_bot_token>`
 
 3. Restart:
    ```bash
-   sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws backend-aws-canary'
+   sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws backend-aws-canary'
    ```
 
 ---
@@ -70,7 +70,7 @@ If SSM is not the source, the token may be in `secrets/runtime.env`:
 After restart, run:
 
 ```bash
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws python -c "
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws python -c "
 import requests
 from app.utils.telegram_token_loader import get_telegram_token, mask_token
 t = get_telegram_token()

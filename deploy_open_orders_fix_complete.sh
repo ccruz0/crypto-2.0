@@ -53,7 +53,7 @@ rsync_cmd \
 echo ""
 echo "🐳 Step 3: Copying files into Docker containers and restarting..."
 ssh_cmd $EC2_USER@$EC2_HOST bash << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 # Find containers
 BACKEND_CONTAINER=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

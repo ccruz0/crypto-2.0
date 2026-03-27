@@ -3,7 +3,7 @@
 # Safe: never prints tokens, secrets, env values, or expanded compose config.
 set -euo pipefail
 
-REPO_ROOT="/home/ubuntu/automated-trading-platform"
+REPO_ROOT="/home/ubuntu/crypto-2.0"
 cd "$REPO_ROOT"
 
 # Wait for backend readiness (retry GET /health until 200)

@@ -136,7 +136,7 @@ Look for structured log line:
 
 ### Step 1: Enable Diagnostics on AWS
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sudo bash -lc "export ENABLE_DIAGNOSTICS_ENDPOINTS=1 DIAGNOSTICS_API_KEY=your-secret-key-here VERIFICATION_DEBUG=1 && docker compose --profile aws restart backend-aws"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sudo bash -lc "export ENABLE_DIAGNOSTICS_ENDPOINTS=1 DIAGNOSTICS_API_KEY=your-secret-key-here VERIFICATION_DEBUG=1 && docker compose --profile aws restart backend-aws"'
 ```
 
 **⚠️ Important**: Set `DIAGNOSTICS_API_KEY` in your AWS environment securely (e.g., via AWS Secrets Manager or environment file).
@@ -145,12 +145,12 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sudo bash -lc "e
 
 **Lite endpoint (recommended)**:
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -s -H "X-Diagnostics-Key: your-secret-key-here" http://localhost:8000/api/diagnostics/portfolio-verify-lite | jq'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && curl -s -H "X-Diagnostics-Key: your-secret-key-here" http://localhost:8000/api/diagnostics/portfolio-verify-lite | jq'
 ```
 
 **Full endpoint**:
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -s -H "X-Diagnostics-Key: your-secret-key-here" http://localhost:8000/api/diagnostics/portfolio-verify | jq'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && curl -s -H "X-Diagnostics-Key: your-secret-key-here" http://localhost:8000/api/diagnostics/portfolio-verify | jq'
 ```
 
 ### Alternative: Direct HTTP Call (if exposed)
@@ -250,7 +250,7 @@ python -m tools.verify_portfolio --json
 ### Example: Cron Job (AWS)
 ```bash
 #!/bin/bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 export ENABLE_DIAGNOSTICS_ENDPOINTS=1
 export DIAGNOSTICS_API_KEY="your-secret-key-here"  # Set securely
 result=$(curl -s -H "X-Diagnostics-Key: $DIAGNOSTICS_API_KEY" \

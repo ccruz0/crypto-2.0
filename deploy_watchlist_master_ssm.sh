@@ -62,9 +62,9 @@ COMMAND_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
     \"set -e\",
-    \"cd /home/ubuntu/automated-trading-platform || cd ~/automated-trading-platform || exit 1\",
+    \"cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform || exit 1\",
     \"echo '📦 Actualizando código desde git...'\",
-    \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true\",
+    \"git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true\",
     \"git pull origin main || echo '⚠️ Git pull failed, continuando...'\",
     \"echo ''\",
     \"echo '🔄 Ejecutando migración de base de datos...'\",

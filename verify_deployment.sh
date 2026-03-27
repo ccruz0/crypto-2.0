@@ -8,7 +8,7 @@ echo "1. Checking source code on server:"
 aws ssm send-command \
   --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform/frontend/src/app","grep -c \"TP Value\" page.tsx","grep -c \"SL Value\" page.tsx"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0/frontend/src/app","grep -c \"TP Value\" page.tsx","grep -c \"SL Value\" page.tsx"]' \
   --region ap-southeast-1 \
   --query 'Command.CommandId' \
   --output text > /tmp/verify_cmd_id.txt 2>&1

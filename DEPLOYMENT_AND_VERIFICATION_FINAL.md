@@ -46,7 +46,7 @@ Automatic deployment cannot proceed due to SSH connection timeout to AWS server 
 ssh ubuntu@54.254.150.31
 
 # Step 2: Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Step 3: Move untracked markdown files blocking git pull
 mkdir -p backup_markdown
@@ -263,7 +263,7 @@ docker compose --profile aws logs --tail=50 frontend-aws
 ### Check Backend Logs
 ```bash
 ssh ubuntu@54.254.150.31
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws logs -n 200 backend-aws | grep -i "orders\|expected-take-profit"
 ```
 

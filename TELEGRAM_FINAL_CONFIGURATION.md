@@ -17,17 +17,17 @@
 
 1. **Added TELEGRAM_CHAT_ID_AWS to .env.aws:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && echo "TELEGRAM_CHAT_ID_AWS=839853931" >> .env.aws'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && echo "TELEGRAM_CHAT_ID_AWS=839853931" >> .env.aws'
    ```
 
 2. **Rebuilt and restarted container:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --build backend-aws'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --build backend-aws'
    ```
 
 3. **Verified environment variables:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT"'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws env | grep -E "TELEGRAM|ENVIRONMENT"'
    ```
    Result:
    - `ENVIRONMENT=aws`

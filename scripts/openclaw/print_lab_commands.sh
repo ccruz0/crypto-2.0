@@ -40,7 +40,7 @@ STEP2
 print_step3() {
   cat << 'STEP3'
 # --- Step 3: .env.lab ---
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 cp .env.lab.example .env.lab
 chmod 600 .env.lab
 nano .env.lab
@@ -52,7 +52,7 @@ STEP3
 print_step4() {
   cat << 'STEP4'
 # --- Step 4: Start OpenClaw ---
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 docker compose -f docker-compose.openclaw.yml logs -f openclaw
@@ -62,7 +62,7 @@ STEP4
 print_step5() {
   cat << 'STEP5'
 # --- Step 5 (optional): systemd for reboot ---
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw

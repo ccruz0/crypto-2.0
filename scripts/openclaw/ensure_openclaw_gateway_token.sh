@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ensure OpenClaw gateway auth token is persistent on LAB.
 # Run on the LAB host:
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/ensure_openclaw_gateway_token.sh
 #
 # Optional:

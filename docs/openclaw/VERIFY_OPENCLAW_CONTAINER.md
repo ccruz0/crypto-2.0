@@ -21,7 +21,7 @@ Aunque el código de OpenClaw no esté en este repo, puedes inspeccionar el cont
 En la instancia LAB (SSH):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker exec -it openclaw sh
 ```
@@ -53,7 +53,7 @@ Salir del contenedor: `exit`.
 En LAB (fuera del contenedor):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml logs --tail=300 openclaw | egrep -i "token|authorization|bearer|ghp_|github_pat_" || true
 ```
 

@@ -14,7 +14,7 @@ Private Crypto.com API calls (user-balance, open-orders, create-order, etc.) are
 
 ## Verification (build and run)
 
-On the AWS host (e.g. `/home/ubuntu/automated-trading-platform`), use these commands to verify the diagnostic script and backend-aws image:
+On the AWS host (e.g. `/home/ubuntu/crypto-2.0`), use these commands to verify the diagnostic script and backend-aws image:
 
 ```bash
 # From repo root on host: compile-check the script (no IndentationError)
@@ -41,7 +41,7 @@ Confirm that the Crypto.com Exchange API key/secret used on AWS is the correct p
 **On AWS host (inside backend-aws container):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 make aws-verify-exchange-creds
 ```
 
@@ -92,7 +92,7 @@ Use the **fingerprint** and **simple auth** scripts to compare credentials and b
 1. **Run fingerprint on AWS** (inside backend-aws container):
 
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    make aws-fingerprint-creds
    ```
 
@@ -132,7 +132,7 @@ Use the **fingerprint** and **simple auth** scripts to compare credentials and b
 Run the standalone script (no Makefile required):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && bash scripts/aws/run_auth_verification_in_container.sh
+cd /home/ubuntu/crypto-2.0 && bash scripts/aws/run_auth_verification_in_container.sh
 ```
 
 The script builds and starts backend-aws, lists `/app/scripts`, then runs `fingerprint_creds.py` and `verify_crypto_auth_simple.py` inside the container. If either script is missing in the image, it exits non-zero with: *"Scripts missing in image: you are on a branch/commit without the scripts OR you didn't rebuild backend-aws with the right build context."*
@@ -144,7 +144,7 @@ When `git checkout` or `git pull` fails on EC2 due to local changes, untracked f
 **Inspect ownership:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ls -la .git scripts/aws || true
 ```
 

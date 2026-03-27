@@ -9,7 +9,7 @@ The `telegram_update_dedup` table prevents duplicate processing of Telegram upda
 1. SSH or SSM into the EC2 instance.
 2. Navigate to the project:
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    ```
 3. Run the migration (choose one):
 
@@ -67,7 +67,7 @@ repeatedly in both containers. Commands in ATP Control will not reply.
 
 ```bash
 # SSH/SSM into EC2, then cd to repo (path may vary):
-cd /home/ubuntu/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd /home/ubuntu/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Primary backend (should acquire lock and process commands)
 docker compose --profile aws logs backend-aws 2>&1 | grep -E '\[TG\]' | tail -50
@@ -78,7 +78,7 @@ docker compose --profile aws logs backend-aws-canary 2>&1 | grep -E '\[TG\]|Anot
 
 **Note:** If `cd` fails in SSM (e.g. "can't cd"), try running as ubuntu:
 ```bash
-sudo -u ubuntu bash -c 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws-canary 2>&1 | grep -E "TG|poller" | tail -15'
+sudo -u ubuntu bash -c 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws-canary 2>&1 | grep -E "TG|poller" | tail -15'
 ```
 
 ### ATP Control verification

@@ -19,8 +19,8 @@ INSTANCE_ID="${ATP_INSTANCE_ID:-i-087953603011543c5}"
 REGION="${AWS_REGION:-ap-southeast-1}"
 export AWS_REGION="$REGION"
 
-GIT_PULL='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
-PARAMS='commands=["set -e","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","'"$GIT_PULL"'git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true","bash scripts/aws/forensic_telegram_task_runtime.sh"]'
+GIT_PULL='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
+PARAMS='commands=["set -e","cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","'"$GIT_PULL"'git fetch origin main && git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true","bash scripts/aws/forensic_telegram_task_runtime.sh"]'
 
 echo "=== Forensic: Telegram /task old message (PROD via SSM) ==="
 echo "Instance: $INSTANCE_ID"

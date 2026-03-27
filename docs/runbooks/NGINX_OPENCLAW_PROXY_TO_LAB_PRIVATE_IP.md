@@ -34,7 +34,7 @@ If you get "Connection lost" or "Undeliverable": EC2 Console → Instances → a
 ### 2. Go to the repo
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 If that fails:
@@ -46,7 +46,7 @@ Then `cd` into the path it returns.
 ### 3. Pull latest code
 
 ```bash
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform
+git config --global --add safe.directory /home/ubuntu/crypto-2.0
 git pull origin main
 ```
 
@@ -95,7 +95,7 @@ You should see the `location` block.
 
 On PROD shell:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 bash scripts/openclaw/fix_openclaw_proxy_prod.sh
 ```
@@ -249,7 +249,7 @@ After any change: `sudo nginx -t && sudo systemctl reload nginx`, then `curl -I 
 **When PROD SSM is Undeliverable:** Connect via EC2 Instance Connect or SSH (e.g. `ssh -i ~/.ssh/atp-rebuild-2026.pem ubuntu@52.220.32.147`), then from the repo run:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 bash scripts/openclaw/diagnose_openclaw_prod.sh
 ```

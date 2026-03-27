@@ -22,7 +22,7 @@ All commands assume you are on the EC2 host where Docker and the backend run. Us
 ### Step 1: Force sync for a single symbol
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 curl -s "http://127.0.0.1:8002/api/orders/history?symbol=ATOM_USDT&limit=10&offset=0&sync=true" | head -c 400
 echo
 ```
@@ -30,7 +30,7 @@ echo
 ### Step 2: DB count and sample rows
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo docker exec -it automated-trading-platform-backend-aws-1 sh -lc '
 python - << "PY"
 from app.database import SessionLocal
@@ -48,7 +48,7 @@ PY
 ### Step 3: API read path (no sync)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 curl -s "http://127.0.0.1:8002/api/orders/history?symbol=ATOM_USDT&limit=5&offset=0&sync=false" | head -c 600
 echo
 ```
@@ -56,7 +56,7 @@ echo
 **Alternative:** run the one-shot script (same three steps with section headers). On EC2, use `sudo` so docker access works. Make the script executable once with `chmod +x`.
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 chmod +x scripts/diag/order_history_four_checks.sh
 sudo ./scripts/diag/order_history_four_checks.sh
 ```

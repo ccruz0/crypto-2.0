@@ -15,7 +15,7 @@ Docker assigns container IPs that can change. If `DATABASE_URL` uses a concrete 
 On the EC2 instance:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/diag_db_and_order_intents.sh
 ```
 
@@ -32,7 +32,7 @@ bash scripts/aws/diag_db_and_order_intents.sh
 1. Update **`.env.aws`** so the DB host in `DATABASE_URL` is **`db`** (do not paste the actual value in this runbook).
 2. Recreate backend and market-updater so they pick up the new env:
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    docker compose --profile aws up -d --force-recreate backend-aws market-updater-aws
    ```
 3. Verify:

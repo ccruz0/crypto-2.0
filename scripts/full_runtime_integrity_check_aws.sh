@@ -121,7 +121,7 @@ echo
 # Check 7: Docker container status
 echo -e "${BLUE}[7] Docker container status (AWS)${NC}"
 echo "----------------------------------"
-if CONTAINER_STATUS=$(ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker ps --format '{{.Names}} {{.Status}}'" 2>&1); then
+if CONTAINER_STATUS=$(ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker ps --format '{{.Names}} {{.Status}}'" 2>&1); then
     echo "$CONTAINER_STATUS"
     BACKEND_STATUS=$(echo "$CONTAINER_STATUS" | grep "automated-trading-platform-backend" || true)
     if [ -z "$BACKEND_STATUS" ]; then

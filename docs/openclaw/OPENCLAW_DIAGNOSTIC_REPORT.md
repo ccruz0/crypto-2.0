@@ -39,7 +39,7 @@ Remote diagnostics were **not** run because the Dashboard (PROD) instance is not
 Run on the machine serving https://dashboard.hilovivo.com (e.g. atp-rebuild-2026):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 sudo nginx -T 2>/dev/null | sed -n '/openclaw/,/}/p'
 
@@ -53,7 +53,7 @@ curl -I https://dashboard.hilovivo.com/openclaw/ws
 Run on the instance where OpenClaw is expected to run (e.g. atp-lab-ssm-clean or the host whose private IP is used in nginx upstream):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 sudo systemctl status openclaw --no-pager
 

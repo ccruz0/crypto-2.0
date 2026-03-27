@@ -22,7 +22,7 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd /home/ubuntu/automated-trading-platform\",
+    \"cd /home/ubuntu/crypto-2.0\",
     \"CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker ps -q --filter name=backend-aws | head -1)\",
     \"if [ -z \\\"$CONTAINER\\\" ]; then CONTAINER=$(docker ps --format '{{.Names}}' | grep backend | head -1); fi\",
     \"echo Container: $CONTAINER\",

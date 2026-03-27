@@ -11,11 +11,11 @@ echo "Deploying api.ts update to AWS..."
 # Copy the updated api.ts file to AWS
 rsync_cmd \
   frontend/src/lib/api.ts \
-  $EC2_USER@$EC2_HOST:/home/ubuntu/automated-trading-platform/frontend/src/lib/api.ts
+  $EC2_USER@$EC2_HOST:/home/ubuntu/crypto-2.0/frontend/src/lib/api.ts
 
 # Copy the file into the Docker container
 ssh_cmd $EC2_USER@$EC2_HOST << 'EOF'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 # Find the correct container name
 CONTAINER_NAME=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)
 if [ -n "$CONTAINER_NAME" ]; then

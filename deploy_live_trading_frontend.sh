@@ -27,7 +27,7 @@ echo "📦 Copying files to server..."
 rsync_cmd \
   frontend/src/app/page.tsx \
   frontend/src/lib/api.ts \
-  $EC2_USER@$EC2_HOST:/home/ubuntu/automated-trading-platform/frontend/src/ 2>&1
+  $EC2_USER@$EC2_HOST:/home/ubuntu/crypto-2.0/frontend/src/ 2>&1
 
 if [ $? -ne 0 ]; then
     echo "⚠️  Connection failed. Trying alternative method..."
@@ -44,7 +44,7 @@ fi
 # Copiar archivos al contenedor Docker y reiniciar
 echo "🐳 Copying files to Docker container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'EOF'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Find the correct container name
 CONTAINER_NAME=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)

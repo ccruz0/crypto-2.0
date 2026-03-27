@@ -41,13 +41,13 @@ cd /Users/carloscruz/automated-trading-platform
 ```bash
 # 1. Copy frontend files to AWS
 rsync -avz --exclude 'node_modules' --exclude '.next' \
-  frontend/ ubuntu@54.254.150.31:/home/ubuntu/automated-trading-platform/frontend/
+  frontend/ ubuntu@54.254.150.31:/home/ubuntu/crypto-2.0/frontend/
 
 # 2. SSH into AWS server
 ssh ubuntu@54.254.150.31
 
 # 3. Rebuild and restart frontend-aws container
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build frontend-aws
 docker compose --profile aws up -d frontend-aws
 

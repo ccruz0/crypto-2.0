@@ -50,7 +50,7 @@ Use the audit snapshot script to automatically verify most items:
 ./scripts/audit_snapshot.sh
 
 # AWS
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./scripts/audit_snapshot.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./scripts/audit_snapshot.sh'
 ```
 
 ## Manual Verification

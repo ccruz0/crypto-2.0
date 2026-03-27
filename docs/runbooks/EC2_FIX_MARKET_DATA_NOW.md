@@ -4,7 +4,7 @@
 
 **Automatic run:** When the health alert hits max remediation attempts for a market_data/market_updater failure, it runs **`scripts/selfheal/full_fix_market_data.sh`** in the background, which performs the same steps as this runbook (restore verify.sh, ensure .env, restart Docker and stack, health/fix, update-cache, bring up market-updater, second round of fix/cache). Use this runbook if the automatic fix did not resolve the issue or you need to run the steps manually (e.g. after changing config or bootstrap).
 
-**Repo path on EC2:** `/home/ubuntu/automated-trading-platform`
+**Repo path on EC2:** `/home/ubuntu/crypto-2.0`
 
 ---
 
@@ -26,7 +26,7 @@
 
 ```bash
 sudo systemctl stop atp-selfheal.timer
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 ### 2) Restore verify.sh (no heredoc paste — use git or emitter script)
@@ -34,7 +34,7 @@ cd /home/ubuntu/automated-trading-platform
 **Option A — From git (preferred):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git fetch origin main
 git checkout origin/main -- scripts/selfheal/verify.sh
 chmod +x scripts/selfheal/verify.sh
@@ -45,7 +45,7 @@ bash -n scripts/selfheal/verify.sh && echo "verify.sh syntax OK"
 If git doesn’t have the file or it’s still broken, pull so you have `scripts/selfheal/emit_verify_sh.py`, then run it to write a valid `verify.sh` from embedded base64:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 python3 scripts/selfheal/emit_verify_sh.py
 bash -n scripts/selfheal/verify.sh && echo "verify.sh syntax OK"
@@ -56,7 +56,7 @@ Do not paste a long heredoc in the terminal; use git or the emitter.
 ### 3) Ensure .env and .env.aws exist
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 if [ ! -f .env ]; then cp .env.example .env; echo "Created .env"; fi
 test -f .env.aws || cp .env .env.aws && echo "Created .env.aws from .env"
 ```
@@ -64,7 +64,7 @@ test -f .env.aws || cp .env .env.aws && echo "Created .env.aws from .env"
 ### 3b) If market_data/market_updater FAIL due to missing watchlist_items — bootstrap schema
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 chmod +x scripts/db/bootstrap.sh
 ./scripts/db/bootstrap.sh
 ```
@@ -76,7 +76,7 @@ Edit `.env` if you created it: set `DATABASE_URL` and `POSTGRES_PASSWORD` for th
 ### 4) Restart Docker and stack
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo systemctl restart docker
 sleep 5
 docker compose --profile aws up -d --remove-orphans
@@ -110,7 +110,7 @@ docker exec automated-trading-platform-market-updater-aws-1 sh -c "curl -sS -o /
 ### 7) If market-updater container is missing or exited: start it
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws up -d market-updater-aws
 sleep 30
 docker logs --tail 100 automated-trading-platform-market-updater-aws-1 2>&1
@@ -126,7 +126,7 @@ curl -sS -X POST --max-time 60 http://127.0.0.1:8002/api/market/update-cache
 ### 9) Validation
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/selfheal/verify.sh; echo "exit=$?"
 curl -s http://127.0.0.1:8002/api/health/system | jq
 docker logs --tail 200 automated-trading-platform-market-updater-aws-1 2>&1
@@ -159,7 +159,7 @@ sudo systemctl status atp-selfheal.timer --no-pager
 ### verify.sh still broken after git checkout
 
 - **Cause:** Branch on EC2 doesn’t have the fixed file, or repo is detached.
-- **Do:** Run the emitter (no paste): `cd /home/ubuntu/automated-trading-platform && python3 scripts/selfheal/emit_verify_sh.py` (after `git pull` so `emit_verify_sh.py` exists). Then `bash -n scripts/selfheal/verify.sh`. Alternatively copy `scripts/selfheal/verify.sh` from another machine via scp.
+- **Do:** Run the emitter (no paste): `cd /home/ubuntu/crypto-2.0 && python3 scripts/selfheal/emit_verify_sh.py` (after `git pull` so `emit_verify_sh.py` exists). Then `bash -n scripts/selfheal/verify.sh`. Alternatively copy `scripts/selfheal/verify.sh` from another machine via scp.
 
 ### Container name different
 
@@ -173,7 +173,7 @@ Run these in one go if you prefer (timer stays stopped until you start it after 
 
 ```bash
 sudo systemctl stop atp-selfheal.timer
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 python3 scripts/selfheal/emit_verify_sh.py || git checkout origin/main -- scripts/selfheal/verify.sh
 chmod +x scripts/selfheal/verify.sh && bash -n scripts/selfheal/verify.sh && echo "verify.sh OK"

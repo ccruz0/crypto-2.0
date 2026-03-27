@@ -36,10 +36,10 @@ Si el deploy automático no funcionó, ejecuta estos comandos en el servidor AWS
 aws ssm start-session --target i-087953603011543c5 --region ap-southeast-1
 
 # 2. Una vez conectado al servidor
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 3. Configurar git (si es necesario)
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform
+git config --global --add safe.directory /home/ubuntu/crypto-2.0
 
 # 4. Hacer pull del código actualizado
 git pull origin main

@@ -40,7 +40,7 @@
 
 2. **Navigate to Project Directory**
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    ```
 
 3. **Pull Latest Code** (if using Git)
@@ -52,7 +52,7 @@
 
    **Pull Latest Images and Deploy:**
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    
    # Pull latest images
    docker compose --profile aws pull
@@ -112,7 +112,7 @@ Database migrations can be run via Docker Compose:
 ```bash
 # Connect via SSH
 ssh ubuntu@<AWS_EC2_IP>
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Run migrations via Docker Compose
 docker compose --profile aws exec backend-aws python scripts/apply_migration_previous_price.py
@@ -121,7 +121,7 @@ docker compose --profile aws exec backend-aws python scripts/apply_migration_pre
 Alternatively, if you need to run migrations outside of Docker:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform/backend
+cd /home/ubuntu/crypto-2.0/backend
 source venv/bin/activate  # If virtualenv exists
 python scripts/apply_migration_previous_price.py
 ```
@@ -135,7 +135,7 @@ python scripts/apply_migration_previous_price.py
 Services are managed via Docker Compose:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Start all services
 docker compose --profile aws up -d
@@ -147,7 +147,7 @@ docker compose --profile aws up -d backend-aws
 ### Stopping Services
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Stop specific service
 docker compose --profile aws stop backend-aws
@@ -159,7 +159,7 @@ docker compose --profile aws down
 ### Checking Service Status
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Check service status
 docker compose --profile aws ps
@@ -180,7 +180,7 @@ Environment variables are configured via `.env.aws` file on the server:
 
 ```bash
 # Edit environment file
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 
 # After editing, restart services to apply changes

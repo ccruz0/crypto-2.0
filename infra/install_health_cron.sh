@@ -10,7 +10,7 @@
 
 set -e
 
-PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+PROJECT_DIR="/home/ubuntu/crypto-2.0"
 CRON_LOG="/var/log/atp_health_monitor.log"
 PYTHON_PATH="/usr/bin/python3"
 SCRIPT_PATH="$PROJECT_DIR/infra/monitor_health.py"

@@ -45,7 +45,7 @@ if [[ "$STATUS" != "Online" ]]; then
 fi
 
 # Git pull fix: SSM runs without HOME; repo may have dubious ownership. Ensure git works.
-GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
+GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
 # Drop broken loose ref so fetch can recreate it (avoids: cannot lock ref ... expected <old-sha>)
 GIT_FETCH_CMD="${GIT_PULL_PREFIX}rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true"
 # DB must be healthy before backend-aws (see prior: postgres_hardened unhealthy blocked compose).
@@ -62,7 +62,7 @@ stack = (
 )
 cmds = [
     "set -e",
-    "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
+    "cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
     git,
     stack,
 ]

@@ -50,7 +50,7 @@ This will:
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose exec -T backend-aws python scripts/watchlist_consistency_check.py
 ```
 
@@ -149,7 +149,7 @@ To run the consistency check automatically every night at 03:00 server time, add
 crontab -e
 
 # Add this line:
-0 3 * * * cd /home/ubuntu/automated-trading-platform && docker compose exec -T backend-aws python scripts/watchlist_consistency_check.py >> /home/ubuntu/watchlist_consistency_cron.log 2>&1
+0 3 * * * cd /home/ubuntu/crypto-2.0 && docker compose exec -T backend-aws python scripts/watchlist_consistency_check.py >> /home/ubuntu/watchlist_consistency_cron.log 2>&1
 ```
 
 This will:

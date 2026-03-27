@@ -20,9 +20,9 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters commands="
-cd /home/ubuntu/automated-trading-platform || exit 1
+cd /home/ubuntu/crypto-2.0 || exit 1
 export HOME=/home/ubuntu
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true
+git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true
 git pull origin main 2>&1 || echo 'Git pull completed'
 CONTAINER=\$(docker ps --filter 'name=market-updater-aws' --format '{{.Names}}' | head -1)
 if [ -z \"\$CONTAINER\" ]; then 

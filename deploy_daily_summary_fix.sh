@@ -38,7 +38,7 @@ rsync -avz --progress \
 # Copy file into Docker container and restart
 echo "🐳 Copiando archivo al contenedor Docker y reiniciando..."
 ssh $REMOTE_TARGET << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 # Find backend container (try multiple patterns)
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

@@ -37,8 +37,8 @@ Or from **PROD** you can SSH to LAB only if key and security groups allow it; ot
 
 ```bash
 docker ps
-cat /home/ubuntu/automated-trading-platform/docker-compose.openclaw.yml
-cat /home/ubuntu/automated-trading-platform/.env.lab | grep -E "OPENCLAW_IMAGE|GIT_REPO"
+cat /home/ubuntu/crypto-2.0/docker-compose.openclaw.yml
+cat /home/ubuntu/crypto-2.0/.env.lab | grep -E "OPENCLAW_IMAGE|GIT_REPO"
 ```
 
 Note the current `OPENCLAW_IMAGE` (likely `ghcr.io/ccruz0/crypto-2.0:openclaw` or unset → placeholder).
@@ -50,7 +50,7 @@ Note the current `OPENCLAW_IMAGE` (likely `ghcr.io/ccruz0/crypto-2.0:openclaw` o
 **Option A — Script (after `git pull origin main`):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 bash scripts/openclaw/deploy_real_openclaw_on_lab.sh
 ```
@@ -58,7 +58,7 @@ bash scripts/openclaw/deploy_real_openclaw_on_lab.sh
 **Option B — Manual:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 
 # Set real OpenClaw image (create .env.lab from example if missing)
@@ -101,7 +101,7 @@ Expect **401** (Basic Auth). Then open in browser: https://dashboard.hilovivo.co
 ## One-liner (on LAB, after SSM connect)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 export OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest && \
 (grep -q '^OPENCLAW_IMAGE=' .env.lab && sed -i "s|^OPENCLAW_IMAGE=.*|OPENCLAW_IMAGE=$OPENCLAW_IMAGE|" .env.lab || echo "OPENCLAW_IMAGE=$OPENCLAW_IMAGE" >> .env.lab) && \
 docker compose -f docker-compose.openclaw.yml down && \

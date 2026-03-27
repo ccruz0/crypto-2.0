@@ -21,7 +21,7 @@ env_files = [
     Path(project_root) / '.env.local',
     Path(project_root) / '.env',
     Path('/opt/automated-trading-platform/.env.local'),
-    Path('/home/ubuntu/automated-trading-platform/.env.local'),
+    Path('/home/ubuntu/crypto-2.0/.env.local'),
 ]
 
 for env_path in env_files:

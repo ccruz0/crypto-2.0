@@ -11,9 +11,9 @@ set -euo pipefail
 
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-i-0d82c172235770a0d}"
 REGION="${AWS_REGION:-ap-southeast-1}"
-REPO=/home/ubuntu/automated-trading-platform
+REPO=/home/ubuntu/crypto-2.0
 # Compose on LAB is run from repo root; override with BACKEND=.../backend if your setup differs.
-BACKEND="${BACKEND:-/home/ubuntu/automated-trading-platform}"
+BACKEND="${BACKEND:-/home/ubuntu/crypto-2.0}"
 NOTION_DB_ID=eb90cfa139f94724a8b476315908510a
 SSM_NOTION_KEY="/automated-trading-platform/lab/notion/api_key"
 

@@ -63,7 +63,7 @@ ls -la docs/reports/no-alerts-no-trades-audit-*.md
 cat docs/reports/no-alerts-no-trades-audit-*.md | tail -1 | xargs cat
 
 # Or download to local machine
-scp your-aws-server:/home/ubuntu/automated-trading-platform/docs/reports/no-alerts-no-trades-audit-*.md ./
+scp your-aws-server:/home/ubuntu/crypto-2.0/docs/reports/no-alerts-no-trades-audit-*.md ./
 ```
 
 ## What to Look For in Audit Report

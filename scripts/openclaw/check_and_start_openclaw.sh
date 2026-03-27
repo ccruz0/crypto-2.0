@@ -6,12 +6,12 @@
 #   4) Print diagnostics for paste (systemctl status + curl -I /openclaw/)
 #
 # Usage (on the instance):
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/check_and_start_openclaw.sh
 
 set -e
 
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 cd "$REPO_ROOT"
 
 echo "=== 1) Check if OpenClaw is already running ==="

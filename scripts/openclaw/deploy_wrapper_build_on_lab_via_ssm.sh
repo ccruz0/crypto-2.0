@@ -14,7 +14,7 @@ cmd_id=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \
   --region "$AWS_REGION" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["sudo -u ubuntu bash -c \"cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1 && git fetch origin main && git reset --hard origin/main\"","cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 && sudo bash scripts/openclaw/do_wrapper_build_on_lab.sh"]' \
+  --parameters 'commands=["sudo -u ubuntu bash -c \"cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1 && git fetch origin main && git reset --hard origin/main\"","cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 && sudo bash scripts/openclaw/do_wrapper_build_on_lab.sh"]' \
   --timeout-seconds 900 \
   --output text --query 'Command.CommandId')
 

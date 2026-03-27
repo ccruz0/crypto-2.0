@@ -51,7 +51,7 @@ Si usas `ssh ubuntu@52.220.32.147` **sin** este bloque, SSH puede estar usando o
 En la terminal de Cursor (en tu Mac):
 
 ```bash
-ssh dashboard-prod 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+ssh dashboard-prod 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 ```
 
 Todo lo que va entre comillas simples se ejecuta **en la instancia EC2**. Puedes encadenar varios comandos con `&&`.
@@ -59,7 +59,7 @@ Todo lo que va entre comillas simples se ejecuta **en la instancia EC2**. Puedes
 ### Opción 2: Varios comandos (una sola conexión)
 
 ```bash
-ssh dashboard-prod 'cd /home/ubuntu/automated-trading-platform && \
+ssh dashboard-prod 'cd /home/ubuntu/crypto-2.0 && \
   sudo chown ubuntu:ubuntu secrets/runtime.env && \
   chmod 600 secrets/runtime.env && \
   docker compose --profile aws up -d'
@@ -116,6 +116,6 @@ Ese script comprueba si la instancia está **Online** en SSM; si lo está, enví
 | Objetivo | Comando / acción |
 |----------|------------------|
 | Conectar por SSH desde Cursor/Mac | `ssh dashboard-prod` (con `dashboard-prod` en `~/.ssh/config` y clave `.pem`). |
-| Ejecutar un comando en EC2 desde Cursor | `ssh dashboard-prod 'cd /home/ubuntu/automated-trading-platform && <comando>'` |
+| Ejecutar un comando en EC2 desde Cursor | `ssh dashboard-prod 'cd /home/ubuntu/crypto-2.0 && <comando>'` |
 | Evitar Permission denied | Usar el alias que tenga `IdentityFile` correcto (p. ej. `dashboard-prod`), no solo `ssh ubuntu@IP`. |
 | Ejecutar sin SSH (si SSM está Online) | `./scripts/aws/fix_runtime_env_and_up_ssm.sh` (u otros scripts que usen `aws ssm send-command`). |

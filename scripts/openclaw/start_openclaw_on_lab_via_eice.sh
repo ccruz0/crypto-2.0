@@ -28,7 +28,7 @@ set +e
 ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -i "$KEY_DIR/key" "ubuntu@$LAB_IP" "bash -s" << 'INNER'
 REPO="$HOME/automated-trading-platform"
-[ -d "$REPO" ] || REPO="/home/ubuntu/automated-trading-platform"
+[ -d "$REPO" ] || REPO="/home/ubuntu/crypto-2.0"
 cd "$REPO" 2>/dev/null || { echo "Repo not found on LAB"; exit 1; }
 export NONINTERACTIVE=1
 sudo bash scripts/openclaw/check_and_start_openclaw.sh 2>/dev/null || {
@@ -50,7 +50,7 @@ if [[ "$SSH_EXIT" -ne 0 ]]; then
   echo "SSH to LAB timed out or failed (exit $SSH_EXIT)."
   echo "LAB SG must allow inbound TCP 22 from YOUR IP (or use Session Manager when Online)."
   echo "Alternative — AWS Console → EC2 → atp-lab-ssm-clean → Connect → EC2 Instance Connect, then:"
-  echo "  cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh"
+  echo "  cd /home/ubuntu/crypto-2.0 && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh"
   echo "Or clone on LAB: git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform"
   exit "$SSH_EXIT"
 fi

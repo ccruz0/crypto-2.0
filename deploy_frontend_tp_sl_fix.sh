@@ -14,12 +14,12 @@ rsync_cmd \
   --exclude 'node_modules' \
   --exclude '.next' \
   frontend/ \
-  $EC2_USER@$EC2_HOST:/home/ubuntu/automated-trading-platform/frontend/
+  $EC2_USER@$EC2_HOST:/home/ubuntu/crypto-2.0/frontend/
 
 # Rebuild and restart on server
 echo "🔨 Rebuilding Docker image and restarting container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'EOF'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 echo "Building frontend Docker image..."
 docker-compose build --no-cache frontend-aws
 echo "Stopping and removing old container..."

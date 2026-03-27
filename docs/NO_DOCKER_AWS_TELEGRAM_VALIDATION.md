@@ -57,7 +57,7 @@ Expected after this fix:
 Run (adjust repo path if needed):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform/backend && /usr/bin/python3 - <<'PY'
+cd /home/ubuntu/crypto-2.0/backend && /usr/bin/python3 - <<'PY'
 from app.services.telegram_notifier import TelegramNotifier
 
 notifier = TelegramNotifier()

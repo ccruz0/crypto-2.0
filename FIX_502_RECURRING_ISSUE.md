@@ -39,7 +39,7 @@ ssh hilovivo-aws
 crontab -e
 
 # Add this line:
-*/5 * * * * /home/ubuntu/automated-trading-platform/auto_restart_containers.sh >> /var/log/auto_restart_containers.log 2>&1
+*/5 * * * * /home/ubuntu/crypto-2.0/auto_restart_containers.sh >> /var/log/auto_restart_containers.log 2>&1
 ```
 
 ### What the Script Does
@@ -58,7 +58,7 @@ If 502 error occurs again, run these commands:
 ./auto_restart_containers.sh
 
 # Option 2: Manual restart
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d'
 
 # Option 3: Quick diagnostic script
 ./quick_fix_502.sh
@@ -68,16 +68,16 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 
 ### Check Container Status
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 ```
 
 ### Check Logs
 ```bash
 # Backend logs
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=100 backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=100 backend-aws'
 
 # Frontend logs  
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=100 frontend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=100 frontend-aws'
 
 # Auto-restart script logs
 ssh hilovivo-aws 'tail -50 /tmp/auto_restart_containers.log'

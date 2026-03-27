@@ -9,38 +9,38 @@
 
 ```bash
 # 1. Navigate to repo and pull latest main
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 
 # 2. Update frontend submodule if needed
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git submodule update --init --recursive
 
 # 3. Rebuild backend-aws container
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build backend-aws
 
 # 4. Rebuild frontend-aws container
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build frontend-aws
 
 # 5. Restart services to use new code
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws up -d backend-aws frontend-aws
 
 # 6. Wait for services to be healthy (30 seconds)
 sleep 30
 
 # 7. Run consistency check (read-only, safe)
-cd /home/ubuntu/automated-trading-platform/backend
+cd /home/ubuntu/crypto-2.0/backend
 python3 scripts/watchlist_consistency_check.py
 
 # 8. Run E2E verification (read-only mode, safe)
-cd /home/ubuntu/automated-trading-platform/backend
+cd /home/ubuntu/crypto-2.0/backend
 python3 scripts/verify_watchlist_e2e.py
 
 # 9. Optional: Run E2E verification with writes (modifies DB, restores values)
-cd /home/ubuntu/automated-trading-platform/backend
+cd /home/ubuntu/crypto-2.0/backend
 E2E_WRITE_TEST=1 python3 scripts/verify_watchlist_e2e.py
 ```
 
@@ -150,7 +150,7 @@ Testing with BTC_USDT (original trade_amount_usd: 10.0, sl_tp_mode: conservative
 
 **Check:**
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ls -la backend/scripts/verify_watchlist_e2e.py
 git log --oneline -1
 git show HEAD:backend/scripts/verify_watchlist_e2e.py | head -5

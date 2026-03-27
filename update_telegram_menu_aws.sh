@@ -36,7 +36,7 @@ echo ""
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
 set -e
 
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || {
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || {
     echo "❌ Cannot find project directory"
     exit 1
 }

@@ -73,7 +73,7 @@
 | `OPENCLAW_API_TOKEN` | Auth for run-atp-command (same as gateway) | Required |
 | `ATP_SSM_INSTANCE_ID` | PROD instance for SSM | i-087953603011543c5 |
 | `ATP_SSM_REGION` | AWS region | ap-southeast-1 |
-| `ATP_PROJECT_PATH` | Project path on instance | /home/ubuntu/automated-trading-platform |
+| `ATP_PROJECT_PATH` | Project path on instance | /home/ubuntu/crypto-2.0 |
 
 ---
 

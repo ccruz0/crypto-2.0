@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Option A one-shot verification on EC2. Safe: no secrets, no expanded compose config.
-# Run: cd /home/ubuntu/automated-trading-platform && bash scripts/aws/option_a_verify_ec2.sh
+# Run: cd /home/ubuntu/crypto-2.0 && bash scripts/aws/option_a_verify_ec2.sh
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 cd "$REPO_ROOT"
 
 # Retry curl until success or max attempts (connection reset / not ready)

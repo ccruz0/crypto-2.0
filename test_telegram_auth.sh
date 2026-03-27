@@ -10,7 +10,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "docker compose --profile aws exec backend-aws python3 << '\''PYEOF'\''",
     "import os",
     "import requests",

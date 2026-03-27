@@ -99,7 +99,7 @@ Sustituye `TU_FINE_GRAINED_PAT_AQUI` por tu Personal Access Token de GitHub (fin
 1. Conéctate a PROD (SSM o EC2 Instance Connect).
 2. Añade `NOTION_TASK_DB` si aún no está (sustituye por el ID de tu base Notion si es otra):
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    grep -q NOTION_TASK_DB secrets/runtime.env || echo 'NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a' >> secrets/runtime.env
    docker compose --profile aws restart backend-aws
    ```

@@ -9,5 +9,5 @@ echo ""
 echo "Local development workflow:"
 echo "1. Edit code locally"
 echo "2. Commit and push changes"
-echo "3. Pull and run on AWS: ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up -d'"
+echo "3. Pull and run on AWS: ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up -d'"
 exit 1

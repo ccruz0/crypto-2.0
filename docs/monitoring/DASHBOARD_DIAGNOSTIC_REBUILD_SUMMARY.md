@@ -146,8 +146,8 @@ bash scripts/debug_dashboard_remote.sh
 **To update documentation on AWS (if needed):**
 ```bash
 cd /Users/carloscruz/automated-trading-platform
-scp -r docs hilovivo-aws:/home/ubuntu/automated-trading-platform/
-scp scripts/debug_dashboard_remote.sh hilovivo-aws:/home/ubuntu/automated-trading-platform/scripts/
+scp -r docs hilovivo-aws:/home/ubuntu/crypto-2.0/
+scp scripts/debug_dashboard_remote.sh hilovivo-aws:/home/ubuntu/crypto-2.0/scripts/
 ```
 
 ## Testing

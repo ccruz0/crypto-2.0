@@ -63,7 +63,7 @@ test -r ~/secrets/openclaw_token && echo "OK: token readable"
 En LAB, en el directorio del repo:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 cp .env.lab.example .env.lab
 chmod 600 .env.lab
 ```
@@ -96,7 +96,7 @@ grep -i token .env.lab
 ## 4. Levantar OpenClaw
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 docker compose -f docker-compose.openclaw.yml logs -f openclaw
@@ -109,7 +109,7 @@ Si falla el `up` por "image not found": define una **OPENCLAW_IMAGE** válida en
 ## 5. (Opcional) Arranque tras reinicio
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw

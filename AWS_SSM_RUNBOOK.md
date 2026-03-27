@@ -52,7 +52,7 @@ cd ~/automated-trading-platform
 If that directory doesn't exist, try:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 Verify you're in the right place:

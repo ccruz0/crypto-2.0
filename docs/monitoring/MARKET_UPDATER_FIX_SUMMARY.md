@@ -96,22 +96,22 @@ bash scripts/debug_dashboard_remote.sh
 
 **Option A: Restart only market-updater (if healthcheck was the only issue)**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart market-updater'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart market-updater'
 ```
 
 **Option B: Full rebuild and restart (if you made changes to docker-compose.yml)**
 ```bash
 # Copy updated docker-compose.yml to AWS
 cd /Users/carloscruz/automated-trading-platform
-scp docker-compose.yml hilovivo-aws:/home/ubuntu/automated-trading-platform/
+scp docker-compose.yml hilovivo-aws:/home/ubuntu/crypto-2.0/
 
 # Rebuild and restart on AWS
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --force-recreate market-updater'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --force-recreate market-updater'
 ```
 
 **Option C: Full stack restart (if needed)**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart'
 ```
 
 ### 3. Verify After Restart

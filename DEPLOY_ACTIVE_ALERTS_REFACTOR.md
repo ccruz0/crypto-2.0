@@ -21,12 +21,12 @@ This deployment updates the ActiveAlerts logic to be state-based from Watchlist 
 
 2. **Navigate to project directory:**
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    ```
 
 3. **Fix git ownership (if needed):**
    ```bash
-   git config --global --add safe.directory /home/ubuntu/automated-trading-platform
+   git config --global --add safe.directory /home/ubuntu/crypto-2.0
    ```
 
 4. **Pull latest changes:**
@@ -71,8 +71,8 @@ aws ssm send-command \
   --instance-ids i-087953603011543c5 \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
-    "git config --global --add safe.directory /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
+    "git config --global --add safe.directory /home/ubuntu/crypto-2.0",
     "git fetch origin",
     "git pull origin main",
     "docker compose --profile aws restart backend",
@@ -145,7 +145,7 @@ docker compose --profile aws up -d backend
 ### Git pull fails
 ```bash
 # Fix ownership
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform
+git config --global --add safe.directory /home/ubuntu/crypto-2.0
 
 # Or reset and pull
 git fetch origin
@@ -169,7 +169,7 @@ curl http://localhost:8000/api/health
 If you need to rollback:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git log --oneline -5  # Find previous commit
 git reset --hard <previous-commit-hash>
 docker compose --profile aws restart backend

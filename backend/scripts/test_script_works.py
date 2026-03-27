@@ -83,7 +83,7 @@ env_files = [
     Path(backend_dir).parent / '.env',
     Path.home() / '.env.local',
     Path('/opt/automated-trading-platform/.env.local'),
-    Path('/home/ubuntu/automated-trading-platform/.env.local'),
+    Path('/home/ubuntu/crypto-2.0/.env.local'),
 ]
 
 found = False

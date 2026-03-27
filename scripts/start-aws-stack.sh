@@ -5,13 +5,13 @@ set -euo pipefail
 # Usage:
 #   SERVER=175.41.189.249 ./scripts/start-aws-stack.sh [/remote/project/path]
 # Defaults:
-#   SERVER (env or $1) required; remote project path defaults to /home/ubuntu/automated-trading-platform
+#   SERVER (env or $1) required; remote project path defaults to /home/ubuntu/crypto-2.0
 
 # Load unified SSH helper
 . "$(dirname "$0")/ssh_key.sh" 2>/dev/null || source "$(dirname "$0")/ssh_key.sh"
 
 SERVER="${SERVER:-${1:-}}"
-REMOTE_PROJECT_DIR="${2:-/home/ubuntu/automated-trading-platform}"
+REMOTE_PROJECT_DIR="${2:-/home/ubuntu/crypto-2.0}"
 if [[ -z "${SERVER}" ]]; then
   echo "❌ SERVER not specified. Set SERVER env or pass as first argument."
   exit 1

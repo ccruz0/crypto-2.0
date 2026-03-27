@@ -25,7 +25,7 @@ echo "=========================================="
 echo ""
 echo "Or run via SSH in one command:"
 echo ""
-echo "ssh your-aws-server 'cd /home/ubuntu/automated-trading-platform && docker exec automated-trading-platform-backend-aws-1 python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24'"
+echo "ssh your-aws-server 'cd /home/ubuntu/crypto-2.0 && docker exec automated-trading-platform-backend-aws-1 python backend/scripts/audit_no_alerts_no_trades.py --since-hours 24'"
 
 
 

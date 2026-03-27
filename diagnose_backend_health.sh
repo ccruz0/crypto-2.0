@@ -72,7 +72,7 @@ diagnose_backend() {
 
 # Run diagnostics locally (on AWS server)
 run_local_diagnostics() {
-    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/automated-trading-platform 2>/dev/null || {
+    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
         print_error "Cannot find project directory"
         exit 1
     }
@@ -359,7 +359,7 @@ fix_backend() {
 
 # Fix backend locally
 fix_local_backend() {
-    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/automated-trading-platform 2>/dev/null || {
+    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
         print_error "Cannot find project directory"
         exit 1
     }

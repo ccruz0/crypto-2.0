@@ -17,7 +17,7 @@ echo "📤 Step 1: Pulling latest code..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main || git pull"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main || git pull"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)
@@ -45,7 +45,7 @@ echo "🔄 Step 2: Restarting backend service..."
 COMMAND_ID2=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker-compose --profile aws restart backend-aws"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker-compose --profile aws restart backend-aws"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)
@@ -69,7 +69,7 @@ echo "============================================================="
 COMMAND_ID3=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker-compose --profile aws logs market-updater-aws --tail=50"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker-compose --profile aws logs market-updater-aws --tail=50"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)

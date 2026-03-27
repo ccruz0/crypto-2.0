@@ -48,7 +48,7 @@ Run from **repo root on the LAB host** (e.g. after SSM Session Manager or SSH).
 ### 1.1 Diagnostic (no secrets printed)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/diagnostics/check_notion_env.sh
 ```
 
@@ -90,7 +90,7 @@ No extra steps if diagnostic and container checks above pass.
 ## 3. One Notion pickup cycle
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/run_notion_task_pickup.sh
 ```
 

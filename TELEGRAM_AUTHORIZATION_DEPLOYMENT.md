@@ -20,7 +20,7 @@ docker compose --profile aws logs backend-aws | grep "user_id" | tail -5
 **Option A: Using Helper Script (Recommended)**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./fix_telegram_auth_user_id.sh .env.aws
 # Enter your user ID when prompted
 ```
@@ -28,7 +28,7 @@ cd /home/ubuntu/automated-trading-platform
 **Option B: Manual Edit**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

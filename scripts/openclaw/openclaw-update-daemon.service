@@ -6,7 +6,7 @@
 
 [Unit]
 Description=OpenClaw Update Daemon (host-side)
-Documentation=file:///home/ubuntu/automated-trading-platform/docs/openclaw/OPENCLAW_UPDATE_FROM_UI.md
+Documentation=file:///home/ubuntu/crypto-2.0/docs/openclaw/OPENCLAW_UPDATE_FROM_UI.md
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -14,11 +14,11 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/home/ubuntu/automated-trading-platform
+WorkingDirectory=/home/ubuntu/crypto-2.0
 Environment=OPENCLAW_CONFIG_PATH=/opt/openclaw/home-data/openclaw.json
-Environment=ATP_REPO_PATH=/home/ubuntu/automated-trading-platform
+Environment=ATP_REPO_PATH=/home/ubuntu/crypto-2.0
 Environment=OPENCLAW_UPDATE_PORT=19999
-ExecStart=/usr/bin/python3 /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw_update_daemon.py
+ExecStart=/usr/bin/python3 /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw_update_daemon.py
 Restart=always
 RestartSec=5
 

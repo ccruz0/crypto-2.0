@@ -22,7 +22,7 @@ bash scripts/debug_strategy_remote.sh
 ```bash
 REMOTE_USER="ubuntu"
 REMOTE_HOST="REPLACE_ME"              # ⚠️ Change this to your server IP or hostname
-REMOTE_PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+REMOTE_PROJECT_DIR="/home/ubuntu/crypto-2.0"
 BACKEND_SERVICE_NAME="backend-aws"
 ```
 
@@ -67,7 +67,7 @@ Example output:
 [REMOTE DEBUG] Running on ubuntu@123.45.67.89
 [REMOTE DEBUG] Symbol: ALGO_USDT
 [REMOTE DEBUG] Last N: 20
-[REMOTE DEBUG] Command: cd "/home/ubuntu/automated-trading-platform" && docker compose exec "backend-aws" python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "20"
+[REMOTE DEBUG] Command: cd "/home/ubuntu/crypto-2.0" && docker compose exec "backend-aws" python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "20"
 
 ⚠️  FLIP DETECTED between Entry #1 and Entry #2
    BUY → WAIT

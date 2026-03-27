@@ -6,12 +6,12 @@ Requires=docker.service
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/automated-trading-platform
-ExecStart=/home/ubuntu/automated-trading-platform/scripts/health_monitor.sh
+WorkingDirectory=/home/ubuntu/crypto-2.0
+ExecStart=/home/ubuntu/crypto-2.0/scripts/health_monitor.sh
 Restart=always
 RestartSec=10
-StandardOutput=append:/home/ubuntu/automated-trading-platform/logs/health_monitor.log
-StandardError=append:/home/ubuntu/automated-trading-platform/logs/health_monitor.error.log
+StandardOutput=append:/home/ubuntu/crypto-2.0/logs/health_monitor.log
+StandardError=append:/home/ubuntu/crypto-2.0/logs/health_monitor.error.log
 
 [Install]
 WantedBy=multi-user.target

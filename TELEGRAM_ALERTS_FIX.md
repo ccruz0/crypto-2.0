@@ -51,7 +51,7 @@ TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
 ### 3. Run Diagnostic Script
 On the AWS server, run:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker-compose exec market-updater-aws python3 backend/scripts/diagnose_telegram_alerts.py
 ```
 
@@ -119,7 +119,7 @@ docker-compose ps market-updater-aws
 1. **Deploy the fix**:
    ```bash
    # On AWS server
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    git pull
    docker-compose restart market-updater-aws
    ```

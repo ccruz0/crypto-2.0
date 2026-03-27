@@ -11,7 +11,7 @@ echo "🔍 Verifying Telegram config on EC2..."
 echo ""
 
 # SSM commands - must be valid JSON array (tg_enabled via Python after deploy; env vars always work)
-PARAMS='{"commands":["cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || true","echo === RUN_TELEGRAM backend-aws ===","docker compose --profile aws exec -T backend-aws printenv RUN_TELEGRAM 2>/dev/null || true","echo","echo === RUN_TELEGRAM_POLLER canary ===","docker compose --profile aws exec -T backend-aws-canary printenv RUN_TELEGRAM_POLLER 2>/dev/null || true","echo","echo === tg_enabled_aws DB ===","docker compose --profile aws exec -T backend-aws python scripts/diag/verify_telegram_tg_enabled.py 2>/dev/null || echo (run after deploy)"]}'
+PARAMS='{"commands":["cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || true","echo === RUN_TELEGRAM backend-aws ===","docker compose --profile aws exec -T backend-aws printenv RUN_TELEGRAM 2>/dev/null || true","echo","echo === RUN_TELEGRAM_POLLER canary ===","docker compose --profile aws exec -T backend-aws-canary printenv RUN_TELEGRAM_POLLER 2>/dev/null || true","echo","echo === tg_enabled_aws DB ===","docker compose --profile aws exec -T backend-aws python scripts/diag/verify_telegram_tg_enabled.py 2>/dev/null || echo (run after deploy)"]}'
 CMD_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \

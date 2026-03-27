@@ -33,7 +33,7 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$AWS_REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform || exit 1",
+    "cd /home/ubuntu/crypto-2.0 || exit 1",
     "RUN_VIA_SSM=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh"
   ]' \
   --query 'Command.CommandId' \

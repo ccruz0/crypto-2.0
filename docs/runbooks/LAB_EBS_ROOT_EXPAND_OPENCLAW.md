@@ -144,7 +144,7 @@ The repo ships **`scripts/aws/lab_grow_root_filesystem.sh`**, which uses **`lsbl
 ```bash
 export AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 export LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-i-0d82c172235770a0d}"
-REPO="/home/ubuntu/automated-trading-platform"
+REPO="/home/ubuntu/crypto-2.0"
 
 CID=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \

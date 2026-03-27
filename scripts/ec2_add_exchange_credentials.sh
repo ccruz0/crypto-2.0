@@ -2,10 +2,10 @@
 # Run this ON the EC2 instance (e.g. after ssh ubuntu@...)
 # Prompts for Exchange API Key and Secret, appends them to secrets/runtime.env,
 # fixes perms, and tells you to restart the backend.
-# Usage: cd /home/ubuntu/automated-trading-platform && bash scripts/ec2_add_exchange_credentials.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && bash scripts/ec2_add_exchange_credentials.sh
 
 set -e
-REPO_DIR="${REPO_DIR:-/home/ubuntu/automated-trading-platform}"
+REPO_DIR="${REPO_DIR:-/home/ubuntu/crypto-2.0}"
 ENV_FILE="${REPO_DIR}/secrets/runtime.env"
 
 echo "Add Exchange API credentials to secrets/runtime.env"

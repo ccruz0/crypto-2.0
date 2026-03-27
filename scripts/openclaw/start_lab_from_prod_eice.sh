@@ -21,4 +21,4 @@ aws ec2-instance-connect send-ssh-public-key --instance-id "$PROD_ID" --instance
 
 echo "Copying key to PROD and running PROD->LAB..."
 cat "$KEY_DIR/key" | ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  -i "$KEY_DIR/key" "ubuntu@$PROD_PUBLIC" "cat > /tmp/labkey && chmod 600 /tmp/labkey && ssh -i /tmp/labkey -o ConnectTimeout=12 -o StrictHostKeyChecking=no ubuntu@$LAB_IP 'cd /home/ubuntu/automated-trading-platform 2>/dev/null && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh' && rm -f /tmp/labkey" 2>/dev/null && echo "OpenClaw started on LAB." || echo "PROD->LAB SSH failed (key may have expired or LAB SG blocks 22 from PROD)."
+  -i "$KEY_DIR/key" "ubuntu@$PROD_PUBLIC" "cat > /tmp/labkey && chmod 600 /tmp/labkey && ssh -i /tmp/labkey -o ConnectTimeout=12 -o StrictHostKeyChecking=no ubuntu@$LAB_IP 'cd /home/ubuntu/crypto-2.0 2>/dev/null && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh' && rm -f /tmp/labkey" 2>/dev/null && echo "OpenClaw started on LAB." || echo "PROD->LAB SSH failed (key may have expired or LAB SG blocks 22 from PROD)."

@@ -10,7 +10,7 @@ Usage:
     python3 infra/monitor_health.py
 
 The script should be run via cron every 5 minutes:
-    */5 * * * * cd /home/ubuntu/automated-trading-platform && /usr/bin/python3 infra/monitor_health.py >> /var/log/atp_health_monitor.log 2>&1
+    */5 * * * * cd /home/ubuntu/crypto-2.0 && /usr/bin/python3 infra/monitor_health.py >> /var/log/atp_health_monitor.log 2>&1
 """
 import os
 import sys
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-PROJECT_DIR = "/home/ubuntu/automated-trading-platform"
+PROJECT_DIR = "/home/ubuntu/crypto-2.0"
 CRITICAL_SERVICES = ["backend-aws", "frontend-aws", "db", "gluetun"]
 BACKEND_HEALTH_URL = "http://127.0.0.1:8002/health"
 FRONTEND_HEALTH_URL = "http://127.0.0.1:3000"

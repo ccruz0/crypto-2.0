@@ -14,7 +14,7 @@ NC='\033[0m'
 # AWS Configuration
 INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
-PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+PROJECT_DIR="/home/ubuntu/crypto-2.0"
 
 print_header() {
     echo -e "\n${CYAN}========================================${NC}"

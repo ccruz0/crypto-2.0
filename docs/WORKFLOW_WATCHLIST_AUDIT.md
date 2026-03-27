@@ -35,11 +35,11 @@ Assume:
   `hilovivo-aws` (configured in `~/.ssh/config`)
 
 - **Remote project path:**
-  `/home/ubuntu/automated-trading-platform`
+  `/home/ubuntu/crypto-2.0`
 
 - **All remote commands MUST be run like this:**
   ```bash
-  sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && <COMMAND>'"
+  sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && <COMMAND>'"
   ```
 
 Never change SSH keys or credentials.
@@ -96,13 +96,13 @@ Once local tests and build pass:
 
 1. **Deploy the stack to AWS:**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose pull || true'"
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up --build -d'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose pull || true'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up --build -d'"
    ```
 
 2. **Wait for services to become healthy:**
    ```bash
-   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose ps'"
+   sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose ps'"
    ```
 
 3. **Check backend logs for startup errors:**
@@ -354,8 +354,8 @@ cd /Users/carloscruz/automated-trading-platform/frontend && npm run lint && npm 
 
 ### AWS Deployment
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose down'"
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up --build -d'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose down'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up --build -d'"
 ```
 
 ### Health Check
@@ -365,7 +365,7 @@ curl -s https://dashboard.hilovivo.com/api/health
 
 ### Backend Logs
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker logs automated-trading-platform-backend-aws-1 --tail 200'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker logs automated-trading-platform-backend-aws-1 --tail 200'"
 ```
 
 ### Dashboard URL

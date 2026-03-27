@@ -11,7 +11,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform || exit 1",
+    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || exit 1",
     "docker ps --format \"table {{.Names}}\t{{.Status}}\" | grep backend",
     "docker logs --tail 300 automated-trading-platform-backend-aws-1 2>&1 || docker logs --tail 300 backend-aws 2>&1 || echo \"Container not found\""
   ]' \

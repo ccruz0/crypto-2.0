@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 echo "=== Step 1: Get API Token ==="
 TOKEN=$(docker compose --profile aws exec -T backend-aws python3 -c "

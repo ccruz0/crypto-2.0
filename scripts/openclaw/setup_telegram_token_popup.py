@@ -11,7 +11,7 @@ SECRETS_ENV = REPO_ROOT / "secrets" / "runtime.env"
 
 LAB_INSTANCE_ID = "i-0d82c172235770a0d"
 AWS_REGION = "ap-southeast-1"
-REPO_ON_LAB = "/home/ubuntu/automated-trading-platform"
+REPO_ON_LAB = "/home/ubuntu/crypto-2.0"
 
 
 def _get_token_osascript():

@@ -40,13 +40,13 @@ fi
 rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
   frontend/src/app/page.tsx \
   frontend/src/lib/api.ts \
-  ubuntu@54.254.150.31:/home/ubuntu/automated-trading-platform/frontend/src/
+  ubuntu@54.254.150.31:/home/ubuntu/crypto-2.0/frontend/src/
 
 # 2. Conectar al servidor
 ssh -i ~/.ssh/id_rsa ubuntu@54.254.150.31
 
 # 3. Copiar archivos al contenedor Docker y reiniciar
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 CONTAINER_NAME=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)
 if [ -n "$CONTAINER_NAME" ]; then
   docker cp frontend/src/app/page.tsx $CONTAINER_NAME:/app/src/app/page.tsx
@@ -76,7 +76,7 @@ Si el frontend necesita rebuild (no solo copiar archivos), ejecuta:
 
 ```bash
 # En el servidor del frontend
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker-compose exec frontend npm run build
 docker-compose restart frontend
 ```

@@ -313,7 +313,7 @@ bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "ALERT_EMIT_FINAL|send_bu
 
 ### Container Status
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker ps --format \"table {{.Names}}\t{{.Status}}\"'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker ps --format \"table {{.Names}}\t{{.Status}}\"'"
 ```
 
 ---

@@ -6,13 +6,13 @@
 # - Points Nginx proxy_pass to LAB private IP (default 172.31.3.214:8080 — matches docker-compose.openclaw.yml)
 # - Reloads nginx after validating config
 #
-# Prereqs: repo at /home/ubuntu/automated-trading-platform (or set REPO_ROOT).
+# Prereqs: repo at /home/ubuntu/crypto-2.0 (or set REPO_ROOT).
 # After running: open https://dashboard.hilovivo.com/openclaw/ — expect 401 (Basic Auth), not 504.
 #
 # If 504 persists: LAB may be down or SG blocking. On LAB run: sudo bash scripts/openclaw/check_and_start_openclaw.sh
 
 set -e
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 if [[ ! -d "$REPO_ROOT" ]]; then
   echo "REPO_ROOT not found: $REPO_ROOT. Set REPO_ROOT or run from repo on PROD."
   exit 1

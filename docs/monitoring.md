@@ -41,14 +41,14 @@ A helper script to install the health monitor as a cron job that runs every 5 mi
    TELEGRAM_CHAT_ID=<REDACTED_TELEGRAM_CHAT_ID>
    ```
 
-2. Ensure you have Docker Compose installed and the project is set up at `/home/ubuntu/automated-trading-platform`
+2. Ensure you have Docker Compose installed and the project is set up at `/home/ubuntu/crypto-2.0`
 
 ### Install Cron Job
 
 Run the installation script:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash infra/install_health_cron.sh
 ```
 
@@ -79,17 +79,17 @@ If you prefer to install manually:
 
    Add this line:
    ```
-   */5 * * * * cd /home/ubuntu/automated-trading-platform && /usr/bin/python3 infra/monitor_health.py >> /var/log/atp_health_monitor.log 2>&1
+   */5 * * * * cd /home/ubuntu/crypto-2.0 && /usr/bin/python3 infra/monitor_health.py >> /var/log/atp_health_monitor.log 2>&1
    ```
 
-   **Important:** Always include `cd /home/ubuntu/automated-trading-platform` before running the script to ensure Docker Compose commands work correctly.
+   **Important:** Always include `cd /home/ubuntu/crypto-2.0` before running the script to ensure Docker Compose commands work correctly.
 
 ## Manual Testing
 
 To test the monitor script manually:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 /usr/bin/python3 infra/monitor_health.py
 ```
 
@@ -206,7 +206,7 @@ tail -50 /var/log/atp_health_monitor.log
 
 2. Test Telegram helper manually:
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    python3 -c "from infra.telegram_helper import send_telegram_message; send_telegram_message('Test message')"
    ```
 
@@ -214,7 +214,7 @@ tail -50 /var/log/atp_health_monitor.log
 
 Ensure you're running from the correct directory:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose ps
 ```
 

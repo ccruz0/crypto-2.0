@@ -9,7 +9,7 @@ echo ""
 aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws exec backend-aws grep -A 5 \"CRITICAL: Store as string\" /app/app/services/brokers/crypto_com_trade.py || echo \"Code not found\""]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker compose --profile aws exec backend-aws grep -A 5 \"CRITICAL: Store as string\" /app/app/services/brokers/crypto_com_trade.py || echo \"Code not found\""]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' > /tmp/verify_cmd.txt

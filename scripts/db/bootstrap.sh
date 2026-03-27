@@ -4,7 +4,7 @@
 # Exit 0 if schema OK or created; non-zero if we cannot ensure schema.
 #
 # Usage:
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   ./scripts/db/bootstrap.sh
 
 set -euo pipefail

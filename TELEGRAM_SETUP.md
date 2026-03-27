@@ -51,7 +51,7 @@ Run these commands to add the environment variables to your Docker container:
 ssh -i "your-key.pem" ubuntu@your-ip
 
 # Edit the docker-compose.yml to add environment variables
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano docker-compose.yml
 
 # Add these lines under backend -> environment:

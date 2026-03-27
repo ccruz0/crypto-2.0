@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 REMOTE_HOST="hilovivo-aws"
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 EC2_HOST="54.254.150.31"
 
 echo -e "${BLUE}========================================${NC}"

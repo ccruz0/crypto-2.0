@@ -6,7 +6,7 @@ set -e
 
 DIAGNOSTICS_API_KEY="${DIAGNOSTICS_API_KEY:-eJrAlyoA9SleEMAwRpvISw5qekXAfFoTVMxB6Ja-TUA}"
 AWS_HOST="${AWS_HOST:-hilovivo-aws}"
-REPO_PATH="/home/ubuntu/automated-trading-platform"
+REPO_PATH="/home/ubuntu/crypto-2.0"
 BACKEND_PORT="8002"
 
 echo "🔍 Verifying portfolio on AWS..."

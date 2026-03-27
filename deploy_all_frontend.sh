@@ -13,11 +13,11 @@ rsync_cmd \
   --exclude 'node_modules' \
   --exclude '.next' \
   frontend/ \
-  $EC2_USER@$EC2_HOST:/home/ubuntu/automated-trading-platform/frontend/
+  $EC2_USER@$EC2_HOST:/home/ubuntu/crypto-2.0/frontend/
 
 # Rebuild and restart frontend-aws container
 ssh_cmd $EC2_USER@$EC2_HOST << 'EOF'
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 echo "Rebuilding frontend-aws container..."
 docker compose --profile aws build frontend-aws
 echo "Restarting frontend-aws container..."

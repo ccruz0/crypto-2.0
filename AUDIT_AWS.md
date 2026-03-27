@@ -87,7 +87,7 @@ Outbound:
 
 | Aspect | Documentation Claims | Current State (Live) | Verification Command | Status |
 |--------|---------------------|---------------------|---------------------|--------|
-| **Repo Location** | `/home/ubuntu/automated-trading-platform` | ✅ `/home/ubuntu/automated-trading-platform` exists | `pwd` → `/home/ubuntu/automated-trading-platform` | ✅ MATCH |
+| **Repo Location** | `/home/ubuntu/crypto-2.0` | ✅ `/home/ubuntu/crypto-2.0` exists | `pwd` → `/home/ubuntu/crypto-2.0` | ✅ MATCH |
 | **Git Branch** | `main` | ✅ `main` (up to date with origin/main) | `git branch --show-current` → `main` | ✅ MATCH |
 | **Git HEAD** | UNKNOWN | ✅ `c5bd965` (feat: Add admin endpoints) | `git rev-parse HEAD` → `c5bd965cbef90d10975737f479c2056300690500` | ✅ VERIFIED |
 | **Git Status** | Clean working tree | ❌ **603 uncommitted changes** (severe drift) | `git status --short | wc -l` → `603` | ❌ DRIFT |
@@ -148,7 +148,7 @@ Swap:          2.0Gi       585Mi       1.4Gi
 
 ### 2. Repo State (Including Drift)
 
-**Location**: `/home/ubuntu/automated-trading-platform`
+**Location**: `/home/ubuntu/crypto-2.0`
 
 **Command Output**:
 ```bash
@@ -371,7 +371,7 @@ server_name dashboard.hilovivo.com;
    - **Verification**: `docker compose --profile aws ps | grep market-updater-aws` should show running
 
 2. **Git Repository Drift (603 Uncommitted Changes)**
-   - **File**: `/home/ubuntu/automated-trading-platform`
+   - **File**: `/home/ubuntu/crypto-2.0`
    - **Issue**: 603 uncommitted changes, deployment drift from git state, unclear what code is actually deployed
    - **Evidence**:
      ```bash
@@ -752,7 +752,7 @@ postgres_hardened                           automated-trading-platform-db       
 5. Copied required files: `.env`, `.env.local` from drifted directory
 
 **Result**:
-- ✅ Clean repo at `/home/ubuntu/automated-trading-platform`
+- ✅ Clean repo at `/home/ubuntu/crypto-2.0`
 - ✅ HEAD: `fd44bca06e6ff0ddd3147a46aaa6e89b06a6f580` (newer than previous)
 - ✅ Working tree clean: `git status` shows "nothing to commit"
 - ✅ Drifted repo archived: `~/automated-trading-platform.DRIFTED.20260108_092722`
@@ -920,7 +920,7 @@ $ ls -la /home/ubuntu/secure-backups/ | wc -l
 
 **Findings**:
 - **Process**: Python uvicorn service (pid=1633597)
-- **Command**: `/home/ubuntu/automated-trading-platform/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000`
+- **Command**: `/home/ubuntu/crypto-2.0/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000`
 - **Purpose**: Crypto proxy service (not in docker-compose.yml, runs outside Docker)
 - **Status**: Running since 2025 (uptime: 116:39)
 
@@ -932,7 +932,7 @@ $ ss -lntp | grep ':9000'
 LISTEN 0      2048         0.0.0.0:9000       0.0.0.0:*    users:(("python",pid=1633597,fd=6))
 
 $ ps aux | grep 1633597
-ubuntu   1633597  0.3  0.6  63564 12124 ?        Ss    2025 116:39 /home/ubuntu/automated-trading-platform/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000
+ubuntu   1633597  0.3  0.6  63564 12124 ?        Ss    2025 116:39 /home/ubuntu/crypto-2.0/crypto_proxy_env/bin/python -m uvicorn crypto_proxy:app --host 0.0.0.0 --port 9000
 ```
 
 ---

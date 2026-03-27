@@ -13,7 +13,7 @@ read -p "Presiona Enter DESPUÉS de enviar el mensaje en el canal..."
 cd /Users/carloscruz/automated-trading-platform
 source scripts/ssh_key.sh 2>/dev/null
 
-ssh_cmd hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'
+ssh_cmd hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'
 import os
 import requests
 import time
@@ -38,7 +38,7 @@ if data.get('ok'):
                 print()
                 print('📝 Actualizando .env.aws...')
                 import subprocess
-                subprocess.run(['sed', '-i', f's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID={chat_id}|', '/home/ubuntu/automated-trading-platform/.env.aws'])
+                subprocess.run(['sed', '-i', f's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID={chat_id}|', '/home/ubuntu/crypto-2.0/.env.aws'])
                 print(f'✅ Actualizado: TELEGRAM_CHAT_ID={chat_id}')
                 exit(0)
 
@@ -48,7 +48,7 @@ PYEOF
 
 echo ""
 echo "🔄 Reiniciando servicios..."
-ssh_cmd hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws market-updater-aws"
+ssh_cmd hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws market-updater-aws"
 
 echo ""
 echo "✅ ¡Listo! El chat_id ha sido actualizado y los servicios reiniciados."

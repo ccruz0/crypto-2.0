@@ -82,7 +82,7 @@ docker-compose --profile aws logs --tail=50 backend
 docker-compose --profile aws ps backend
 
 # Verificar que el fix está activo
-grep -A 2 "sync_order_history(db" /home/ubuntu/automated-trading-platform/backend/app/services/exchange_sync.py
+grep -A 2 "sync_order_history(db" /home/ubuntu/crypto-2.0/backend/app/services/exchange_sync.py
 ```
 
 ---

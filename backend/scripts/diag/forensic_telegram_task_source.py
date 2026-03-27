@@ -10,7 +10,7 @@ Run inside backend-aws container:
 
 Or via SSM:
   aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T backend-aws python /app/scripts/diag/forensic_telegram_task_source.py"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws python /app/scripts/diag/forensic_telegram_task_source.py"]' \
     --region ap-southeast-1
 """
 from __future__ import annotations

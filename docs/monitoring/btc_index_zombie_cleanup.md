@@ -10,7 +10,7 @@ BTC BUY INDEX alerts were being sent repeatedly, even after throttling fixes wer
 A **zombie systemd service** (`crypto-trading.service`) was running an old backend instance outside Docker:
 - **Service:** `crypto-trading.service`
 - **Processes:** Two Python processes (PIDs 2792569 and 3102798)
-- **Command:** `/usr/bin/python3 /home/ubuntu/automated-trading-platform/working_crypto_server.py`
+- **Command:** `/usr/bin/python3 /home/ubuntu/crypto-2.0/working_crypto_server.py`
 - **Status:** The file `working_crypto_server.py` no longer exists, but the processes were still running from a previous deployment
 - **Location:** Running directly on the host (not in Docker)
 

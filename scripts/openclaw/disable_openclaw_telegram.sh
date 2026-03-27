@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-/home/ubuntu/automated-trading-platform}"
+REPO="${REPO:-/home/ubuntu/crypto-2.0}"
 CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/opt/openclaw/home-data/openclaw.json}"
 
 echo "=== Disable OpenClaw Telegram (LAB) ==="

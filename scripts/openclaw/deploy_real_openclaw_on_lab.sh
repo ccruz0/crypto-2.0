@@ -3,13 +3,13 @@
 # Connect to LAB via: aws ssm start-session --target i-0d82c172235770a0d --region ap-southeast-1
 #
 # Usage on LAB:
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/deploy_real_openclaw_on_lab.sh
 #
 # Optional: OPENCLAW_IMAGE=ghcr.io/ccruz0/openclaw:latest (default)
 
 set -euo pipefail
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/ccruz0/openclaw:latest}"
 
 cd "$REPO_ROOT"

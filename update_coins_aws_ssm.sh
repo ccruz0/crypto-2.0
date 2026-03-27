@@ -99,7 +99,7 @@ ENCODED_SCRIPT=$(echo "$PYTHON_SCRIPT" | base64)
 
 # Create command to decode and execute
 # Try different service names and profiles
-COMMAND="cd /home/ubuntu/automated-trading-platform && echo '$ENCODED_SCRIPT' | base64 -d > /tmp/update_coins.py && (docker compose --profile aws exec -T backend-aws python3 /tmp/update_coins.py 2>/dev/null || docker compose exec -T backend-aws python3 /tmp/update_coins.py 2>/dev/null || docker compose exec -T backend python3 /tmp/update_coins.py 2>/dev/null || docker exec -i \$(docker ps --filter 'name=backend' --format '{{.Names}}' | head -1) python3 /tmp/update_coins.py)"
+COMMAND="cd /home/ubuntu/crypto-2.0 && echo '$ENCODED_SCRIPT' | base64 -d > /tmp/update_coins.py && (docker compose --profile aws exec -T backend-aws python3 /tmp/update_coins.py 2>/dev/null || docker compose exec -T backend-aws python3 /tmp/update_coins.py 2>/dev/null || docker compose exec -T backend python3 /tmp/update_coins.py 2>/dev/null || docker exec -i \$(docker ps --filter 'name=backend' --format '{{.Names}}' | head -1) python3 /tmp/update_coins.py)"
 
 print_status "Enviando comando a AWS EC2 instance $INSTANCE_ID..."
 

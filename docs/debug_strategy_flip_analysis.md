@@ -13,7 +13,7 @@ Attempted to capture FLIP DETECTED events for `ALGO_USDT` using the remote debug
 ### Script Configuration
 - **Remote Host:** `hilovivo-aws`
 - **Remote User:** `ubuntu`
-- **Project Directory:** `/home/ubuntu/automated-trading-platform`
+- **Project Directory:** `/home/ubuntu/crypto-2.0`
 - **Backend Service:** `backend-aws`
 - **Container:** `automated-trading-platform-backend-aws-1` (ID: `4da09ea4cd4ca745ce8b5aab0145a11ee4d3986bdcd2d5ab7873ac541524892c`)
 
@@ -31,7 +31,7 @@ bash scripts/debug_strategy_remote.sh ALGO_USDT 100
 [REMOTE DEBUG] Running on ubuntu@hilovivo-aws
 [REMOTE DEBUG] Symbol: ALGO_USDT
 [REMOTE DEBUG] Last N: 100
-[REMOTE DEBUG] Command: cd "/home/ubuntu/automated-trading-platform" && CONTAINER_NAME=$(docker compose ps -q "backend-aws") && python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "100" --container "$CONTAINER_NAME"
+[REMOTE DEBUG] Command: cd "/home/ubuntu/crypto-2.0" && CONTAINER_NAME=$(docker compose ps -q "backend-aws") && python3 backend/scripts/debug_strategy.py "ALGO_USDT" --compare --last "100" --container "$CONTAINER_NAME"
 
 🔍 Fetching strategy logs for ALGO_USDT...
    Container: 4da09ea4cd4ca745ce8b5aab0145a11ee4d3986bdcd2d5ab7873ac541524892c

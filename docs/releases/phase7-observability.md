@@ -39,7 +39,7 @@ In `secrets/runtime.env` set `TELEGRAM_ALERT_BOT_TOKEN` and `TELEGRAM_ALERT_CHAT
 **EC2 run (Phase 7.1):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull --ff-only
 docker compose --profile aws build --no-cache telegram-alerts backend-aws market-updater-aws
 docker compose --profile aws up -d prometheus grafana alertmanager telegram-alerts
@@ -118,7 +118,7 @@ Backend logs a line when a request exceeds 800 ms:
 ## EC2 verification checklist
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull --ff-only
 
 # Rebuild the images that changed (backend + updater)

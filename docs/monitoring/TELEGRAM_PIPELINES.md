@@ -220,7 +220,7 @@ docker compose exec backend python scripts/send_test_telegram_message.py
 
 **AWS:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws exec backend-aws python scripts/send_test_telegram_message.py'
 ```
 

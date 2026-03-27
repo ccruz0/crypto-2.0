@@ -106,7 +106,7 @@ For **LDO_USDT** (and **LDO_USD**) with preset **scalp-aggressive**:
 cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "LDO.*DEBUG" | tail -20
 
 # Check preset configuration
-ssh hilovivo-aws 'cat /home/ubuntu/automated-trading-platform/backend/trading_config.json | grep -A 3 "LDO"'
+ssh hilovivo-aws 'cat /home/ubuntu/crypto-2.0/backend/trading_config.json | grep -A 3 "LDO"'
 ```
 
 ## Files Changed

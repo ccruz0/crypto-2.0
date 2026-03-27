@@ -3,7 +3,7 @@
 # Use on the host where the backend runs (e.g. EC2) or in a venv that has backend deps.
 #
 # On AWS (backend in Docker):
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   ./scripts/run_notion_task_pickup.sh
 #
 # When run on the server, the script passes NOTION_TASK_DB into the container for this run,

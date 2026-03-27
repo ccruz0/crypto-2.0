@@ -182,5 +182,5 @@ Telegram message sent successfully (origin=AWS)
 - The script uses `docker compose logs` which may have a slight delay
 - For real-time debugging, you can tail logs directly:
   ```bash
-  ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs -f backend-aws | grep TON_USDT'
+  ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs -f backend-aws | grep TON_USDT'
   ```

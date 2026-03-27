@@ -132,7 +132,7 @@ docker compose --profile aws up -d backend-aws
 **Manual (PROD, if not re-rendering):** On the PROD host, add the variable to the existing runtime env, then restart only the backend:
 
 ```bash
-cd /path/to/repo   # e.g. /home/ubuntu/automated-trading-platform
+cd /path/to/repo   # e.g. /home/ubuntu/crypto-2.0
 grep -n 'HEALTH_STALE_MARKET_MINUTES' secrets/runtime.env || true
 # If not present, add:
 echo 'HEALTH_STALE_MARKET_MINUTES=15' | sudo tee -a secrets/runtime.env

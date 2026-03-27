@@ -5,7 +5,7 @@ echo "=========================================="
 echo "Fixing TON_USDT trade configuration"
 echo "=========================================="
 
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose exec -T backend-aws python << EOF
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec -T backend-aws python << EOF
 import sys
 sys.path.insert(0, "/app")
 from app.database import SessionLocal

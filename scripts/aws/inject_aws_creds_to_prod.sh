@@ -29,7 +29,7 @@ B64_SK=$(echo -n "$SK" | base64 | tr -d '\n')
 
 echo "Injecting AWS credentials into PROD runtime.env..."
 
-CMD="cd /home/ubuntu/automated-trading-platform || exit 1
+CMD="cd /home/ubuntu/crypto-2.0 || exit 1
 grep -v '^AWS_ACCESS_KEY_ID=' secrets/runtime.env 2>/dev/null | grep -v '^AWS_SECRET_ACCESS_KEY=' | grep -v '^AWS_DEFAULT_REGION=' > secrets/runtime.env.tmp || cp secrets/runtime.env secrets/runtime.env.tmp
 mv secrets/runtime.env.tmp secrets/runtime.env
 echo 'AWS_ACCESS_KEY_ID='\$(echo $B64_AK | base64 -d) >> secrets/runtime.env
@@ -57,7 +57,7 @@ echo "Testing run-atp-command from instance..."
 TEST_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && set -a && . secrets/runtime.env 2>/dev/null; set +a; curl -sS -X POST http://127.0.0.1:8002/api/agent/run-atp-command -H \"Authorization: Bearer ${OPENCLAW_API_TOKEN}\" -H \"Content-Type: application/json\" -d '\''{\"command\": \"docker compose --profile aws ps\"}'\''"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && set -a && . secrets/runtime.env 2>/dev/null; set +a; curl -sS -X POST http://127.0.0.1:8002/api/agent/run-atp-command -H \"Authorization: Bearer ${OPENCLAW_API_TOKEN}\" -H \"Content-Type: application/json\" -d '\''{\"command\": \"docker compose --profile aws ps\"}'\''"]' \
   --region "$REGION" \
   --timeout-seconds 90 \
   --query 'Command.CommandId' \

@@ -66,7 +66,7 @@ When the Dashboard showed Trading = YES for a coin (e.g., ALGO_USDT), the backen
 
 ```bash
 # 1. Check current state
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python -m backend.scripts.debug_watchlist_trade_enabled ALGO_USDT'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python -m backend.scripts.debug_watchlist_trade_enabled ALGO_USDT'
 
 # 2. Toggle Trading in Dashboard, then check logs
 cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200 | grep -E "DASHBOARD_UPDATE_BY_SYMBOL|MONITOR_TRADE_FLAG"
@@ -86,10 +86,10 @@ cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs
 
 ```bash
 # Check all symbols with trade_enabled=True
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python -m backend.scripts.verify_trading_toggle_end_to_end'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python -m backend.scripts.verify_trading_toggle_end_to_end'
 
 # Check specific symbol
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python -m backend.scripts.verify_trading_toggle_end_to_end ALGO_USDT'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python -m backend.scripts.verify_trading_toggle_end_to_end ALGO_USDT'
 ```
 
 ## Files Changed

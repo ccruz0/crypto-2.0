@@ -8,7 +8,7 @@ ssh ubuntu@175.41.189.249
 # (or use your configured SSH method)
 
 # 2. Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 3. Find container name
 docker compose --profile aws ps

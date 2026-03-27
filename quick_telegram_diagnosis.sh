@@ -11,7 +11,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd /home/ubuntu/automated-trading-platform\",
+    \"cd /home/ubuntu/crypto-2.0\",
     \"echo '=== Service Status ==='\",
     \"docker compose --profile aws ps backend-aws\",
     \"echo ''\",

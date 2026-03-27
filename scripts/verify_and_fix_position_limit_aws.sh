@@ -11,7 +11,7 @@ echo ""
 
 # Verificar si el código correcto está en AWS
 echo "1. Verificando código en AWS..."
-if ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && grep -q "ORDEN NO EJECUTADA POR VALOR EN CARTERA" backend/app/services/signal_monitor.py' 2>/dev/null; then
+if ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && grep -q "ORDEN NO EJECUTADA POR VALOR EN CARTERA" backend/app/services/signal_monitor.py' 2>/dev/null; then
     echo "   ✅ Código correcto encontrado en AWS"
     CODE_CORRECT=true
 else
@@ -22,7 +22,7 @@ fi
 # Verificar si existe la columna order_skipped
 echo ""
 echo "2. Verificando columna order_skipped en base de datos..."
-if ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T db-aws psql -U trader -d atp -c "SELECT column_name FROM information_schema.columns WHERE table_name = '\''telegram_messages'\'' AND column_name = '\''order_skipped'\'';"' 2>/dev/null | grep -q "order_skipped"; then
+if ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T db-aws psql -U trader -d atp -c "SELECT column_name FROM information_schema.columns WHERE table_name = '\''telegram_messages'\'' AND column_name = '\''order_skipped'\'';"' 2>/dev/null | grep -q "order_skipped"; then
     echo "   ✅ Columna order_skipped existe"
     COLUMN_EXISTS=true
 else
@@ -33,7 +33,7 @@ fi
 # Verificar mensajes recientes
 echo ""
 echo "3. Verificando mensajes recientes de LDO_USD..."
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec -T db-aws psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 100) as message FROM telegram_messages WHERE symbol = '\''LDO_USD'\'' ORDER BY timestamp DESC LIMIT 3;"' 2>/dev/null || echo "   ⚠️ No se pudieron obtener mensajes"
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T db-aws psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 100) as message FROM telegram_messages WHERE symbol = '\''LDO_USD'\'' ORDER BY timestamp DESC LIMIT 3;"' 2>/dev/null || echo "   ⚠️ No se pudieron obtener mensajes"
 
 echo ""
 echo "=========================================="
@@ -48,7 +48,7 @@ if [ "$CODE_CORRECT" = false ]; then
     echo "   1. Hacer commit y push de los cambios locales"
     echo "   2. Desplegar a AWS (o hacer pull en el servidor)"
     echo "   3. Reiniciar el backend:"
-    echo "      ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'"
+    echo "      ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'"
     echo ""
 fi
 
@@ -56,7 +56,7 @@ if [ "$COLUMN_EXISTS" = false ]; then
     echo "❌ PROBLEMA: La columna order_skipped no existe"
     echo ""
     echo "   Solución:"
-    echo "   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/migrate_add_order_skipped.py'"
+    echo "   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/migrate_add_order_skipped.py'"
     echo ""
 fi
 
@@ -65,10 +65,10 @@ if [ "$CODE_CORRECT" = true ] && [ "$COLUMN_EXISTS" = true ]; then
     echo ""
     echo "   Si aún ves mensajes de 'ALERTA BLOQUEADA', intenta:"
     echo "   1. Reiniciar el backend:"
-    echo "      ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'"
+    echo "      ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'"
     echo ""
     echo "   2. Verificar logs recientes:"
-    echo "      ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E \"ORDEN NO EJECUTADA|ALERTA BLOQUEADA\" | tail -10'"
+    echo "      ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep -E \"ORDEN NO EJECUTADA|ALERTA BLOQUEADA\" | tail -10'"
     echo ""
 fi
 

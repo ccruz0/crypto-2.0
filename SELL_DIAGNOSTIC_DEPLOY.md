@@ -15,27 +15,27 @@ All commands use `backend-aws` service name.
 ### Step 1: Set Environment Variables
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 echo "FORCE_SELL_DIAGNOSTIC_SYMBOL=TRX_USDT" >> .env.aws
 ```
 
 **Verify env file:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 grep FORCE_SELL .env.aws
 ```
 
 ### Step 2: Rebuild with No Cache
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws build --no-cache backend-aws
 ```
 
 ### Step 3: Deploy with Force Recreate
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws up -d --force-recreate backend-aws
 ```
 
@@ -43,7 +43,7 @@ docker compose --profile aws up -d --force-recreate backend-aws
 
 **Check diagnostic strings exist:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/app/services/signal_monitor.py
 ```
 
@@ -51,7 +51,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "\[DIAGNOSTIC\]" /app/ap
 
 **Check force diagnostic env checks:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" /app/app/services/signal_monitor.py
 ```
 
@@ -59,7 +59,7 @@ docker exec $(docker ps -q -f name=backend-aws) grep -c "FORCE_SELL_DIAGNOSTIC" 
 
 **Check startup log:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "DIAGNOSTIC.*enabled"
 ```
 
@@ -73,13 +73,13 @@ docker compose --profile aws logs backend-aws | grep "DIAGNOSTIC.*enabled"
 **Wait ~30 seconds for next signal monitor cycle, then:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*TRX"
 ```
 
 **Or filter for FINAL summary lines only:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs -f backend-aws | grep "\[DIAGNOSTIC\].*FINAL.*TRX"
 ```
 
@@ -102,7 +102,7 @@ Every ~30 seconds, you'll see diagnostic logs including:
 ## Disable Diagnostics
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 # Edit .env.aws and remove FORCE_SELL_DIAGNOSTIC_SYMBOL line, then:
 docker compose --profile aws restart backend-aws
 ```
@@ -111,7 +111,7 @@ docker compose --profile aws restart backend-aws
 
 **Verify no real orders are placed:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "Creating automatic SELL order for TRX_USDT"
 ```
 
@@ -119,7 +119,7 @@ docker compose --profile aws logs backend-aws | grep "Creating automatic SELL or
 
 **Verify DRY_RUN guard is working:**
 ```bash
-cd /home/ubuntu/automated-trading-platform && \
+cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws logs backend-aws | grep "\[DIAGNOSTIC\].*DRY_RUN.*suppressed"
 ```
 

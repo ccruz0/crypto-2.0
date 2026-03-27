@@ -10,7 +10,7 @@ Veo que estás en el canal "Hilovivo-alerts" y el bot ya está agregado. Aquí t
 4. **Luego ejecuta este comando:**
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    docker compose --profile aws exec backend-aws python3 << 'PYEOF'
    import requests
    import os
@@ -46,7 +46,7 @@ Actualiza `.env.aws`:
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

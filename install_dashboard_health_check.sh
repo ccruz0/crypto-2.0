@@ -5,7 +5,7 @@
 set -euo pipefail
 
 HOST="${HOST:-ubuntu@175.41.189.249}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/automated-trading-platform}"
+REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/crypto-2.0}"
 # Load unified SSH helper
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
 

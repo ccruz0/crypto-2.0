@@ -57,7 +57,7 @@
 **Then run verification to capture logs:**
 ```bash
 aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws --tail=100 | grep -E \"\\[TG\\]\\[UPDATE\\]|\\[TG\\]\\[ROUTER\\]|\\[TG\\]\\[TASK\\]|token_source\""]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws --tail=100 | grep -E \"\\[TG\\]\\[UPDATE\\]|\\[TG\\]\\[ROUTER\\]|\\[TG\\]\\[TASK\\]|token_source\""]' \
   --region ap-southeast-1
 ```
 
@@ -95,7 +95,7 @@ docker compose --profile aws exec backend-aws printenv | grep NOTION
 
 **Render runtime.env:**
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/render_runtime_env.sh
 docker compose --profile aws restart backend-aws
 ```
@@ -106,13 +106,13 @@ docker compose --profile aws restart backend-aws
 
 Run full verification anytime:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/verify_telegram_task_production.sh
 ```
 
 Or via SSM:
 ```bash
 aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && bash scripts/aws/verify_telegram_task_production.sh"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && bash scripts/aws/verify_telegram_task_production.sh"]' \
   --region ap-southeast-1
 ```

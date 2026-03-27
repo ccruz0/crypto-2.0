@@ -12,7 +12,7 @@ set -e
 
 INSTANCE_ID="${INSTANCE_ID:-i-087953603011543c5}"
 REGION="${REGION:-ap-southeast-1}"
-REPO_PATH="${REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO_PATH="${REPO_PATH:-/home/ubuntu/crypto-2.0}"
 
 NEW_CHAT_ID="${1:-$TELEGRAM_ATP_CONTROL_CHAT_ID}"
 if [[ -z "$NEW_CHAT_ID" ]]; then

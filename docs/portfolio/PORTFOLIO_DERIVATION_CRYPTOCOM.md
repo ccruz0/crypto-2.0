@@ -192,7 +192,7 @@ Linear checklist with exact commands. Target: new engineer can rebuild/verify in
      ```
 
 3. **Rebuild Docker image and restart**  
-   - `cd /home/ubuntu/automated-trading-platform` (or repo root on EC2)  
+   - `cd /home/ubuntu/crypto-2.0` (or repo root on EC2)  
    - `git pull --rebase origin main`  
    - `sudo docker compose --profile aws build --no-cache backend-aws`  
    - `sudo docker compose --profile aws up -d --force-recreate backend-aws`

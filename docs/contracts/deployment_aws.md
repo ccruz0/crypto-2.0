@@ -8,7 +8,7 @@ This document defines the canonical commands and procedures for operating the pr
 
 ## Environment
 
-- **EC2 Instance Path**: `/home/ubuntu/automated-trading-platform`
+- **EC2 Instance Path**: `/home/ubuntu/crypto-2.0`
 - **SSH Prefix Convention**: All commands are executed via SSH on the EC2 instance
 - **Docker Compose Profile**: `--profile aws`
 
@@ -26,7 +26,7 @@ ssh ubuntu@<AWS_EC2_IP>
 ### Navigate to Project Directory
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 ---

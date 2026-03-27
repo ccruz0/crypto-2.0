@@ -25,11 +25,11 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd /home/ubuntu/automated-trading-platform\",
-    \"if [ ! -d /home/ubuntu/automated-trading-platform ]; then echo '❌ Cannot find project directory'; exit 1; fi\",
+    \"cd /home/ubuntu/crypto-2.0\",
+    \"if [ ! -d /home/ubuntu/crypto-2.0 ]; then echo '❌ Cannot find project directory'; exit 1; fi\",
     \"echo '📥 Pulling latest code...'\",
     \"export HOME=/home/ubuntu\",
-    \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform || true\",
+    \"git config --global --add safe.directory /home/ubuntu/crypto-2.0 || true\",
     \"git config --global user.name 'Deploy Script' || true\",
     \"git config --global user.email 'deploy@automated-trading-platform' || true\",
     \"git fetch origin main || true\",

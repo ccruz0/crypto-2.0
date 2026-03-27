@@ -82,13 +82,13 @@ upstream: "http://127.0.0.1:8002/..."
 **Verificar backend**:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps backend-aws'
 ```
 
 Si el backend no está corriendo, reinícialo:
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ## Resumen

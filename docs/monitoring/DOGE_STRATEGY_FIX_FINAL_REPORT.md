@@ -126,7 +126,7 @@ The `preset` field was **missing from the database model**, causing:
 ### Backend Logs
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose logs backend-aws --since=10m | grep -E "WATCHLIST_PRESET|DASHBOARD_SERIALIZE.*DOGE"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws --since=10m | grep -E "WATCHLIST_PRESET|DASHBOARD_SERIALIZE.*DOGE"'
 ```
 
 **Expected**:

@@ -6,7 +6,7 @@ for self-diagnostics: docker ps, docker logs openclaw, etc.
 Uses AWS SSM send-command; requires AWS credentials and SSM permissions.
 
 Instance: i-0d82c172235770a0d (atp-lab-ssm-clean)
-Project path: /home/ubuntu/automated-trading-platform
+Project path: /home/ubuntu/crypto-2.0
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 _LAB_INSTANCE_ID = "i-0d82c172235770a0d"
 _LAB_REGION = "ap-southeast-1"
-_LAB_PROJECT_PATH = "/home/ubuntu/automated-trading-platform"
+_LAB_PROJECT_PATH = "/home/ubuntu/crypto-2.0"
 
 # Allowed subcommand patterns for LAB (OpenClaw self-diagnostics).
 _ALLOWED_SUBCOMMANDS = (

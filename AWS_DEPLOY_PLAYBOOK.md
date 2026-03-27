@@ -23,7 +23,7 @@ The AWS deployment uses a **deploy-by-commit** workflow where:
 ### On AWS EC2
 
 - Docker and Docker Compose installed
-- Repository cloned at `/home/ubuntu/automated-trading-platform`
+- Repository cloned at `/home/ubuntu/crypto-2.0`
 - `.env.aws` file configured (not in git)
 - SSH access configured
 - Required ports open (22 for SSH, 80/443 for Nginx, 3000/8002 for services)
@@ -77,7 +77,7 @@ bash scripts/deploy_aws.sh
 AWS Deploy-by-Commit
 ==========================================
 
-📁 Repository root: /home/ubuntu/automated-trading-platform
+📁 Repository root: /home/ubuntu/crypto-2.0
 
 📥 Fetching latest from origin...
 🔀 Checking out main branch...

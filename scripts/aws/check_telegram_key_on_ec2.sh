@@ -25,7 +25,7 @@ if [[ "$STATUS" == "Online" ]]; then
     --instance-ids "$INSTANCE_ID" \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["test -f /home/ubuntu/automated-trading-platform/secrets/telegram_key && echo FOUND || echo NOT_FOUND","test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND_CRYPTO || true","ls -la /home/ubuntu/automated-trading-platform/secrets/telegram_key 2>/dev/null || ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null || true"]' \
+    --parameters 'commands=["test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND || echo NOT_FOUND","test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND_CRYPTO || true","ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null || ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null || true"]' \
     --timeout-seconds 30 \
     --query 'Command.CommandId' --output text 2>/dev/null || true)
   if [[ -n "$OUT" && "$OUT" != Error* ]]; then
@@ -41,10 +41,10 @@ echo ""
 echo "=== Manual check / copy from EC2 ==="
 echo "1. Connect to PROD: AWS Console → EC2 → Instance $INSTANCE_ID → Connect (Session Manager or EC2 Instance Connect)."
 echo "2. In the session, run:"
-echo "   test -f /home/ubuntu/automated-trading-platform/secrets/telegram_key && echo FOUND || test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND || echo NOT_FOUND"
-echo "   ls -la /home/ubuntu/automated-trading-platform/secrets/telegram_key 2>/dev/null || ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null"
+echo "   test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND || test -f /home/ubuntu/crypto-2.0/secrets/telegram_key && echo FOUND || echo NOT_FOUND"
+echo "   ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null || ls -la /home/ubuntu/crypto-2.0/secrets/telegram_key 2>/dev/null"
 echo "3. To copy the key to your Mac (from your Mac, after you have SSH or Session Manager plugin):"
-echo "   aws ssm start-session --target $INSTANCE_ID --region $REGION --document-name AWS-StartNonInteractiveCommand --parameters command=\"cat /home/ubuntu/automated-trading-platform/secrets/telegram_key\" 2>/dev/null | head -1"
-echo "   Or via scp if you use SSH: scp ${SSH_USER}@<EC2_PUBLIC_IP>:/home/ubuntu/automated-trading-platform/secrets/telegram_key $REPO_ROOT/secrets/telegram_key"
+echo "   aws ssm start-session --target $INSTANCE_ID --region $REGION --document-name AWS-StartNonInteractiveCommand --parameters command=\"cat /home/ubuntu/crypto-2.0/secrets/telegram_key\" 2>/dev/null | head -1"
+echo "   Or via scp if you use SSH: scp ${SSH_USER}@<EC2_PUBLIC_IP>:/home/ubuntu/crypto-2.0/secrets/telegram_key $REPO_ROOT/secrets/telegram_key"
 echo ""
 echo "If FOUND, copy that file to: $REPO_ROOT/secrets/telegram_key (then chmod 600)."

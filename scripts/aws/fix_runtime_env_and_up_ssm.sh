@@ -9,7 +9,7 @@ REGION="${ATP_AWS_REGION:-ap-southeast-1}"
 PING=$(aws ssm describe-instance-information --region "$REGION" --filters "Key=InstanceIds,Values=$INSTANCE_ID" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo "None")
 if [ "$PING" != "Online" ]; then
     echo "Instance $INSTANCE_ID SSM PingStatus=$PING (need Online). Run these commands on EC2 instead:"
-    echo "  cd /home/ubuntu/automated-trading-platform"
+    echo "  cd /home/ubuntu/crypto-2.0"
     echo "  sudo chown ubuntu:ubuntu secrets/runtime.env && chmod 600 secrets/runtime.env"
     echo "  docker compose --profile aws up -d"
     exit 1
@@ -22,7 +22,7 @@ COMMAND_ID=$(aws ssm send-command \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
         "set -e",
-        "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || { echo ERR: repo not found; exit 1; }",
+        "cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || { echo ERR: repo not found; exit 1; }",
         "REPO=$(pwd)",
         "echo Repo: $REPO",
         "if [ -f secrets/runtime.env ]; then sudo chown ubuntu:ubuntu secrets/runtime.env; chmod 600 secrets/runtime.env; fi",

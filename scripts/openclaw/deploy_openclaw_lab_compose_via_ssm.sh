@@ -2,12 +2,12 @@
 # Deploy OpenClaw on LAB via docker-compose (builds ATP wrapper with docker.io on LAB).
 # Uses docker-compose.openclaw.yml: Docker socket, group_add, ATP wrapper with docker CLI.
 # Usage: ./scripts/openclaw/deploy_openclaw_lab_compose_via_ssm.sh
-# Requires: AWS CLI, SSM access to LAB, repo at /home/ubuntu/automated-trading-platform on LAB.
+# Requires: AWS CLI, SSM access to LAB, repo at /home/ubuntu/crypto-2.0 on LAB.
 set -euo pipefail
 
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-i-0d82c172235770a0d}"
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
-REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/crypto-2.0}"
 DOCKER_GROUP_GID="${DOCKER_GROUP_GID:-988}"
 
 echo "=== Deploying OpenClaw on LAB via docker-compose ($LAB_INSTANCE_ID) ==="

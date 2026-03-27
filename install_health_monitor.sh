@@ -11,7 +11,7 @@ set -euo pipefail
 # ============================================
 
 HOST="${HOST:-ubuntu@175.41.189.249}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/automated-trading-platform}"
+REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/crypto-2.0}"
 # Load unified SSH helper
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
 
@@ -71,7 +71,7 @@ ssh_cmd "$HOST" << 'ENDSSH'
     sudo cp /tmp/health_monitor.service /etc/systemd/system/health_monitor.service
     
     # Create logs directory
-    mkdir -p /home/ubuntu/automated-trading-platform/logs
+    mkdir -p /home/ubuntu/crypto-2.0/logs
     
     # Reload systemd
     sudo systemctl daemon-reload
@@ -96,7 +96,7 @@ if [ $? -eq 0 ]; then
     info "  ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'sudo systemctl status health_monitor'"
     info ""
     info "To view logs:"
-    info "  ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/automated-trading-platform/logs/health_monitor.log'"
+    info "  ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'tail -f /home/ubuntu/crypto-2.0/logs/health_monitor.log'"
 else
     error "Failed to install health monitor"
     exit 1

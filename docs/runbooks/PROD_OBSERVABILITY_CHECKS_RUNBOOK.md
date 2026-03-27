@@ -16,7 +16,7 @@ This runbook is for **manual** post-incident or routine checks on PROD. It colle
 
 ## 3. Manual Commands
 
-Run these on the PROD instance. If you are `ssm-user`, the repo may be at `/home/ubuntu/automated-trading-platform`; otherwise use the path that applies.
+Run these on the PROD instance. If you are `ssm-user`, the repo may be at `/home/ubuntu/crypto-2.0`; otherwise use the path that applies.
 
 ### Memory and swap
 

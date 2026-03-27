@@ -95,13 +95,13 @@ grep -r "TODO\|FIXME\|XXX" --include="*.py" --include="*.tsx" --include="*.ts" b
 
 ```bash
 # Check container status
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 
 # Check backend logs
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 80 backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 80 backend-aws'
 
 # Check frontend logs
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 80 frontend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 80 frontend-aws'
 
 # Test endpoints
 curl https://dashboard.hilovivo.com/api/ping_fast

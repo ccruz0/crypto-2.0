@@ -23,7 +23,7 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-      'cd /home/ubuntu/automated-trading-platform',
+      'cd /home/ubuntu/crypto-2.0',
       'echo \"$FILE_CONTENT\" | base64 -d > frontend/src/hooks/useOrders.ts',
       'echo \"✅ File written to host filesystem\"',
       'docker-compose --profile aws build frontend-aws',

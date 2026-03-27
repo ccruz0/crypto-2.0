@@ -6,7 +6,7 @@
 # Usage: ./scripts/capture_atp_control_channel_id.sh
 # Or via SSM: aws ssm send-command --instance-ids i-087953603011543c5 \
 #   --document-name AWS-RunShellScript \
-#   --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && ./scripts/capture_atp_control_channel_id.sh"]'
+#   --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && ./scripts/capture_atp_control_channel_id.sh"]'
 
 set -e
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -93,7 +93,7 @@ Notion is used for projects, tasks, and decisions and may reference this repo. C
 ssh ubuntu@<AWS_EC2_IP>
 
 # Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Standardized deployment (recommended)
 bash scripts/deploy_aws.sh

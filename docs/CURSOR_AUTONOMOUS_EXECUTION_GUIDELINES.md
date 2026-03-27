@@ -67,8 +67,8 @@ Cursor must correct all failures automatically.
 After local validation, Cursor must deploy to AWS automatically:
 
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose down'"
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up --build -d'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose down'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up --build -d'"
 ```
 
 Cursor must wait for the containers to become healthy, then:

@@ -22,7 +22,7 @@ If you run `docker compose` or `git` from `/home/ubuntu`, you will get:
 Use these commands (copy/paste):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose ps
 docker compose logs --tail=120 backend-aws
 git status -sb
@@ -31,7 +31,7 @@ git status -sb
 Optional safe wrapper (works from any directory):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./dc.sh ps
 ./dc.sh logs --tail=120 backend-aws
 ```
@@ -49,14 +49,14 @@ cd /home/ubuntu/automated-trading-platform
 **Always `cd` to repo root first:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/aws_up_backend.sh
 ```
 
 Or via Make:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 make aws-backend-up
 ```
 
@@ -64,7 +64,7 @@ make aws-backend-up
 
 1. **Git state (on AWS host):**
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    git fetch origin main
    git checkout main
    git pull origin main
@@ -84,7 +84,7 @@ This will:
 **Lower-level deploy only (no evidence summary):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/deploy_backend_with_secrets.sh
 ```
 
@@ -127,7 +127,7 @@ To inspect backend logs around the **last** occurrence of a trading symbol (e.g.
 **From repo root on the EC2 host:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
 ```
 
@@ -155,7 +155,7 @@ sudo ./scripts/aws_tail_symbol_logs.sh backend-aws DOT_USDT
 To inspect backend logs around the **last** occurrence of a correlation ID (e.g. for tracing a single request or E2E test), use:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/aws_tail_correlation_logs.sh backend-aws <correlation_id>
 ```
 
@@ -527,7 +527,7 @@ Para producción:
 Use the one-command AWS path (**always `cd` first**):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/aws_up_backend.sh
 ```
 
@@ -701,7 +701,7 @@ aws ssm send-command \
   --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=20 backend-aws"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker compose --profile aws ps backend-aws","docker compose --profile aws logs --tail=20 backend-aws"]' \
   --query 'Command.CommandId' --output text
 ```
 

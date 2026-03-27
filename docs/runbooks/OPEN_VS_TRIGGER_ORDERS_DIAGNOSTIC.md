@@ -13,14 +13,14 @@
 **Auth check (optional, does not show open/trigger counts):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo docker compose --profile aws exec backend-aws python /app/scripts/verify_crypto_auth_simple.py
 ```
 
 **Explicit open vs trigger diagnostic (use this for counts):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo docker compose --profile aws exec backend-aws python /app/scripts/diagnose_open_vs_trigger_orders.py
 ```
 

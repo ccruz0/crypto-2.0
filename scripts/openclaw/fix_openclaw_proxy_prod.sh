@@ -9,7 +9,7 @@ if [[ ! -d /etc/nginx/sites-enabled ]] && [[ -z "${FORCE_LOCAL_NGINX_FIX:-}" ]];
   echo "ERROR: /etc/nginx/sites-enabled not found."
   echo "This script must run ON the Dashboard EC2 instance (Ubuntu), not on your Mac."
   echo "  1) AWS Console → EC2 → atp-rebuild-2026 → Connect → EC2 Instance Connect"
-  echo "  2) cd /home/ubuntu/automated-trading-platform && git pull"
+  echo "  2) cd /home/ubuntu/crypto-2.0 && git pull"
   echo "  3) sudo OPENCLAW_PORT=8080 LAB_PRIVATE_IP=172.31.3.214 bash scripts/openclaw/fix_openclaw_proxy_prod.sh"
   echo "Or from your Mac: ./scripts/openclaw/fix_504_via_eice.sh   (SSHs to PROD for you)"
   exit 2

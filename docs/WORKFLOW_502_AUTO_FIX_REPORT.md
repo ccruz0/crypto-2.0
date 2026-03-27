@@ -48,7 +48,7 @@ El contenedor `frontend-aws` no estaba corriendo. Esto causaba que nginx devolvi
 ### Acción Tomada
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d frontend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d frontend-aws'
 ```
 
 ### Resultado

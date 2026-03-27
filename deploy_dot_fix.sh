@@ -16,8 +16,8 @@ COMMAND_ID1=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
-    "git config --global --add safe.directory /home/ubuntu/automated-trading-platform || git config --global --add safe.directory ~/automated-trading-platform || true",
+    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0",
+    "git config --global --add safe.directory /home/ubuntu/crypto-2.0 || git config --global --add safe.directory ~/automated-trading-platform || true",
     "git fetch origin",
     "git reset --hard origin/main",
     "git log -1 --oneline",
@@ -42,7 +42,7 @@ COMMAND_ID2=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
+    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0",
     "echo \"🔄 Rebuilding backend with latest code...\"",
     "docker compose --profile aws build --no-cache backend-aws 2>&1 | tail -20",
     "echo \"🔄 Restarting backend...\"",

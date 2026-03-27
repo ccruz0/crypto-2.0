@@ -9,7 +9,7 @@ echo ""
 aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws logs --tail=200 backend-aws | grep -E \"(QUANTITY_FORMAT|quantity|DOT_USDT|SELL order|Invalid quantity)\" || docker compose --profile aws logs --tail=200 backend-aws"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker compose --profile aws logs --tail=200 backend-aws | grep -E \"(QUANTITY_FORMAT|quantity|DOT_USDT|SELL order|Invalid quantity)\" || docker compose --profile aws logs --tail=200 backend-aws"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' > /tmp/command_id.txt

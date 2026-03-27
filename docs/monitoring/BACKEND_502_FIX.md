@@ -51,7 +51,7 @@ command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.work
 ## Deployment Steps
 
 1. **Updated docker-compose.yml locally**
-2. **Copied to AWS**: `scp docker-compose.yml hilovivo-aws:/home/ubuntu/automated-trading-platform/`
+2. **Copied to AWS**: `scp docker-compose.yml hilovivo-aws:/home/ubuntu/crypto-2.0/`
 3. **Recreated backend container**: `docker compose --profile aws up -d --force-recreate backend-aws`
 4. **Waited for health check**: ~60 seconds for backend to become healthy
 5. **Verified**: Tested `/api/config` endpoint returns HTTP 200

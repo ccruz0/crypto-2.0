@@ -86,23 +86,23 @@ git push
 
 ```bash
 # Sync code to server
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && git pull"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && git pull"
 
 # Rebuild and restart backend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build backend && docker compose restart backend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build backend && docker compose restart backend"
 
 # Rebuild and restart frontend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build frontend && docker compose restart frontend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build frontend && docker compose restart frontend"
 ```
 
 ### 3. Verify Deployment
 
 ```bash
 # Check backend logs
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose logs --tail=50 backend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose logs --tail=50 backend"
 
 # Check frontend logs
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose logs --tail=50 frontend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose logs --tail=50 frontend"
 
 # Test endpoints
 curl -k https://dashboard.hilovivo.com/api/health

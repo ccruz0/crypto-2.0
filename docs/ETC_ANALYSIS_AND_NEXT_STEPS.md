@@ -56,7 +56,7 @@ If your system is running on AWS, connect via SSH and run:
 ssh hilovivo-aws
 
 # Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Run diagnostic
 python3 backend/scripts/check_etc_sell_alert.py

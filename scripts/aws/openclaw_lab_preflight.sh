@@ -22,7 +22,7 @@ echo "  SSM: $STATUS"
 CMD_ID=$(aws ssm send-command \
   --instance-ids "$LAB_INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["docker --version 2>/dev/null || echo no-docker","docker compose version 2>/dev/null | head -1 || echo no-compose","test -d /home/ubuntu/automated-trading-platform/.git && echo repo-ok || echo repo-missing","test -f /home/ubuntu/automated-trading-platform/.env.lab && echo envlab-ok || echo envlab-missing","test -r /home/ubuntu/secrets/openclaw_token && echo token-ok || echo token-missing","docker ps -q -f name=openclaw 2>/dev/null | wc -l"]' \
+  --parameters 'commands=["docker --version 2>/dev/null || echo no-docker","docker compose version 2>/dev/null | head -1 || echo no-compose","test -d /home/ubuntu/crypto-2.0/.git && echo repo-ok || echo repo-missing","test -f /home/ubuntu/crypto-2.0/.env.lab && echo envlab-ok || echo envlab-missing","test -r /home/ubuntu/secrets/openclaw_token && echo token-ok || echo token-missing","docker ps -q -f name=openclaw 2>/dev/null | wc -l"]' \
   --region "$REGION" \
   --query 'Command.CommandId' \
   --output text)

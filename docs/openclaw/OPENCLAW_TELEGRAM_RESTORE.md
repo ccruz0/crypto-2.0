@@ -84,7 +84,7 @@ docker logs openclaw --tail 50 | grep -i telegram
 
 Or on LAB:
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/enable_openclaw_telegram.sh
 ```
 

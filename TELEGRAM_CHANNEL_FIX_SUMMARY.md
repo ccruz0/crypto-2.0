@@ -47,7 +47,7 @@ The `TELEGRAM_CHAT_ID_AWS` environment variable in `.env.aws` is pointing to the
 **Option A: Using the helper script**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./fix_telegram_channel.sh .env.aws
 # Enter the chat ID when prompted
 # The script will update TELEGRAM_CHAT_ID_AWS (not TELEGRAM_CHAT_ID)
@@ -56,7 +56,7 @@ cd /home/ubuntu/automated-trading-platform
 **Option B: Manual edit**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 # Find TELEGRAM_CHAT_ID_AWS and update it to the Hilovivo-alerts channel ID
 # Example: TELEGRAM_CHAT_ID_AWS=-1001234567890

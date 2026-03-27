@@ -83,25 +83,25 @@ This report documents the deployment and verification of the portfolio snapshot 
 aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/utils","echo \"<base64_content>\" | base64 -d > backend/app/utils/credential_resolver.py"]'
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","mkdir -p backend/app/utils","echo \"<base64_content>\" | base64 -d > backend/app/utils/credential_resolver.py"]'
 
 # Copy routes_portfolio.py
 aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/api","echo \"<base64_content>\" | base64 -d > backend/app/api/routes_portfolio.py"]'
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","mkdir -p backend/app/api","echo \"<base64_content>\" | base64 -d > backend/app/api/routes_portfolio.py"]'
 
 # Copy portfolio_snapshot.py
 aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","mkdir -p backend/app/services","echo \"<base64_content>\" | base64 -d > backend/app/services/portfolio_snapshot.py"]'
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","mkdir -p backend/app/services","echo \"<base64_content>\" | base64 -d > backend/app/services/portfolio_snapshot.py"]'
 
 # Rebuild and restart
 aws ssm send-command --instance-ids i-087953603011543c5 \
   --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","docker compose --profile aws build backend-aws","docker compose --profile aws up -d backend-aws"]'
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0","docker compose --profile aws build backend-aws","docker compose --profile aws up -d backend-aws"]'
 ```
 
 ## Phase 3: Verification

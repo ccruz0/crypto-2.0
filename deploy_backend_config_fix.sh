@@ -48,7 +48,7 @@ echo ""
 echo "🐳 Deploying to Docker containers..."
 
 ssh_cmd $EC2_USER@$EC2_HOST 'bash -s' << 'REMOTE_SCRIPT'
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 # Find backend container
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

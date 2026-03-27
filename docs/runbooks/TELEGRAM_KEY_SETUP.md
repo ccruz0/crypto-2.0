@@ -8,7 +8,7 @@ If you have the **same** `secrets/telegram_key` file that the server uses (it wa
 
 1. Copy it from the server to your repo (never commit it):
    ```bash
-   scp user@your-ec2:/home/ubuntu/automated-trading-platform/secrets/telegram_key ./secrets/telegram_key
+   scp user@your-ec2:/home/ubuntu/crypto-2.0/secrets/telegram_key ./secrets/telegram_key
    chmod 600 secrets/telegram_key
    ```
 2. Ensure `secrets/runtime.env` is present and contains `TELEGRAM_BOT_TOKEN_ENCRYPTED` and `TELEGRAM_CHAT_ID` (it already does if you pulled from server config).

@@ -10,7 +10,7 @@
 ## First Command to Run
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws logs --tail=500 -f backend-aws
 ```
 

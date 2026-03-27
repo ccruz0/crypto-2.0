@@ -25,9 +25,9 @@ COMMAND_ID=$(aws ssm send-command \
   --region "$REGION" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd /home/ubuntu/automated-trading-platform || { echo '❌ Cannot find project directory' && exit 1; }\",
+    \"cd /home/ubuntu/crypto-2.0 || { echo '❌ Cannot find project directory' && exit 1; }\",
     \"echo '📥 Pulling latest code...'\",
-    \"git config --global --add safe.directory /home/ubuntu/automated-trading-platform || true\",
+    \"git config --global --add safe.directory /home/ubuntu/crypto-2.0 || true\",
     \"git pull origin main || echo 'Git pull failed, continuing...'\",
     \"echo '🔧 Making scripts executable...'\",
     \"chmod +x deploy_audit_fixes.sh run_audit_in_production.sh 2>/dev/null || true\",

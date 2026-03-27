@@ -24,11 +24,11 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-        \"cd /home/ubuntu/automated-trading-platform/frontend/src/app\",
+        \"cd /home/ubuntu/crypto-2.0/frontend/src/app\",
         \"echo '$FILE_CONTENT' | base64 -d > page.tsx.new\",
         \"mv page.tsx.new page.tsx\",
         \"grep -n 'TP Value' page.tsx | head -2\",
-        \"cd /home/ubuntu/automated-trading-platform\",
+        \"cd /home/ubuntu/crypto-2.0\",
         \"echo 'Building frontend Docker image...'\",
         \"docker compose --profile aws build --no-cache frontend-aws\",
         \"docker compose --profile aws stop frontend-aws\",

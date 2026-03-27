@@ -46,7 +46,7 @@ cat "$KEY_DIR/key_lab" | ssh -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o
 ssh -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -i "$KEY_DIR/key" "ubuntu@$PUBLIC_IP" "bash -s" << INNER
 REPO="$HOME/automated-trading-platform"
-[ -d "$REPO" ] || REPO="/home/ubuntu/automated-trading-platform"
+[ -d "$REPO" ] || REPO="/home/ubuntu/crypto-2.0"
 if [ ! -d "$REPO" ]; then echo "Repo not found"; exit 1; fi
 cd "$REPO"
 sudo rm -f /etc/nginx/sites-enabled/default.bak504 2>/dev/null || true
@@ -85,7 +85,7 @@ echo "Verifying..."
 curl -sS -m 8 -I "https://dashboard.hilovivo.com/openclaw/" 2>/dev/null | head -8 || true
 echo ""
 echo "Starting OpenClaw on LAB from PROD (ssh to $LAB_PRIVATE_IP with temp key)..."
-ssh -i /tmp/labkey -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@$LAB_PRIVATE_IP 'for d in /home/ubuntu/automated-trading-platform /home/ubuntu/crypto-2.0; do [ -f "$d/scripts/openclaw/check_and_start_openclaw.sh" ] && cd "$d" && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh && exit 0; done; echo "LAB script not found (clone repo on LAB or run compose manually)"' 2>/dev/null && echo "OpenClaw started on LAB." || echo "(PROD could not SSH to LAB; start OpenClaw on LAB via Instance Connect — see docs/runbooks/START_OPENCLAW_ON_LAB_CONSOLE.md)"
+ssh -i /tmp/labkey -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@$LAB_PRIVATE_IP 'for d in /home/ubuntu/crypto-2.0 /home/ubuntu/crypto-2.0; do [ -f "$d/scripts/openclaw/check_and_start_openclaw.sh" ] && cd "$d" && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh && exit 0; done; echo "LAB script not found (clone repo on LAB or run compose manually)"' 2>/dev/null && echo "OpenClaw started on LAB." || echo "(PROD could not SSH to LAB; start OpenClaw on LAB via Instance Connect — see docs/runbooks/START_OPENCLAW_ON_LAB_CONSOLE.md)"
 rm -f /tmp/labkey
 INNER
 

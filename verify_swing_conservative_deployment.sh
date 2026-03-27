@@ -109,7 +109,7 @@ if command -v aws &> /dev/null && [ -n "$INSTANCE_ID" ]; then
       --instance-ids "$INSTANCE_ID" \
       --document-name "AWS-RunShellScript" \
       --parameters "commands=[
-        \"cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform\",
+        \"cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0\",
         \"echo '=== Checking config file ==='\",
         \"if [ -f backend/trading_config.json ]; then\",
         \"  echo 'Config file exists'\",

@@ -13,7 +13,7 @@ aws ssm send-command \
     --instance-ids "$INSTANCE_ID" \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-        'cd /home/ubuntu/automated-trading-platform',
+        'cd /home/ubuntu/crypto-2.0',
         'docker compose exec -T backend-aws python3 -c \"import sys; sys.path.insert(0, \\\"/app\\\"); exec(open(\\\"/tmp/disable_alerts.py\\\").read())\"'
     ]" \
     --output text \

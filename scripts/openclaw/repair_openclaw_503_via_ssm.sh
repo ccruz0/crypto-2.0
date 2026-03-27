@@ -2,10 +2,10 @@
 # Fix OpenClaw 503/504 using SSM Run Command.
 #
 # Run from: your Mac or any host with AWS CLI + IAM (ssm:SendCommand). NOT required to SSH to EC2.
-# Do NOT use Mac paths on Linux: repo on the server is /home/ubuntu/automated-trading-platform
+# Do NOT use Mac paths on Linux: repo on the server is /home/ubuntu/crypto-2.0
 #
 # If you are already SSH'd ON the dashboard instance, skip this file — use instead:
-#   cd /home/ubuntu/automated-trading-platform && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
+#   cd /home/ubuntu/crypto-2.0 && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
 #
 # Use when: repair_openclaw_503.sh fails with "Permission denied (publickey)" from home.
 #
@@ -15,14 +15,14 @@
 #   ATP_INSTANCE_ID / DASHBOARD_INSTANCE_ID  (default may be stale — set to real dashboard i-...)
 #   OPENCLAW_LAB_INSTANCE_ID / LAB_INSTANCE_ID (default i-0d82c172235770a0d)
 #   AWS_REGION (default ap-southeast-1)
-#   ATP_REPO_PATH (default /home/ubuntu/automated-trading-platform)
+#   ATP_REPO_PATH (default /home/ubuntu/crypto-2.0)
 #
 set -euo pipefail
 
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 DASHBOARD_INSTANCE_ID="${DASHBOARD_INSTANCE_ID:-${ATP_INSTANCE_ID:-i-087953603011543c5}}"
 LAB_INSTANCE_ID="${LAB_INSTANCE_ID:-${OPENCLAW_LAB_INSTANCE_ID:-i-0d82c172235770a0d}}"
-REPO="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO="${ATP_REPO_PATH:-/home/ubuntu/crypto-2.0}"
 LAB_IP="${LAB_PRIVATE_IP:-172.31.3.214}"
 PORT="${OPENCLAW_PORT:-8080}"
 
@@ -75,7 +75,7 @@ for id in "$DASHBOARD_INSTANCE_ID" "$LAB_INSTANCE_ID"; do
     echo "      DASHBOARD_INSTANCE_ID=i-xxxxxxxx LAB_INSTANCE_ID=i-yyyyyyyy $0"
     echo "  • Or fix SSM agent / IAM / VPC endpoints: docs/aws/RUNBOOK_SSM_PROD_CONNECTION_LOST.md"
     echo "  • If you are logged into the dashboard server now, run locally (no SSM):"
-    echo "      cd /home/ubuntu/automated-trading-platform && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh"
+    echo "      cd /home/ubuntu/crypto-2.0 && git pull origin main && bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh"
     exit 1
   fi
 done

@@ -48,7 +48,7 @@
 
 ```bash
 # On AWS server:
-cd /home/ubuntu/automated-trading-platform/frontend
+cd /home/ubuntu/crypto-2.0/frontend
 DASHBOARD_URL=https://dashboard.hilovivo.com ENABLE_TEST_PRICE_INJECTION=1 npx playwright test tests/e2e/price-threshold-e2e.spec.ts --timeout=120000
 ```
 

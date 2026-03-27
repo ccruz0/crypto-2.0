@@ -39,7 +39,7 @@ A comprehensive checklist covering:
 ./scripts/audit_snapshot.sh
 
 # AWS
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./scripts/audit_snapshot.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./scripts/audit_snapshot.sh'
 
 # Python version directly
 python3 backend/app/tools/audit_snapshot.py
@@ -141,9 +141,9 @@ python3 backend/app/tools/audit_snapshot.py
 
 **AWS**:
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./scripts/audit_snapshot.sh'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./scripts/audit_snapshot.sh'
 # OR
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 backend/app/tools/audit_snapshot.py'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python3 backend/app/tools/audit_snapshot.py'
 ```
 
 **Telegram**:
@@ -240,11 +240,11 @@ npm run lint
 
 1. **Deploy to AWS**:
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && git pull && docker compose --profile aws up -d --build'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && git pull && docker compose --profile aws up -d --build'
    ```
 
 2. **Verify on AWS**:
-   - Run audit snapshot: `ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ./scripts/audit_snapshot.sh'`
+   - Run audit snapshot: `ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ./scripts/audit_snapshot.sh'`
    - Test Telegram `/audit` command
    - Test `/portfolio` command (should show PnL)
    - Test strategy config save in dashboard

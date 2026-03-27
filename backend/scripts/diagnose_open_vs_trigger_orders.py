@@ -10,7 +10,7 @@ Also prints sample order keys (e.g. product_type, spot_margin) to detect
 Cross/margin vs spot filtering.
 
 Usage (on EC2):
-  cd /home/ubuntu/automated-trading-platform
+  cd /home/ubuntu/crypto-2.0
   sudo docker compose --profile aws exec backend-aws python /app/scripts/diagnose_open_vs_trigger_orders.py
 """
 

@@ -104,7 +104,7 @@ Do not run raw `docker compose config` on EC2 or in any script that could log ou
 
 ## EC2 deploy order
 
-1. `cd /home/ubuntu/automated-trading-platform` (or your repo path)
+1. `cd /home/ubuntu/crypto-2.0` (or your repo path)
 2. `bash scripts/aws/render_runtime_env.sh`
 3. `test -f secrets/runtime.env || exit 1`
 4. `bash scripts/aws/check_no_inline_secrets_in_compose.sh`

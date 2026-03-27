@@ -6,7 +6,7 @@
 #   ./scripts/diag/verify_task_command_in_container.sh
 #   # Or via SSM:
 #   aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-#     --parameters 'commands=["cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","bash scripts/diag/verify_task_command_in_container.sh"]' \
+#     --parameters 'commands=["cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1","bash scripts/diag/verify_task_command_in_container.sh"]' \
 #     --region ap-southeast-1
 
 set -euo pipefail

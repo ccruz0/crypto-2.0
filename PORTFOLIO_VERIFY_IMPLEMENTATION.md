@@ -85,8 +85,8 @@ curl -s http://localhost:8000/api/diagnostics/portfolio-verify | jq
 
 ### AWS
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && sudo bash -lc "export ENABLE_DIAGNOSTICS_ENDPOINTS=1 VERIFICATION_DEBUG=1 && docker compose --profile aws restart backend-aws"'
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -s http://localhost:8000/api/diagnostics/portfolio-verify | jq'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sudo bash -lc "export ENABLE_DIAGNOSTICS_ENDPOINTS=1 VERIFICATION_DEBUG=1 && docker compose --profile aws restart backend-aws"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && curl -s http://localhost:8000/api/diagnostics/portfolio-verify | jq'
 ```
 
 ### CLI Tool

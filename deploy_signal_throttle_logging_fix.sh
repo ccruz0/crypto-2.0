@@ -5,7 +5,7 @@ set -e
 # This script syncs the updated signal_monitor.py and restarts the backend container
 
 REMOTE_HOST="hilovivo-aws"
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 
 # Unified SSH
 . "$(cd "$(dirname "$0")"; pwd)/scripts/ssh_key.sh" 2>/dev/null || source "$(cd "$(dirname "$0")"; pwd)/scripts/ssh_key.sh"

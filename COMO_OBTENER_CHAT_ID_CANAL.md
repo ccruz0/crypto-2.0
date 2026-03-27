@@ -45,7 +45,7 @@ Si el método 1 no funciona, puedes usar este:
 ### Paso 3: Ejecuta este comando en AWS
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws exec backend-aws python3 << 'PYEOF'
 import requests
 import os
@@ -92,7 +92,7 @@ PYEOF
 ### Paso 1: Actualiza .env.aws
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

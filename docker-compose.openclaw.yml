@@ -50,7 +50,7 @@ services:
       # Persistent home — keeps devices, config, sessions across restarts
       - /opt/openclaw/home-data:/home/node/.openclaw
       # ATP repo as workspace so tools can read docs, source, etc.
-      - /home/ubuntu/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro
+      - /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace/atp:ro
       - openclaw_workspace:/workspace
       - openclaw_logs:/var/log/openclaw
       - /home/ubuntu/secrets/openclaw_token:/run/secrets/openclaw_token:ro

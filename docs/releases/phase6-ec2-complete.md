@@ -37,7 +37,7 @@ All phases A–F of the EC2 hard verifier pass:
 2. Run:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash scripts/aws/final_ec2_hard_verification.sh
 echo "exit=$?"
 ```

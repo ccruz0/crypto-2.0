@@ -76,7 +76,7 @@ Si el servicio está en AWS:
 ssh hilovivo-aws
 
 # Reiniciar el contenedor del backend
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose restart backend-aws
 ```
 

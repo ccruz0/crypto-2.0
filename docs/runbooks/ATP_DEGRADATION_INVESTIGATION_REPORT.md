@@ -189,7 +189,7 @@ Backend unreachable
 ### 7.1 Backend and Health
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Backend reachable?
 curl -sS --max-time 5 http://127.0.0.1:8002/api/health
@@ -252,7 +252,7 @@ docker logs --tail 200 automated-trading-platform-backend-aws-1 2>&1 | grep -E "
 **Action:** Restart backend and verify health.
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws up -d backend-aws --force-recreate
 sleep 30
 curl -sS --max-time 5 http://127.0.0.1:8002/api/health

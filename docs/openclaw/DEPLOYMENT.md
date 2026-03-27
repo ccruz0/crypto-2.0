@@ -31,7 +31,7 @@ automated-trading-platform/          # or crypto-2.0 (repo root)
     └── .gitkeep
 ```
 
-On the **Lab EC2** host (e.g. `/home/ubuntu/automated-trading-platform` or `~/lab-repo`):
+On the **Lab EC2** host (e.g. `/home/ubuntu/crypto-2.0` or `~/lab-repo`):
 
 ```
 /home/ubuntu/
@@ -124,7 +124,7 @@ This keeps OpenClaw running under Docker Compose after reboot. Install to `/etc/
 
 [Unit]
 Description=OpenClaw Lab Stack
-Documentation=file:///home/ubuntu/automated-trading-platform/docs/openclaw/DEPLOYMENT.md
+Documentation=file:///home/ubuntu/crypto-2.0/docs/openclaw/DEPLOYMENT.md
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
@@ -132,7 +132,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/ubuntu/automated-trading-platform
+WorkingDirectory=/home/ubuntu/crypto-2.0
 ExecStartPre=/usr/bin/docker compose -f docker-compose.openclaw.yml pull --quiet
 ExecStart=/usr/bin/docker compose -f docker-compose.openclaw.yml up -d
 ExecStop=/usr/bin/docker compose -f docker-compose.openclaw.yml down
@@ -148,7 +148,7 @@ WantedBy=multi-user.target
 **Install steps (on Lab host):**
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw

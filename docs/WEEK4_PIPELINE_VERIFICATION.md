@@ -54,7 +54,7 @@ curl -s http://localhost:8000/health/system | jq .
 
 ```bash
 # 1) SSH and go to repo
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 2) Identify backend container
 docker ps
@@ -79,7 +79,7 @@ print('DB_CONNECT: PASS')
 Or use the diagnostics script from host (if Python env has access to backend code):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py
 ```
 

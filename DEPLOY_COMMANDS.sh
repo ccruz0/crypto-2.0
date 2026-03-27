@@ -6,11 +6,11 @@ echo "================================="
 echo ""
 
 # Navigate to project
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Fix git ownership (if needed)
 export HOME=/home/ubuntu
-git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true
+git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true
 
 # Pull latest code
 echo "📥 Pulling latest code..."

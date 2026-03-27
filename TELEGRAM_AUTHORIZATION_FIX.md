@@ -71,7 +71,7 @@ Edit `.env.aws` and add your user ID:
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

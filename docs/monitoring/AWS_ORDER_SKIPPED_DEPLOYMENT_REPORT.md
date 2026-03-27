@@ -16,7 +16,7 @@ Successfully deployed the `order_skipped` behavior to AWS production. The system
 
 **Command Executed:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python -c "...migration code..."'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python -c "...migration code..."'
 ```
 
 **Result:**
@@ -55,7 +55,7 @@ Columns in telegram_messages:
 
 **Command:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 **Status:** ✅ Container restarted and healthy
@@ -100,7 +100,7 @@ CREATE INDEX ix_telegram_messages_order_skipped ON telegram_messages(order_skipp
 
 **Command:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python -c "...test code..."'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python -c "...test code..."'
 ```
 
 **Results:**
@@ -257,7 +257,7 @@ else:
 
 ### 1. Migration
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python -c "...migration..."'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python -c "...migration..."'
 ```
 
 ### 2. Code Update
@@ -270,7 +270,7 @@ docker compose --profile aws cp backend/app/services/signal_monitor.py backend-a
 
 ### 3. Restart
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ## Next Steps

@@ -32,7 +32,7 @@ if [[ "$STATUS" != "Online" ]]; then
   exit 1
 fi
 
-GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/automated-trading-platform 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
+GIT_PULL_PREFIX='export HOME=/home/ubuntu; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true; '
 GIT_FETCH_CMD="${GIT_PULL_PREFIX}rm -f .git/refs/remotes/origin/main 2>/dev/null || true; git fetch origin main && git reset --hard FETCH_HEAD 2>/dev/null || git reset --hard origin/main 2>/dev/null || git pull origin main 2>/dev/null || true"
 
 export GIT_FETCH_CMD
@@ -43,7 +43,7 @@ git_fetch = os.environ["GIT_FETCH_CMD"]
 aggressive = os.environ.get("AGGRESSIVE", "0") == "1"
 cmds = [
     "set -e",
-    "cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
+    "cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || exit 1",
     git_fetch,
     "chmod +x infra/cleanup_disk.sh 2>/dev/null || true",
     "bash infra/cleanup_disk.sh",

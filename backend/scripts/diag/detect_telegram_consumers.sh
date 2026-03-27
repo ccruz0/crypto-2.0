@@ -9,7 +9,7 @@
 #   ./backend/scripts/diag/detect_telegram_consumers.sh
 #   # Or via SSM:
 #   aws ssm send-command --instance-ids i-xxx --document-name AWS-RunShellScript \
-#     --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && bash backend/scripts/diag/detect_telegram_consumers.sh"]'
+#     --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && bash backend/scripts/diag/detect_telegram_consumers.sh"]'
 #
 # Output: process name, container name, command, which file handles Telegram updates.
 

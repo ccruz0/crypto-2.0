@@ -66,7 +66,7 @@ sudo systemctl start dashboard_health_check.service
 ```bash
 tail -f /tmp/dashboard_health_check.log
 # o desde el servidor:
-tail -f /home/ubuntu/automated-trading-platform/logs/dashboard_health_check.log
+tail -f /home/ubuntu/crypto-2.0/logs/dashboard_health_check.log
 ```
 
 ## Notificaciones
@@ -101,7 +101,7 @@ El servicio envía notificaciones por Telegram:
 
 1. Verificar que las variables de entorno estén configuradas:
    ```bash
-   grep TELEGRAM /home/ubuntu/automated-trading-platform/.env
+   grep TELEGRAM /home/ubuntu/crypto-2.0/.env
    ```
 
 2. Verificar que el servicio tenga acceso a las variables:

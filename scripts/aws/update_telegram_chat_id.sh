@@ -18,7 +18,7 @@ set -e
 
 INSTANCE_ID="${INSTANCE_ID:-i-087953603011543c5}"
 REGION="${REGION:-ap-southeast-1}"
-REPO_PATH="${REPO_PATH:-/home/ubuntu/automated-trading-platform}"
+REPO_PATH="${REPO_PATH:-/home/ubuntu/crypto-2.0}"
 SSM_CHAT_ID="/automated-trading-platform/prod/telegram/chat_id"
 
 NEW_CHAT_ID="${1:-$TELEGRAM_CHAT_ID}"

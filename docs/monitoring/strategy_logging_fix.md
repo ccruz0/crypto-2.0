@@ -74,14 +74,14 @@ Since the container uses a built image (no bind mounts), the deployment requires
 ```bash
 # 1. Copy updated file to server
 scp backend/app/services/trading_signals.py \
-  hilovivo-aws:/home/ubuntu/automated-trading-platform/backend/app/services/
+  hilovivo-aws:/home/ubuntu/crypto-2.0/backend/app/services/
 
 # 2. Rebuild backend image
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   docker compose build backend-aws'
 
 # 3. Restart container
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   docker compose up -d backend-aws'
 ```
 

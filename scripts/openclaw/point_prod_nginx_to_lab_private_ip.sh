@@ -3,7 +3,7 @@
 # LAB = atp-lab-ssm-clean (172.31.3.214). No args; uses canonical IP.
 #
 # Usage on PROD (SSH or Instance Connect):
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/point_prod_nginx_to_lab_private_ip.sh
 
 set -e

@@ -23,7 +23,7 @@ SSH into the AWS server and run:
 
 ```bash
 # 1. Navigate to project directory
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 2. Pull latest code (if using git)
 git pull origin main  # or your branch name
@@ -48,10 +48,10 @@ If you need to copy files manually:
 ```bash
 # From local machine
 rsync -avz --exclude 'node_modules' --exclude '.next' \
-  frontend/ ubuntu@54.254.150.31:/home/ubuntu/automated-trading-platform/frontend/
+  frontend/ ubuntu@54.254.150.31:/home/ubuntu/crypto-2.0/frontend/
 
 # Then on server, rebuild:
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker-compose build --no-cache frontend-aws
 docker-compose restart frontend-aws
 ```

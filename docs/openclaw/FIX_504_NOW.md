@@ -15,15 +15,15 @@ Conéctate al LAB (Session Manager o EC2 Instance Connect): **atp-lab-ssm-clean*
 Si el repo **no** está clonado:
 
 ```bash
-sudo -u ubuntu git clone https://github.com/ccruz0/crypto-2.0.git /home/ubuntu/automated-trading-platform
+sudo -u ubuntu git clone https://github.com/ccruz0/crypto-2.0.git /home/ubuntu/crypto-2.0
 # o la URL de tu repo
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 Si ya existe el repo:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform   # o donde esté el clone
+cd /home/ubuntu/crypto-2.0   # o donde esté el clone
 git pull origin main
 ```
 
@@ -43,7 +43,7 @@ Debe aparecer `0.0.0.0:8080`. Si no, revisar [OPENCLAW_504_UPSTREAM_DIAGNOSIS.md
 Conéctate al **Dashboard** por **EC2 Instance Connect**: atp-rebuild-2026 (52.220.32.147).
 
 ```bash
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 git pull origin main
 sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214
 ```

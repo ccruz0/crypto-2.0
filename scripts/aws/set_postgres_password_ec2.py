@@ -27,7 +27,7 @@ import urllib.parse
 EC2_HOST = os.environ.get("EC2_HOST", "52.220.32.147")
 SSH_USER = os.environ.get("SSH_USER", "ubuntu")
 SSH_KEY = os.environ.get("SSH_KEY", os.path.expanduser("~/.ssh/atp-rebuild-2026.pem"))
-REPO_PATH = os.environ.get("EC2_REPO_PATH", "/home/ubuntu/automated-trading-platform")
+REPO_PATH = os.environ.get("EC2_REPO_PATH", "/home/ubuntu/crypto-2.0")
 
 
 def get_password_gui_mac():

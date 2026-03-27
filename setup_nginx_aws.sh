@@ -7,7 +7,7 @@ set -e
 # Configuration
 EC2_HOST="${EC2_HOST:-175.41.189.249}"
 EC2_USER="ubuntu"
-REMOTE_PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+REMOTE_PROJECT_DIR="/home/ubuntu/crypto-2.0"
 
 # Unified SSH
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh
@@ -31,7 +31,7 @@ echo "🔧 Setting up nginx on remote server..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
 set -e
 
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 echo "📦 Installing nginx..."
 sudo apt-get update -qq

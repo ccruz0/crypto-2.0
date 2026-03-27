@@ -7,7 +7,7 @@ When `./redeploy.sh` reports **Status: Undeliverable**, the SSM command never re
 On the EC2 instance (SSH or SSM start-session):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 docker compose --profile aws build --no-cache backend-aws frontend-aws
 docker compose --profile aws up -d
@@ -28,7 +28,7 @@ From your machine: `curl -s https://dashboard.hilovivo.com/api/ping_fast`
 If only backend changed:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws up -d backend-aws

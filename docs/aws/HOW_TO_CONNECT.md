@@ -30,7 +30,7 @@ Use **EC2 → Instances → select instance → Connect**.
 1. **EC2** → **Instances** → select **atp-lab-ssm-clean** (i-0d82c172235770a0d).
 2. **Connect** → **EC2 Instance Connect** → **Connect** (browser terminal).
 3. Run:  
-   `cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh`  
+   `cd /home/ubuntu/crypto-2.0 && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh`  
    Full steps: [START_OPENCLAW_ON_LAB_CONSOLE.md](../runbooks/START_OPENCLAW_ON_LAB_CONSOLE.md).
 
 ---

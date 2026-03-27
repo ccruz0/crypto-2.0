@@ -25,7 +25,7 @@ CHECK_CMD=$(aws ssm send-command \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
+        "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0",
         "echo \"=== Current Backend Status ===\"",
         "docker compose --profile aws ps backend-aws 2>/dev/null || docker ps --filter \"name=backend-aws\"",
         "echo \"\"",
@@ -55,7 +55,7 @@ DEPLOY_CMD=$(aws ssm send-command \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform",
+        "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0",
         "echo \"📥 Pulling latest code...\"",
         "git pull origin main || echo \"Git pull failed, continuing...\"",
         "echo \"\"",

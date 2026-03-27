@@ -40,7 +40,7 @@ Se corrigió la configuración de canales de Telegram para que las alertas vayan
 2. **Actualizar `.env.aws` en el servidor**:
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    
    # Opción A: Usar el script helper
    ./fix_telegram_channel.sh .env.aws

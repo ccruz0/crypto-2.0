@@ -90,7 +90,7 @@ Once SSH or Instance Connect works:
 ```bash
 # Restart services
 sudo systemctl restart nginx
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws up -d
 ```
 

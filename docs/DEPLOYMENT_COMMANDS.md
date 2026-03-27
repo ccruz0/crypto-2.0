@@ -3,7 +3,7 @@
 ## 1. Run Database Migration (REQUIRED FIRST)
 
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose exec db psql -U trader -d atp -c \"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose exec db psql -U trader -d atp -c \"
 DO \$\$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='watchlist_items' AND column_name='buy_alert_enabled') THEN
@@ -29,30 +29,30 @@ git add .
 git commit -m "feat: Split alert button into Buy Alert and Sell Alert with full order creation support"
 git push
 
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && git pull"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && git pull"
 ```
 
 ## 3. Rebuild and Restart Services
 
 ```bash
 # Backend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build backend && docker compose restart backend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build backend && docker compose restart backend"
 
 # Frontend
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build frontend && docker compose restart frontend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build frontend && docker compose restart frontend"
 ```
 
 ## 4. Verify Services
 
 ```bash
 # Check backend logs
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose logs --tail=50 backend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose logs --tail=50 backend"
 
 # Check frontend logs
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose logs --tail=50 frontend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose logs --tail=50 frontend"
 
 # Check if services are running
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose ps"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose ps"
 ```
 
 ## 5. Test End-to-End

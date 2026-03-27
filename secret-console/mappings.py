@@ -32,7 +32,7 @@ class DeployTarget(TypedDict, total=False):
 SECRET_TARGETS: dict[str, dict[str, DeployTarget]] = {
     "telegram.atp_control.bot_token": {
         "prod": {
-            "project_path": "/home/ubuntu/automated-trading-platform",
+            "project_path": "/home/ubuntu/crypto-2.0",
             "profile": "aws",
             "service": "backend-aws",
             "env_files": [

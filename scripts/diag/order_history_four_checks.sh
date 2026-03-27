@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Executed-orders diagnostic: 3 checks (sync, DB count, API read). Run on EC2 where Docker + backend run.
-# Usage: cd /home/ubuntu/automated-trading-platform && sudo ./scripts/diag/order_history_four_checks.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && sudo ./scripts/diag/order_history_four_checks.sh
 # See: docs/runbooks/ORDER_HISTORY_DASHBOARD_DEBUG.md
 set -e
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 CONTAINER="${BACKEND_CONTAINER:-automated-trading-platform-backend-aws-1}"
 
 echo "=== 1. Force sync (symbol=ATOM_USDT) ==="

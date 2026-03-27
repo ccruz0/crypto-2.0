@@ -18,7 +18,7 @@ echo "📤 Sending rebuild command..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["cd /home/ubuntu/automated-trading-platform","git pull origin main || true","docker compose --profile aws stop backend-aws","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d backend-aws","sleep 15","docker compose --profile aws ps","docker compose --profile aws logs --tail=30 backend-aws"]' \
+    --parameters 'commands=["cd /home/ubuntu/crypto-2.0","git pull origin main || true","docker compose --profile aws stop backend-aws","docker compose --profile aws build --no-cache backend-aws","docker compose --profile aws up -d backend-aws","sleep 15","docker compose --profile aws ps","docker compose --profile aws logs --tail=30 backend-aws"]' \
     --region $REGION \
     --output text \
     --query 'Command.CommandId' 2>&1)

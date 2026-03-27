@@ -58,7 +58,7 @@ Esto te dará el chat_id del canal.
 3. **Luego ejecuta:**
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    docker compose --profile aws exec backend-aws python3 << 'PYEOF'
    import requests
    import os
@@ -81,7 +81,7 @@ Esto te dará el chat_id del canal.
 1. **Actualiza .env.aws:**
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    nano .env.aws
    ```
 

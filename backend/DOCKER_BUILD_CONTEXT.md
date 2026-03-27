@@ -39,7 +39,7 @@ docker compose --profile aws up -d backend-aws
 After building the backend image, verify scripts and dependencies:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws up -d backend-aws
 ./backend/scripts/verify_image_scripts.sh

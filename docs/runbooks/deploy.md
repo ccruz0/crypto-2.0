@@ -33,7 +33,7 @@ When you need to deploy manually (e.g. SSM unavailable, or one-off fix):
    ```bash
    ssh ubuntu@dashboard.hilovivo.com
    # or ssh ubuntu@<PROD_IP>
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    ```
 
 2. **Pull and run** (use the project’s standard deploy script if available):
@@ -77,7 +77,7 @@ From [contracts/deployment_aws.md](../contracts/deployment_aws.md):
 If the project has a rollback script (e.g. `scripts/rollback_aws.sh`), use it with the desired commit SHA. Otherwise, on EC2:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git checkout <commit-sha>
 docker compose --profile aws up -d --build
 ```

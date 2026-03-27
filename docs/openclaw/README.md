@@ -38,7 +38,7 @@ cd ~/automated-trading-platform
 ```
 (Use **one** command per line — `cd path # comment` can trigger `cd: too many arguments` in some shells.)
 
-**Never on your Mac:** `cd /home/ubuntu/automated-trading-platform` — that path exists only on the **EC2** server. On the Mac use `cd ~/automated-trading-platform` only.
+**Never on your Mac:** `cd /home/ubuntu/crypto-2.0` — that path exists only on the **EC2** server. On the Mac use `cd ~/automated-trading-platform` only.
 Uses EC2 Instance Connect to SSH to PROD, start nginx if needed, point `/openclaw/` to LAB **:8080** (same as `docker-compose.openclaw.yml`), and optionally start OpenClaw on LAB from PROD. Override with `OPENCLAW_PORT=8081` if LAB publishes 8081 only. GitHub Actions: **Actions → Fix OpenClaw 504 (EICE)** (manual or scheduled 06:00/18:00 UTC). Requires AWS credentials with `ec2-instance-connect:SendSSHPublicKey` and `ec2:DescribeInstances`.
 
 **Step-by-step checklist (OpenClaw host → Dashboard host → browser):** [GET_OPENCLAW_WORKING_ON_DASHBOARD.md](GET_OPENCLAW_WORKING_ON_DASHBOARD.md).
@@ -143,7 +143,7 @@ This runs `check_and_start_openclaw.sh` on the Dashboard instance via AWS SSM an
 **Option B — On the server (SSH or EC2 Instance Connect):**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```
 

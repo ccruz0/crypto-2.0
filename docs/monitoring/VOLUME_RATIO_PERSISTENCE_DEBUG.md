@@ -67,7 +67,7 @@ The Volume Requirement dropdown always shows 0.5x after reload, even though the 
 
 1. **Check backend logs** when saving:
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=100 backend-aws | grep VOLUME_DEBUG'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=100 backend-aws | grep VOLUME_DEBUG'
    ```
 
 2. **Verify the save is actually happening:**
@@ -101,10 +101,10 @@ The Volume Requirement dropdown always shows 0.5x after reload, even though the 
 ```bash
 # 1. Save a volumeMinRatio value in the UI (e.g., change to 1.5x)
 # 2. Check backend logs immediately after save:
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=200 backend-aws | grep -E "VOLUME_DEBUG|volumeMinRatio"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=200 backend-aws | grep -E "VOLUME_DEBUG|volumeMinRatio"'
 
 # 3. Check the config file in container:
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec backend-aws python3 /app/check_config.py'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec backend-aws python3 /app/check_config.py'
 
 # 4. Reload the frontend and check browser console for [VOLUME_DEBUG_FRONTEND] logs
 ```

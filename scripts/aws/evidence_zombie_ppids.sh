@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Step A — Evidence: map zombie PPIDs to parent owners (run on EC2 host).
 # No secrets. Output is paste-friendly for runbook decision.
-# Usage: cd /home/ubuntu/automated-trading-platform && bash scripts/aws/evidence_zombie_ppids.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && bash scripts/aws/evidence_zombie_ppids.sh
 set -euo pipefail
 
 echo "=== Zombie list (first 60) ==="

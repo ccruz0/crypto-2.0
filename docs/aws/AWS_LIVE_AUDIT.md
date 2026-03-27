@@ -53,7 +53,7 @@ Connect via **EC2 → Instances → atp-rebuild-2026 → Connect → Session Man
 docker ps
 
 # 2) Docker Compose services (aws profile)
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws ps
 
 # 3) Listening ports

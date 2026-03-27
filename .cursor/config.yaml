@@ -1,6 +1,6 @@
 version: 1
 remoteWorkspace:
   host: hilovivo-aws
-  rootPath: /home/ubuntu/automated-trading-platform
+  rootPath: /home/ubuntu/crypto-2.0
   dockerComposeFile: docker-compose.yml
 

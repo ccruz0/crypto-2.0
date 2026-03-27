@@ -15,13 +15,13 @@ Ejecuta el script de verificación:
 **En el servidor AWS:**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose exec backend-aws python3 scripts/verify_market_data_status.py
 ```
 
 **O desde local (si tienes acceso al servidor):**
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose exec backend-aws python3 scripts/verify_market_data_status.py"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws python3 scripts/verify_market_data_status.py"
 ```
 
 Este script mostrará:
@@ -37,7 +37,7 @@ Este script mostrará:
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Verificar estado del contenedor
 docker compose ps market-updater-aws

@@ -16,9 +16,9 @@ name: Deploy to AWS EC2 (Legacy SSH)
 #   - Updated line 81: docker compose --profile aws ps command
 #
 # Manual Verification:
-#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
-#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 60 backend-aws'
-#   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 60 frontend-aws'
+#   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
+#   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 60 backend-aws'
+#   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 60 frontend-aws'
 # ============================================
 
 on:

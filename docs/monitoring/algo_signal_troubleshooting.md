@@ -10,7 +10,7 @@ ALGO_USDT debe estar en el watchlist con:
 
 **Comando para verificar:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
   docker compose exec backend-aws python3 -c "
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem

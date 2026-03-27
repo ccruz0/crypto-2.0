@@ -4,19 +4,19 @@
 
 1. **Git Pull:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && git stash && git pull'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && git stash && git pull'
    ```
    Result: Fast-forward to commit `4c4529b`
 
 2. **Container Rebuild:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up -d --build backend-aws'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up -d --build backend-aws'
    ```
    Result: Container rebuilt and restarted successfully
 
 3. **Log Verification:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs backend-aws | grep -E "TELEGRAM_SECURITY"'
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs backend-aws | grep -E "TELEGRAM_SECURITY"'
    ```
    Result: Multiple `[TELEGRAM_SECURITY]` errors confirming new code is running
 

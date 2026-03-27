@@ -13,7 +13,7 @@
 
 | Location | Path | Status |
 |----------|------|--------|
-| **PROD** | `/home/ubuntu/automated-trading-platform/backend/app/services/task_compiler.py` | **Contains old rejection logic** |
+| **PROD** | `/home/ubuntu/crypto-2.0/backend/app/services/task_compiler.py` | **Contains old rejection logic** |
 | **LAB** | `backend/app/services/task_compiler.py` | Fixed – low-impact → backlog |
 
 ### Evidence
@@ -47,7 +47,7 @@ if not _value_gate_safety_pass(task, priority_score) and value_score < VALUE_CRE
 - **Instance ID:** i-087953603011543c5
 - **Region:** ap-southeast-1
 - **SSM:** Online
-- **Repos:** `/home/ubuntu/automated-trading-platform` (preferred), `/home/ubuntu/crypto-2.0`
+- **Repos:** `/home/ubuntu/crypto-2.0` (preferred), `/home/ubuntu/crypto-2.0`
 
 ### 2.2 Source Comparison
 
@@ -91,7 +91,7 @@ NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh
 
 ### 3.3 What the Deploy Does
 
-1. `cd /home/ubuntu/automated-trading-platform` (or crypto-2.0)
+1. `cd /home/ubuntu/crypto-2.0` (or crypto-2.0)
 2. `git fetch origin main && git reset --hard origin/main`
 3. `docker compose --profile aws build --no-cache backend-aws`
 4. `docker compose --profile aws up -d backend-aws`
@@ -114,7 +114,7 @@ If `automated-trading-platform` uses a different remote:
 ```bash
 aws ssm send-command --instance-ids i-087953603011543c5 --region ap-southeast-1 \
   --document-name AWS-RunShellScript \
-  --parameters 'commands=["grep -c \"low impact and was not created\" /home/ubuntu/automated-trading-platform/backend/app/services/task_compiler.py 2>/dev/null || echo 0"]' \
+  --parameters 'commands=["grep -c \"low impact and was not created\" /home/ubuntu/crypto-2.0/backend/app/services/task_compiler.py 2>/dev/null || echo 0"]' \
   --timeout-seconds 30 --query 'Command.CommandId' --output text
 # Expected: 0 (string removed)
 ```
@@ -151,6 +151,6 @@ docker compose --profile aws logs backend-aws --tail=100 | grep -E "task_created
 | Item | Result |
 |------|--------|
 | **Root cause** | Stale `task_compiler.py` on PROD with old rejection logic |
-| **Exact source** | `/home/ubuntu/automated-trading-platform/backend/app/services/task_compiler.py` line 487 |
+| **Exact source** | `/home/ubuntu/crypto-2.0/backend/app/services/task_compiler.py` line 487 |
 | **Fix** | `NO_CACHE=1 ./scripts/deploy_production_via_ssm.sh` |
 | **Verification** | `/task test deployment verification` in ATP Control → task created, no old message |

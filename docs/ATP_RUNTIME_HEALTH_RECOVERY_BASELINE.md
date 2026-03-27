@@ -40,7 +40,7 @@ Evidence from SSM commands run on **i-0d82c172235770a0d** on 2026-03-11. Command
 | health_monitor.service | service | no | no | no | n/a | n/a | No health_monitor unit file. | N/A | — |
 | dashboard_health_check.service | service | no | no | no | n/a | n/a | No dashboard_health* unit file. | N/A | — |
 | ubuntu crontab | cron | no | no | n/a | n/a | n/a | `crontab -l` → NO_CRONTAB. | N/A | — |
-| verify.sh | script | yes | n/a | n/a | n/a | n/a | Exists: `/home/ubuntu/automated-trading-platform/scripts/selfheal/verify.sh`, -rwxrwxr-x, Mar 7 08:13. REPO_EXISTS. | N/A | keep (repo asset). |
+| verify.sh | script | yes | n/a | n/a | n/a | n/a | Exists: `/home/ubuntu/crypto-2.0/scripts/selfheal/verify.sh`, -rwxrwxr-x, Mar 7 08:13. REPO_EXISTS. | N/A | keep (repo asset). |
 | /var/log/atp/health_snapshots.log | log/state | no | n/a | n/a | n/a | n/a | NO_ATP_LOG_DIR. | N/A | Created when snapshot timer runs. |
 | /var/lib/atp/health_alert_state.json | log/state | no | n/a | n/a | n/a | n/a | NO_ATP_LIB_DIR. | N/A | Created when health-alert runs. |
 | backend-aws (Docker) | docker | no | n/a | no | n/a | n/a | `docker compose --profile aws ps` → empty (no rows). | N/A | LAB may not run full ATP stack. |
@@ -212,7 +212,7 @@ Based on **repo audit** (docs/ATP_EXISTING_HEALTH_RECOVERY_AUDIT.md) and **LAB r
   Result: NO_CRONTAB.
 
 - **LAB – verify.sh and repo:**  
-  `test -f /home/ubuntu/automated-trading-platform/scripts/selfheal/verify.sh && ls -la /home/ubuntu/automated-trading-platform/scripts/selfheal/verify.sh; test -d /home/ubuntu/automated-trading-platform && echo REPO_EXISTS || echo REPO_MISSING`  
+  `test -f /home/ubuntu/crypto-2.0/scripts/selfheal/verify.sh && ls -la /home/ubuntu/crypto-2.0/scripts/selfheal/verify.sh; test -d /home/ubuntu/crypto-2.0 && echo REPO_EXISTS || echo REPO_MISSING`  
   Result: verify.sh exists, executable; REPO_EXISTS.
 
 - **LAB – log/state dirs:**  
@@ -221,7 +221,7 @@ Based on **repo audit** (docs/ATP_EXISTING_HEALTH_RECOVERY_AUDIT.md) and **LAB r
   Result: NO_ATP_LOG_DIR, NO_ATP_LIB_DIR.
 
 - **LAB – Docker:**  
-  `cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps 2>/dev/null`  
+  `cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps 2>/dev/null`  
   Result: Empty table (no services).
 
 ### Commands to run on each instance (LAB and PROD) to complete baseline
@@ -260,7 +260,7 @@ curl -sS -o /dev/null -w "api/health/system %{http_code}\n" --max-time 5 http://
 curl -sS --max-time 5 http://127.0.0.1:8002/api/health/system | jq -c '.global_status, .market_data.status, .market_updater.status' 2>/dev/null || echo "jq or curl failed"
 
 # 8) self-heal verification (from repo root; does not trigger heal)
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/selfheal/verify.sh; echo "exit=$?"
 
 # 9) logs and state
@@ -275,7 +275,7 @@ for u in atp-selfheal atp-health-snapshot atp-health-alert nightly-integrity-aud
 done
 
 # 11) Docker
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws ps
 docker ps --format "table {{.Names}}\t{{.Status}}" | head -20
 ```

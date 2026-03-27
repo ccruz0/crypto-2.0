@@ -79,7 +79,7 @@ aws ssm send-command \
     --instance-ids i-087953603011543c5 \
     --document-name "AWS-RunShellScript" \
     --parameters 'commands=[
-        "cd /home/ubuntu/automated-trading-platform",
+        "cd /home/ubuntu/crypto-2.0",
         "docker compose exec -T backend-aws python3 -c \"import sys; sys.path.insert(0, \\\"/app\\\"); from sqlalchemy.orm import Session; from app.database import SessionLocal; from app.models.watchlist import WatchlistItem; db = SessionLocal(); coins = db.query(WatchlistItem).all(); [setattr(c, \\\"alert_enabled\\\", False) or setattr(c, \\\"trade_enabled\\\", False) or setattr(c, \\\"trade_on_margin\\\", False) for c in coins if c.alert_enabled]; db.commit(); print(f\\\"✅ Actualizadas {sum(1 for c in coins if c.alert_enabled)} monedas\\\"); db.close()\""
     ]' \
     --region ap-southeast-1

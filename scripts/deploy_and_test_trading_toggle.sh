@@ -27,7 +27,7 @@ NC='\033[0m' # No Color
 
 # Function to run command on AWS
 run_aws() {
-    sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && $1'"
+    sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && $1'"
 }
 
 # Use python3 instead of python
@@ -73,7 +73,7 @@ echo "1. Open the Dashboard in your browser"
 echo "2. For $SYMBOL_UPPER:"
 echo "   - Set Trading = NO"
 echo "   - Refresh page and verify it stays NO"
-echo "   - Run: ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && python3 -m backend.scripts.debug_watchlist_trade_enabled $SYMBOL_UPPER'"
+echo "   - Run: ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && python3 -m backend.scripts.debug_watchlist_trade_enabled $SYMBOL_UPPER'"
 echo "   - Verify trade_enabled=False for canonical row"
 echo ""
 echo "3. Then set Trading = YES"

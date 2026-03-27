@@ -42,7 +42,7 @@ No secrets. Expected to fail locally when Docker profile is not running or Crypt
 Run on EC2 and paste outputs here (no secrets):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 date -u +"%Y-%m-%dT%H:%M:%SZ"
 hostname
 curl -s https://api.ipify.org; echo
@@ -86,7 +86,7 @@ PHASE 6 — EC2 VALIDATION COMPLETE
 
 **To close Phase 6 on EC2:** SSH into the instance, ensure the EC2 egress IP is allowlisted in the Crypto.com API key, then run:
 ```bash
-cd /home/ubuntu/automated-trading-platform && bash scripts/aws/phase6_final_ec2_close.sh
+cd /home/ubuntu/crypto-2.0 && bash scripts/aws/phase6_final_ec2_close.sh
 ```
 The script runs steps 1–7 and appends `PHASE 6 — EC2 VALIDATION COMPLETE` only if all checks pass. Afterward, run the systemd commands (step 6) with `sudo` and confirm timer/service; the script reminds you.
 
@@ -220,7 +220,7 @@ The script runs steps 1–7 and appends `PHASE 6 — EC2 VALIDATION COMPLETE` on
 After allowlist is applied:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && bash scripts/aws/nightly_integrity_audit.sh; echo "exit=$?"
+cd /home/ubuntu/crypto-2.0 && bash scripts/aws/nightly_integrity_audit.sh; echo "exit=$?"
 ```
 
 Expected: exit=0.

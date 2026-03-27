@@ -136,13 +136,13 @@ Whenever this workflow is invoked for a backend-related problem (alerts, strateg
 
 - **Deploy to AWS:**
   ```bash
-  ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws down backend-aws'
-  ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws up --build -d backend-aws'
+  ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws down backend-aws'
+  ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws up --build -d backend-aws'
   ```
 
 - **Wait for container to be healthy:**
   ```bash
-  ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps backend-aws'
+  ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps backend-aws'
   ```
 
 - **Validate live telemetry - On `hilovivo-aws`, perform a full backend audit:**
@@ -259,13 +259,13 @@ curl http://localhost:8000/api/monitoring/telegram-messages
 
 ### AWS Deployment
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose pull'"
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up --build -d'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose pull'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up --build -d'"
 ```
 
 ### AWS Health Check
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose ps'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose ps'"
 curl -s https://monitoring-ai-dashboard-nu.vercel.app/api/health
 ```
 

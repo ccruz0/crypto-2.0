@@ -86,8 +86,8 @@ npm run type-check  # if available
 
 ### Backend Deployment (AWS)
 ```bash
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose down'"
-sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose up --build -d'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose down'"
+sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose up --build -d'"
 ```
 
 ### Health Check

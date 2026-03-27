@@ -56,7 +56,7 @@ sudo sed -i 's/172.31.3.214:8080/172.31.3.214:8081/g' /etc/nginx/sites-enabled/d
 ## Option 3: Run fix script from repo (if you have the repo on PROD)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/openclaw/fix_openclaw_proxy_prod.sh
 ```
 

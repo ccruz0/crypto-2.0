@@ -7,7 +7,7 @@ If the OpenClaw Chat shows "I don't see a dedicated Tavily tool in my available 
 Run the enable script from the repo root on the **OpenClaw/LAB** instance:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/enable_tavily_plugin.sh
 ```
 

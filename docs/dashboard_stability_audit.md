@@ -188,7 +188,7 @@ Updated `/etc/nginx/sites-available/*`:
 2. **Remote Testing:**
    ```bash
    ssh hilovivo-aws
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    docker compose exec backend-aws curl http://127.0.0.1:8002/ping_fast
    ```
 

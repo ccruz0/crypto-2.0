@@ -4,7 +4,7 @@
 # secrets/runtime.env (use scripts/setup_tavily_key.sh or setup_tavily_key_popup.py first).
 #
 # Usage (on LAB):
-#   cd /home/ubuntu/automated-trading-platform
+#   cd /home/ubuntu/crypto-2.0
 #   sudo bash scripts/openclaw/enable_tavily_plugin.sh
 #
 # What this does:
@@ -14,7 +14,7 @@
 
 set -e
 
-REPO_ROOT="${REPO_ROOT:-/home/ubuntu/automated-trading-platform}"
+REPO_ROOT="${REPO_ROOT:-/home/ubuntu/crypto-2.0}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-/opt/openclaw/home-data}"
 CONFIG_FILE="${OPENCLAW_HOME}/openclaw.json"
 

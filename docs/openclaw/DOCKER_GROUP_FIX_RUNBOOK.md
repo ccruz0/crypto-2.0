@@ -46,7 +46,7 @@ After applying the fix, run:
 ```bash
 # As ubuntu (or run via: sudo -u ubuntu -i)
 docker ps
-docker compose -f /home/ubuntu/automated-trading-platform/docker-compose.openclaw.yml ps
+docker compose -f /home/ubuntu/crypto-2.0/docker-compose.openclaw.yml ps
 ```
 
 **Expected:** No "Permission denied". Output shows running containers.

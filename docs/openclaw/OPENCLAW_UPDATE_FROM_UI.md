@@ -15,7 +15,7 @@ When OpenClaw runs in Docker, the built-in "Update now" button fails because it 
 On the LAB instance (via SSM or SSH):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/install_openclaw_update_daemon.sh
 ```
 

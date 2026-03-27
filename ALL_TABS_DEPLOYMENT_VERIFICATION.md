@@ -54,7 +54,7 @@ ssh ubuntu@54.254.150.31
 
 ### Step 2: Navigate to Project Directory
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ```
 
 ### Step 3: Handle Git Pull Blockers
@@ -287,7 +287,7 @@ Only check backend if:
 ### Check Backend Logs
 ```bash
 ssh ubuntu@54.254.150.31
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker compose --profile aws logs -n 200 backend-aws | grep -i "orders\|expected-take-profit"
 ```
 

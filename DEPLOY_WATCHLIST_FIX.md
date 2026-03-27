@@ -30,7 +30,7 @@ Este deploy incluye correcciones para resolver discrepancias en el reporte de co
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 ./deploy_watchlist_fix.sh
 ```
@@ -39,7 +39,7 @@ git pull origin main
 
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 1. Pull latest code
 git pull origin main
@@ -122,7 +122,7 @@ Estos campos **aún pueden mostrar `-`** si `MarketData` está vacío o desactua
 Si hay problemas, puedes hacer rollback:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git log --oneline -5  # Ver últimos commits
 git checkout <commit-anterior>
 docker compose --profile aws build --no-cache backend-aws

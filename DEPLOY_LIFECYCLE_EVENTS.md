@@ -18,7 +18,7 @@
 
 ```bash
 # 1. Pull latest code
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 
 # 2. Rebuild and restart backend

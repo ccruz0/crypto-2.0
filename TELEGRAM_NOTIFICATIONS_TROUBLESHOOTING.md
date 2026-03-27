@@ -6,7 +6,7 @@ Run the diagnostic script to check your configuration:
 
 ```bash
 # On AWS instance
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 docker-compose --profile aws exec backend-aws python backend/scripts/diagnose_telegram_alerts.py
 ```
 

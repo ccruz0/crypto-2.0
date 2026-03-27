@@ -161,7 +161,7 @@ pytest tests/test_system_health.py -v
 
 ### AWS Verification
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Check health endpoint
 curl http://localhost:8002/api/health/system | jq
@@ -190,7 +190,7 @@ docker logs --tail 200 market-updater-aws | grep SYSTEM_DOWN
 
 1. Deploy to AWS:
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    git pull origin main
    docker compose --profile aws build backend-aws
    docker compose --profile aws restart backend-aws

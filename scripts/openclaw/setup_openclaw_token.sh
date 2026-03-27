@@ -5,7 +5,7 @@
 #   sudo ./scripts/openclaw/setup_openclaw_token.sh
 #
 # Or from any directory:
-#   sudo bash /home/ubuntu/automated-trading-platform/scripts/openclaw/setup_openclaw_token.sh
+#   sudo bash /home/ubuntu/crypto-2.0/scripts/openclaw/setup_openclaw_token.sh
 #
 # Token: GitHub → Settings → Developer settings → Fine-grained tokens →
 #        Contents (R/W), Pull requests (R/W). Copy the token, then paste here (nothing will show).

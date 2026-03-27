@@ -14,7 +14,7 @@
 4. In the terminal, paste and run:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh
+cd /home/ubuntu/crypto-2.0 && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```
 
 5. Wait for “OpenClaw already running” or “Started and enabled openclaw.service”.
@@ -35,5 +35,5 @@ cd automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/che
 ## One-liner (copy-paste)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh
+cd /home/ubuntu/crypto-2.0 && NONINTERACTIVE=1 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```

@@ -45,7 +45,7 @@ When the user asks Cursor to **pick this triage and run the changes needed**, do
 3. **Restart backend after env/secret changes**  
    On PROD via SSM or on instance:
    ```bash
-   cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws
+   cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws
    ```
    If you changed `secrets/runtime.env` permissions or content, use the same host where the stack runs.
 

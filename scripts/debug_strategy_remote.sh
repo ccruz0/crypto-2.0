@@ -17,7 +17,7 @@ set -e  # Exit on error
 
 REMOTE_USER="ubuntu"
 REMOTE_HOST="hilovivo-aws"
-REMOTE_PROJECT_DIR="/home/ubuntu/automated-trading-platform"
+REMOTE_PROJECT_DIR="/home/ubuntu/crypto-2.0"
 BACKEND_SERVICE_NAME="backend-aws"
 
 # ============================================================================

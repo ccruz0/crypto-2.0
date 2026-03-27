@@ -119,7 +119,7 @@ This script automatically checks:
 
 ```bash
 cd /Users/carloscruz/automated-trading-platform
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws ps'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 ```
 
 **What to look for:**
@@ -135,7 +135,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 **Backend health:**
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker inspect automated-trading-platform-backend-aws-1 --format="{{json .State.Health}}" | python3 -m json.tool'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker inspect automated-trading-platform-backend-aws-1 --format="{{json .State.Health}}" | python3 -m json.tool'
 ```
 
 **What to look for:**
@@ -146,7 +146,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker inspect a
 **Market-updater health:**
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker ps --filter "name=market-updater" --format "{{.Names}}" | head -1 | xargs -I {} docker inspect {} --format="{{json .State.Health}}" | python3 -m json.tool'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker ps --filter "name=market-updater" --format "{{.Names}}" | head -1 | xargs -I {} docker inspect {} --format="{{json .State.Health}}" | python3 -m json.tool'
 ```
 
 **Note:** Market-updater healthcheck failures are informational only and do NOT break the dashboard.
@@ -156,7 +156,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker ps --filt
 **Test backend directly (bypassing nginx):**
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -v http://127.0.0.1:8002/api/config'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && curl -v http://127.0.0.1:8002/api/config'
 ```
 
 **Expected:** HTTP 200 with JSON response
@@ -172,7 +172,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && curl -v http://1
 **Test Docker network connectivity:**
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec market-updater python3 -c "import urllib.request; resp = urllib.request.urlopen(\"http://backend-aws:8002/ping_fast\", timeout=5); print(\"HTTP\", resp.getcode())"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec market-updater python3 -c "import urllib.request; resp = urllib.request.urlopen(\"http://backend-aws:8002/ping_fast\", timeout=5); print(\"HTTP\", resp.getcode())"'
 ```
 
 **Expected:** `HTTP 200`
@@ -214,7 +214,7 @@ curl -v https://dashboard.hilovivo.com/
 ### Step 6: Check Backend Logs
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=200 backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=200 backend-aws'
 ```
 
 **What to look for:**
@@ -228,7 +228,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 ### Step 7: Check Market-Updater Logs
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=200 market-updater'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=200 market-updater'
 ```
 
 **What to look for:**
@@ -253,7 +253,7 @@ ssh hilovivo-aws 'sudo tail -50 /var/log/nginx/error.log'
 ### Step 9: Check Database Connectivity
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
 ```
 
 **Expected:** Returns `1` (connection successful)
@@ -404,7 +404,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 ### Restart Backend
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 Wait 60-180 seconds for healthcheck to pass, then test again.
@@ -412,13 +412,13 @@ Wait 60-180 seconds for healthcheck to pass, then test again.
 ### Restart All Services
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws restart'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws restart'
 ```
 
 ### Rebuild and Restart Backend
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws build --no-cache backend-aws && docker compose --profile aws up -d backend-aws'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws build --no-cache backend-aws && docker compose --profile aws up -d backend-aws'
 ```
 
 ### Restart Nginx
@@ -430,7 +430,7 @@ ssh hilovivo-aws 'sudo systemctl restart nginx'
 ### Check Database Connection
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec db psql -U trader -d atp -c "SELECT 1;"'
 ```
 
 ## Interpreting Diagnostic Script Output

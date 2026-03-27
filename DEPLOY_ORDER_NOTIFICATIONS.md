@@ -27,7 +27,7 @@ This deployment adds Telegram notifications for all order cancellation scenarios
 
 2. **Navigate to project directory:**
    ```bash
-   cd /home/ubuntu/automated-trading-platform
+   cd /home/ubuntu/crypto-2.0
    ```
 
 3. **Pull latest code** (if using Git):

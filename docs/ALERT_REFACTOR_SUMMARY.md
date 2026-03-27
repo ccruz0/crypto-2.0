@@ -109,12 +109,12 @@ Both BUY and SELL orders are created only when:
 
 ### 1. Run Database Migration
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose exec -T db python3 -c \"$(cat /tmp/add_buy_sell_alert_columns.py)\""
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose exec -T db python3 -c \"$(cat /tmp/add_buy_sell_alert_columns.py)\""
 ```
 
 Or execute the migration script directly on AWS:
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose exec db psql -U trader -d atp -c \"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose exec db psql -U trader -d atp -c \"
 DO \$\$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='watchlist_items' AND column_name='buy_alert_enabled') THEN
@@ -136,17 +136,17 @@ git add .
 git commit -m "feat: Split alert button into Buy Alert and Sell Alert with full order creation support"
 git push
 
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && git pull"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && git pull"
 ```
 
 ### 3. Rebuild Backend
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build backend && docker compose up -d backend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build backend && docker compose up -d backend"
 ```
 
 ### 4. Rebuild Frontend
 ```bash
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && docker compose build frontend && docker compose up -d frontend"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose build frontend && docker compose up -d frontend"
 ```
 
 ### 5. Verify

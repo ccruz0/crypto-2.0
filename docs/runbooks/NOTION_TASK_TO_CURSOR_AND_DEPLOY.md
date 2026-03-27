@@ -153,7 +153,7 @@ On the **EC2 instance** (PROD), add the database ID to `secrets/runtime.env` so 
 
 ```bash
 # On EC2 (after connecting via SSM or EC2 Instance Connect)
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 echo 'NOTION_TASK_DB=eb90cfa139f94724a8b476315908510a' >> secrets/runtime.env
 ```
 
@@ -168,7 +168,7 @@ docker compose --profile aws restart backend-aws
 From the **same EC2 session** (repo root). The script runs one scheduler cycle **inside** the backend container, which already has `NOTION_API_KEY` and (after step 1) `NOTION_TASK_DB` from `secrets/runtime.env`:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ./scripts/run_notion_task_pickup.sh
 ```
 

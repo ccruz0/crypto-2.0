@@ -51,7 +51,7 @@ aws ssm start-session --target i-087953603011543c5
 # 2. Navigate to project directory
 cd ~/automated-trading-platform
 # or
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # 3. Pull latest code
 git pull origin main
@@ -115,7 +115,7 @@ aws ssm send-command \
   --region ap-southeast-1 \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/automated-trading-platform",
+    "cd /home/ubuntu/crypto-2.0",
     "git pull origin main",
     "docker compose --profile aws build --no-cache",
     "docker compose --profile aws up -d"

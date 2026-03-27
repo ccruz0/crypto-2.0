@@ -6,7 +6,7 @@
 set -e
 
 SSH_HOST="hilovivo-aws"
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 
 # Colors
 RED='\033[0;31m'

@@ -52,7 +52,7 @@ OPENCLAW_PAT=ghp_xxx ./scripts/openclaw/store_pat_and_install.sh
 
   ```bash
   docker ps -f name=openclaw
-  cd /home/ubuntu/automated-trading-platform && docker compose -f docker-compose.openclaw.yml logs -f openclaw
+  cd /home/ubuntu/crypto-2.0 && docker compose -f docker-compose.openclaw.yml logs -f openclaw
   ```
 
 - Siguiente: [INSTALL_CONTINUE.md](INSTALL_CONTINUE.md) — "After installation" y [LAB_SETUP_AND_VALIDATION.md](LAB_SETUP_AND_VALIDATION.md).

@@ -3,14 +3,14 @@
 #
 # Run via SSM:
 #   aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-#     --parameters 'commands=["cd /home/ubuntu/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 || true","bash scripts/aws/forensic_telegram_task_runtime.sh"]' \
+#     --parameters 'commands=["cd /home/ubuntu/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 || true","bash scripts/aws/forensic_telegram_task_runtime.sh"]' \
 #     --region ap-southeast-1 --timeout-seconds 120
 #
 # Target string: "This task has low impact and was not created"
 
 set -euo pipefail
 
-REPO="${1:-/home/ubuntu/automated-trading-platform}"
+REPO="${1:-/home/ubuntu/crypto-2.0}"
 [[ -d "$REPO" ]] || REPO="/home/ubuntu/crypto-2.0"
 cd "$REPO" 2>/dev/null || { echo "Repo not found"; exit 1; }
 
@@ -39,7 +39,7 @@ echo ""
 
 # 2. Search HOST filesystem (repo, backups, old deploys)
 echo "--- 2. SEARCH HOST FILESYSTEM FOR OLD STRING ---"
-for dir in "$REPO" /home/ubuntu/crypto-2.0 /home/ubuntu/automated-trading-platform; do
+for dir in "$REPO" /home/ubuntu/crypto-2.0 /home/ubuntu/crypto-2.0; do
   [[ -d "$dir" ]] || continue
   echo "  Searching $dir ..."
   found=$(grep -r -l --include="*.py" -e "$OLD_STR" -e "$OLD_TAIL" "$dir" 2>/dev/null || true)

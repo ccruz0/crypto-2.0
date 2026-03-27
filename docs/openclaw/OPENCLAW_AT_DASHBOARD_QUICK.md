@@ -22,7 +22,7 @@ cd /Users/carloscruz/automated-trading-platform
 
 **En el servidor LAB (sin SSM):**
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```
 
@@ -37,7 +37,7 @@ sudo bash scripts/openclaw/check_and_start_openclaw.sh
 En la instancia donde corre el dashboard (PROD):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/fix_openclaw_proxy_prod.sh
 sudo nginx -t
 sudo systemctl reload nginx
@@ -95,7 +95,7 @@ El token no va en el compose ni en env como valor; solo la ruta del archivo.
 ### 1) En el host del Dashboard (PROD)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # A) ¿Está el bloque nginx de /openclaw y a qué IP apunta?
 sudo nginx -T 2>/dev/null | sed -n '/openclaw/,/}/p' | sed -n '1,200p'
@@ -113,7 +113,7 @@ curl -sS -I https://dashboard.hilovivo.com/openclaw/ws | head -n 20
 
 **Si ves 404, ejecuta en PROD:**
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214
 sudo nginx -t
 sudo systemctl reload nginx
@@ -125,7 +125,7 @@ sudo systemctl reload nginx
 ### 2) En el host de OpenClaw (LAB)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo systemctl status openclaw --no-pager -l | sed -n '1,120p'
 sudo ss -lntp | egrep '(:8081|:8080|:3000|:80)\b' || true
 curl -sS -I http://127.0.0.1:8081/ | head -n 20 || true
@@ -138,7 +138,7 @@ curl -sS -I http://127.0.0.1:8081/ | head -n 20 || true
 
 **Si openclaw no está activo o no hay nada escuchando en 8081:**
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 sudo bash scripts/openclaw/check_and_start_openclaw.sh
 ```
 

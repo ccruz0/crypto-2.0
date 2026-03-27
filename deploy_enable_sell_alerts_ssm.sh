@@ -60,7 +60,7 @@ finally:
 ENCODED_SCRIPT=$(echo "$PYTHON_SCRIPT" | base64)
 
 # Create command to decode and execute (exact same pattern as update_coins_aws_ssm.sh)
-COMMAND="cd /home/ubuntu/automated-trading-platform && echo '$ENCODED_SCRIPT' | base64 -d > /tmp/enable_sell_alerts.py && docker compose --profile aws exec -T backend-aws python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker compose exec -T backend-aws python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker compose exec -T backend python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker exec -i \$(docker ps --filter 'name=backend' --format '{{.Names}}' | head -1) python3 /tmp/enable_sell_alerts.py"
+COMMAND="cd /home/ubuntu/crypto-2.0 && echo '$ENCODED_SCRIPT' | base64 -d > /tmp/enable_sell_alerts.py && docker compose --profile aws exec -T backend-aws python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker compose exec -T backend-aws python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker compose exec -T backend python3 /tmp/enable_sell_alerts.py 2>/dev/null || docker exec -i \$(docker ps --filter 'name=backend' --format '{{.Names}}' | head -1) python3 /tmp/enable_sell_alerts.py"
 
 print_status "Enviando comando a AWS EC2 instance $INSTANCE_ID..."
 

@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_DIR="${REPO_DIR:-/home/ubuntu/automated-trading-platform}"
+REPO_DIR="${REPO_DIR:-/home/ubuntu/crypto-2.0}"
 ON_SERVER="${1:-}"
 
 run_on_server() {

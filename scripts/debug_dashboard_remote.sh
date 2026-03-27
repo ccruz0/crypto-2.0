@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-REMOTE_PATH="/home/ubuntu/automated-trading-platform"
+REMOTE_PATH="/home/ubuntu/crypto-2.0"
 SSH_OPTS=""
 
 # REMOTE_HOST: use env, or SSH alias hilovivo-aws, or ubuntu@<dashboard DNS IP> with atp-rebuild key.

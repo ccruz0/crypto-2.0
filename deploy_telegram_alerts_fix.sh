@@ -28,7 +28,7 @@ rsync_cmd \
 # Copy file into Docker container and restart
 echo "🐳 Copying file into Docker container and restarting market-updater-aws..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/automated-trading-platform
+cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
 
 # Find the market-updater-aws container name
 MARKET_UPDATER_CONTAINER=$(docker ps --filter "name=market-updater-aws" --format "{{.Names}}" | head -1)

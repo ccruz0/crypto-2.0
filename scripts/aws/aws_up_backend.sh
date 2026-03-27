@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-command AWS backend deploy: render runtime.env, deploy backend-aws, print evidence (no secrets).
 # Always run this instead of `docker compose --profile aws up -d backend-aws` directly.
-# Usage: cd /home/ubuntu/automated-trading-platform && bash scripts/aws/aws_up_backend.sh
+# Usage: cd /home/ubuntu/crypto-2.0 && bash scripts/aws/aws_up_backend.sh
 set -euo pipefail
 set +x 2>/dev/null || true
 

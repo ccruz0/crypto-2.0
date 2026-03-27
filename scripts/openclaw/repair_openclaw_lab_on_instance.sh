@@ -2,7 +2,7 @@
 # OpenClaw LAB repair — run on the LAB EC2 instance (SSM Run Command runs as root).
 # Does not touch PROD nginx. Verifies Docker, starts/restarts OpenClaw, checks :8080 + local curl.
 #
-# Usage (from SSM):  bash /home/ubuntu/automated-trading-platform/scripts/openclaw/repair_openclaw_lab_on_instance.sh
+# Usage (from SSM):  bash /home/ubuntu/crypto-2.0/scripts/openclaw/repair_openclaw_lab_on_instance.sh
 # Env (optional):
 #   ATP_REPO_PATH   — force repo root (default: detect)
 #   OPENCLAW_PORT   — host port (default: 8080)
@@ -36,7 +36,7 @@ detect_repo() {
     fi
   fi
   for c in \
-    "/home/ubuntu/automated-trading-platform" \
+    "/home/ubuntu/crypto-2.0" \
     "/home/ubuntu/crypto-2.0" \
     "$HOME/automated-trading-platform"; do
     if [[ -f "$c/$COMPOSE_REL" || -f "$c/$COMPOSE_ALT" ]]; then
@@ -196,7 +196,7 @@ maybe_prune_images
 if detect_repo; then
   ok "Repo root: $REPO"
 else
-  REPO="/home/ubuntu/automated-trading-platform"
+  REPO="/home/ubuntu/crypto-2.0"
   log "WARN: could not auto-detect repo with $COMPOSE_REL; using default $REPO"
 fi
 

@@ -34,7 +34,7 @@ except Exception as e:
 
 **On AWS:**
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP'
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs -n 200 backend-aws | grep TELEGRAM_STARTUP'
 ```
 
 **Expected Output:**
@@ -58,7 +58,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && docker compose -
 **To deploy:**
 ```bash
 # On AWS server
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 docker compose --profile aws up -d --build backend-aws
 

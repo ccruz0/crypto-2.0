@@ -7,7 +7,7 @@ uname -a || true
 pwd || true
 echo
 
-REPO_DIR="/home/ubuntu/automated-trading-platform"
+REPO_DIR="/home/ubuntu/crypto-2.0"
 
 if [[ ! -d "$REPO_DIR" ]]; then
   echo "ERROR: Expected EC2 repo dir not found: $REPO_DIR"
@@ -173,4 +173,4 @@ PY
 
 echo
 echo "If FAIL and you need logs:"
-echo "cd /home/ubuntu/automated-trading-platform && docker compose --profile aws logs --tail=120 backend-aws"
+echo "cd /home/ubuntu/crypto-2.0 && docker compose --profile aws logs --tail=120 backend-aws"

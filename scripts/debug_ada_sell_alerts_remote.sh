@@ -28,7 +28,7 @@ echo ""
 
 echo "[4] Throttle state for ADA (from database)"
 echo "-------------------------------------------------"
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && BACKEND_CONTAINER=\$(docker ps --format '{{.Names}}' | grep backend | head -1) && docker exec \$BACKEND_CONTAINER python3 -c \"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && BACKEND_CONTAINER=\$(docker ps --format '{{.Names}}' | grep backend | head -1) && docker exec \$BACKEND_CONTAINER python3 -c \"
 from app.database import SessionLocal
 from app.models.signal_throttle import SignalThrottleState
 db = SessionLocal()
@@ -40,7 +40,7 @@ echo ""
 
 echo "[5] Recent Monitoring entries for ADA"
 echo "-------------------------------------------------"
-ssh hilovivo-aws "cd /home/ubuntu/automated-trading-platform && BACKEND_CONTAINER=\$(docker ps --format '{{.Names}}' | grep backend | head -1) && docker exec \$BACKEND_CONTAINER python3 -c \"
+ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && BACKEND_CONTAINER=\$(docker ps --format '{{.Names}}' | grep backend | head -1) && docker exec \$BACKEND_CONTAINER python3 -c \"
 from app.database import SessionLocal
 from app.models.monitoring import TelegramMessage
 from datetime import datetime, timedelta, timezone

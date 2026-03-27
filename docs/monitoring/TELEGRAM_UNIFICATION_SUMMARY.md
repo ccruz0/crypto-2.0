@@ -80,7 +80,7 @@ docker compose exec backend python scripts/send_test_telegram_message.py
 ### AWS Test
 
 ```bash
-ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
 docker compose --profile aws exec backend-aws python scripts/send_test_telegram_message.py'
 ```
 
@@ -96,13 +96,13 @@ The daily sales report should continue to work as before. It uses the same path,
 
 1. **Check Environment Variables:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
    docker compose --profile aws exec backend-aws env | grep -E "TELEGRAM|RUNTIME_ORIGIN|RUN_TELEGRAM"'
    ```
 
 2. **Check Logs:**
    ```bash
-   ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && \
+   ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
    docker compose --profile aws logs backend-aws | grep -E "TELEGRAM_SEND|TELEGRAM_ERROR|GATEKEEPER" | tail -50'
    ```
 

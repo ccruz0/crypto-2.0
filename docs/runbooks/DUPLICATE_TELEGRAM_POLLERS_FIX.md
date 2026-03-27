@@ -17,14 +17,14 @@ ATP Control bot returns:
 ### 1. Run diagnostic script on PROD
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 bash backend/scripts/diag/detect_telegram_consumers.sh
 ```
 
 Or via SSM:
 ```bash
 aws ssm send-command --instance-ids i-087953603011543c5 --document-name AWS-RunShellScript \
-  --parameters 'commands=["cd /home/ubuntu/automated-trading-platform && bash backend/scripts/diag/detect_telegram_consumers.sh"]' \
+  --parameters 'commands=["cd /home/ubuntu/crypto-2.0 && bash backend/scripts/diag/detect_telegram_consumers.sh"]' \
   --region ap-southeast-1
 ```
 

@@ -116,7 +116,7 @@ VITE_OPENCLAW_BASE_PATH=/openclaw/ npm run build
 Use the deploy script (copies to the resolved target). It **finds the repo from the script path** (or use `REPO=/path/to/automated-trading-platform` if you moved the script):
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh
 ```
@@ -191,7 +191,7 @@ If you have no key on file, use **AWS Console → EC2 → Connect**, **Session M
 `nginx/dashboard.conf` is **relative to the repo root**. You must:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 ls nginx/dashboard.conf
 ```
 
@@ -247,7 +247,7 @@ With `docker compose --profile aws`, **port 8080** on the dashboard machine is c
 2. **Deploy on dashboard host** (one line; no comment lines — zsh can mangle pasted `#` blocks):
 
    ```bash
-   ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/automated-trading-platform && git pull && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
+   ssh ubuntu@dashboard.hilovivo.com 'cd /home/ubuntu/crypto-2.0 && git pull && ./scripts/openclaw/deploy_openclaw_basepath_nginx.sh'
    ```
 
 3. **Verify redirect** (must use Basic Auth):
@@ -300,7 +300,7 @@ Requires SSM agent **Online** on dashboard + LAB and IAM permission for `ssm:Sen
 **If you are already SSH’d on the dashboard EC2** (not your Mac), do **not** use `/Users/...` paths and you do **not** need SSM to fix nginx on this host:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull origin main
 bash scripts/openclaw/repair_openclaw_503_on_dashboard.sh
 ```
@@ -320,7 +320,7 @@ Optional env: `ATP_INSTANCE_ID`, `OPENCLAW_LAB_INSTANCE_ID`, `LAB_PRIVATE_IP`, `
 **Fix (manual):**
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/nginx/rate_limiting_zones.conf /etc/nginx/rate_limiting_zones.conf
+sudo cp /home/ubuntu/crypto-2.0/nginx/rate_limiting_zones.conf /etc/nginx/rate_limiting_zones.conf
 # Edit /etc/nginx/nginx.conf — inside http { }, add before sites-enabled:
 #   include /etc/nginx/rate_limiting_zones.conf;
 sudo nginx -t && sudo systemctl reload nginx
@@ -335,7 +335,7 @@ If nginx was left broken after a failed deploy, restore the previous site file f
 On the **dashboard** host:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 ./scripts/openclaw/openclaw_basic_auth_find_or_reset.sh
 ```
@@ -375,7 +375,7 @@ curl -sS -I --max-time 5 http://127.0.0.1:8080/   || echo "local 8080 unreachabl
 **On the dashboard EC2:**
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 docker compose --profile aws ps
 docker compose --profile aws up -d
@@ -395,7 +395,7 @@ Re-run `./scripts/openclaw/diagnose_openclaw_prod.sh` — sections **3)** (local
 ## Continue: automated upstream check (dashboard EC2)
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 git pull
 ./scripts/openclaw/diagnose_openclaw_prod.sh
 ```

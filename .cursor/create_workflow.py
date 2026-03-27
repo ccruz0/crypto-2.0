@@ -41,10 +41,10 @@ Remote host (SSH config already set up):
   hilovivo-aws
 
 Remote project path:
-  /home/ubuntu/automated-trading-platform
+  /home/ubuntu/crypto-2.0
 
 ALWAYS run remote shell commands via:
-  sh -c "ssh hilovivo-aws 'cd /home/ubuntu/automated-trading-platform && ...'"
+  sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && ...'"
 
 Key documentation files (source of truth):
 

@@ -7,7 +7,7 @@
 # Usage on PROD (raw — repo origin is crypto-2.0):
 #   curl -sSL https://raw.githubusercontent.com/ccruz0/crypto-2.0/main/scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh | sudo bash
 # Or after git pull in repo dir on PROD:
-#   cd /home/ubuntu/automated-trading-platform && sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh
+#   cd /home/ubuntu/crypto-2.0 && sudo bash scripts/openclaw/force_openclaw_proxy_8080_on_prod.sh
 #
 # Env (optional):
 #   LAB_PRIVATE_IP=172.31.3.214 OPENCLAW_PORT=8080

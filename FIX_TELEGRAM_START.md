@@ -40,7 +40,7 @@ The bot needs your Telegram user ID to authorize you for commands. Follow these 
 **On AWS Server:**
 ```bash
 ssh hilovivo-aws
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 nano .env.aws
 ```
 

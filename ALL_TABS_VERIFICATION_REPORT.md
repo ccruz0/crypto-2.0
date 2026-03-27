@@ -46,7 +46,7 @@
 
 ```bash
 ssh ubuntu@54.254.150.31
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 
 # Move untracked markdown files blocking git pull
 mkdir -p backup_markdown

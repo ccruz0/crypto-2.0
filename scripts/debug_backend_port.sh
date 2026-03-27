@@ -6,7 +6,7 @@ set -euo pipefail
 #   scripts/debug_backend_port.sh [SERVER] [REMOTE_PROJECT_DIR]
 # Defaults:
 #   SERVER=175.41.189.249
-#   REMOTE_PROJECT_DIR=/home/ubuntu/automated-trading-platform
+#   REMOTE_PROJECT_DIR=/home/ubuntu/crypto-2.0
 #
 # Requires: scripts/ssh_key.sh (ssh_cmd helper)
 
@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/scripts/ssh_key.sh"
 
 SERVER="${1:-175.41.189.249}"
-REMOTE_PROJECT_DIR="${2:-/home/ubuntu/automated-trading-platform}"
+REMOTE_PROJECT_DIR="${2:-/home/ubuntu/crypto-2.0}"
 
 echo "== Debugging backend port on ${SERVER} =="
 echo "Remote project dir: ${REMOTE_PROJECT_DIR}"

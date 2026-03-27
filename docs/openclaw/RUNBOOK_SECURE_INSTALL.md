@@ -82,7 +82,7 @@ id
 Luego:
 
 ```bash
-cd /home/ubuntu/automated-trading-platform
+cd /home/ubuntu/crypto-2.0
 cp -n .env.lab.example .env.lab
 # Ajustar .env.lab: GIT_REPO_URL, OPENCLAW_IMAGE
 docker compose -f docker-compose.openclaw.yml up -d
@@ -96,7 +96,7 @@ El token se monta **solo** como archivo de solo lectura; no hay variable de ento
 ## 6. Servicio (opcional)
 
 ```bash
-sudo cp /home/ubuntu/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp /home/ubuntu/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw
