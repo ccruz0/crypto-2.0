@@ -45,7 +45,7 @@ EXCHANGE_CUSTOM_API_SECRET=<secret_de_AWS_KEY_3.1>
 
 5. Reinicia el backend:
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose restart backend-aws"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose restart backend-aws"
 ```
 
 ### Opción B: Usar la Key Actual (`z3HWF8m292...`)
@@ -63,7 +63,7 @@ ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose res
 Después de actualizar las credenciales:
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 Deberías ver:

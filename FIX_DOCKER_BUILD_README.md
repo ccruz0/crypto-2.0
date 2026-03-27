@@ -87,7 +87,7 @@ If the script doesn't work, you can run commands manually:
 
 ```bash
 # On AWS server
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Stop and remove
 docker compose --profile aws stop backend-aws

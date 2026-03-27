@@ -3,7 +3,7 @@
 # Token from: .env.aws, secrets/runtime.env, or TELEGRAM_BOT_TOKEN env var.
 #
 # Usage:
-#   cd ~/automated-trading-platform && ./scripts/diag/get_chat_ids_local.sh
+#   cd ~/crypto-2.0 && ./scripts/diag/get_chat_ids_local.sh
 #   TELEGRAM_BOT_TOKEN=xxx ./scripts/diag/get_chat_ids_local.sh
 
 set -e

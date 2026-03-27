@@ -4,7 +4,7 @@ set -euo pipefail
 # Verification script for local backend-dev hot-reload setup
 # This script verifies the backend-dev service is working correctly
 
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "🔍 Verifying local backend-dev setup..."
 echo ""

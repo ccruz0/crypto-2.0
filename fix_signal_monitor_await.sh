@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fix await syntax error in signal_monitor.py
 
-cd ~/automated-trading-platform/backend/app/services || cd /home/ubuntu/crypto-2.0/backend/app/services
+cd ~/crypto-2.0/backend/app/services || cd /home/ubuntu/crypto-2.0/backend/app/services
 
 # Check if file exists
 if [ ! -f "signal_monitor.py" ]; then

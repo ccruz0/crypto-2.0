@@ -9,7 +9,7 @@ echo "🔧 APPLYING AUTHENTICATION FIX"
 echo "================================================================================"
 echo ""
 
-cd ~/automated-trading-platform || { echo "❌ Could not find automated-trading-platform directory"; exit 1; }
+cd ~/crypto-2.0 || { echo "❌ Could not find automated-trading-platform directory"; exit 1; }
 
 echo "1. Checking current .env.aws..."
 if [ -f .env.aws ]; then
@@ -62,7 +62,7 @@ elif pgrep -f "uvicorn app.main:app" > /dev/null; then
     echo "   You need to restart it manually to apply the fix:"
     echo ""
     echo "   pkill -f 'uvicorn app.main:app'"
-    echo "   cd ~/automated-trading-platform/backend"
+    echo "   cd ~/crypto-2.0/backend"
     echo "   source venv/bin/activate  # if using venv"
     echo "   nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &"
     echo ""
@@ -92,6 +92,6 @@ echo "4. You should see: 'MARGIN ORDER CONFIGURED: leverage=X (exec_inst skipped
 echo ""
 echo "To check logs:"
 echo "  - Docker: docker compose logs backend -f | grep -E 'AUTHENTICATION|order created'"
-echo "  - Process: tail -f ~/automated-trading-platform/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
+echo "  - Process: tail -f ~/crypto-2.0/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
 echo ""
 

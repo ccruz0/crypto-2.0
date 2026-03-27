@@ -32,14 +32,14 @@ git push origin main  # or your branch name
 ssh hilovivo-aws
 
 # 2. Navigate to project directory
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 3. Pull latest changes (if using git) or copy files manually
 git pull origin main
 
 # OR if not using git, copy files:
-# scp backend/app/services/exchange_sync.py hilovivo-aws:~/automated-trading-platform/backend/app/services/
-# scp backend/app/services/sl_tp_checker.py hilovivo-aws:~/automated-trading-platform/backend/app/services/
+# scp backend/app/services/exchange_sync.py hilovivo-aws:~/crypto-2.0/backend/app/services/
+# scp backend/app/services/sl_tp_checker.py hilovivo-aws:~/crypto-2.0/backend/app/services/
 
 # 4. Restart backend service
 docker compose --profile aws restart backend-aws
@@ -120,7 +120,7 @@ If issues occur, rollback:
 ```bash
 # Option 1: Git revert (if using git)
 ssh hilovivo-aws
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git revert HEAD
 docker compose --profile aws restart backend-aws
 

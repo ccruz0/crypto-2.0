@@ -12,7 +12,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd ~/automated-trading-platform\",
+    \"cd ~/crypto-2.0\",
     \"CONTAINER=\$(docker compose --profile aws ps -q backend 2>/dev/null)\",
     \"if [ -n \\\"\\\$CONTAINER\\\" ]; then\",
     \"  echo '🔍 Verificando cambios en signal_monitor.py...'\",

@@ -26,7 +26,7 @@ Run the diagnostic script:
 
 ```bash
 # On AWS server
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 backend/scripts/check_decision_tracing.py
 
 # Or via Docker

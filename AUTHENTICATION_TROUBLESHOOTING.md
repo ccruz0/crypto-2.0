@@ -28,7 +28,7 @@ See [`FIX_API_KEY_PERMISSIONS.md`](FIX_API_KEY_PERMISSIONS.md) for detailed inst
 On your AWS server, run the diagnostic script to identify the issue:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 backend/scripts/diagnose_auth_issue.py
 ```
 

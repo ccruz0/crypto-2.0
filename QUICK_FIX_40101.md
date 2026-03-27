@@ -12,7 +12,7 @@ docker compose exec backend python scripts/quick_check_auth.py
 O si estás en el servidor directamente:
 
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 python3 scripts/quick_check_auth.py
 ```
 

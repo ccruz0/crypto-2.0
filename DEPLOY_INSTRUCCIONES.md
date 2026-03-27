@@ -52,7 +52,7 @@ git commit -m "Fix: Telegram SL/TP notifications + Manual signals support"
 git push origin main
 
 # 3. En el servidor AWS, hacer pull y reiniciar:
-ssh hilovivo-aws 'cd ~/automated-trading-platform && git pull origin main && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && git pull origin main && docker compose --profile aws restart backend-aws'
 ```
 
 ### Opción 3: Deploy Solo Backend (si solo cambió backend)
@@ -63,10 +63,10 @@ rsync -avz --exclude='__pycache__' --exclude='*.pyc' \
   backend/app/services/telegram_notifier.py \
   backend/app/services/signal_monitor.py \
   backend/app/api/routes_dashboard.py \
-  hilovivo-aws:~/automated-trading-platform/backend/app/
+  hilovivo-aws:~/crypto-2.0/backend/app/
 
 # Reiniciar servicio
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ## 📋 Cambios Incluidos en este Deploy

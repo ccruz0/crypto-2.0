@@ -141,7 +141,7 @@ EXCHANGE_CUSTOM_API_SECRET=your_api_secret_here
 ### 2. Restart Backend
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local up -d --build db backend-dev
 ```
 

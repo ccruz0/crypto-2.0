@@ -37,13 +37,13 @@ rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
   backend/app/api/routes_monitoring.py \
   backend/app/services/signal_monitor.py \
   backend/app/utils/decision_reason.py \
-  ubuntu@your-aws-server:~/automated-trading-platform/backend/app/
+  ubuntu@your-aws-server:~/crypto-2.0/backend/app/
 
 # 2. SSH to server
 ssh ubuntu@your-aws-server
 
 # 3. Restart market-updater
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 pkill -f "run_updater.py" || true
 nohup python3 run_updater.py > market_updater.log 2>&1 &
 
@@ -56,7 +56,7 @@ nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2
 If you use git on AWS:
 ```bash
 # On AWS server
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 # Then restart processes as above
 ```
@@ -80,7 +80,7 @@ Expected: Returns structured report showing pipeline steps
 ### 3. Check Process Logs
 ```bash
 # On AWS server
-tail -50 ~/automated-trading-platform/backend/market_updater.log | grep -i "decision\|buy signal"
+tail -50 ~/crypto-2.0/backend/market_updater.log | grep -i "decision\|buy signal"
 ```
 
 Look for:

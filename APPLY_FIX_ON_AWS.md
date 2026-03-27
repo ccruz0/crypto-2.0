@@ -5,7 +5,7 @@
 **SSH into your AWS server and run these commands:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 1. Add the fix to .env.aws
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws

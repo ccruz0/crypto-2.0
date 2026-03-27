@@ -19,7 +19,7 @@ Dashboard shows: **"Backend Health: ERROR"** with message:
 
 **On AWS server:**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./diagnose_backend_health.sh --fix
 ```
 
@@ -28,7 +28,7 @@ cd ~/automated-trading-platform
 **SSH into AWS server:**
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend-aws
 ```
 

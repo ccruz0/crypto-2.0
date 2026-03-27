@@ -18,7 +18,7 @@ if ssh -o ConnectTimeout=5 $SERVER "echo 'Connected'" 2>/dev/null; then
     echo ""
     
     ssh $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "=== Last 100 lines with Telegram START/MENU/ERROR ==="
 docker-compose --profile aws logs --tail=100 backend-aws 2>/dev/null | grep -i "TG.*START\|TG.*MENU\|TG.*ERROR" | tail -30
@@ -45,7 +45,7 @@ else
     echo ""
     echo "Manual steps to check logs:"
     echo "1. SSH to AWS: ssh ubuntu@175.41.189.249"
-    echo "2. Run: cd ~/automated-trading-platform"
+    echo "2. Run: cd ~/crypto-2.0"
     echo "3. Check logs: docker-compose --profile aws logs --tail=200 backend-aws | grep -i 'TG.*START\|TG.*MENU'"
     echo ""
     echo "Or check all recent logs:"

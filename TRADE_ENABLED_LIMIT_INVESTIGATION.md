@@ -44,7 +44,7 @@ docker compose --profile aws logs backend-aws | grep -E "TRADE_ENABLED_COUNT|COU
 
 # Option 2: Direct log file
 ssh ubuntu@175.41.189.249
-tail -500 ~/automated-trading-platform/backend/backend.log | grep -E "TRADE_ENABLED_COUNT|COUNT_MISMATCH|LINK_USDT" | tail -50
+tail -500 ~/crypto-2.0/backend/backend.log | grep -E "TRADE_ENABLED_COUNT|COUNT_MISMATCH|LINK_USDT" | tail -50
 ```
 
 Look for:
@@ -85,7 +85,7 @@ Enable another coin and immediately check logs:
 1. Enable a coin with `trade_enabled=False` (e.g., SUI_USDT)
 2. Immediately check backend logs:
    ```bash
-   tail -f ~/automated-trading-platform/backend/backend.log | grep -E "TRADE_ENABLED|COUNT"
+   tail -f ~/crypto-2.0/backend/backend.log | grep -E "TRADE_ENABLED|COUNT"
    ```
 3. Check if any other coin gets disabled
 4. Note the exact timestamp and sequence of events

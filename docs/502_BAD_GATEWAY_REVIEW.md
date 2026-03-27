@@ -68,7 +68,7 @@ This script checks:
 ssh hilovivo-aws
 
 # Check Docker Compose services
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws ps
 
 # Check specific containers
@@ -132,7 +132,7 @@ If the backend container is unhealthy or not responding:
 ssh hilovivo-aws
 
 # Restart backend
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend-aws
 
 # Wait for healthcheck (up to 180 seconds)
@@ -151,7 +151,7 @@ If multiple services are affected:
 ssh hilovivo-aws
 
 # Restart all services
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart
 
 # Wait for services to be healthy
@@ -171,7 +171,7 @@ If containers are crashing:
 ssh hilovivo-aws
 
 # Check backend logs
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws logs --tail=100 backend-aws
 
 # Check frontend logs
@@ -265,16 +265,16 @@ bash scripts/debug_dashboard_remote.sh
 bash restart_nginx_aws.sh
 
 # Check container status
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws ps"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws ps"
 
 # Check backend health
 ssh hilovivo-aws "curl http://localhost:8002/health"
 
 # View backend logs
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs --tail=50 backend-aws"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs --tail=50 backend-aws"
 
 # Restart all services
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws restart && sudo systemctl restart nginx"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws restart && sudo systemctl restart nginx"
 ```
 
 ## Expected Behavior After Fix

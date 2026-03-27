@@ -75,7 +75,7 @@
 
 2. **Disk and containers**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd ~/crypto-2.0`  
    `df -h`  
    `docker system df`  
    `uptime`  
@@ -84,14 +84,14 @@
 
 3. **Env and API key**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd ~/crypto-2.0`  
    `git pull origin main`  
    `./scripts/aws/create_runtime_env.sh`  
    Save printed ATP_API_KEY. If script missing, add ATP_API_KEY to `secrets/runtime.env` (generate with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`).
 
 4. **Restart stack**  
    On EC2:  
-   `cd ~/automated-trading-platform`  
+   `cd ~/crypto-2.0`  
    `docker compose --profile aws down`  
    `docker compose --profile aws up -d`  
    Wait ~30s.  
@@ -128,10 +128,10 @@
 
 ## 6) Server verification commands (run on EC2)
 
-*Run these on PROD (cd ~/automated-trading-platform first). Paste outputs into §2 Evidence column.*
+*Run these on PROD (cd ~/crypto-2.0 first). Paste outputs into §2 Evidence column.*
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 1) Disk and system
 df -h

@@ -11,7 +11,7 @@
 - **Action needed**: Run deployment script or manually:
   ```bash
   # On AWS instance:
-  cd ~/automated-trading-platform
+  cd ~/crypto-2.0
   git pull origin main
   docker compose --profile aws build backend-aws
   docker compose --profile aws restart backend-aws

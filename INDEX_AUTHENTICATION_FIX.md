@@ -52,7 +52,7 @@
 ## 🎯 Quick Fix (Copy-Paste)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws
 echo "CRYPTO_AUTH_DIAG=true" >> .env.aws
 docker compose restart backend

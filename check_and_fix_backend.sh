@@ -149,7 +149,7 @@ if [ "$BACKEND_ACCESSIBLE" = false ] || [ "$EXTERNAL_ACCESSIBLE" = false ]; then
         1)
             print_info "Starting Docker backend..."
             ssh_cmd "$EC2_USER@$EC2_HOST" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws up -d backend-aws
 sleep 5
 docker compose --profile aws ps backend-aws
@@ -159,7 +159,7 @@ ENDSSH
         2)
             print_info "Starting direct uvicorn process..."
             ssh_cmd "$EC2_USER@$EC2_HOST" << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 # Stop any existing process
 pkill -f "uvicorn.*app.main:app.*port.*8002" || true
 sleep 2
@@ -174,7 +174,7 @@ ENDSSH
         3)
             print_info "Restarting Docker backend..."
             ssh_cmd "$EC2_USER@$EC2_HOST" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend-aws
 sleep 5
 docker compose --profile aws ps backend-aws
@@ -184,12 +184,12 @@ ENDSSH
         4)
             print_info "Checking backend logs..."
             ssh_cmd "$EC2_USER@$EC2_HOST" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 echo "=== Docker Backend Logs (last 30 lines) ==="
 docker compose --profile aws logs --tail=30 backend-aws 2>/dev/null || echo "No Docker logs available"
 echo ""
 echo "=== Direct Process Logs (if exists) ==="
-tail -30 ~/automated-trading-platform/backend/backend.log 2>/dev/null || echo "No process logs available"
+tail -30 ~/crypto-2.0/backend/backend.log 2>/dev/null || echo "No process logs available"
 ENDSSH
             ;;
         5)

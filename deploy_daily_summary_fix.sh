@@ -33,12 +33,12 @@ rsync -avz --progress \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   backend/app/services/daily_summary.py \
-  $REMOTE_TARGET:~/automated-trading-platform/backend/app/services/
+  $REMOTE_TARGET:~/crypto-2.0/backend/app/services/
 
 # Copy file into Docker container and restart
 echo "🐳 Copiando archivo al contenedor Docker y reiniciando..."
 ssh $REMOTE_TARGET << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find backend container (try multiple patterns)
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

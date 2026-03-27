@@ -29,12 +29,12 @@ echo "📦 Syncing fixed backend files..."
 rsync_cmd \
   backend/app/services/brokers/crypto_com_trade.py \
   backend/app/services/exchange_sync.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/
 
 echo ""
 echo "🐳 Copying files into Docker container and restarting..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find backend container name
 BACKEND_CONTAINER=$(docker compose ps --format json --profile aws | grep -i backend | head -1 | grep -o '"Name":"[^"]*' | cut -d'"' -f4 || echo "automated-trading-platform-backend-aws-1")

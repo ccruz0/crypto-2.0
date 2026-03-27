@@ -4,7 +4,7 @@
 # Backups go to /etc/nginx/backups/ (not sites-enabled) to avoid "duplicate default server".
 #
 # Usage (from repo root):
-#   cd ~/automated-trading-platform
+#   cd ~/crypto-2.0
 #   ./scripts/openclaw/deploy_openclaw_nginx_prod.sh
 #
 # Dry-run (no remote changes, no reload):

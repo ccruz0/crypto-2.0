@@ -50,7 +50,7 @@ if echo "$HISTORY_RESULT" | grep -q "could not translate host name"; then
     echo "   1. Verificar que el servicio 'db' está corriendo en el servidor"
     echo "   2. Verificar que backend-aws y db están en la misma red Docker"
     echo "   3. Reiniciar los servicios:"
-    echo "      ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart db backend-aws'"
+    echo "      ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart db backend-aws'"
     echo ""
 elif echo "$HISTORY_RESULT" | grep -q "Connection refused"; then
     echo "❌ PROBLEMA DETECTADO: Conexión rechazada a PostgreSQL"

@@ -1,6 +1,6 @@
 # EC2 Self-Heal Deploy Runbook
 
-Deploy and enable the production self-heal (timer + verify/heal scripts) on EC2 where the repo lives at `~/automated-trading-platform`. No backend code changes, no DB migrations, no secrets.
+Deploy and enable the production self-heal (timer + verify/heal scripts) on EC2 where the repo lives at `~/crypto-2.0`. No backend code changes, no DB migrations, no secrets.
 
 ---
 
@@ -18,7 +18,7 @@ Deploy and enable the production self-heal (timer + verify/heal scripts) on EC2 
 If `watchlist_items` (or other tables) are missing, market-updater crashes and health stays FAIL. Run **scripts/db/bootstrap.sh** once after bringing the stack up (e.g. in your deploy runbook or CI), **before** enabling the timer:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/db/bootstrap.sh
 ```
 
@@ -31,7 +31,7 @@ See [EC2_DB_BOOTSTRAP.md](EC2_DB_BOOTSTRAP.md) for full commands (including buil
 Scripts and `create_runtime_env.sh` live in the repo. If they are missing on EC2, pull (or fix repo path).
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 ```
 
@@ -40,7 +40,7 @@ If **scripts/selfheal/** is still missing, the repo on EC2 is behind or differen
 If **.env** is missing, create it; if **.env.aws** is missing, copy from .env so compose does not error on "env file .env.aws not found":
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 if [[ ! -f .env ]]; then
   cp .env.example .env
   echo "Created .env from .env.example. Edit .env and set DATABASE_URL and POSTGRES_PASSWORD."
@@ -61,7 +61,7 @@ Then edit `.env` (and optionally `secrets/runtime.env`) with real values; do not
 ## 2) Make scripts executable
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 chmod +x scripts/selfheal/verify.sh scripts/selfheal/heal.sh scripts/selfheal/run.sh
 ```
 
@@ -70,7 +70,7 @@ chmod +x scripts/selfheal/verify.sh scripts/selfheal/heal.sh scripts/selfheal/ru
 ## 3) Install systemd units (timer every 2 min)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 sudo cp scripts/selfheal/systemd/atp-selfheal.service /etc/systemd/system/
 sudo cp scripts/selfheal/systemd/atp-selfheal.timer /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -94,7 +94,7 @@ Expect: timer active; runs every ~2 min; logs show "PASS" or "HEALED", not repea
 ## 5) Manual test
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/selfheal/verify.sh; echo "exit=$?"
 ./scripts/selfheal/run.sh
 ```
@@ -106,7 +106,7 @@ Expect: `verify.sh` prints PASS and exit=0 when db, market_data, market_updater,
 ## If ExecStart fails (203/EXEC)
 
 - **Cause:** Path in the service file does not exist (e.g. repo not at `/home/ubuntu/crypto-2.0` or scripts missing).
-- **Fix:** Ensure repo is at `~/automated-trading-platform` and contains `scripts/selfheal/run.sh`. If you use another path, edit the service file:
+- **Fix:** Ensure repo is at `~/crypto-2.0` and contains `scripts/selfheal/run.sh`. If you use another path, edit the service file:
 
 ```bash
 sudo sed -i 's|/home/ubuntu/crypto-2.0|/your/actual/repo/path|g' /etc/systemd/system/atp-selfheal.service
@@ -121,7 +121,7 @@ sudo systemctl restart atp-selfheal.timer
 Heal script skips `docker compose` when `.env` is missing and prints a message. Create .env so the stack can start:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 cp .env.example .env
 # Edit .env: set DATABASE_URL and POSTGRES_PASSWORD (and any other required vars).
 ```
@@ -141,7 +141,7 @@ Exit codes from verify: 2=DISK, 3=CONTAINERS_UNHEALTHY, 4=API_HEALTH, 5=DB, 6=MA
 
 ## Deploy checklist
 
-- [ ] `cd ~/automated-trading-platform && git pull origin main`
+- [ ] `cd ~/crypto-2.0 && git pull origin main`
 - [ ] `scripts/selfheal/verify.sh`, `heal.sh`, `run.sh` exist and are executable
 - [ ] `.env` exists (copy from `.env.example` if not); DATABASE_URL and POSTGRES_PASSWORD set
 - [ ] systemd units copied to `/etc/systemd/system/`, `daemon-reload`, timer `enable --now`

@@ -60,7 +60,7 @@ Mientras estás en la página de API Keys:
 ### Paso 3: Probar de Nuevo
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ## 📊 Comparación: Documentación vs Realidad

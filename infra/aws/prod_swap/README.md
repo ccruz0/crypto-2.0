@@ -38,10 +38,10 @@ See:
 
 **Exact deploy sequence on PROD:**
 
-1. **Repo on PROD must be updated first** if the folder `infra/aws/prod_swap` does not exist yet. On the PROD instance: `cd ~/automated-trading-platform && git pull`, then `ls infra/aws/prod_swap` to confirm.
+1. **Repo on PROD must be updated first** if the folder `infra/aws/prod_swap` does not exist yet. On the PROD instance: `cd ~/crypto-2.0 && git pull`, then `ls infra/aws/prod_swap` to confirm.
 2. **Run swap setup:**
    ```bash
-   cd ~/automated-trading-platform/infra/aws/prod_swap
+   cd ~/crypto-2.0/infra/aws/prod_swap
    sudo ./setup_swap.sh
    ```
    Optional size: `sudo SWAP_SIZE_GB=1 ./setup_swap.sh`

@@ -21,7 +21,7 @@ echo ""
 # Restart backend service
 if command -v ssh_cmd &> /dev/null; then
   ssh_cmd $USER@$SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "🛑 Stopping backend..."
 docker compose --profile aws stop backend-aws || pkill -f "uvicorn app.main:app" || true
@@ -49,10 +49,10 @@ ENDSSH
 else
   echo "⚠️ SSH helper not found. Please run manually:"
   echo ""
-  echo "ssh $USER@$SERVER 'cd ~/automated-trading-platform && docker compose --profile aws restart backend-aws'"
+  echo "ssh $USER@$SERVER 'cd ~/crypto-2.0 && docker compose --profile aws restart backend-aws'"
   echo ""
   echo "Or if using direct Python:"
-  echo "ssh $USER@$SERVER 'cd ~/automated-trading-platform/backend && pkill -f uvicorn && source venv/bin/activate && nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &'"
+  echo "ssh $USER@$SERVER 'cd ~/crypto-2.0/backend && pkill -f uvicorn && source venv/bin/activate && nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &'"
 fi
 
 echo ""

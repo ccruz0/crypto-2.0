@@ -3,7 +3,7 @@
 ## Run verification (EC2)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/verify_invariant.sh --hours 12 --limit 500
 ```
 
@@ -28,7 +28,7 @@ You should see:
 3) Check backend logs for orchestrator errors:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws logs --tail 300 backend-aws
 ```
 
@@ -43,7 +43,7 @@ This endpoint is protected by diagnostics auth. Set these env vars on the backen
 Run from inside the backend container:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec -T backend-aws \
   curl -s -X POST \
   -H "X-Diagnostics-Key: $DIAGNOSTICS_API_KEY" \

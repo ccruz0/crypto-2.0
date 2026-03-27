@@ -18,7 +18,7 @@ while true; do
     echo "=== $(date '+%Y-%m-%d %H:%M:%S UTC') ==="
     
     # Check for new alerts
-    ALERTS=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+    ALERTS=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
         SELECT 
             id,
             symbol,
@@ -51,7 +51,7 @@ while true; do
             echo ""
             echo "📊 Verificando si se creó orden para $SYMBOL..."
             
-            ORDER=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+            ORDER=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
                 SELECT 
                     exchange_order_id,
                     side,
@@ -75,7 +75,7 @@ while true; do
                 echo "  🔍 Verificando decision tracing..."
                 
                 # Get full decision tracing details
-                DECISION=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+                DECISION=$(ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
                     SELECT 
                         id,
                         decision_type,

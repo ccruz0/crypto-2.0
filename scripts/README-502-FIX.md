@@ -83,17 +83,17 @@ If the script doesn't fix the issue:
 
 1. **Check Docker Compose Status**:
    ```bash
-   ssh ubuntu@SERVER "cd ~/automated-trading-platform && docker compose --profile aws ps"
+   ssh ubuntu@SERVER "cd ~/crypto-2.0 && docker compose --profile aws ps"
    ```
 
 2. **Check Service Logs**:
    ```bash
-   ssh ubuntu@SERVER "cd ~/automated-trading-platform && docker compose --profile aws logs --tail=50"
+   ssh ubuntu@SERVER "cd ~/crypto-2.0 && docker compose --profile aws logs --tail=50"
    ```
 
 3. **Manual Service Start**:
    ```bash
-   ssh ubuntu@SERVER "cd ~/automated-trading-platform && docker compose --profile aws up -d"
+   ssh ubuntu@SERVER "cd ~/crypto-2.0 && docker compose --profile aws up -d"
    ```
 
 4. **Check Nginx Error Logs**:

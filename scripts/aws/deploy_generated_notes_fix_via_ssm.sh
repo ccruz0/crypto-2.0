@@ -26,7 +26,7 @@ CMD_ID=$(aws ssm send-command \
     --timeout-seconds 600 \
     --parameters 'commands=[
         "set -e",
-        "cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform || { echo ERR: repo not found; exit 1; }",
+        "cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0 || { echo ERR: repo not found; exit 1; }",
         "git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true",
         "echo Pulling latest code...",
         "git pull origin main || true",

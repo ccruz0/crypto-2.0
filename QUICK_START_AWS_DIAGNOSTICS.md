@@ -4,17 +4,17 @@
 
 ### SSH and Run Deep Diagnostic
 ```bash
-ssh your-aws-server "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh your-aws-server "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ### SSH and Run Comprehensive Diagnostic
 ```bash
-ssh your-aws-server "cd ~/automated-trading-platform/backend && python3 scripts/diagnose_auth_40101.py"
+ssh your-aws-server "cd ~/crypto-2.0/backend && python3 scripts/diagnose_auth_40101.py"
 ```
 
 ### SSH and Run Connection Test
 ```bash
-ssh your-aws-server "cd ~/automated-trading-platform/backend && python3 scripts/test_crypto_connection.py"
+ssh your-aws-server "cd ~/crypto-2.0/backend && python3 scripts/test_crypto_connection.py"
 ```
 
 ## Step-by-Step (Interactive)
@@ -29,7 +29,7 @@ ssh ubuntu@your-aws-ip
 ### 2. Navigate to Backend
 ```bash
 # Try these locations:
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 # or
 cd /opt/automated-trading-platform/backend
 # or find it:

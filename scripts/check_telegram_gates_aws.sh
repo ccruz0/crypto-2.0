@@ -1,6 +1,6 @@
 #!/bin/bash
 # Diagnostic script to check all 4 Telegram health gates on AWS
-# Run this on AWS: ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && bash scripts/check_telegram_gates_aws.sh"
+# Run this on AWS: ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && bash scripts/check_telegram_gates_aws.sh"
 
 set -euo pipefail
 

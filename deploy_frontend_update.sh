@@ -26,7 +26,7 @@ rsync_cmd \
 echo "🔨 Rebuilding frontend..."
 # Use helper
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Rebuild frontend image
 echo "Building frontend image..."

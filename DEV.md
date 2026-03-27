@@ -447,7 +447,7 @@ echo "Expected commit: $EXPECTED_COMMIT"
 ssh ubuntu@<EC2_IP>
 
 # Run deploy script
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/deploy_aws.sh
 ```
 
@@ -470,7 +470,7 @@ If deployment fails or issues are detected:
 
 ```bash
 # On EC2
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/rollback_aws.sh <previous-commit-sha>
 
 # Example:

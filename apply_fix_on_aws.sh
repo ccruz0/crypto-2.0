@@ -32,7 +32,7 @@ echo "Applying fix..."
 echo ""
 
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "1. Checking current .env.aws..."
 if [ -f .env.aws ]; then

@@ -14,7 +14,7 @@
 Run the diagnostic script on AWS:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/diagnose_auth_issue.py"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/diagnose_auth_issue.py"
 ```
 
 This will tell you:
@@ -27,7 +27,7 @@ This will tell you:
 ### Step 2: Get Your AWS IP (1 minute)
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/get_aws_ip.py"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/get_aws_ip.py"
 ```
 
 **Important:** Copy this IP address - you'll need it for Step 3.
@@ -60,10 +60,10 @@ Based on the diagnostic, fix one of these:
 
 ```bash
 # Restart backend
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws restart backend-aws"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws restart backend-aws"
 
 # Wait 30 seconds, then test
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python scripts/diagnose_auth_issue.py"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python scripts/diagnose_auth_issue.py"
 ```
 
 ## 📚 Documentation Created

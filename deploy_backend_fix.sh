@@ -12,12 +12,12 @@ echo "Syncing backend files..."
 rsync_cmd \
   backend/app/services/brokers/crypto_com_trade.py \
   backend/app/api/routes_account.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/
 
 # Copy files into Docker container and restart
 echo "Copying files into Docker container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker cp backend/app/services/brokers/crypto_com_trade.py automated-trading-platform_backend_1:/app/app/services/brokers/crypto_com_trade.py
 docker cp backend/app/api/routes_account.py automated-trading-platform_backend_1:/app/app/api/routes_account.py
 docker-compose restart backend

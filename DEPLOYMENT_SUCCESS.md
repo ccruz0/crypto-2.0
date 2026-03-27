@@ -61,17 +61,17 @@ The backend is now using direct connection. If you see authentication errors (40
 
 ### Check Service Status
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws ps"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws ps"
 ```
 
 ### Check Environment Variables
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws env | grep -E 'USE_CRYPTO_PROXY|EXCHANGE_CUSTOM_BASE_URL'"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws env | grep -E 'USE_CRYPTO_PROXY|EXCHANGE_CUSTOM_BASE_URL'"
 ```
 
 ### Monitor Backend Logs
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws logs -f backend-aws"
 ```
 
 ### Test Health Endpoint
@@ -88,7 +88,7 @@ curl http://47.130.143.159:8002/health
 3. **Test trading functionality** to ensure direct connection works correctly
 4. **Remove gluetun container** (optional, can be done later):
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws stop gluetun && docker compose --profile aws rm gluetun"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws stop gluetun && docker compose --profile aws rm gluetun"
    ```
 
 ---

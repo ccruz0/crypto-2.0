@@ -21,7 +21,7 @@ echo ""
 
 echo "📦 Step 1: Pulling latest code from Git..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 echo "✅ Code updated"
 ENDSSH
@@ -29,7 +29,7 @@ ENDSSH
 echo ""
 echo "🔄 Step 2: Restarting backend service..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Check if using Docker Compose
 if command -v docker-compose &> /dev/null || docker compose version &> /dev/null 2>/dev/null; then
@@ -97,8 +97,8 @@ echo "   2. Send /portfolio - should show TP/SL values and open position indicat
 echo "   3. Verify menu buttons appear in all cases"
 echo ""
 echo "🔍 To check backend logs:"
-echo "   ssh $SERVER 'cd ~/automated-trading-platform/backend && tail -f backend.log'"
+echo "   ssh $SERVER 'cd ~/crypto-2.0/backend && tail -f backend.log'"
 echo "   Or if using Docker:"
-echo "   ssh $SERVER 'cd ~/automated-trading-platform && docker compose logs -f backend'"
+echo "   ssh $SERVER 'cd ~/crypto-2.0 && docker compose logs -f backend'"
 echo ""
 

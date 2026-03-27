@@ -163,7 +163,7 @@
 - **Domain**: dashboard.hilovivo.com
 
 **Startup**:
-- Manual: `ssh` → `cd ~/automated-trading-platform` → `docker compose --profile aws up -d`
+- Manual: `ssh` → `cd ~/crypto-2.0` → `docker compose --profile aws up -d`
 - GitHub Actions: Automatic on push to `main`
 - No systemd service for docker-compose (manual/CI-driven)
 

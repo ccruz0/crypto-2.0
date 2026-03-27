@@ -9,7 +9,7 @@ echo "Deploying Watchlist Consistency Fix"
 echo "=========================================="
 echo ""
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 echo "1. Pulling latest code..."
 git pull origin main

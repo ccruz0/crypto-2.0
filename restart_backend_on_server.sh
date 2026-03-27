@@ -7,7 +7,7 @@ set -e
 echo "🔄 Restarting backend on AWS..."
 echo ""
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Check if using Docker Compose
 if command -v docker &> /dev/null && docker compose --profile aws ps backend 2>/dev/null | grep -q "Up"; then

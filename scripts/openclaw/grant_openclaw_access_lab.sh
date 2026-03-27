@@ -25,7 +25,7 @@ ONLAB
   echo ""
   echo "=== Then on LAB: restart OpenClaw ==="
   echo ""
-  echo "  cd ~/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d --force-recreate"
+  echo "  cd ~/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d --force-recreate"
   echo ""
   echo "=== Verify (on LAB) ==="
   echo ""

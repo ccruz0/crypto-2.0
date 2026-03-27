@@ -160,7 +160,7 @@ read -p "Check backend logs for notification activity? (y/n): " CHECK_LOGS
 if [ "$CHECK_LOGS" = "y" ]; then
     echo ""
     echo "Checking logs on AWS instance..."
-    ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws --tail 100 | grep -i "notification\|cancel.*order.*'$ORDER_ID'" | tail -20' 2>&1 || echo "Could not check logs remotely"
+    ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws --tail 100 | grep -i "notification\|cancel.*order.*'$ORDER_ID'" | tail -20' 2>&1 || echo "Could not check logs remotely"
 fi
 
 echo ""

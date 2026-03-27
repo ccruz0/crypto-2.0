@@ -63,7 +63,7 @@ This will:
 ```bash
 # On AWS EC2
 ssh ubuntu@47.130.143.159
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest code (if using git)
 git pull origin main
@@ -110,7 +110,7 @@ This is correct - it shows Telegram is not configured, but the health check is w
 ```bash
 # On AWS EC2
 ssh ubuntu@47.130.143.159
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/configure_telegram_aws.sh
 ```
 
@@ -200,7 +200,7 @@ docker compose --profile aws restart backend-aws
 
 **Solution**: The deployment script copies the file. If it fails, manually copy:
 ```bash
-scp backend/app/services/system_health.py ubuntu@47.130.143.159:~/automated-trading-platform/backend/app/services/system_health.py
+scp backend/app/services/system_health.py ubuntu@47.130.143.159:~/crypto-2.0/backend/app/services/system_health.py
 ```
 
 ### Issue: Health check returns error

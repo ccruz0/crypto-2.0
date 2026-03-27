@@ -14,7 +14,7 @@ scp_cmd backend/app/services/telegram_notifier.py $REMOTE_HOST:$REMOTE_PATH/back
 echo "✅ File synced"
 
 ssh_cmd $REMOTE_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 CONTAINER_NAME=$(docker ps --format '{{.Names}}' | grep -E 'automated-trading-platform-backend|backend-aws' | head -1)
 if [ -z "$CONTAINER_NAME" ]; then
     echo "❌ Error: No backend container found"

@@ -49,7 +49,7 @@ rsync_cmd \
     backend/app/api/routes_monitoring.py \
     backend/app/services/signal_monitor.py \
     backend/app/utils/decision_reason.py \
-    "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/"
+    "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/"
 
 echo ""
 echo -e "${GREEN}✅ Files synced successfully${NC}"
@@ -58,7 +58,7 @@ echo ""
 # Step 2: Restart services on AWS
 echo -e "${GREEN}🔄 Restarting services on AWS...${NC}"
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Find and restart market-updater process (run_updater.py)
 echo "🔄 Restarting market-updater (run_updater.py)..."
@@ -102,6 +102,6 @@ echo "1. Verify the diagnostics endpoint:"
 echo "   curl http://${EC2_HOST}:8000/api/diagnostics/recent-buy-signals?limit=10"
 echo ""
 echo "2. Check market-updater logs:"
-echo "   ssh $EC2_USER@$EC2_HOST 'tail -50 ~/automated-trading-platform/backend/market_updater.log'"
+echo "   ssh $EC2_USER@$EC2_HOST 'tail -50 ~/crypto-2.0/backend/market_updater.log'"
 echo ""
 echo "3. Monitor for new BUY SIGNAL messages with decision tracing"

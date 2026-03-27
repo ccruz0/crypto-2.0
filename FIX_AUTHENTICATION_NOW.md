@@ -15,7 +15,7 @@ Your automated trading platform is failing to create SELL orders due to an authe
 ### Step 1: SSH into Your AWS Server
 ```bash
 ssh ubuntu@your-aws-server-ip
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ```
 
 ### Step 2: Run the Quick Fix Script

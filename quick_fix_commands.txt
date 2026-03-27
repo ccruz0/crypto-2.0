@@ -5,8 +5,8 @@
 # OPCIÓN 1: Script Automático (Recomendado)
 # ============================================
 # Subir el script al servidor y ejecutarlo:
-scp fix_deployment.sh hilovivo-aws:~/automated-trading-platform/
-ssh hilovivo-aws "cd ~/automated-trading-platform && chmod +x fix_deployment.sh && ./fix_deployment.sh"
+scp fix_deployment.sh hilovivo-aws:~/crypto-2.0/
+ssh hilovivo-aws "cd ~/crypto-2.0 && chmod +x fix_deployment.sh && ./fix_deployment.sh"
 
 # ============================================
 # OPCIÓN 2: Comandos Manuales (Paso a Paso)
@@ -16,7 +16,7 @@ ssh hilovivo-aws "cd ~/automated-trading-platform && chmod +x fix_deployment.sh 
 ssh hilovivo-aws
 
 # 2. Ir al directorio del proyecto
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 3. Verificar estado actual
 docker compose --profile aws ps
@@ -65,7 +65,7 @@ docker compose --profile aws ps
 # ============================================
 # Si solo necesitas reiniciar los servicios rápidamente:
 
-ssh hilovivo-aws "cd ~/automated-trading-platform && \
+ssh hilovivo-aws "cd ~/crypto-2.0 && \
   docker compose --profile aws restart db backend-aws && \
   sleep 15 && \
   docker compose --profile aws ps"
@@ -80,13 +80,13 @@ cd /Users/carloscruz/automated-trading-platform
 
 # Sincronizar código (excluyendo node_modules y .git)
 rsync -avz --exclude='.git' --exclude='node_modules' --exclude='.next' \
-  ./ hilovivo-aws:~/automated-trading-platform/
+  ./ hilovivo-aws:~/crypto-2.0/
 
 # O usar git pull en el servidor:
-ssh hilovivo-aws "cd ~/automated-trading-platform && git pull origin main"
+ssh hilovivo-aws "cd ~/crypto-2.0 && git pull origin main"
 
 # Reconstruir y reiniciar en el servidor:
-ssh hilovivo-aws "cd ~/automated-trading-platform && \
+ssh hilovivo-aws "cd ~/crypto-2.0 && \
   docker compose --profile aws down && \
   docker compose --profile aws up -d --build && \
   sleep 30 && \
@@ -97,7 +97,7 @@ ssh hilovivo-aws "cd ~/automated-trading-platform && \
 # ============================================
 
 # 1. Verificar que los servicios están corriendo
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws ps"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws ps"
 
 # 2. Verificar health check
 curl https://dashboard.hilovivo.com/api/health
@@ -109,7 +109,7 @@ curl "https://dashboard.hilovivo.com/api/orders/history?limit=3&offset=0"
 curl -X POST https://dashboard.hilovivo.com/api/orders/sync-history
 
 # 5. Monitorear logs en tiempo real
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs -f backend-aws"
 
 
 

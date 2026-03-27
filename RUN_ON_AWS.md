@@ -187,7 +187,7 @@ Run these commands on your AWS server to diagnose and fix the authentication iss
 ssh hilovivo-aws
 
 # Get current IP (needs to be whitelisted)
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec backend-aws python scripts/get_aws_ip.py
 
 # Check configuration
@@ -204,7 +204,7 @@ docker compose --profile aws exec backend-aws python scripts/test_crypto_connect
 
 ```bash
 # From your local machine, run:
-ssh hilovivo-aws "cd ~/automated-trading-platform && bash backend/scripts/fix_auth_on_aws.sh"
+ssh hilovivo-aws "cd ~/crypto-2.0 && bash backend/scripts/fix_auth_on_aws.sh"
 ```
 
 ## Most Common Fix

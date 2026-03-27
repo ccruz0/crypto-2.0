@@ -16,7 +16,7 @@
 **On AWS server, run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest code
 git pull origin main
@@ -37,7 +37,7 @@ docker compose --profile aws ps backend-aws market-updater-aws
 **On AWS server, run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check market data in database
 docker compose --profile aws exec -T backend-aws python3 << 'PYTHON_SCRIPT'
@@ -84,7 +84,7 @@ docker compose --profile aws exec -T backend-aws python3 backend/check_all_symbo
 **On AWS server, run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check Telegram environment variables
 docker compose --profile aws exec -T market-updater-aws env | grep -E "TELEGRAM|RUNTIME_ORIGIN|RUN_TELEGRAM"
@@ -101,7 +101,7 @@ docker compose --profile aws logs --tail=30 backend-aws | grep -E "ERROR|WARNING
 **On AWS server, run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check all services status
 docker compose --profile aws ps

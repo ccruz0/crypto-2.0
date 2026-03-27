@@ -51,7 +51,7 @@ echo "📤 Configurando credenciales en el servidor AWS..."
 
 # Actualizar el archivo .env.aws en el servidor
 ssh hilovivo-aws << EOF
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Backup del archivo actual
 cp .env.aws .env.aws.backup.\$(date +%Y%m%d_%H%M%S)

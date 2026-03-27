@@ -8,7 +8,7 @@ Once you can SSH to AWS, run these commands to check the logs:
 
 ```bash
 ssh ubuntu@175.41.189.249
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker-compose --profile aws logs --tail=200 backend-aws | grep -i "TG.*START" | tail -30
 ```
 
@@ -158,7 +158,7 @@ To export all relevant logs for analysis:
 
 ```bash
 ssh ubuntu@175.41.189.249
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker-compose --profile aws logs --tail=1000 backend-aws > /tmp/telegram_logs.txt
 grep -i "TG.*START\|TG.*MENU\|TG.*ERROR" /tmp/telegram_logs.txt > /tmp/telegram_start_analysis.txt
 cat /tmp/telegram_start_analysis.txt

@@ -24,7 +24,7 @@ Run the monitoring script to watch for new SELL orders:
 ```bash
 # On production server
 ssh hilovivo-aws
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 python3 monitor_sell_orders.py
 ```
 
@@ -39,12 +39,12 @@ The script will:
 To run monitoring in the background:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform/backend && nohup python3 monitor_sell_orders.py > monitor_sell_orders.log 2>&1 &"
+ssh hilovivo-aws "cd ~/crypto-2.0/backend && nohup python3 monitor_sell_orders.py > monitor_sell_orders.log 2>&1 &"
 ```
 
 Check logs:
 ```bash
-ssh hilovivo-aws "tail -f ~/automated-trading-platform/backend/monitor_sell_orders.log"
+ssh hilovivo-aws "tail -f ~/crypto-2.0/backend/monitor_sell_orders.log"
 ```
 
 ## Manual SL/TP Creation
@@ -55,7 +55,7 @@ If a SELL order is missing SL/TP, create them manually:
 
 ```bash
 ssh hilovivo-aws
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 python3 create_sl_tp_manual.py <order_id> --force
 ```
 
@@ -68,7 +68,7 @@ curl -X POST "https://dashboard.hilovivo.com/api/orders/<order_id>/create-sl-tp?
 ### Option 3: Direct Python call
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 << 'PYEOF'
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 << 'PYEOF'
 import sys
 sys.path.insert(0, '/app')
 from app.database import SessionLocal
@@ -108,7 +108,7 @@ PYEOF
 Check all recent SELL orders and their SL/TP status:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 << 'PYEOF'
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 << 'PYEOF'
 import sys
 sys.path.insert(0, '/app')
 from app.database import SessionLocal

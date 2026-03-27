@@ -65,7 +65,7 @@ The hourly check complements existing checks:
 
 Check logs for hourly check execution:
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws -f | grep -E '(hourly|SL/TP.*check)'"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws -f | grep -E '(hourly|SL/TP.*check)'"
 ```
 
 ### Configuration

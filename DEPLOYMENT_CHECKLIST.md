@@ -12,7 +12,7 @@
 ### 1. On AWS Server
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Apply fix
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws

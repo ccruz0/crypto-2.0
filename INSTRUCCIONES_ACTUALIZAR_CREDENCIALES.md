@@ -65,7 +65,7 @@ Si prefieres hacerlo manualmente:
 ssh ubuntu@47.130.143.159
 
 # Editar .env.local
-nano ~/automated-trading-platform/.env.local
+nano ~/crypto-2.0/.env.local
 
 # Actualizar estas líneas:
 EXCHANGE_CUSTOM_API_KEY=raHZAk1MDkAWviDpcBxAWU
@@ -74,7 +74,7 @@ EXCHANGE_CUSTOM_API_SECRET=<tu_secret_key_aqui>
 # Guardar (Ctrl+X, luego Y, luego Enter)
 
 # Reiniciar backend
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose restart backend-aws
 ```
 
@@ -97,7 +97,7 @@ Después de actualizar:
 
 ```bash
 # Verificar en AWS
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 Deberías ver:

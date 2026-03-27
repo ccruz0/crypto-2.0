@@ -36,7 +36,7 @@ echo ""
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
 set -e
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || {
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || {
     echo "❌ Cannot find project directory"
     exit 1
 }
@@ -74,5 +74,5 @@ echo ""
 echo "✅ Update complete on AWS!"
 echo ""
 echo "To monitor logs:"
-echo "  ssh $EC2_USER@$EC2_HOST 'cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws | grep -i TG'"
+echo "  ssh $EC2_USER@$EC2_HOST 'cd ~/crypto-2.0 && docker compose --profile aws logs -f backend-aws | grep -i TG'"
 

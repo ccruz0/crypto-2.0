@@ -22,12 +22,12 @@ rsync_cmd \
   --include='app/services/telegram_commands.py' \
   --exclude='*' \
   ./backend/app/services/telegram_commands.py \
-  $SERVER:~/automated-trading-platform/backend/app/services/telegram_commands.py
+  $SERVER:~/crypto-2.0/backend/app/services/telegram_commands.py
 
 echo ""
 echo "🔄 Step 2: Restarting backend service..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if using Docker Compose
 if command -v docker-compose &> /dev/null || command -v docker &> /dev/null; then
@@ -91,7 +91,7 @@ else
     else
         echo "⚠️  No uvicorn process found. Backend may not be running."
         echo "💡 To start backend manually:"
-        echo "   cd ~/automated-trading-platform/backend"
+        echo "   cd ~/crypto-2.0/backend"
         echo "   source venv/bin/activate"
         echo "   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     fi

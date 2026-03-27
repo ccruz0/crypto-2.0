@@ -5,7 +5,7 @@ Since SSH connection from local machine isn't working, **SSH into your AWS serve
 ## Step 1: Check Current Status
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if fix is in .env.aws
 grep CRYPTO_SKIP_EXEC_INST .env.aws
@@ -26,7 +26,7 @@ docker compose logs backend --tail 200 | grep "MARGIN ORDER CONFIGURED"
 ## Step 2: Apply the Fix (if not already done)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add fix to .env.aws
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws

@@ -18,7 +18,7 @@ COMMAND_ID=$(aws ssm send-command \
     --region "$REGION" \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-        \"cd ~/automated-trading-platform\",
+        \"cd ~/crypto-2.0\",
         \"mkdir -p backend/app/api\",
         \"echo '$FILE_CONTENT' | base64 -d > backend/app/api/routes_portfolio.py\",
         \"chmod 644 backend/app/api/routes_portfolio.py\",

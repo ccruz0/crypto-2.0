@@ -17,10 +17,10 @@
 # Sync backend files
 rsync -avz --exclude='venv/' --exclude='__pycache__/' --exclude='*.pyc' \
   backend/app/api/routes_dashboard.py \
-  ubuntu@175.41.189.249:~/automated-trading-platform/backend/app/api/
+  ubuntu@175.41.189.249:~/crypto-2.0/backend/app/api/
 
 # Restart backend service on AWS
-ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker-compose --profile aws restart backend-aws'
+ssh ubuntu@175.41.189.249 'cd ~/crypto-2.0 && docker-compose --profile aws restart backend-aws'
 ```
 
 ### Option 2: Using docker-compose (if on AWS server)
@@ -30,7 +30,7 @@ ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker-compose --p
 ssh ubuntu@175.41.189.249
 
 # Navigate to project directory
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest code (if using git)
 # git pull

@@ -48,7 +48,7 @@ scp_cmd update_all_coins_aws.py "$EC2_USER@$EC2_HOST:~/$PROJECT_DIR/"
 # Execute the script inside the backend container
 print_status "Executing update script in AWS backend container..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'UPDATE_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Execute the script inside the backend container
 docker compose exec -T backend python3 /app/update_all_coins_aws.py || {

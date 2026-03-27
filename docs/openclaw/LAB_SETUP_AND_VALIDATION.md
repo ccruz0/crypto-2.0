@@ -35,8 +35,8 @@ ls -la ~/secrets/openclaw_token
 ### 1.2 Ensure token is NOT in repository or .env
 
 ```bash
-# From repo root (e.g. ~/automated-trading-platform)
-cd ~/automated-trading-platform  # or your clone path
+# From repo root (e.g. ~/crypto-2.0)
+cd ~/crypto-2.0  # or your clone path
 
 # .env.lab must NOT contain the token (only OPENCLAW_TOKEN_PATH and other non-secrets)
 cp .env.lab.example .env.lab
@@ -67,7 +67,7 @@ Run from the Lab instance. Assumes `git` and `curl` (or `jq`) are installed.
 ### 2.1 Configure Git remote to HTTPS
 
 ```bash
-cd ~/automated-trading-platform  # or your clone path
+cd ~/crypto-2.0  # or your clone path
 git remote -v
 # Should show: origin  https://github.com/ccruz0/crypto-2.0.git (fetch) (push)
 # If SSH (git@github.com:...), switch to HTTPS:
@@ -113,7 +113,7 @@ REPO_NAME=crypto-2.0
 TOKEN=$(cat ~/secrets/openclaw_token)
 
 # --- 1) Create branch (via Git + push) ---
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git fetch origin main
 git checkout -b openclaw/validation-$(date +%Y%m%d-%H%M%S) origin/main
 # Make a trivial change so we can push
@@ -163,7 +163,7 @@ unset TOKEN
 # Quick checks (token in env for this session only – do not log)
 export TOKEN=$(cat ~/secrets/openclaw_token)
 # Can create branch + push
-git -C ~/automated-trading-platform fetch origin main && git -C ~/automated-trading-platform checkout -b openclaw/test-$(date +%s) origin/main && touch /tmp/tt && git -C ~/automated-trading-platform add -A && git -C ~/automated-trading-platform commit -m "validation" --allow-empty && git -C ~/automated-trading-platform push -u origin HEAD && echo "PUSH OK"
+git -C ~/crypto-2.0 fetch origin main && git -C ~/crypto-2.0 checkout -b openclaw/test-$(date +%s) origin/main && touch /tmp/tt && git -C ~/crypto-2.0 add -A && git -C ~/crypto-2.0 commit -m "validation" --allow-empty && git -C ~/crypto-2.0 push -u origin HEAD && echo "PUSH OK"
 # Open PR (expect 201)
 curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/ccruz0/crypto-2.0/pulls" -d '{"title":"v","head":"openclaw/test-'$(date +%s)'","base":"main"}'
 # Apply label (expect 403) – use a real PR number if you have one
@@ -176,7 +176,7 @@ unset TOKEN
 ## Phase 3 – Start Hardened OpenClaw Service
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 docker compose -f docker-compose.openclaw.yml logs --tail 50 openclaw
@@ -185,7 +185,7 @@ docker compose -f docker-compose.openclaw.yml logs --tail 50 openclaw
 ### Install systemd (persist across reboot)
 
 ```bash
-sudo cp ~/automated-trading-platform/scripts/openclaw/openclaw.service /etc/systemd/system/
+sudo cp ~/crypto-2.0/scripts/openclaw/openclaw.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw
 sudo systemctl start openclaw

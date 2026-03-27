@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform
+cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0
 echo "=== Container Status ==="
 docker compose --profile aws ps
 echo ""

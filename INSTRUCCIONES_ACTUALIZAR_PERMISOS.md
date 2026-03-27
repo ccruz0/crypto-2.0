@@ -49,7 +49,7 @@ O manualmente:
 curl -X POST https://dashboard.hilovivo.com/api/orders/sync-history
 
 # Verificar logs
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws --tail=50 | grep -i 'order history\|authentication\|Received.*orders'"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws --tail=50 | grep -i 'order history\|authentication\|Received.*orders'"
 ```
 
 ## 🔍 Qué Buscar

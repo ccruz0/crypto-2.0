@@ -29,7 +29,7 @@ echo "📝 Actualizando archivos..."
 # 1. Actualizar .env.local en AWS
 echo ""
 echo "1️⃣  Actualizando .env.local en AWS..."
-ssh $AWS_SERVER "cd ~/automated-trading-platform && \
+ssh $AWS_SERVER "cd ~/crypto-2.0 && \
     sed -i.bak 's/^EXCHANGE_CUSTOM_API_KEY=.*/EXCHANGE_CUSTOM_API_KEY=$API_KEY/' .env.local && \
     sed -i.bak 's/^EXCHANGE_CUSTOM_API_SECRET=.*/EXCHANGE_CUSTOM_API_SECRET=$API_SECRET/' .env.local && \
     echo '✅ .env.local actualizado en AWS'"
@@ -98,10 +98,10 @@ fi
 echo ""
 echo "🔄 Próximos pasos:"
 echo "   1. Reiniciar backend en AWS:"
-echo "      ssh $AWS_SERVER 'cd ~/automated-trading-platform && docker compose restart backend-aws'"
+echo "      ssh $AWS_SERVER 'cd ~/crypto-2.0 && docker compose restart backend-aws'"
 echo ""
 echo "   2. Verificar que funciona:"
-echo "      ssh $AWS_SERVER 'cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py'"
+echo "      ssh $AWS_SERVER 'cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py'"
 echo ""
 echo "============================================================"
 

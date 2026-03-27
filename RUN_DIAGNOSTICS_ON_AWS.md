@@ -14,7 +14,7 @@ ssh ubuntu@your-aws-ip
 
 ```bash
 # Common locations (try these):
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 # or
 cd /opt/automated-trading-platform/backend
 # or
@@ -104,7 +104,7 @@ pip3 install requests
 ### 1. Deep Diagnostic (Most Detailed)
 
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 bash scripts/deep_auth_diagnostic_aws.sh
 ```
 
@@ -118,7 +118,7 @@ bash scripts/deep_auth_diagnostic_aws.sh
 ### 2. Comprehensive Diagnostic
 
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 bash scripts/diagnose_auth_40101_aws.sh
 ```
 
@@ -131,7 +131,7 @@ bash scripts/diagnose_auth_40101_aws.sh
 ### 3. Connection Test
 
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 bash scripts/test_crypto_connection_aws.sh
 ```
 
@@ -228,7 +228,7 @@ chmod +x scripts/*.py
 ssh your-aws-server
 
 # Navigate to backend
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Run deep diagnostic
 bash scripts/deep_auth_diagnostic_aws.sh

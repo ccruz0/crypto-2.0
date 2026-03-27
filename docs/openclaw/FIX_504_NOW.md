@@ -43,7 +43,7 @@ Debe aparecer `0.0.0.0:8080`. Si no, revisar [OPENCLAW_504_UPSTREAM_DIAGNOSIS.md
 Conéctate al **Dashboard** por **EC2 Instance Connect**: atp-rebuild-2026 (52.220.32.147).
 
 ```bash
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 git pull origin main
 sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh 172.31.3.214
 ```

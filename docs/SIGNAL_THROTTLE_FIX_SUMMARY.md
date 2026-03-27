@@ -152,7 +152,7 @@ bash scripts/aws_backend_logs.sh --tail 5000 | grep -E "(ERROR|Exception|Traceba
 bash scripts/aws_backend_logs.sh --tail 5000 | grep -E "(Recording signal|Signal event recorded|throttled)"
 
 # Reiniciar contenedor si es necesario
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker restart automated-trading-platform-backend-aws-1"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker restart automated-trading-platform-backend-aws-1"
 ```
 
 ---

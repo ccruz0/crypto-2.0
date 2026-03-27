@@ -25,7 +25,7 @@ Since SSH connection isn't working, here's what to do:
 **SSH into AWS and run these commands:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add fix
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws
@@ -39,7 +39,7 @@ docker compose restart backend
 
 # If running as process:
 pkill -f "uvicorn app.main:app"
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 source venv/bin/activate  # if using venv
 nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
 ```
@@ -54,7 +54,7 @@ grep CRYPTO_SKIP_EXEC_INST .env.aws
 docker compose logs backend --tail 50 | grep "MARGIN ORDER CONFIGURED"
 
 # Check logs (Process)
-tail -50 ~/automated-trading-platform/backend/backend.log | grep "MARGIN ORDER CONFIGURED"
+tail -50 ~/crypto-2.0/backend/backend.log | grep "MARGIN ORDER CONFIGURED"
 ```
 
 **You should see:**

@@ -21,7 +21,7 @@ Portfolio reconcile code crashes when API response shape differs from expected, 
 
 ### 1. Commit and Push Changes
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git add backend/app/services/portfolio_cache.py
 git commit -m "Fix: Add defensive error handling to portfolio_cache to prevent 500 errors"
 git push origin main
@@ -30,7 +30,7 @@ git push origin main
 ### 2. Deploy to AWS
 On AWS instance (via SSM or SSH):
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose --profile aws build backend-aws
 docker compose --profile aws restart backend-aws
@@ -58,7 +58,7 @@ curl -sS "http://localhost:8002/api/dashboard/state" | python3 -m json.tool | he
 
 ### 5. Collect Evidence
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./evidence/portfolio_reconcile/collect_evidence.sh
 ```
 

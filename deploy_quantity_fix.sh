@@ -11,12 +11,12 @@ echo "🚀 Deploying quantity formatting fix to AWS..."
 echo "📦 Syncing crypto_com_trade.py..."
 rsync_cmd \
   backend/app/services/brokers/crypto_com_trade.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/brokers/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/brokers/
 
 # Copy file into Docker container and restart
 echo "🔄 Restarting backend service..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 CONTAINER_NAME=$(docker-compose ps -q backend)
 if [ -n "$CONTAINER_NAME" ]; then
     docker cp backend/app/services/brokers/crypto_com_trade.py $CONTAINER_NAME:/app/app/services/brokers/crypto_com_trade.py

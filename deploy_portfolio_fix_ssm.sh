@@ -15,7 +15,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
     "git pull origin main || { echo \"⚠️ Git pull failed, continuing...\" && exit 0; }",
     "echo \"✅ Code updated\""
   ]' \
@@ -42,7 +42,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || exit 1",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || exit 1",
     "docker compose --profile aws build backend-aws",
     "docker compose --profile aws restart backend-aws",
     "sleep 5",

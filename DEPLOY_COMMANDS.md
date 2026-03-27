@@ -3,7 +3,7 @@
 ## Quick Deploy (Copy and paste on AWS server)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest code
 git pull origin main

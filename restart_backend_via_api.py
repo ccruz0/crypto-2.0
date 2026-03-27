@@ -63,7 +63,7 @@ def restart_backend():
         print()
         print("💡 Alternativa: Reinicia manualmente en el servidor AWS:")
         print("   ssh ubuntu@54.254.150.31")
-        print("   cd ~/automated-trading-platform")
+        print("   cd ~/crypto-2.0")
         print("   docker compose --profile aws restart backend")
 
 if __name__ == "__main__":

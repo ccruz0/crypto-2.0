@@ -11,12 +11,12 @@ echo "Deploying contradictory alerts fix to AWS..."
 echo "Syncing backend file..."
 rsync_cmd \
   backend/app/services/exchange_sync.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/exchange_sync.py
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/exchange_sync.py
 
 # Copy file into Docker container and restart
 echo "Copying file into Docker container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker cp backend/app/services/exchange_sync.py automated-trading-platform_backend_1:/app/app/services/exchange_sync.py
 docker-compose restart backend
 echo "✅ Deployment complete! Backend restarted with contradictory alerts fix"

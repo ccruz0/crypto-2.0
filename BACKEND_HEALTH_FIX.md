@@ -18,7 +18,7 @@ The backend container (`backend-aws`) is either:
 
 **On AWS Server (SSH):**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws ps backend-aws
 ```
 
@@ -73,7 +73,7 @@ docker compose --profile aws logs -f backend-aws
 
 **On AWS Server:**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Restart backend
 docker compose --profile aws restart backend-aws
@@ -97,7 +97,7 @@ curl -s http://localhost:8002/ping_fast && echo "✅ Backend is responding"
 
 **On AWS Server:**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Stop backend
 docker compose --profile aws stop backend-aws
@@ -120,7 +120,7 @@ curl -s http://localhost:8002/ping_fast && echo "✅ Backend is responding"
 
 **On AWS Server:**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Restart all AWS services
 docker compose --profile aws restart

@@ -25,7 +25,7 @@ All four builders prepend runtime context when `_fetch_atp_runtime_context()` re
 **Local validation (boto3 not installed):**
 
 ```bash
-cd ~/automated-trading-platform && source .venv/bin/activate && cd backend && PYTHONPATH=. python3 -c "
+cd ~/crypto-2.0 && source .venv/bin/activate && cd backend && PYTHONPATH=. python3 -c "
 from app.services.openclaw_client import build_investigation_prompt
 mock = {'task': {'id': 't', 'task': 'Test', 'details': 'docker denied'}, 'repo_area': {}}
 up, inst = build_investigation_prompt(mock)

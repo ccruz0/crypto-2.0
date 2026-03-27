@@ -36,29 +36,29 @@ rsync_cmd \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   backend/app/api/routes_orders.py \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/api/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/api/"
 
 rsync_cmd \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   backend/app/services/exchange_sync.py \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/"
 
 # Sync documentation
 echo "📚 Syncing documentation..."
 rsync_cmd docs/ORDER_CANCELLATION_NOTIFICATIONS.md \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/docs/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/docs/"
 
 rsync_cmd ORDER_CANCELLATION_NOTIFICATION_AUDIT.md \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/"
 
 rsync_cmd CODE_REVIEW_NOTES.md \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/"
 
 # Restart backend service
 echo "🔄 Restarting backend service..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend-aws
 echo "✅ Backend service restarted"
 echo ""
@@ -74,7 +74,7 @@ echo ""
 echo "✅ Deployment complete!"
 echo ""
 echo "💡 To monitor logs in real-time:"
-echo "   ssh $EC2_USER@$EC2_HOST 'cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws'"
+echo "   ssh $EC2_USER@$EC2_HOST 'cd ~/crypto-2.0 && docker compose --profile aws logs -f backend-aws'"
 
 
 

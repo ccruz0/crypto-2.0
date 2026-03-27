@@ -20,7 +20,7 @@ The code changes include transaction rollback handling, so:
 ### Step 1: Deploy Code Changes
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Try the main deployment script
 bash sync_to_aws.sh
@@ -42,7 +42,7 @@ ssh ubuntu@54.254.150.31
 # OR try alternative IP:
 ssh ubuntu@175.41.189.249
 
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Apply migration via Python script
 docker compose exec -T backend python backend/scripts/apply_migration_previous_price.py

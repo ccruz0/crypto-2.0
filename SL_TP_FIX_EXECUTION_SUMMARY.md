@@ -32,7 +32,7 @@
 **Usage on AWS:**
 ```bash
 ssh hilovivo-aws
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 backend/scripts/check_update_dot_usdt_settings.py
 ```
 
@@ -78,7 +78,7 @@ git push origin main
 
 # SSH to AWS and deploy
 ssh hilovivo-aws
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull
 docker compose --profile aws restart backend-aws
 
@@ -89,7 +89,7 @@ docker compose --profile aws logs -f backend-aws | grep -E "(Reading SL/TP|Using
 ### Step 3: Verify on AWS
 ```bash
 # On AWS server, check DOT_USDT settings
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 backend/scripts/check_update_dot_usdt_settings.py
 
 # Update if needed

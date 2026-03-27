@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 EC2_HOST="54.254.150.31"
 EC2_USER="ubuntu"
 BACKEND_PORT="8002"
-PROJECT_DIR="~/automated-trading-platform"
+PROJECT_DIR="~/crypto-2.0"
 
 # Load SSH key if available
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh 2>/dev/null || true
@@ -72,7 +72,7 @@ diagnose_backend() {
 
 # Run diagnostics locally (on AWS server)
 run_local_diagnostics() {
-    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
+    cd ~/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
         print_error "Cannot find project directory"
         exit 1
     }
@@ -193,7 +193,7 @@ run_remote_diagnostics() {
     
     if [ -n "$(type -t ssh_cmd)" ]; then
         ssh_cmd "$EC2_USER@$EC2_HOST" << 'DIAG_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "=========================================="
 echo "Backend Health Diagnostic"
@@ -269,7 +269,7 @@ echo "=========================================="
 DIAG_SCRIPT
     else
         ssh "$EC2_USER@$EC2_HOST" << 'DIAG_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "=========================================="
 echo "Backend Health Diagnostic"
@@ -359,7 +359,7 @@ fix_backend() {
 
 # Fix backend locally
 fix_local_backend() {
-    cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
+    cd ~/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
         print_error "Cannot find project directory"
         exit 1
     }
@@ -394,7 +394,7 @@ fix_remote_backend() {
     
     if [ -n "$(type -t ssh_cmd)" ]; then
         ssh_cmd "$EC2_USER@$EC2_HOST" << 'FIX_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "🔄 Restarting backend..."
 docker compose --profile aws restart backend-aws
@@ -416,7 +416,7 @@ fi
 FIX_SCRIPT
     else
         ssh "$EC2_USER@$EC2_HOST" << 'FIX_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "🔄 Restarting backend..."
 docker compose --profile aws restart backend-aws

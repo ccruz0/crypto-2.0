@@ -10,15 +10,15 @@ echo ""
 
 # Step 1: Sync files
 echo "📦 Syncing files..."
-rsync_cmd backend/app/api/routes_dashboard.py $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/api/ 2>&1 | grep -v "error:" | grep -v "warning:" || true
-rsync_cmd frontend/src/app/page.tsx $EC2_USER@$EC2_HOST:~/automated-trading-platform/frontend/src/app/ 2>&1 | grep -v "error:" | grep -v "warning:" || true
+rsync_cmd backend/app/api/routes_dashboard.py $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/api/ 2>&1 | grep -v "error:" | grep -v "warning:" || true
+rsync_cmd frontend/src/app/page.tsx $EC2_USER@$EC2_HOST:~/crypto-2.0/frontend/src/app/ 2>&1 | grep -v "error:" | grep -v "warning:" || true
 
 echo ""
 echo "🐳 Deploying to Docker containers..."
 
 # Step 2: Deploy via SSH
 ssh_cmd $EC2_USER@$EC2_HOST 'bash -s' << 'REMOTE_SCRIPT'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find containers
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

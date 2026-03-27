@@ -7,7 +7,7 @@ set -e
 echo "🚀 Aplicando fix de visualización de SL..."
 echo ""
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Verificar que los archivos existen
 if [ ! -f "backend/app/api/routes_orders.py" ]; then

@@ -7,14 +7,14 @@ El config del repo no está en el servidor. Opciones: **script automático** (re
 **Siempre ejecutar desde la raíz del repo:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/openclaw/deploy_openclaw_nginx_prod.sh
 ```
 
 **Dry-run (recomendado antes de prod):** no modifica nada en el servidor ni recarga nginx; solo imprime qué haría:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 DRY_RUN=1 ./scripts/openclaw/deploy_openclaw_nginx_prod.sh
 ```
 

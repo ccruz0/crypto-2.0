@@ -61,7 +61,7 @@ Para verificar si se resolvió:
 
 ```bash
 ssh ubuntu@47.130.143.159
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker exec automated-trading-platform-backend-aws-1 python3 /app/scripts/test_crypto_connection.py
 ```
 

@@ -5,7 +5,7 @@
 set -e
 
 SERVER="ubuntu@175.41.189.249"
-REMOTE_PATH="~/automated-trading-platform"
+REMOTE_PATH="~/crypto-2.0"
 
 # Load SSH config
 . ./scripts/ssh_key.sh 2>/dev/null || source ./scripts/ssh_key.sh

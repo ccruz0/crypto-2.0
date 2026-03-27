@@ -40,7 +40,7 @@ After running, check:
 
 ### Step 1: Copy Script to Server
 ```bash
-scp backend/scripts/enable_sell_alerts.py ubuntu@175.41.189.249:~/automated-trading-platform/backend/scripts/
+scp backend/scripts/enable_sell_alerts.py ubuntu@175.41.189.249:~/crypto-2.0/backend/scripts/
 ```
 
 ### Step 2: SSH to Server
@@ -50,7 +50,7 @@ ssh ubuntu@175.41.189.249
 
 ### Step 3: Run Script
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 source venv/bin/activate  # or source .venv/bin/activate
 python3 scripts/enable_sell_alerts.py
 ```

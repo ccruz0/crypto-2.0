@@ -9,7 +9,7 @@ The backend validates the `x-api-key` header against **ATP_API_KEY** (or **INTER
 - **Option A — Create env from scratch (no SSM / .env.aws):** run the helper script (generates ATP_API_KEY and writes `secrets/runtime.env`). **On EC2, pull first so the script exists:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 ./scripts/aws/create_runtime_env.sh
 ```
@@ -19,7 +19,7 @@ If `.env` is missing, the script creates it from `.env.example` (or an empty fil
 - **Option B — Set key manually:** create or edit `secrets/runtime.env` (never commit):
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # copy output
 # Add to secrets/runtime.env: ATP_API_KEY=<paste-the-generated-key-here>
 ```
@@ -29,7 +29,7 @@ Docker Compose loads `./secrets/runtime.env` for `backend-aws` and `market-updat
 ## 2. Deploy and Restart
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 git pull
 
@@ -46,7 +46,7 @@ sleep 30
 Either restart (above) so `init_db` runs, or call the repair endpoint once you have a valid API key:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Replace YOUR_ATP_API_KEY with the value from secrets/runtime.env
 curl -s -X POST "http://127.0.0.1:8002/api/health/repair" \
@@ -64,7 +64,7 @@ Expected:
 Market data freshness (and thus “market_updater” health) comes from the **market-updater-aws** container writing to the DB. If it was stopped, bring it up:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 docker compose --profile aws up -d market-updater-aws
 docker compose --profile aws logs -f market-updater-aws --tail=50
@@ -132,7 +132,7 @@ If those vars are not set, health will show `telegram.enabled: false`; that is e
 |------|-------------------|
 | Set API key | Add `ATP_API_KEY=<secret>` to `secrets/runtime.env` |
 | Generate key | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| Deploy | `cd ~/automated-trading-platform && git pull` |
+| Deploy | `cd ~/crypto-2.0 && git pull` |
 | Restart stack | `docker compose --profile aws down && docker compose --profile aws up -d` |
 | Repair DB (if needed) | `curl -s -X POST http://127.0.0.1:8002/api/health/repair -H "x-api-key: $ATP_API_KEY" \| jq` |
 | Start updater | `docker compose --profile aws up -d market-updater-aws` |

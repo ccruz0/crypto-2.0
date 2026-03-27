@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform
+cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0
 
 echo "=== Step 1: Boot Log Check ==="
 docker compose --profile aws logs --tail=200 backend-aws 2>&1 | grep -i "order_intents\|BOOT" | tail -10 || echo "No BOOT log found"

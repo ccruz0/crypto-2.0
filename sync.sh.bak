@@ -7,7 +7,7 @@ EC2_HOST="54.254.150.31"
 EC2_USER="ubuntu"
 KEY_FILE="crypto 2.0 key.pem"
 LOCAL_DIR="."
-REMOTE_DIR="~/automated-trading-platform"
+REMOTE_DIR="~/crypto-2.0"
 
 # Colors for output
 GREEN='\033[0;32m'

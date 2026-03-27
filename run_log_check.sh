@@ -11,7 +11,7 @@ SERVER="ubuntu@175.41.189.249"
 echo "📋 Checking recent /start command activity..."
 echo ""
 ssh $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "=== Last 30 /start related logs ==="
 docker-compose --profile aws logs --tail=200 backend-aws 2>/dev/null | grep -i "TG.*START" | tail -30

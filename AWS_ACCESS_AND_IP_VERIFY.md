@@ -22,7 +22,7 @@ When you run `docker compose --profile aws ps` on your Mac, you're seeing **loca
 Run this script on your Mac:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/verify_local_vs_ec2.sh
 ```
 
@@ -48,7 +48,7 @@ cd ~/automated-trading-platform
 Once connected via SSM, run:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/verify_ec2_ip_and_health.sh
 ```
 

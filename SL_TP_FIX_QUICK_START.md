@@ -90,7 +90,7 @@ python backend/tests/test_sl_tp_percentage_fix.py
 ssh hilovivo-aws
 
 # Navigate and pull
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull
 
 # Restart service

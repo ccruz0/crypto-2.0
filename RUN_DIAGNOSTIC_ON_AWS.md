@@ -13,16 +13,16 @@ Based on your deployment scripts, your AWS server appears to be:
 
 ```bash
 # Test setup first
-ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py"
+ssh ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py"
 
 # Then run deep diagnostic
-ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 
 # Or run comprehensive diagnostic
-ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/diagnose_auth_40101.py"
+ssh ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/diagnose_auth_40101.py"
 
 # Or connection test
-ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/test_crypto_connection.py"
+ssh ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/test_crypto_connection.py"
 ```
 
 ### Option 2: SSH First, Then Run (Interactive)
@@ -32,7 +32,7 @@ ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 sc
 ssh ubuntu@175.41.189.249
 
 # 2. Navigate to backend
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # 3. Test setup
 python3 scripts/test_script_works.py
@@ -44,7 +44,7 @@ python3 scripts/deep_auth_diagnostic.py
 ### Option 3: All-in-One Test
 
 ```bash
-ssh ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py && echo '---' && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py && echo '---' && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ## If IP or User is Different
@@ -63,7 +63,7 @@ To find your AWS server details:
 If you use an SSH key file:
 
 ```bash
-ssh -i /path/to/your-key.pem ubuntu@175.41.189.249 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh -i /path/to/your-key.pem ubuntu@175.41.189.249 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ## What to Expect

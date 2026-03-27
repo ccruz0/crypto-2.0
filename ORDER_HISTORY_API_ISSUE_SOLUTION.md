@@ -34,7 +34,7 @@ El código ya tiene un fallback implementado. Verificar si `TRADEBOT_BASE` está
 
 ```bash
 # Verificar si TRADEBOT_BASE está configurado
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws env | grep TRADEBOT"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws env | grep TRADEBOT"
 ```
 
 Si está configurado, el código debería hacer fallback automáticamente cuando detecta el error 401.
@@ -45,7 +45,7 @@ El WebSocket puede recibir actualizaciones de órdenes en tiempo real. Verificar
 
 ```bash
 # Verificar WebSocket
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws env | grep WEBSOCKET"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws env | grep WEBSOCKET"
 ```
 
 ### Solución 4: Contactar Soporte de Crypto.com

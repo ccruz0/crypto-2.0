@@ -9,7 +9,7 @@ echo "🚀 DEPLOYING AUTHENTICATION FIX"
 echo "================================================================================"
 echo ""
 
-cd ~/automated-trading-platform || { echo "❌ Could not find automated-trading-platform directory"; exit 1; }
+cd ~/crypto-2.0 || { echo "❌ Could not find automated-trading-platform directory"; exit 1; }
 
 # Step 1: Verify code files exist
 echo "1. Verifying code files..."
@@ -70,7 +70,7 @@ elif pgrep -f "uvicorn app.main:app" > /dev/null; then
     echo "   Restarting backend process..."
     pkill -f "uvicorn app.main:app" || true
     sleep 2
-    cd ~/automated-trading-platform/backend
+    cd ~/crypto-2.0/backend
     if [ -d "venv" ]; then
         source venv/bin/activate
         echo "   ✅ Activated virtual environment"
@@ -89,7 +89,7 @@ elif pgrep -f "python.*main:app" > /dev/null; then
     echo "   Restarting backend process..."
     pkill -f "python.*main:app" || true
     sleep 2
-    cd ~/automated-trading-platform/backend
+    cd ~/crypto-2.0/backend
     if [ -d "venv" ]; then
         source venv/bin/activate
     fi
@@ -118,6 +118,6 @@ echo "  3. Orders should be created without authentication errors"
 echo ""
 echo "To check logs:"
 echo "  - Docker: docker compose logs backend -f | grep -E 'AUTHENTICATION|order created'"
-echo "  - Process: tail -f ~/automated-trading-platform/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
+echo "  - Process: tail -f ~/crypto-2.0/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
 echo ""
 

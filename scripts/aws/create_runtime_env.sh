@@ -4,7 +4,7 @@
 # Telegram stays disabled until you add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
 #
 # Usage (from repo root):
-#   cd ~/automated-trading-platform
+#   cd ~/crypto-2.0
 #   ./scripts/aws/create_runtime_env.sh
 #
 # On EC2: run "git pull" first so this script exists; ensure .env or .env.aws exists for DATABASE_URL.

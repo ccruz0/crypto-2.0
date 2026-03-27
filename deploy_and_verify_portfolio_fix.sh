@@ -15,7 +15,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || exit 1",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || exit 1",
     "git pull origin main || echo \"Git pull failed, continuing...\"",
     "docker compose --profile aws build backend-aws",
     "docker compose --profile aws restart backend-aws",
@@ -47,7 +47,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || exit 1",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || exit 1",
     "grep -q \"PORTFOLIO_RECONCILE_DEBUG\" docker-compose.yml || sed -i \"/SIGNALS_DUP_GUARD/a\\      - PORTFOLIO_RECONCILE_DEBUG=1\" docker-compose.yml",
     "docker compose --profile aws restart backend-aws",
     "sleep 5",

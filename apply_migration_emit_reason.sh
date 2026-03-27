@@ -29,7 +29,7 @@ echo "🔄 Applying emit_reason migration to AWS..."
 
 if [[ "$EC2_HOST" == "hilovivo-aws" ]]; then
   ssh -o StrictHostKeyChecking=no $EC2_HOST << 'MIGRATION_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "Applying emit_reason migration..."
 docker compose exec -T backend python backend/scripts/apply_migration_emit_reason.py || {
@@ -41,7 +41,7 @@ echo "✅ Migration complete!"
 MIGRATION_SCRIPT
 else
   ssh_cmd "$EC2_HOST" << 'MIGRATION_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "Applying emit_reason migration..."
 docker compose exec -T backend python backend/scripts/apply_migration_emit_reason.py || {

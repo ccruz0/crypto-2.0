@@ -168,7 +168,7 @@ git revert 821e4cc
 git push origin main
 
 # Redeploy on AWS
-ssh hilovivo-aws "cd ~/automated-trading-platform && git pull && docker compose restart backend-aws"
+ssh hilovivo-aws "cd ~/crypto-2.0 && git pull && docker compose restart backend-aws"
 ```
 
 ## Conclusion

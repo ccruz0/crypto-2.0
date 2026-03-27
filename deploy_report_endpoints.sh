@@ -37,7 +37,7 @@ rsync_cmd \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
   backend/app/api/routes_monitoring.py \
-  $USER@$SERVER:~/automated-trading-platform/backend/app/api/routes_monitoring.py
+  $USER@$SERVER:~/crypto-2.0/backend/app/api/routes_monitoring.py
 
 echo "   ✅ Backend file synced"
 echo ""
@@ -65,7 +65,7 @@ echo "🔧 Step 4: Deploying on server..."
 ssh_cmd "$USER@$SERVER" << 'REMOTE'
 set -e
 
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Backup existing files
 echo "   📦 Creating backups..."
@@ -182,7 +182,7 @@ if [ -f /tmp/api.ts ]; then
             }
             
             echo "      Rebuilding frontend container..."
-            cd ~/automated-trading-platform
+            cd ~/crypto-2.0
             docker-compose build frontend 2>&1 | tail -5 || {
                 echo "      ⚠️  Build failed, trying restart only..."
                 docker restart "$FRONTEND_CONTAINER"

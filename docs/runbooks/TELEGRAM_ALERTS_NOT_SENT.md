@@ -25,7 +25,7 @@ Optional: `INSTANCE_ID=i-xxx REGION=ap-southeast-1 ./scripts/diag/run_telegram_d
 **Or** start an SSM shell, then on the instance run:
 
 ```bash
-cd ~/automated-trading-platform  # or your repo path
+cd ~/crypto-2.0  # or your repo path
 docker compose --profile aws exec backend-aws python scripts/diagnose_telegram_alerts.py
 ```
 

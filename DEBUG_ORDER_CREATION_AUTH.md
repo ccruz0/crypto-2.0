@@ -33,7 +33,7 @@ This will log:
 ## Step 2: Run Comparison Test
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 backend/scripts/test_order_creation_auth.py
 ```
 

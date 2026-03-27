@@ -17,7 +17,7 @@ scp_cmd backend/migrations/add_previous_price_to_signal_throttle.sql "$EC2_USER@
 # Execute migration using Docker
 echo "🚀 Executing migration on server..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'MIGRATION_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Execute migration using docker compose exec
 if docker compose --profile aws ps db | grep -q "Up"; then

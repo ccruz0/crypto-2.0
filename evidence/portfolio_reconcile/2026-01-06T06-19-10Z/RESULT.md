@@ -52,7 +52,7 @@
 aws ssm start-session --target i-087953603011543c5
 
 # On AWS instance:
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose --profile aws build backend-aws
 docker compose --profile aws restart backend-aws
@@ -80,7 +80,7 @@ curl -sS "http://localhost:8002/api/dashboard/state" | python3 -m json.tool | he
 
 ### 4. Collect Evidence
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./evidence/portfolio_reconcile/collect_evidence.sh
 ```
 

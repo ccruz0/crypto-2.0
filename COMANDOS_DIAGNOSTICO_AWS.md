@@ -9,31 +9,31 @@
 ### 1. Verificar que los Scripts Funcionan
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py"
 ```
 
 ### 2. Diagnóstico Profundo (Más Detallado)
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ### 3. Diagnóstico Completo
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/diagnose_auth_40101.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/diagnose_auth_40101.py"
 ```
 
 ### 4. Test de Conexión
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/test_crypto_connection.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/test_crypto_connection.py"
 ```
 
 ### 5. Todo en Uno (Verificación + Diagnóstico)
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py && echo '---' && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py && echo '---' && python3 scripts/deep_auth_diagnostic.py"
 ```
 
 ## Opción Interactiva (SSH Primero)
@@ -45,7 +45,7 @@ Si prefieres conectarte primero y luego ejecutar comandos:
 ssh ubuntu@47.130.143.159
 
 # 2. Navegar al backend
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # 3. Verificar setup
 python3 scripts/test_script_works.py
@@ -89,6 +89,6 @@ Si ves el error 40101:
 Ejecuta este comando para ver todo:
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py && echo '========================================' && python3 scripts/deep_auth_diagnostic.py"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py && echo '========================================' && python3 scripts/deep_auth_diagnostic.py"
 ```
 

@@ -35,7 +35,7 @@ COMMAND_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
-    \"cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0\",
+    \"cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0\",
     \"git pull origin main || echo 'Git pull failed'\",
     \"CONTAINER=\$(docker compose --profile aws ps -q backend 2>/dev/null || docker ps -q --filter 'name=backend')\",
     \"if [ -n \\\"\\\$CONTAINER\\\" ]; then\",

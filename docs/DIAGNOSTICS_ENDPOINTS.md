@@ -82,7 +82,7 @@ export PORTFOLIO_RECONCILE_DEBUG=1
 ### Verify Endpoints Are Registered
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -sS http://localhost:8002/openapi.json | python3 -m json.tool | grep -A 2 "diagnostics/portfolio/reconcile"
 curl -sS http://localhost:8002/openapi.json | python3 -m json.tool | grep -A 2 "diagnostics/whoami"
 ```
@@ -92,7 +92,7 @@ curl -sS http://localhost:8002/openapi.json | python3 -m json.tool | grep -A 2 "
 ### Test Endpoints
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 # Test whoami
 curl -sS http://localhost:8002/api/diagnostics/whoami | python3 -m json.tool
 

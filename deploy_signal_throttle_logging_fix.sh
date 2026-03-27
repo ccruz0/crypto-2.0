@@ -25,7 +25,7 @@ echo "✅ File synced"
 echo ""
 echo "🐳 Updating Docker container..."
 ssh_cmd $REMOTE_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find backend container name
 CONTAINER_NAME=$(docker ps --format '{{.Names}}' | grep -E 'automated-trading-platform-backend|backend-aws' | head -1)

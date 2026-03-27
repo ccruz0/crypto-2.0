@@ -64,13 +64,13 @@
 
 ### Start Backend
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Start Frontend (if separate)
 ```bash
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 npm run dev
 ```
 

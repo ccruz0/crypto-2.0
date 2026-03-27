@@ -34,7 +34,7 @@ Si devuelve 200, el self-heal puede “arreglar” reiniciando esos servicios. S
 Si `watchlist_items` no existe, market-updater falla y health queda en FAIL. Crear schema una vez:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/db/bootstrap.sh
 ```
 
@@ -43,7 +43,7 @@ Ver [EC2_DB_BOOTSTRAP.md](../../docs/runbooks/EC2_DB_BOOTSTRAP.md) para comandos
 ### 1) Scripts (vía repo)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 chmod +x scripts/selfheal/verify.sh scripts/selfheal/heal.sh scripts/selfheal/run.sh
 ```
@@ -61,7 +61,7 @@ sudo systemctl status atp-selfheal.timer --no-pager
 ### 3) Prueba manual
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/selfheal/verify.sh
 ./scripts/selfheal/run.sh
 ```
@@ -113,7 +113,7 @@ sudo journalctl -u atp-selfheal.service -n 120 --no-pager
 ### 2) Verify manual y códigos de salida
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/selfheal/verify.sh; echo "exit=$?"
 ```
 

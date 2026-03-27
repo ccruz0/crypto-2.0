@@ -24,14 +24,14 @@ rsync_cmd \
   --exclude='venv' \
   --exclude='.env' \
   ./backend/app/services/trading_signals.py \
-  $USER@$SERVER:~/automated-trading-platform/backend/app/services/trading_signals.py
+  $USER@$SERVER:~/crypto-2.0/backend/app/services/trading_signals.py
 
 echo ""
 echo "✅ Code synced"
 echo ""
 echo "🔍 Step 2: Verifying code on server..."
 ssh_cmd $USER@$SERVER << 'VERIFY'
-cd ~/automated-trading-platform/backend/app/services
+cd ~/crypto-2.0/backend/app/services
 if grep -q "CRITICAL FIX: RSI validation" trading_signals.py; then
   echo "✅ Fix found in server code"
   grep -A 3 "CRITICAL FIX: RSI validation" trading_signals.py | head -5
@@ -44,7 +44,7 @@ VERIFY
 echo ""
 echo "🐳 Step 3: Rebuilding and restarting backend container..."
 ssh_cmd $USER@$SERVER << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "🛑 Stopping backend..."
 docker compose --profile aws stop backend-aws || true

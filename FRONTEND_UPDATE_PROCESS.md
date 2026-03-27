@@ -23,10 +23,10 @@ This script automatically:
 ### Option 2: Manual Update
 ```bash
 # 1. Copy files
-scp -i ~/.ssh/id_rsa frontend/src/app/page.tsx ubuntu@175.41.189.249:~/automated-trading-platform/frontend/src/app/page.tsx
+scp -i ~/.ssh/id_rsa frontend/src/app/page.tsx ubuntu@175.41.189.249:~/crypto-2.0/frontend/src/app/page.tsx
 
 # 2. Rebuild and restart
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker compose -f docker-compose.yml build frontend-aws && docker compose -f docker-compose.yml up -d frontend-aws'
+ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/crypto-2.0 && docker compose -f docker-compose.yml build frontend-aws && docker compose -f docker-compose.yml up -d frontend-aws'
 ```
 
 ## After Deployment
@@ -39,7 +39,7 @@ Users must hard refresh:
 ### 2. Verify Deployment
 Check that the code is in the container:
 ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'grep -n "Minimum Price Change" ~/automated-trading-platform/frontend/src/app/page.tsx'
+ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'grep -n "Minimum Price Change" ~/crypto-2.0/frontend/src/app/page.tsx'
 ```
 
 ### 3. Check Container Status
@@ -63,12 +63,12 @@ Before making frontend changes:
 
 1. **Verify code is on server:**
    ```bash
-   ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'grep "your change" ~/automated-trading-platform/frontend/src/app/page.tsx'
+   ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'grep "your change" ~/crypto-2.0/frontend/src/app/page.tsx'
    ```
 
 2. **Check if rebuild is needed:**
    ```bash
-   ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker compose -f docker-compose.yml build frontend-aws'
+   ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/crypto-2.0 && docker compose -f docker-compose.yml build frontend-aws'
    ```
 
 3. **Verify container is running:**
@@ -78,7 +78,7 @@ Before making frontend changes:
 
 4. **Check build logs for errors:**
    ```bash
-ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/automated-trading-platform && docker compose -f docker-compose.yml build frontend-aws 2>&1 | grep -i error'
+ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 'cd ~/crypto-2.0 && docker compose -f docker-compose.yml build frontend-aws 2>&1 | grep -i error'
    ```
 
 5. **Clear browser cache completely:**

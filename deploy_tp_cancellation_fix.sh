@@ -14,12 +14,12 @@ echo ""
 echo "📦 Syncing backend/app/services/exchange_sync.py..."
 rsync_cmd \
   backend/app/services/exchange_sync.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/exchange_sync.py
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/exchange_sync.py
 
 echo ""
 echo "🔄 Restarting backend container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find backend container name
 CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker compose ps -q backend 2>/dev/null || echo "")

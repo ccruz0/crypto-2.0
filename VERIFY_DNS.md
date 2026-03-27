@@ -3,7 +3,7 @@
 ## Desde el directorio del proyecto
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/verify_dashboard_dns.sh
 ```
 

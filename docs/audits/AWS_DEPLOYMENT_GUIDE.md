@@ -14,15 +14,15 @@
 
 ```bash
 # From your local machine
-scp .env.aws ubuntu@47.130.143.159:~/automated-trading-platform/
-scp scripts/deploy_aws_backend.sh ubuntu@47.130.143.159:~/automated-trading-platform/scripts/
+scp .env.aws ubuntu@47.130.143.159:~/crypto-2.0/
+scp scripts/deploy_aws_backend.sh ubuntu@47.130.143.159:~/crypto-2.0/scripts/
 ```
 
 ### 2. SSH to AWS Server
 
 ```bash
 ssh ubuntu@47.130.143.159
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ```
 
 ### 3. Run Deployment Script

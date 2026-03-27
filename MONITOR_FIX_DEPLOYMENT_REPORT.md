@@ -41,7 +41,7 @@ curl -s http://localhost:8000/api/monitoring/summary | python3 -m json.tool | he
 ### Option 2: Manual File Copy
 ```bash
 # Copy backend file
-scp backend/app/api/routes_monitoring.py ubuntu@<AWS_IP>:~/automated-trading-platform/backend/app/api/
+scp backend/app/api/routes_monitoring.py ubuntu@<AWS_IP>:~/crypto-2.0/backend/app/api/
 
 # On AWS, copy into container and restart
 docker cp backend/app/api/routes_monitoring.py <container_id>:/app/app/api/routes_monitoring.py

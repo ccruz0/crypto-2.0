@@ -142,7 +142,7 @@ curl -sS http://localhost:8002/api/dashboard/state | python3 -m json.tool | grep
 ### 3. Run Evidence Script
 
 ```bash
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 npm run qa:real-portfolio
 ```
 

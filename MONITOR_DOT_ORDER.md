@@ -16,7 +16,7 @@
 Run this command on production to check if the order has been filled:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 -c \"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 -c \"
 import sys
 sys.path.insert(0, '/app')
 from app.database import SessionLocal
@@ -66,7 +66,7 @@ finally:
 Monitor the exchange_sync service to see when it detects the order as FILLED:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws -f | grep -E '(5755600481538037740|DOT_USDT|SL/TP|FILLED)'"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws -f | grep -E '(5755600481538037740|DOT_USDT|SL/TP|FILLED)'"
 ```
 
 ### 3. Check for SL/TP Creation
@@ -74,7 +74,7 @@ ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aw
 Once the order is FILLED, verify SL/TP orders were created:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 check_specific_order.py 5755600481538037740"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 check_specific_order.py 5755600481538037740"
 ```
 
 ### 4. Check All Recent Orders
@@ -82,7 +82,7 @@ ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aw
 Check all orders from today to see their SL/TP status:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 check_orders_sl_tp.py"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 check_orders_sl_tp.py"
 ```
 
 ## Expected Behavior
@@ -112,7 +112,7 @@ If SL/TP are not created after order is FILLED:
 Run this one-liner to quickly check order and SL/TP status:
 
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 -c \"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 -c \"
 from app.database import SessionLocal
 from app.models.exchange_order import ExchangeOrder, OrderStatusEnum
 db = SessionLocal()

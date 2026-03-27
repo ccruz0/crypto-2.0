@@ -15,7 +15,7 @@ echo "   Host IP: $HOST_IP"
 echo ""
 
 echo "2. Backend Container Outbound IP:"
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Try python3 first, fallback to python
 CONTAINER_IP=$(docker compose --profile aws exec -T backend-aws python3 -c "import urllib.request; print(urllib.request.urlopen('https://api.ipify.org').read().decode())" 2>/dev/null || \

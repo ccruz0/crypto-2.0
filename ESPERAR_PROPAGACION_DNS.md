@@ -65,7 +65,7 @@ Una vez que `dig +short dashboard.hilovivo.com A` muestre `47.130.143.159`:
 Puedes ejecutar este script periódicamente para verificar:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/verify_dashboard_dns.sh
 ```
 

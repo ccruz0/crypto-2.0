@@ -2,7 +2,7 @@
 # One-liner to apply authentication fix on AWS server
 # Run this on your AWS server: bash ONE_LINER_FIX.sh
 
-cd ~/automated-trading-platform && \
+cd ~/crypto-2.0 && \
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws && \
 echo "CRYPTO_AUTH_DIAG=true" >> .env.aws && \
 echo "✅ Added to .env.aws" && \

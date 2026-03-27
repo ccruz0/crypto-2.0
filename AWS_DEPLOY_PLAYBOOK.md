@@ -58,7 +58,7 @@ The AWS deployment uses a **deploy-by-commit** workflow where:
 **Command**:
 ```bash
 ssh ubuntu@<EC2_IP>
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/deploy_aws.sh
 ```
 
@@ -121,7 +121,7 @@ AWS Deploy-by-Commit
 
 ```bash
 # On EC2
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/rollback_aws.sh <commit-sha>
 ```
 

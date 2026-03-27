@@ -48,7 +48,7 @@ Ordered checklist. Do **OpenClaw host** first, then **Dashboard host**, then **b
 - [ ] **Insert the Nginx OpenClaw block** (run on Dashboard):
 
   ```bash
-  cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+  cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
   git pull origin main
   ls scripts/openclaw/insert_nginx_openclaw_block.sh   # confirm script exists
   sudo ./scripts/openclaw/insert_nginx_openclaw_block.sh <OPENCLAW_PRIVATE_IP>

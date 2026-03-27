@@ -3,7 +3,7 @@
 # Usage: ./EDITAR_ENV_AWS.sh
 
 AWS_SERVER="ubuntu@47.130.143.159"
-ENV_FILE="~/automated-trading-platform/.env.local"
+ENV_FILE="~/crypto-2.0/.env.local"
 
 echo "============================================================"
 echo "📝 EDITAR .env.local EN AWS"
@@ -52,6 +52,6 @@ esac
 echo ""
 echo "============================================================"
 echo "💡 Después de editar, reinicia el backend:"
-echo "   ssh $AWS_SERVER 'cd ~/automated-trading-platform && docker compose restart backend-aws'"
+echo "   ssh $AWS_SERVER 'cd ~/crypto-2.0 && docker compose restart backend-aws'"
 echo "============================================================"
 

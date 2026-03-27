@@ -169,7 +169,7 @@
 ## 4. Gaps
 
 - **Unified “one watchdog” story:** There are several parallel mechanisms (health_monitor.sh, atp-selfheal, atp-health-snapshot + alert, optional cron for monitor_health.py, Docker restart). No single doc or diagram that states “this is the canonical health/recovery stack” and “these are disabled/superseded.”
-- **Installation and host consistency:** install_health_monitor.sh uses a hardcoded IP; EC2_SELFHEAL_DEPLOY and runbooks refer to ~/automated-trading-platform and ubuntu user. LAB vs PROD and which timers/services are actually enabled is not codified in repo (only in runbooks/checklists).
+- **Installation and host consistency:** install_health_monitor.sh uses a hardcoded IP; EC2_SELFHEAL_DEPLOY and runbooks refer to ~/crypto-2.0 and ubuntu user. LAB vs PROD and which timers/services are actually enabled is not codified in repo (only in runbooks/checklists).
 - **Backend /health vs /api/health:** health_guard.sh curls `/health`; nginx and main app expose `/api/health` → `__ping` and `/api/health/system`. Clarification of canonical liveness URL (e.g. always use `/api/health` or `ping_fast`) would avoid confusion.
 - **Telegram alert dedupe and escalation:** health_snapshot_telegram_alert + health_alert_incident implement cooldown and streak rules; other scripts (dashboard_health_check, monitor_health.py) may send independently — no single “alert manager” to avoid duplicate or conflicting notifications.
 - **Disk/memory cleanup:** heal.sh and docs (e.g. PROD_DISK_RESIZE) mention disk cleanup; infra/install_cleanup_cron.sh and cleanup_disk.sh exist. It’s not clear if cleanup cron is installed on LAB/PROD or if only selfheal handles disk.

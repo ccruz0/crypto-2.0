@@ -16,12 +16,12 @@ rsync_cmd \
   --exclude='*.pyc' \
   --exclude='.env' \
   ./backend/ \
-  $SERVER:~/automated-trading-platform/backend/
+  $SERVER:~/crypto-2.0/backend/
 
 echo ""
 echo "⚙️  Setting up environment and starting backend..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Create .env file with AWS proxy configuration
 cat > .env << 'ENVFILE'

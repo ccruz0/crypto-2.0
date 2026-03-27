@@ -34,7 +34,7 @@ rsync_cmd \
 # Step 2: Rebuild and restart frontend
 echo "🔨 Rebuilding and restarting frontend..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Rebuild frontend
 echo "Building frontend image..."

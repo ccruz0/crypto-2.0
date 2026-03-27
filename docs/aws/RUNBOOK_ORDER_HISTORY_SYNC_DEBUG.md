@@ -15,7 +15,7 @@ git push
 ## 2. On EC2: pull, rebuild backend, restart
 
 ```bash
-cd ~/automated-trading-platform   # or your repo path on EC2
+cd ~/crypto-2.0   # or your repo path on EC2
 git pull
 
 # Rebuild only the backend-aws image and recreate the container

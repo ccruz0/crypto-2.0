@@ -11,7 +11,7 @@ cd "$REPO_ROOT"
 cat << 'MANUAL_EOF'
 # ========== Run these commands ON THE EC2 SERVER (paste in EC2 Instance Connect or SSH) ==========
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || { echo "❌ No project dir"; exit 1; }
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo "❌ No project dir"; exit 1; }
 
 # 1) Pull code + frontend
 git pull origin main || true

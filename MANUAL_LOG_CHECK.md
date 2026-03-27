@@ -9,7 +9,7 @@ Since SSH connection is timing out, run these commands directly on the AWS serve
 ssh ubuntu@175.41.189.249
 
 # Then run these commands:
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check recent /start activity
 docker-compose --profile aws logs --tail=200 backend-aws | grep -i "TG.*START" | tail -30

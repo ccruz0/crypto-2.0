@@ -11,7 +11,7 @@ Si tienes acceso SSH al servidor AWS:
 ssh ubuntu@54.254.150.31
 
 # Una vez conectado, ejecutar:
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T backend-aws python3 << 'EOF'
 import sys
 sys.path.insert(0, '/app')
@@ -90,14 +90,14 @@ aws ssm send-command \
 1. Copiar el script `disable_all_alerts_aws.py` al servidor:
 
 ```bash
-scp disable_all_alerts_aws.py ubuntu@54.254.150.31:~/automated-trading-platform/
+scp disable_all_alerts_aws.py ubuntu@54.254.150.31:~/crypto-2.0/
 ```
 
 2. Ejecutar en el servidor:
 
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T backend-aws python3 disable_all_alerts_aws.py
 ```
 

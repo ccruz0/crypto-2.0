@@ -45,7 +45,7 @@ bash ~/fix_auth_on_aws.sh
 
 **Option 2: Run commands directly**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws
 echo "CRYPTO_AUTH_DIAG=true" >> .env.aws
 

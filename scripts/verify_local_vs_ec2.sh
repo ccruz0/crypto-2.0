@@ -30,7 +30,7 @@ echo ""
 echo "3. Checking for local Docker containers:"
 echo "   Running: docker compose --profile aws ps"
 echo ""
-if cd ~/automated-trading-platform 2>/dev/null && docker compose --profile aws ps 2>/dev/null | head -20; then
+if cd ~/crypto-2.0 2>/dev/null && docker compose --profile aws ps 2>/dev/null | head -20; then
     echo ""
     echo "   ⚠️  IMPORTANT: Docker containers listed above are LOCAL (running on this Mac)"
     echo "   ⚠️  These are NOT the EC2 containers"

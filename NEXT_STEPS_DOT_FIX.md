@@ -24,7 +24,7 @@ aws ssm send-command \
   --instance-ids "i-087953603011543c5" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform",
+    "cd ~/crypto-2.0",
     "git pull origin main",
     "docker compose --profile aws build backend-aws",
     "docker compose --profile aws up -d backend-aws"

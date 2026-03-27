@@ -124,7 +124,7 @@ run_diagnostics() {
         echo ""
         
         # Mostrar comandos para ejecutar en Cursor
-        run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws ps'"
+        run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws ps'"
         
         run_in_cursor_terminal "ssh hilovivo-aws 'curl -s http://localhost:8002/health || echo \"Backend no responde\"'"
         
@@ -135,7 +135,7 @@ run_diagnostics() {
         
         # Ejecutar comandos básicos de diagnóstico
         echo -e "${CYAN}📊 Verificando estado de servicios en AWS...${NC}"
-        ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws ps" 2>/dev/null || echo -e "${RED}❌ No se pudo conectar a AWS${NC}"
+        ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws ps" 2>/dev/null || echo -e "${RED}❌ No se pudo conectar a AWS${NC}"
         
         echo ""
         echo -e "${CYAN}🌐 Verificando backend...${NC}"
@@ -199,15 +199,15 @@ echo "   5. Revisa los archivos abiertos en Cursor"
 echo ""
 echo -e "${YELLOW}🔧 Comandos rápidos para ejecutar en Cursor Terminal:${NC}"
 echo ""
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws ps frontend-aws'"
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws up -d frontend-aws'"
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart && sudo systemctl restart nginx'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws ps frontend-aws'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws up -d frontend-aws'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart && sudo systemctl restart nginx'"
 echo ""
 echo -e "${CYAN}💡 Otros comandos útiles:${NC}"
 run_in_cursor_terminal "ssh hilovivo-aws 'sudo systemctl restart nginx'"
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart backend-aws'"
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws logs --tail=50 frontend-aws'"
-run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws logs --tail=50 backend-aws'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart backend-aws'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws logs --tail=50 frontend-aws'"
+run_in_cursor_terminal "ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws logs --tail=50 backend-aws'"
 echo ""
 echo -e "${GREEN}💡 Tip: Todos los comandos están guardados en .502_diagnostic_commands.sh${NC}"
 echo ""

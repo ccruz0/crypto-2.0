@@ -39,7 +39,7 @@ rsync_cmd \
 # Step 3: Rebuild and restart services
 echo "🔨 Rebuilding and restarting services..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find containers
 FRONTEND_CONTAINER=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)

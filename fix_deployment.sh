@@ -30,7 +30,7 @@ error() {
 # Verificar que estamos en el directorio correcto
 if [ ! -f "docker-compose.yml" ]; then
     error "No se encontró docker-compose.yml. ¿Estás en el directorio correcto?"
-    echo "Ejecuta: cd ~/automated-trading-platform"
+    echo "Ejecuta: cd ~/crypto-2.0"
     exit 1
 fi
 

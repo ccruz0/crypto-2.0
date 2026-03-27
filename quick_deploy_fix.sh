@@ -40,13 +40,13 @@ echo "📦 Sincronizando archivos..."
 rsync_cmd \
   backend/app/api/routes_dashboard.py \
   backend/app/services/signal_monitor.py \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/"
 
 echo ""
 echo "🔄 Reiniciando backend..."
 
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'RESTART'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Obtener nombre del contenedor
 CONTAINER=$(docker compose --profile aws ps -q backend 2>/dev/null || docker ps -q --filter "name=backend")

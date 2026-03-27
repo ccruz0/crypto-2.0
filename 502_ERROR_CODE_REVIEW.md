@@ -229,12 +229,12 @@ def list_watchlist_items(db: Session = Depends(get_db)):
 
 ### Check Backend Status
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws ps backend-aws"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws ps backend-aws"
 ```
 
 ### Check Backend Logs
 ```bash
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs --tail=100 backend-aws | grep -iE 'error|exception|502'"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs --tail=100 backend-aws | grep -iE 'error|exception|502'"
 ```
 
 ### Check Nginx Error Logs

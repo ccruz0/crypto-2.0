@@ -40,7 +40,7 @@ echo ""
 echo "📦 Step 1: Syncing backend file..."
 rsync_cmd \
   backend/app/api/routes_dashboard.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/api/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/api/
 
 echo ""
 echo "📦 Step 2: Syncing frontend file..."
@@ -48,12 +48,12 @@ rsync_cmd \
   --exclude='node_modules' \
   --exclude='.next' \
   frontend/src/app/page.tsx \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/frontend/src/app/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/frontend/src/app/
 
 echo ""
 echo "🐳 Step 3: Copying files into Docker containers and restarting..."
 ssh_cmd $EC2_USER@$EC2_HOST bash << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find containers
 BACKEND_CONTAINER=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

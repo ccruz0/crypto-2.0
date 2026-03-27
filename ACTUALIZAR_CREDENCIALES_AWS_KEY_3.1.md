@@ -11,7 +11,7 @@ Para actualizar las credenciales, necesito el **Secret Key** de "AWS KEY 3.1".
 ## 📋 Archivos a Actualizar
 
 ### En el Servidor AWS:
-1. `~/automated-trading-platform/.env.local`
+1. `~/crypto-2.0/.env.local`
 2. Posiblemente `.env.aws` (si se usa)
 
 ### En Local:
@@ -42,13 +42,13 @@ Si prefieres hacerlo manualmente:
 
 ```bash
 # En el servidor AWS
-ssh ubuntu@47.130.143.159 "nano ~/automated-trading-platform/.env.local"
+ssh ubuntu@47.130.143.159 "nano ~/crypto-2.0/.env.local"
 
 # Actualizar estas líneas:
 EXCHANGE_CUSTOM_API_KEY=raHZAk1MDkAWviDpcBxAWU
 EXCHANGE_CUSTOM_API_SECRET=<secret_key_aqui>
 
 # Guardar y reiniciar
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose restart backend-aws"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose restart backend-aws"
 ```
 

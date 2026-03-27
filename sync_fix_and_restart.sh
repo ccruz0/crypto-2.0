@@ -15,13 +15,13 @@ echo "📦 Sincronizando archivos modificados..."
 rsync_cmd \
   backend/app/api/routes_dashboard.py \
   backend/app/services/signal_monitor.py \
-  "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/"
+  "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/"
 
 echo ""
 echo "🔄 Reiniciando backend..."
 
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'RESTART_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if using Docker Compose
 if docker compose --profile aws ps backend 2>/dev/null | grep -q "Up"; then
@@ -54,7 +54,7 @@ else
     pkill -f "uvicorn app.main:app" || true
     sleep 2
     
-    cd ~/automated-trading-platform/backend
+    cd ~/crypto-2.0/backend
     source venv/bin/activate 2>/dev/null || true
     nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
     

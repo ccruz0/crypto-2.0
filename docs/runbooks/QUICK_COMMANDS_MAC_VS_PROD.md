@@ -7,7 +7,7 @@ Comandos que funcionan desde tu **Mac** vs desde **PROD** (SSM/SSH).
 ## Desde tu Mac (ruta local)
 
 ```bash
-cd ~/automated-trading-platform   # En Mac: /Users/carloscruz/automated-trading-platform
+cd ~/crypto-2.0   # En Mac: /Users/carloscruz/automated-trading-platform
 ```
 
 **No uses** `/home/ubuntu/...` en Mac — esa ruta es de Linux (PROD).
@@ -17,7 +17,7 @@ cd ~/automated-trading-platform   # En Mac: /Users/carloscruz/automated-trading-
 ## Deploy a PROD (desde Mac)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./deploy_via_ssm.sh fast    # Rápido (~2 min): git pull + restart backend
 ./deploy_via_ssm.sh full    # Completo (~5 min): rebuild imagen + restart
 ```
@@ -27,7 +27,7 @@ cd ~/automated-trading-platform
 ## Fix Telegram Anomalies (desde Mac)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/fix_telegram_anomalies_via_ssm.sh
 ```
 
@@ -56,7 +56,7 @@ exit
 ## Cursor Bridge (desde Mac, con venv)
 
 ```bash
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 source .venv/bin/activate
 pip install httpx   # si falta
 ATP_WORKSPACE_ROOT="$(cd .. && pwd)" python -c "

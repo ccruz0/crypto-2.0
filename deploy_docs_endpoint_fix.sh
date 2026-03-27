@@ -17,13 +17,13 @@ rsync_cmd \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
   ./backend/app/api/routes_monitoring.py \
-  $SERVER:~/automated-trading-platform/backend/app/api/routes_monitoring.py
+  $SERVER:~/crypto-2.0/backend/app/api/routes_monitoring.py
 
 echo ""
 echo "📝 Step 2: Syncing nginx configuration..."
 rsync_cmd \
   ./nginx/dashboard.conf \
-  $SERVER:~/automated-trading-platform/nginx/dashboard.conf
+  $SERVER:~/crypto-2.0/nginx/dashboard.conf
 
 echo ""
 echo "🔍 Step 3: Testing nginx configuration on server..."

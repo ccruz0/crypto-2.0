@@ -14,6 +14,6 @@ rsync_cmd \
   backend/app/models/order_history.py \
   backend/app/services/order_history_db.py \
   backend/app/api/routes_orders.py \
-  $SERVER:~/automated-trading-platform/backend/app/
+  $SERVER:~/crypto-2.0/backend/app/
 
 echo "✅ Files synced"

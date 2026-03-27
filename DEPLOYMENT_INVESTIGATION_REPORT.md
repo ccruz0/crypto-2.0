@@ -72,7 +72,7 @@ El deployment automático falla por timeout de SSH, lo que significa:
 ssh hilovivo-aws
 
 # Verificar estado de los servicios
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws ps
 
 # Verificar que db está corriendo
@@ -103,13 +103,13 @@ cd /Users/carloscruz/automated-trading-platform
 
 # Sincronizar código al servidor
 rsync -avz --exclude='.git' --exclude='node_modules' \
-  ./ hilovivo-aws:~/automated-trading-platform/
+  ./ hilovivo-aws:~/crypto-2.0/
 
 # O usar git pull en el servidor
-ssh hilovivo-aws "cd ~/automated-trading-platform && git pull origin main"
+ssh hilovivo-aws "cd ~/crypto-2.0 && git pull origin main"
 
 # Reconstruir y reiniciar
-ssh hilovivo-aws "cd ~/automated-trading-platform && \
+ssh hilovivo-aws "cd ~/crypto-2.0 && \
   docker compose --profile aws down && \
   docker compose --profile aws up -d --build"
 ```

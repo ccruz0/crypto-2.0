@@ -34,19 +34,19 @@ if [[ "$EC2_HOST" == "hilovivo-aws" ]]; then
   rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
     backend/app/api/signal_monitor.py \
     backend/app/services/signal_throttle.py \
-    $EC2_HOST:~/automated-trading-platform/backend/app/
+    $EC2_HOST:~/crypto-2.0/backend/app/
 else
   rsync_cmd \
     backend/app/api/signal_monitor.py \
     backend/app/services/signal_throttle.py \
-    $EC2_HOST:~/automated-trading-platform/backend/app/
+    $EC2_HOST:~/crypto-2.0/backend/app/
 fi
 
 # Copy files into Docker container and restart
 echo "🐳 Copying files into Docker container and restarting..."
 if [[ "$EC2_HOST" == "hilovivo-aws" ]]; then
   ssh -o StrictHostKeyChecking=no $EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find the correct backend container name (try different patterns)
 BACKEND_CONTAINER=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)
@@ -75,7 +75,7 @@ echo "✅ Deployment complete!"
 DEPLOY
 else
   ssh_cmd $EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find the correct backend container name (try different patterns)
 BACKEND_CONTAINER=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

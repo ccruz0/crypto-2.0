@@ -4,7 +4,7 @@
 
 ### Option 1: Full Automated Deployment (Recommended)
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash sync_to_aws.sh
 ```
 
@@ -16,14 +16,14 @@ This will:
 
 ### Option 2: Manual Migration (If deployment fails)
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash apply_migration_aws.sh
 ```
 
 ### Option 3: Direct SQL Migration
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T db psql -U trader -d atp -c "ALTER TABLE signal_throttle_states ADD COLUMN IF NOT EXISTS previous_price DOUBLE PRECISION NULL;"
 ```
 

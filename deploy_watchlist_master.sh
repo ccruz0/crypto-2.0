@@ -34,8 +34,8 @@ for file in "${BACKEND_FILES[@]}"; do
     if [ -f "$file" ]; then
         echo "  → $file"
         dir=$(dirname "$file")
-        ssh_cmd $SERVER "mkdir -p ~/automated-trading-platform/$dir"
-        rsync_cmd "$file" "$SERVER:~/automated-trading-platform/$file"
+        ssh_cmd $SERVER "mkdir -p ~/crypto-2.0/$dir"
+        rsync_cmd "$file" "$SERVER:~/crypto-2.0/$file"
     else
         echo "  ⚠️  File not found: $file"
     fi
@@ -47,8 +47,8 @@ for file in "${FRONTEND_FILES[@]}"; do
     if [ -f "$file" ]; then
         echo "  → $file"
         dir=$(dirname "$file")
-        ssh_cmd $SERVER "mkdir -p ~/automated-trading-platform/$dir"
-        rsync_cmd "$file" "$SERVER:~/automated-trading-platform/$file"
+        ssh_cmd $SERVER "mkdir -p ~/crypto-2.0/$dir"
+        rsync_cmd "$file" "$SERVER:~/crypto-2.0/$file"
     else
         echo "  ⚠️  File not found: $file"
     fi
@@ -57,7 +57,7 @@ done
 echo ""
 echo "⚙️  Running migration and restarting services..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Activate virtual environment
 if [ -d "venv" ]; then
@@ -111,7 +111,7 @@ ENDSSH
 echo ""
 echo "📦 Deploying frontend..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 
 # Check if using Next.js
 if [ -f "package.json" ]; then
@@ -142,7 +142,7 @@ echo ""
 echo "🎉 Deployment complete!"
 echo ""
 echo "📋 Next steps:"
-echo "1. Check backend logs: ssh $SERVER 'tail -f ~/automated-trading-platform/backend/backend.log'"
+echo "1. Check backend logs: ssh $SERVER 'tail -f ~/crypto-2.0/backend/backend.log'"
 echo "2. Test API: curl http://your-api-domain/api/dashboard | jq '.[0] | {symbol, field_updated_at}'"
 echo "3. Check frontend: Open watchlist page and verify tooltips/highlighting"
 echo ""

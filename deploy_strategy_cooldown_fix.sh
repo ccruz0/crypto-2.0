@@ -20,7 +20,7 @@ FILES=(
 echo "📦 Syncing backend files..."
 for file in "${FILES[@]}"; do
   echo "  - Syncing $file"
-  rsync_cmd "$file" "$EC2_USER@$EC2_HOST:~/automated-trading-platform/$file" 2>&1 | grep -v "error:" | grep -v "warning:" || true
+  rsync_cmd "$file" "$EC2_USER@$EC2_HOST:~/crypto-2.0/$file" 2>&1 | grep -v "error:" | grep -v "warning:" || true
 done
 
 echo ""
@@ -28,7 +28,7 @@ echo "🐳 Deploying to Docker containers..."
 
 # Step 2: Deploy via SSH
 ssh_cmd $EC2_USER@$EC2_HOST 'bash -s' << 'REMOTE_SCRIPT'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find backend container
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

@@ -29,7 +29,7 @@ Use when you want a new encryption key but keep the same Telegram bot token.
 ### 1) On a secure machine (e.g. your laptop)
 
 ```bash
-cd /path/to/repo   # e.g. ~/automated-trading-platform or ~/crypto-2.0
+cd /path/to/repo   # e.g. ~/crypto-2.0 or ~/crypto-2.0
 
 # Backup current key and env (do not commit)
 cp .telegram_key .telegram_key.bak 2>/dev/null || true

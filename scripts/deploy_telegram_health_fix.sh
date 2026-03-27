@@ -67,7 +67,7 @@ echo ""
 # Restart backend service
 echo "🔄 Restarting backend service..."
 ssh "${EC2_USER}@${EC2_HOST}" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 echo "Stopping backend..."
 docker compose --profile aws stop backend-aws || true
 echo "Starting backend..."

@@ -36,17 +36,17 @@ ssh hilovivo-aws 'sudo systemctl restart nginx'
 
 ### 2. Reiniciar Backend
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart backend-aws'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart backend-aws'
 ```
 
 ### 3. Reiniciar Todos los Servicios
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws restart && sudo systemctl restart nginx'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws restart && sudo systemctl restart nginx'
 ```
 
 ### 4. Ver Logs del Backend
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws logs --tail=50 backend-aws'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws logs --tail=50 backend-aws'
 ```
 
 ### 5. Ver Logs de Nginx

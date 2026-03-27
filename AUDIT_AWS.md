@@ -367,7 +367,7 @@ server_name dashboard.hilovivo.com;
      "market_data":{"status":"FAIL","fresh_symbols":0,"stale_symbols":33,"max_age_minutes":7820.29}
      ```
    - **Impact**: Market data is 5+ days stale, signals may be incorrect, trading decisions based on old data, all 33 symbols stale
-   - **Fix**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws up -d market-updater-aws"`
+   - **Fix**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws up -d market-updater-aws"`
    - **Verification**: `docker compose --profile aws ps | grep market-updater-aws` should show running
 
 2. **Git Repository Drift (603 Uncommitted Changes)**
@@ -411,7 +411,7 @@ server_name dashboard.hilovivo.com;
      ```
    - **Impact**: Admin/diagnostic endpoints unprotected if enabled, security risk
    - **Fix**: Add to `.env.aws`: `ADMIN_ACTIONS_KEY=$(openssl rand -hex 32)` and `DIAGNOSTICS_API_KEY=$(openssl rand -hex 32)`
-   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && echo 'ADMIN_ACTIONS_KEY=$(openssl rand -hex 32)' >> .env.aws && echo 'DIAGNOSTICS_API_KEY=$(openssl rand -hex 32)' >> .env.aws && docker compose --profile aws restart backend-aws"`
+   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && echo 'ADMIN_ACTIONS_KEY=$(openssl rand -hex 32)' >> .env.aws && echo 'DIAGNOSTICS_API_KEY=$(openssl rand -hex 32)' >> .env.aws && docker compose --profile aws restart backend-aws"`
    - **Verification**: `docker compose --profile aws config 2>&1 | grep -i warning` should return no warnings
 
 5. **API Keys in Backup Files**
@@ -428,7 +428,7 @@ server_name dashboard.hilovivo.com;
      ```
    - **Impact**: Secrets in backup files may be committed or exposed, security risk
    - **Fix**: Remove backup files or add to `.gitignore`, verify no secrets in git-tracked files
-   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && rm -f .env*.bak* .env*.backup* && echo '.env*.bak*' >> .gitignore"`
+   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && rm -f .env*.bak* .env*.backup* && echo '.env*.bak*' >> .gitignore"`
    - **Verification**: `git ls-files | xargs grep -nE 'EXCHANGE_CUSTOM_API_KEY|EXCHANGE_CUSTOM_API_SECRET|TELEGRAM_BOT_TOKEN'` should return only `.env.example`
 
 ### P1 - High Priority Issues
@@ -443,7 +443,7 @@ server_name dashboard.hilovivo.com;
      ```
    - **Impact**: No Telegram alerts, trading notifications not sent
    - **Fix**: Check `RUN_TELEGRAM` and `TELEGRAM_BOT_TOKEN` in `.env.aws`, restart backend
-   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && grep -E 'RUN_TELEGRAM|TELEGRAM_BOT_TOKEN' .env.aws && docker compose --profile aws restart backend-aws"`
+   - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && grep -E 'RUN_TELEGRAM|TELEGRAM_BOT_TOKEN' .env.aws && docker compose --profile aws restart backend-aws"`
    - **Verification**: `curl http://localhost:8002/api/health/system | jq .telegram` should show `"enabled": true`
 
 7. **aws-backup Service NOT Running**
@@ -455,7 +455,7 @@ server_name dashboard.hilovivo.com;
      Services not found
      ```
    - **Impact**: No automated database backups, data loss risk
-   - **Fix**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws up -d aws-backup"` OR verify backup strategy if using different method
+   - **Fix**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws up -d aws-backup"` OR verify backup strategy if using different method
    - **Verification**: `docker compose --profile aws ps | grep aws-backup` should show running
 
 8. **Unknown Service on Port 9000**
@@ -540,13 +540,13 @@ This checklist ensures the AWS deployment is ready for deploy-by-commit workflow
   - **Current**: 603 uncommitted changes
   - **Required**: Clean working tree (`git status` shows no changes)
   - **Fix**: Commit or reset changes (see P0#2 fix options)
-  - **Verification**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git status"` should show "nothing to commit, working tree clean"
+  - **Verification**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git status"` should show "nothing to commit, working tree clean"
 
 - [ ] **Single Source of Truth for Code**
   - **Current**: Deployment via rsync (sync_to_aws.sh), git not used for deployment verification
   - **Required**: Deploy via git pull, verify HEAD matches expected commit hash
   - **Fix**: Update deployment procedure to use `git pull` instead of rsync, verify HEAD after pull
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git fetch origin && git checkout <commit-hash> && docker compose --profile aws up -d --build"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git fetch origin && git checkout <commit-hash> && docker compose --profile aws up -d --build"`
   - **Verification**: `git rev-parse HEAD` should match expected commit hash
 
 - [ ] **Single Source of Truth for Environment**
@@ -590,7 +590,7 @@ This checklist ensures the AWS deployment is ready for deploy-by-commit workflow
 2. **Deployment**:
    ```bash
    # On AWS EC2
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && \
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && \
      git fetch origin && \
      git checkout $EXPECTED_COMMIT && \
      git rev-parse HEAD | grep -q $EXPECTED_COMMIT && echo '✅ Git state matches' || (echo '❌ Git state mismatch' && exit 1) && \
@@ -601,7 +601,7 @@ This checklist ensures the AWS deployment is ready for deploy-by-commit workflow
 3. **Post-deployment Verification**:
    ```bash
    # Verify git state
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git rev-parse HEAD"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git rev-parse HEAD"
    # Should match $EXPECTED_COMMIT
    
    # Verify services
@@ -612,7 +612,7 @@ This checklist ensures the AWS deployment is ready for deploy-by-commit workflow
 4. **Rollback** (if needed):
    ```bash
    # On AWS EC2
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && \
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && \
      git checkout <previous-commit-hash> && \
      docker compose --profile aws up -d --build"
    ```
@@ -624,38 +624,38 @@ This checklist ensures the AWS deployment is ready for deploy-by-commit workflow
 ### Immediate (This Week)
 
 - [ ] **Start market-updater-aws Service (P0#1)**
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws up -d market-updater-aws"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws up -d market-updater-aws"`
   - **Verification**: `curl http://47.130.143.159:8002/api/health/system | jq .market_updater`
   - **Expected**: `"is_running": true`, `"last_heartbeat_age_minutes" < 5`
 
 - [ ] **Fix Git Repository Drift (P0#2)**
-  - **Option A (recommended)**: Commit changes: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git add -A && git commit -m 'Deploy: AWS state snapshot $(date +%Y%m%d)' && git push"`
-  - **Option B**: Reset to HEAD: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git reset --hard HEAD && git clean -fd"`
+  - **Option A (recommended)**: Commit changes: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git add -A && git commit -m 'Deploy: AWS state snapshot $(date +%Y%m%d)' && git push"`
+  - **Option B**: Reset to HEAD: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git reset --hard HEAD && git clean -fd"`
   - **Verification**: `git status` should show clean working tree
 
 - [ ] **Secure Database Port (P0#3)**
   - **File**: `docker-compose.yml` line 32
   - **Action**: Remove `ports: "5432:5432"` from `db` service
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && sed -i.bak '32s/ports:.*5432.*//' docker-compose.yml && docker compose --profile aws restart db"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && sed -i.bak '32s/ports:.*5432.*//' docker-compose.yml && docker compose --profile aws restart db"`
   - **Verification**: `ss -lntp | grep 5432` should return empty
 
 - [ ] **Add Missing Environment Variables (P0#4)**
   - **File**: `.env.aws`
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && echo 'ADMIN_ACTIONS_KEY=$(openssl rand -hex 32)' >> .env.aws && echo 'DIAGNOSTICS_API_KEY=$(openssl rand -hex 32)' >> .env.aws && docker compose --profile aws restart backend-aws"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && echo 'ADMIN_ACTIONS_KEY=$(openssl rand -hex 32)' >> .env.aws && echo 'DIAGNOSTICS_API_KEY=$(openssl rand -hex 32)' >> .env.aws && docker compose --profile aws restart backend-aws"`
   - **Verification**: `docker compose --profile aws config 2>&1 | grep -i warning` should return no warnings
 
 - [ ] **Remove API Keys from Backup Files (P0#5)**
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && rm -f .env*.bak* .env*.backup* && echo '.env*.bak*' >> .gitignore && echo '.env*.backup*' >> .gitignore"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && rm -f .env*.bak* .env*.backup* && echo '.env*.bak*' >> .gitignore && echo '.env*.backup*' >> .gitignore"`
   - **Verification**: `ls -la .env*.bak* .env*.backup*` should return empty
 
 ### Short Term (This Month)
 
 - [ ] **Enable Telegram Bot (P1#6)**
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && grep -E 'RUN_TELEGRAM|TELEGRAM_BOT_TOKEN' .env.aws && docker compose --profile aws restart backend-aws"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && grep -E 'RUN_TELEGRAM|TELEGRAM_BOT_TOKEN' .env.aws && docker compose --profile aws restart backend-aws"`
   - **Verification**: `curl http://47.130.143.159:8002/api/health/system | jq .telegram` should show `"enabled": true`
 
 - [ ] **Start aws-backup Service (P1#7)**
-  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws up -d aws-backup"`
+  - **Command**: `ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws up -d aws-backup"`
   - **Verification**: `docker compose --profile aws ps | grep aws-backup` should show running
   - **OR**: Document backup strategy if using different method
 
@@ -755,7 +755,7 @@ postgres_hardened                           automated-trading-platform-db       
 - ✅ Clean repo at `/home/ubuntu/crypto-2.0`
 - ✅ HEAD: `fd44bca06e6ff0ddd3147a46aaa6e89b06a6f580` (newer than previous)
 - ✅ Working tree clean: `git status` shows "nothing to commit"
-- ✅ Drifted repo archived: `~/automated-trading-platform.DRIFTED.20260108_092722`
+- ✅ Drifted repo archived: `~/crypto-2.0.DRIFTED.20260108_092722`
 
 **Verification**:
 ```bash
@@ -1034,7 +1034,7 @@ echo "Expected commit: $EXPECTED_COMMIT"
 **2. Deployment (AWS EC2)**:
 ```bash
 ssh ubuntu@47.130.143.159 << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Fetch latest from GitHub
 git fetch origin
@@ -1061,7 +1061,7 @@ DEPLOY_SCRIPT
 **3. Post-deployment Verification**:
 ```bash
 # Verify git state
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git rev-parse HEAD"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git rev-parse HEAD"
 # Should match $EXPECTED_COMMIT
 
 # Verify services
@@ -1083,7 +1083,7 @@ PREVIOUS_COMMIT="<previous-commit-hash>"  # e.g., from deployment log
 
 # 2. Rollback on AWS EC2
 ssh ubuntu@47.130.143.159 << 'ROLLBACK_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Checkout previous commit
 git checkout $PREVIOUS_COMMIT
@@ -1101,7 +1101,7 @@ curl -sS http://localhost:8002/api/health | jq '.status'
 ROLLBACK_SCRIPT
 
 # 3. Verify rollback
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && git rev-parse HEAD"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && git rev-parse HEAD"
 # Should match $PREVIOUS_COMMIT
 ```
 

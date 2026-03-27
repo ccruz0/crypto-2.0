@@ -66,17 +66,17 @@ El workflow `.github/workflows/deploy.yml` se ejecutará automáticamente.
 
 ### 1. Verificar que el fix de Telegram está aplicado:
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws exec backend-aws python3 -c "from app.services.telegram_notifier import TelegramNotifier; import inspect; src = inspect.getsource(TelegramNotifier.send_sl_tp_orders); print(\"✅ Fix aplicado\" if \"origin=get_runtime_origin()\" in src or \"origin=origin\" in src else \"❌ Fix NO encontrado\")"'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws exec backend-aws python3 -c "from app.services.telegram_notifier import TelegramNotifier; import inspect; src = inspect.getsource(TelegramNotifier.send_sl_tp_orders); print(\"✅ Fix aplicado\" if \"origin=get_runtime_origin()\" in src or \"origin=origin\" in src else \"❌ Fix NO encontrado\")"'
 ```
 
 ### 2. Verificar que las señales manuales funcionan:
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws | grep "using MANUAL signals" | tail -5'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws | grep "using MANUAL signals" | tail -5'
 ```
 
 ### 3. Verificar servicios:
 ```bash
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws ps'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws ps'
 ```
 
 ## 📝 Notas Importantes

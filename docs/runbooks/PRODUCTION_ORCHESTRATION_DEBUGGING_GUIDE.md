@@ -2,7 +2,7 @@
 
 > **EC2 host**: `52.220.32.147` (`dashboard.hilovivo.com`)
 > **SSH**: `ssh -i ~/.ssh/atp-rebuild-2026.pem ubuntu@52.220.32.147`
-> **Working dir**: `~/automated-trading-platform`
+> **Working dir**: `~/crypto-2.0`
 > **All commands below assume you are SSH'd in and inside that directory.**
 
 ---

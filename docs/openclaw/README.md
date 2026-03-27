@@ -33,12 +33,12 @@ Or one-liner after push:
 
 **Fix 504 automatically (no SSM):** Run from your machine (**repo root on your Mac**, not `/home/ubuntu/...`) or trigger from GitHub Actions:
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/openclaw/fix_504_via_eice.sh
 ```
 (Use **one** command per line — `cd path # comment` can trigger `cd: too many arguments` in some shells.)
 
-**Never on your Mac:** `cd /home/ubuntu/crypto-2.0` — that path exists only on the **EC2** server. On the Mac use `cd ~/automated-trading-platform` only.
+**Never on your Mac:** `cd /home/ubuntu/crypto-2.0` — that path exists only on the **EC2** server. On the Mac use `cd ~/crypto-2.0` only.
 Uses EC2 Instance Connect to SSH to PROD, start nginx if needed, point `/openclaw/` to LAB **:8080** (same as `docker-compose.openclaw.yml`), and optionally start OpenClaw on LAB from PROD. Override with `OPENCLAW_PORT=8081` if LAB publishes 8081 only. GitHub Actions: **Actions → Fix OpenClaw 504 (EICE)** (manual or scheduled 06:00/18:00 UTC). Requires AWS credentials with `ec2-instance-connect:SendSSHPublicKey` and `ec2:DescribeInstances`.
 
 **Step-by-step checklist (OpenClaw host → Dashboard host → browser):** [GET_OPENCLAW_WORKING_ON_DASHBOARD.md](GET_OPENCLAW_WORKING_ON_DASHBOARD.md).

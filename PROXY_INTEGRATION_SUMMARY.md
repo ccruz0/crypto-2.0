@@ -37,7 +37,7 @@ The backend needs these packages installed:
 ### Quick Fix Command
 ```bash
 ssh -i "crypto 2.0 key.pem" ubuntu@175.41.189.249
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 source venv/bin/activate
 pip install -r requirements.txt
 ```

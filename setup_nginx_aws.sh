@@ -31,7 +31,7 @@ echo "🔧 Setting up nginx on remote server..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
 set -e
 
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 echo "📦 Installing nginx..."
 sudo apt-get update -qq

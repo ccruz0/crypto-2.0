@@ -58,7 +58,7 @@ git push
 ssh hilovivo-aws
 
 # Navigate to project
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest changes
 git pull

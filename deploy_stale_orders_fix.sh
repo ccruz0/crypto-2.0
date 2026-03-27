@@ -2,7 +2,7 @@
 
 REMOTE_HOST="hilovivo-aws"
 REMOTE_USER="ubuntu"
-PROJECT_DIR="~/automated-trading-platform"
+PROJECT_DIR="~/crypto-2.0"
 
 echo "Deploying stale orders fix to AWS..."
 
@@ -25,7 +25,7 @@ rsync -avz --progress \
 # Copy files into Docker container and restart
 echo "Copying files into Docker container and restarting..."
 ssh "$REMOTE_HOST" << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find the backend container name
 BACKEND_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'backend|backend-aws' | head -1)

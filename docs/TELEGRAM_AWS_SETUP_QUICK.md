@@ -34,7 +34,7 @@ curl -s https://dashboard.hilovivo.com/api/health/system | jq .telegram
 ssh ubuntu@47.130.143.159
 
 # Run configuration script
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/configure_telegram_aws.sh
 ```
 
@@ -74,7 +74,7 @@ The script will:
 **SSH to EC2**:
 ```bash
 ssh ubuntu@47.130.143.159
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ```
 
 **Edit `.env.aws` file**:

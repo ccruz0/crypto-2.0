@@ -17,7 +17,7 @@ En la instancia LAB:
 
 - Instalar **Docker** y **Docker Compose v2** (si no están).
 - Clonar el repo, por ejemplo:  
-  `git clone https://github.com/ccruz0/crypto-2.0.git ~/automated-trading-platform`  
+  `git clone https://github.com/ccruz0/crypto-2.0.git ~/crypto-2.0`  
   (o la URL del repo que uses).
 
 ---
@@ -37,7 +37,7 @@ Seguir **docs/openclaw/LAB_SETUP_AND_VALIDATION.md** Phase 1:
 En el directorio del repo en LAB:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d
 docker compose -f docker-compose.openclaw.yml ps
 docker compose -f docker-compose.openclaw.yml logs -f openclaw

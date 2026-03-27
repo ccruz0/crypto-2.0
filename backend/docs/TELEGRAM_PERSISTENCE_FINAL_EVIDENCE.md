@@ -1,6 +1,6 @@
 # Telegram persistence – final evidence
 
-Collected on the AWS host in this session. All commands were run from `~/automated-trading-platform`.
+Collected on the AWS host in this session. All commands were run from `~/crypto-2.0`.
 
 ---
 

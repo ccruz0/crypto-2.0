@@ -25,7 +25,7 @@ Una vez que el build termine, ejecuta:
 
 ```bash
 # Verificar que las señales manuales están aplicadas
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws exec -T backend-aws python3 -c "from app.services.signal_monitor import SignalMonitorService; import inspect; src = inspect.getsource(SignalMonitorService.monitor_signals); print(\"✅\" if \"manual_signals\" in src else \"❌\")"'
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws exec -T backend-aws python3 -c "from app.services.signal_monitor import SignalMonitorService; import inspect; src = inspect.getsource(SignalMonitorService.monitor_signals); print(\"✅\" if \"manual_signals\" in src else \"❌\")"'
 
 # Verificar servicios
 ssh hilovivo-aws 'docker compose --profile aws ps'

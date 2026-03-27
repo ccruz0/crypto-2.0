@@ -76,7 +76,7 @@ The AWS system health check was showing `global_status: "FAIL"` because Telegram
 ssh ubuntu@47.130.143.159
 
 # Run configuration script
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/configure_telegram_aws.sh
 ```
 

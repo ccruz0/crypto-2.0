@@ -8,7 +8,7 @@
 ## 📝 Archivos Actualizados
 
 ### ✅ En AWS:
-- `~/automated-trading-platform/.env.local` - Actualizado
+- `~/crypto-2.0/.env.local` - Actualizado
 - Backend reiniciado
 
 ### ✅ En Local (si existe):
@@ -23,7 +23,7 @@
 
 1. **Verificar que funciona**:
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
    ```
 
 2. **Verificar en Crypto.com Exchange**:
@@ -36,7 +36,7 @@
 
 3. **Monitorear logs**:
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose logs -f backend-aws | grep -i 'authentication\|crypto'"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose logs -f backend-aws | grep -i 'authentication\|crypto'"
    ```
 
 ## 📦 Backups Creados

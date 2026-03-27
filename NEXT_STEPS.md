@@ -113,7 +113,7 @@ curl http://YOUR_AWS_IP:8000/api/diagnostics/recent-buy-signals?limit=10
 
 # Check logs (SSH to server first)
 ssh ubuntu@YOUR_AWS_IP
-tail -50 ~/automated-trading-platform/backend/market_updater.log
+tail -50 ~/crypto-2.0/backend/market_updater.log
 ```
 
 ## Files Ready to Deploy

@@ -192,7 +192,7 @@ FIXES_APPLIED=false
 # Start Docker services if needed
 if [ "$BACKEND_RUNNING" = false ] || [ "$FRONTEND_RUNNING" = false ]; then
     echo "🚀 Starting Docker services..."
-    cd "$PROJECT_DIR" || cd ~/automated-trading-platform || exit 1
+    cd "$PROJECT_DIR" || cd ~/crypto-2.0 || exit 1
     
     # Start services with AWS profile (frontend-aws is the service name)
     docker compose --profile aws up -d db backend-aws frontend-aws 2>&1 | head -20 || true

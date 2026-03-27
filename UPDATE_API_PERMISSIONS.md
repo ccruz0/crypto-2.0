@@ -56,7 +56,7 @@ Después de actualizar los permisos, espera 1-2 minutos y prueba:
 curl -X POST https://dashboard.hilovivo.com/api/orders/sync-history
 
 # Verificar logs
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws --tail=50 | grep -i 'order history\|authentication'"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws --tail=50 | grep -i 'order history\|authentication'"
 ```
 
 ## 🔍 Verificación de Permisos Actuales

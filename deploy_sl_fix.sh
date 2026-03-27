@@ -18,7 +18,7 @@ rsync_cmd \
   --exclude='*.pyc' \
   --exclude='.env' \
   backend/app/api/routes_orders.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/api/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/api/
 
 echo ""
 echo "📦 Sincronizando archivos del frontend..."
@@ -28,13 +28,13 @@ rsync_cmd \
   --exclude='*.log' \
   frontend/src/lib/api.ts \
   frontend/src/app/page.tsx \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/frontend/src/lib/ \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/frontend/src/app/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/frontend/src/lib/ \
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/frontend/src/app/
 
 echo ""
 echo "🔄 Reiniciando backend en AWS..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'RESTART_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if using Docker Compose
 if docker compose --profile aws ps backend 2>/dev/null | grep -q "Up"; then
@@ -56,7 +56,7 @@ elif pgrep -f "uvicorn app.main:app" > /dev/null; then
     pkill -f "uvicorn app.main:app"
     sleep 2
     
-    cd ~/automated-trading-platform/backend
+    cd ~/crypto-2.0/backend
     source venv/bin/activate 2>/dev/null || true
     nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
     

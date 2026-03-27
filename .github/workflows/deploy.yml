@@ -163,9 +163,9 @@ jobs:
         # Pre-sync: Ensure destination directory exists and has correct permissions
         echo "🔧 Pre-sync checks: Ensuring destination directory permissions..."
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "mkdir -p ~/automated-trading-platform && \
-           chmod 755 ~/automated-trading-platform && \
-           test -w ~/automated-trading-platform" || {
+          "mkdir -p ~/crypto-2.0 && \
+           chmod 755 ~/crypto-2.0 && \
+           test -w ~/crypto-2.0" || {
           echo "❌ Failed to set up destination directory permissions"
           exit 1
         }
@@ -173,7 +173,7 @@ jobs:
         # Pre-sync: Fix permissions on existing files to allow rsync to overwrite them
         echo "🔧 Pre-sync: Fixing permissions on existing files..."
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && \
+          "cd ~/crypto-2.0 && \
            ([ -d frontend ] && find frontend -type f -exec chmod 644 {} \; 2>/dev/null || true) && \
            ([ -d frontend ] && find frontend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
            echo '✅ Pre-sync permissions fixed'"
@@ -191,14 +191,14 @@ jobs:
           --exclude='frontend/artifacts' \
           --exclude='frontend/test-results' \
           --exclude='frontend/playwright-report' \
-          ./ ubuntu@$EC2_TARGET_HOST:~/automated-trading-platform/ || {
+          ./ ubuntu@$EC2_TARGET_HOST:~/crypto-2.0/ || {
           echo "⚠️ rsync completed with some errors, but continuing deployment..."
         }
         
         # Post-sync: Fix permissions for Docker compatibility
         echo "🔧 Post-sync: Ensuring Docker-compatible permissions..."
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && \
+          "cd ~/crypto-2.0 && \
            find . -type d ! -perm 755 -exec chmod 755 {} \; 2>/dev/null || true && \
            find . -type f ! -perm -u+r -exec chmod u+r {} \; 2>/dev/null || true && \
            ([ -d backend ] && find backend -type d -exec chmod 755 {} \; 2>/dev/null || true) && \
@@ -211,7 +211,7 @@ jobs:
         echo "🚀 Running standardized deploy script..."
         # Use the standardized deploy script for consistent deployments
         ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && bash scripts/deploy_aws.sh" || {
+          "cd ~/crypto-2.0 && bash scripts/deploy_aws.sh" || {
           echo "❌ Deployment script failed"
           exit 1
         }
@@ -219,7 +219,7 @@ jobs:
         echo "✅ Verifying deployment health..."
         # Verify health/system endpoint - fail if market_updater or market_data freshness fails
         HEALTH_CHECK=$(ssh -i deploy_key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_TARGET_HOST \
-          "cd ~/automated-trading-platform && curl -sS http://localhost:8002/api/health/system" || echo "")
+          "cd ~/crypto-2.0 && curl -sS http://localhost:8002/api/health/system" || echo "")
         
         if [ -z "$HEALTH_CHECK" ]; then
           echo "❌ Health endpoint not responding"

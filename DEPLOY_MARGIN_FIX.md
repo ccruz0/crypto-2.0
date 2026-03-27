@@ -43,7 +43,7 @@ Una vez que el deploy termine, verifica:
 
 ```bash
 # Verificar que el fix de margin trading está aplicado
-ssh hilovivo-aws 'cd ~/automated-trading-platform && docker compose --profile aws exec -T backend-aws python3 -c "
+ssh hilovivo-aws 'cd ~/crypto-2.0 && docker compose --profile aws exec -T backend-aws python3 -c "
 from app.services.signal_monitor import SignalMonitorService
 import inspect
 src = inspect.getsource(SignalMonitorService._create_buy_order)

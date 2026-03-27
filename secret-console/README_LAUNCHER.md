@@ -65,6 +65,6 @@ To use a custom install path, either symlink your repo to `~/secret-console` or 
 
 ## Troubleshooting
 
-- **“project directory not found”** — Clone or copy `secret-console` to `~/secret-console` or `~/automated-trading-platform/secret-console`, or symlink one of those to your checkout.
+- **“project directory not found”** — Clone or copy `secret-console` to `~/secret-console` or `~/crypto-2.0/secret-console`, or symlink one of those to your checkout.
 - **`python3: command not found`** — Install Python 3 or ensure it is on your `PATH`.
 - **Port in use** — Stop the other process or set `SECRET_CONSOLE_PORT` to a free port (and bookmark the matching URL).

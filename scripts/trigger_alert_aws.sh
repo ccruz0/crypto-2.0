@@ -11,5 +11,5 @@ echo ""
 cd "$(dirname "$0")/.."
 . ./scripts/ssh_key.sh
 
-ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T market-updater-aws python3 /app/scripts/trigger_manual_alert.py $SYMBOL $SIDE"
+ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T market-updater-aws python3 /app/scripts/trigger_manual_alert.py $SYMBOL $SIDE"
 

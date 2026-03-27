@@ -402,7 +402,7 @@ If you cancelled an order but didn't receive a Telegram notification, follow the
    ssh hilovivo-aws
    
    # Check backend logs for notification errors
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    docker compose --profile aws logs backend-aws | grep -i "notification\|telegram" | tail -50
    ```
    

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 HOURS=12
 LIMIT=500

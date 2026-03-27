@@ -16,7 +16,7 @@ echo ""
 
 echo "📦 Step 1: Pulling latest code from Git..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 echo "✅ Code updated"
 ENDSSH
@@ -24,7 +24,7 @@ ENDSSH
 echo ""
 echo "🔄 Step 2: Restarting backend service..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Check if using Docker Compose
 if command -v docker-compose &> /dev/null || docker compose version &> /dev/null 2>/dev/null; then

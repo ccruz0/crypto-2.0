@@ -10,7 +10,7 @@ Make Portfolio "Total Value" match Crypto.com Exchange UI "Wallet Balance (after
 ## Step 1: Start Port-Forward
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 aws ssm start-session \
   --target i-087953603011543c5 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
@@ -22,7 +22,7 @@ aws ssm start-session \
 ## Step 2: Verify AWS Connection
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -i http://localhost:8002/api/health | grep -E "(HTTP|X-ATP-Backend)"
 ```
 
@@ -31,7 +31,7 @@ curl -i http://localhost:8002/api/health | grep -E "(HTTP|X-ATP-Backend)"
 ## Step 3: Run Evidence Script
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 evidence/portfolio_reconcile/fetch_reconcile_evidence.py --api-base-url http://localhost:8002
 ```
 
@@ -64,14 +64,14 @@ Look at `summary.txt` or `reconcile_diagnostics.json` for fields that likely mat
 **Via SSM shell:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 aws ssm start-session --target i-087953603011543c5
 ```
 
 **Inside SSM shell:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 # Edit docker-compose.yml or .env.aws
 # Add: PORTFOLIO_EQUITY_FIELD_OVERRIDE="field_path_here"
 # Example: PORTFOLIO_EQUITY_FIELD_OVERRIDE="result.data[0].walletBalanceAfterHaircut"
@@ -84,7 +84,7 @@ exit
 ### 5c) Verify Override
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 evidence/portfolio_reconcile/fetch_reconcile_evidence.py --api-base-url http://localhost:8002
 ```
 
@@ -104,7 +104,7 @@ Check `summary.txt`:
 
 ### Port 8002 not accessible
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 lsof -nP -iTCP:8002 -sTCP:LISTEN
 # Stop any local containers using port 8002
 ```

@@ -11,17 +11,17 @@
 ### Opción 1: Sincronización Rápida (Solo archivos modificados)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Sincronizar archivos
 rsync -avz -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
   backend/app/api/routes_dashboard.py \
   backend/app/services/signal_monitor.py \
-  ubuntu@54.254.150.31:~/automated-trading-platform/backend/app/
+  ubuntu@54.254.150.31:~/crypto-2.0/backend/app/
 
 # Conectarse y reiniciar
 ssh -i ~/.ssh/id_rsa ubuntu@54.254.150.31 << 'EOF'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Copiar al contenedor
 CONTAINER=$(docker compose --profile aws ps -q backend)
@@ -45,7 +45,7 @@ EOF
 
 # Luego reiniciar manualmente:
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend
 ```
 
@@ -59,7 +59,7 @@ git push
 
 # Luego en AWS:
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull
 docker compose --profile aws restart backend
 ```

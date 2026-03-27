@@ -12,7 +12,7 @@ ssh -i ~/.ssh/id_rsa ubuntu@54.254.150.31
 
 ### Step 2: Navigate to project directory
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 # or
 cd /home/ubuntu/crypto-2.0
 ```
@@ -72,7 +72,7 @@ docker compose --profile aws logs -f market-updater-aws | grep TELEGRAM
 Run this entire block on your AWS server:
 
 ```bash
-cd ~/automated-trading-platform && \
+cd ~/crypto-2.0 && \
 git pull origin main && \
 CONTAINER_NAME=$(docker ps --filter "name=market-updater-aws" --format "{{.Names}}" | head -1) && \
 echo "Container: $CONTAINER_NAME" && \
@@ -89,7 +89,7 @@ If you've already committed and pushed the changes to git:
 
 ```bash
 # On AWS server
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose --profile aws restart market-updater-aws
 ```

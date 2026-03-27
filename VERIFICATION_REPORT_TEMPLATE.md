@@ -108,7 +108,7 @@
 curl -s https://api.ipify.org
 
 # Get container IP
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec -T backend-aws python3 -c "import urllib.request; print(urllib.request.urlopen('https://api.ipify.org').read().decode())"
 
 # Check health

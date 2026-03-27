@@ -62,7 +62,7 @@ COMMAND_ID=$(aws ssm send-command \
   --document-name "AWS-RunShellScript" \
   --parameters "commands=[
     \"set -e\",
-    \"cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform || exit 1\",
+    \"cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0 || exit 1\",
     \"echo '📦 Actualizando código desde git...'\",
     \"git config --global --add safe.directory /home/ubuntu/crypto-2.0 2>/dev/null || true\",
     \"git pull origin main || echo '⚠️ Git pull failed, continuando...'\",
@@ -152,7 +152,7 @@ if [ $? -eq 0 ] && [ -n "$COMMAND_ID" ]; then
     echo "✅ Despliegue completado!"
     echo ""
     echo "🧪 Para verificar:"
-    echo "   ssh ubuntu@175.41.189.249 'cd ~/automated-trading-platform/backend && python3 scripts/test_watchlist_master_endpoints.py'"
+    echo "   ssh ubuntu@175.41.189.249 'cd ~/crypto-2.0/backend && python3 scripts/test_watchlist_master_endpoints.py'"
 else
     echo "❌ Error al enviar comando SSM"
     echo "💡 Asegúrate de que:"

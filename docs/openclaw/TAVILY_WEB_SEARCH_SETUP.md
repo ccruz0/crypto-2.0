@@ -7,7 +7,7 @@ Enable web search in OpenClaw using [Tavily](https://tavily.com). The API key is
 From the repo root (e.g. on the OpenClaw/Lab host or locally):
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 bash scripts/setup_tavily_key.sh
 ```
 
@@ -26,7 +26,7 @@ mkdir -p secrets && touch secrets/runtime.env
 Restart the OpenClaw container so it loads the new env:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose -f docker-compose.openclaw.yml restart openclaw
 ```
 
@@ -46,7 +46,7 @@ You should see `TAVILY_API_KEY=...` and `SEARCH_PROVIDER=tavily` (or the same fr
 
 | Step | Command |
 |------|--------|
-| Store key (once) | `cd ~/automated-trading-platform && bash scripts/setup_tavily_key.sh` |
+| Store key (once) | `cd ~/crypto-2.0 && bash scripts/setup_tavily_key.sh` |
 | Restart OpenClaw | `docker compose -f docker-compose.openclaw.yml restart openclaw` |
 | Verify | `docker compose -f docker-compose.openclaw.yml exec openclaw printenv \| grep TAVILY` |
 

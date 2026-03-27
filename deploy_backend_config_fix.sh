@@ -35,20 +35,20 @@ FILES=(
 echo "📦 Syncing backend files..."
 for file in "${FILES[@]}"; do
   echo "  - Syncing $file"
-  rsync_cmd "$file" "$EC2_USER@$EC2_HOST:~/automated-trading-platform/$file" 2>&1 | grep -v "error:" | grep -v "warning:" || true
+  rsync_cmd "$file" "$EC2_USER@$EC2_HOST:~/crypto-2.0/$file" 2>&1 | grep -v "error:" | grep -v "warning:" || true
 done
 
 # Also sync signal_monitor.py from api if it exists
 if [ -f "backend/app/api/signal_monitor.py" ]; then
   echo "  - Syncing backend/app/api/signal_monitor.py"
-  rsync_cmd "backend/app/api/signal_monitor.py" "$EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/api/signal_monitor.py" 2>&1 | grep -v "error:" | grep -v "warning:" || true
+  rsync_cmd "backend/app/api/signal_monitor.py" "$EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/api/signal_monitor.py" 2>&1 | grep -v "error:" | grep -v "warning:" || true
 fi
 
 echo ""
 echo "🐳 Deploying to Docker containers..."
 
 ssh_cmd $EC2_USER@$EC2_HOST 'bash -s' << 'REMOTE_SCRIPT'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find backend container
 BACKEND=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

@@ -95,7 +95,7 @@ scp_cmd frontend-aws.tar.gz "$EC2_USER@$EC2_HOST:~/$PROJECT_DIR/"
 # Step 5: Deploy on AWS
 print_status "Deploying on AWS..."
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Load Docker images
 echo "Loading Docker images..."

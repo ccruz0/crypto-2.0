@@ -14,13 +14,13 @@ Este script actualiza todas las monedas en el servidor de AWS para que tengan:
 
 2. **Navegar al directorio del proyecto:**
    ```bash
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    ```
 
 3. **Copiar el script (si no está ya en el servidor):**
    ```bash
    # Desde tu máquina local, copia el script:
-   scp update_all_coins_aws.py ubuntu@54.254.150.31:~/automated-trading-platform/
+   scp update_all_coins_aws.py ubuntu@54.254.150.31:~/crypto-2.0/
    ```
 
 4. **Ejecutar el script dentro del contenedor Docker del backend:**

@@ -7,7 +7,7 @@ If your code is committed and pushed to git:
 ```bash
 # On AWS server
 ssh ubuntu@175.41.189.249
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull
 docker-compose --profile aws restart backend-aws
 ```
@@ -16,13 +16,13 @@ docker-compose --profile aws restart backend-aws
 
 1. **Copy the file to AWS:**
    ```bash
-   scp -i ~/.ssh/id_rsa backend/app/services/telegram_commands.py ubuntu@175.41.189.249:~/automated-trading-platform/backend/app/services/telegram_commands.py
+   scp -i ~/.ssh/id_rsa backend/app/services/telegram_commands.py ubuntu@175.41.189.249:~/crypto-2.0/backend/app/services/telegram_commands.py
    ```
 
 2. **SSH to AWS and restart:**
    ```bash
    ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    docker-compose --profile aws restart backend-aws
    ```
 
@@ -31,7 +31,7 @@ docker-compose --profile aws restart backend-aws
 If you're already on the AWS server:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker-compose --profile aws restart backend-aws
 ```
 
@@ -41,7 +41,7 @@ If the code is already on the server but you want to rebuild:
 
 ```bash
 ssh ubuntu@175.41.189.249
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker-compose --profile aws up -d --build backend-aws
 ```
 
@@ -86,7 +86,7 @@ If `/start` still doesn't work:
 1. **Check if file was updated:**
    ```bash
    ssh ubuntu@175.41.189.249
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    grep -A 5 "Send welcome message with persistent keyboard" backend/app/services/telegram_commands.py
    ```
 

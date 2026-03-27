@@ -14,14 +14,14 @@ The database migration must be run manually on the AWS server before the backend
 **Option A: Via SSH (if direct SSH access)**
 ```bash
 ssh hilovivo-aws  # or your AWS connection
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 psql -U trader -d atp -f backend/migrations/add_decision_tracing_fields.sql
 ```
 
 **Option B: Via Docker Compose (if using Docker)**
 ```bash
 ssh hilovivo-aws
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec -T db psql -U trader -d atp -f /path/to/add_decision_tracing_fields.sql
 # Or copy the file first:
 docker compose --profile aws cp backend/migrations/add_decision_tracing_fields.sql db:/tmp/
@@ -95,7 +95,7 @@ After code deployment and migration:
 
 ```bash
 ssh hilovivo-aws
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend-aws
 # Or if not using Docker:
 # pkill -f "uvicorn app.main:app" && nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &

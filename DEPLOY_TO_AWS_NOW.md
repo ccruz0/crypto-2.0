@@ -10,7 +10,7 @@
 ### Terminal 1: Start Port-Forward (keep open)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 aws ssm start-session \
   --target i-087953603011543c5 \
   --document-name AWS-StartPortForwardingSessionToRemoteHost \
@@ -20,14 +20,14 @@ aws ssm start-session \
 ### Terminal 2: Deploy on AWS (SSM shell)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 aws ssm start-session --target i-087953603011543c5
 ```
 
 **Inside AWS SSM shell:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose --profile aws build --no-cache backend-aws
 docker compose --profile aws restart backend-aws
@@ -39,11 +39,11 @@ exit
 ### Terminal 3: Verify and Collect Evidence (Mac)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -i http://localhost:8002/api/health | grep -E "(HTTP|X-ATP-Backend)"
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 evidence/portfolio_reconcile/fetch_reconcile_evidence.py --api-base-url http://localhost:8002
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 LATEST=$(ls -1td evidence/portfolio_reconcile/*/ | head -1)
 cat "$LATEST/summary.txt"
 ```
@@ -51,9 +51,9 @@ cat "$LATEST/summary.txt"
 ## If Still Derived
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -sS http://localhost:8002/api/diagnostics/portfolio/reconcile | python3 -m json.tool > /tmp/reconcile.json
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 python3 - <<'PY'
 import json
 d=json.load(open('/tmp/reconcile.json'))

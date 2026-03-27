@@ -38,7 +38,7 @@
 ### Option 1: Use Deployment Script (Recommended)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./deploy_portfolio_fix.sh
 ```
 
@@ -49,7 +49,7 @@ cd ~/automated-trading-platform
 ssh ubuntu@175.41.189.249
 
 # Navigate to project
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Pull latest code
 git pull origin main

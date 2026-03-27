@@ -79,7 +79,7 @@ def main() -> int:
     print("Telegram message sent successfully.")
 
     print("\nRun command:")
-    print("  cd ~/automated-trading-platform")
+    print("  cd ~/crypto-2.0")
     print("  source .venv/bin/activate")
     print("  cd backend")
     print("  PYTHONPATH=. python scripts/diag/telegram_agent_interface_test.py")

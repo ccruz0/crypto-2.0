@@ -202,7 +202,7 @@ Use this if you decide the Crypto instance remains LAB and a new instance is PRO
 - **On Crypto (source):**  
   `docker compose --profile aws exec -T db pg_dump -U trader -d atp --no-owner --no-acl > atp_dump.sql`  
   (or use `pg_dump` from host if client installed.)
-- **Copy dump to new instance:** e.g. `scp atp_dump.sql ubuntu@<new-prod-ip>:~/automated-trading-platform/`
+- **Copy dump to new instance:** e.g. `scp atp_dump.sql ubuntu@<new-prod-ip>:~/crypto-2.0/`
 - **On new PROD:** Start stack so `db` is up, then:  
   `docker compose --profile aws exec -T db psql -U trader -d atp < atp_dump.sql`
 - **Trading config:** Copy `aws_trading_config_data` content if needed (e.g. export from backend or copy volume data); attach to new instance’s backend-aws.

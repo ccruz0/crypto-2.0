@@ -14,7 +14,7 @@ SSH into AWS and run:
 
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T backend python backend/scripts/apply_migration_previous_price.py
 ```
 
@@ -24,7 +24,7 @@ If the Python script doesn't work, use direct SQL:
 
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T db psql -U trader -d atp -c "ALTER TABLE signal_throttle_states ADD COLUMN IF NOT EXISTS previous_price DOUBLE PRECISION NULL;"
 ```
 
@@ -32,7 +32,7 @@ docker compose exec -T db psql -U trader -d atp -c "ALTER TABLE signal_throttle_
 
 ```bash
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec -T db psql -U trader -d atp -f backend/migrations/add_previous_price_to_signal_throttle.sql
 ```
 

@@ -14,12 +14,12 @@ echo ""
 echo "📦 Syncing order_position_service.py..."
 rsync_cmd \
   backend/app/services/order_position_service.py \
-  $SERVER:~/automated-trading-platform/backend/app/services/order_position_service.py
+  $SERVER:~/crypto-2.0/backend/app/services/order_position_service.py
 
 echo ""
 echo "🔄 Restarting backend container..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Restart the backend-aws container
 if docker compose --profile aws ps backend-aws 2>/dev/null | grep -q "Up"; then

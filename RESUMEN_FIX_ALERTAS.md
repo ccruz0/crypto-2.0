@@ -50,17 +50,17 @@ Cuando cambiabas `trade_enabled` a `YES` para DOT o BTC, no saltaba la alerta de
 ### Opción 1: Sincronizar y Reiniciar (Recomendado)
 ```bash
 # Desde tu máquina local:
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Sincronizar archivos modificados
 rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
   backend/app/api/routes_dashboard.py \
   backend/app/services/signal_monitor.py \
-  ubuntu@54.254.150.31:~/automated-trading-platform/backend/app/
+  ubuntu@54.254.150.31:~/crypto-2.0/backend/app/
 
 # Conectarte a AWS y reiniciar
 ssh ubuntu@54.254.150.31
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws restart backend
 ```
 
@@ -76,7 +76,7 @@ docker compose --profile aws restart backend
 ssh ubuntu@54.254.150.31
 
 # Ir al directorio del proyecto
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Copiar archivos al contenedor (si ya están sincronizados)
 docker cp backend/app/api/routes_dashboard.py $(docker compose --profile aws ps -q backend):/app/app/api/routes_dashboard.py

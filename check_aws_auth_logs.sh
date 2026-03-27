@@ -34,7 +34,7 @@ echo ""
 echo "2. Checking environment variables in .env.aws..."
 echo "------------------------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 if [ -f .env.aws ]; then
     echo "File exists. Checking relevant variables:"
     grep -E "CRYPTO_SKIP_EXEC_INST|CRYPTO_AUTH_DIAG|USE_CRYPTO_PROXY|LIVE_TRADING|EXCHANGE_CUSTOM" .env.aws || echo "⚠️  Variables not found in .env.aws"
@@ -47,7 +47,7 @@ echo ""
 echo "3. Checking environment variables in running container..."
 echo "---------------------------------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose exec backend env 2>/dev/null | grep -E "CRYPTO_SKIP_EXEC_INST|CRYPTO_AUTH_DIAG|USE_CRYPTO_PROXY|LIVE_TRADING|EXCHANGE_CUSTOM" || echo "⚠️  Could not check (backend may not be running or docker not accessible)"
 ENDSSH
 
@@ -55,7 +55,7 @@ echo ""
 echo "4. Recent authentication errors..."
 echo "----------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose logs backend --tail 300 2>/dev/null | grep -A 30 "AUTHENTICATION FAILED" | tail -50 || echo "No recent authentication errors found"
 ENDSSH
 
@@ -63,7 +63,7 @@ echo ""
 echo "5. Recent SELL order creation attempts..."
 echo "-----------------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose logs backend --tail 300 2>/dev/null | grep -A 20 "Creating automatic SELL order" | tail -40 || echo "No recent SELL order attempts found"
 ENDSSH
 
@@ -71,7 +71,7 @@ echo ""
 echo "6. MARGIN ORDER configuration logs..."
 echo "-------------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose logs backend --tail 200 2>/dev/null | grep -E "MARGIN ORDER CONFIGURED|exec_inst" | tail -10 || echo "No margin order logs found"
 ENDSSH
 
@@ -79,7 +79,7 @@ echo ""
 echo "7. Diagnostic logs (if CRYPTO_AUTH_DIAG=true)..."
 echo "------------------------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose logs backend --tail 300 2>/dev/null | grep "CRYPTO_AUTH_DIAG" | tail -20 || echo "No diagnostic logs found (CRYPTO_AUTH_DIAG may not be enabled)"
 ENDSSH
 
@@ -87,7 +87,7 @@ echo ""
 echo "8. Backend container status..."
 echo "------------------------------"
 ssh_cmd "$AWS_SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose ps backend 2>/dev/null || echo "⚠️  Could not check backend status"
 ENDSSH
 

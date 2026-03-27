@@ -29,7 +29,7 @@ echo ""
 # Deploy on AWS
 echo -e "${GREEN}[2/5]${NC} Deploying services on AWS..."
 ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "📦 Loading Docker images (if any)..."
 if [ -f "backend-aws.tar.gz" ]; then
@@ -65,7 +65,7 @@ DEPLOY_SCRIPT
 echo ""
 echo -e "${GREEN}[3/5]${NC} Verifying deployment..."
 ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" << 'VERIFY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "Checking backend-aws environment variables:"
 docker compose --profile aws exec -T backend-aws env | grep -E "USE_CRYPTO_PROXY|EXCHANGE_CUSTOM_BASE_URL|CRYPTO_REST_BASE|LIVE_TRADING" | sort
@@ -77,7 +77,7 @@ VERIFY_SCRIPT
 
 echo ""
 echo -e "${GREEN}[4/5]${NC} Checking service dependencies..."
-ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "cd ~/automated-trading-platform && docker compose --profile aws config | grep -A 10 'backend-aws:' | grep -A 5 'depends_on:'"
+ssh -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "cd ~/crypto-2.0 && docker compose --profile aws config | grep -A 10 'backend-aws:' | grep -A 5 'depends_on:'"
 
 echo ""
 echo -e "${GREEN}[5/5]${NC} Final verification..."

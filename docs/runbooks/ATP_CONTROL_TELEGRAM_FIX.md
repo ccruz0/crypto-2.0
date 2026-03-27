@@ -60,7 +60,7 @@ The chat ID must be a **channel or group** ID (usually negative, e.g. `-10012345
 ### Method C: Using the repo script
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 TELEGRAM_BOT_TOKEN=YOUR_ATP_CONTROL_TOKEN ./scripts/diag/get_chat_ids_local.sh
 ```
 

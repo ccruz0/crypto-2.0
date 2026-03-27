@@ -16,7 +16,7 @@ echo "Server: $SERVER"
 echo ""
 
 ssh_cmd "$SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "1. Checking .env.aws file..."
 echo "---------------------------"
@@ -68,10 +68,10 @@ if pgrep -f "uvicorn app.main:app" > /dev/null; then
     pwdx $PID 2>/dev/null || echo "   Could not determine working directory"
     echo ""
     echo "8. Checking backend log file..."
-    if [ -f ~/automated-trading-platform/backend/backend.log ]; then
+    if [ -f ~/crypto-2.0/backend/backend.log ]; then
         echo "   ✅ Log file found: backend/backend.log"
         echo "   Recent authentication errors:"
-        tail -500 ~/automated-trading-platform/backend/backend.log | grep -A 20 "AUTHENTICATION FAILED" | tail -40 || echo "   No authentication errors in log file"
+        tail -500 ~/crypto-2.0/backend/backend.log | grep -A 20 "AUTHENTICATION FAILED" | tail -40 || echo "   No authentication errors in log file"
     else
         echo "   ⚠️  Log file not found"
     fi

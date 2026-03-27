@@ -172,7 +172,7 @@ aws ssm start-session \
 ### Frontend Configuration
 
 ```bash
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 export NEXT_PUBLIC_API_BASE_URL="http://localhost:8002"
 npm run dev
 ```

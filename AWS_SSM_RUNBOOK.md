@@ -46,7 +46,7 @@ This runbook guides you through connecting to your EC2 instance via AWS Systems 
 In the SSM Session Manager terminal, run:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ```
 
 If that directory doesn't exist, try:
@@ -286,7 +286,7 @@ After completing all steps, verify:
 ### Commands on EC2 (via SSM Session Manager)
 ```bash
 # Navigate to project
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Run verification
 ./scripts/verify_ec2_ip_and_health.sh
@@ -349,7 +349,7 @@ If you encounter paste truncation issues when creating the script on EC2 (e.g., 
 ### On EC2 (via SSM Session Manager)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Generate the verification script
 python3 scripts/write_verify_ec2_ip_and_health.py

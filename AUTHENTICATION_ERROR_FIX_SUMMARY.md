@@ -48,7 +48,7 @@ Changes committed in commit `821e4cc`.
 To deploy:
 ```bash
 # On AWS server
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose restart backend-aws
 ```

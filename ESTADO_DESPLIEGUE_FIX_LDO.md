@@ -23,7 +23,7 @@ El workflow `.github/workflows/deploy.yml` debería desplegar automáticamente c
 ssh ubuntu@54.254.150.31
 
 # Ir al directorio del proyecto
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Actualizar código
 git pull origin main

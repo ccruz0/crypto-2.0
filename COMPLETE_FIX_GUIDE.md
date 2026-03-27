@@ -18,7 +18,7 @@ The issue is likely with how complex parameters (especially list parameters like
 **On AWS server:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add environment variables
 cat >> .env.aws << 'EOF'
@@ -73,7 +73,7 @@ docker compose logs backend | grep "order created successfully"
 **Run diagnostic scripts:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Test comparison
 python3 backend/scripts/test_order_creation_auth.py

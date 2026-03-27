@@ -1,6 +1,6 @@
 #!/bin/bash
 # Final verification script after fixes are applied
-# Run this on AWS: ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && bash scripts/verify_telegram_green_aws.sh"
+# Run this on AWS: ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && bash scripts/verify_telegram_green_aws.sh"
 
 set -euo pipefail
 

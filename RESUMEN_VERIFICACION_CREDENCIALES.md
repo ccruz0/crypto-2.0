@@ -54,12 +54,12 @@
 
 1. **Verificar que funciona**:
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform/backend && python3 scripts/deep_auth_diagnostic.py"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0/backend && python3 scripts/deep_auth_diagnostic.py"
    ```
 
 2. **Monitorear logs**:
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose logs -f backend-aws | grep -i 'authentication\|crypto\|balance'"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose logs -f backend-aws | grep -i 'authentication\|crypto\|balance'"
    ```
 
 3. **Esperar al próximo resumen diario** para confirmar que todo funciona correctamente.

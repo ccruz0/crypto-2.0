@@ -116,7 +116,7 @@ After verification, the dashboard should show:
 
 If quick fixes don't work, do a full rebuild:
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 git pull origin main
 docker compose --profile aws build backend-aws
 docker compose --profile aws up -d backend-aws

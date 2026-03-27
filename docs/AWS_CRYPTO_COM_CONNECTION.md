@@ -128,7 +128,7 @@ curl https://api.ipify.org
 Edita `.env.aws` en la instancia AWS:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 nano .env.aws
 ```
 

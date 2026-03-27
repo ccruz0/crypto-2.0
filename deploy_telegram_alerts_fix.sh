@@ -17,18 +17,18 @@ echo ""
 echo "📦 Syncing signal_monitor.py..."
 rsync_cmd \
   backend/app/services/signal_monitor.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/
 
 # Also sync the diagnostic script
 echo "📦 Syncing diagnose_telegram_alerts.py..."
 rsync_cmd \
   backend/scripts/diagnose_telegram_alerts.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/scripts/ 2>/dev/null || true
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/scripts/ 2>/dev/null || true
 
 # Copy file into Docker container and restart
 echo "🐳 Copying file into Docker container and restarting market-updater-aws..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0
+cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0
 
 # Find the market-updater-aws container name
 MARKET_UPDATER_CONTAINER=$(docker ps --filter "name=market-updater-aws" --format "{{.Names}}" | head -1)

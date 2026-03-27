@@ -10,7 +10,7 @@
 ### Option 1: One-line Command (Easiest)
 
 ```bash
-ssh ubuntu@<AWS_EC2_IP> 'cd ~/automated-trading-platform && git pull origin main && docker compose --profile aws restart backend-aws && sleep 5 && docker compose --profile aws ps backend-aws'
+ssh ubuntu@<AWS_EC2_IP> 'cd ~/crypto-2.0 && git pull origin main && docker compose --profile aws restart backend-aws && sleep 5 && docker compose --profile aws ps backend-aws'
 ```
 
 ### Option 2: Step by Step
@@ -20,7 +20,7 @@ ssh ubuntu@<AWS_EC2_IP> 'cd ~/automated-trading-platform && git pull origin main
 ssh ubuntu@<AWS_EC2_IP>
 
 # 2. Navigate to project
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 3. Pull latest code
 git pull origin main

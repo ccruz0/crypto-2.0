@@ -6,7 +6,7 @@ Run this first to verify everything is set up correctly:
 
 ```bash
 # On AWS server
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 python3 scripts/test_script_works.py
 ```
 
@@ -52,7 +52,7 @@ python3 scripts/test_crypto_connection.py
 ## One-Liner Test (from local machine)
 
 ```bash
-ssh your-aws-server "cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py"
+ssh your-aws-server "cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py"
 ```
 
 ## Troubleshooting

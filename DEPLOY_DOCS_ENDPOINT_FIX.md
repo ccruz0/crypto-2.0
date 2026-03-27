@@ -21,16 +21,16 @@ This document provides instructions to deploy the fix for the 404 error when acc
 # 1. Sync the backend file
 rsync -avz -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
   ./backend/app/api/routes_monitoring.py \
-  ubuntu@175.41.189.249:~/automated-trading-platform/backend/app/api/routes_monitoring.py
+  ubuntu@175.41.189.249:~/crypto-2.0/backend/app/api/routes_monitoring.py
 
 # 2. Sync the nginx config
 rsync -avz -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
   ./nginx/dashboard.conf \
-  ubuntu@175.41.189.249:~/automated-trading-platform/nginx/dashboard.conf
+  ubuntu@175.41.189.249:~/crypto-2.0/nginx/dashboard.conf
 
 # 3. SSH into server and reload services
 ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249 << 'EOF'
-  cd ~/automated-trading-platform
+  cd ~/crypto-2.0
   
   # Test nginx config
   sudo nginx -t
@@ -63,7 +63,7 @@ EOF
 
 3. **Once files are on server, run:**
    ```bash
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    
    # Verify files are updated
    grep -A 5 "watchlist-consistency/latest" backend/app/api/routes_monitoring.py

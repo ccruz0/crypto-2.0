@@ -108,7 +108,7 @@ But `missing_env` will always return canonical names: `EXCHANGE_CUSTOM_API_KEY`,
 
 3. **Create `.env.secrets.local` in repo root:**
    ```bash
-   # In ~/automated-trading-platform/.env.secrets.local
+   # In ~/crypto-2.0/.env.secrets.local
    EXCHANGE_CUSTOM_API_KEY=your_actual_api_key
    EXCHANGE_CUSTOM_API_SECRET=your_actual_api_secret
    ```
@@ -219,19 +219,19 @@ cd backend && make dev-down
 
 ```bash
 # Start
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local up -d --build db backend-dev
 
 # Logs
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local logs -f backend-dev
 
 # Restart
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local restart backend-dev
 
 # Stop
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local stop backend-dev
 ```
 

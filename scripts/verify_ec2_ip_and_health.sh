@@ -24,7 +24,7 @@ echo "   EC2 Host Outbound IP: $HOST_IP"
 echo ""
 
 echo "3. Backend Container Outbound IP:"
-cd ~/automated-trading-platform 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
+cd ~/crypto-2.0 2>/dev/null || cd /home/ubuntu/crypto-2.0 2>/dev/null || {
     echo "   ❌ ERROR: Cannot find project directory"
     exit 1
 }

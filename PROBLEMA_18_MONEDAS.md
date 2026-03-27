@@ -26,7 +26,7 @@ El proceso `market_updater.py` debería actualizar los precios de todas las mone
 
 ```bash
 # En el servidor AWS
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws ps market-updater
 ```
 
@@ -45,7 +45,7 @@ El frontend tiene `WATCHLIST_PAGE_SIZE = 30`, así que debería mostrar hasta 30
 Para verificar qué está pasando, ejecuta en el servidor AWS:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec backend-aws python3 /app/check_db_direct.py
 ```
 

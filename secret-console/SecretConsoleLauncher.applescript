@@ -20,7 +20,7 @@ on run
 			do shell script "test -f " & quoted form of p2
 			set launcher to p2
 		on error
-			display dialog "Could not find secret_console_launcher.sh in:" & return & return & p1 & return & p2 & return & return & "Place secret-console at ~/secret-console or ~/automated-trading-platform/secret-console, or edit this script to add another path." buttons {"OK"} default button "OK" with title "Secret Console Launcher" with icon stop
+			display dialog "Could not find secret_console_launcher.sh in:" & return & return & p1 & return & p2 & return & return & "Place secret-console at ~/secret-console or ~/crypto-2.0/secret-console, or edit this script to add another path." buttons {"OK"} default button "OK" with title "Secret Console Launcher" with icon stop
 			return
 		end try
 	end try

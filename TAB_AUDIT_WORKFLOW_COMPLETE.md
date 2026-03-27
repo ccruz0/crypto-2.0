@@ -31,16 +31,16 @@
 
 ### 1. Start Services
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile local up -d --build db backend-dev
 
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 npm run dev
 ```
 
 ### 2. Run Audit
 ```bash
-cd ~/automated-trading-platform/frontend
+cd ~/crypto-2.0/frontend
 npm run qa:tabs
 ```
 

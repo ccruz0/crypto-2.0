@@ -15,7 +15,7 @@ ssh ubuntu@47.130.143.159
 Once connected, run:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check recent /start activity
 docker-compose --profile aws logs --tail=500 backend-aws | grep -i "TG.*START\|TG.*MENU\|TG.*ERROR" | tail -50
@@ -45,7 +45,7 @@ When `/start` is sent successfully, you should see:
 ## Quick One-Liner
 
 ```bash
-ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker-compose --profile aws logs --tail=500 backend-aws | grep -i 'TG.*START\|TG.*MENU' | tail -30"
+ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker-compose --profile aws logs --tail=500 backend-aws | grep -i 'TG.*START\|TG.*MENU' | tail -30"
 ```
 
 

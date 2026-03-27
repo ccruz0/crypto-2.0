@@ -165,7 +165,7 @@ Si ves:
 
 ```bash
 # Ver estado del contenedor
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker ps | grep backend"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker ps | grep backend"
 
 # Ver logs del signal monitor específicamente
 bash scripts/aws_backend_logs.sh -f | grep signal_monitor
@@ -174,7 +174,7 @@ bash scripts/aws_backend_logs.sh -f | grep signal_monitor
 bash scripts/aws_backend_logs.sh --tail 50
 
 # Reiniciar contenedor si es necesario
-ssh hilovivo-aws "cd ~/automated-trading-platform && docker restart automated-trading-platform-backend-aws-1"
+ssh hilovivo-aws "cd ~/crypto-2.0 && docker restart automated-trading-platform-backend-aws-1"
 ```
 
 ---

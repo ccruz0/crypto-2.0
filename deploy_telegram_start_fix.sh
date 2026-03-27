@@ -44,12 +44,12 @@ if [ -f "scripts/ssh_key.sh" ]; then
       --include='app/services/telegram_commands.py' \
       --exclude='*' \
       ./backend/app/services/telegram_commands.py \
-      $SERVER:~/automated-trading-platform/backend/app/services/telegram_commands.py
+      $SERVER:~/crypto-2.0/backend/app/services/telegram_commands.py
     
     echo ""
     echo "🔄 Step 2: Restarting backend-aws service..."
     ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Restart backend-aws using docker compose
 if command -v docker-compose &> /dev/null; then
@@ -81,7 +81,7 @@ ENDSSH
     echo ""
     echo "📱 Next steps:"
     echo "   1. Test /start command in Telegram"
-    echo "   2. Check logs: ssh $SERVER 'cd ~/automated-trading-platform && docker-compose --profile aws logs -f backend-aws | grep -i TG.*START'"
+    echo "   2. Check logs: ssh $SERVER 'cd ~/crypto-2.0 && docker-compose --profile aws logs -f backend-aws | grep -i TG.*START'"
     echo "   3. You should see both welcome message and main menu"
     
 else
@@ -107,7 +107,7 @@ else
         echo "Manual deployment steps:"
         echo "1. Copy backend/app/services/telegram_commands.py to AWS server"
         echo "2. SSH to AWS: ssh ubuntu@175.41.189.249"
-        echo "3. Restart: cd ~/automated-trading-platform && docker-compose --profile aws restart backend-aws"
+        echo "3. Restart: cd ~/crypto-2.0 && docker-compose --profile aws restart backend-aws"
         exit 1
     fi
 fi

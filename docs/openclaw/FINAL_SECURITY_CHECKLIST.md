@@ -89,11 +89,11 @@ unset TOKEN
 ```bash
 # Token file exists and is not in repo
 ls -la ~/secrets/openclaw_token
-grep -r "ghp_\|github_pat_" ~/automated-trading-platform --include="*.yml" --include="*.yaml" --include="*.env*" 2>/dev/null || true
+grep -r "ghp_\|github_pat_" ~/crypto-2.0 --include="*.yml" --include="*.yaml" --include="*.env*" 2>/dev/null || true
 # Expected: no matches in repo
 
 # .env.lab must not contain token value (path is hardcoded in docker-compose, not in .env)
-grep -E "TOKEN|token" ~/automated-trading-platform/.env.lab 2>/dev/null || true
+grep -E "TOKEN|token" ~/crypto-2.0/.env.lab 2>/dev/null || true
 # Expected: no line with token value; OPENCLAW_TOKEN_PATH is not used (path is in compose).
 
 # Container env has path only

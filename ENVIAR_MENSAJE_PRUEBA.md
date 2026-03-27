@@ -9,7 +9,7 @@
 ssh -i tu-key.pem ubuntu@tu-servidor-aws
 
 # Navega al directorio del proyecto
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Ejecuta el script
 docker compose exec backend python scripts/send_test_message.py
@@ -22,7 +22,7 @@ docker compose exec backend python scripts/send_test_message.py
 ssh -i tu-key.pem ubuntu@tu-servidor-aws
 
 # Navega al directorio del proyecto
-cd ~/automated-trading-platform/backend
+cd ~/crypto-2.0/backend
 
 # Ejecuta el script directamente
 python3 scripts/send_test_message.py

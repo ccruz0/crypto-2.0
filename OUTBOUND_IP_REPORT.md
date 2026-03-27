@@ -29,7 +29,7 @@ Based on analysis of `docker-compose.yml`:
 Run these commands via SSH or AWS SSM to confirm actual outbound IPs:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # 1. Check outbound IP from EC2 host
 echo "=== Host Outbound IP ==="

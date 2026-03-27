@@ -12,7 +12,7 @@ echo ""
 # Step 1: Get current IP
 echo "📋 Step 1: Getting current AWS IP address..."
 echo "------------------------------------------------------------"
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws exec backend-aws python scripts/get_aws_ip.py
 echo ""
 

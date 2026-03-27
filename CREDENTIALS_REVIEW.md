@@ -85,7 +85,7 @@ Si el servidor usa VPN (gluetun):
 
 3. **Monitorear logs**:
    ```bash
-   ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs -f backend-aws | grep -i auth"
+   ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs -f backend-aws | grep -i auth"
    ```
 
 ## ⚠️ Nota Importante

@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 STRATEGY_KEY="scalp:conservative"
 
 echo "1️⃣ Setting force_next_signal=True..."
-ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
 UPDATE signal_throttle_states 
 SET force_next_signal = TRUE 
 WHERE symbol = '$SYMBOL' 
@@ -32,7 +32,7 @@ sleep 30
 
 echo ""
 echo "3️⃣ Checking for new alerts and decision tracing..."
-ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
 SELECT 
     id,
     symbol,
@@ -58,7 +58,7 @@ LIMIT 10;
 
 echo ""
 echo "4️⃣ Checking if order was created..."
-ssh_cmd ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
+ssh_cmd ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose --profile aws exec -T -e PGPASSWORD=traderpass db psql -U trader -d atp -c \"
 SELECT 
     exchange_order_id,
     symbol,

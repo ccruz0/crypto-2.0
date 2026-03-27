@@ -5,7 +5,7 @@
 **SSH into AWS server and run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Copy and run the deployment script
 # Option 1: Copy the script content below, or

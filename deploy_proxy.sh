@@ -18,9 +18,9 @@ echo ""
 
 # Copy files to trade_Bot instance
 echo "📁 Copying files to trade_Bot..."
-scp_cmd crypto_proxy.py ubuntu@$TRADE_BOT_IP:~/automated-trading-platform/
-scp_cmd requirements.txt ubuntu@$TRADE_BOT_IP:~/automated-trading-platform/
-scp_cmd crypto-proxy.service ubuntu@$TRADE_BOT_IP:~/automated-trading-platform/
+scp_cmd crypto_proxy.py ubuntu@$TRADE_BOT_IP:~/crypto-2.0/
+scp_cmd requirements.txt ubuntu@$TRADE_BOT_IP:~/crypto-2.0/
+scp_cmd crypto-proxy.service ubuntu@$TRADE_BOT_IP:~/crypto-2.0/
 
 echo "✅ Files copied successfully"
 echo ""
@@ -28,7 +28,7 @@ echo ""
 # Deploy and configure on trade_Bot
 echo "🔧 Configuring proxy on trade_Bot..."
 ssh_cmd ubuntu@$TRADE_BOT_IP << 'EOF'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Install dependencies
 echo "📦 Installing dependencies..."

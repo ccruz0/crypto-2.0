@@ -27,7 +27,7 @@ COMMAND_ID=$(aws ssm send-command \
     --instance-ids $INSTANCE_ID \
     --document-name "AWS-RunShellScript" \
     --parameters "commands=[
-        \"cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0\",
+        \"cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0\",
         \"echo '📦 Step 1: Restoring backend file...'\",
         \"echo '$BACKEND_FILE_B64' | base64 -d > backend/app/api/routes_monitoring.py.new\",
         \"mv backend/app/api/routes_monitoring.py.new backend/app/api/routes_monitoring.py\",

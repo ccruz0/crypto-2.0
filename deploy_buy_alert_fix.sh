@@ -15,12 +15,12 @@ echo ""
 echo "📦 Syncing signal_monitor.py..."
 rsync_cmd \
   backend/app/services/signal_monitor.py \
-  $EC2_USER@$EC2_HOST:~/automated-trading-platform/backend/app/services/
+  $EC2_USER@$EC2_HOST:~/crypto-2.0/backend/app/services/
 
 # Copy file into Docker container and restart
 echo "🐳 Copying file into Docker container and restarting backend..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find the backend container name
 BACKEND_CONTAINER=$(docker ps --filter "name=backend" --format "{{.Names}}" | head -1)

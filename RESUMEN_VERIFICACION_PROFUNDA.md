@@ -33,7 +33,7 @@
 
 1. **Reconstruir el contenedor** para asegurar que tiene el código más reciente:
    ```bash
-   ssh ubuntu@47.130.143.159 "cd ~/automated-trading-platform && docker compose build backend-aws && docker compose up -d backend-aws"
+   ssh ubuntu@47.130.143.159 "cd ~/crypto-2.0 && docker compose build backend-aws && docker compose up -d backend-aws"
    ```
 
 2. **Verificar que el código en el servidor es el mismo que el local**

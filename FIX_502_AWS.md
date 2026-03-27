@@ -40,7 +40,7 @@ sudo apt-get install -y nginx certbot python3-certbot-nginx
 ### 3. Copy nginx configuration
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 sudo cp nginx/dashboard.conf /etc/nginx/sites-available/dashboard.conf
 sudo ln -sf /etc/nginx/sites-available/dashboard.conf /etc/nginx/sites-enabled/dashboard.conf
 sudo rm -f /etc/nginx/sites-enabled/default

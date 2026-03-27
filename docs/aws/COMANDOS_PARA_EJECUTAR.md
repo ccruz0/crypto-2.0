@@ -77,7 +77,7 @@ chmod 600 ~/secrets/openclaw_token
 cd ~
 git clone https://github.com/ccruz0/crypto-2.0.git automated-trading-platform 2>/dev/null || (cd automated-trading-platform && git pull)
 
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 cp .env.lab.example .env.lab
 chmod 600 .env.lab
 # Editar .env.lab: GIT_REPO_URL, OPENCLAW_TOKEN_PATH=/home/ubuntu/secrets/openclaw_token

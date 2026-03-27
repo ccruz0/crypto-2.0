@@ -14,13 +14,13 @@
 rsync -avz -e "ssh -i ~/.ssh/id_rsa" \
   frontend/src/app/page.tsx \
   frontend/src/lib/api.ts \
-  ubuntu@175.41.189.249:~/automated-trading-platform/frontend/src/
+  ubuntu@175.41.189.249:~/crypto-2.0/frontend/src/
 
 # 2. Conectar al servidor
 ssh -i ~/.ssh/id_rsa ubuntu@175.41.189.249
 
 # 3. Copiar archivos al contenedor Docker y reiniciar
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 CONTAINER_NAME=$(docker ps --filter "name=frontend" --format "{{.Names}}" | head -1)
 if [ -n "$CONTAINER_NAME" ]; then
   docker cp frontend/src/app/page.tsx $CONTAINER_NAME:/app/src/app/page.tsx

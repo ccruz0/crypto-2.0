@@ -5,7 +5,7 @@
 set -e
 
 AWS_SERVER="ubuntu@47.130.143.159"
-REMOTE_PATH="~/automated-trading-platform/backend/scripts"
+REMOTE_PATH="~/crypto-2.0/backend/scripts"
 
 echo "============================================================"
 echo "📤 Uploading Diagnostic Scripts to AWS"
@@ -35,6 +35,6 @@ echo ""
 echo "✅ Scripts uploaded successfully!"
 echo ""
 echo "💡 Now you can run:"
-echo "   ssh $AWS_SERVER \"cd ~/automated-trading-platform/backend && python3 scripts/test_script_works.py\""
+echo "   ssh $AWS_SERVER \"cd ~/crypto-2.0/backend && python3 scripts/test_script_works.py\""
 echo ""
 

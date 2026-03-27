@@ -13,7 +13,7 @@
 ### Option A: Automated Deployment (Recommended)
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./deploy_and_verify_portfolio_fix.sh
 ```
 
@@ -26,7 +26,7 @@ cd ~/automated-trading-platform
 
 2. **On AWS instance**:
    ```bash
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    git pull origin main
    docker compose --profile aws build backend-aws
    docker compose --profile aws restart backend-aws
@@ -59,7 +59,7 @@ curl -sS "http://localhost:8002/api/dashboard/state" | python3 -m json.tool | he
 
 ### 4. Collect Evidence
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./evidence/portfolio_reconcile/collect_evidence.sh
 ```
 

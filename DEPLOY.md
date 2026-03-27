@@ -49,7 +49,7 @@ ssh ubuntu@YOUR_AWS_IP
 aws ssm start-session --target i-087953603011543c5
 
 # 2. Navigate to project directory
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 # or
 cd /home/ubuntu/crypto-2.0
 
@@ -133,7 +133,7 @@ On AWS instance, create/update `.env.aws`:
 ssh ubuntu@YOUR_AWS_IP
 
 # Edit environment file
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 nano .env.aws
 
 # Or copy from example (⚠️ fill in real values!)
@@ -203,7 +203,7 @@ If deployment causes issues:
 ```bash
 # SSH into AWS instance
 ssh ubuntu@YOUR_AWS_IP
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Option 1: Revert to previous git commit
 git log --oneline  # Find previous commit
@@ -227,7 +227,7 @@ docker compose --profile aws restart
 ssh ubuntu@YOUR_AWS_IP
 
 # All services
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose --profile aws logs -f
 
 # Backend only

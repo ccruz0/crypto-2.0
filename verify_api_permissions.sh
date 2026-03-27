@@ -43,7 +43,7 @@ echo ""
 
 echo "3. Verificando logs del backend para errores de autenticación..."
 sleep 3
-AUTH_ERRORS=$(ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws --tail=100 --since 2m 2>&1 | grep -i '40101\|authentication failed' | tail -5" 2>&1)
+AUTH_ERRORS=$(ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws --tail=100 --since 2m 2>&1 | grep -i '40101\|authentication failed' | tail -5" 2>&1)
 
 if [ -z "$AUTH_ERRORS" ]; then
     info "No se encontraron errores de autenticación recientes"
@@ -55,7 +55,7 @@ echo ""
 
 echo "4. Verificando si se recibieron órdenes del sync..."
 sleep 2
-ORDERS_RECEIVED=$(ssh hilovivo-aws "cd ~/automated-trading-platform && docker compose --profile aws logs backend-aws --tail=200 --since 5m 2>&1 | grep -E 'Received.*orders from API|Fetched page|Found.*FILLED orders' | tail -3" 2>&1)
+ORDERS_RECEIVED=$(ssh hilovivo-aws "cd ~/crypto-2.0 && docker compose --profile aws logs backend-aws --tail=200 --since 5m 2>&1 | grep -E 'Received.*orders from API|Fetched page|Found.*FILLED orders' | tail -3" 2>&1)
 
 if echo "$ORDERS_RECEIVED" | grep -q "Received.*orders"; then
     info "Se están recibiendo órdenes de la API!"

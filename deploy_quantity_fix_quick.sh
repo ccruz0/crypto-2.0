@@ -21,7 +21,7 @@ rsync_cmd \
 echo ""
 echo "🔄 Step 2: Restarting backend container..."
 ssh_cmd $EC2_USER@$EC2_HOST << 'DEPLOY'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Find backend container
 CONTAINER=$(docker compose --profile aws ps -q backend-aws 2>/dev/null || docker compose ps -q backend 2>/dev/null || echo "")

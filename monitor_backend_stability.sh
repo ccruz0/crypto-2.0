@@ -17,7 +17,7 @@ for i in $(seq 1 $((DURATION_MINUTES * 60 / CHECK_INTERVAL))); do
     
     # Check backend status
     status=$(ssh_cmd ubuntu@$EC2_HOST \
-        "cd ~/automated-trading-platform && docker compose --profile aws ps backend-aws 2>&1 | grep -o 'Up [0-9]*' | head -1" 2>/dev/null)
+        "cd ~/crypto-2.0 && docker compose --profile aws ps backend-aws 2>&1 | grep -o 'Up [0-9]*' | head -1" 2>/dev/null)
     
     if [ -z "$status" ]; then
         echo "  ❌ Backend status: UNKNOWN or DOWN"
@@ -27,7 +27,7 @@ for i in $(seq 1 $((DURATION_MINUTES * 60 / CHECK_INTERVAL))); do
     
     # Check alert-ratio requests in last minute
     alert_count=$(ssh_cmd ubuntu@$EC2_HOST \
-        "cd ~/automated-trading-platform && docker compose --profile aws logs --since 1m backend-aws 2>&1 | grep -c 'alert-ratio' || echo 0" 2>/dev/null)
+        "cd ~/crypto-2.0 && docker compose --profile aws logs --since 1m backend-aws 2>&1 | grep -c 'alert-ratio' || echo 0" 2>/dev/null)
     
     echo "  📊 Alert-ratio requests (last minute): $alert_count"
     
@@ -41,7 +41,7 @@ for i in $(seq 1 $((DURATION_MINUTES * 60 / CHECK_INTERVAL))); do
     
     # Check for errors
     errors=$(ssh_cmd ubuntu@$EC2_HOST \
-        "cd ~/automated-trading-platform && docker compose --profile aws logs --since 1m backend-aws 2>&1 | grep -iE 'error|exception|503|died|killed' | wc -l || echo 0" 2>/dev/null)
+        "cd ~/crypto-2.0 && docker compose --profile aws logs --since 1m backend-aws 2>&1 | grep -iE 'error|exception|503|died|killed' | wc -l || echo 0" 2>/dev/null)
     
     if [ "$errors" -gt 0 ]; then
         echo "  ⚠️  Errors found (last minute): $errors"

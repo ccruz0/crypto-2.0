@@ -22,7 +22,7 @@ If `context: ./backend` is used, the Dockerfile cannot access `backend/scripts/`
 When `backend/requirements.txt` changes or you see `ModuleNotFoundError` (e.g. `pydantic_settings`) in the container:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose build --no-cache
 docker compose up -d
 ```

@@ -38,7 +38,7 @@ print_info() {
 # Configuration
 REMOTE_HOST="hilovivo-aws"
 REMOTE_USER="ubuntu"
-PROJECT_DIR="~/automated-trading-platform"
+PROJECT_DIR="~/crypto-2.0"
 
 # Check SSH connection
 print_status "Testing SSH connection..."
@@ -78,7 +78,7 @@ rsync -avz --progress \
 # Step 2: Build and deploy on remote server
 print_status "Building and deploying on AWS..."
 ssh "$REMOTE_HOST" << 'DEPLOY_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "Building backend..."
 docker compose build backend-aws

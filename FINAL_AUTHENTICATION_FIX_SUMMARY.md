@@ -32,7 +32,7 @@ The `exec_inst: ["MARGIN_ORDER"]` is a **list parameter** that was likely causin
 ### On AWS Server
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add fix
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws

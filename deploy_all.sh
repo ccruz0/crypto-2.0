@@ -48,7 +48,7 @@ INJECT_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd /home/ubuntu/crypto-2.0 || cd ~/automated-trading-platform || true",
+    "cd /home/ubuntu/crypto-2.0 || cd ~/crypto-2.0 || true",
     "GHTOKEN=$(aws ssm get-parameter --name /automated-trading-platform/prod/github_token --with-decryption --query Parameter.Value --output text 2>/dev/null || aws ssm get-parameter --name /openclaw/github-token --with-decryption --query Parameter.Value --output text 2>/dev/null || true)",
     "if [ -n \"$GHTOKEN\" ]; then grep -q \"^GITHUB_TOKEN=\" .env.aws 2>/dev/null && sed -i \"s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$GHTOKEN|\" .env.aws || echo \"GITHUB_TOKEN=$GHTOKEN\" >> .env.aws; mkdir -p secrets; if grep -q \"^GITHUB_TOKEN=\" secrets/runtime.env 2>/dev/null; then sed -i \"s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=$GHTOKEN|\" secrets/runtime.env; else echo \"GITHUB_TOKEN=$GHTOKEN\" >> secrets/runtime.env; fi; echo GITHUB_TOKEN injected; else echo No token in SSM; fi"
   ]' \
@@ -70,7 +70,7 @@ PULL_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
     "git pull origin main || echo \"Git pull failed, continuing...\"",
     "if [ -d frontend ]; then rm -rf frontend; fi",
     "git clone https://github.com/ccruz0/frontend.git frontend || { echo \"⚠️ Clone failed\" && exit 1; }",
@@ -97,7 +97,7 @@ BUILD_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=[
-    "cd ~/automated-trading-platform || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
+    "cd ~/crypto-2.0 || cd /home/ubuntu/crypto-2.0 || { echo \"❌ Cannot find project directory\" && exit 1; }",
     "mkdir -p docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state && sudo chown -R 10001:10001 docs/agents/bug-investigations docs/agents/telegram-alerts docs/agents/execution-state || true",
     "bash scripts/aws/render_runtime_env.sh || true",
     "docker compose --profile aws down || true",

@@ -35,7 +35,7 @@ ip-172-31-31-131
 $ uptime
  10:13:39 up 23 days, 21:55,  2 users,  load average: 0.08, 0.29, 0.27
 
-$ cd ~/automated-trading-platform && pwd
+$ cd ~/crypto-2.0 && pwd
 /home/ubuntu/crypto-2.0
 
 $ git status --short | wc -l

@@ -14,7 +14,7 @@ You received an authentication error when trying to create a SELL order for BTC_
 **On your AWS server, run:**
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add fix
 echo "CRYPTO_SKIP_EXEC_INST=true" >> .env.aws

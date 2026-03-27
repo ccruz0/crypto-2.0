@@ -20,7 +20,7 @@ rsync_cmd \
   --exclude='.env' \
   --exclude='backend.log' \
   backend/app/services/brokers/crypto_com_trade.py \
-  $SERVER:~/automated-trading-platform/backend/app/services/brokers/
+  $SERVER:~/crypto-2.0/backend/app/services/brokers/
 
 rsync_cmd \
   --exclude='venv/' \
@@ -28,7 +28,7 @@ rsync_cmd \
   --exclude='*.pyc' \
   --exclude='.env' \
   backend/app/services/signal_monitor.py \
-  $SERVER:~/automated-trading-platform/backend/app/services/
+  $SERVER:~/crypto-2.0/backend/app/services/
 
 echo "✅ Code files synced"
 
@@ -36,7 +36,7 @@ echo "✅ Code files synced"
 echo ""
 echo "⚙️  Step 2: Applying environment variable fix..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Add fix to .env.aws
 if [ -f .env.aws ]; then
@@ -59,7 +59,7 @@ ENDSSH
 echo ""
 echo "🔄 Step 3: Restarting backend..."
 ssh_cmd $SERVER << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if using Docker
 if command -v docker &> /dev/null && docker ps 2>/dev/null | grep -q backend; then
@@ -74,7 +74,7 @@ elif pgrep -f "uvicorn app.main:app" > /dev/null; then
     echo "   Backend running as process - restarting..."
     pkill -f "uvicorn app.main:app" || true
     sleep 2
-    cd ~/automated-trading-platform/backend
+    cd ~/crypto-2.0/backend
     if [ -d "venv" ]; then
         source venv/bin/activate
     fi
@@ -109,6 +109,6 @@ echo "  3. Orders should be created without authentication errors"
 echo ""
 echo "To check logs:"
 echo "  - Docker: docker compose logs backend -f | grep -E 'AUTHENTICATION|order created'"
-echo "  - Process: tail -f ~/automated-trading-platform/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
+echo "  - Process: tail -f ~/crypto-2.0/backend/backend.log | grep -E 'AUTHENTICATION|order created'"
 echo ""
 

@@ -8,7 +8,7 @@ Use this when **dashboard.hilovivo.com** times out **and/or** **/openclaw/** ret
 
 1. **From your Mac** (AWS CLI configured):
    ```bash
-   cd ~/automated-trading-platform
+   cd ~/crypto-2.0
    AUTO_START=1 AUTO_REBOOT=1 ./scripts/aws/bringup_dashboard_prod.sh
    ```
 2. Wait **3–5 minutes** after start/reboot.
@@ -21,7 +21,7 @@ Connection dropped immediately — often wedged nginx worker or bad proxy state.
 
 **From your Mac (no SSM):**
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 ./scripts/aws/heal_nginx_connection_closed_eice.sh
 ```
 This SSHs to PROD via Instance Connect, **restarts nginx**, and **re-syncs** all openclaw `proxy_pass` lines to LAB:8080.

@@ -60,7 +60,7 @@ Ensure the OpenClaw container mounts this file and gets only the *path* in env (
 Restart OpenClaw after creating or updating the token:
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 docker compose -f docker-compose.openclaw.yml up -d --force-recreate
 ```
 
@@ -138,7 +138,7 @@ Follow these steps in order to actually grant Claw access.
    ```
 4. **Restart OpenClaw** on LAB:
    ```bash
-   cd ~/automated-trading-platform && docker compose -f docker-compose.openclaw.yml up -d --force-recreate
+   cd ~/crypto-2.0 && docker compose -f docker-compose.openclaw.yml up -d --force-recreate
    ```
 5. **Verify:** `docker exec openclaw env | grep OPENCLAW_TOKEN_FILE` should show `OPENCLAW_TOKEN_FILE=/run/secrets/openclaw_token`. The OpenClaw app must read that file for git/API (see §1.3; if unsure, apply [PROMPT_AUDIT_OPENCLAW_SOURCE.md](PROMPT_AUDIT_OPENCLAW_SOURCE.md) in the OpenClaw repo).
 

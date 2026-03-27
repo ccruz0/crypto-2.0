@@ -14,7 +14,7 @@ echo "🛑 Stopping backend on AWS..."
 echo ""
 
 ssh_cmd "$EC2_USER@$EC2_HOST" << 'STOP_SCRIPT'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 # Check if using Docker Compose
 if docker ps | grep -q "backend-aws"; then

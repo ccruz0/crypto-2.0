@@ -17,7 +17,7 @@ echo ""
 
 # Apply fix directly on AWS
 ssh_cmd "$SERVER" << 'ENDSSH'
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 
 echo "1. Checking current .env.aws..."
 if [ -f .env.aws ]; then
@@ -68,7 +68,7 @@ echo "6. Checking if backend is running as a process..."
 if pgrep -f "uvicorn app.main:app" > /dev/null; then
     echo "   ✅ Backend process found (uvicorn)"
     echo "   ⚠️  You may need to restart the backend process manually"
-    echo "   Run: pkill -f 'uvicorn app.main:app' && cd ~/automated-trading-platform/backend && nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &"
+    echo "   Run: pkill -f 'uvicorn app.main:app' && cd ~/crypto-2.0/backend && nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &"
 elif pgrep -f "python.*main:app" > /dev/null; then
     echo "   ✅ Backend process found (python)"
     echo "   ⚠️  You may need to restart the backend process manually"

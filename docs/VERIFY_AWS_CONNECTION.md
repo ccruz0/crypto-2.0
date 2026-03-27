@@ -3,7 +3,7 @@
 ## Quick Verification
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -i http://localhost:8002/api/health | grep -E "(HTTP|X-ATP-Backend)"
 ```
 
@@ -23,7 +23,7 @@ X-ATP-Backend-BuildTime: <timestamp>
 ## Full Health Check
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -sS http://localhost:8002/api/health | python3 -m json.tool
 ```
 
@@ -32,7 +32,7 @@ curl -sS http://localhost:8002/api/health | python3 -m json.tool
 ## Verify Dashboard State
 
 ```bash
-cd ~/automated-trading-platform
+cd ~/crypto-2.0
 curl -sS -w "\nHTTP Status: %{http_code}\n" "http://localhost:8002/api/dashboard/state" | head -50
 ```
 
