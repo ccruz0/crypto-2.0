@@ -254,6 +254,18 @@ def _resource_exhausted_backoff_s() -> int:
     return max(1, min(n, 120))
 
 
+def _bridge_model_chain() -> list[str]:
+    """
+    Ordered bridge model preference (cheap stable first, then stronger fallback).
+
+    Override via CURSOR_BRIDGE_MODEL_CHAIN="modelA,modelB,...".
+    """
+    raw = (os.environ.get("CURSOR_BRIDGE_MODEL_CHAIN") or "").strip()
+    if raw:
+        return [m.strip() for m in raw.split(",") if m.strip()]
+    return ["gpt-5.4-medium", "gpt-5.3-codex"]
+
+
 def _is_resource_exhausted_error(stderr_text: str) -> bool:
     s = (stderr_text or "").strip().lower()
     if not s:
@@ -625,108 +637,118 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
                 "Set CURSOR_API_KEY in runtime env for headless bridge runs."
             ),
         }
-    if "cursor-agent" in Path(cli).name:
-        args = [cli, "-p", "--output-format", "json", "--trust"]
-        if api_key:
-            args.extend(["--api-key", api_key])
-        args.append(prompt)
-    else:
-        args = [cli, "agent", "-p", "--output-format", "json", "--trust"]
-        if api_key:
-            args.extend(["--api-key", api_key])
-        args.append(prompt)
+    base_args = [cli, "-p", "--output-format", "json", "--trust"] if "cursor-agent" in Path(cli).name else [
+        cli, "agent", "-p", "--output-format", "json", "--trust"
+    ]
+    if api_key:
+        base_args.extend(["--api-key", api_key])
 
+    models = _bridge_model_chain()
     logger.info("CursorBridge: applying patch task_id=%s staging=%s", task_id, staging_path)
-    logger.info(
-        "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d",
-        task_id, staging_path, timeout, len(prompt),
-    )
-    logger.info(
-        "cursor_bridge: invoke mode=blocking subprocess.run capture_output=True cli=%s args_prefix=%s",
-        Path(cli).name,
-        " ".join(args[:5]),
-    )
-    _log_event("cursor_bridge_invoke_start", task_id=task_id, details={
-        "staging_path": str(staging_path),
-        "prompt_len": len(prompt),
-    })
-
     retries = _resource_exhausted_retries()
     base_backoff = _resource_exhausted_backoff_s()
     max_attempts = 1 + retries
 
-    for attempt in range(1, max_attempts + 1):
-        try:
-            with _cursor_bridge_global_invoke_lock():
-                result = subprocess.run(
-                    args,
-                    cwd=str(staging_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
-            output = (result.stdout or "").strip()
-            err_out = (result.stderr or "").strip()
-            success = result.returncode == 0
+    _log_event("cursor_bridge_invoke_start", task_id=task_id, details={
+        "staging_path": str(staging_path),
+        "prompt_len": len(prompt),
+        "model_chain": models,
+    })
+    last_failure: dict[str, Any] = {"success": False, "exit_code": -1, "output": "", "error": "invoke failed"}
+    for model_idx, model in enumerate(models, start=1):
+        args = [*base_args, "--model", model, prompt]
+        logger.info(
+            "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d model=%s model_attempt=%d/%d",
+            task_id, staging_path, timeout, len(prompt), model, model_idx, len(models),
+        )
+        logger.info(
+            "cursor_bridge: invoke mode=blocking subprocess.run capture_output=True cli=%s args_prefix=%s",
+            Path(cli).name,
+            " ".join(args[:7]),
+        )
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with _cursor_bridge_global_invoke_lock():
+                    result = subprocess.run(
+                        args,
+                        cwd=str(staging_path),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                output = (result.stdout or "").strip()
+                err_out = (result.stderr or "").strip()
+                success = result.returncode == 0
 
-            logger.info(
-                "cursor_bridge: CLI finished task_id=%s success=%s exit_code=%d output_len=%d attempt=%d/%d",
-                task_id, success, result.returncode, len(output), attempt, max_attempts,
-            )
-            if success:
-                _log_event(
-                    "cursor_bridge_invoke_done",
-                    task_id=task_id,
-                    details={"exit_code": result.returncode, "output_len": len(output), "success": True},
+                logger.info(
+                    "cursor_bridge: CLI finished task_id=%s success=%s exit_code=%d output_len=%d attempt=%d/%d model=%s",
+                    task_id, success, result.returncode, len(output), attempt, max_attempts, model,
                 )
-                return {
-                    "success": True,
+                if success:
+                    _log_event(
+                        "cursor_bridge_invoke_done",
+                        task_id=task_id,
+                        details={"exit_code": result.returncode, "output_len": len(output), "success": True, "model": model},
+                    )
+                    return {
+                        "success": True,
+                        "exit_code": result.returncode,
+                        "output": output,
+                        "error": None,
+                    }
+
+                if _is_resource_exhausted_error(err_out) and attempt < max_attempts:
+                    wait_s = min(base_backoff * attempt, 120)
+                    logger.warning(
+                        "cursor_bridge: resource_exhausted task_id=%s attempt=%d/%d model=%s; retrying in %ss",
+                        task_id, attempt, max_attempts, model, wait_s,
+                    )
+                    time.sleep(wait_s)
+                    continue
+
+                last_failure = {
+                    "success": False,
                     "exit_code": result.returncode,
                     "output": output,
-                    "error": None,
+                    "error": err_out,
+                }
+                break
+
+            except subprocess.TimeoutExpired:
+                logger.warning("cursor_bridge: CLI timeout task_id=%s after %ds model=%s", task_id, timeout, model)
+                _log_event("cursor_bridge_invoke_timeout", task_id=task_id, details={"timeout": timeout, "model": model})
+                return {
+                    "success": False,
+                    "exit_code": -1,
+                    "output": "",
+                    "error": f"timeout after {timeout}s",
+                }
+            except Exception as e:
+                logger.exception("cursor_bridge: invoke_cursor_cli failed task_id=%s model=%s", task_id, model)
+                _log_event("cursor_bridge_invoke_error", task_id=task_id, details={"error": str(e), "model": model})
+                return {
+                    "success": False,
+                    "exit_code": -1,
+                    "output": "",
+                    "error": str(e),
                 }
 
-            if _is_resource_exhausted_error(err_out) and attempt < max_attempts:
-                wait_s = min(base_backoff * attempt, 120)
-                logger.warning(
-                    "cursor_bridge: resource_exhausted task_id=%s attempt=%d/%d; retrying in %ss",
-                    task_id, attempt, max_attempts, wait_s,
-                )
-                time.sleep(wait_s)
-                continue
-
-            _log_event(
-                "cursor_bridge_invoke_failed",
-                task_id=task_id,
-                details={"exit_code": result.returncode, "output_len": len(output), "success": False},
+        if model_idx < len(models):
+            logger.warning(
+                "cursor_bridge: escalating model task_id=%s from=%s to=%s after failure",
+                task_id, model, models[model_idx],
             )
-            return {
-                "success": False,
-                "exit_code": result.returncode,
-                "output": output,
-                "error": err_out,
-            }
 
-        except subprocess.TimeoutExpired:
-            logger.warning("cursor_bridge: CLI timeout task_id=%s after %ds", task_id, timeout)
-            _log_event("cursor_bridge_invoke_timeout", task_id=task_id, details={"timeout": timeout})
-            return {
-                "success": False,
-                "exit_code": -1,
-                "output": "",
-                "error": f"timeout after {timeout}s",
-            }
-        except Exception as e:
-            logger.exception("cursor_bridge: invoke_cursor_cli failed task_id=%s", task_id)
-            _log_event("cursor_bridge_invoke_error", task_id=task_id, details={"error": str(e)})
-            return {
-                "success": False,
-                "exit_code": -1,
-                "output": "",
-                "error": str(e),
-            }
-
-    return {"success": False, "exit_code": -1, "output": "", "error": "invoke failed"}
+    _log_event(
+        "cursor_bridge_invoke_failed",
+        task_id=task_id,
+        details={
+            "exit_code": last_failure.get("exit_code"),
+            "output_len": len(last_failure.get("output") or ""),
+            "success": False,
+        },
+    )
+    return last_failure
 
 
 def cleanup_staging(task_id: str) -> bool:
