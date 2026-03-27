@@ -5,7 +5,7 @@
 ### Option 1: Check via API (Fastest - No Docker needed if backend is running)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./backend/scripts/check_etc_via_api.sh
 ```
 
@@ -14,7 +14,7 @@ This will check the current configuration via the API endpoint.
 ### Option 2: Run Diagnostic Script (Requires Database Access)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/check_etc_sell_alert.py
 ```
 
@@ -29,7 +29,7 @@ This will:
 ### Option 1: Run Fix Script (Recommended)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/fix_etc_sell_alerts.py
 ```
 

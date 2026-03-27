@@ -12,7 +12,7 @@ echo "5. Envía un mensaje de prueba en el canal (ej: 'test')"
 echo ""
 read -p "Presiona Enter cuando hayas completado los pasos 1-5..."
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 source scripts/ssh_key.sh 2>/dev/null
 
 echo ""

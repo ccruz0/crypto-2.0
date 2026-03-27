@@ -37,7 +37,7 @@
 **Archivo:** `.env` en la raíz del proyecto
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 nano .env
 ```
 
@@ -60,7 +60,7 @@ CRYPTO_COM_USE_SANDBOX=false
 ### 3. Reiniciar Backend
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile local restart backend
 ```
 
@@ -258,7 +258,7 @@ Una vez configurado correctamente:
 **CONFIGURA TU .ENV AHORA:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 nano .env
 ```
 

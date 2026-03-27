@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/carloscruz/automated-trading-platform/scripts/check-and-start-services.sh</string>
+        <string>/Users/carloscruz/crypto-2.0/scripts/check-and-start-services.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -18,6 +18,6 @@
     <key>StandardErrorPath</key>
     <string>/Users/carloscruz/Library/Logs/automated-trading-platform/start.error.log</string>
     <key>WorkingDirectory</key>
-    <string>/Users/carloscruz/automated-trading-platform</string>
+    <string>/Users/carloscruz/crypto-2.0</string>
 </dict>
 </plist>

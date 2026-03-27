@@ -104,7 +104,7 @@ curl -s -o /dev/null -w '%{http_code}' https://dashboard.hilovivo.com/api/health
 
 ### Run lifecycle tests
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 .venv/bin/python -m pytest backend/tests/test_task_health_monitor.py backend/tests/test_task_status_transition.py -v
 ```
 

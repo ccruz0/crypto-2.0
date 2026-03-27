@@ -73,7 +73,7 @@ systemctl status crypto-trading.service
 docker ps | grep backend-aws
 
 # Check BuyIndexMonitorService logs
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh | grep -i "BuyIndexMonitorService"
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh | grep -i "BuyIndexMonitorService"
 ```
 
 ## Expected Behavior

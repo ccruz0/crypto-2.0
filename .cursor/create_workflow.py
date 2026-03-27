@@ -35,7 +35,7 @@ CONTEXT
 ==================================================
 
 Project root (local):
-  /Users/carloscruz/automated-trading-platform
+  /Users/carloscruz/crypto-2.0
 
 Remote host (SSH config already set up):
   hilovivo-aws
@@ -170,7 +170,7 @@ END OF WORKFLOW PROMPT."""
 
 def main():
     """Create workflow configuration file."""
-    workspace_root = Path("/Users/carloscruz/automated-trading-platform")
+    workspace_root = Path("/Users/carloscruz/crypto-2.0")
     cursor_dir = workspace_root / ".cursor"
     cursor_dir.mkdir(exist_ok=True)
     

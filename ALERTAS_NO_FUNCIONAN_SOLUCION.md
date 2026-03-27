@@ -39,7 +39,7 @@ El backend se reinició automáticamente, PERO puede que necesites un **reinicio
 ### 1. Reinicia el Backend Completamente
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker-compose down backend
 docker-compose up -d backend
 ```

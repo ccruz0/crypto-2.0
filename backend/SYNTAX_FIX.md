@@ -35,7 +35,7 @@ if not DEBUG_DISABLE_EXCHANGE_SYNC:
 ✅ Backend restarted successfully  
 
 ## Files Modified
-- `/Users/carloscruz/automated-trading-platform/backend/app/main.py`
+- `/Users/carloscruz/crypto-2.0/backend/app/main.py`
 
 ## Testing
 ```bash

@@ -284,7 +284,7 @@ Common issues to check:
 
 ### Local Docker Testing
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile local up --build -d
 docker compose --profile local ps
 docker compose --profile local logs backend

@@ -25,7 +25,7 @@ This project now follows an **AWS-first development workflow**. All runtime serv
 
 1. **Edit Code Locally**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    # Edit files using your preferred editor
    ```
 

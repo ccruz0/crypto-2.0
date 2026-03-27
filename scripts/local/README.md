@@ -18,7 +18,7 @@ chmod +x scripts/local/analyze_trigger_probe_jsonl.py
 
 **Run matrix:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/local/run_trigger_probe_matrix.sh
 ```
 
@@ -30,7 +30,7 @@ Reads one or more probe JSONL files (paths or globs). Outputs: totals by schema;
 
 **Run analyzer:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 scripts/local/analyze_trigger_probe_jsonl.py /tmp/crypto_trigger_probe_*.jsonl
 ```
 

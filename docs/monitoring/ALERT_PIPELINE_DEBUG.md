@@ -40,7 +40,7 @@ Strategy → Monitor → Alert Helper (DB + Telegram) → Telegram Delivery
 From your Mac, run:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_alert_pipeline_remote.sh TON_USDT 30
 ```
 
@@ -92,7 +92,7 @@ Look for `[TELEGRAM_ERROR]` entries:
 From your Mac, check the monitoring API to see if alerts were saved to the database:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_monitoring_api_local.sh
 ```
 

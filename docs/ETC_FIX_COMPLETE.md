@@ -32,7 +32,7 @@ The `sell_alert_enabled` flag defaults to `False` and must be explicitly enabled
 
 ### Option 1: Fix ETC_USDT Only (Recommended)
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/fix_etc_sell_alerts.py
 ```
 

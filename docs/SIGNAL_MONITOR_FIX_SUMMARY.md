@@ -115,25 +115,25 @@ logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | p
 
 **1. Check SignalMonitorService lifecycle:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 200 | grep -E "\[SignalMonitorService\]|Starting Signal"
 ```
 
 **2. Check cycle summaries:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 500 | grep -E "\[DEBUG_SIGNAL_MONITOR\].*cycle="
 ```
 
 **3. Check alert emissions and throttling:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "\[ALERT_EMIT_FINAL\]|\[ALERT_THROTTLED\]" | tail -20
 ```
 
 **4. Run health check:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/check_runtime_health_aws.sh
 ```
 
@@ -186,7 +186,7 @@ bash scripts/check_runtime_health_aws.sh
 
 1. **Monitor logs for next BUY signal:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 200 -f | grep -E "\[ALERT_EMIT_FINAL\]|\[ALERT_THROTTLED\]|\[DEBUG_SIGNAL_MONITOR\].*cycle="
    ```
 

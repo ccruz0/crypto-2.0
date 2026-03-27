@@ -55,19 +55,19 @@
 
 ```bash
 # Run Week 5 tests
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m pytest tests/test_invariants_week5.py tests/test_dedup_week5.py tests/test_retry_circuit_week5.py -v
 
 # Run pipeline diagnostics (may FAIL if no DB/exchange env)
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
 
 # Week 5 health snapshot (last decisions, dedup count, circuit state)
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 PYTHONPATH=backend python3 scripts/run_week5_health_snapshot.py 2>&1
 
 # Git state
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git rev-parse HEAD
 git status
 ```

@@ -19,7 +19,7 @@ This workflow validates the complete path from signals → monitor → alerts �
 From your Mac:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/full_runtime_integrity_check_aws.sh
 ```
 
@@ -33,7 +33,7 @@ This script runs all checks sequentially and prints a clear summary.
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/check_runtime_health_aws.sh
 ```
 
@@ -51,7 +51,7 @@ bash scripts/check_runtime_health_aws.sh
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "DEBUG_SIGNAL_MONITOR|SignalMonitorService|_run_signal_monitor" | tail -50
 ```
 
@@ -68,7 +68,7 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "DEBUG_SIGNAL_MONITOR|Sig
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "DEBUG_STRATEGY_FINAL" | tail -40
 ```
 
@@ -85,7 +85,7 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "DEBUG_STRATEGY_FINAL" | 
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "ALERT_EMIT_FINAL|send_buy_signal|send_sell_signal" | tail -40
 ```
 
@@ -102,7 +102,7 @@ bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "ALERT_EMIT_FINAL|send_bu
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 2000 | grep -E "ALERT_THROTTLED" | tail -40
 ```
 
@@ -124,7 +124,7 @@ If alerts are being throttled incorrectly, review throttle rules in `signal_moni
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 5000 | grep -E "Traceback|Exception|ERROR" | tail -40
 ```
 
@@ -141,7 +141,7 @@ bash scripts/aws_backend_logs.sh --tail 5000 | grep -E "Traceback|Exception|ERRO
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ssh hilovivo-aws "cd automated-trading-platform && docker ps --format '{{.Names}} {{.Status}}'"
 ```
 
@@ -165,7 +165,7 @@ Wait 2-3 minutes, then re-run the health check.
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 400 | grep -E "CRYPTO_AUTH_DIAG|Proxy authentication error|API credentials not configured"
 ```
 
@@ -186,7 +186,7 @@ bash scripts/aws_backend_logs.sh --tail 400 | grep -E "CRYPTO_AUTH_DIAG|Proxy au
 
 **Command:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 400 | grep -E "telegram|409" | tail -40
 ```
 

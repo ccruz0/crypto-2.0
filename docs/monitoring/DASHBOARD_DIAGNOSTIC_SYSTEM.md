@@ -9,7 +9,7 @@ The dashboard diagnostic system provides a unified, automated workflow for diagn
 **From your local Mac:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 
@@ -228,7 +228,7 @@ The diagnostic script is designed to work with the [Dashboard Health Check Runbo
 ### Quick Health Check
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 

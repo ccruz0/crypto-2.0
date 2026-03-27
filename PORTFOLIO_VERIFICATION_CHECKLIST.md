@@ -13,7 +13,7 @@ Crypto.com Exchange "Portfolio balance" = NET equity (assets - borrowed), not gr
 
 ### 1. Enable Diagnostic Logging
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 export PORTFOLIO_DEBUG=1
 # Restart backend
 ```

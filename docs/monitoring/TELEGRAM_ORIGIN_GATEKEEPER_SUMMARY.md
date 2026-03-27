@@ -154,7 +154,7 @@ def send_sell_signal(
 
 **Run tests:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 poetry run pytest tests/test_telegram_alerts_origin.py -v
 ```
 

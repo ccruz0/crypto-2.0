@@ -106,7 +106,7 @@ Because SSM is ConnectionLost, the next step is **one of**:
 
 2. **Restore SSM on the Dashboard instance**, then re-run the automated check:  
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/openclaw/run_openclaw_check_via_ssm.sh
    ```  
    See: `docs/aws/RUNBOOK_SSM_PROD_CONNECTION_LOST.md` (or equivalent) for SSM recovery.

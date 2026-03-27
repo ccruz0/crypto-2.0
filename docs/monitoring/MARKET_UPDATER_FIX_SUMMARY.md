@@ -88,7 +88,7 @@ bash scripts/debug_dashboard_remote.sh
 
 ### 1. Verify Current Status
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 
@@ -102,7 +102,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws res
 **Option B: Full rebuild and restart (if you made changes to docker-compose.yml)**
 ```bash
 # Copy updated docker-compose.yml to AWS
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 scp docker-compose.yml hilovivo-aws:/home/ubuntu/crypto-2.0/
 
 # Rebuild and restart on AWS
@@ -116,7 +116,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws res
 
 ### 3. Verify After Restart
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 

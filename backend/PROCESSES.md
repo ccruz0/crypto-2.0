@@ -8,7 +8,7 @@ Sirve datos desde el cache compartido. **NUNCA** llama a APIs externas.
 
 ### Comando:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-reload
 ```
 
@@ -24,7 +24,7 @@ Actualiza datos desde APIs externas (Crypto.com, CoinGecko, etc.) con delays de 
 
 ### Comando:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 run_updater.py
 ```
 
@@ -80,13 +80,13 @@ Ejecuta ambos procesos en paralelo:
 
 **Terminal 1 (API Server):**
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-reload
 ```
 
 **Terminal 2 (Updater Worker):**
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 run_updater.py
 ```
 

@@ -62,7 +62,7 @@
 
 1. **Run Migration:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform && docker compose exec backend python scripts/migrate_add_order_skipped.py
+   cd /Users/carloscruz/crypto-2.0 && docker compose exec backend python scripts/migrate_add_order_skipped.py
    ```
    **Expected:** Column added, index created, verification shows column exists
 

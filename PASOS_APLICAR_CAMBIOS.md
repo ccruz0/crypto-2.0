@@ -34,13 +34,13 @@ open -a Docker
 
 **Si estás usando el perfil local:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile local restart backend
 ```
 
 **Si estás usando el perfil AWS:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile aws restart backend-aws
 ```
 

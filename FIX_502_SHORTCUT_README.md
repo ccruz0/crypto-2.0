@@ -65,7 +65,7 @@ ssh hilovivo-aws 'sudo tail -20 /var/log/nginx/error.log'
 Si necesitas recrear el acceso directo:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash create_502_shortcut.sh
 ```
 
@@ -80,7 +80,7 @@ bash create_502_shortcut.sh
 ### El acceso directo no se ejecuta
 - Verifica que el script `fix_502_dashboard.sh` tenga permisos de ejecución:
   ```bash
-  chmod +x /Users/carloscruz/automated-trading-platform/fix_502_dashboard.sh
+  chmod +x /Users/carloscruz/crypto-2.0/fix_502_dashboard.sh
   ```
 
 ### Cursor no se abre

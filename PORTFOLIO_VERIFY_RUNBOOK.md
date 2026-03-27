@@ -86,7 +86,7 @@ The dashboard portfolio response includes `portfolio_value_source` field indicat
 
 ### Step 1: Set Environment Variables
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 export ENABLE_DIAGNOSTICS_ENDPOINTS=1
 export DIAGNOSTICS_API_KEY="your-secret-key-here"  # Generate a secure random key
 export VERIFICATION_DEBUG=1  # Optional: for detailed logging
@@ -208,7 +208,7 @@ ssh hilovivo-aws 'curl -s -H "X-Diagnostics-Key: $DIAGNOSTICS_API_KEY" http://lo
 
 ### Basic Usage (Lite Endpoint)
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 export DIAGNOSTICS_API_KEY="your-secret-key-here"
 python -m tools.verify_portfolio
 ```

@@ -105,7 +105,7 @@ Cursor must:
 
 - **Read CloudWatch/docker logs:**
   ```bash
-  cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200
+  cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 200
   ```
 
 - **Search for expected markers:**

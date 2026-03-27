@@ -133,7 +133,7 @@ python3 backend/app/tools/audit_snapshot.py
 
 **Local**:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./scripts/audit_snapshot.sh
 # OR
 python3 backend/app/tools/audit_snapshot.py

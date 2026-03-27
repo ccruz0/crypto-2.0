@@ -29,7 +29,7 @@ Run these commands before committing a small change:
 
 ```bash
 # 1. Check overall diff size
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git show --stat
 
 # 2. Review actual changes (first 200 lines)
@@ -39,7 +39,7 @@ git show --word-diff | head -200
 python3 -m compileall backend/app -q
 
 # 4. Run relevant tests
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m pytest tests/test_environment.py -q
 ```
 

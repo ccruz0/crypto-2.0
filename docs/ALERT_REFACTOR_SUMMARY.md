@@ -131,7 +131,7 @@ END
 
 ### 2. Sync Code to AWS
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add .
 git commit -m "feat: Split alert button into Buy Alert and Sell Alert with full order creation support"
 git push

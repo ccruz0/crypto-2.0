@@ -137,7 +137,7 @@ docker compose --profile aws exec market-updater python3 -c \
 
 ### Diagnostic Script
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 
@@ -183,7 +183,7 @@ bash scripts/debug_dashboard_remote.sh
 The market-updater healthcheck is now fully integrated into the diagnostic workflow:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 

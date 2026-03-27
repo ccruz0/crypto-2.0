@@ -28,7 +28,7 @@ Assume:
 
 - **Local project path:**
   ```bash
-  cd /Users/carloscruz/automated-trading-platform
+  cd /Users/carloscruz/crypto-2.0
   ```
 
 - **Remote host:**
@@ -67,7 +67,7 @@ For any change you make:
 
 1. **Go to the project root:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    ```
 
 2. **Run backend tests:**
@@ -107,7 +107,7 @@ Once local tests and build pass:
 
 3. **Check backend logs for startup errors:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200
+   cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 200
    ```
 
 If anything fails to start, you must:
@@ -348,8 +348,8 @@ If you follow this workflow for every Watchlist-related task, each change will b
 
 ### Local Testing
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend && pytest -q
-cd /Users/carloscruz/automated-trading-platform/frontend && npm run lint && npm run build
+cd /Users/carloscruz/crypto-2.0/backend && pytest -q
+cd /Users/carloscruz/crypto-2.0/frontend && npm run lint && npm run build
 ```
 
 ### AWS Deployment

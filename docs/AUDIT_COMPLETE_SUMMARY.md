@@ -342,7 +342,7 @@ Expected message titles:
 
 ```bash
 # Run linting
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python -m pylint app/services/signal_monitor.py --disable=all --enable=unused-import
 
 # Run type checking

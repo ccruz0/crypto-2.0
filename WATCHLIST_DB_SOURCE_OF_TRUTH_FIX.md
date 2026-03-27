@@ -98,7 +98,7 @@ Created `backend/scripts/test_trade_amount_usd_consistency.py`:
 ### 1. Run the Test Script
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/test_trade_amount_usd_consistency.py
 ```
 
@@ -112,7 +112,7 @@ Expected output:
 ### 2. Run Consistency Check
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/watchlist_consistency_check.py
 ```
 

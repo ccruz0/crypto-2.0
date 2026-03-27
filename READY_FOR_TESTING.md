@@ -36,7 +36,7 @@
 
 ```bash
 # 1. Start local stack
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./dev_local.sh
 # OR
 docker compose --profile local up -d

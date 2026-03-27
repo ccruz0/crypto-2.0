@@ -63,11 +63,11 @@ Este documento define las **tareas de seguridad operativas** del proyecto. Está
 ### 2.1 Trivy (local)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 local/atp-frontend:ci || true
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 trivy fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 .
 ```
@@ -75,11 +75,11 @@ trivy fs --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 .
 ### 2.2 Regenerar constraints (backend)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 bash scripts/lock.sh
 
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 docker build --no-cache -t automated-trading-platform-backend:latest .
 ```
@@ -91,15 +91,15 @@ docker build --no-cache -t automated-trading-platform-backend:latest .
 ### 2.4 Compose (arranque/verificación)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose up -d --build
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose ps
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose logs -f backend
 ```

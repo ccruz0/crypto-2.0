@@ -187,7 +187,7 @@ The frontend form fields map to backend configuration as follows:
 
 ### Backend Tests
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 # Run all trading signals tests
 python -m pytest backend/tests/test_trading_signals_canonical.py -v
 python -m pytest backend/tests/test_swing_conservative_gating.py -v
@@ -198,13 +198,13 @@ python -m pytest backend/tests/test_swing_conservative_gating.py::test_price_bel
 
 ### Frontend Type Check
 ```bash
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 npm run type-check  # or npm run build
 ```
 
 ### Verify Configuration Migration
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 # Check that config loads correctly
 python -c "from app.services.config_loader import load_config; import json; print(json.dumps(load_config()['strategy_rules']['swing']['rules']['Conservative'], indent=2))"
 ```

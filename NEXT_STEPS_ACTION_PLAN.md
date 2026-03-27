@@ -19,7 +19,7 @@ Once Docker is running, execute:
 
 ```bash
 # Navigate to project directory
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Run comprehensive diagnostic
 docker compose exec backend-aws python scripts/diagnose_auth_40101.py

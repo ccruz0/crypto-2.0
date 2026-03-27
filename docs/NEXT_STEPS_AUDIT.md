@@ -7,7 +7,7 @@ Deploy the fixes to your AWS environment:
 
 ```bash
 # Build and deploy backend with new fixes
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker-compose build backend
 docker-compose up -d backend
 

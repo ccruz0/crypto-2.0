@@ -132,7 +132,7 @@ ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile 
 
 ```bash
 # 1. Commit and push locally
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add .
 git commit -m "Migration to v0.45: AWS-first development"
 git push origin main  # or develop
@@ -198,7 +198,7 @@ RUN_TELEGRAM=true
 ### 2. Commit and Push Local Changes
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add .
 git commit -m "Version 0.45: AWS-first development migration"
 git push origin main
@@ -235,7 +235,7 @@ ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'curl -s http://localhost:
 ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile aws logs backend-aws | grep -i \"Telegram\" | tail -10'"
 
 # Verify Telegram is disabled locally
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 -c "import sys; sys.path.insert(0, 'backend'); from app.services.telegram_notifier import telegram_notifier; print(f'Local Telegram enabled: {telegram_notifier.enabled}')"
 ```
 

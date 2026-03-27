@@ -66,7 +66,7 @@ tolerance_pct = 2.0 if strategy_type == StrategyType.SCALP else MA_TOLERANCE_PCT
 
 ```bash
 # Ver logs recientes de ALGO_USDT
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 200 | \
   grep -E "DEBUG_STRATEGY_FINAL.*ALGO_USDT|DEBUG_BUY_FLAGS.*ALGO_USDT" | \
   tail -5

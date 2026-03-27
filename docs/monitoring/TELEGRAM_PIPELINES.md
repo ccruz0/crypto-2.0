@@ -214,7 +214,7 @@ print(f"Send result: {success}")
 
 **Local:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
 docker compose exec backend python scripts/send_test_telegram_message.py
 ```
 

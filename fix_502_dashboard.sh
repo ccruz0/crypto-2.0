@@ -4,7 +4,7 @@
 # Este script abre el navegador, ejecuta diagnósticos y abre Cursor con archivos relevantes
 
 DASHBOARD_URL="https://dashboard.hilovivo.com"
-PROJECT_PATH="/Users/carloscruz/automated-trading-platform"
+PROJECT_PATH="/Users/carloscruz/crypto-2.0"
 CURSOR_APP="/Applications/Cursor.app"
 
 # Función para crear archivo de comandos y ejecutar comandos en Cursor terminal

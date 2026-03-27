@@ -132,7 +132,7 @@ npm run build
 1. **Backend container health:**
    ```bash
    sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose ps'"
-   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 50
+   cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 50
    ```
 
 2. **API endpoint responsiveness:**

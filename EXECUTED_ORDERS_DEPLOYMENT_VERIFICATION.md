@@ -32,7 +32,7 @@ useEffect(() => {
 ### Option 1: Automated Deployment (if SSH works)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./deploy_all_frontend.sh
 ```
 

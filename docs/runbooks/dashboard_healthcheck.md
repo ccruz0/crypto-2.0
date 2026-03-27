@@ -99,7 +99,7 @@ market-updater → depends_on: [db]
 **From your local Mac:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 
@@ -118,7 +118,7 @@ This script automatically checks:
 **From local Mac:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws ps'
 ```
 
@@ -187,7 +187,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exe
 **From local Mac:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Test API endpoint
 curl -v https://dashboard.hilovivo.com/api/config

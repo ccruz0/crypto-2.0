@@ -118,7 +118,7 @@ Busca el `"id"` dentro de `"chat"`.
 ## 📋 Paso 6: Reiniciar el Servicio Backend
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose restart backend
 ```
 

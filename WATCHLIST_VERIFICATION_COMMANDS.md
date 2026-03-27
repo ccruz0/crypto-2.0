@@ -2,7 +2,7 @@
 
 ## Quick Reference
 
-All commands should be run from the **repo root** (`/Users/carloscruz/automated-trading-platform`).
+All commands should be run from the **repo root** (`/Users/carloscruz/crypto-2.0`).
 
 ---
 
@@ -162,7 +162,7 @@ Created test item: TEST_10_USD with trade_amount_usd=10.0
 
 **Command**:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 echo "=== Regression Guard Tests (No API Required) ==="
 python3 -m pytest tests/test_watchlist_regression_guard.py -v

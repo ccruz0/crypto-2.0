@@ -129,7 +129,7 @@ Posibles causas:
 Ejecuta el script de diagnóstico (requiere acceso a la base de datos):
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/diagnose_open_orders_limit.py --symbol AAVE
 ```
 

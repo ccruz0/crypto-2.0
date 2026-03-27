@@ -72,7 +72,7 @@ You MUST:
 
 ### Local Testing
 ```bash
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 npm run lint
 npm run build
 npm run type-check  # if available
@@ -97,7 +97,7 @@ curl -s https://monitoring-ai-dashboard-nu.vercel.app/api/health
 
 ### Backend Logs
 ```bash
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 200
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 200
 ```
 
 ### Dashboard URL

@@ -46,7 +46,7 @@ The system uses `ETC_USDT` (not `ETC_USD`). Verify the symbol in the watchlist m
 ### Step 1: Run Diagnostic Script
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/check_etc_sell_alert.py
 ```
 

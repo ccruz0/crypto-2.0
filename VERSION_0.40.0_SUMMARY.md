@@ -74,7 +74,7 @@ None - This release is backward compatible with version 1.0.0
 
 ### Local Development
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile local down
 docker compose --profile local pull
 docker compose --profile local up -d db backend frontend
@@ -82,7 +82,7 @@ docker compose --profile local up -d db backend frontend
 
 ### AWS Deployment
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose --profile aws down
 docker compose --profile aws pull
 docker compose --profile aws up -d

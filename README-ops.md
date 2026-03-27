@@ -292,7 +292,7 @@ Local dev uses **`.env.local`** as the single source of truth for exchange crede
 **Método único: cargar con el loader y verificar (no imprime secretos):**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 source scripts/local/load_env_local.sh
 python3 - <<'PY'
 import os
@@ -306,7 +306,7 @@ PY
 **Check de caracteres invisibles (sin mostrar el secreto):**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 source scripts/local/load_env_local.sh
 python3 - <<'PY'
 import os
@@ -331,7 +331,7 @@ Diagnóstico ejecutable desde tu máquina: ejecuta un script dentro del contened
 **Comando básico:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws/run_diagnose_exchange_auth_aws.sh
 ```
 
@@ -346,7 +346,7 @@ REMOTE_HOST=47.x.x.x SSH_USER=ubuntu bash scripts/aws/run_diagnose_exchange_auth
 **Modo local:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/diagnose_exchange_auth.py
 ```
 
@@ -393,7 +393,7 @@ Crypto.com Exchange API keys are **IP-whitelisted**. Production traffic must com
 ### 1. Configurar secrets de Postgres
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 mkdir -p secrets
 
@@ -407,7 +407,7 @@ chmod 600 secrets/pg_password
 ### 2. Iniciar servicios
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose up -d --build
 ```
@@ -415,7 +415,7 @@ docker compose up -d --build
 ### 3. Verificar estado de servicios
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose ps
 ```
@@ -423,7 +423,7 @@ docker compose ps
 ### 4. Ver logs de base de datos
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 docker compose logs -f db
 ```
@@ -576,14 +576,14 @@ Verify the complete pipeline: Signal → Alert → Telegram → Trade Decision �
 ### Quick Start (DRY_RUN mode - safe, no real orders)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 make prod-e2e
 ```
 
 Or directly:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/verify_alerts_and_trading_e2e.sh --dry-run --symbol BTC_USDT
 ```
 
@@ -619,14 +619,14 @@ The report includes:
 ⚠️ **WARNING**: REAL mode places actual orders on Crypto.com exchange.
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 make prod-e2e-real SYMBOL=BTC_USDT
 ```
 
 Or directly:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/verify_alerts_and_trading_e2e.sh --real --symbol BTC_USDT
 ```
 
@@ -694,7 +694,7 @@ If the health check shows "HTTP 000000", this means:
 **Quick Diagnostics:**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Check backend status via SSM
 aws ssm send-command \

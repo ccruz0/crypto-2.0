@@ -4,7 +4,7 @@
 echo "🔍 Capturando chat_id del canal..."
 echo ""
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 source scripts/ssh_key.sh 2>/dev/null
 
 ssh_cmd hilovivo-aws "cd /home/ubuntu/crypto-2.0 && docker compose --profile aws exec -T backend-aws python3 << 'PYEOF'

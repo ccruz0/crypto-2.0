@@ -2,7 +2,7 @@
 # Remote execution script for watchlist consistency check
 #
 # Usage:
-#   cd /Users/carloscruz/automated-trading-platform
+#   cd /Users/carloscruz/crypto-2.0
 #   bash scripts/watchlist_consistency_remote.sh
 
 set -e

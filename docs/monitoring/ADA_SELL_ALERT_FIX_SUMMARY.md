@@ -250,7 +250,7 @@ logger.info(
 
 **Run tests:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 poetry run pytest tests/test_ada_sell_alert_flow.py -v
 ```
 

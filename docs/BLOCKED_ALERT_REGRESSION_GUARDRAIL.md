@@ -43,7 +43,7 @@ If ANY of the following patterns are found in Monitoring entries or backend logs
 
 3. **Docker logs (AWS):**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh 2>&1 | grep -E "(send_buy_signal verification|send_sell_signal verification|BLOQUEADO.*send_buy|BLOQUEADO.*send_sell)"
+   cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh 2>&1 | grep -E "(send_buy_signal verification|send_sell_signal verification|BLOQUEADO.*send_buy|BLOQUEADO.*send_sell)"
    ```
 
 ---

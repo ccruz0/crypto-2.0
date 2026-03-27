@@ -152,7 +152,7 @@ POSTGRES_PASSWORD=<contraseña_segura>
 **IMPORTANTE:** Debes agregar las siguientes variables a `.env.aws` antes de usar el sistema:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Editar .env.aws (o crearlo si no existe)
 nano .env.aws

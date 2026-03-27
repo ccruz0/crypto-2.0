@@ -38,7 +38,7 @@ https://dashboard.hilovivo.com
 
 **Opción B: Verificar vía API**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 curl -s http://localhost:8002/api/dashboard | python3 -m json.tool | grep -A 10 "BTC_USDT"
 ```
 
@@ -52,7 +52,7 @@ curl -s http://localhost:8002/api/dashboard | python3 -m json.tool | grep -A 10 
 
 Abre una terminal y ejecuta:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./check_watchlist_logs.sh
 ```
 
@@ -80,13 +80,13 @@ ps aux | grep "uvicorn app.main:app" | grep -v grep
 kill <PID>
 
 # Reiniciar
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload > backend.log 2>&1 &
 ```
 
 **Opción B: Si está en Docker**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker-compose restart backend
 ```
 
@@ -99,7 +99,7 @@ docker-compose restart backend
 ### 8. Verificar en la Base de Datos Directamente
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -c "
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem

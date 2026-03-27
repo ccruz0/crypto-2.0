@@ -65,7 +65,7 @@ The dashboard diagnostic workflow has been completely rebuilt to provide a unifi
 ### Quick Diagnostic
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 
@@ -145,7 +145,7 @@ bash scripts/debug_dashboard_remote.sh
 
 **To update documentation on AWS (if needed):**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 scp -r docs hilovivo-aws:/home/ubuntu/crypto-2.0/
 scp scripts/debug_dashboard_remote.sh hilovivo-aws:/home/ubuntu/crypto-2.0/scripts/
 ```

@@ -5,7 +5,7 @@ echo "📋 Revisando logs de Watchlist"
 echo "================================"
 echo ""
 
-LOG_FILE="/Users/carloscruz/automated-trading-platform/backend/backend.log"
+LOG_FILE="/Users/carloscruz/crypto-2.0/backend/backend.log"
 
 if [ ! -f "$LOG_FILE" ]; then
     echo "⚠️  Archivo de log no encontrado: $LOG_FILE"

@@ -7,7 +7,7 @@ This runbook: (1) build and push the wrapper image, (2) run it on LAB, (3) check
 ## 1. Build wrapper (from your Mac, in this repo)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker build -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .
 ```
 

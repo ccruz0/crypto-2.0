@@ -144,7 +144,7 @@ To verify with actual data, wait for new `telegram_messages` to be created (BUY/
 - `test-results/throttle_blocked.png` - Blocked messages
 - `test-results/monitor_final.png` - Final state
 
-**All screenshots are in**: `/Users/carloscruz/automated-trading-platform/frontend/test-results/`
+**All screenshots are in**: `/Users/carloscruz/crypto-2.0/frontend/test-results/`
 
 ---
 

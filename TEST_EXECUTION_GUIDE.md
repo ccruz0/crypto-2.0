@@ -6,7 +6,7 @@
 # 1. Start Docker Desktop (if not running)
 
 # 2. Start local stack
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./dev_local.sh
 
 # 3. Wait for services (verify they're running)

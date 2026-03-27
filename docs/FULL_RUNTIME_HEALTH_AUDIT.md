@@ -223,7 +223,7 @@ Last 5 messages from Monitoring API:
 
 From Mac:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/check_runtime_health_aws.sh
 ```
 
@@ -250,25 +250,25 @@ bash scripts/check_runtime_health_aws.sh
 
 1. **Investigate backend health check:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 200 | grep -i "health\|unhealthy"
    ```
 
 2. **Check why LDO_USD alerts didn't trigger:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "LDO_USD.*alert|LDO_USD.*throttle|LDO_USD.*buy_alert_enabled"
    ```
 
 3. **Monitor SignalMonitor logs in real-time:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 200 -f | grep -E "DEBUG_SIGNAL_MONITOR|ALERT_EMIT_FINAL|SignalMonitorService cycle"
    ```
 
 4. **Verify scheduler is running:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 500 | grep -E "SCHEDULER|scheduler.*started|run_scheduler"
    ```
 
@@ -295,19 +295,19 @@ The health check script (`backend/scripts/check_runtime_health.py`) has been cre
 ### Quick Health Check
 ```bash
 # Note: Script needs to be deployed to AWS first
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/check_runtime_health_aws.sh
 ```
 
 ### SignalMonitor Logs
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 200 | grep -E "DEBUG_SIGNAL_MONITOR|SignalMonitorService cycle|ALERT_EMIT_FINAL"
 ```
 
 ### Recent Alerts
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "ALERT_EMIT_FINAL|send_buy_signal|send_sell_signal" | tail -20
 ```
 

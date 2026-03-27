@@ -66,7 +66,7 @@ Cambios sin commitear:
 
 ### Cuando trabajas en Frontend:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 # Hacer cambios en src/, public/, etc.
 git add .
 git commit -m "tus cambios"
@@ -75,7 +75,7 @@ git push origin main  # Push al repo 'frontend'
 
 ### Cuando trabajas en Backend/Config:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 # Hacer cambios en backend/, scripts/, etc.
 git add .
 git commit -m "tus cambios"

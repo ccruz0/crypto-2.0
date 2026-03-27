@@ -1,7 +1,7 @@
 ============================= test session starts ==============================
 platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
 cachedir: .pytest_cache
-rootdir: /Users/carloscruz/automated-trading-platform/backend
+rootdir: /Users/carloscruz/crypto-2.0/backend
 plugins: anyio-4.9.0
 collecting ... collected 25 items
 

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 echo "Fetching /api/monitoring/telegram-messages from local backend..."
 echo ""

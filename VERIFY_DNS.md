@@ -10,7 +10,7 @@ cd ~/crypto-2.0
 ## Desde cualquier directorio
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && ./scripts/verify_dashboard_dns.sh
+cd /Users/carloscruz/crypto-2.0 && ./scripts/verify_dashboard_dns.sh
 ```
 
 ## Comandos rápidos de verificación

@@ -99,7 +99,7 @@ The biggest improvement in this release is the **dashboard optimization**. We've
 
 ### Local Development
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Stop all services
 docker compose --profile local down
@@ -114,7 +114,7 @@ curl http://localhost:8002/ | jq .version
 
 ### AWS Deployment
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Stop AWS services
 docker compose --profile aws down

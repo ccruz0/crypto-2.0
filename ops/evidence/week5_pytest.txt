@@ -1,7 +1,7 @@
 ============================= test session starts ==============================
 platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
 cachedir: .pytest_cache
-rootdir: /Users/carloscruz/automated-trading-platform/backend
+rootdir: /Users/carloscruz/crypto-2.0/backend
 plugins: anyio-4.9.0
 collecting ... collected 36 items
 
@@ -49,11 +49,11 @@ tests/test_retry_circuit_week5.py::test_get_telegram_circuit_singleton PASSED [1
     warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
 
 app/core/config.py:70
-  /Users/carloscruz/automated-trading-platform/backend/app/core/config.py:70: UserWarning: SECRET_KEY is not set or using default value. This is a security risk. Set SECRET_KEY in your environment variables. Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'
+  /Users/carloscruz/crypto-2.0/backend/app/core/config.py:70: UserWarning: SECRET_KEY is not set or using default value. This is a security risk. Set SECRET_KEY in your environment variables. Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'
     warnings.warn(
 
 app/database.py:105
-  /Users/carloscruz/automated-trading-platform/backend/app/database.py:105: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+  /Users/carloscruz/crypto-2.0/backend/app/database.py:105: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
     Base = declarative_base()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

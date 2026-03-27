@@ -9,7 +9,7 @@ Copy the prompt you need into Cursor (English) or into OpenClaw in the dashboard
 Paste this into Cursor to run the full audit in the repo.
 
 ```
-You are working in the repo /Users/carloscruz/automated-trading-platform (crypto-2.0 / ATP).
+You are working in the repo /Users/carloscruz/crypto-2.0 (crypto-2.0 / ATP).
 
 Goal
 - Read ALL documentation and configuration in this repo and produce an "Instance + Architecture Consistency Audit".

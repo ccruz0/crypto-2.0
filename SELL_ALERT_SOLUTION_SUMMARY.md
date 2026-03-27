@@ -10,7 +10,7 @@ The **`sell_alert_enabled` flag is disabled** for most/all symbols. This flag is
 
 ### Step 1: Enable Sell Alerts
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/enable_sell_alerts.py
 ```
 

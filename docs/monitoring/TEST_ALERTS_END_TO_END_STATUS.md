@@ -240,7 +240,7 @@ result = self.send_message(message.strip(), origin=origin)  # ✅ Passes origin
 
 From your Mac, run:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 500 | grep 'TEST_'
 ```
 

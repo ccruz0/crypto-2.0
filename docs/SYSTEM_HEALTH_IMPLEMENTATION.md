@@ -149,7 +149,7 @@ pytest tests/test_system_health.py -v
 
 ### Local Verification
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Test health endpoint
 curl http://localhost:8002/api/health/system | jq

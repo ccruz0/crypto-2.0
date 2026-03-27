@@ -67,7 +67,7 @@
 ### 1. Run Consistency Check
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/watchlist_consistency_check.py
 ```
 
@@ -79,7 +79,7 @@ python3 scripts/watchlist_consistency_check.py
 ### 2. Run E2E Verification
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/verify_watchlist_e2e.py
 ```
 

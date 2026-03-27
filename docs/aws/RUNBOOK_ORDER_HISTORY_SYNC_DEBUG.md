@@ -5,7 +5,7 @@ Use this after the **order history response parsing + diagnostic logging** chang
 ## 1. On your machine: commit and push (if not already)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add backend/app/services/brokers/crypto_com_trade.py
 git status
 git commit -m "fix: order history response parsing and add diagnostic logging"

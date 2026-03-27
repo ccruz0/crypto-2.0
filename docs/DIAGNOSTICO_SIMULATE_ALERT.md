@@ -92,7 +92,7 @@ Se envía notificación a Telegram cuando la orden se crea exitosamente, con det
 
 ### Opción 1: Usar el script de diagnóstico
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose exec backend python scripts/diagnose_simulate_alert.py AAVE_USDT
 ```
 

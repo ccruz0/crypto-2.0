@@ -5,7 +5,7 @@
 Tienes **DOS repositorios separados**:
 
 ### 1. **`crypto-2.0`** (Repositorio Principal)
-- **Ubicación local**: `/Users/carloscruz/automated-trading-platform`
+- **Ubicación local**: `/Users/carloscruz/crypto-2.0`
 - **GitHub**: `https://github.com/ccruz0/crypto-2.0`
 - **Contiene**:
   - ✅ `backend/` - Código Python/FastAPI
@@ -17,7 +17,7 @@ Tienes **DOS repositorios separados**:
   - ✅ Archivos de configuración del proyecto
 
 ### 2. **`frontend`** (Repositorio Separado)
-- **Ubicación local**: `/Users/carloscruz/automated-trading-platform/frontend`
+- **Ubicación local**: `/Users/carloscruz/crypto-2.0/frontend`
 - **GitHub**: `https://github.com/ccruz0/frontend` (probablemente)
 - **Contiene**:
   - ✅ Código Next.js/TypeScript
@@ -64,7 +64,7 @@ frontend/
 ### Cuando trabajas en **Backend** o **Configuración**:
 ```bash
 # Estás en: automated-trading-platform/
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Hacer cambios en backend, scripts, workflows, etc.
 git add .
@@ -75,13 +75,13 @@ git push origin main
 ### Cuando trabajas en **Frontend**:
 ```bash
 # Opción 1: Trabajar directamente en el repo frontend
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 git add .
 git commit -m "cambios en frontend"
 git push origin main  # o la rama que uses
 
 # Opción 2: Si quieres actualizar el repo principal también
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add frontend  # Esto actualiza la referencia al submodule
 git commit -m "update frontend submodule"
 git push origin main
@@ -117,11 +117,11 @@ Si quieres unificar todo en `crypto-2.0`:
 
 ```bash
 # 1. Eliminar el .git de frontend
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 rm -rf .git
 
 # 2. Agregar frontend al repo principal
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add frontend/
 git commit -m "unify: move frontend into main repository"
 git push origin main

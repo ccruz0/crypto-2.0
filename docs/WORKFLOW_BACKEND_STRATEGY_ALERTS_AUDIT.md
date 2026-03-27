@@ -154,7 +154,7 @@ Whenever this workflow is invoked for a backend-related problem (alerts, strateg
 
   - **Inspect logs for validation:**
     ```bash
-    cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER"
+    cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER"
     ```
 
   - **Validate each rule against logs and test scenarios:**
@@ -238,14 +238,14 @@ Whenever this workflow is invoked for a backend-related problem (alerts, strateg
 
 ### Local Testing
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 pytest -q
 pytest tests/test_trading_signals.py -v  # Example targeted test
 ```
 
 ### Local Backend Run
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose up backend -d
 # Or: python -m uvicorn app.main:app --reload
 ```
@@ -271,7 +271,7 @@ curl -s https://monitoring-ai-dashboard-nu.vercel.app/api/health
 
 ### AWS Backend Logs
 ```bash
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER'
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 500 | grep -E 'DEBUG_STRATEGY_FINAL|DEBUG_BUY_FLAGS|DEBUG_RESOLVED_PROFILE|STRATEGY_DEBUG_MARKER'
 ```
 
 ### AWS API Tests

@@ -34,7 +34,7 @@ These env vars are loaded from `.env.aws` (via `env_file`) or can be set via env
 ### Run Verification
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./verify_portfolio_aws.sh
 ```
 
@@ -121,7 +121,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && \
 Before deploying, validate the implementation locally:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python -m tools.self_check_portfolio_verify
 ```
 

@@ -305,7 +305,7 @@ elif my_chat_member:
 
 1. **Start backend with diagnostics:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    export TELEGRAM_DIAGNOSTICS=1
    docker compose --profile local up backend
    ```

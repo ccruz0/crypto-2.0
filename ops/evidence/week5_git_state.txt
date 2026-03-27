@@ -1,5 +1,5 @@
 # Week 5 git state
-# Command: cd /Users/carloscruz/automated-trading-platform && git rev-parse HEAD && git status
+# Command: cd /Users/carloscruz/crypto-2.0 && git rev-parse HEAD && git status
 
 1c5dedf6f26ac4a3c090adba6f8b590ba5998885
 On branch main

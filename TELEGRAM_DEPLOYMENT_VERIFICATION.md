@@ -4,9 +4,9 @@
 
 ### 1. Local Repository Status
 ```bash
-cd /Users/carloscruz/automated-trading-platform && git status --short
-cd /Users/carloscruz/automated-trading-platform && git log --oneline -1
-cd /Users/carloscruz/automated-trading-platform && git push
+cd /Users/carloscruz/crypto-2.0 && git status --short
+cd /Users/carloscruz/crypto-2.0 && git log --oneline -1
+cd /Users/carloscruz/crypto-2.0 && git push
 ```
 **Result:** Commit `fa6c534` pushed successfully
 

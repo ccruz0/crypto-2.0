@@ -53,7 +53,7 @@ portfolio?: {
 ## Quick Verification
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 export PORTFOLIO_DEBUG=1
 # Restart backend, reload dashboard
 # Compare "Total Value" with Crypto.com "Portfolio balance"

@@ -4,7 +4,7 @@ node:internal/modules/cjs/loader:1368
 
 Error: Cannot find module 'playwright'
 Require stack:
-- /Users/carloscruz/automated-trading-platform/debug_hanging.js
+- /Users/carloscruz/crypto-2.0/debug_hanging.js
     at Function._resolveFilename (node:internal/modules/cjs/loader:1365:15)
     at defaultResolveImpl (node:internal/modules/cjs/loader:1021:19)
     at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1026:22)
@@ -13,10 +13,10 @@ Require stack:
     at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)
     at Module.require (node:internal/modules/cjs/loader:1445:12)
     at require (node:internal/modules/helpers:135:16)
-    at Object.<anonymous> (/Users/carloscruz/automated-trading-platform/debug_hanging.js:1:22)
+    at Object.<anonymous> (/Users/carloscruz/crypto-2.0/debug_hanging.js:1:22)
     at Module._compile (node:internal/modules/cjs/loader:1688:14) {
   code: 'MODULE_NOT_FOUND',
-  requireStack: [ '/Users/carloscruz/automated-trading-platform/debug_hanging.js' ]
+  requireStack: [ '/Users/carloscruz/crypto-2.0/debug_hanging.js' ]
 }
 
 Node.js v22.18.0

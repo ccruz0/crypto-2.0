@@ -14,7 +14,7 @@ Both are idempotent (safe to run multiple times).
 From your Mac terminal:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && docker compose exec backend python scripts/migrate_add_order_skipped.py
+cd /Users/carloscruz/crypto-2.0 && docker compose exec backend python scripts/migrate_add_order_skipped.py
 ```
 
 **Expected output:**
@@ -28,12 +28,12 @@ INFO: ✅ Migration completed successfully!
 
 **Verify locally:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && docker compose exec db psql -U trader -d atp -c "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = 'telegram_messages' AND column_name = 'order_skipped';"
+cd /Users/carloscruz/crypto-2.0 && docker compose exec db psql -U trader -d atp -c "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = 'telegram_messages' AND column_name = 'order_skipped';"
 ```
 
 **Check existing rows:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && docker compose exec db psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 60) as msg FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"
+cd /Users/carloscruz/crypto-2.0 && docker compose exec db psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 60) as msg FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"
 ```
 
 All existing rows should have `order_skipped = false`.

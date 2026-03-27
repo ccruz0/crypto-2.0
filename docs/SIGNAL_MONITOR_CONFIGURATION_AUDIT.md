@@ -156,14 +156,14 @@ sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker exec automated-tra
 ### Step 2: Check Startup Logs
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 500 | grep -E "Starting Signal|Signal monitor service|Failed to start signal monitor|PERF: Signal monitor service DISABLED"
 ```
 
 ### Step 3: Verify Service is Running
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 1000 | grep -E "DEBUG_SIGNAL_MONITOR|SignalMonitorService cycle" | tail -10
 ```
 
@@ -249,7 +249,7 @@ The service is:
 
 2. **Backend Stability:** Investigate why backend processes are dying:
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 500 | grep -E "Traceback|Exception|ERROR|Fatal" | tail -50
    ```
 

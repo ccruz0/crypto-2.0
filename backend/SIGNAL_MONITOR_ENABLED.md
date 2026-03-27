@@ -71,7 +71,7 @@ Every 30 seconds, the Signal Monitor will:
 ## Logs to Watch
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh -f | grep signal_monitor
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh -f | grep signal_monitor
 ```
 
 Expected logs:

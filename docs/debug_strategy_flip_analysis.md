@@ -21,7 +21,7 @@ Attempted to capture FLIP DETECTED events for `ALGO_USDT` using the remote debug
 
 ```bash
 # From Mac terminal
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_strategy_remote.sh ALGO_USDT 100
 ```
 
@@ -71,7 +71,7 @@ To capture FLIP DETECTED events:
 
 1. **Verify Logging Configuration**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh 2>&1 | grep -i 'log.*level\|logging' | head -5
+   cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh 2>&1 | grep -i 'log.*level\|logging' | head -5
    ```
 
 2. **Trigger Strategy Evaluation**

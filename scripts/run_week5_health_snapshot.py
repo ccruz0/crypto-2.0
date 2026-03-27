@@ -2,7 +2,7 @@
 """
 Week 5 health snapshot: last N decisions by symbol, dedup_events count, circuit breaker state.
 Lightweight; no heavy dependencies. Run from repo root:
-  cd /Users/carloscruz/automated-trading-platform
+  cd /Users/carloscruz/crypto-2.0
   PYTHONPATH=backend python3 scripts/run_week5_health_snapshot.py
 """
 from __future__ import annotations

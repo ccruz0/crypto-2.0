@@ -45,15 +45,15 @@
 
 ```bash
 # File evidence
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 rg -n "tp_sl|trigger_condition|Invalid price format|API_DISABLED|Error 308|140001|place_.*order" backend/app > ops/evidence/week6_file_checks.txt
 
 # Week 6 tests
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m pytest tests/test_exchange_formatting_week6.py tests/test_tp_sl_week6.py -v | tee ../ops/evidence/week6_pytest.txt
 
 # Git state
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ( git rev-parse HEAD && git status --porcelain ) > ops/evidence/week6_git_state.txt
 ```
 

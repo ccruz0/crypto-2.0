@@ -31,7 +31,7 @@ This stress test proves that BTC alerts cannot bypass throttle in runtime. It us
 ### Runtime Script
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 backend/scripts/debug_btc_throttle_runtime.py
 ```
 

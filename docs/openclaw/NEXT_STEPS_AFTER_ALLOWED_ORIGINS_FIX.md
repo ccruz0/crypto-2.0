@@ -26,7 +26,7 @@ git push origin main
 Si usas la imagen wrapper `openclaw-with-origins` / `ghcr.io/ccruz0/openclaw:with-origins`, vuelve a construirla desde la nueva base:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker build -f openclaw/Dockerfile.openclaw -t openclaw-with-origins:latest .
 docker tag openclaw-with-origins:latest ghcr.io/ccruz0/openclaw:with-origins
 docker push ghcr.io/ccruz0/openclaw:with-origins

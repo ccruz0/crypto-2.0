@@ -148,7 +148,7 @@ def main():
         print("❌ No se pudo conectar al backend")
         print("\n💡 SOLUCIONES:")
         print("   1. Inicia el backend localmente:")
-        print("      cd /Users/carloscruz/automated-trading-platform")
+        print("      cd /Users/carloscruz/crypto-2.0")
         print("      docker-compose up -d backend")
         print("\n   2. O verifica que el backend esté corriendo y que las variables")
         print("      de entorno API_BASE_URL o PUBLIC_BASE_URL estén configuradas")

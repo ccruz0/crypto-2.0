@@ -179,7 +179,7 @@ Updated `/etc/nginx/sites-available/*`:
 
 1. **Local Testing:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    docker compose up backend
    curl http://localhost:8002/ping_fast
    curl http://localhost:8002/api/dashboard/snapshot

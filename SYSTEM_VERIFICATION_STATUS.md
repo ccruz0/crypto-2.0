@@ -61,7 +61,7 @@ This has been fixed. Current state:
 
 1. **Enable Debug Mode**:
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    export PORTFOLIO_DEBUG=1
    # Restart backend
    ```

@@ -100,7 +100,7 @@ Frontend receives exact DB value (write-through confirmed)
 
 **Run**:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/verify_watchlist_e2e.py
 ```
 
@@ -113,7 +113,7 @@ python scripts/verify_watchlist_e2e.py
 
 **Run**:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/watchlist_consistency_check.py
 ```
 
@@ -128,7 +128,7 @@ python scripts/watchlist_consistency_check.py
 
 **Run**:
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/test_trade_amount_usd_consistency.py
 ```
 
@@ -140,7 +140,7 @@ python scripts/test_trade_amount_usd_consistency.py
 
 ```bash
 # Check DB value
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python -c "
 from app.database import SessionLocal
 from app.models.watchlist import WatchlistItem
@@ -234,7 +234,7 @@ curl -s http://localhost:8002/api/dashboard | jq '.[] | select(.symbol=="ADA_USD
 Run all verification scripts in sequence:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 # 1. End-to-end verification
 echo "=== E2E Verification ==="

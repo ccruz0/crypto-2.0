@@ -76,7 +76,7 @@ Timestamp:         2025-01-18T12:34:56.789Z
 
 ### Local
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 export ENABLE_DIAGNOSTICS_ENDPOINTS=1
 export VERIFICATION_DEBUG=1
 # Start backend
@@ -91,7 +91,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && curl -s http://localhost:8000/ap
 
 ### CLI Tool
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python -m tools.verify_portfolio
 python -m tools.verify_portfolio --endpoint https://dashboard.hilovivo.com
 python -m tools.verify_portfolio --json

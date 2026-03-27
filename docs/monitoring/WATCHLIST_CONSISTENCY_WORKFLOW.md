@@ -36,7 +36,7 @@ The workflow classifies each field comparison as:
 ### From Local Machine
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/watchlist_consistency_remote.sh
 ```
 

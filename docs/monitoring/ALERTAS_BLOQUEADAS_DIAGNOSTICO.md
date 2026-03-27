@@ -95,7 +95,7 @@ El sistema tiene **3 puntos principales** donde las alertas pueden ser bloqueada
 ### Paso 1: Verificar Configuración en AWS
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|APP_ENV)"'
 ```
 
@@ -108,7 +108,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws 
 ### Paso 2: Revisar Logs del Gatekeeper
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_alert_pipeline_remote.sh TON_USDT 30
 ```
 
@@ -162,7 +162,7 @@ ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose logs backend-aws 
 ### Verificar estado completo del sistema de alertas:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # 1. Ver configuración
 ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec backend-aws env | grep -E "(RUN_TELEGRAM|TELEGRAM|APP_ENV)"'
@@ -257,7 +257,7 @@ Si hay problemas:
 Para verificar manualmente la configuración de Telegram:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && docker compose exec -T backend-aws python -c "from app.services.telegram_health import check_telegram_health; check_telegram_health(origin=\"manual_check\")"'
 ```
 

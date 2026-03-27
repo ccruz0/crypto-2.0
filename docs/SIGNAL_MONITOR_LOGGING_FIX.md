@@ -112,7 +112,7 @@ logger.info(f"[ALERT_EMIT_FINAL] symbol={symbol} | side=BUY | status=success | p
 **From Mac:**
 ```bash
 # Check SignalMonitorService lifecycle
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/aws_backend_logs.sh --tail 200 | grep -E "\[SignalMonitorService\]|Starting Signal"
 
 # Check cycle summaries

@@ -145,7 +145,7 @@ After enabling these settings, the next TON alert will automatically create a bu
 
 1. **Check Recent Logs for Successful Alert:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/aws_backend_logs.sh --tail 100000 | grep -i "TON_USDT" | grep -E "(✅ BUY alert sent|Checking order creation|MA validation|Portfolio value|Cannot create|ORDEN NO EJECUTADA)" | tail -50
    ```
 

@@ -3,13 +3,13 @@
 ## 1. Run Migration Locally
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && docker compose exec backend python scripts/migrate_add_order_skipped.py
+cd /Users/carloscruz/crypto-2.0 && docker compose exec backend python scripts/migrate_add_order_skipped.py
 ```
 
 ## 2. Verify Locally
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && docker compose exec db psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 60) as msg FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"
+cd /Users/carloscruz/crypto-2.0 && docker compose exec db psql -U trader -d atp -c "SELECT id, symbol, blocked, order_skipped, LEFT(message, 60) as msg FROM telegram_messages ORDER BY timestamp DESC LIMIT 5;"
 ```
 
 ## 3. Run Migration on AWS

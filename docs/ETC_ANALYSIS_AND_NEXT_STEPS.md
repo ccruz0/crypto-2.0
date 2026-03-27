@@ -71,7 +71,7 @@ If you want to run locally, start Docker services first:
 
 ```bash
 # Start Docker services
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 docker compose up -d
 
 # Wait for services to be ready

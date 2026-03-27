@@ -1,7 +1,7 @@
 ============================= test session starts ==============================
 platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Applications/Xcode.app/Contents/Developer/usr/bin/python3
 cachedir: .pytest_cache
-rootdir: /Users/carloscruz/automated-trading-platform/backend
+rootdir: /Users/carloscruz/crypto-2.0/backend
 plugins: anyio-4.9.0
 collecting ... collected 22 items
 
@@ -33,4 +33,4 @@ tests/test_pipeline_logging_week4.py::TestFormatCriticalFailure::test_used_in_lo
 
 ======================== 22 passed, 6 warnings in 0.45s ========================
 
-Command run: cd /Users/carloscruz/automated-trading-platform/backend && python3 -m pytest tests/test_exchange_sync_order_history_decimal.py tests/test_pipeline_logging_week4.py -v 2>&1
+Command run: cd /Users/carloscruz/crypto-2.0/backend && python3 -m pytest tests/test_exchange_sync_order_history_decimal.py tests/test_pipeline_logging_week4.py -v 2>&1

@@ -28,7 +28,7 @@ The fastest way to set up local Telegram testing:
 Run the bootstrap script to extract chat_id and test sendMessage:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 # Set your DEV bot token
 export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token_here"
@@ -155,7 +155,7 @@ export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token_here"
 
 2. **Run the diagnostic script:**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform/backend
+   cd /Users/carloscruz/crypto-2.0/backend
    export TELEGRAM_BOT_TOKEN_DEV="your_dev_bot_token"
    python3 scripts/telegram_chat_id_doctor.py
    ```
@@ -182,7 +182,7 @@ Expected: `✅ SUCCESS: Message sent (message_id: ...)`
 
 ```bash
 # Terminal 1: Start backend
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 export DATABASE_URL="postgresql://trader:traderpass@localhost:5432/atp"
 export ENVIRONMENT="local"
 export RUN_TELEGRAM="true"
@@ -249,7 +249,7 @@ If you see "409 Conflict" errors:
 **Option A: Use the diagnostic script (recommended)**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 export TELEGRAM_BOT_TOKEN_LOCAL="your_token"
 python3 scripts/telegram_chat_id_doctor.py
 ```
@@ -291,7 +291,7 @@ Expected: `✅ SUCCESS: Message sent (message_id: ...)`
 
 ```bash
 # Terminal 1: Start backend
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 export DATABASE_URL="postgresql://trader:traderpass@localhost:5432/atp"
 export ENVIRONMENT="local"
 export TELEGRAM_BOT_TOKEN_LOCAL="your_token"

@@ -212,7 +212,7 @@ If the dashboard at https://dashboard.hilovivo.com is not loading:
 
 1. **Quick diagnostic**: Run the automated diagnostic script:
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    bash scripts/debug_dashboard_remote.sh
    ```
 

@@ -6,7 +6,7 @@ set +x 2>/dev/null || true
 # Execute from repo root. No secrets printed.
 #
 # Usage:
-#   cd /Users/carloscruz/automated-trading-platform
+#   cd /Users/carloscruz/crypto-2.0
 #   bash scripts/aws/run_diagnose_exchange_auth_aws.sh
 
 REMOTE_HOST="${REMOTE_HOST:-hilovivo-aws}"

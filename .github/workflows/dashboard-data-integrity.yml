@@ -253,7 +253,7 @@ jobs:
               "4. Commit changes with message: \\"fix: resolve dashboard data integrity issues\\"\\n" +
               "5. Deploy after verification\\n\\n" +
               "To re-run the workflow:\\n" +
-              "cd /Users/carloscruz/automated-trading-platform\\n" +
+              "cd /Users/carloscruz/crypto-2.0\\n" +
               "git push origin main";
           } else {
             report.cursor_prompt = "No inconsistencies found. Dashboard data integrity is valid.";

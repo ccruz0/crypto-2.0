@@ -7,7 +7,7 @@ Comandos que funcionan desde tu **Mac** vs desde **PROD** (SSM/SSH).
 ## Desde tu Mac (ruta local)
 
 ```bash
-cd ~/crypto-2.0   # En Mac: /Users/carloscruz/automated-trading-platform
+cd ~/crypto-2.0   # En Mac: /Users/carloscruz/crypto-2.0
 ```
 
 **No uses** `/home/ubuntu/...` en Mac — esa ruta es de Linux (PROD).

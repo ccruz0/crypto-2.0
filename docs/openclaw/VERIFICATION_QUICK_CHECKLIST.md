@@ -24,7 +24,7 @@ No hay forma de comprobarlo desde el código; es solo configuración en la UI de
 **Comandos (desde el repo en tu máquina):**
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git fetch origin main
 git checkout -b test/path-guard-verify origin/main
 

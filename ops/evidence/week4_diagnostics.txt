@@ -1,5 +1,5 @@
 # Week 4 pipeline diagnostics run
-# Command: cd /Users/carloscruz/automated-trading-platform && PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
+# Command: cd /Users/carloscruz/crypto-2.0 && PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
 
 # The script executed and produced exit code 1 (OVERALL: FAIL).
 # This is expected when run locally without a configured DB or exchange (e.g. no .env, or DB not running).

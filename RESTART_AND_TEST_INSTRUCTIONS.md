@@ -4,7 +4,7 @@
 
 ### Option 1: Automated Script (Recommended)
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./restart_and_test.sh
 ```
 

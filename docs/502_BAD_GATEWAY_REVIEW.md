@@ -48,7 +48,7 @@ Based on your nginx configuration (`nginx/dashboard.conf`):
 The fastest way to diagnose the issue:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 bash scripts/debug_dashboard_remote.sh
 ```
 

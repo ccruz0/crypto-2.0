@@ -134,7 +134,7 @@ echo ""
 
 echo "5️⃣ Revisando logs del backend..."
 echo "   Buscando [WATCHLIST_UPDATE] y [WATCHLIST_PROTECT]..."
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 if [ -f backend.log ]; then
     echo "   Últimas líneas relevantes:"
     tail -50 backend.log | grep -E "WATCHLIST_UPDATE|WATCHLIST_PROTECT" | tail -10 || echo "   No se encontraron logs de watchlist aún"

@@ -37,7 +37,7 @@
 **To run tests**:
 ```bash
 # 1. Start local stack (backend + frontend + database)
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 # Option A: Use docker-compose
 docker-compose up -d
 # Option B: Use start scripts

@@ -59,7 +59,7 @@
 ## B) Canonical Command List
 
 All commands use the format:
-- **Local:** `cd /Users/carloscruz/automated-trading-platform && sh -c "..."`
+- **Local:** `cd /Users/carloscruz/crypto-2.0 && sh -c "..."`
 - **Remote AWS:** `ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c '...'"`
 
 ### Start/Restart Dev Stack
@@ -95,7 +95,7 @@ ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile 
 
 ```bash
 # Step 1: Commit and push locally
-cd /Users/carloscruz/automated-trading-platform && sh -c "git add . && git commit -m 'Version 0.45: AWS-first development migration' && git push origin main"
+cd /Users/carloscruz/crypto-2.0 && sh -c "git add . && git commit -m 'Version 0.45: AWS-first development migration' && git push origin main"
 
 # Step 2: Pull and rebuild on AWS
 ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
@@ -105,7 +105,7 @@ ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git c
 
 ```bash
 # Step 1: Merge to main (if using develop branch)
-cd /Users/carloscruz/automated-trading-platform && sh -c "git checkout main && git merge develop && git push origin main"
+cd /Users/carloscruz/crypto-2.0 && sh -c "git checkout main && git merge develop && git push origin main"
 
 # Step 2: Deploy on AWS
 ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'git fetch origin && git checkout main && git pull origin main && docker compose --profile aws down && docker compose --profile aws up -d --build'"
@@ -158,7 +158,7 @@ ssh hilovivo-aws "cd /home/ubuntu/crypto-2.0 && sh -c 'docker compose --profile 
 ### Verify Local Telegram Disabled
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "python3 -c 'import sys; sys.path.insert(0, \"backend\"); from app.services.telegram_notifier import telegram_notifier; print(f\"Local Telegram enabled: {telegram_notifier.enabled}\")'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "python3 -c 'import sys; sys.path.insert(0, \"backend\"); from app.services.telegram_notifier import telegram_notifier; print(f\"Local Telegram enabled: {telegram_notifier.enabled}\")'"
 ```
 
 **Expected output:** `Local Telegram enabled: False`
@@ -170,7 +170,7 @@ cd /Users/carloscruz/automated-trading-platform && sh -c "python3 -c 'import sys
 ### 1. Commit and Push Local Changes
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "git add . && git commit -m 'Version 0.45: AWS-first development migration - Telegram AWS-only, local Docker disabled' && git push origin main"
+cd /Users/carloscruz/crypto-2.0 && sh -c "git add . && git commit -m 'Version 0.45: AWS-first development migration - Telegram AWS-only, local Docker disabled' && git push origin main"
 ```
 
 ### 2. Update AWS Codebase to v0.45

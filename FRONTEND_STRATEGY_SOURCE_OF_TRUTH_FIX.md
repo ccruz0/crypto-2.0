@@ -118,7 +118,7 @@ curl -s http://localhost:8002/api/dashboard | jq '.[] | select(.symbol=="ADA_USD
 ### 3. Consistency Check
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/watchlist_consistency_check.py
 ```
 

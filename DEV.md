@@ -13,7 +13,7 @@ This guide explains how to set up and run the application locally for fast devel
 ### 1. Setup Environment Variables
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Copy the example env file for local development
 cp .env.local.example .env.local
@@ -36,7 +36,7 @@ nano .env.local  # or use your preferred editor
 ### 2. Start Services
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Start all services (database, backend, frontend)
 docker compose --profile local up -d
@@ -81,7 +81,7 @@ The frontend uses Next.js rewrites to proxy API requests to the backend during d
 ### 5. Verify Services are Running
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Check container status
 docker compose --profile local ps
@@ -121,7 +121,7 @@ Both frontend and backend support hot reload:
 ### Viewing Logs
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # All services
 docker compose --profile local logs -f
@@ -139,7 +139,7 @@ docker compose --profile local logs -f db
 ### Stopping Services
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Stop services (containers remain)
 docker compose --profile local stop
@@ -154,7 +154,7 @@ docker compose --profile local down -v
 ### Restarting Services
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Restart all services
 docker compose --profile local restart
@@ -169,7 +169,7 @@ docker compose --profile local restart frontend
 ### Accessing the Database
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Connect to PostgreSQL via Docker
 docker compose --profile local exec db psql -U trader -d atp
@@ -186,7 +186,7 @@ docker compose --profile local exec db psql -U trader -d atp
 ### Running Migrations
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Execute migration script inside backend container
 docker compose --profile local exec backend python scripts/your_migration.py
@@ -347,7 +347,7 @@ If you get out of memory errors:
 ## Common Commands Reference
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Start services
 docker compose --profile local up -d

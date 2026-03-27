@@ -29,7 +29,7 @@
 
 1. **Commit Local Changes**
    ```bash
-   cd /Users/carloscruz/automated-trading-platform
+   cd /Users/carloscruz/crypto-2.0
    git add .
    git commit -m "Version 0.45: AWS-first development migration"
    git push origin main

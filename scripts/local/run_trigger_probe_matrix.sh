@@ -2,7 +2,7 @@
 # Run trigger probe for ETH_USDT with side SELL and BUY; save logs and print key summary lines.
 set -euo pipefail
 
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 INSTRUMENT="${INSTRUMENT:-ETH_USDT}"
 QTY="${QTY:-0.003}"

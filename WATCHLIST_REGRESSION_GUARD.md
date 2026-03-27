@@ -61,7 +61,7 @@ These tests will **FAIL** if any regression is introduced:
 ### Run All Regression Tests
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 
 # Run regression guard tests
 pytest tests/test_watchlist_regression_guard.py -v
@@ -136,7 +136,7 @@ These regression tests should be run as part of:
 
 ### 1. End-to-End Verification
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/verify_watchlist_e2e.py
 ```
 
@@ -144,7 +144,7 @@ python3 scripts/verify_watchlist_e2e.py
 
 ### 2. Consistency Check
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/watchlist_consistency_check.py
 ```
 
@@ -152,7 +152,7 @@ python3 scripts/watchlist_consistency_check.py
 
 ### 3. Unit Test
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 scripts/test_trade_amount_usd_consistency.py
 ```
 

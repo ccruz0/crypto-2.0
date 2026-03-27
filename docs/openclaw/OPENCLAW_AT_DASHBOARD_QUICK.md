@@ -16,7 +16,7 @@ cd /path/to/automated-trading-platform
 
 **Desde tu máquina (con SSM):**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./scripts/openclaw/run_openclaw_check_via_ssm.sh
 ```
 

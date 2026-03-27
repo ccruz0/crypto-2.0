@@ -73,31 +73,31 @@
 ### 1. Rebuild and Restart Backend
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose --profile aws build backend-aws && docker compose --profile aws up -d backend-aws\"'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose --profile aws build backend-aws && docker compose --profile aws up -d backend-aws\"'"
 ```
 
 ### 2. Rebuild and Restart Frontend (if needed)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose --profile aws build frontend-aws && docker compose --profile aws up -d frontend-aws\"'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose --profile aws build frontend-aws && docker compose --profile aws up -d frontend-aws\"'"
 ```
 
 ### 3. Tail Backend Logs for Debug Messages
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose logs --tail=200 -f backend-aws | grep -E \"VOLUME_DEBUG_BACKEND|DASHBOARD_STATE_DEBUG|volumeMinRatio\"'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose logs --tail=200 -f backend-aws | grep -E \"VOLUME_DEBUG_BACKEND|DASHBOARD_STATE_DEBUG|volumeMinRatio\"'"
 ```
 
 ### 4. Test Dashboard Endpoint from Inside Container
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/dashboard/state | head -20\"'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/dashboard/state | head -20\"'"
 ```
 
 ### 5. Test Config Endpoint from Inside Container
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/config | python3 -m json.tool | grep -A 5 volumeMinRatio\"'"
+cd /Users/carloscruz/crypto-2.0 && sh -c "ssh hilovivo-aws 'cd /home/ubuntu/crypto-2.0 && sh -c \"docker compose exec backend-aws curl -sS http://localhost:8002/api/config | python3 -m json.tool | grep -A 5 volumeMinRatio\"'"
 ```
 
 ## Verification Steps

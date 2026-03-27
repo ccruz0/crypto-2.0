@@ -46,15 +46,15 @@ Evidence-backed verification of Week 4 (pipeline verification, no-silent-failure
 # See ops/evidence/week4_file_checks.txt
 
 # Pytest
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m pytest tests/test_exchange_sync_order_history_decimal.py tests/test_pipeline_logging_week4.py -v 2>&1
 
 # Diagnostics (local; may FAIL without DB/exchange)
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py 2>&1
 
 # Git state
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git rev-parse HEAD
 git status -sb
 ```

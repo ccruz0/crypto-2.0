@@ -30,7 +30,7 @@ This document defines the end-to-end pipeline steps, PASS/FAIL evidence for each
 
 ```bash
 # 1) Run pipeline diagnostics (DB, system health, exchange public ping, Telegram config)
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 PYTHONPATH=backend python3 scripts/run_pipeline_diagnostics.py
 ```
 
@@ -38,7 +38,7 @@ Expected: lines like `DB_CONNECT: PASS`, `MARKET_DATA: PASS`, `TELEGRAM: PASS`, 
 
 ```bash
 # 2) Run Week 3 + Week 4 targeted tests
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 -m pytest tests/test_exchange_sync_order_history_decimal.py tests/test_pipeline_logging_week4.py -v
 ```
 

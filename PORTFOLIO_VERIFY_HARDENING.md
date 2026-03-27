@@ -59,7 +59,7 @@ This has been fixed. The verification endpoints ensure the fix remains correct b
 
 ### Local (Lite Endpoint)
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 export ENABLE_DIAGNOSTICS_ENDPOINTS=1
 export DIAGNOSTICS_API_KEY="your-secret-key-here"
 curl -s -H "X-Diagnostics-Key: your-secret-key-here" \
@@ -86,7 +86,7 @@ ssh hilovivo-aws 'curl -s -H "X-Diagnostics-Key: $DIAGNOSTICS_API_KEY" \
 
 ### CLI Tool
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 export DIAGNOSTICS_API_KEY="your-secret-key-here"
 python -m tools.verify_portfolio  # Uses lite endpoint by default
 python -m tools.verify_portfolio --full  # Uses full endpoint

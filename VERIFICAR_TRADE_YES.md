@@ -21,7 +21,7 @@ El botón "Trade YES" se activa en amarillo en el dashboard, pero necesitas veri
 ### Paso 1: Iniciar el Backend
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Si usas Docker local:
 docker compose --profile local up -d
@@ -44,7 +44,7 @@ curl http://localhost:8002/health
 ### Paso 3: Ejecutar el Script de Verificación
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python3 check_trade_status.py
 ```
 

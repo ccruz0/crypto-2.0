@@ -99,7 +99,7 @@ Si el deployment automático sigue fallando:
 
 ```bash
 # Desde tu máquina local
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 
 # Sincronizar código al servidor
 rsync -avz --exclude='.git' --exclude='node_modules' \

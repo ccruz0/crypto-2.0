@@ -51,7 +51,7 @@ ALGO_USDT debe tener datos de mercado actualizados:
 
 **Comando para verificar:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 100 | grep -i "ALGO_USDT" | tail -20
 ```
 
@@ -60,7 +60,7 @@ Buscar logs `DEBUG_STRATEGY_FINAL` y `DEBUG_BUY_FLAGS` para ALGO_USDT:
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 500 | \
   grep "DEBUG_STRATEGY_FINAL.*ALGO_USDT" | tail -10
 ```
@@ -76,7 +76,7 @@ Revisar qué flags están bloqueando:
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 500 | \
   grep "DEBUG_BUY_FLAGS.*ALGO_USDT" | tail -5
 ```
@@ -93,7 +93,7 @@ El throttle puede estar bloqueando alertas repetidas:
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 500 | \
   grep -i "ALGO_USDT.*throttle\|ALGO_USDT.*cooldown" | tail -10
 ```
@@ -107,7 +107,7 @@ Revisar si el alert path está siendo ejecutado:
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 500 | \
   grep -i "DEBUG_MONITOR_BUY.*ALGO_USDT\|DEBUG_ALGO_ALERT" | tail -10
 ```
@@ -149,7 +149,7 @@ cd /Users/carloscruz/automated-trading-platform && \
 Ejecutar en el servidor AWS:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform && \
+cd /Users/carloscruz/crypto-2.0 && \
   bash scripts/aws_backend_logs.sh --tail 200 | \
   grep -E "DEBUG_STRATEGY_FINAL.*ALGO_USDT|DEBUG_BUY_FLAGS.*ALGO_USDT|DEBUG_MONITOR_BUY.*ALGO_USDT" | \
   tail -5

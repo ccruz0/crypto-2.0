@@ -13,7 +13,7 @@
 ### Option 1: Automated Deployment (when SSH is available)
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./deploy_frontend_tp_sl_fix.sh
 ```
 

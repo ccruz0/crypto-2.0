@@ -77,7 +77,7 @@ Necesitas agregar estas variables a `.env.aws`:
 
 Edita `.env.aws`:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 nano .env.aws
 ```
 

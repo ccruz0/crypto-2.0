@@ -10,7 +10,7 @@
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 git add .
 git commit -m "tus cambios"
 git push origin main
@@ -24,7 +24,7 @@ git push origin main
 
 **Comando:**
 ```bash
-cd /Users/carloscruz/automated-trading-platform/frontend
+cd /Users/carloscruz/crypto-2.0/frontend
 git add .
 git commit -m "tus cambios"
 git push origin main

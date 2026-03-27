@@ -24,7 +24,7 @@
 ### Opción 1: Editar .env.aws directamente
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 nano .env.aws
 ```
 
@@ -125,7 +125,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 Después de agregar todas las variables, ejecuta:
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 python3 scripts/validate_env_vars.py
 ```
 

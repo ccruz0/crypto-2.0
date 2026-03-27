@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
 ```bash
 # Buscar credenciales hardcodeadas en el repositorio
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 grep -r "OPENVPN_USER=\|OPENVPN_PASSWORD=\|TELEGRAM_BOT_TOKEN=" --exclude-dir=node_modules --exclude-dir=venv --exclude-dir=.git .
 
 # Verificar historial de git

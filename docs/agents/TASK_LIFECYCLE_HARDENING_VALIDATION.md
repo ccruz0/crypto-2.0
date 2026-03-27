@@ -25,7 +25,7 @@ PYTHONPATH=backend .venv/bin/python -m pytest backend/tests/...
 ## 2. Tests Run
 
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 PYTHONPATH=backend .venv/bin/python -m pytest \
   backend/tests/test_task_lifecycle_hardening.py \
   backend/tests/test_task_health_monitor.py \

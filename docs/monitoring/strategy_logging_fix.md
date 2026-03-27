@@ -91,11 +91,11 @@ After deployment, verify logs appear:
 
 ```bash
 # Check for entry markers
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | \
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 1000 | \
   grep "STRATEGY_DEBUG_MARKER"
 
 # Check for final markers
-cd /Users/carloscruz/automated-trading-platform && bash scripts/aws_backend_logs.sh --tail 1000 | \
+cd /Users/carloscruz/crypto-2.0 && bash scripts/aws_backend_logs.sh --tail 1000 | \
   grep "DEBUG_STRATEGY_FINAL"
 ```
 

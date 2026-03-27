@@ -87,7 +87,7 @@ If sell alerts are still not triggering after Phase 1-2, consider:
 
 ### Step 1: Enable Sell Alerts
 ```bash
-cd /Users/carloscruz/automated-trading-platform/backend
+cd /Users/carloscruz/crypto-2.0/backend
 python scripts/enable_sell_alerts.py
 ```
 

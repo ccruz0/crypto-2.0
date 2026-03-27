@@ -4,7 +4,7 @@
 # para diagnosticar y solucionar el error 502 del dashboard
 
 DESKTOP_PATH="$HOME/Desktop"
-SCRIPT_PATH="/Users/carloscruz/automated-trading-platform/fix_502_dashboard.sh"
+SCRIPT_PATH="/Users/carloscruz/crypto-2.0/fix_502_dashboard.sh"
 SHORTCUT_NAME="Fix 502 Dashboard"
 APP_NAME="Fix_502_Dashboard.app"
 APP_PATH="$DESKTOP_PATH/$APP_NAME"
@@ -20,10 +20,10 @@ mkdir -p "$APP_PATH/Contents/Resources"
 # Crear el script ejecutable dentro de la app que abre una terminal
 SCRIPT_CONTENT='#!/bin/bash
 # Abrir una terminal y ejecutar el script principal
-SCRIPT_PATH="/Users/carloscruz/automated-trading-platform/fix_502_dashboard.sh"
+SCRIPT_PATH="/Users/carloscruz/crypto-2.0/fix_502_dashboard.sh"
 
 # Abrir Terminal.app con el script
-osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"cd /Users/carloscruz/automated-trading-platform && bash $SCRIPT_PATH\"" -e "end tell"'
+osascript -e "tell application \"Terminal\"" -e "activate" -e "do script \"cd /Users/carloscruz/crypto-2.0 && bash $SCRIPT_PATH\"" -e "end tell"'
 
 echo "$SCRIPT_CONTENT" > "$APP_PATH/Contents/MacOS/Fix_502_Dashboard"
 

@@ -26,7 +26,7 @@ Expected format:
 ### 2. Test Local Environment (Optional)
 Verify local environment does NOT send alerts:
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ENVIRONMENT=local python3 -c "from backend.app.services.telegram_notifier import TelegramNotifier; n = TelegramNotifier(); print(f'telegram_enabled={n.enabled}')"
 ```
 

@@ -7,7 +7,7 @@ The local database schema doesn't match production. The script needs to be run o
 
 ### Step 1: Deploy and Run Script via SSM
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./deploy_enable_sell_alerts_ssm.sh
 ```
 
@@ -22,7 +22,7 @@ This will:
 
 ### Step 1: Deploy and Run Script
 ```bash
-cd /Users/carloscruz/automated-trading-platform
+cd /Users/carloscruz/crypto-2.0
 ./deploy_enable_sell_alerts.sh
 ```
 
