@@ -861,6 +861,7 @@ _OPENCLAW_QUALITY_RETRY_APPEND = (
     "- Do NOT say 'OpenClaw preparation plan'.\n"
     "- Do NOT repeat 'read docs', 'check runbooks', or 'inspect likely files/modules'.\n"
     "- Use prior feedback and previously identified files only.\n"
+    "- Do NOT assert the bug report symptom as fact; with embedded excerpts, root cause must be excerpt-backed only.\n"
     "Do NOT return short answers.\n"
     "Output must be at least 500 characters and include concrete code evidence."
 )
@@ -956,6 +957,7 @@ def _call_openclaw_once(
     model_chain_override: list[str] | None = None,
     *,
     sections: Optional[tuple[str, ...]] = None,
+    investigation_embedded_excerpts: bool | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Single OpenClaw call + quality gate.  Returns (result_or_None, error_reason)."""
     try:
@@ -1007,6 +1009,24 @@ def _call_openclaw_once(
             task_id,
         )
         return None, "OpenClaw quality gate failed (generic preparation-plan output detected)"
+
+    if investigation_embedded_excerpts is True:
+        try:
+            from app.services.openclaw_client import investigation_symptom_fact_gate_fails
+
+            fail, sym_reason = investigation_symptom_fact_gate_fails(
+                content, has_embedded_excerpts=True
+            )
+            if fail:
+                logger.warning(
+                    "investigation_rejected_symptom_as_fact task_id=%s response_len=%d reason=%s",
+                    task_id,
+                    body_len,
+                    sym_reason,
+                )
+                return None, f"OpenClaw quality gate failed (symptom-as-fact: {sym_reason})"
+        except Exception as e:
+            logger.debug("investigation_symptom_fact_gate_fails skipped: %s", e)
 
     return result, ""
 
@@ -1165,11 +1185,22 @@ def _apply_via_openclaw(
                 return fallback_fn(prepared_task)
             return {"success": False, "summary": f"agent schema unavailable: {e}"}
 
+    investigation_embedded_excerpts: bool | None = None
+    if not use_agent_schema and save_subdir == "docs/agents/bug-investigations":
+        try:
+            from app.services.openclaw_client import has_embedded_workspace_excerpts
+
+            investigation_embedded_excerpts = has_embedded_workspace_excerpts(prompt_task)
+        except Exception as e:
+            logger.debug("has_embedded_workspace_excerpts failed task_id=%s: %s", task_id, e)
+            investigation_embedded_excerpts = None
+
     for attempt in range(1, max_attempts + 1):
         result, last_error = _call_openclaw_once(
             send_to_openclaw, user_prompt, instructions, task_id,
             model_chain_override=chain_override,
             sections=call_sections,
+            investigation_embedded_excerpts=investigation_embedded_excerpts,
         )
         if result is not None:
             usage = result.get("usage") if isinstance(result, dict) else None

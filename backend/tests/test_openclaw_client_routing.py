@@ -68,6 +68,41 @@ def test_truncate_task_text_default_limit(monkeypatch: pytest.MonkeyPatch) -> No
     assert "truncated" in out.lower()
 
 
+def test_investigation_symptom_fact_gate() -> None:
+    # Load module directly so this test runs without full app.services import chain (pydantic_settings, etc.).
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "openclaw_client_symptom",
+        root / "app/services/openclaw_client.py",
+    )
+    assert spec and spec.loader
+    oc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(oc)
+    investigation_symptom_fact_gate_fails = oc.investigation_symptom_fact_gate_fails
+
+    fail, _ = investigation_symptom_fact_gate_fails(
+        "Root cause: missing files on the server.",
+        has_embedded_excerpts=False,
+    )
+    assert fail is False
+
+    fail2, reason = investigation_symptom_fact_gate_fails(
+        "## Root Cause\nThe issue is missing files in the deployment.",
+        has_embedded_excerpts=True,
+    )
+    assert fail2 is True
+    assert "missing files" in reason.lower()
+
+    fail3, _ = investigation_symptom_fact_gate_fails(
+        "The reported missing-files hypothesis is unproven; excerpts show files are not missing.",
+        has_embedded_excerpts=True,
+    )
+    assert fail3 is False
+
+
 def test_task_metadata_truncates_details() -> None:
     from app.services.openclaw_client import _task_metadata_block
 

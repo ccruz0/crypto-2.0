@@ -548,13 +548,75 @@ def _investigation_workspace_instructions(*, has_embedded_excerpts: bool) -> str
         return (
             "Embedded workspace file excerpts below were read from this repository by the ATP backend "
             "and are authoritative for this call. Analyze them as your primary source code. "
-            "Do NOT claim that required files are missing, not present in the workspace, or unreadable."
+            "The bug report may contain an incorrect hypothesis — do NOT restate the reported symptom as fact. "
+            "Root cause must follow only from embedded code evidence; if the symptom is unproven from excerpts, "
+            "say so explicitly and continue from what the code shows."
         )
     return (
         "No file excerpts could be embedded for this run (paths missing or unavailable on the backend). "
         "Use task metadata, symptom, area hints, and pre-fetched runtime context. "
         "Do NOT refuse by claiming repository files are inaccessible in a workspace — reason from what is provided."
     )
+
+
+# When embedded excerpts exist, reject model output that treats bug-report symptom text as proven fact.
+_SYMPTOM_AS_FACT_PHRASES_EMBEDDED: tuple[str, ...] = (
+    "restore missing files",
+    "files unavailable",
+    "file unavailable",
+    "not available in the workspace",
+    "not present in the workspace",
+    "absence of required source",
+    "absence of the required",
+    "unavailability of critical",
+    "unavailability of the required",
+    "unavailability of these files",
+    "files are not present",
+    "files were not present",
+    "required source files are not",
+    "inability to access vital source",
+    "cannot locate the specified files",
+    "lack the necessary source",
+)
+
+
+def investigation_symptom_fact_gate_fails(
+    content: str,
+    *,
+    has_embedded_excerpts: bool,
+) -> tuple[bool, str]:
+    """Return (True, reason) if output should be rejected: symptom language asserted as fact while excerpts exist."""
+    if not has_embedded_excerpts:
+        return False, ""
+    text = (content or "").strip()
+    if not text:
+        return False, ""
+    lc = text.lower()
+    for phrase in _SYMPTOM_AS_FACT_PHRASES_EMBEDDED:
+        if phrase in lc:
+            return True, f"symptom-as-fact phrase {phrase!r} with embedded excerpts"
+
+    # "missing files" / "missing critical files" — allow explicit negations used to refute the hypothesis
+    if "missing files" in lc or "missing critical files" in lc:
+        neg = (
+            "not missing files",
+            "files are not missing",
+            "no missing files",
+            "files not missing",
+            "not missing critical",
+        )
+        if any(n in lc for n in neg):
+            return False, ""
+        return True, "symptom-as-fact: missing files language with embedded excerpts"
+
+    return False, ""
+
+
+def has_embedded_workspace_excerpts(prepared_task: dict[str, Any]) -> bool:
+    """True if this task's investigation prompt would include non-empty embedded file excerpts."""
+    retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
+    ctx = _embedded_workspace_file_context(prepared_task, retry_mode=retry_mode)
+    return bool((ctx or "").strip())
 
 
 def _repo_relative_for_embedding(rel: str, root: Path) -> str | None:
@@ -952,11 +1014,26 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         if retry_mode
         else "1. Read the relevant source files listed above to understand the current behavior.\n"
     )
+    has_embedded = bool((embedded_context or "").strip())
+    epistemic_block = ""
+    if has_embedded:
+        epistemic_block = (
+            "EPISTEMIC RULES (embedded code excerpts are present):\n"
+            "- The bug report may contain an incorrect hypothesis — treat it as a claim to test, not as fact.\n"
+            "- Do NOT restate the reported symptom as established truth.\n"
+            "- Separate clearly: (A) what was reported vs (B) what the embedded code actually shows.\n"
+            "- Root cause MUST be justified only with evidence from the embedded excerpts (quote or paraphrase specifics).\n"
+            "- If the reported symptom (e.g. files missing / not in workspace) is not provable from the embedded code, "
+            "state explicitly that the claim is unproven by the evidence shown, then give the best-supported analysis.\n"
+            "- Do NOT recommend 'restore missing files' or imply repository source files are absent unless the excerpts "
+            "themselves show missing imports, failed loads, or paths that do not exist in the embedded text.\n\n"
+        )
     user_prompt += (
         f"Investigate the following bug report for the Automated Trading Platform.\n\n"
         f"{meta}\n\n"
-        f"Reported symptom: {symptom}\n\n"
+        f"Reported symptom (hypothesis — may be wrong): {symptom}\n\n"
         f"{embedded_context}\n\n"
+        f"{epistemic_block}"
         f"{retry_mode_block}"
         f"HARD OUTPUT REQUIREMENTS (MANDATORY):\n"
         f"- Root cause MUST reference a real file path and a real function name.\n"
@@ -965,8 +1042,15 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"  1) at least one real function definition, and\n"
         f"  2) at least one code block.\n"
         f"- Generic preparation plans are invalid (examples: 'read docs', 'check runbooks', 'investigate further').\n"
-        f"- If concrete code evidence is missing, the output is invalid.\n\n"
-        f"Required minimal format (example):\n"
+        f"- If concrete code evidence is missing, the output is invalid.\n"
+    )
+    if has_embedded:
+        user_prompt += (
+            f"- When embedded excerpts are present: do not assert the bug report's symptom as fact unless "
+            f"excerpt-backed; do not turn symptom wording into 'missing files' or 'unavailable' root cause without proof.\n\n"
+        )
+    user_prompt += (
+        f"\nRequired minimal format (example):\n"
         f"Root cause:\n"
         f"In backend/app/services/telegram_commands.py inside _handle_task_command()\n\n"
         f"Failing scenario:\n"
@@ -985,7 +1069,6 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
         f"{_INVESTIGATION_MIN_SECTIONS_INSTRUCTION}"
     )
-    has_embedded = bool((embedded_context or "").strip())
     instructions = (
         "You are an expert software engineer investigating a bug in a Python/FastAPI "
         "trading platform backend with a Next.js frontend. "
