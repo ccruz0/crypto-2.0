@@ -550,7 +550,8 @@ def _investigation_workspace_instructions(*, has_embedded_excerpts: bool) -> str
             "and are authoritative for this call. Analyze them as your primary source code. "
             "The bug report may contain an incorrect hypothesis — do NOT restate the reported symptom as fact. "
             "Root cause must follow only from embedded code evidence; if the symptom is unproven from excerpts, "
-            "say so explicitly and continue from what the code shows."
+            "say so explicitly and continue from what the code shows. "
+            "Do not invent identifiers: function names and pasted code in evidence must come from the excerpts."
         )
     return (
         "No file excerpts could be embedded for this run (paths missing or unavailable on the backend). "
@@ -617,6 +618,73 @@ def has_embedded_workspace_excerpts(prepared_task: dict[str, Any]) -> bool:
     retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
     ctx = _embedded_workspace_file_context(prepared_task, retry_mode=retry_mode)
     return bool((ctx or "").strip())
+
+
+def get_embedded_investigation_excerpt_blob(prepared_task: dict[str, Any]) -> str:
+    """Return the same embedded excerpt text sent in the investigation prompt (for fidelity checks)."""
+    retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
+    return (_embedded_workspace_file_context(prepared_task, retry_mode=retry_mode) or "").strip()
+
+
+def _investigation_evidence_only_slice(content: str) -> str:
+    """Strip Recommended Fix and below so proposed new code is not subject to excerpt-fidelity gate."""
+    text = content or ""
+    for sep in (
+        "## Recommended Fix",
+        "## Recommended fix",
+        "## Proposed Minimal Fix",
+        "## Fix",
+    ):
+        idx = text.find(sep)
+        if idx != -1:
+            return text[:idx]
+    return text
+
+
+# Python defs inside markdown code fences in model output
+_DEF_LINE_IN_FENCE = re.compile(
+    r"^\s*(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+
+def investigation_excerpt_fidelity_gate_fails(
+    content: str,
+    embedded_blob: str,
+) -> tuple[bool, str]:
+    """Reject when investigation cites defs or backtick names not present in embedded excerpts.
+
+    Only the evidence portion (before Recommended Fix) is checked so legitimate proposed
+    patches in the fix section are not required to pre-exist in excerpts.
+    """
+    blob = (embedded_blob or "").strip()
+    evidence = _investigation_evidence_only_slice(content).strip()
+    if not blob or not evidence:
+        return False, ""
+
+    for fence in re.findall(r"```(?:[^\n`]*)\n([\s\S]*?)```", evidence):
+        for m in _DEF_LINE_IN_FENCE.finditer(fence):
+            name = m.group(1)
+            if re.search(rf"\b(?:async\s+)?def\s+{re.escape(name)}\s*\(", blob) is None:
+                return True, f"code in evidence cites def {name}() not present in embedded excerpts"
+
+    rc_m = re.search(
+        r"##\s*Root Cause\s*\n([\s\S]*?)(?=\n##\s|\Z)",
+        evidence,
+        re.IGNORECASE,
+    )
+    if rc_m:
+        rc_body = rc_m.group(1)
+        for m in re.finditer(r"`([a-zA-Z_][a-zA-Z0-9_]{4,})`", rc_body):
+            ident = m.group(1)
+            if ident[0].isupper():
+                continue
+            if "_" not in ident:
+                continue
+            if ident not in blob:
+                return True, f"Root Cause references `{ident}` not found in embedded excerpts"
+
+    return False, ""
 
 
 def _repo_relative_for_embedding(rel: str, root: Path) -> str | None:
@@ -1023,6 +1091,10 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
             "- Do NOT restate the reported symptom as established truth.\n"
             "- Separate clearly: (A) what was reported vs (B) what the embedded code actually shows.\n"
             "- Root cause MUST be justified only with evidence from the embedded excerpts (quote or paraphrase specifics).\n"
+            "- Do NOT invent function names, classes, or code: every `def` / `async def` and every backtick identifier "
+            "you cite in Root Cause or in evidence code blocks must appear in the embedded excerpts above.\n"
+            "- Code blocks under Root Cause / Code reference / evidence sections must copy lines from the excerpts "
+            "(or minimal surrounding context). Do not fabricate example functions.\n"
             "- If the reported symptom (e.g. files missing / not in workspace) is not provable from the embedded code, "
             "state explicitly that the claim is unproven by the evidence shown, then give the best-supported analysis.\n"
             "- Do NOT recommend 'restore missing files' or imply repository source files are absent unless the excerpts "
@@ -1047,18 +1119,19 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     if has_embedded:
         user_prompt += (
             f"- When embedded excerpts are present: do not assert the bug report's symptom as fact unless "
-            f"excerpt-backed; do not turn symptom wording into 'missing files' or 'unavailable' root cause without proof.\n\n"
+            f"excerpt-backed; do not turn symptom wording into 'missing files' or 'unavailable' root cause without proof.\n"
+            f"- Evidence sections only: cite function names and paste code that already appear in the embedded excerpts; "
+            f"you may propose new code only under Recommended Fix.\n\n"
         )
     user_prompt += (
         f"\nRequired minimal format (example):\n"
         f"Root cause:\n"
-        f"In backend/app/services/telegram_commands.py inside _handle_task_command()\n\n"
+        f"In <path from excerpts> inside <function name that appears in excerpts>()\n\n"
         f"Failing scenario:\n"
         f"When user sends /task twice quickly...\n\n"
         f"Code reference:\n"
         f"```python\n"
-        f"def _handle_task_command(...):\n"
-        f"    ...\n"
+        f"<paste exact def lines from embedded excerpts only>\n"
         f"```\n\n"
         f"Please:\n"
         f"{step1_line}"

@@ -103,6 +103,37 @@ def test_investigation_symptom_fact_gate() -> None:
     assert fail3 is False
 
 
+def test_investigation_excerpt_fidelity_gate() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "openclaw_client_fidelity",
+        root / "app/services/openclaw_client.py",
+    )
+    assert spec and spec.loader
+    oc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(oc)
+    gate = oc.investigation_excerpt_fidelity_gate_fails
+
+    emb = "def real_only():\n    return 1\n"
+    bad = (
+        "## Root Cause\n\n```python\ndef invented_xyz():\n    pass\n```\n\n"
+        "## Recommended Fix\nNew code here.\n"
+    )
+    fail, reason = gate(bad, emb)
+    assert fail is True
+    assert "invented_xyz" in reason
+
+    ok_content = (
+        "## Root Cause\n\n```python\ndef real_only():\n    return 1\n```\n\n"
+        "## Recommended Fix\n```python\ndef brand_new():\n    pass\n```"
+    )
+    fail2, _ = gate(ok_content, emb)
+    assert fail2 is False
+
+
 def test_task_metadata_truncates_details() -> None:
     from app.services.openclaw_client import _task_metadata_block
 
