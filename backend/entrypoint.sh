@@ -9,14 +9,6 @@ if [ "$(id -u)" = "0" ]; then
   mkdir -p /app/docs/agents/generated-notes
   chown -R appuser:appuser /app/docs/agents/generated-notes 2>/dev/null || true
   chmod 775 /app/docs/agents/generated-notes 2>/dev/null || true
-  # Cursor bridge runs as appuser; /root/.local/bin/cursor-agent is not executable for appuser.
-  # Copy into appuser home so bridge resolution picks an X_OK cursor-agent (see cursor_execution_bridge).
-  if [ -f /root/.local/bin/cursor-agent ]; then
-    mkdir -p /home/appuser/.local/bin
-    cp -f /root/.local/bin/cursor-agent /home/appuser/.local/bin/cursor-agent 2>/dev/null || true
-    chown appuser:appuser /home/appuser/.local/bin/cursor-agent 2>/dev/null || true
-    chmod 755 /home/appuser/.local/bin/cursor-agent 2>/dev/null || true
-  fi
 fi
 
 if [ -f /app/secrets/runtime.env ]; then

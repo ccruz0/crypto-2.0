@@ -560,12 +560,12 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
             ),
         }
     if "cursor-agent" in Path(cli).name:
-        args = [cli, "-p", "--output-format", "json"]
+        args = [cli, "-p", "--output-format", "json", "--trust"]
         if api_key:
             args.extend(["--api-key", api_key])
         args.append(prompt)
     else:
-        args = [cli, "agent", "-p", "--output-format", "json"]
+        args = [cli, "agent", "-p", "--output-format", "json", "--trust"]
         if api_key:
             args.extend(["--api-key", api_key])
         args.append(prompt)
