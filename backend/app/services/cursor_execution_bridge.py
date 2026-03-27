@@ -266,6 +266,53 @@ def _bridge_model_chain() -> list[str]:
     return ["gpt-5.4-medium", "gpt-5.3-codex"]
 
 
+def _bridge_prompt_max_chars() -> int:
+    raw = (os.environ.get("CURSOR_BRIDGE_PROMPT_MAX_CHARS") or "").strip()
+    try:
+        n = int(raw) if raw else 2400
+    except ValueError:
+        n = 2400
+    return max(800, min(n, 12000))
+
+
+def _extract_repo_paths_from_prompt(prompt: str) -> list[str]:
+    # Heuristic extraction from markdown/code references in handoff text.
+    matches = re.findall(r"(?:^|[`\\s])(backend/[^`\\s]+|frontend/[^`\\s]+|docs/[^`\\s]+)(?:[`\\s]|$)", prompt or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in matches:
+        p = (m or "").strip().strip("`'\"")
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _optimize_bridge_prompt(prompt: str, *, task_id: str = "") -> str:
+    """
+    Keep bridge prompt concise and force narrow code scope to reduce token usage.
+    """
+    raw = (prompt or "").strip()
+    max_chars = _bridge_prompt_max_chars()
+    compact = re.sub(r"\n{3,}", "\n\n", raw)
+    compact = compact[:max_chars]
+    target_paths = _extract_repo_paths_from_prompt(compact)
+    scope_hint = ", ".join(target_paths) if target_paths else "files explicitly mentioned in the task/handoff"
+    efficiency_prefix = (
+        f"TASK_ID: {task_id}\n"
+        "Execution policy (cost-optimized):\n"
+        "- Do NOT scan the full repository.\n"
+        f"- Work only in: {scope_hint}.\n"
+        "- Limit file reads/edits to what is strictly required for this task.\n"
+        "- Keep response concise (final summary under 200 words).\n"
+        "- Run only fast targeted tests needed for your touched files.\n\n"
+    )
+    return efficiency_prefix + compact
+
+
 def _is_resource_exhausted_error(stderr_text: str) -> bool:
     s = (stderr_text or "").strip().lower()
     if not s:
@@ -649,17 +696,19 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
     base_backoff = _resource_exhausted_backoff_s()
     max_attempts = 1 + retries
 
+    optimized_prompt = _optimize_bridge_prompt(prompt, task_id=task_id)
     _log_event("cursor_bridge_invoke_start", task_id=task_id, details={
         "staging_path": str(staging_path),
         "prompt_len": len(prompt),
+        "optimized_prompt_len": len(optimized_prompt),
         "model_chain": models,
     })
     last_failure: dict[str, Any] = {"success": False, "exit_code": -1, "output": "", "error": "invoke failed"}
     for model_idx, model in enumerate(models, start=1):
-        args = [*base_args, "--model", model, prompt]
+        args = [*base_args, "--model", model, optimized_prompt]
         logger.info(
-            "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d model=%s model_attempt=%d/%d",
-            task_id, staging_path, timeout, len(prompt), model, model_idx, len(models),
+            "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d optimized_prompt_len=%d model=%s model_attempt=%d/%d",
+            task_id, staging_path, timeout, len(prompt), len(optimized_prompt), model, model_idx, len(models),
         )
         logger.info(
             "cursor_bridge: invoke mode=blocking subprocess.run capture_output=True cli=%s args_prefix=%s",
