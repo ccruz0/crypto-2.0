@@ -8,6 +8,7 @@ Notion, and optionally creates a PR. ATP source remains read-only.
 Env vars:
   ATP_STAGING_ROOT       — Staging directory root (default: /tmp/atp-staging)
   CURSOR_CLI_PATH       — Cursor binary (default: cursor)
+  CURSOR_AGENT_PATH     — Optional explicit path to cursor-agent (must be executable by the process user)
   CURSOR_BRIDGE_ENABLED — Master switch (default: false)
   CURSOR_CLI_TIMEOUT    — Timeout seconds for Cursor (default: 300)
   CURSOR_BRIDGE_TEST_TIMEOUT — Timeout per test suite (default: 120)
@@ -79,8 +80,9 @@ def _cursor_bridge_phase2_lock(task_id: str) -> Iterator[bool]:
     """
     Serialize Cursor bridge phase-2 runs per task_id across gunicorn workers (fcntl file lock).
 
-    Yields True if the lock was acquired; False if another process is already running
-    the bridge for this task (non-blocking). Caller should skip work when False.
+    Yields True if the lock was acquired (or lock skipped); False if another process already
+    holds the lock (non-blocking). Only OSError from open/flock here is handled — errors from
+    the ``with`` body must not be caught as lock failures (PermissionError is OSError).
     """
     if not _HAS_FCNTL or fcntl is None:
         yield True
@@ -96,22 +98,37 @@ def _cursor_bridge_phase2_lock(task_id: str) -> Iterator[bool]:
     lock_path = lock_root / f"{safe}.lock"
     f = None
     acquired = False
+    duplicate = False
+
     try:
         f = open(lock_path, "a+", encoding="utf-8")
-        try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except BlockingIOError:
-            logger.info(
-                "CursorBridge: concurrent run skipped (lock held) task_id=%s lock=%s",
-                tid,
-                lock_path,
-            )
-            yield False
-            return
-        yield True
     except OSError as e:
-        logger.warning("cursor_bridge: lock acquire failed task_id=%s: %s", tid, e)
+        logger.warning("cursor_bridge: lock open failed task_id=%s: %s", tid, e)
+        yield True
+        return
+
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+    except BlockingIOError:
+        logger.info(
+            "CursorBridge: concurrent run skipped (lock held) task_id=%s lock=%s",
+            tid,
+            lock_path,
+        )
+        duplicate = True
+    except OSError as e:
+        logger.warning("cursor_bridge: lock flock failed task_id=%s: %s", tid, e)
+
+    if duplicate:
+        try:
+            f.close()
+        except OSError:
+            pass
+        yield False
+        return
+
+    try:
         yield True
     finally:
         if acquired and f is not None:
@@ -184,14 +201,27 @@ def _cursor_api_key() -> str:
 
 
 def _cursor_agent_binary() -> str:
-    # Prefer explicit cursor-agent binary when available (supports --api-key).
-    for p in (Path("/root/.local/bin/cursor-agent"), Path("/home/appuser/.local/bin/cursor-agent")):
-        if p.is_file():
+    """
+    Prefer cursor-agent (supports --api-key). Only return paths executable by the current uid.
+
+    Order: CURSOR_AGENT_PATH, /home/appuser/.local/bin (before /root — gunicorn runs as appuser),
+    ``which cursor-agent``, skipping non-executable files (e.g. /root/.local/... for non-root).
+    """
+    explicit = (os.environ.get("CURSOR_AGENT_PATH") or "").strip()
+    if explicit:
+        p = Path(explicit)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+        return ""
+    for p in (Path("/home/appuser/.local/bin/cursor-agent"), Path("/root/.local/bin/cursor-agent")):
+        if p.is_file() and os.access(p, os.X_OK):
             return str(p)
     try:
         r = subprocess.run(["which", "cursor-agent"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and (r.stdout or "").strip():
-            return (r.stdout or "").strip()
+            w = (r.stdout or "").strip()
+            if os.access(w, os.X_OK):
+                return w
     except Exception:
         pass
     return ""
@@ -535,7 +565,10 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
             args.extend(["--api-key", api_key])
         args.append(prompt)
     else:
-        args = [cli, "agent", "-p", "--output-format", "json", prompt]
+        args = [cli, "agent", "-p", "--output-format", "json"]
+        if api_key:
+            args.extend(["--api-key", api_key])
+        args.append(prompt)
 
     logger.info("CursorBridge: applying patch task_id=%s staging=%s", task_id, staging_path)
     logger.info(

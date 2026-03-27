@@ -501,15 +501,23 @@ def agent_cursor_bridge_run(body: dict[str, Any] = Body(default={})) -> dict[str
     if exec_ctx not in ("api", "scheduler", "telegram"):
         exec_ctx = "api"
 
-    if phase == 1:
-        result = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=exec_ctx)
-    else:
-        result = run_bridge_phase2(
-            task_id=task_id,
-            prompt=prompt,
-            ingest=ingest,
-            create_pr=create_pr,
-            current_status=current_status,
-            execution_context=exec_ctx,
-        )
-    return result
+    try:
+        if phase == 1:
+            result = run_bridge_phase1(task_id=task_id, prompt=prompt, execution_context=exec_ctx)
+        else:
+            result = run_bridge_phase2(
+                task_id=task_id,
+                prompt=prompt,
+                ingest=ingest,
+                create_pr=create_pr,
+                current_status=current_status,
+                execution_context=exec_ctx,
+            )
+        return result
+    except Exception as e:
+        logger.exception("agent_cursor_bridge_run failed task_id=%s", task_id)
+        return {
+            "ok": False,
+            "error": str(e)[:800],
+            "task_id": task_id,
+        }
