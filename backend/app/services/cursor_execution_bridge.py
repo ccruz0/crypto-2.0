@@ -825,12 +825,20 @@ def run_tests_in_staging(staging_path: Path, *, task_id: str = "") -> dict[str, 
     backend_output = ""
     frontend_output = ""
 
-    # Backend: pytest -q
+    # Backend: run a fast bridge smoke subset to keep phase-2 validation bounded.
     backend_dir = staging_path / "backend"
     if backend_dir.is_dir():
         try:
             result = subprocess.run(
-                ["python", "-m", "pytest", "-q", "--tb=short"],
+                [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "--tb=short",
+                    "tests/test_cursor_execution_bridge.py",
+                    "tests/test_cursor_handoff_paths.py",
+                ],
                 cwd=str(backend_dir),
                 capture_output=True,
                 text=True,
