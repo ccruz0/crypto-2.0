@@ -106,6 +106,9 @@ def _extract_plain_text(prop_value: Any) -> str:
                 if fval is not None:
                     return str(fval).strip()
 
+        if "number" in prop_value and prop_value.get("number") is not None:
+            return str(prop_value.get("number")).strip()
+
         rich = prop_value.get("rich_text") or prop_value.get("title")
         if isinstance(rich, list):
             return _extract_plain_text(rich)
