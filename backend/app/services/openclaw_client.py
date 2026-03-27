@@ -853,7 +853,7 @@ def _task_metadata_block(prepared_task: dict[str, Any], *, retry_mode: bool = Fa
     return "\n".join(lines)
 
 
-def _embedded_workspace_file_context(prepared_task: dict[str, Any]) -> str:
+def _embedded_workspace_file_context(prepared_task: dict[str, Any], *, retry_mode: bool = False) -> str:
     """Embed a small set of real workspace file excerpts directly into the prompt.
 
     This avoids dependency on remote filesystem tooling inside the gateway call.
@@ -873,8 +873,8 @@ def _embedded_workspace_file_context(prepared_task: dict[str, Any]) -> str:
                 p = str(raw or "").strip()
                 if p:
                     candidates.append(p)
-    # Same cap for retry as initial: retry previously used 3 and could omit needed modules.
-    max_files = 5
+    # Keep retry mode tighter to prevent re-orientation loops.
+    max_files = 3 if retry_mode else 5
     seen: set[str] = set()
     sections: list[str] = []
     total_budget = 7000
@@ -887,21 +887,34 @@ def _embedded_workspace_file_context(prepared_task: dict[str, Any]) -> str:
         if not rel_norm or rel_norm in seen:
             continue
         seen.add(rel_norm)
-        try:
-            full = (root / rel_norm).resolve()
-            if not str(full).startswith(str(root.resolve())):
+        variants = [rel_norm]
+        # Runtime layout remap: repo paths often include "backend/" but container code is at /app/app/...
+        if rel_norm.startswith("backend/"):
+            variants.append(rel_norm[len("backend/"):])
+        full = None
+        text = ""
+        used_rel = rel_norm
+        for variant in variants:
+            try:
+                candidate = (root / variant).resolve()
+                if not str(candidate).startswith(str(root.resolve())):
+                    continue
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+                text = candidate.read_text(encoding="utf-8", errors="ignore")
+                full = candidate
+                used_rel = variant
+                break
+            except Exception:
                 continue
-            if not full.exists() or not full.is_file():
-                continue
-            text = full.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        if full is None:
             continue
         snippet = text[: min(per_file_chars, total_budget)].strip()
         if not snippet:
             continue
         total_budget -= len(snippet)
         sections.append(
-            f"### File excerpt: {rel_norm}\n"
+            f"### File excerpt: {used_rel}\n"
             f"```text\n{snippet}\n```"
         )
     if not sections:
@@ -916,7 +929,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     """
     retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
     meta = _task_metadata_block(prepared_task, retry_mode=retry_mode)
-    embedded_context = _embedded_workspace_file_context(prepared_task)
+    embedded_context = _embedded_workspace_file_context(prepared_task, retry_mode=retry_mode)
     task = (prepared_task or {}).get("task") or {}
     symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
