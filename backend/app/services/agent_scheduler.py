@@ -59,6 +59,26 @@ def _parse_attempt_count(raw: Any) -> int:
         return 0
 
 
+def _fallback_attempt_count_from_activity(task_id: str, attempt_path: str) -> int:
+    """Fallback counter from local durable activity log when Notion metadata is unavailable."""
+    try:
+        from app.services.agent_activity_log import get_recent_agent_events
+        events = get_recent_agent_events(limit=5000)
+        best = 0
+        for ev in events:
+            if str(ev.get("task_id") or "").strip() != (task_id or "").strip():
+                continue
+            if ev.get("event_type") != "auto_attempt_increment":
+                continue
+            d = ev.get("details") or {}
+            if str(d.get("path") or "") != attempt_path:
+                continue
+            best = max(best, _parse_attempt_count(d.get("count")))
+        return best
+    except Exception:
+        return 0
+
+
 def _record_auto_attempt_or_block(
     task_id: str,
     task_title: str,
@@ -87,6 +107,8 @@ def _record_auto_attempt_or_block(
             return False, _parse_attempt_count(latest.get("revision_count")), cap
 
         current = _parse_attempt_count(latest.get("revision_count"))
+        if current <= 0:
+            current = _fallback_attempt_count_from_activity(task_id, attempt_path)
         if current >= cap:
             reason = f"auto retry cap exceeded ({current}/{cap}) on path={attempt_path}"
             logger.warning(
@@ -130,6 +152,12 @@ def _record_auto_attempt_or_block(
             "agent_scheduler: auto_attempt_increment task_id=%s count=%d cap=%d path=%s",
             task_id, nxt, cap, attempt_path,
         )
+        _log_event(
+            "auto_attempt_increment",
+            task_id=task_id,
+            task_title=task_title,
+            details={"count": nxt, "cap": cap, "path": attempt_path},
+        )
         return True, nxt, cap
     except Exception as e:
         logger.warning("agent_scheduler: auto retry guard failed task_id=%s path=%s err=%s", task_id, attempt_path, e)
@@ -150,6 +178,7 @@ def _reset_auto_attempt_count(task_id: str, task_title: str, *, path: str) -> No
             },
         )
         logger.info("agent_scheduler: auto_attempt_reset task_id=%s path=%s", task_id, path)
+        _log_event("auto_attempt_reset", task_id=task_id, task_title=task_title, details={"path": path})
     except Exception as e:
         logger.debug("agent_scheduler: auto_attempt_reset failed task_id=%s path=%s err=%s", task_id, path, e)
 
