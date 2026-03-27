@@ -1569,10 +1569,43 @@ def execute_prepared_notion_task(
         msg = summarize_execution_result(False, apply_summary)
         _append_notion_page_comment(task_id, f"[{executed_at}] {msg}")
         logger.warning("execute_prepared_notion_task: apply failed task_id=%s summary=%s retryable=%s", task_id, apply_summary, apply_retryable)
-        # Retryable LLM failures: move to ready-for-investigation so scheduler can retry
+        # Retryable LLM failures: move to ready-for-investigation so scheduler can retry.
+        # Guardrail: never demote tasks that already entered patch/deploy lifecycle
+        # (or already have a Cursor handoff file) back into investigation retry flow.
         if apply_retryable:
             try:
                 from app.services.notion_tasks import TASK_STATUS_READY_FOR_INVESTIGATION
+                from app.services.notion_task_reader import get_notion_task_by_id
+                from app.services._paths import get_writable_cursor_handoffs_dir
+
+                latest = get_notion_task_by_id(task_id) or {}
+                latest_status = str(latest.get("status") or "").strip().lower()
+                protected_statuses = {
+                    "ready-for-patch",
+                    "patching",
+                    "testing",
+                    "ready-for-deploy",
+                    "release-candidate-ready",
+                    "awaiting-deploy-approval",
+                    "deploying",
+                    "deployed",
+                    "done",
+                }
+                handoff_exists = (
+                    get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
+                ).exists()
+                if latest_status in protected_statuses or handoff_exists:
+                    logger.info(
+                        "execute_prepared_notion_task: retryable apply failure kept in-progress "
+                        "task_id=%s latest_status=%s handoff_exists=%s",
+                        task_id, latest_status, handoff_exists,
+                    )
+                    return result(
+                        True, False, apply_summary,
+                        False, False, False, "", False, False, "",
+                        "in-progress", False,
+                    )
+
                 update_notion_task_status(
                     task_id,
                     TASK_STATUS_READY_FOR_INVESTIGATION,

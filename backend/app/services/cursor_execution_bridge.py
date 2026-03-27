@@ -55,7 +55,7 @@ _DEFAULT_REPO = "ccruz0/crypto-2.0"
 
 _DEFAULT_STAGING_ROOT = "/tmp/atp-staging"
 _DEFAULT_CURSOR_CLI = "cursor"
-_DEFAULT_TIMEOUT = 300
+_DEFAULT_TIMEOUT = 900
 _DEFAULT_TEST_TIMEOUT = 120
 _MAX_STAGING_DIRS = 5
 _PATCHES_SUBDIR = "docs/agents/patches"
@@ -574,6 +574,11 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
     logger.info(
         "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d",
         task_id, staging_path, timeout, len(prompt),
+    )
+    logger.info(
+        "cursor_bridge: invoke mode=blocking subprocess.run capture_output=True cli=%s args_prefix=%s",
+        Path(cli).name,
+        " ".join(args[:5]),
     )
     _log_event("cursor_bridge_invoke_start", task_id=task_id, details={
         "staging_path": str(staging_path),
