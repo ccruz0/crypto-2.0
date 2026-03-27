@@ -91,6 +91,18 @@ def _is_stale_retry_exhausted_task(task: dict[str, Any]) -> tuple[bool, str]:
     return True, f"stale_retry_exhausted age_minutes={int(age.total_seconds() // 60)} test_status={test_status[:120]}"
 
 
+def _is_stale_missing_tmp_artifact_failure(summary: str) -> bool:
+    s = (summary or "").strip().lower()
+    return (
+        "missing file:" in s
+        and "/tmp/" in s
+        and (
+            "agent-bug-investigations" in s
+            or "notion-bug-" in s
+        )
+    )
+
+
 def _patching_fingerprint_state_path(task_id: str) -> Path:
     from app.services._paths import get_writable_cursor_handoffs_dir
     state_dir = get_writable_cursor_handoffs_dir() / ".patching-state"
@@ -2428,6 +2440,36 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
             record_test_result(task_id, outcome, summary=summary, advance_on_pass=False, current_status="patching")
         except Exception:
             pass
+        if _is_stale_missing_tmp_artifact_failure(val_summary):
+            try:
+                from app.services.notion_tasks import TASK_STATUS_BLOCKED
+                block_reason = (
+                    "stale patching validation loop: repeated missing artifact under /tmp/ "
+                    "cannot self-heal in scheduler path"
+                )
+                update_notion_task_status(
+                    task_id,
+                    TASK_STATUS_BLOCKED,
+                    append_comment=(
+                        f"[{ts}] Validation repeatedly failed with missing /tmp artifact. "
+                        f"Moved to blocked to stop lifecycle churn. Details: {val_summary[:200]}"
+                    ),
+                )
+                logger.info(
+                    "advance_ready_for_patch_task: blocked stale missing-artifact loop "
+                    "task_id=%s reason=%s summary=%s",
+                    task_id,
+                    block_reason,
+                    val_summary,
+                )
+                return _result(False, "validation", f"{val_summary} ({block_reason})", "blocked")
+            except Exception as exc:
+                logger.warning(
+                    "advance_ready_for_patch_task: failed to block stale missing-artifact loop "
+                    "task_id=%s err=%s",
+                    task_id,
+                    exc,
+                )
         return _result(False, "validation", val_summary, "patching")
 
     logger.info("advance_ready_for_patch_task: validation passed task_id=%s", task_id)
