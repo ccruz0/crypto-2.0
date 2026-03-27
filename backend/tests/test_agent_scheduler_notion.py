@@ -386,3 +386,52 @@ class TestAgentRecoveryStaleInProgress:
 
         result = run_stale_in_progress_playbook(max_tasks=5)
         assert result == []
+
+
+class TestAgentRecoveryMissingArtifactBridgeRace:
+    """Verify missing-artifact recovery defers while Cursor Bridge is active."""
+
+    def test_get_tasks_with_missing_artifacts_skips_active_bridge_patching(self):
+        from app.services.agent_recovery import _get_tasks_with_missing_artifacts
+
+        task = {
+            "id": "32eb1837-03fe-812a-a197-d313f3928531",
+            "task": "Race case",
+            "status": "patching",
+        }
+
+        with (
+            patch("app.services.agent_recovery._has_recovery_attempt_for_task", return_value=False),
+            patch("app.services.agent_recovery._get_artifact_paths", return_value=[]),
+            patch("app.services.agent_recovery._is_bridge_phase2_active_for_task", return_value=True),
+            patch(
+                "app.services.notion_task_reader.get_tasks_by_status",
+                return_value=[task],
+            ),
+        ):
+            result = _get_tasks_with_missing_artifacts(max_results=5)
+
+        assert result == []
+
+    def test_get_tasks_with_missing_artifacts_includes_non_active_bridge_patching(self):
+        from app.services.agent_recovery import _get_tasks_with_missing_artifacts
+
+        task = {
+            "id": "32eb1837-03fe-812a-a197-d313f3928531",
+            "task": "Race case",
+            "status": "patching",
+        }
+
+        with (
+            patch("app.services.agent_recovery._has_recovery_attempt_for_task", return_value=False),
+            patch("app.services.agent_recovery._get_artifact_paths", return_value=[]),
+            patch("app.services.agent_recovery._is_bridge_phase2_active_for_task", return_value=False),
+            patch(
+                "app.services.notion_task_reader.get_tasks_by_status",
+                return_value=[task],
+            ),
+        ):
+            result = _get_tasks_with_missing_artifacts(max_results=5)
+
+        assert len(result) == 1
+        assert result[0]["id"] == task["id"]

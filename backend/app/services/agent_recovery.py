@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -665,6 +666,98 @@ def run_revalidate_patching_playbook(
 # ---------------------------------------------------------------------------
 
 _MIN_CONTENT_CHARS = 200  # Minimum body length for valid investigation note
+_BRIDGE_ACTIVE_GRACE_SECONDS = 900
+
+
+def _is_cursor_bridge_phase2_lock_held(task_id: str) -> bool:
+    """
+    True when the Cursor Bridge per-task phase2 lock is currently held.
+
+    Uses the same lock path/filename convention as cursor_execution_bridge.
+    On unsupported platforms (no fcntl) or lock-check errors, returns False.
+    """
+    tid = (task_id or "").strip()
+    if not tid:
+        return False
+    try:
+        import fcntl  # Linux production path
+    except Exception:
+        return False
+
+    lock_root = Path((os.environ.get("CURSOR_BRIDGE_LOCK_DIR") or "").strip() or "/tmp/cursor-bridge-locks")
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", tid)[:120] if tid else "unknown"
+    lock_path = lock_root / f"{safe}.lock"
+    if not lock_path.exists():
+        return False
+    f = None
+    try:
+        f = open(lock_path, "a+", encoding="utf-8")
+        try:
+            # If we can acquire non-blocking, bridge is not currently holding it.
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False
+    except OSError:
+        return False
+    finally:
+        if f is not None:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                f.close()
+            except Exception:
+                pass
+
+
+def _bridge_started_recently(task_id: str, *, grace_seconds: int = _BRIDGE_ACTIVE_GRACE_SECONDS) -> bool:
+    """
+    True when cursor_bridge_started was recorded recently for task_id.
+
+    This is a conservative fallback to avoid racing recovery immediately after
+    bridge start in environments where lock introspection may be unavailable.
+    """
+    tid = (task_id or "").strip()
+    if not tid:
+        return False
+    try:
+        from app.services.agent_activity_log import get_recent_agent_events
+
+        now = datetime.now(timezone.utc)
+        events = get_recent_agent_events(limit=1000)
+        for ev in events:
+            if ev.get("event_type") != "cursor_bridge_started":
+                continue
+            if str(ev.get("task_id") or "").strip() != tid:
+                continue
+            ts = (
+                ev.get("timestamp")
+                or ev.get("created_at")
+                or ev.get("ts")
+                or ev.get("time")
+            )
+            dt = _parse_last_edited(str(ts) if ts is not None else None)
+            if dt is None:
+                return True
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if (now - dt).total_seconds() <= max(1, grace_seconds):
+                return True
+            return False
+        return False
+    except Exception:
+        return False
+
+
+def _is_bridge_phase2_active_for_task(task: dict[str, Any]) -> bool:
+    """True when missing-artifact reset should be deferred for active bridge work."""
+    task_id = str(task.get("id") or "").strip()
+    status = str(task.get("status") or "").strip().lower()
+    if not task_id or status != "patching":
+        return False
+    return _is_cursor_bridge_phase2_lock_held(task_id) or _bridge_started_recently(task_id)
 
 
 def artifact_exists_for_task(task_id: str, min_size: int = 200) -> bool:
@@ -985,6 +1078,12 @@ def _get_tasks_with_missing_artifacts(*, max_results: int = 5) -> list[dict[str,
     for t in tasks:
         tid = str(t.get("id") or "").strip()
         if not tid:
+            continue
+        if _is_bridge_phase2_active_for_task(t):
+            logger.info(
+                "agent_recovery: task_id=%s skipped (cursor bridge phase2 active; defer missing-artifact reset)",
+                tid,
+            )
             continue
         if _has_recovery_attempt_for_task(tid, _RECOVERY_MISSING_ARTIFACT_EVENT_TYPE):
             continue
