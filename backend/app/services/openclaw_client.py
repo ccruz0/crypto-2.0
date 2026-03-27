@@ -781,7 +781,7 @@ def _fetch_atp_runtime_context() -> str:
     return "## Pre-fetched runtime context (do NOT run docker/sudo — use this)\n\n" + "\n\n".join(blocks)
 
 
-def _task_metadata_block(prepared_task: dict[str, Any]) -> str:
+def _task_metadata_block(prepared_task: dict[str, Any], *, retry_mode: bool = False) -> str:
     task = (prepared_task or {}).get("task") or {}
     repo_area = (prepared_task or {}).get("repo_area") or {}
     details_raw = str(task.get("details") or "")
@@ -796,14 +796,18 @@ def _task_metadata_block(prepared_task: dict[str, Any]) -> str:
         f"Area: {repo_area.get('area_name', '')}",
     ]
     likely = repo_area.get("likely_files") or []
-    if likely:
-        lines.append(f"Likely files: {', '.join(likely[:12])}")
-    docs = repo_area.get("relevant_docs") or []
-    if docs:
-        lines.append(f"Relevant docs: {', '.join(docs[:8])}")
-    runbooks = repo_area.get("relevant_runbooks") or []
-    if runbooks:
-        lines.append(f"Relevant runbooks: {', '.join(runbooks[:8])}")
+    if retry_mode:
+        if likely:
+            lines.append(f"Previously identified files (reuse only): {', '.join(likely[:8])}")
+    else:
+        if likely:
+            lines.append(f"Likely files: {', '.join(likely[:12])}")
+        docs = repo_area.get("relevant_docs") or []
+        if docs:
+            lines.append(f"Relevant docs: {', '.join(docs[:8])}")
+        runbooks = repo_area.get("relevant_runbooks") or []
+        if runbooks:
+            lines.append(f"Relevant runbooks: {', '.join(runbooks[:8])}")
     return "\n".join(lines)
 
 
@@ -812,7 +816,8 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
 
     Returns (user_prompt, system_instructions).
     """
-    meta = _task_metadata_block(prepared_task)
+    retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
+    meta = _task_metadata_block(prepared_task, retry_mode=retry_mode)
     task = (prepared_task or {}).get("task") or {}
     symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
@@ -820,12 +825,46 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     user_prompt = ""
     if runtime:
         user_prompt = f"{runtime}\n\n---\n\n"
+    retry_mode_block = (
+        "RETRY INVESTIGATION MODE (MANDATORY):\n"
+        "- Do NOT output orientation/preparation checklists.\n"
+        "- Do NOT output 'OpenClaw preparation plan'.\n"
+        "- Do NOT repeat instructions like 'read docs', 'check runbooks', or 'inspect likely files'.\n"
+        "- Use prior failure feedback and previously identified files only.\n"
+        "- Respond directly with code-grounded investigation evidence.\n\n"
+        if retry_mode
+        else ""
+    )
+    step1_line = (
+        "1. Use prior failure feedback to produce a stronger code-grounded investigation.\n"
+        if retry_mode
+        else "1. Read the relevant source files listed above to understand the current behavior.\n"
+    )
     user_prompt += (
         f"Investigate the following bug report for the Automated Trading Platform.\n\n"
         f"{meta}\n\n"
         f"Reported symptom: {symptom}\n\n"
+        f"{retry_mode_block}"
+        f"HARD OUTPUT REQUIREMENTS (MANDATORY):\n"
+        f"- Root cause MUST reference a real file path and a real function name.\n"
+        f"- Failing scenario MUST be explicit and reproducible (e.g., when user sends..., when scheduler runs...).\n"
+        f"- Code reference MUST include:\n"
+        f"  1) at least one real function definition, and\n"
+        f"  2) at least one code block.\n"
+        f"- Generic preparation plans are invalid (examples: 'read docs', 'check runbooks', 'investigate further').\n"
+        f"- If concrete code evidence is missing, the output is invalid.\n\n"
+        f"Required minimal format (example):\n"
+        f"Root cause:\n"
+        f"In backend/app/services/telegram_commands.py inside _handle_task_command()\n\n"
+        f"Failing scenario:\n"
+        f"When user sends /task twice quickly...\n\n"
+        f"Code reference:\n"
+        f"```python\n"
+        f"def _handle_task_command(...):\n"
+        f"    ...\n"
+        f"```\n\n"
         f"Please:\n"
-        f"1. Read the relevant source files listed above to understand the current behavior.\n"
+        f"{step1_line}"
         f"2. Identify the most likely root cause.\n"
         f"3. Suggest a concrete fix (code change, config change, or operational step).\n"
         f"4. Note any risks or side effects of the fix.\n"
@@ -839,6 +878,8 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"{_WORKSPACE_NOTE} "
         f"{_ATP_COMMAND_NOTE} "
         "Be thorough but concise. Focus on actionable findings. "
+        "Do not output generic plans or checklists. "
+        "Every conclusion must be tied to real code evidence. "
         "Always use the exact section headings requested in the prompt."
     )
     return user_prompt, instructions

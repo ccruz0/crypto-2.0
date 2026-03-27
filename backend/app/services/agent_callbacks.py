@@ -856,6 +856,11 @@ _OPENCLAW_QUALITY_RETRY_APPEND = (
     "def function_name(...):\n"
     "    ...\n"
     "```\n"
+    "RETRY MODE MANDATORY:\n"
+    "- Do NOT output orientation or preparation plans.\n"
+    "- Do NOT say 'OpenClaw preparation plan'.\n"
+    "- Do NOT repeat 'read docs', 'check runbooks', or 'inspect likely files/modules'.\n"
+    "- Use prior feedback and previously identified files only.\n"
     "Do NOT return short answers.\n"
     "Output must be at least 500 characters and include concrete code evidence."
 )
@@ -1018,6 +1023,13 @@ def _apply_via_openclaw(
     """Send a task to OpenClaw for AI analysis, save the result, fall back to template on failure."""
     task_id = _safe_task_id(prepared_task)
     title = _safe_task_title(prepared_task) or "Untitled"
+    root = _repo_root()
+    feedback_path = root / "docs" / "agents" / "verification-feedback" / f"{task_id}.txt"
+    task_obj = (prepared_task or {}).get("task") or {}
+    revision_reason = str((task_obj or {}).get("revision_reason") or "").strip().lower()
+    retry_investigation_mode = feedback_path.exists() or revision_reason.startswith(
+        "strict_mode_reinvestigation_retry_scheduled"
+    )
 
     if not _openclaw_auto_execution_enabled():
         allowed_task_ids = _openclaw_allowed_task_ids()
@@ -1081,8 +1093,13 @@ def _apply_via_openclaw(
     if _exec_mode == "strict":
         logger.info("STRICT MODE ACTIVE at _apply_via_openclaw task_id=%s", task_id)
 
+    prompt_task = prepared_task
+    if retry_investigation_mode:
+        prompt_task = dict(prepared_task or {})
+        prompt_task["_investigation_retry_mode"] = True
+        logger.info("openclaw_retry_investigation_mode task_id=%s", task_id)
     try:
-        user_prompt, instructions = prompt_builder_fn(prepared_task)
+        user_prompt, instructions = prompt_builder_fn(prompt_task)
     except Exception as e:
         logger.warning("OpenClaw prompt build failed for task %s: %s", task_id, e)
         if fallback_fn:
@@ -1097,8 +1114,6 @@ def _apply_via_openclaw(
         logger.debug("prepend_strict_mode_if_needed failed: %s — continuing without strict block", e)
 
     # Append verification feedback if this is a re-investigation after failed verification
-    root = _repo_root()
-    feedback_path = root / "docs" / "agents" / "verification-feedback" / f"{task_id}.txt"
     if feedback_path.exists():
         try:
             prev_feedback = feedback_path.read_text(encoding="utf-8").strip()
