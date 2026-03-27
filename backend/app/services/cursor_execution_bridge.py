@@ -269,9 +269,9 @@ def _bridge_model_chain() -> list[str]:
 def _bridge_prompt_max_chars() -> int:
     raw = (os.environ.get("CURSOR_BRIDGE_PROMPT_MAX_CHARS") or "").strip()
     try:
-        n = int(raw) if raw else 2400
+        n = int(raw) if raw else 1400
     except ValueError:
-        n = 2400
+        n = 1400
     return max(800, min(n, 12000))
 
 
@@ -300,17 +300,43 @@ def _optimize_bridge_prompt(prompt: str, *, task_id: str = "") -> str:
     compact = re.sub(r"\n{3,}", "\n\n", raw)
     compact = compact[:max_chars]
     target_paths = _extract_repo_paths_from_prompt(compact)
-    scope_hint = ", ".join(target_paths) if target_paths else "files explicitly mentioned in the task/handoff"
+    if target_paths:
+        allowlist_lines = "\n".join(f"- {p}" for p in target_paths)
+    else:
+        allowlist_lines = "- (no explicit paths found in handoff; use only files required by the exact task)"
     efficiency_prefix = (
         f"TASK_ID: {task_id}\n"
-        "Execution policy (cost-optimized):\n"
-        "- Do NOT scan the full repository.\n"
-        f"- Work only in: {scope_hint}.\n"
-        "- Limit file reads/edits to what is strictly required for this task.\n"
-        "- Keep response concise (final summary under 200 words).\n"
-        "- Run only fast targeted tests needed for your touched files.\n\n"
+        "Execution rules:\n"
+        "You may ONLY read/edit these files:\n"
+        f"{allowlist_lines}\n"
+        "Do not access any other files in the repository.\n"
+        "Keep output concise (<150 words).\n\n"
     )
     return efficiency_prefix + compact
+
+
+def _select_bridge_workspace(staging_path: Path, allowed_paths: list[str]) -> Path:
+    """
+    Narrow workspace root to reduce repository-context ingestion.
+    """
+    cleaned = [p.strip().strip("/").strip() for p in (allowed_paths or []) if p and p.strip()]
+    if not cleaned:
+        return staging_path
+    top_levels = {p.split("/", 1)[0] for p in cleaned}
+    if len(top_levels) == 1:
+        candidate = staging_path / next(iter(top_levels))
+        if candidate.is_dir():
+            return candidate
+    try:
+        common = os.path.commonpath(cleaned)
+        candidate = staging_path / common
+        if candidate.is_file():
+            candidate = candidate.parent
+        if candidate.is_dir():
+            return candidate
+    except Exception:
+        pass
+    return staging_path
 
 
 def _is_resource_exhausted_error(stderr_text: str) -> bool:
@@ -696,19 +722,23 @@ def invoke_cursor_cli(staging_path: Path, prompt: str, *, task_id: str = "") -> 
     base_backoff = _resource_exhausted_backoff_s()
     max_attempts = 1 + retries
 
+    allowed_paths = _extract_repo_paths_from_prompt(prompt)
     optimized_prompt = _optimize_bridge_prompt(prompt, task_id=task_id)
+    workspace_path = _select_bridge_workspace(staging_path, allowed_paths)
     _log_event("cursor_bridge_invoke_start", task_id=task_id, details={
         "staging_path": str(staging_path),
+        "workspace_path": str(workspace_path),
+        "allowed_paths_count": len(allowed_paths),
         "prompt_len": len(prompt),
         "optimized_prompt_len": len(optimized_prompt),
         "model_chain": models,
     })
     last_failure: dict[str, Any] = {"success": False, "exit_code": -1, "output": "", "error": "invoke failed"}
     for model_idx, model in enumerate(models, start=1):
-        args = [*base_args, "--model", model, optimized_prompt]
+        args = [*base_args, "--workspace", str(workspace_path), "--model", model, optimized_prompt]
         logger.info(
-            "cursor_bridge: invoking CLI task_id=%s path=%s timeout=%ds prompt_len=%d optimized_prompt_len=%d model=%s model_attempt=%d/%d",
-            task_id, staging_path, timeout, len(prompt), len(optimized_prompt), model, model_idx, len(models),
+            "cursor_bridge: invoking CLI task_id=%s path=%s workspace=%s timeout=%ds prompt_len=%d optimized_prompt_len=%d model=%s model_attempt=%d/%d",
+            task_id, staging_path, workspace_path, timeout, len(prompt), len(optimized_prompt), model, model_idx, len(models),
         )
         logger.info(
             "cursor_bridge: invoke mode=blocking subprocess.run capture_output=True cli=%s args_prefix=%s",
