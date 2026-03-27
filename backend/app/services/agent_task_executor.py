@@ -22,7 +22,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -43,6 +43,52 @@ from app.services.agent_versioning import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso_utc(ts: str) -> datetime | None:
+    raw = (ts or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _is_stale_retry_exhausted_task(task: dict[str, Any]) -> tuple[bool, str]:
+    """
+    Guardrail: skip stale tasks that keep failing with the same non-progress signatures.
+    """
+    status = str((task or {}).get("status") or "").strip().lower()
+    if status not in ("planned", "backlog", "ready-for-investigation", "blocked"):
+        return False, ""
+
+    test_status = str((task or {}).get("test_status") or "").strip().lower()
+    if not test_status.startswith("failed:"):
+        return False, ""
+
+    stale_signatures = (
+        "missing file: /tmp/",
+        "openclaw auto-execution disabled by cost-control",
+    )
+    if not any(sig in test_status for sig in stale_signatures):
+        return False, ""
+
+    last_edited = _parse_iso_utc(str((task or {}).get("last_edited_time") or ""))
+    if last_edited is None:
+        # Conservative: if we cannot determine freshness, do not skip.
+        return False, ""
+
+    age = datetime.now(timezone.utc) - last_edited
+    if age < timedelta(minutes=20):
+        return False, ""
+
+    return True, f"stale_retry_exhausted age_minutes={int(age.total_seconds() // 60)} test_status={test_status[:120]}"
 
 
 def _patching_fingerprint_state_path(task_id: str) -> Path:
@@ -921,7 +967,24 @@ def prepare_next_notion_task(
         logger.info("No pending Notion tasks found for preparation project=%r type_filter=%r", project, type_filter)
         return None
 
-    task = tasks[0]
+    task = None
+    for candidate in tasks:
+        exhausted, reason = _is_stale_retry_exhausted_task(candidate)
+        if exhausted:
+            cid = str(candidate.get("id") or "").strip()
+            logger.info(
+                "prepare_next_notion_task: skipping stale retry-exhausted task task_id=%s status=%s reason=%s",
+                cid,
+                str(candidate.get("status") or "").strip().lower(),
+                reason,
+            )
+            continue
+        task = candidate
+        break
+
+    if task is None:
+        logger.info("prepare_next_notion_task: all pending tasks skipped as stale retry-exhausted")
+        return None
     page_id = str(task.get("id") or "").strip()
     exec_mode = (task.get("execution_mode") or "normal").strip().lower()
     if exec_mode not in ("strict", "normal"):
@@ -1618,10 +1681,29 @@ def execute_prepared_notion_task(
                 )
             except Exception as e:
                 logger.warning("execute_prepared_notion_task: move to ready-for-investigation failed: %s", e)
+        else:
+            try:
+                from app.services.notion_tasks import TASK_STATUS_BLOCKED
+                update_notion_task_status(
+                    task_id,
+                    TASK_STATUS_BLOCKED,
+                    append_comment=(
+                        f"[{executed_at}] Non-retryable apply failure; task moved to blocked to avoid "
+                        f"automatic reprocessing. Reason: {apply_summary[:200]}"
+                    ),
+                )
+                logger.info(
+                    "execute_prepared_notion_task: moved non-retryable apply failure to blocked "
+                    "task_id=%s summary=%s",
+                    task_id,
+                    apply_summary,
+                )
+            except Exception as e:
+                logger.warning("execute_prepared_notion_task: move to blocked failed: %s", e)
         return result(
             True, False, apply_summary,
             False, False, False, "", False, False, "",
-            "in-progress", False,
+            "blocked", False,
         )
 
     # ----- Step 1b: enrich Notion metadata from OpenClaw structured sections

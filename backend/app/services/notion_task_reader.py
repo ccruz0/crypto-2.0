@@ -36,10 +36,9 @@ NOTION_PICKABLE_STATUS_OPTIONS = (
     "Planned",
     "Backlog",
     "Ready for Investigation",
-    "Blocked",
 )
 # Internal normalized status names (used for comparisons after parsing).
-INTERNAL_PICKABLE_STATUSES = ("planned", "backlog", "ready-for-investigation", "blocked")
+INTERNAL_PICKABLE_STATUSES = ("planned", "backlog", "ready-for-investigation")
 
 
 def _get_config() -> tuple[str, str]:
@@ -339,7 +338,7 @@ def get_pending_notion_tasks(
 ) -> list[dict[str, Any]]:
     """
     Fetch tasks from the Notion "AI Task System" database where Status is one of:
-    Planned, Backlog, Ready for Investigation, or Blocked.
+    Planned, Backlog, or Ready for Investigation.
 
     Uses NOTION_API_KEY and NOTION_TASK_DB from environment. On missing config,
     network failure, or API error, returns an empty list and logs; does not raise.
@@ -506,7 +505,7 @@ def get_pending_notion_tasks(
                     logger.warning(
                         "Notion task read: no tasks found for any pickable status "
                         "database_id=%s status_options_tried=%s — check that tasks have Status "
-                        "exactly one of: Planned, Backlog, Ready for Investigation, Blocked",
+                        "exactly one of: Planned, Backlog, Ready for Investigation",
                         database_id[:8] + "…" if len(database_id) > 8 else database_id,
                         status_options,
                     )
