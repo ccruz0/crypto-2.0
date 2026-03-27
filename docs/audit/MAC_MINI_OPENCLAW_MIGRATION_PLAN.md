@@ -69,7 +69,7 @@
 | **secrets/runtime.env** | Set `OPENCLAW_API_URL=http://<macmini-tailscale>:8080` |
 | **Backend restart** | Required after env change |
 | **OPENCLAW_API_TOKEN** | Must match Mac Mini OpenClaw gateway token (same token can be shared with LAB for parallel run) |
-| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/crypto-2.0`. Mac Mini: e.g. `/Users/<user>/automated-trading-platform` or Docker volume path |
+| **Workspace path** | Mac Mini: mount differs. LAB uses `/home/ubuntu/crypto-2.0`. Mac Mini: e.g. `/Users/<user>/crypto-2.0` or Docker volume path |
 | **run-atp-command** | No change. OpenClaw (Mac Mini) calls `https://dashboard.hilovivo.com/api/agent/run-atp-command` — public URL, outbound from Mac Mini works |
 | **Nginx /openclaw/** | No change for Phase 1. UI stays on LAB. PROD nginx continues to proxy to LAB for browser access |
 
@@ -148,8 +148,8 @@
 
 | Assumption | LAB | Mac Mini |
 |------------|-----|----------|
-| Host ATP path | `/home/ubuntu/crypto-2.0` | e.g. `/Users/<user>/automated-trading-platform` |
-| Container mount | `-v /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/automated-trading-platform:/home/node/.openclaw/workspace/atp:ro` |
+| Host ATP path | `/home/ubuntu/crypto-2.0` | e.g. `/Users/<user>/crypto-2.0` |
+| Container mount | `-v /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` | `-v /Users/<user>/crypto-2.0:/home/node/.openclaw/workspace/atp:ro` |
 | Prompt text | `/home/node/.openclaw/workspace/atp/` | Same — container path is identical |
 
 ### Auth/token handling
@@ -259,7 +259,7 @@
 
 1. Install Docker on Mac Mini
 2. Install Tailscale; join tailnet; note hostname (e.g. `macmini`)
-3. Clone ATP repo: `git clone ... automated-trading-platform`
+3. Clone ATP repo: `git clone ... crypto-2.0`
 4. Create `docker-compose.openclaw.macmini.yml` (or use existing with path override):
    - Same image: `ghcr.io/ccruz0/openclaw:latest`
    - Mount: `-v $(pwd):/home/node/.openclaw/workspace/atp:ro`
