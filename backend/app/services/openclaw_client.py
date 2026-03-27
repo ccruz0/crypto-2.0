@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -531,12 +532,53 @@ def parse_agent_output_sections(text: str) -> dict[str, str | None]:
 # ---------------------------------------------------------------------------
 
 _WORKSPACE_NOTE = (
-    "You have read-only access to the project workspace at "
-    "/home/node/.openclaw/workspace/atp/. "
-    "Use it to read source code, configs, docs, and scripts when investigating. "
-    "IMPORTANT: Never read a directory path directly (causes EISDIR error). "
-    "Always list a directory first, then read the specific files inside it."
+    "You do not have guaranteed direct filesystem access in this call. "
+    "Use the provided task metadata and embedded workspace file excerpts below as source of truth. "
+    "Do not claim files are inaccessible when excerpts are present; analyze those excerpts directly."
 )
+
+
+def _investigation_workspace_instructions(*, has_embedded_excerpts: bool) -> str:
+    """Bug-investigation-specific: OpenResponses has no agent-side repo mount; excerpts are server-embedded.
+
+    The generic `_WORKSPACE_NOTE` invited models to say required paths are 'not in the workspace'
+    while the prompt simultaneously demands `backend/...` citations — a direct contradiction.
+    """
+    if has_embedded_excerpts:
+        return (
+            "Embedded workspace file excerpts below were read from this repository by the ATP backend "
+            "and are authoritative for this call. Analyze them as your primary source code. "
+            "Do NOT claim that required files are missing, not present in the workspace, or unreadable."
+        )
+    return (
+        "No file excerpts could be embedded for this run (paths missing or unavailable on the backend). "
+        "Use task metadata, symptom, area hints, and pre-fetched runtime context. "
+        "Do NOT refuse by claiming repository files are inaccessible in a workspace — reason from what is provided."
+    )
+
+
+def _repo_relative_for_embedding(rel: str, root: Path) -> str | None:
+    """Normalize Notion/repo_area paths so embedding reads succeed (absolute paths under root, etc.)."""
+    s = (rel or "").strip()
+    if not s:
+        return None
+    s = s.lstrip("./")
+    try:
+        root_r = root.resolve()
+    except OSError:
+        return None
+    p = Path(s)
+    if p.is_absolute():
+        try:
+            resolved = p.resolve()
+            rs = resolved.as_posix()
+            rr = root_r.as_posix()
+            if rs == rr or rs.startswith(rr + "/"):
+                return str(resolved.relative_to(root_r))
+        except (ValueError, OSError):
+            return None
+        return None
+    return s
 
 _ATP_COMMAND_NOTE = (
     "CRITICAL: Runtime context (docker ps, logs) is PRE-FETCHED and included in the prompt below. "
@@ -811,6 +853,62 @@ def _task_metadata_block(prepared_task: dict[str, Any], *, retry_mode: bool = Fa
     return "\n".join(lines)
 
 
+def _embedded_workspace_file_context(prepared_task: dict[str, Any]) -> str:
+    """Embed a small set of real workspace file excerpts directly into the prompt.
+
+    This avoids dependency on remote filesystem tooling inside the gateway call.
+    """
+    try:
+        from app.services._paths import workspace_root
+        root = workspace_root()
+    except Exception:
+        return ""
+
+    repo_area = (prepared_task or {}).get("repo_area") or {}
+    candidates: list[str] = []
+    for key in ("likely_files", "relevant_docs", "relevant_runbooks"):
+        values = repo_area.get(key) or []
+        if isinstance(values, list):
+            for raw in values:
+                p = str(raw or "").strip()
+                if p:
+                    candidates.append(p)
+    # Same cap for retry as initial: retry previously used 3 and could omit needed modules.
+    max_files = 5
+    seen: set[str] = set()
+    sections: list[str] = []
+    total_budget = 7000
+    per_file_chars = 1800
+
+    for rel in candidates:
+        if len(sections) >= max_files or total_budget <= 200:
+            break
+        rel_norm = _repo_relative_for_embedding(rel, root)
+        if not rel_norm or rel_norm in seen:
+            continue
+        seen.add(rel_norm)
+        try:
+            full = (root / rel_norm).resolve()
+            if not str(full).startswith(str(root.resolve())):
+                continue
+            if not full.exists() or not full.is_file():
+                continue
+            text = full.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        snippet = text[: min(per_file_chars, total_budget)].strip()
+        if not snippet:
+            continue
+        total_budget -= len(snippet)
+        sections.append(
+            f"### File excerpt: {rel_norm}\n"
+            f"```text\n{snippet}\n```"
+        )
+    if not sections:
+        return ""
+    return "## Embedded workspace file excerpts (authoritative for this run)\n\n" + "\n\n".join(sections)
+
+
 def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]:
     """Build prompt for bug investigation tasks.
 
@@ -818,6 +916,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
     """
     retry_mode = bool((prepared_task or {}).get("_investigation_retry_mode"))
     meta = _task_metadata_block(prepared_task, retry_mode=retry_mode)
+    embedded_context = _embedded_workspace_file_context(prepared_task)
     task = (prepared_task or {}).get("task") or {}
     symptom = _truncate_task_text((task.get("details") or task.get("task") or "").strip())
     runtime = _fetch_atp_runtime_context()
@@ -844,6 +943,7 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"Investigate the following bug report for the Automated Trading Platform.\n\n"
         f"{meta}\n\n"
         f"Reported symptom: {symptom}\n\n"
+        f"{embedded_context}\n\n"
         f"{retry_mode_block}"
         f"HARD OUTPUT REQUIREMENTS (MANDATORY):\n"
         f"- Root cause MUST reference a real file path and a real function name.\n"
@@ -872,10 +972,11 @@ def build_investigation_prompt(prepared_task: dict[str, Any]) -> tuple[str, str]
         f"{_STRUCTURED_OUTPUT_INSTRUCTION}"
         f"{_INVESTIGATION_MIN_SECTIONS_INSTRUCTION}"
     )
+    has_embedded = bool((embedded_context or "").strip())
     instructions = (
         "You are an expert software engineer investigating a bug in a Python/FastAPI "
         "trading platform backend with a Next.js frontend. "
-        f"{_WORKSPACE_NOTE} "
+        f"{_investigation_workspace_instructions(has_embedded_excerpts=has_embedded)} "
         f"{_ATP_COMMAND_NOTE} "
         "Be thorough but concise. Focus on actionable findings. "
         "Do not output generic plans or checklists. "
