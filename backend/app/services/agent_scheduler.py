@@ -79,6 +79,25 @@ def _fallback_attempt_count_from_activity(task_id: str, attempt_path: str) -> in
         return 0
 
 
+def _has_auto_retry_cap_comment_logged(task_id: str) -> bool:
+    """Dedup guard: True when retry-cap Notion comment was already logged for this task."""
+    tid = (task_id or "").strip()
+    if not tid:
+        return False
+    try:
+        from app.services.agent_activity_log import get_recent_agent_events
+
+        for ev in get_recent_agent_events(limit=5000):
+            if str(ev.get("task_id") or "").strip() != tid:
+                continue
+            if str(ev.get("event_type") or "").strip() == "notion_auto_retry_cap_comment_added":
+                return True
+    except Exception:
+        # Fail-open: if we cannot read events, do not block processing.
+        return False
+    return False
+
+
 def _record_auto_attempt_or_block(
     task_id: str,
     task_title: str,
@@ -115,15 +134,47 @@ def _record_auto_attempt_or_block(
                 "agent_scheduler: auto_retry_cap_reached task_id=%s count=%d cap=%d path=%s",
                 task_id, current, cap, attempt_path,
             )
-            update_notion_task_status(
+            cap_comment = (
+                "---\n"
+                "⚠️ Automatic retries stopped\n\n"
+                "This task reached the maximum number of automatic retry attempts.\n\n"
+                f"- Attempts: {current}\n"
+                f"- Cap: {cap}\n\n"
+                "Automatic processing has been stopped to prevent infinite loops or unnecessary cost.\n\n"
+                "You can:\n"
+                "- Run the task manually if you want to continue\n"
+                "- Review logs / investigation output before retrying\n\n"
+                "---"
+            )
+            already_notified = _has_auto_retry_cap_comment_logged(task_id)
+            status_ok = update_notion_task_status(
                 task_id,
                 TASK_STATUS_BLOCKED,
-                append_comment=(
-                    f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')}Z] "
-                    f"Automatic processing halted: retry cap exceeded ({current}/{cap}) on {attempt_path}. "
-                    "Manual rerun by task ID is required to continue."
-                ),
+                append_comment=None if already_notified else cap_comment,
             )
+            if not already_notified:
+                if status_ok:
+                    logger.info(
+                        "notion_auto_retry_cap_comment_added task_id=%s attempts=%d cap=%d path=%s",
+                        task_id, current, cap, attempt_path,
+                    )
+                    _log_event(
+                        "notion_auto_retry_cap_comment_added",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={"attempts": current, "cap": cap, "path": attempt_path},
+                    )
+                else:
+                    logger.warning(
+                        "notion_auto_retry_cap_comment_failed task_id=%s attempts=%d cap=%d path=%s",
+                        task_id, current, cap, attempt_path,
+                    )
+                    _log_event(
+                        "notion_auto_retry_cap_comment_failed",
+                        task_id=task_id,
+                        task_title=task_title,
+                        details={"attempts": current, "cap": cap, "path": attempt_path},
+                    )
             update_notion_task_metadata(
                 task_id,
                 {
