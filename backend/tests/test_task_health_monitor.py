@@ -5,6 +5,7 @@ Tests for task health monitor: stuck detection, recovery, retry limit, alert coo
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -126,6 +127,55 @@ class TestHandleStuckTask:
         mock_manual.assert_called_once()
         # Retry count should be cleared so we don't keep updating
         assert "max-1" not in thm._retry_count
+
+    def test_strict_reinvestigation_pending_skips_investigation_recovery(self):
+        """Do not auto-transition when strict retry is already scheduled (revision_reason on task)."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        t = _task(task_id="strict-rr-1", status="in-progress", last_edited_time=old)
+        t["revision_reason"] = "strict_mode_reinvestigation_retry_scheduled:1/2"
+        with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
+            with patch.object(thm, "_send_stuck_alert"):
+                with patch.object(thm, "_log_event"):
+                    thm.handle_stuck_task(t, now)
+        mock_update.assert_not_called()
+
+    def test_strict_reinvestigation_pending_skips_after_fresh_notion_fetch(self):
+        """List payload may omit revision_reason; refresh from page must still skip."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        t = _task(task_id="strict-rr-2", status="in-progress", last_edited_time=old)
+        fresh = {
+            **t,
+            "revision_reason": "strict_mode_reinvestigation_retry_scheduled:1/2",
+        }
+        with patch("app.services.notion_task_reader.get_notion_task_by_id", return_value=fresh):
+            with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
+                with patch.object(thm, "_send_stuck_alert"):
+                    with patch.object(thm, "_log_event"):
+                        thm.handle_stuck_task(t, now)
+        mock_update.assert_not_called()
+
+    def test_strict_reinvestigation_pending_skips_via_feedback_file(self, tmp_path: Path):
+        """If Notion metadata is missing, strict feedback file implies pending retry."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        tid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        t = _task(task_id=tid, status="in-progress", last_edited_time=old)
+        fb_dir = tmp_path / "docs" / "agents" / "verification-feedback"
+        fb_dir.mkdir(parents=True, exist_ok=True)
+        (fb_dir / f"{tid}.txt").write_text(
+            "Strict mode proof failed. Rewrite investigation with stronger, code-grounded evidence.\n\n"
+            "Missing criteria: test\n",
+            encoding="utf-8",
+        )
+        with patch("app.services.notion_task_reader.get_notion_task_by_id", return_value=None):
+            with patch("app.services._paths.workspace_root", return_value=tmp_path):
+                with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
+                    with patch.object(thm, "_send_stuck_alert"):
+                        with patch.object(thm, "_log_event"):
+                            thm.handle_stuck_task(t, now)
+        mock_update.assert_not_called()
 
     def test_alert_cooldown_prevents_duplicate_stuck_alerts(self):
         now = datetime.now(timezone.utc)

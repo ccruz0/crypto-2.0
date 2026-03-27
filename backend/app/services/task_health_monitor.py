@@ -58,8 +58,41 @@ _parent_child_map: dict[str, list[str]] = {}
 
 
 def _strict_reinvestigation_pending(task: dict[str, Any]) -> bool:
-    rr = str((task or {}).get("revision_reason") or "").strip().lower()
-    return rr.startswith("strict_mode_reinvestigation_retry_scheduled")
+    """
+    True when strict-mode auto re-investigation is already scheduled for this task.
+
+    List queries sometimes omit or lag metadata; refresh from the page and fall back to
+    the strict feedback file written by execute_prepared_notion_task (same path as
+    OpenClaw retry feedback, but only strict scheduling uses the template prefix).
+    """
+    tid = str((task or {}).get("id") or "").strip()
+
+    def _rr_ok(d: dict[str, Any]) -> bool:
+        rr = str((d or {}).get("revision_reason") or "").strip().lower()
+        return rr.startswith("strict_mode_reinvestigation_retry_scheduled")
+
+    if _rr_ok(task or {}):
+        return True
+    if tid:
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+
+            fresh = get_notion_task_by_id(tid)
+            if fresh and _rr_ok(fresh):
+                return True
+        except Exception as e:
+            logger.debug("task_health_monitor: strict pending refresh failed task_id=%s: %s", tid[:12], e)
+        try:
+            from app.services._paths import workspace_root
+
+            p = workspace_root() / "docs" / "agents" / "verification-feedback" / f"{tid}.txt"
+            if p.is_file():
+                head = p.read_text(encoding="utf-8", errors="replace")[:400]
+                if head.strip().startswith("Strict mode proof failed"):
+                    return True
+        except Exception as e:
+            logger.debug("task_health_monitor: strict pending file check failed task_id=%s: %s", tid[:12], e)
+    return False
 
 
 def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
