@@ -821,6 +821,13 @@ _GENERIC_INVESTIGATION_MARKERS = (
     "additional information required",
 )
 
+_GENERIC_PLAN_OUTPUT_MARKERS = (
+    "openclaw preparation plan",
+    "read required docs",
+    "check relevant runbooks",
+    "inspect likely affected files/modules",
+)
+
 _MIN_INVESTIGATION_CONTENT_CHARS = 200
 # Agent output: require all 9 sections and longer body
 _MIN_AGENT_BODY_CHARS = 500
@@ -832,15 +839,25 @@ _OPENCLAW_RETRY_DELAY_S = 5
 _OPENCLAW_FAILURE_PREVIEW_CHARS = 800
 _OPENCLAW_QUALITY_RETRY_APPEND = (
     "\n\nIMPORTANT: Your previous response was invalid.\n"
-    "It did not satisfy the required structured format and minimum length.\n"
-    "Retry now and strictly follow these mandatory sections:\n"
-    "## Summary\n"
-    "## Root Cause\n"
-    "## Fix\n"
-    "## Next Steps\n"
+    "It did not satisfy strict evidence requirements.\n"
+    "Retry now with concrete code-grounded analysis only.\n"
+    "MANDATORY (hard requirements):\n"
+    "- Root Cause must reference a real file path and real function name.\n"
+    "- Failing Scenario must be explicit and reproducible.\n"
+    "- Code Reference must include at least one real function definition and one code block.\n"
+    "- Generic preparation/checklist text is forbidden (e.g., 'read docs', 'check runbooks', 'investigate further').\n"
+    "Required evidence snippet format:\n"
+    "Root cause:\n"
+    "In backend/app/services/...py inside function_name(...)\n"
+    "Failing scenario:\n"
+    "When user sends ... / when scheduler runs ...\n"
+    "Code reference:\n"
+    "```python\n"
+    "def function_name(...):\n"
+    "    ...\n"
+    "```\n"
     "Do NOT return short answers.\n"
-    "Do NOT return a single sentence.\n"
-    "Output must be at least 300 characters."
+    "Output must be at least 500 characters and include concrete code evidence."
 )
 
 # Cost-control switch for automatic OpenClaw execution.
@@ -972,6 +989,19 @@ def _call_openclaw_once(
             f"OpenClaw quality gate failed (has_sections={bool(found_sections)} "
             f"len={body_len} min={_MIN_INVESTIGATION_CONTENT_CHARS})"
         )
+
+    content_lc = content.lower()
+    if any(marker in content_lc for marker in _GENERIC_PLAN_OUTPUT_MARKERS):
+        logger.warning(
+            "investigation_rejected_generic_plan task_id=%s response_len=%d",
+            task_id,
+            body_len,
+        )
+        logger.info(
+            "investigation_rewrite_forced task_id=%s reason=generic_preparation_plan_output",
+            task_id,
+        )
+        return None, "OpenClaw quality gate failed (generic preparation-plan output detected)"
 
     return result, ""
 

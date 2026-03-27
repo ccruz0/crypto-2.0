@@ -57,6 +57,11 @@ _decomposed_parents: set[str] = set()
 _parent_child_map: dict[str, list[str]] = {}
 
 
+def _strict_reinvestigation_pending(task: dict[str, Any]) -> bool:
+    rr = str((task or {}).get("revision_reason") or "").strip().lower()
+    return rr.startswith("strict_mode_reinvestigation_retry_scheduled")
+
+
 def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
     """Read last stuck-alert timestamp from DB. Returns Unix timestamp or None."""
     try:
@@ -510,6 +515,22 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
     )
 
     if status in ("in-progress", "investigating"):
+        if _strict_reinvestigation_pending(task):
+            logger.info(
+                "task_health_monitor: strict_reinvestigation_pending_skip task_id=%s status=%s",
+                task_id[:12],
+                status,
+            )
+            _log_event(
+                "stuck_retry_skipped",
+                task_id=task_id,
+                task_title=task_title,
+                details={
+                    "status": status,
+                    "reason": "strict_reinvestigation_pending",
+                },
+            )
+            return
         # Case 1: Investigation stuck — move to ready-for-investigation (retryable)
         # Never use Needs Revision for operational timeouts.
         failure_reason = "Investigation timed out (no progress within threshold). Retrying automatically."

@@ -1700,6 +1700,12 @@ def execute_prepared_notion_task(
     use_extended_lifecycle = bool((prepared_task or {}).get("_use_extended_lifecycle"))
     if use_extended_lifecycle:
         logger.info("investigation_started task_id=%s", task_id[:12] if task_id else "?")
+    # Visibility/heartbeat: publish investigation start before the blocking apply/OpenClaw call.
+    # Without this, tasks can appear idle in Notion until apply returns or times out.
+    _append_notion_page_comment(
+        task_id,
+        f"[{executed_at}] Investigation started: running OpenClaw analysis.",
+    )
     try:
         from app.services.agent_activity_log import log_agent_event
         log_agent_event("execution_started", task_id=task_id, task_title=task_title, details={})
@@ -1733,7 +1739,51 @@ def execute_prepared_notion_task(
                     isinstance((prepared_task or {}).get("execution_mode"), str)
                     and str((prepared_task or {}).get("execution_mode")).strip().lower() == "strict"
                 )
+                generic_plan_rejected = "generic preparation-plan output detected" in str(apply_summary or "").lower()
                 strict_retry_scheduled = strict_mode_active and _strict_retry_is_scheduled(latest_revision_reason)
+                if strict_mode_active and generic_plan_rejected:
+                    strict_retry_cap = 2
+                    prior_retry_count = _strict_reinvestigation_retry_count(task_id)
+                    if prior_retry_count < strict_retry_cap:
+                        next_attempt = prior_retry_count + 1
+                        _write_strict_reinvestigation_feedback(
+                            task_id,
+                            "generic preparation-plan output detected; rewrite with concrete code-level evidence",
+                        )
+                        _log_strict_reinvestigation_event(
+                            "strict_mode_reinvestigation_retry",
+                            task_id,
+                            task_title,
+                            {
+                                "attempt": next_attempt,
+                                "cap": strict_retry_cap,
+                                "reason": "generic_plan_output_rejected",
+                                "mode": "scheduled_from_apply_gate",
+                            },
+                        )
+                        update_notion_task_metadata(
+                            task_id,
+                            {
+                                "revision_reason": f"strict_mode_reinvestigation_retry_scheduled:{next_attempt}/{strict_retry_cap}",
+                            },
+                        )
+                        _append_notion_page_comment(
+                            task_id,
+                            f"[{executed_at}] Strict mode re-investigation scheduled {next_attempt}/{strict_retry_cap}: "
+                            "generic preparation-plan output was rejected; rewrite forced.",
+                        )
+                        logger.info(
+                            "investigation_rewrite_forced task_id=%s attempt=%d cap=%d source=apply_gate",
+                            task_id[:12] if task_id else "?",
+                            next_attempt,
+                            strict_retry_cap,
+                        )
+                        return result(
+                            True, False, apply_summary,
+                            False, False, False, "",
+                            False, False, "",
+                            "in-progress", False,
+                        )
                 if strict_retry_scheduled:
                     logger.warning(
                         "strict_mode_reinvestigation_retry_failed task_id=%s summary=%s",
