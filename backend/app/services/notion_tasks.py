@@ -1732,9 +1732,19 @@ def update_notion_task_metadata(
                     skipped_fields.append(key)
                     continue
 
-                payload: dict[str, Any] = {
-                    "properties": {prop_name: {"rich_text": _rich_text(text_value)}}
-                }
+                if key == "revision_count":
+                    try:
+                        num_value = int(text_value)
+                    except ValueError:
+                        skipped_fields.append(key)
+                        continue
+                    payload: dict[str, Any] = {
+                        "properties": {prop_name: {"number": num_value}}
+                    }
+                else:
+                    payload = {
+                        "properties": {prop_name: {"rich_text": _rich_text(text_value)}}
+                    }
                 r = client.patch(
                     f"{NOTION_API_BASE}/pages/{normalized_page_id}",
                     json=payload,
