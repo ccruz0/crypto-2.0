@@ -205,7 +205,7 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
-      # Only backend-aws polls Telegram; canary has RUN_TELEGRAM_POLLER=false
+      # Only backend-aws polls Telegram and runs the agent Notion scheduler; canary has RUN_TELEGRAM_POLLER=false
       - RUN_TELEGRAM_POLLER=true
       - RUNTIME_ORIGIN=AWS
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
@@ -333,7 +333,7 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
-      # Only backend-aws polls Telegram; canary skips to avoid lock contention and duplicate processing
+      # Canary skips Telegram poller and agent scheduler (same env as poller) to avoid duplicate Notion/task work
       - RUN_TELEGRAM_POLLER=false
       - RUNTIME_ORIGIN=AWS
       - EXECUTION_CONTEXT=AWS

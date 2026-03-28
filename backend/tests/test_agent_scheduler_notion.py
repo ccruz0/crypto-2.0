@@ -302,11 +302,12 @@ class TestSchedulerWiring:
             assert _get_scheduler_interval() == 30  # minimum clamp
 
     def test_main_py_references_agent_scheduler(self):
-        """main.py contains the startup wiring for the agent scheduler."""
+        """main.py wires the agent scheduler only when RUN_TELEGRAM_POLLER is true (primary instance)."""
         from pathlib import Path
         main_py = Path(__file__).resolve().parents[1] / "app" / "main.py"
         content = main_py.read_text()
         assert "start_agent_scheduler_loop" in content
+        assert "RUN_TELEGRAM_POLLER" in content
         assert "NOTION_API_KEY" in content or "notion_env" in content
 
     def test_notion_env_missing_then_auto_repair_proceeds(self):

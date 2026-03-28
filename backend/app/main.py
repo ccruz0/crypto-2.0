@@ -480,13 +480,29 @@ async def startup_event():
             else:
                 logger.warning("PERF: Telegram commands DISABLED for performance testing")
 
-            # Agent scheduler: periodic Notion task scanner (always start; pre-flight will auto-repair or skip)
-            try:
-                from app.services.agent_scheduler import start_agent_scheduler_loop
-                asyncio.create_task(start_agent_scheduler_loop())
-                logger.info("Agent scheduler loop started (Notion task scanner; pre-flight auto-repair enabled)")
-            except Exception as e:
-                logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
+            # Agent scheduler: same primary/standby split as Telegram poller (docker-compose: RUN_TELEGRAM_POLLER).
+            # If canary/standby also started the scheduler, two processes would run run_agent_scheduler_cycle()
+            # and duplicate Notion comments (execution plan, version proposal, investigation, etc.).
+            _run_poller = (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if _run_poller:
+                try:
+                    from app.services.agent_scheduler import start_agent_scheduler_loop
+
+                    asyncio.create_task(start_agent_scheduler_loop())
+                    logger.info(
+                        "Agent scheduler loop started (Notion task scanner; pre-flight auto-repair enabled)"
+                    )
+                except Exception as e:
+                    logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
+            else:
+                logger.info(
+                    "Agent scheduler loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
+                )
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
     
