@@ -1290,9 +1290,12 @@ def get_telegram_updates(offset: Optional[int] = None, timeout_override: Optiona
         token_to_use = BOT_TOKEN_DEV
         logger.debug(f"[TG_LOCAL_DEBUG] Using DEV token for getUpdates in LOCAL runtime")
     else:
-        # AWS runtime: Use production token
+        # AWS runtime: BOT_TOKEN comes from get_telegram_token() (ATP Control preferred; else TELEGRAM_BOT_TOKEN)
         if not BOT_TOKEN:
-            logger.warning("[TG] AWS runtime but TELEGRAM_BOT_TOKEN not set")
+            logger.warning(
+                "[TG] AWS runtime but no polling token — set TELEGRAM_ATP_CONTROL_BOT_TOKEN "
+                "or TELEGRAM_BOT_TOKEN (see docs/architecture/telegram.md)"
+            )
             return []
         token_to_use = BOT_TOKEN
     
@@ -6287,9 +6290,12 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         # LOCAL with DEV token: Allow processing (uses separate dev bot)
         logger.debug("[TG] LOCAL runtime with DEV token - processing commands with dev bot")
     else:
-        # AWS runtime: Use production token (existing behavior)
+        # AWS runtime: BOT_TOKEN from get_telegram_token(); see get_telegram_updates guard message
         if not BOT_TOKEN:
-            logger.warning("[TG] AWS runtime but TELEGRAM_BOT_TOKEN not set")
+            logger.warning(
+                "[TG] AWS runtime but no polling token — set TELEGRAM_ATP_CONTROL_BOT_TOKEN "
+                "or TELEGRAM_BOT_TOKEN"
+            )
             return
     
     # Ensure we have a DB session

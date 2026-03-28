@@ -31,7 +31,8 @@ def test_get_telegram_token_source_aws_atp_first():
             assert ttl.get_telegram_token_source() == "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
 
 
-def test_get_telegram_token_aws_does_not_fallback_to_telegram_bot_token():
+def test_get_telegram_token_aws_falls_back_to_telegram_bot_token_when_atp_unset():
+    """PROD often sets TELEGRAM_BOT_TOKEN only; polling must still work (ATP Control preferred when set)."""
     from app.utils import telegram_token_loader as ttl
 
     env = {
@@ -42,7 +43,7 @@ def test_get_telegram_token_aws_does_not_fallback_to_telegram_bot_token():
         with patch("app.core.runtime.is_aws_runtime", return_value=True):
             with patch.object(ttl, "_get_token_interactive", return_value=None):
                 tok = ttl.get_telegram_token()
-    assert tok is None
+    assert tok == "111:AAA"
 
 
 def test_get_telegram_token_non_aws_still_prefers_primary_bot_token():

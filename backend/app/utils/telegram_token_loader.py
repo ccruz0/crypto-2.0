@@ -203,6 +203,13 @@ def get_telegram_token() -> Optional[str]:
             logger.warning("[TG] No token provided - Telegram disabled")
         return token
 
+    # Compose/docs often use TELEGRAM_BOT_TOKEN_AWS; main.py also copies it at startup, but
+    # get_telegram_token() runs at import time — normalize so polling sees the same token.
+    if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
+        _aws_tok = (os.getenv("TELEGRAM_BOT_TOKEN_AWS") or "").strip()
+        if _aws_tok:
+            os.environ["TELEGRAM_BOT_TOKEN"] = _aws_tok
+
     # AWS PROD: /task and other commands are sent to @ATP_control_bot. If we poll TELEGRAM_BOT_TOKEN
     # (trading/alerts bot) instead, those updates never reach backend-aws — another consumer (e.g.
     # OpenClaw on LAB with the ATP Control token) may answer /task and try read-only workspace edits.
@@ -210,7 +217,10 @@ def get_telegram_token() -> Optional[str]:
         from app.core.runtime import is_aws_runtime
 
         if is_aws_runtime():
-            # AWS poller must use a single token source to avoid drift during rotations.
+            # AWS poller: prefer ATP Control token (canonical for /task + getUpdates).
+            # Fall back to TELEGRAM_BOT_TOKEN when ATP is unset — many PROD hosts only populate
+            # TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_TOKEN_AWS (main.py aliases to TELEGRAM_BOT_TOKEN
+            # at startup, but both names may exist in env_file before import order issues).
             atp = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
             if atp:
                 global _TOKEN_LOGGED
@@ -225,7 +235,18 @@ def get_telegram_token() -> Optional[str]:
                         )
                         _TOKEN_LOGGED = True
                 return atp
-            logger.warning("[TG][CONFIG] AWS runtime missing TELEGRAM_ATP_CONTROL_BOT_TOKEN; polling token unavailable")
+            legacy = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+            if legacy:
+                logger.warning(
+                    "[TG][CONFIG] AWS: TELEGRAM_ATP_CONTROL_BOT_TOKEN unset; using TELEGRAM_BOT_TOKEN for polling. "
+                    "Set TELEGRAM_ATP_CONTROL_BOT_TOKEN to the @ATP_control bot for canonical /task routing "
+                    "(see docs/architecture/telegram.md)."
+                )
+                return legacy
+            logger.warning(
+                "[TG][CONFIG] AWS runtime: no polling token — set TELEGRAM_ATP_CONTROL_BOT_TOKEN "
+                "or TELEGRAM_BOT_TOKEN in env (e.g. secrets/runtime.env)"
+            )
             return None
     except Exception:
         pass
@@ -273,8 +294,11 @@ def get_telegram_token_source() -> str:
     try:
         from app.core.runtime import is_aws_runtime
 
-        if is_aws_runtime() and (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip():
-            return "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
+        if is_aws_runtime():
+            if (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip():
+                return "TELEGRAM_ATP_CONTROL_BOT_TOKEN"
+            if (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
+                return "TELEGRAM_BOT_TOKEN"
     except Exception:
         pass
     if (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
