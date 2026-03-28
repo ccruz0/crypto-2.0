@@ -183,6 +183,11 @@ def _log_telegram_task_pipeline_event(event_type: str, details: Optional[Dict[st
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
 
+# Serialize poll cycles within one process. trading_scheduler calls process_telegram_commands every ~1s
+# while get_telegram_updates long-polls (~10–35s), so concurrent calls would hit advisory_lock_busy
+# against the same session's held lock — not a second container.
+_PROCESS_TELEGRAM_POLL_MUTEX = threading.Lock()
+
 
 def _mark_update_id_seen_runtime(update_id: int) -> bool:
     """
@@ -6302,7 +6307,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
                 "or TELEGRAM_BOT_TOKEN"
             )
             return
-    
+
     # Ensure we have a DB session
     if not db:
         session_factory = SessionLocal
@@ -6321,13 +6326,25 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
     if db is None:
         return
 
+    # One poll cycle at a time per process: trading_scheduler calls this every ~1s while
+    # get_telegram_updates long-polls (~10–35s), so overlapping threads hit advisory_lock_busy
+    # on the same backend — not a second container.
+    if not _PROCESS_TELEGRAM_POLL_MUTEX.acquire(blocking=False):
+        logger.debug(
+            "[TG] Skipping poll cycle: previous getUpdates still in progress "
+            "(scheduler interval < long-poll; not duplicate_poller)"
+        )
+        if db_created and db:
+            db.close()
+        return
+
     try:
-        # CRITICAL: Acquire PostgreSQL advisory lock (single poller enforcement)
-        # If lock cannot be acquired, another poller is active - skip this cycle
-        if not _acquire_poller_lock(db):
-            return
-        
         try:
+            # CRITICAL: Acquire PostgreSQL advisory lock (cross-container single poller)
+            # If lock cannot be acquired, another host/container holds it — skip this cycle
+            if not _acquire_poller_lock(db):
+                return
+
             # Load LAST_UPDATE_ID from DB on first call or if not loaded
             if LAST_UPDATE_ID == 0:
                 _load_last_update_id(db)
@@ -6477,6 +6494,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         # Ensure lock is released on error
         _release_poller_lock(db)
     finally:
+        _PROCESS_TELEGRAM_POLL_MUTEX.release()
         if db_created and db:
             db.close()
 
