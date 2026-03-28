@@ -6242,11 +6242,16 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
 
     global _POLLER_STARTUP_LOGGED
-    # EXPLICIT OPT-IN: only poll when RUN_TELEGRAM_POLLER is explicitly true.
-    run_poller_raw = (os.getenv("RUN_TELEGRAM_POLLER") or "").strip()
+    # Must match main.py agent-scheduler gate and docker-compose (backend-aws: true; canary: false).
+    # Default when unset: true — same as main.py `(RUN_TELEGRAM_POLLER or "true")` so scheduler can
+    # call process_telegram_commands while polling was previously no-op (empty env = disabled).
+    run_poller_raw = (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip()
     run_poller = run_poller_raw.lower() in ("1", "true", "yes", "on")
     if not run_poller:
-        logger.debug("[TG] Poller disabled: RUN_TELEGRAM_POLLER=%r (requires explicit true)", run_poller_raw)
+        logger.warning(
+            "[TG] Poller disabled: RUN_TELEGRAM_POLLER=%r — Telegram commands will not be processed",
+            (os.getenv("RUN_TELEGRAM_POLLER") or "").strip() or run_poller_raw,
+        )
         return
 
     # LAB hard guard: deny poller by default even if RUN_TELEGRAM_POLLER=true.
