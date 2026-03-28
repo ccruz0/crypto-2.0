@@ -171,6 +171,15 @@ TASK_PROJECT_OPTIONS: List[Tuple[str, str]] = [
 ]
 
 
+def _log_telegram_task_pipeline_event(event_type: str, details: Optional[Dict[str, Any]] = None) -> None:
+    """Append /task lifecycle events to agent_activity.jsonl (never raises)."""
+    try:
+        from app.services.agent_activity_log import log_agent_event
+        log_agent_event(event_type, details=dict(details) if details else {})
+    except Exception:
+        logger.debug("[TG][TASK] pipeline log failed event=%s", event_type)
+
+
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
 
@@ -1420,6 +1429,28 @@ def send_command_response(chat_id: str, message: str) -> bool:
         except Exception as e3:
             logger.error("[TG][ERROR] Exception fallback also failed: %s", e3)
             return False
+
+
+def _task_telegram_reply(
+    chat_id: str,
+    message: str,
+    *,
+    kind: str,
+    update_id: int = 0,
+) -> bool:
+    """
+    Wrapper for send_command_response: logs when Telegram returns no message to the user
+    (API failure), which otherwise looks like a silent /task failure.
+    """
+    ok = send_command_response(chat_id, message)
+    if not ok:
+        logger.error(
+            "[TG][TASK] telegram_sendMessage_failed kind=%s update_id=%s chat_id=%s",
+            kind,
+            update_id,
+            chat_id,
+        )
+    return ok
 
 
 def _setup_custom_keyboard(chat_id: str) -> bool:
@@ -4721,6 +4752,25 @@ def _handle_task_command(
         "created_at": now_ts,
     }
 
+    _log_telegram_task_pipeline_event(
+        "telegram_task_received",
+        {
+            "chat_id": chat_id,
+            "update_id": update_id,
+            "user_id": initiating_user_id,
+            "intent_len": len(intent_text),
+        },
+    )
+    _log_telegram_task_pipeline_event(
+        "telegram_task_parsed",
+        {
+            "chat_id": chat_id,
+            "update_id": update_id,
+            "intent_preview": (intent_text or "")[:200],
+            "intent_len": len(intent_text),
+        },
+    )
+
     logger.info(
         "[TG][TASK] awaiting_project_selection update_id=%s chat_id=%s user_id=%s desc_len=%s",
         update_id,
@@ -4736,7 +4786,33 @@ def _handle_task_command(
         None,
     )
     logger.info("[TG][TASK] project_selector_sent update_id=%s chat_id=%s ok=%s", update_id, chat_id, ok)
-    return bool(ok)
+    if not ok:
+        # Avoid ghost pending without UI; user must have a visible error (menu send failed silently before).
+        PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
+        _log_telegram_task_pipeline_event(
+            "telegram_task_project_menu_failed",
+            {"chat_id": chat_id, "update_id": update_id, "reason": "send_menu_or_inline_keyboard_failed"},
+        )
+        logger.error(
+            "[TG][TASK] project_selector_send_failed update_id=%s chat_id=%s pending_cleared=1",
+            update_id,
+            chat_id,
+        )
+        fb_ok = send_response(
+            chat_id,
+            "❌ <b>Could not show project selection</b>\n\n"
+            "Telegram did not accept the inline keyboard message.\n\n"
+            "Please try again: <code>/task &lt;description&gt;</code>\n\n"
+            "<i>If this repeats, check logs for <code>project_selector_send_failed</code> or Telegram API errors.</i>",
+        )
+        if not fb_ok:
+            logger.error(
+                "[TG][TASK] telegram_sendMessage_failed kind=project_menu_fallback update_id=%s chat_id=%s",
+                update_id,
+                chat_id,
+            )
+        return bool(fb_ok)
+    return True
 
 
 def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
@@ -5044,34 +5120,63 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             valid_projects = {k for k, _ in TASK_PROJECT_OPTIONS}
             if project_key not in valid_projects:
                 logger.warning("[TG][TASK] invalid_project_selection chat_id=%s user_id=%s project_key=%s", chat_id, user_id, project_key)
-                send_command_response(chat_id, "❌ Invalid project selection. Please choose one option from the menu.")
+                _task_telegram_reply(
+                    chat_id,
+                    "❌ Invalid project selection. Please choose one option from the menu.",
+                    kind="task_invalid_project",
+                    update_id=update_id,
+                )
                 return
 
             pending_key = _task_pending_selection_key(chat_id, user_id)
             pending = PENDING_TASK_PROJECT_SELECTION.get(pending_key)
             if not pending:
                 logger.info("[TG][TASK] project_selection_missing_pending chat_id=%s user_id=%s", chat_id, user_id)
-                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _log_telegram_task_pipeline_event(
+                    "telegram_task_create_failed",
+                    {"chat_id": chat_id, "update_id": update_id, "reason": "pending_missing_multiprocess_or_expired"},
+                )
+                _task_telegram_reply(
+                    chat_id,
+                    "⏳ Task request expired. Please send /task <description> again.",
+                    kind="task_pending_missing",
+                    update_id=update_id,
+                )
                 return
 
             created_at = float(pending.get("created_at") or 0.0)
             if not created_at or (time.time() - created_at) > PENDING_TASK_PROJECT_SELECTION_TTL_SECONDS:
                 PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
                 logger.info("[TG][TASK] project_selection_expired chat_id=%s user_id=%s", chat_id, user_id)
-                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _task_telegram_reply(
+                    chat_id,
+                    "⏳ Task request expired. Please send /task <description> again.",
+                    kind="task_pending_expired",
+                    update_id=update_id,
+                )
                 return
 
             initiating_user_id = str(pending.get("initiating_user_id") or "").strip()
             if initiating_user_id and initiating_user_id != user_id:
                 logger.info("[TG][TASK] project_selection_wrong_user chat_id=%s initiating_user_id=%s user_id=%s", chat_id, initiating_user_id, user_id)
-                send_command_response(chat_id, "⛔ Only the user who started this /task can select the project.")
+                _task_telegram_reply(
+                    chat_id,
+                    "⛔ Only the user who started this /task can select the project.",
+                    kind="task_wrong_user",
+                    update_id=update_id,
+                )
                 return
 
             intent_text = str(pending.get("description") or "").strip()
             telegram_user = str(pending.get("telegram_user") or "").strip() or "Carlos"
             if not intent_text:
                 PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
-                send_command_response(chat_id, "⏳ Task request expired. Please send /task <description> again.")
+                _task_telegram_reply(
+                    chat_id,
+                    "⏳ Task request expired. Please send /task <description> again.",
+                    kind="task_intent_empty",
+                    update_id=update_id,
+                )
                 return
 
             project_label = _task_project_label(project_key)
@@ -5108,6 +5213,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                     project_label,
                     len(intent_text),
                 )
+                _log_telegram_task_pipeline_event(
+                    "telegram_task_create_started",
+                    {
+                        "chat_id": chat_id,
+                        "update_id": update_id,
+                        "project": project_label,
+                        "intent_len": len(intent_text),
+                    },
+                )
                 result = create_notion_task_from_telegram_direct(intent_text, telegram_user, project=project_label)
                 _tid = (result.get("task_id") or "").strip()
                 logger.info(
@@ -5122,6 +5236,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 if result.get("ok"):
                     PENDING_TASK_PROJECT_SELECTION.pop(pending_key, None)
                     if result.get("dedup_cooldown"):
+                        _log_telegram_task_pipeline_event(
+                            "telegram_task_created",
+                            {
+                                "chat_id": chat_id,
+                                "update_id": update_id,
+                                "project": project_label,
+                                "dedup_cooldown": True,
+                            },
+                        )
                         msg = (
                             "✅ <b>Task already recorded</b>\n\n"
                             f"<b>Project:</b> {project_label}\n"
@@ -5129,11 +5252,55 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                             "Check your Notion AI Task System database."
                         )
                         logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=dedup_cooldown chat_id=%s", update_id, chat_id)
-                        _ok = send_command_response(chat_id, msg)
+                        _ok = _task_telegram_reply(chat_id, msg, kind="task_dedup_cooldown", update_id=update_id)
                         logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=dedup_cooldown ok=%s", update_id, _ok)
                         return
 
                     tid = (result.get("task_id") or "").strip()
+                    if not tid:
+                        err_detail = (result.get("error") or "missing Notion page id after create").strip()
+                        logger.error(
+                            "[TG][TASK] notion_success_without_task_id update_id=%s chat_id=%s project=%s detail=%r",
+                            update_id,
+                            chat_id,
+                            project_label,
+                            err_detail[:300],
+                        )
+                        _log_telegram_task_pipeline_event(
+                            "telegram_task_create_failed",
+                            {
+                                "chat_id": chat_id,
+                                "update_id": update_id,
+                                "reason": "missing_task_id_after_ok",
+                                "error": err_detail[:500],
+                            },
+                        )
+                        _task_telegram_reply(
+                            chat_id,
+                            "❌ <b>Notion task not created</b>\n\n"
+                            f"<code>{err_detail[:500]}</code>",
+                            kind="task_missing_notion_id",
+                            update_id=update_id,
+                        )
+                        return
+
+                    _log_telegram_task_pipeline_event(
+                        "telegram_task_created",
+                        {
+                            "chat_id": chat_id,
+                            "update_id": update_id,
+                            "project": project_label,
+                            "notion_page_id": tid,
+                            "title_preview": (result.get("title") or "")[:120],
+                        },
+                    )
+                    logger.info(
+                        "[TG][TASK] notion_create_confirmed update_id=%s chat_id=%s page_id=%s project=%s",
+                        update_id,
+                        chat_id,
+                        tid,
+                        project_label,
+                    )
                     launch_info = {"accepted": False, "task_id": "", "run_dir": "", "status": "not-started", "error": ""}
                     try:
                         from app.services.autonomous_runner_launcher import launch_autonomous_runner
@@ -5171,11 +5338,20 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                         )
                     )
                     logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=task_created chat_id=%s", update_id, chat_id)
-                    _ok = send_command_response(chat_id, msg)
+                    _ok = _task_telegram_reply(chat_id, msg, kind="task_created_success", update_id=update_id)
                     logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=task_created ok=%s", update_id, _ok)
                     return
 
                 err = result.get("error", "Unknown error")
+                _log_telegram_task_pipeline_event(
+                    "telegram_task_create_failed",
+                    {
+                        "chat_id": chat_id,
+                        "update_id": update_id,
+                        "project": project_label,
+                        "error": (str(err) or "")[:800],
+                    },
+                )
                 if err == ERROR_NOTION_NOT_CONFIGURED:
                     msg = (
                         "[task-debug-v4] ⚠️ Task could not be created because Notion is not configured. "
@@ -5185,13 +5361,27 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 else:
                     msg = f"❌ <b>Notion task not created</b>\n\n<code>{err}</code>"
                 logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=notion_error chat_id=%s", update_id, chat_id)
-                _ok = send_command_response(chat_id, msg)
+                _ok = _task_telegram_reply(chat_id, msg, kind="task_notion_error", update_id=update_id)
                 logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=notion_error ok=%s", update_id, _ok)
                 return
             except Exception as e:
                 logger.exception("[TG][TASK] notion_create_failure update_id=%s chat_id=%s", update_id, chat_id)
+                _log_telegram_task_pipeline_event(
+                    "telegram_task_create_failed",
+                    {
+                        "chat_id": chat_id,
+                        "update_id": update_id,
+                        "reason": "exception",
+                        "error": str(e)[:800],
+                    },
+                )
                 logger.info("[TG][TASK] before_telegram_reply update_id=%s kind=exception chat_id=%s", update_id, chat_id)
-                _ok = send_command_response(chat_id, f"❌ Error: {str(e)[:200]}")
+                _ok = _task_telegram_reply(
+                    chat_id,
+                    f"❌ Error: {str(e)[:200]}",
+                    kind="task_create_exception",
+                    update_id=update_id,
+                )
                 logger.info("[TG][TASK] after_telegram_reply update_id=%s kind=exception ok=%s", update_id, _ok)
                 return
             return
