@@ -56,6 +56,17 @@ _decomposed_parents: set[str] = set()
 # Parent -> child task ids (for aggregation when children complete)
 _parent_child_map: dict[str, list[str]] = {}
 
+# Anomaly detector tasks use titles like "[Anomaly] Scheduler Inactivity" (agent_anomaly_detector).
+# They are not normal agent work; stuck-task Telegram for them spams when the anomaly is chronic.
+# Suppress only Claw Telegram — logging (stuck_task_detected) and Notion recovery still run.
+ANOMALY_TASK_TITLE_PREFIX = "[Anomaly]"
+
+
+def _is_anomaly_system_task(task: dict[str, Any]) -> bool:
+    """True if task was created by the anomaly detector (title prefix from _build_task_title)."""
+    title = (task.get("task") or "").strip()
+    return title.startswith(ANOMALY_TASK_TITLE_PREFIX)
+
 
 def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
     """Read last stuck-alert timestamp from DB. Returns Unix timestamp or None."""
@@ -269,6 +280,15 @@ def _minutes_stuck(task: dict[str, Any], now: datetime | None = None) -> float:
 def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float, *, retry_attempt: int = 1) -> None:
     """Send to Claw (task-system). Stuck task alert. Suppressed in quiet mode (INFO/IMPORTANT).
     Includes retry attempt count. Re-investigate button when in investigation phase."""
+    if _is_anomaly_system_task(task):
+        logger.info(
+            "task_health_monitor: stuck alert suppressed (anomaly system task; Telegram skipped, recovery unchanged) "
+            "task_id=%s title=%r minutes_stuck=%.1f",
+            (task.get("id") or "")[:12],
+            ((task.get("task") or "")[:120]),
+            minutes_stuck,
+        )
+        return
     try:
         from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_IMPORTANT
         if not should_send_agent_telegram(AGENT_MSG_IMPORTANT):
