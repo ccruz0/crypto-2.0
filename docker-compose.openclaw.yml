@@ -49,9 +49,9 @@ services:
     volumes:
       # Persistent home — keeps devices, config, sessions across restarts
       - /opt/openclaw/home-data:/home/node/.openclaw
-      # ATP repo root must be the OpenClaw workspace dir (not workspace/atp): tools resolve
-      # paths like backend/... and docs/... under ~/.openclaw/workspace/, not workspace/atp/...
-      - /home/ubuntu/crypto-2.0:/home/node/.openclaw/workspace:ro
+      # ATP repo root must mount at workspace (not workspace/atp): tools use backend/..., docs/...
+      # Set OPENCLAW_WORKSPACE_HOST in .env or `docker compose --env-file .env.lab` (LAB: .../automated-trading-platform).
+      - ${OPENCLAW_WORKSPACE_HOST:-/home/ubuntu/crypto-2.0}:/home/node/.openclaw/workspace:ro
       - openclaw_workspace:/workspace
       - openclaw_logs:/var/log/openclaw
       - /home/ubuntu/secrets/openclaw_token:/run/secrets/openclaw_token:ro
@@ -76,7 +76,7 @@ services:
         reservations:
           memory: 512M
     ports:
-      - "8080:18789"
+      - "${OPENCLAW_PUBLISHED_PORT:-8080}:18789"
     extra_hosts:
       # Allows container to reach host update daemon (openclaw-update-daemon.service on :19999)
       - "host.docker.internal:host-gateway"

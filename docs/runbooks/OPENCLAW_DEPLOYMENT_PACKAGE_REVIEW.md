@@ -59,7 +59,7 @@
 
 ### Execution context issue
 - Script expects `cwd` = ATP repo root and source = `/home/node/.openclaw/workspace/`
-- In OpenClaw container, ATP is mounted at `/home/node/.openclaw/workspace/atp` **read-only**
+- In OpenClaw container, ATP repo root is mounted at `/home/node/.openclaw/workspace` **read-only** (see `docker-compose.openclaw.yml`, `OPENCLAW_WORKSPACE_HOST`)
 - Running inside container would **fail** — cannot write to read-only mount
 - Script must run on **host** with paths adjusted (e.g. `/opt/openclaw/home-data/workspace/`)
 
@@ -117,7 +117,7 @@ ATP architecture is **already integrated**. The package describes the initial in
 4. Package is **outdated** relative to current ATP (Mar 8, 2026).
 
 ### If OpenClaw generates a new package
-- Ensure it compares against **current** ATP (e.g. via `workspace/atp` read) before proposing adds.
+- Ensure it compares against **current** ATP (e.g. via `/home/node/.openclaw/workspace` read) before proposing adds.
 - For files that exist, propose **diffs/patches** rather than full replacements.
 - Run conflict checks against live ATP, not a stale snapshot.
 
