@@ -44,6 +44,8 @@ services:
       - OPENCLAW_MODEL_FALLBACKS=${OPENCLAW_MODEL_FALLBACKS:-anthropic/claude-3-5-haiku-20241022,anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o,anthropic/claude-sonnet-4-20250514}
       # ACP default agent for Cursor integration (sessions_spawn / acp.defaultAgent)
       - OPENCLAW_ACP_DEFAULT_AGENT=${OPENCLAW_ACP_DEFAULT_AGENT:-codex}
+      # Agent bootstrap (AGENTS.md, memory/) must not target read-only ~/.openclaw/workspace; use rw volume
+      - OPENCLAW_AGENT_WORKSPACE=/workspace
       - NODE_ENV=production
       # Tavily web search (set in secrets/runtime.env via scripts/setup_tavily_key.sh)
       - SEARCH_PROVIDER=${SEARCH_PROVIDER:-tavily}

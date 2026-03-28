@@ -126,6 +126,25 @@ else
 fi
 rm -f "$ORIGINS_FILE"
 
+# Writable agent workspace (AGENTS.md, memory/, etc.). Default ~/.openclaw/workspace can be EROFS when the
+# whole tree is read-only (e.g. repo bind-mount). docker-compose.openclaw.yml mounts openclaw_workspace at /workspace.
+if [ -n "${OPENCLAW_AGENT_WORKSPACE:-}" ]; then
+  mkdir -p "${OPENCLAW_AGENT_WORKSPACE}" 2>/dev/null || true
+  if command -v node >/dev/null 2>&1 && [ -f "$CONFIG_FILE" ]; then
+    node -e "
+      const fs = require('fs');
+      const cfgPath = process.argv[1];
+      const ws = process.argv[2];
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (!cfg.agents) cfg.agents = {};
+      if (!cfg.agents.defaults) cfg.agents.defaults = {};
+      cfg.agents.defaults.workspace = ws;
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    " "$CONFIG_FILE" "${OPENCLAW_AGENT_WORKSPACE}"
+    echo "[openclaw-entrypoint] agents.defaults.workspace=${OPENCLAW_AGENT_WORKSPACE}" 1>&2
+  fi
+fi
+
 # Log that allowedOrigins was loaded (count only; no secrets)
 if command -v node >/dev/null 2>&1; then
   COUNT=$(node -e "try { console.log(JSON.parse('$ORIGINS_JSON').length); } catch(e) { console.log(0); }" 2>/dev/null || echo "?")
