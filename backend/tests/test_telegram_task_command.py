@@ -78,29 +78,19 @@ def test_script_api_default_pattern_no_8000(monkeypatch):
 
 
 def test_handle_task_command_with_intent():
-    """_handle_task_command creates task and sends success when intent provided."""
+    """_handle_task_command prompts for project selection before Notion create (callback creates task)."""
     from app.services.telegram_commands import _handle_task_command
 
     mock_send = MagicMock(return_value=True)
-    with patch("app.services.task_compiler.create_notion_task_from_telegram_direct") as mock_create:
-        mock_create.return_value = {
-            "ok": True,
-            "task_id": "page-uuid-123",
-            "title": "Test task",
-            "type": "Investigation",
-            "status": "Planned",
-            "priority": 50,
-            "priority_label": "medium",
-            "reused": False,
-        }
+    with patch("app.services.telegram_commands._send_or_edit_menu", return_value=True) as mock_menu:
         _handle_task_command(
             "123", "/task Critical: fix production", "Critical: fix production",
-            {"username": "test"}, mock_send, update_id=1,
+            {"id": "999", "username": "test"}, mock_send, update_id=1,
         )
-    mock_send.assert_called_once()
-    call_args = mock_send.call_args[0]
-    assert "Task created in Notion" in call_args[1] or "task" in call_args[1].lower()
-    assert "Unknown command" not in call_args[1]
+    mock_menu.assert_called_once()
+    text = mock_menu.call_args[0][1]
+    assert "Select project" in text
+    mock_send.assert_not_called()
 
 
 def test_handle_task_command_no_intent_shows_usage():
@@ -169,64 +159,60 @@ def test_task_at_botname_normalization():
 
 
 def test_handle_task_command_notion_not_configured_returns_debug_marker():
-    """When Notion is not configured, error message includes [task-debug-v4] marker (proves updated code)."""
-    from app.services.telegram_commands import _handle_task_command
+    """Direct Telegram→Notion path returns configured error when env is missing (project callback uses same helper)."""
+    from app.services.task_compiler import (
+        ERROR_NOTION_NOT_CONFIGURED,
+        create_notion_task_from_telegram_direct,
+    )
 
-    mock_send = MagicMock(return_value=True)
-    with patch("app.services.task_compiler.create_notion_task_from_telegram_direct") as mock_create:
-        mock_create.return_value = {"ok": False, "error": "Notion is not configured"}
-        _handle_task_command(
-            "123", "/task fix order mismatch", "fix order mismatch",
-            {"username": "test"}, mock_send, update_id=2,
-        )
-    mock_send.assert_called_once()
-    msg = mock_send.call_args[0][1]
-    assert "[task-debug-v4]" in msg
-    assert "Notion is not configured" in msg
+    with patch("app.services.task_compiler.notion_is_configured", return_value=False):
+        out = create_notion_task_from_telegram_direct("fix order mismatch", "test")
+    assert out["ok"] is False
+    assert out["error"] == ERROR_NOTION_NOT_CONFIGURED
 
 
 def test_handle_task_command_shows_notion_error_detail():
-    """Direct /task path surfaces Notion API error text (no generic 'unavailable' unless returned)."""
-    from app.services.telegram_commands import _handle_task_command
+    """Direct Telegram→Notion helper surfaces Notion API error text from last failure."""
+    from app.services.task_compiler import create_notion_task_from_telegram_direct
 
-    mock_send = MagicMock(return_value=True)
-    with patch("app.services.task_compiler.create_notion_task_from_telegram_direct") as mock_create:
-        mock_create.return_value = {
-            "ok": False,
-            "error": "HTTP 403: insufficient permissions for database",
-        }
-        _handle_task_command(
-            "123", "/task fix order mismatch", "fix order mismatch",
-            {"username": "test"}, mock_send, update_id=3,
-        )
-    mock_send.assert_called_once()
-    msg = mock_send.call_args[0][1]
-    assert "HTTP 403" in msg
-    assert "Notion task not created" in msg
+    with patch("app.services.task_compiler.notion_is_configured", return_value=True):
+        with patch("app.services.task_compiler.create_notion_task", return_value=None):
+            with patch(
+                "app.services.task_compiler.get_last_notion_create_failure",
+                return_value="HTTP 403: insufficient permissions for database",
+            ):
+                out = create_notion_task_from_telegram_direct("fix order mismatch", "test")
+    assert out["ok"] is False
+    assert "HTTP 403" in (out.get("error") or "")
 
 
 def test_handle_task_command_does_not_call_legacy_telegram_intent_pipeline():
-    """Regression: /task must not use create_task_from_telegram_intent (LLM-adjacent / similarity pipeline)."""
+    """Regression: /task intake must not use create_task_from_telegram_intent (LLM-adjacent / similarity pipeline)."""
     from app.services.telegram_commands import _handle_task_command
 
     mock_send = MagicMock(return_value=True)
     with patch("app.services.task_compiler.create_notion_task_from_telegram_direct") as mock_direct:
-        mock_direct.return_value = {
-            "ok": True,
-            "task_id": "abc",
-            "title": "T",
-            "type": "Investigation",
-            "status": "Planned",
-            "priority": 50,
-            "priority_label": "medium",
-            "reused": False,
-        }
-        with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_legacy:
-            _handle_task_command(
-                "123", "/task hello", "hello", {"username": "test"}, mock_send, update_id=9,
-            )
-            mock_legacy.assert_not_called()
-    mock_direct.assert_called_once_with("hello", "test")
+        with patch("app.services.telegram_commands._send_or_edit_menu", return_value=True):
+            with patch("app.services.task_compiler.create_task_from_telegram_intent") as mock_legacy:
+                _handle_task_command(
+                    "123", "/task hello", "hello", {"id": "1", "username": "test"}, mock_send, update_id=9,
+                )
+                mock_legacy.assert_not_called()
+        mock_direct.assert_not_called()
+
+
+def test_create_notion_task_from_telegram_direct_passes_project_to_notion():
+    """Project chosen in Telegram callback must be forwarded to create_notion_task (not silently ignored)."""
+    from app.services.task_compiler import create_notion_task_from_telegram_direct
+
+    with patch("app.services.task_compiler.notion_is_configured", return_value=True):
+        with patch("app.services.task_compiler.create_notion_task") as mock_create:
+            mock_create.return_value = {"id": "notion-page-id", "object": "page"}
+            out = create_notion_task_from_telegram_direct("hello", "testuser", project="ATP")
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs.get("project") == "ATP"
+    assert out["ok"] is True
+    assert out["task_id"] == "notion-page-id"
 
 
 def test_task_token_fallback_atp_control(monkeypatch):

@@ -253,12 +253,14 @@ async def startup_event():
     run_telegram = (os.getenv("RUN_TELEGRAM") or "").strip().lower() in ("1", "true", "yes", "on")
     if is_aws() and run_telegram:
         missing = []
-        if not (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip():
-            missing.append("TELEGRAM_BOT_TOKEN")
+        _tg_bot = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        _tg_atp_token = (os.getenv("TELEGRAM_ATP_CONTROL_BOT_TOKEN") or "").strip()
+        if not _tg_bot and not _tg_atp_token:
+            missing.append("TELEGRAM_BOT_TOKEN or TELEGRAM_ATP_CONTROL_BOT_TOKEN")
         _tg_chat = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
         _tg_auth = (os.getenv("TELEGRAM_AUTH_USER_ID") or "").strip()
-        _tg_atp = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
-        if not _tg_chat and not _tg_auth and not _tg_atp:
+        _tg_atp_chat = (os.getenv("TELEGRAM_ATP_CONTROL_CHAT_ID") or "").strip()
+        if not _tg_chat and not _tg_auth and not _tg_atp_chat:
             missing.append(
                 "TELEGRAM_CHAT_ID or TELEGRAM_AUTH_USER_ID or TELEGRAM_ATP_CONTROL_CHAT_ID"
             )
@@ -353,7 +355,15 @@ async def startup_event():
                 def init_db():
                     try:
                         import app.models  # noqa: F401 - ensure all models registered before create_all
-                        _Base.metadata.create_all(bind=_engine)
+                        try:
+                            _Base.metadata.create_all(bind=_engine)
+                        except Exception as create_all_err:
+                            # Partial schema (e.g. orphan index ix_order_intents_signal_id) must not skip
+                            # ensure_optional_columns — Telegram poller needs telegram_state and repair paths.
+                            logger.warning(
+                                "create_all raised %s; continuing with ensure_optional_columns",
+                                create_all_err,
+                            )
                         if ensure_optional_columns:
                             ensure_optional_columns(_engine)
                         logger.info("Database tables initialized (including optional columns)")
@@ -470,13 +480,29 @@ async def startup_event():
             else:
                 logger.warning("PERF: Telegram commands DISABLED for performance testing")
 
-            # Agent scheduler: periodic Notion task scanner (always start; pre-flight will auto-repair or skip)
-            try:
-                from app.services.agent_scheduler import start_agent_scheduler_loop
-                asyncio.create_task(start_agent_scheduler_loop())
-                logger.info("Agent scheduler loop started (Notion task scanner; pre-flight auto-repair enabled)")
-            except Exception as e:
-                logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
+            # Agent scheduler: same primary/standby split as Telegram poller (docker-compose: RUN_TELEGRAM_POLLER).
+            # If canary/standby also started the scheduler, two processes would run run_agent_scheduler_cycle()
+            # and duplicate Notion comments (execution plan, version proposal, investigation, etc.).
+            _run_poller = (os.getenv("RUN_TELEGRAM_POLLER") or "true").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if _run_poller:
+                try:
+                    from app.services.agent_scheduler import start_agent_scheduler_loop
+
+                    asyncio.create_task(start_agent_scheduler_loop())
+                    logger.info(
+                        "Agent scheduler loop started (Notion task scanner; pre-flight auto-repair enabled)"
+                    )
+                except Exception as e:
+                    logger.error("Failed to start agent scheduler loop: %s", e, exc_info=True)
+            else:
+                logger.info(
+                    "Agent scheduler loop skipped (RUN_TELEGRAM_POLLER=false — standby/canary must not duplicate work)"
+                )
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
     

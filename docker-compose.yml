@@ -76,14 +76,6 @@ services:
       - TRADING_ENABLED=false
       - LIVE_TRADING=false
       - RUN_TELEGRAM=false
-      - RUN_TELEGRAM_POLLER=false
-      - ALLOW_LAB_TELEGRAM_POLLER=false
-      - TELEGRAM_BOT_TOKEN=
-      - TELEGRAM_ATP_CONTROL_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_AWS=
-      - TELEGRAM_BOT_TOKEN_DEV=
-      - TELEGRAM_CLAW_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_LOCAL=
       - USE_CRYPTO_PROXY=false
       - API_BASE_URL=http://localhost:8002
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
@@ -135,19 +127,10 @@ services:
       - .env.local
       - .env.aws
     environment:
-      # DATABASE_URL, CRYPTO_PROXY_TOKEN from env_file only. Telegram OFF (LAB): see docs/architecture/telegram.md
+      # DATABASE_URL, TELEGRAM_BOT_TOKEN_LOCAL, TELEGRAM_CHAT_ID_LOCAL, CRYPTO_PROXY_TOKEN from env_file only
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
-      # --- Telegram: OFF for LAB/local (docs/architecture/telegram.md) ---
-      - RUN_TELEGRAM=false
-      - RUN_TELEGRAM_POLLER=false
-      - ALLOW_LAB_TELEGRAM_POLLER=false
-      - TELEGRAM_BOT_TOKEN=
-      - TELEGRAM_ATP_CONTROL_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_AWS=
-      - TELEGRAM_BOT_TOKEN_DEV=
-      - TELEGRAM_CLAW_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_LOCAL=
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       - RUNTIME_ORIGIN=${RUNTIME_ORIGIN:-LOCAL}
       - TRADING_ENABLED=${TRADING_ENABLED:-false}
       - EXCHANGE_CUSTOM_BASE_URL=https://api.crypto.com/exchange/v1
@@ -201,10 +184,8 @@ services:
   # ============================================
   # BACKEND - AWS Profile (Direct Connection)
   # ============================================
-  # Telegram: PRODUCTION ONLY. Single poller: this service (RUN_TELEGRAM_POLLER=true).
-  # Canonical polling token: TELEGRAM_ATP_CONTROL_BOT_TOKEN (see docs/architecture/telegram.md).
-  # TELEGRAM_BOT_TOKEN: outbound alerts/notifier only — not used as AWS polling token.
-  # Credentials: .env.aws + secrets/runtime.env (never .env.local on AWS).
+  # AWS alert/Telegram: ENVIRONMENT=aws, RUNTIME_ORIGIN=AWS, RUN_TELEGRAM=true (injected below).
+  # Telegram credentials from .env.aws / secrets/runtime.env (TELEGRAM_BOT_TOKEN_AWS, TELEGRAM_CHAT_ID_AWS).
   backend-aws:
     image: automated-trading-platform-backend-aws
     build:
@@ -224,9 +205,8 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
-      # Only backend-aws polls Telegram; canary has RUN_TELEGRAM_POLLER=false
+      # Only backend-aws polls Telegram and runs the agent Notion scheduler; canary has RUN_TELEGRAM_POLLER=false
       - RUN_TELEGRAM_POLLER=true
-      # Polling token (AWS): TELEGRAM_ATP_CONTROL_BOT_TOKEN only — see docs/architecture/telegram.md
       - RUNTIME_ORIGIN=AWS
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
       - EXECUTION_CONTEXT=AWS
@@ -301,6 +281,8 @@ services:
     volumes:
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./.git:/app/.git:ro
+      - /home/ubuntu/.cursor-server:/app/.cursor-server:ro
       - ./backend/ai_runs:/app/backend/ai_runs
       - ./docs:/app/docs
       - ./logs:/app/logs
@@ -315,7 +297,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Prod must not use --reload; it causes restarts and 502s
-    # Use 2 workers so webhook-triggered smoke check can hit /ping_fast without deadlock (single worker blocks on self-request).
+    # Single worker: Telegram long-polling + pg advisory lock must not run in two Gunicorn workers (both would
+    # contend on the lock and spam logs). External health checks should call /ping_fast from outside the process.
     command: sh -c "sleep 10 && python -m gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8002 --log-level info --access-logfile - --timeout 120 --max-requests 10000 --max-requests-jitter 50"
     restart: always
     # Healthcheck: Python one-liner to avoid bash/shell forks (containerd-shim zombie leak)
@@ -350,7 +333,7 @@ services:
       - ENVIRONMENT=aws
       - APP_ENV=aws
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
-      # Must never poll: only backend-aws is the Telegram poller (docs/architecture/telegram.md)
+      # Canary skips Telegram poller and agent scheduler (same env as poller) to avoid duplicate Notion/task work
       - RUN_TELEGRAM_POLLER=false
       - RUNTIME_ORIGIN=AWS
       - EXECUTION_CONTEXT=AWS
@@ -408,15 +391,7 @@ services:
       # DATABASE_URL, CRYPTO_PROXY_TOKEN from env_file only
       - ENVIRONMENT=${ENVIRONMENT:-local}
       - APP_ENV=${APP_ENV:-local}
-      - RUN_TELEGRAM=false
-      - RUN_TELEGRAM_POLLER=false
-      - ALLOW_LAB_TELEGRAM_POLLER=false
-      - TELEGRAM_BOT_TOKEN=
-      - TELEGRAM_ATP_CONTROL_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_AWS=
-      - TELEGRAM_BOT_TOKEN_DEV=
-      - TELEGRAM_CLAW_BOT_TOKEN=
-      - TELEGRAM_BOT_TOKEN_LOCAL=
+      - RUN_TELEGRAM=${RUN_TELEGRAM:-false}
       - RUNTIME_ORIGIN=LOCAL
       - LIVE_TRADING=${LIVE_TRADING:-true}
       - USE_CRYPTO_PROXY=${USE_CRYPTO_PROXY:-true}

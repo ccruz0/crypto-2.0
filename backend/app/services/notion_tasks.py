@@ -771,15 +771,33 @@ def create_notion_task(
         return None
 
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            _set_last_notion_create_failure(f"invalid_json: {e!s}")
+            logger.error(
+                "notion_create_invalid_json status=200 err=%s body_prefix=%r",
+                e,
+                (response.text or "")[:500],
+            )
+            return None
+        page_id = str(data.get("id") or "").strip()
+        if not page_id:
+            err_body = (response.text or "")[:800]
+            _set_last_notion_create_failure("Notion returned 200 without page id")
+            logger.error(
+                "notion_create_invalid_response missing page id status=200 title=%r body_prefix=%r",
+                (title or "")[:80],
+                err_body[:500],
+            )
+            return None
         with _dedup_lock:
             _dedup_record(dedup_key)
         logger.info(
-            "Notion task created: id=%s title=%r (details enriched with system context)",
-            data.get("id", ""),
+            "notion_task_created_ok page_id=%s title=%r (details enriched with system context)",
+            page_id,
             title,
         )
-        page_id = str(data.get("id") or "").strip()
         if page_id and priority_score is not None:
             try:
                 update_notion_task_priority(page_id, int(priority_score))

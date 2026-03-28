@@ -710,7 +710,12 @@ def create_task_from_telegram_intent(intent_text: str, user: str = "") -> dict[s
     }
 
 
-def create_notion_task_from_telegram_direct(description: str, source: str) -> dict[str, Any]:
+def create_notion_task_from_telegram_direct(
+    description: str,
+    source: str,
+    *,
+    project: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Minimal Telegram /task path: single Notion API create only.
 
@@ -728,12 +733,13 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
     title = (desc.split("\n")[0] or "").strip()[:200] or "Telegram task"
     details_body = desc[:15000]
     src = (source or "").strip() or DEFAULT_SOURCE
+    project_resolved = (project or "").strip() or DEFAULT_PROJECT
 
     clear_last_notion_create_failure()
     try:
         page = create_notion_task(
             title=title,
-            project=DEFAULT_PROJECT,
+            project=project_resolved,
             type=DEFAULT_TYPE,
             details=details_body,
             status="planned",
@@ -763,9 +769,31 @@ def create_notion_task_from_telegram_direct(description: str, source: str) -> di
         detail = (get_last_notion_create_failure() or "").strip()
         if not detail:
             detail = "Notion API did not return a page (see notion_sync_failed in logs)"
+        logger.error(
+            "telegram_direct_notion_create_failed title=%r project=%r detail=%r",
+            (title or "")[:80],
+            project_resolved,
+            detail[:500],
+        )
         return {"ok": False, "error": detail}
 
     tid = (page.get("id") or "").strip()
+    if not tid:
+        detail = (get_last_notion_create_failure() or "").strip() or "Notion page missing id after create"
+        logger.error(
+            "telegram_direct_notion_missing_task_id title=%r project=%r detail=%r",
+            (title or "")[:80],
+            project_resolved,
+            detail[:500],
+        )
+        return {"ok": False, "error": detail}
+
+    logger.info(
+        "telegram_direct_notion_create_ok task_id=%s title=%r project=%r",
+        tid,
+        (title or "")[:80],
+        project_resolved,
+    )
     return {
         "ok": True,
         "task_id": tid,
