@@ -5774,14 +5774,54 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     if update.get("callback_query"):
         logger.info("[TG][ROUTE] update_id=%s selected=callback_query_guard_return", update_id)
         return
-    message = update.get("message")
+    # Must match getUpdates allowed_updates: edited_message / channel_post use different top-level keys.
+    # Previously only `message` was read — edited/channel updates exited here with no log (silent drop).
+    message = (
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+    )
     if not message:
         return
-    if not isinstance(message.get("text"), str):
-        return
-    raw_text = (message.get("text") or "").strip()
+    raw_body = message.get("text")
+    if not isinstance(raw_body, str):
+        cap = message.get("caption")
+        if isinstance(cap, str):
+            raw_body = cap
+        else:
+            logger.info(
+                "[TG][ROUTE] update_id=%s skip no str text/caption text_type=%s caption_type=%s",
+                update_id,
+                type(message.get("text")).__name__,
+                type(message.get("caption")).__name__,
+            )
+            return
+    raw_text = (raw_body or "").strip()
+    # Some clients send fullwidth slash (U+FF0F) instead of ASCII /
+    if raw_text.startswith("\uff0f"):
+        raw_text = "/" + raw_text[1:].lstrip()
     if not raw_text:
         return
+    _update_msg_source = (
+        "message"
+        if update.get("message")
+        else (
+            "edited_message"
+            if update.get("edited_message")
+            else (
+                "channel_post"
+                if update.get("channel_post")
+                else ("edited_channel_post" if update.get("edited_channel_post") else "?")
+            )
+        )
+    )
+    logger.info(
+        "[TG][UPDATE] raw_text=%r update_id=%s update_source=%s",
+        (raw_text or "")[:220],
+        update_id,
+        _update_msg_source,
+    )
     if not raw_text.startswith("/"):
         logger.info(
             "[TG][ROUTE] update_id=%s selected=message_non_command_ignored text_preview=%s",
@@ -5986,12 +6026,25 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
         "[TG][ROUTER] selected_handler=%s text_lower=%s cmd_lower=%s update_id=%s chat_id=%s token_source=%s",
         handler_name, (text_lower or "")[:50], (cmd_lower or "")[:40], update_id, chat_id, token_source,
     )
+    logger.info(
+        "[TG][HANDLER] selected=%s update_id=%s chat_id=%s",
+        handler_name,
+        update_id,
+        chat_id,
+    )
 
     # CRITICAL: /task has one canonical handler. Dispatch first, never fall through to unknown.
     if handler_name == "task":
         logger.info(
             "[TG][TASK] handler=task path=_handle_task_command update_id=%s chat_id=%s token_source=%s",
             update_id, chat_id, token_source,
+        )
+        logger.info(
+            "[TG][TASK] entering _handle_task_command update_id=%s chat_id=%s cmd_token=%r args_preview=%r",
+            update_id,
+            chat_id,
+            (cmd_token or "")[:60],
+            (args or "")[:120],
         )
         try:
             _handle_task_command(chat_id, text, args, from_user, send_command_response, update_id)
