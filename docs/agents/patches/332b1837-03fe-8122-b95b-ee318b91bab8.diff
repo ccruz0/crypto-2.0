@@ -1,0 +1,13 @@
+diff --git a/docs/agents/agent-scheduler.md b/docs/agents/agent-scheduler.md
+index 5c39303..d23e7a7 100644
+--- a/docs/agents/agent-scheduler.md
++++ b/docs/agents/agent-scheduler.md
+@@ -94,6 +94,8 @@ Example (run from repo root or backend, with env loaded):
+ 
+ Ensure `NOTION_API_KEY`, `NOTION_TASK_DB`, and (for approval path) `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` are set.
+ 
++On Docker/AWS hosts, run the same script inside the `backend-aws` container from the repo root (e.g. `docker compose --profile aws exec -T backend-aws python scripts/run_agent_scheduler_cycle.py`) so Notion and database environment match the running API.
++
+ ---
+ 
+ ## CLI usage
