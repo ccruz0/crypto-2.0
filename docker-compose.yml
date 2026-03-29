@@ -207,6 +207,8 @@ services:
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       # Only backend-aws polls Telegram and runs the agent Notion scheduler; canary has RUN_TELEGRAM_POLLER=false
       - RUN_TELEGRAM_POLLER=true
+      # Single active signal monitor / trading executor (Postgres advisory lock); canary must stay false
+      - RUN_SIGNAL_MONITOR=true
       - RUNTIME_ORIGIN=AWS
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
       - EXECUTION_CONTEXT=AWS
@@ -335,6 +337,8 @@ services:
       - RUN_TELEGRAM=${RUN_TELEGRAM:-true}
       # Canary skips Telegram poller and agent scheduler (same env as poller) to avoid duplicate Notion/task work
       - RUN_TELEGRAM_POLLER=false
+      # Do not run the signal monitor loop here — primary backend-aws holds the DB lock for trading execution
+      - RUN_SIGNAL_MONITOR=false
       - RUNTIME_ORIGIN=AWS
       - EXECUTION_CONTEXT=AWS
       - TRADING_ENABLED=${TRADING_ENABLED:-true}

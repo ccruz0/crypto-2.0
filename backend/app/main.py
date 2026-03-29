@@ -110,6 +110,12 @@ DEBUG_DISABLE_DATABASE_IMPORT = _get_bool_env("DEBUG_DISABLE_DATABASE_IMPORT", F
 DEBUG_DISABLE_EXCHANGE_SYNC = _get_bool_env("DEBUG_DISABLE_EXCHANGE_SYNC", False)
 DEBUG_DISABLE_SIGNAL_MONITOR = _get_bool_env("DEBUG_DISABLE_SIGNAL_MONITOR", False)
 DEBUG_DISABLE_TRADING_SCHEDULER = _get_bool_env("DEBUG_DISABLE_TRADING_SCHEDULER", False)
+
+
+def _run_signal_monitor_enabled() -> bool:
+    """Single-primary trading executor: only processes with RUN_SIGNAL_MONITOR=true start the DB-locked loop."""
+    v = (os.getenv("RUN_SIGNAL_MONITOR") or "true").strip().lower()
+    return v not in ("0", "false", "no", "off")
 DEBUG_DISABLE_VPN_GATE = _get_bool_env("DEBUG_DISABLE_VPN_GATE", True)
 DEBUG_DISABLE_TELEGRAM = _get_bool_env("DEBUG_DISABLE_TELEGRAM", False)
 
@@ -366,6 +372,19 @@ async def startup_event():
                             )
                         if ensure_optional_columns:
                             ensure_optional_columns(_engine)
+                        # Explicit operator-facing line: Telegram dedup must exist before scheduler polls
+                        try:
+                            from app.database import table_exists as _tg_dedup_table_exists
+
+                            _dedup_present = _tg_dedup_table_exists(_engine, "telegram_update_dedup")
+                            logger.info(
+                                "[STARTUP_DB_CHECK] telegram_update_dedup=%s",
+                                "present" if _dedup_present else "ABSENT",
+                            )
+                        except Exception as _dedup_chk:
+                            logger.error(
+                                "[STARTUP_DB_CHECK] telegram_update_dedup=FAIL: %s", _dedup_chk
+                            )
                         logger.info("Database tables initialized (including optional columns)")
                     except Exception as e:
                         logger.warning(f"Database initialization failed: {e}")
@@ -448,8 +467,23 @@ async def startup_event():
             else:
                 logger.warning("PERF: Exchange sync service DISABLED for performance testing")
             
-            if not DEBUG_DISABLE_SIGNAL_MONITOR:
+            if DEBUG_DISABLE_SIGNAL_MONITOR:
+                logger.warning("PERF: Signal monitor service DISABLED for performance testing")
+                logger.info(
+                    "signal_monitor_role=passive reason=DEBUG_DISABLE_SIGNAL_MONITOR "
+                    "(no SignalMonitorService loop on this process)"
+                )
+            elif not _run_signal_monitor_enabled():
+                logger.info(
+                    "signal_monitor_role=passive reason=RUN_SIGNAL_MONITOR=false "
+                    "(this process does not run the advisory-locked monitor; keep RUN_SIGNAL_MONITOR=true on exactly one trading backend)"
+                )
+            else:
                 try:
+                    logger.info(
+                        "signal_monitor_role=primary reason=RUN_SIGNAL_MONITOR=true — starting SignalMonitorService "
+                        "(Postgres advisory lock 123456; other primaries will log RUN_LOCKED until this one releases)"
+                    )
                     logger.info("🔧 Starting Signal monitor service...")
                     from app.services.signal_monitor import signal_monitor_service
                     loop = asyncio.get_running_loop()
@@ -457,8 +491,6 @@ async def startup_event():
                     logger.info("✅ Signal monitor service start() scheduled")
                 except Exception as e:
                     logger.error(f"❌ Failed to start signal monitor: {e}", exc_info=True)
-            else:
-                logger.warning("PERF: Signal monitor service DISABLED for performance testing")
             
             # Buy Index Monitor Service - DISABLED
             # try:

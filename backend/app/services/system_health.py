@@ -249,6 +249,15 @@ def _check_market_data_health_fallback(
 def _check_signal_monitor_health(stale_threshold_minutes: float) -> Dict:
     """Check signal monitor health"""
     try:
+        _rsm = (os.getenv("RUN_SIGNAL_MONITOR") or "true").strip().lower()
+        if _rsm in ("0", "false", "no", "off"):
+            return {
+                "status": "PASS",
+                "is_running": False,
+                "last_cycle_age_minutes": None,
+                "message": "signal_monitor_role=passive (RUN_SIGNAL_MONITOR=false; health N/A on this instance)",
+            }
+
         is_running = signal_monitor_service.is_running
         last_cycle_age_minutes = None
         
