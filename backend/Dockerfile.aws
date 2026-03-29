@@ -38,7 +38,8 @@ FROM python:3.11-slim-bookworm AS runner
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UVICORN_WORKERS=1
+    UVICORN_WORKERS=1 \
+    SYSTEM_CORE_MD_PATH=/app/SYSTEM_CORE.md
 
 WORKDIR /app
 
@@ -84,6 +85,10 @@ ARG BUILD_TIME=unknown
 # Copiar código de la app (needed before we can check .git)
 # CRITICAL: Build context is "." (repo root), so backend/ prefix is required
 COPY backend/ /app/
+
+# SYSTEM_CORE.md lives at repo root (not under backend/); OpenClaw reads via SYSTEM_CORE_MD_PATH
+COPY SYSTEM_CORE.md /app/SYSTEM_CORE.md
+RUN test -s /app/SYSTEM_CORE.md || (echo "ERROR: /app/SYSTEM_CORE.md missing or empty" >&2 && exit 1)
 
 # Build-time verification: Ensure signal_monitor.py has no function-scope imports
 # This fails the build if the wrong file is copied, preventing UnboundLocalError in production

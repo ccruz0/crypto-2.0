@@ -347,7 +347,7 @@ class TestSchedulerWiring:
                 os.environ.pop("NOTION_TASK_DB")
 
     def test_notion_env_missing_no_repair_skips_cycle(self):
-        """When NOTION env missing and repair fails, cycle returns without crashing (reason notion_env_missing)."""
+        """When NOTION env missing and repair fails, cycle returns autonomous (trading continues without Notion)."""
         import os
         from app.services.agent_scheduler import run_agent_scheduler_cycle
 
@@ -357,7 +357,8 @@ class TestSchedulerWiring:
             with patch("app.services.agent_scheduler._ensure_notion_env_preflight", return_value=False):
                 result = run_agent_scheduler_cycle()
             assert result["ok"] is True
-            assert result.get("reason") == "notion_env_missing"
+            assert result.get("action") == "autonomous"
+            assert result.get("reason") == "notion_env_missing_trading_continues"
         finally:
             if saved_key is not None:
                 os.environ["NOTION_API_KEY"] = saved_key

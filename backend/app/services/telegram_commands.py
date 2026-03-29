@@ -56,6 +56,12 @@ def _telegram_auth_env_configured() -> bool:
     )
 
 
+def _telegram_notion_task_enabled() -> bool:
+    """When false, /task is disabled (alerts-only / autonomous mode). Default true for backward compatibility."""
+    v = (os.getenv("TELEGRAM_NOTION_TASK_ENABLED") or "true").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
 def _to_float(v: Any) -> float:
     """Convert ORM Column or value to float for type checker and runtime."""
     if v is None:
@@ -142,6 +148,7 @@ LAST_UPDATE_ID = 0  # Global variable to track last processed update (loaded fro
 PROCESSED_CALLBACK_IDS = set()  # Track processed callback query IDs to prevent duplicate processing
 _POLLER_LOCK_ACQUIRED = False  # Track if this process has the poller lock
 _POLLER_STARTUP_LOGGED = False  # One-time log when this process becomes the active poller
+_TELEGRAM_DEDUP_TABLE_ENSURED = False  # ensure_telegram_update_dedup_table once per process before first poll
 _NO_UPDATE_COUNT = 0  # Track consecutive cycles with no updates
 _GET_UPDATES_409_STREAK = 0  # Consecutive getUpdates HTTP 409 conflicts
 _GET_UPDATES_409_LAST_WARN_TS = 0.0  # Rate-limit high-signal duplicate poller warnings
@@ -182,6 +189,62 @@ def _log_telegram_task_pipeline_event(event_type: str, details: Optional[Dict[st
 
 # PostgreSQL advisory lock ID for Telegram poller (arbitrary but consistent)
 TELEGRAM_POLLER_LOCK_ID = 1234567890
+# Log advisory_lock_busy at DEBUG until it persists this many consecutive polls, then WARNING + alert
+_ADVISORY_LOCK_BUSY_STREAK = 0
+_ADVISORY_LOCK_BUSY_WARN_AFTER = 3
+
+
+def _rollback_session_if_invalid(db: Optional[Session]) -> None:
+    """Clear aborted/failed transaction state so commits (e.g. LAST_UPDATE_ID) can succeed."""
+    if not db:
+        return
+    try:
+        if hasattr(db, "is_active") and not db.is_active:
+            db.rollback()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _try_acquire_poller_flock():
+    """
+    Cross-process single poller (Linux fcntl). threading.Lock only serializes threads
+    within one OS process; a second Gunicorn worker or duplicate container still collides
+    on pg_try_advisory_lock → advisory_lock_busy.
+    Returns:
+      - file object: lock acquired (caller must _release_poller_flock)
+      - False: another process holds the lock (skip this poll cycle)
+      - None: fcntl unavailable or failed open — proceed without file lock (degraded)
+    """
+    if not HAS_FCNTL:
+        return None
+    path = (os.getenv("TELEGRAM_POLLER_FLOCK_PATH") or "/tmp/atp_telegram_poller_singleton.lock").strip()
+    try:
+        fd = open(path, "a+", encoding="utf-8")
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        try:
+            fd.close()
+        except Exception:
+            pass
+        return False
+    except Exception as e:
+        logger.warning("[TG] poller flock acquire failed (%s) — proceeding without flock", e)
+        return None
+
+
+def _release_poller_flock(fd) -> None:
+    if fd is None or fd is False:
+        return
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        fd.close()
+    except Exception as e:
+        logger.debug("[TG] poller flock release: %s", e)
+
 
 # Serialize poll cycles within one process. trading_scheduler calls process_telegram_commands every ~1s
 # while get_telegram_updates long-polls (~10–35s), so concurrent calls would hit advisory_lock_busy
@@ -438,7 +501,7 @@ def _acquire_poller_lock(db: Session) -> bool:
     """Acquire PostgreSQL advisory lock for single poller enforcement.
     Returns True if lock acquired, False if another poller is active.
     """
-    global _POLLER_LOCK_ACQUIRED, _POLLER_STARTUP_LOGGED
+    global _POLLER_LOCK_ACQUIRED, _POLLER_STARTUP_LOGGED, _ADVISORY_LOCK_BUSY_STREAK
     if not db or not engine:
         logger.warning("[TG] Database not available for poller lock")
         return False
@@ -448,6 +511,7 @@ def _acquire_poller_lock(db: Session) -> bool:
         result = db.execute(sql_text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
         acquired = result.scalar()
         if acquired:
+            _ADVISORY_LOCK_BUSY_STREAK = 0
             _POLLER_LOCK_ACQUIRED = True
             logger.info("[TG] Poller lock acquired")
             # One-time startup visibility: log process identity for operator debugging
@@ -464,12 +528,24 @@ def _acquire_poller_lock(db: Session) -> bool:
                 )
             return True
         else:
-            logger.warning(
-                "[TG][ALERT] duplicate_telegram_poller_suspected reason=advisory_lock_busy %s",
-                _duplicate_poller_operator_kv(),
-            )
-            logger.warning("[TG] Another poller is active, cannot acquire lock")
-            _emit_duplicate_poller_ops_alert("advisory_lock_busy")
+            _ADVISORY_LOCK_BUSY_STREAK += 1
+            kv = _duplicate_poller_operator_kv()
+            if _ADVISORY_LOCK_BUSY_STREAK >= _ADVISORY_LOCK_BUSY_WARN_AFTER:
+                logger.warning(
+                    "[TG][ALERT] duplicate_telegram_poller_suspected reason=advisory_lock_busy "
+                    "consecutive=%s %s",
+                    _ADVISORY_LOCK_BUSY_STREAK,
+                    kv,
+                )
+                logger.warning("[TG] Another poller is active, cannot acquire lock")
+                _emit_duplicate_poller_ops_alert("advisory_lock_busy")
+            else:
+                logger.debug(
+                    "[TG] advisory_lock_busy (consecutive=%s/%s) %s",
+                    _ADVISORY_LOCK_BUSY_STREAK,
+                    _ADVISORY_LOCK_BUSY_WARN_AFTER,
+                    kv,
+                )
             return False
     except Exception as e:
         logger.error(f"[TG] Error acquiring poller lock: {e}")
@@ -477,17 +553,28 @@ def _acquire_poller_lock(db: Session) -> bool:
 
 
 def _release_poller_lock(db: Session) -> None:
-    """Release PostgreSQL advisory lock."""
+    """Release session-level Telegram poller advisory lock on this connection.
+
+    Uses pg_advisory_unlock_all() on PostgreSQL so the lock cannot leak back into the
+    pool on this Session's connection (a leaked lock causes 2–4 advisory_lock_busy
+    cycles on other pooled connections until the holding connection is reused).
+    """
     global _POLLER_LOCK_ACQUIRED
-    if not db or not engine or not _POLLER_LOCK_ACQUIRED:
-        return
-    
-    try:
-        db.execute(sql_text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
+    if not db or not engine:
         _POLLER_LOCK_ACQUIRED = False
+        return
+    if not _POLLER_LOCK_ACQUIRED:
+        return
+    try:
+        if engine.dialect.name == "postgresql":
+            db.execute(sql_text("SELECT pg_advisory_unlock_all()"))
+        else:
+            db.execute(sql_text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": TELEGRAM_POLLER_LOCK_ID})
         logger.debug("[TG] Poller lock released")
     except Exception as e:
         logger.error(f"[TG] Error releasing poller lock: {e}")
+    finally:
+        _POLLER_LOCK_ACQUIRED = False
 
 
 def _load_last_update_id(db: Session) -> int:
@@ -497,6 +584,7 @@ def _load_last_update_id(db: Session) -> int:
         return 0
     
     try:
+        _rollback_session_if_invalid(db)
         state = db.query(TelegramState).filter(TelegramState.id == 1).first()
         if state:
             LAST_UPDATE_ID = int(getattr(state, "last_update_id", 0))
@@ -522,6 +610,7 @@ def _save_last_update_id(db: Session, update_id: int) -> None:
         return
     
     try:
+        _rollback_session_if_invalid(db)
         state = db.query(TelegramState).filter(TelegramState.id == 1).first()
         if state:
             setattr(state, "last_update_id", update_id)
@@ -1228,10 +1317,12 @@ def setup_bot_commands():
             {"command": "start", "description": "Mostrar mensaje de bienvenida"},
             {"command": "help", "description": "Mostrar ayuda con todos los comandos"},
             {"command": "investigate", "description": "Investigar problema (auto-ruta a agente)"},
-            {"command": "task", "description": "Crear tarea en Notion desde texto (ej: /task <descripción>)"},
             {"command": "agent", "description": "Forzar agente: /agent sentinel|ledger <problema>"},
             {"command": "runtime-check", "description": "Verificar dependencias de runtime (pydantic, etc.)"},
             {"command": "status", "description": "Estado del bot y trading"},
+            {"command": "pause", "description": "Pausar trading (kill switch ON)"},
+            {"command": "resume", "description": "Reanudar trading (kill switch OFF)"},
+            {"command": "close_all", "description": "Parar nuevas entradas: panic + kill switch"},
             {"command": "portfolio", "description": "Órdenes abiertas y posiciones activas"},
             {"command": "signals", "description": "Últimas 5 señales BUY/SELL"},
             {"command": "balance", "description": "Balance de la cuenta"},
@@ -1246,7 +1337,10 @@ def setup_bot_commands():
             {"command": "panic", "description": "🛑 EMERGENCIA: Detener todo el trading (Trade=NO para todas)"},
             {"command": "kill", "description": "🛑 Kill switch: on/off/status - Global trading kill switch"},
         ]
-        
+        if _telegram_notion_task_enabled():
+            # Insert after investigate for stable ordering
+            commands.insert(3, {"command": "task", "description": "Crear tarea en Notion desde texto (ej: /task <descripción>)"})
+
         payload = {
             "commands": commands
         }
@@ -1256,7 +1350,10 @@ def setup_bot_commands():
         
         result = response.json()
         if result.get("ok"):
-            logger.info("[TG] Bot commands menu configured successfully")
+            logger.info(
+                "[TG] Bot commands menu configured task_command_in_menu=%s",
+                _telegram_notion_task_enabled(),
+            )
             return True
         else:
             logger.warning(f"[TG] Failed to set commands: {result.get('description', 'Unknown error')}")
@@ -4670,6 +4767,25 @@ def handle_kill_command(chat_id: str, text: str, db: Optional[Session] = None) -
         return send_command_response(chat_id, f"❌ Error executing kill command: {str(e)}")
 
 
+def handle_close_all_command(chat_id: str, text: str, db: Optional[Session] = None) -> bool:
+    """Disable new entries: all trade_enabled off + kill switch on. Does not market-close holdings."""
+    if not db:
+        return send_command_response(chat_id, "❌ Database not available")
+    try:
+        handle_panic_command(chat_id, "/panic", db=db)
+        handle_kill_command(chat_id, "/kill on", db=db)
+        return send_command_response(
+            chat_id,
+            "🛑 <b>/close_all</b> complete: Trade=NO for all watchlist coins and kill switch <b>ON</b>.\n\n"
+            "Open positions are not auto-sold; close them in the exchange UI or dashboard if needed.",
+        )
+    except Exception as e:
+        logger.error("[TG][ERROR] /close_all failed: %s", e, exc_info=True)
+        if db:
+            db.rollback()
+        return send_command_response(chat_id, f"❌ Error: {str(e)}")
+
+
 def _telegram_text_is_task_command(text: str, raw_command: str, cmd_token: str) -> bool:
     """True if the user message is /task (safety net when router misses after text mutations)."""
     for s in ((text or ""), (raw_command or ""), (cmd_token or "")):
@@ -4707,6 +4823,20 @@ def _handle_task_command(
     """
     Canonical handler for /task. Requires project selection before creating Notion task.
     """
+    if not _telegram_notion_task_enabled():
+        logger.info(
+            "[TG][TASK] disabled_by_env TELEGRAM_NOTION_TASK_ENABLED=false update_id=%s chat_id=%s",
+            update_id,
+            chat_id,
+        )
+        ok = send_response(
+            chat_id,
+            "📵 <b>Notion task creation is disabled</b> (TELEGRAM_NOTION_TASK_ENABLED=false).\n\n"
+            "Trading runs autonomously. Use /status, /pause, /resume, /close_all, and alerts.",
+        )
+        logger.info("[TG][TASK] blocked notion_disabled update_id=%s chat_id=%s", update_id, chat_id)
+        return bool(ok)
+
     raw_text = (text or "").strip()
     normalized_cmd = (args or "").strip() or re.sub(r"^/task\s*", "", raw_text, flags=re.IGNORECASE).strip()
     intent_text = normalized_cmd
@@ -4873,7 +5003,7 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
     else:
         logger.info(f"[TG][HANDLER] update_id={update_id}, type={update_type} (no message, channel_post, or callback_query)")
     
-    # DEDUPLICATION: telegram_update_dedup table — must happen before any command routing
+    # DEDUPLICATION: telegram_update_dedup — must happen before any command routing
     if db and update_id > 0:
         try:
             result = db.execute(
@@ -4895,47 +5025,38 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
                 return
             logger.info("[TG][DEDUP] update_id=%s action=process", update_id)
             import random
+
             if random.random() < 0.05:
                 try:
-                    db.execute(sql_text("DELETE FROM telegram_update_dedup WHERE received_at < NOW() - INTERVAL '7 days'"))
+                    bind = db.get_bind()
+                    dname = bind.dialect.name if bind is not None else "postgresql"
+                    # created_at is ensured by ensure_telegram_update_dedup_table (legacy rows backfilled from received_at)
+                    if dname == "sqlite":
+                        del_sql = (
+                            "DELETE FROM telegram_update_dedup WHERE created_at < datetime('now', '-7 days')"
+                        )
+                    else:
+                        del_sql = (
+                            "DELETE FROM telegram_update_dedup WHERE created_at < NOW() - INTERVAL '7 days'"
+                        )
+                    db.execute(sql_text(del_sql))
                     db.commit()
                 except Exception as cleanup_err:
                     logger.debug("[TG] Cleanup of old dedup rows failed: %s", cleanup_err)
-                    db.rollback()
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
         except Exception as db_err:
-            logger.info("[TG][DEDUP] telegram_update_dedup failed (%s), trying legacy", db_err)
+            logger.error(
+                "[TG][DEDUP] telegram_update_dedup insert failed; rolled back, continuing to handlers: %s",
+                db_err,
+                exc_info=True,
+            )
             try:
-                from app.models.telegram_message import TelegramMessage
-                update_marker = f"UPDATE_{update_id}"
-                existing = db.query(TelegramMessage).filter(
-                    TelegramMessage.symbol == update_marker,
-                    TelegramMessage.message == "update_deduplication",
-                ).first()
-                if existing:
-                    logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
-                    obj = msg_obj or channel_obj
-                    if obj:
-                        cid = (obj or {}).get("chat", {}).get("id")
-                        if cid:
-                            send_command_response(str(cid), "⏳ Already processed.")
-                    return
-                db.add(TelegramMessage(symbol=update_marker, message="update_deduplication", blocked=False, order_skipped=False))
-                db.commit()
-            except Exception as legacy_err:
-                logger.debug("[TG] Legacy deduplication failed: %s", legacy_err)
-            if not hasattr(handle_telegram_update, 'processed_update_ids'):
-                handle_telegram_update.processed_update_ids = set()
-            if update_id in handle_telegram_update.processed_update_ids:
-                logger.info("[TG][DEDUP] update_id=%s action=skip_duplicate", update_id)
-                obj = msg_obj or channel_obj
-                if obj:
-                    cid = (obj or {}).get("chat", {}).get("id")
-                    if cid:
-                        send_command_response(str(cid), "⏳ Already processed.")
-                return
-            handle_telegram_update.processed_update_ids.add(update_id)
-            if len(handle_telegram_update.processed_update_ids) > 1000:
-                handle_telegram_update.processed_update_ids = set(list(handle_telegram_update.processed_update_ids)[-500:])
+                db.rollback()
+            except Exception:
+                pass
     else:
         if not hasattr(handle_telegram_update, 'processed_update_ids'):
             handle_telegram_update.processed_update_ids = set()
@@ -6164,6 +6285,15 @@ def handle_telegram_update(update: Dict, db: Optional[Session] = None) -> None:
             handle_skip_sl_tp_reminder_command(chat_id, text, db)
         elif text.startswith("/panic"):
             handle_panic_command(chat_id, text, db)
+        elif text.startswith("/pause"):
+            logger.info("[TG][CMD] /pause maps_to=kill_on chat_id=%s", chat_id)
+            handle_kill_command(chat_id, "/kill on", db)
+        elif text.startswith("/resume"):
+            logger.info("[TG][CMD] /resume maps_to=kill_off chat_id=%s", chat_id)
+            handle_kill_command(chat_id, "/kill off", db)
+        elif text.startswith("/close_all"):
+            logger.info("[TG][CMD] /close_all invoking panic+kill_on chat_id=%s", chat_id)
+            handle_close_all_command(chat_id, text, db)
         elif text.startswith("/kill"):
             handle_kill_command(chat_id, text, db)
         elif text.startswith("/agent"):
@@ -6246,7 +6376,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
     """Process pending Telegram commands using long polling for real-time processing"""
     global LAST_UPDATE_ID, _NO_UPDATE_COUNT
 
-    global _POLLER_STARTUP_LOGGED
+    global _POLLER_STARTUP_LOGGED, _TELEGRAM_DEDUP_TABLE_ENSURED
     # Must match main.py agent-scheduler gate and docker-compose (backend-aws: true; canary: false).
     # Default when unset: true — same as main.py `(RUN_TELEGRAM_POLLER or "true")` so scheduler can
     # call process_telegram_commands while polling was previously no-op (empty env = disabled).
@@ -6308,23 +6438,48 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
             )
             return
 
+    # Cross-process: only one worker/container on this host should enter polling (see d048637 + gunicorn -w>1).
+    _poller_flock_fd = _try_acquire_poller_flock()
+    if _poller_flock_fd is False:
+        logger.debug(
+            "[TG] Skipping poll: another process holds the poller flock "
+            "(not duplicate_poller alert — expected when second worker/container tries to poll)"
+        )
+        return
+
     # Ensure we have a DB session
     if not db:
         session_factory = SessionLocal
         if session_factory is None:
             logger.error("[TG] SessionLocal not available")
+            _release_poller_flock(_poller_flock_fd)
             return
         try:
             db = session_factory()
             db_created = True
         except Exception as e:
             logger.error(f"[TG] Cannot create DB session: {e}")
+            _release_poller_flock(_poller_flock_fd)
             return
     else:
         db_created = False
 
     if db is None:
+        _release_poller_flock(_poller_flock_fd)
         return
+
+    # Boot should have created telegram_update_dedup; heal here if startup failed (avoids aborted txn on INSERT).
+    if not _TELEGRAM_DEDUP_TABLE_ENSURED:
+        try:
+            from app.database import ensure_telegram_update_dedup_table
+
+            _bind = db.get_bind()
+            if _bind is not None and ensure_telegram_update_dedup_table(_bind):
+                _TELEGRAM_DEDUP_TABLE_ENSURED = True
+            elif _bind is None:
+                logger.warning("[TG] Cannot ensure telegram_update_dedup: session bind is None")
+        except Exception as _e:
+            logger.warning("[TG] ensure telegram_update_dedup before poll failed: %s", _e)
 
     # One poll cycle at a time per process: trading_scheduler calls this every ~1s while
     # get_telegram_updates long-polls (~10–35s), so overlapping threads hit advisory_lock_busy
@@ -6336,6 +6491,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         )
         if db_created and db:
             db.close()
+        _release_poller_flock(_poller_flock_fd)
         return
 
     try:
@@ -6495,6 +6651,7 @@ def process_telegram_commands(db: Optional[Session] = None) -> None:
         _release_poller_lock(db)
     finally:
         _PROCESS_TELEGRAM_POLL_MUTEX.release()
+        _release_poller_flock(_poller_flock_fd)
         if db_created and db:
             db.close()
 

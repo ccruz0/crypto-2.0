@@ -15,6 +15,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _notion_agent_scheduler_enabled() -> bool:
+    """When false, skip Notion task queue; trading continues via signal_monitor (autonomous)."""
+    v = (os.getenv("NOTION_AGENT_SCHEDULER_ENABLED") or "true").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
 # ---------------------------------------------------------------------------
 # Scheduler state (module-level, updated each cycle)
 # ---------------------------------------------------------------------------
@@ -174,6 +180,17 @@ def run_agent_scheduler_cycle(
     )
     _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter, "task_id": task_id})
 
+    if not _notion_agent_scheduler_enabled():
+        logger.info(
+            "agent_scheduler: autonomous_mode action=autonomous reason=notion_agent_scheduler_disabled "
+            "(NOTION_AGENT_SCHEDULER_ENABLED off; Notion queue skipped, trading via signal_monitor)"
+        )
+        return {
+            "ok": True,
+            "action": "autonomous",
+            "reason": "notion_agent_scheduler_disabled",
+        }
+
     # Pre-flight: NOTION_* present or auto-repair from SSM
     if not _ensure_notion_env_preflight():
         try:
@@ -181,11 +198,14 @@ def run_agent_scheduler_cycle(
             set_last_pickup_status("skipped", "NOTION env missing")
         except Exception:
             pass
-        logger.warning("agent_scheduler: skipping cycle NOTION_env=missing")
+        logger.warning(
+            "agent_scheduler: autonomous_mode action=autonomous reason=notion_env_missing_trading_continues "
+            "(NOTION_API_KEY/NOTION_TASK_DB missing after repair; agent queue skipped, trading via signal_monitor)"
+        )
         return {
             "ok": True,
-            "action": "none",
-            "reason": "notion_env_missing",
+            "action": "autonomous",
+            "reason": "notion_env_missing_trading_continues",
         }
 
     # Retry fallback tasks (Telegram-created tasks stored locally when Notion was down)

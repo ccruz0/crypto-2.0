@@ -1656,16 +1656,25 @@ class SignalMonitorService:
                     continue  # Continue with next coin even if one fails
         except Exception as e:
             logger.error(f"Error in monitor_signals: {e}", exc_info=True)
-            try:
-                from app.services.notion_tasks import create_bug_task
-                create_bug_task(
-                    title="Unexpected strategy exception",
-                    project="Crypto Trading",
-                    details=f"Error in monitor_signals: {str(e)[:500]}.",
+            _bug_on = (os.getenv("NOTION_BUG_TASK_FROM_SIGNAL_MONITOR") or "true").strip().lower() not in (
+                "0", "false", "no", "off",
+            )
+            if not _bug_on:
+                logger.info(
+                    "signal_monitor: Notion bug task skipped NOTION_BUG_TASK_FROM_SIGNAL_MONITOR=off err_preview=%s",
+                    str(e)[:200],
                 )
-                logger.info("Trading failure triggered Notion bug task: Unexpected strategy exception")
-            except Exception as notion_err:
-                logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
+            if _bug_on:
+                try:
+                    from app.services.notion_tasks import create_bug_task
+                    create_bug_task(
+                        title="Unexpected strategy exception",
+                        project="Crypto Trading",
+                        details=f"Error in monitor_signals: {str(e)[:500]}.",
+                    )
+                    logger.info("Trading failure triggered Notion bug task: Unexpected strategy exception")
+                except Exception as notion_err:
+                    logger.debug("Notion bug task creation failed (non-fatal): %s", notion_err)
     
     async def _check_signal_for_coin(self, db: Session, watchlist_item: WatchlistItem):
         """Async wrapper to run the synchronous signal check in a thread"""
@@ -3723,6 +3732,8 @@ class SignalMonitorService:
                                                     current_price=current_price,
                                                     source="orchestrator",
                                                     correlation_id=evaluation_id,
+                                                    rsi=rsi,
+                                                    ma200=ma200,
                                                 )
                                             )
                                         finally:
@@ -8132,6 +8143,8 @@ class SignalMonitorService:
         current_price: float,
         source: str = "orchestrator",
         correlation_id: Optional[str] = None,
+        rsi: Optional[float] = None,
+        ma200: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Place order immediately from signal (NO eligibility checks).
@@ -8191,6 +8204,40 @@ class SignalMonitorService:
                 }
         except Exception as inv_err:
             logger.warning("Week 5 invariants check failed, proceeding: %s", inv_err)
+
+        if (side or "").strip().upper() == "BUY":
+            try:
+                from app.services.system_core_trade_guards import check_system_core_buy_allowed
+
+                ok_sc, reason_sc = check_system_core_buy_allowed(
+                    db,
+                    symbol,
+                    float(amount_usd),
+                    rsi=rsi,
+                    ma200=ma200,
+                    price=float(current_price),
+                )
+                if not ok_sc:
+                    logger.info(
+                        "SYSTEM_CORE buy_blocked symbol=%s reason=%s amount_usd=%s rsi=%s ma200=%s price=%s",
+                        symbol,
+                        reason_sc,
+                        amount_usd,
+                        rsi,
+                        ma200,
+                        current_price,
+                    )
+                    return {"error": reason_sc, "blocked": True, "message": reason_sc}
+                logger.info(
+                    "SYSTEM_CORE buy_allowed symbol=%s amount_usd=%s rsi=%s ma200=%s price=%s",
+                    symbol,
+                    amount_usd,
+                    rsi,
+                    ma200,
+                    current_price,
+                )
+            except Exception as sc_err:
+                logger.warning("SYSTEM_CORE guards check failed, proceeding: %s", sc_err)
         
         # Get live trading status (for dry_run)
         live_trading = get_live_trading_status(db)

@@ -272,6 +272,18 @@ class TradingScheduler:
                     # Record periodic status (no report file for telegram commands)
                     record_workflow_execution("telegram_commands", "success", None)
             finally:
+                # Ensure poller advisory lock cannot remain on this pooled connection (see telegram_commands._release_poller_lock)
+                try:
+                    bind = db.get_bind()
+                    if bind is not None and bind.dialect.name == "postgresql":
+                        from sqlalchemy import text
+
+                        db.execute(text("SELECT pg_advisory_unlock_all()"))
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                 db.close()
             logger.debug("[SCHEDULER] Telegram commands check completed")
         except Exception as e:
@@ -514,6 +526,20 @@ class TradingScheduler:
                 loop_count += 1
                 if loop_count % 10 == 0:  # Log every 10 iterations
                     logger.info(f"[SCHEDULER] Loop iteration #{loop_count}")
+                # ~60s cadence (main loop ~1s sleep): keeps SYSTEM_CORE drawdown peak current
+                if loop_count % 60 == 1:
+                    try:
+                        def _refresh_equity_peak():
+                            db = SessionLocal()
+                            try:
+                                from app.services.system_core_trade_guards import refresh_daily_equity_peak
+                                refresh_daily_equity_peak(db)
+                            finally:
+                                db.close()
+
+                        await asyncio.to_thread(_refresh_equity_peak)
+                    except Exception as eq_err:
+                        logger.warning("[SCHEDULER] system_core equity_peak_refresh thread failed: %s", eq_err)
                 await self.check_daily_summary()
                 await self.check_sell_orders_report()
                 await self.check_sl_tp_positions()

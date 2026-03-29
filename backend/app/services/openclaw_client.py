@@ -15,11 +15,74 @@ from __future__ import annotations
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_SYSTEM_CORE_CACHE: str | None = None
+
+
+def load_system_core() -> str:
+    """Load SYSTEM_CORE.md for OpenClaw prompts (cached). Returns empty string if missing.
+
+    If ``SYSTEM_CORE_MD_PATH`` is set (e.g. ``/app/SYSTEM_CORE.md`` in ``backend/Dockerfile.aws``),
+    that file is tried first; otherwise ancestor directories of this module are searched.
+    """
+    global _SYSTEM_CORE_CACHE
+    if _SYSTEM_CORE_CACHE is not None:
+        return _SYSTEM_CORE_CACHE
+    override = (os.environ.get("SYSTEM_CORE_MD_PATH") or "").strip()
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    here = Path(__file__).resolve()
+    for k in range(min(7, len(here.parents))):
+        candidates.append(here.parents[k] / "SYSTEM_CORE.md")
+    tried = [str(p) for p in candidates]
+    text = ""
+    loaded_from: str | None = None
+    try:
+        for path in candidates:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    loaded_from = str(path.resolve())
+                    break
+                text = ""
+        _SYSTEM_CORE_CACHE = text
+    except Exception as e:
+        logger.warning(
+            "openclaw_client: SYSTEM_CORE load failed error=%s tried_paths=%s",
+            e,
+            tried,
+        )
+        _SYSTEM_CORE_CACHE = ""
+        return ""
+    if loaded_from:
+        logger.info(
+            "openclaw_client: SYSTEM_CORE loaded path=%s chars=%d openclaw_file=%s",
+            loaded_from,
+            len(text),
+            str(here),
+        )
+    else:
+        logger.warning(
+            "openclaw_client: SYSTEM_CORE.md missing or empty; OpenClaw prompts will NOT be prefixed. "
+            "Set SYSTEM_CORE_MD_PATH or add SYSTEM_CORE.md. tried_paths=%s override_env=%r",
+            tried,
+            override or None,
+        )
+    return _SYSTEM_CORE_CACHE or ""
+
+
+def prepend_system_core_to_prompt(prompt: str) -> str:
+    core = load_system_core()
+    if not core:
+        return prompt
+    return f"# SYSTEM CORE (authoritative)\n\n{core}\n\n---\n\n{(prompt or '').strip()}"
 
 _DEFAULT_API_URL = "http://172.31.3.214:8080"
 _DEFAULT_TIMEOUT = 120
@@ -298,6 +361,15 @@ def send_to_openclaw(
     chain = model_chain_override if model_chain_override is not None else _model_chain()
     if not chain:
         chain = [_DEFAULT_MODEL]
+
+    _before = len(prompt or "")
+    prompt = prepend_system_core_to_prompt(prompt)
+    if len(prompt) > _before:
+        logger.debug(
+            "openclaw_client: send_to_openclaw SYSTEM_CORE prepended task_id=%s delta_chars=%d",
+            task_id,
+            len(prompt) - _before,
+        )
 
     primary = chain[0]
     logger.info(
