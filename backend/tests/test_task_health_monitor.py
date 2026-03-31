@@ -4,6 +4,7 @@ Tests for task health monitor: stuck detection, recovery, retry limit, alert coo
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -52,12 +53,13 @@ class TestStuckAlertAnomalySuppression:
 
     def test_send_stuck_alert_sends_for_normal_tasks(self):
         t = _task(task_id="norm-1", title="Fix production order sync", status="in-progress")
-        with patch("app.services.claw_telegram.send_claw_message", return_value=(True, None)) as mock_send:
-            with patch(
-                "app.services.agent_telegram_policy.should_send_agent_telegram",
-                return_value=True,
-            ):
-                thm._send_stuck_alert(t, 18.0)
+        with patch.dict(os.environ, {"TELEGRAM_NOTIFICATION_MODE": "verbose"}, clear=False):
+            with patch("app.services.claw_telegram.send_claw_message", return_value=(True, None)) as mock_send:
+                with patch(
+                    "app.services.agent_telegram_policy.should_send_agent_telegram",
+                    return_value=True,
+                ):
+                    thm._send_stuck_alert(t, 18.0)
         mock_send.assert_called_once()
 
 

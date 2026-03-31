@@ -167,12 +167,17 @@ def save_cursor_handoff(
     task_id: str,
     prompt: str,
     title: str = "",
+    *,
+    dest_dir: Path | None = None,
 ) -> Path | None:
     """Write the handoff prompt under the writable cursor-handoffs directory.
 
     Resolution matches ``get_writable_cursor_handoffs_dir()`` (repo path or
     ``AGENT_CURSOR_HANDOFFS_DIR`` / ``/tmp/agent-cursor-handoffs`` when the repo
     tree is not writable).
+
+    When *dest_dir* is set (e.g. per-task artifact tree for docs_investigation),
+    writes only ``cursor-handoff-{task_id}.md`` there — no shared README churn.
 
     Returns the path on success, ``None`` on failure.  Never raises.
     """
@@ -184,7 +189,7 @@ def save_cursor_handoff(
         from app.services import path_guard
         from app.services._paths import get_writable_cursor_handoffs_dir
 
-        out_dir = get_writable_cursor_handoffs_dir()
+        out_dir = dest_dir if dest_dir is not None else get_writable_cursor_handoffs_dir()
         exists = out_dir.is_dir()
         writable = False
         try:
@@ -206,22 +211,24 @@ def save_cursor_handoff(
         path = out_dir / filename
         path_guard.safe_write_text(path, prompt, context="cursor_handoff:handoff_md")
 
-        idx_path = out_dir / "README.md"
-        idx_line = f"- [{title or task_id}]({filename})"
-        if not idx_path.exists():
-            path_guard.safe_write_text(
-                idx_path,
-                "# Cursor implementation handoffs\n\n"
-                "Generated prompts for Cursor-driven patching.\n\n"
-                + idx_line + "\n",
-                context="cursor_handoff:readme_init",
-            )
-        else:
-            existing = idx_path.read_text(encoding="utf-8")
-            if idx_line not in existing:
-                chunk = ("" if existing.endswith("\n") else "\n") + idx_line + "\n"
-                path_guard.safe_append_text(idx_path, chunk, context="cursor_handoff:readme_append")
+        if dest_dir is None:
+            idx_path = out_dir / "README.md"
+            idx_line = f"- [{title or task_id}]({filename})"
+            if not idx_path.exists():
+                path_guard.safe_write_text(
+                    idx_path,
+                    "# Cursor implementation handoffs\n\n"
+                    "Generated prompts for Cursor-driven patching.\n\n"
+                    + idx_line + "\n",
+                    context="cursor_handoff:readme_init",
+                )
+            else:
+                existing = idx_path.read_text(encoding="utf-8")
+                if idx_line not in existing:
+                    chunk = ("" if existing.endswith("\n") else "\n") + idx_line + "\n"
+                    path_guard.safe_append_text(idx_path, chunk, context="cursor_handoff:readme_append")
 
+        logger.info("handoff_artifact_path task_id=%s path=%s", task_id[:12], path)
         logger.info("Cursor handoff saved task_id=%s path=%s", task_id, path)
         return path
 
@@ -259,6 +266,17 @@ def generate_cursor_handoff(
     title = str(task.get("task") or "").strip() or "Untitled"
     repo_area = (prepared_task or {}).get("repo_area") or {}
 
+    tn = (prepared_task or {}).get("task_normalization") or {}
+    if not isinstance(tn, dict) or not tn:
+        try:
+            from app.services.task_normalizer import normalize_task
+
+            tn = normalize_task(task)
+            if prepared_task is not None:
+                prepared_task["task_normalization"] = tn
+        except Exception:
+            tn = {}
+
     # Resolve sections: parameter → stashed on prepared_task → sidecar on disk
     if sections is None:
         sections = (prepared_task or {}).get("_openclaw_sections") or {}
@@ -278,7 +296,13 @@ def generate_cursor_handoff(
     if prepared_task is not None:
         prepared_task["_cursor_handoff_prompt"] = prompt
 
-    path = save_cursor_handoff(task_id, prompt, title=title)
+    handoff_dest: Path | None = None
+    if isinstance(tn, dict) and tn.get("task_type") == "docs_investigation" and task_id:
+        from app.services.artifact_paths import get_task_dir
+
+        handoff_dest = get_task_dir(task_id)
+
+    path = save_cursor_handoff(task_id, prompt, title=title, dest_dir=handoff_dest)
 
     return {
         "success": bool(path),
@@ -293,7 +317,10 @@ def _load_sections_from_sidecar(task_id: str) -> dict[str, Any]:
         return {}
     try:
         from app.services._paths import get_writable_dir_for_subdir
+        from app.services.artifact_paths import get_task_dir
+
         search_dirs = [
+            get_task_dir(task_id),
             get_writable_dir_for_subdir("docs/agents/bug-investigations"),
             get_writable_dir_for_subdir("docs/agents/telegram-alerts"),
             get_writable_dir_for_subdir("docs/agents/execution-state"),

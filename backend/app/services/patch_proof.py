@@ -42,6 +42,38 @@ def is_code_fix_task(task: dict[str, Any] | None) -> bool:
         return False
     task_obj = task.get("task") if isinstance(task.get("task"), dict) else task
     raw = str(task_obj.get("type") or task.get("type") or "").strip().lower()
+    title = str(task_obj.get("task") or task.get("task") or "").strip().lower()
+    details = str(task_obj.get("details") or task.get("details") or "").strip().lower()
+    blob = f"{title} {details}"
+    is_full_audit = (
+        ("audit atp codebase" in blob)
+        or ("full-system audit" in blob)
+        or ("full system audit" in blob)
+        or ("against documentation and business rules" in blob)
+        or (
+            "audit" in blob
+            and "atp" in blob
+            and ("documentation" in blob or "business rules" in blob or "codebase" in blob)
+        )
+    )
+    explicit_patch_request = any(
+        k in blob
+        for k in (
+            "code patch",
+            "apply patch",
+            "create patch",
+            "patch handoff",
+            "cursor handoff",
+            "cursor bridge",
+            "implementation handoff",
+            "open pr",
+            "code change",
+            "modify code",
+            "fix and patch",
+        )
+    )
+    if is_full_audit and not explicit_patch_request:
+        return False
     return raw in CODE_FIX_TASK_TYPES
 
 
@@ -59,10 +91,9 @@ def handoff_exists_for_task(task_id: str) -> bool:
     task_id = (task_id or "").strip()
     if not task_id:
         return False
-    from app.services._paths import get_writable_cursor_handoffs_dir
+    from app.services.artifact_paths import resolve_cursor_handoff_path_for_read
 
-    handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
-    return handoff_path.exists()
+    return resolve_cursor_handoff_path_for_read(task_id) is not None
 
 
 def has_patch_proof(task_id: str, task: dict[str, Any] | None = None) -> tuple[bool, str]:

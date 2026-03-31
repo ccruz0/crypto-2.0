@@ -9,6 +9,12 @@ Message levels:
 
 When AGENT_TELEGRAM_ONLY_DEPLOY_AND_CRITICAL is enabled, only DEPLOY and CRITICAL are sent.
 Everything else remains in logs only. User receives only actionable messages.
+
+TELEGRAM_NOTIFICATION_MODE (see also agent_telegram_approval._get_notification_mode):
+- minimal (default): only high-signal ATP messages — release-candidate/deploy approvals,
+  blockers, and CRITICAL health alerts. No investigation info, subtask decomposition,
+  stuck-task nudges, patch-not-applied, or needs-revision Telegram.
+- verbose: intermediate status messages are also sent (more noise, easier debugging).
 """
 
 from __future__ import annotations
@@ -32,6 +38,22 @@ def is_quiet_mode() -> bool:
     """
     v = (os.environ.get("AGENT_TELEGRAM_ONLY_DEPLOY_AND_CRITICAL") or "").strip().lower()
     return v in ("1", "true", "yes")
+
+
+def is_verbose_notification_mode() -> bool:
+    """True when TELEGRAM_NOTIFICATION_MODE requests extra status messages (not default)."""
+    raw = (os.environ.get("TELEGRAM_NOTIFICATION_MODE") or "").strip().lower()
+    return raw in ("verbose", "1", "true", "yes")
+
+
+def should_send_atp_intermediate_telegram() -> bool:
+    """
+    Whether to send non-essential ATP Telegram (investigation info, decomposition, stuck
+    nudges, patch-not-applied, needs-revision). Default is False (minimal / high-signal only).
+    """
+    if is_quiet_mode():
+        return False
+    return is_verbose_notification_mode()
 
 
 def should_send_agent_telegram(level: str) -> bool:

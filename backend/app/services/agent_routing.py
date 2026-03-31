@@ -66,6 +66,21 @@ def route_task(prepared_task: dict[str, Any]) -> str | None:
     task = (prepared_task or {}).get("task") or {}
     task_type = str(task.get("type") or "").strip().lower()
 
+    # Full ATP audits are broad/system-wide and must not be narrowed to Telegram/alerts.
+    if (
+        "audit atp codebase" in blob
+        or "full-system audit" in blob
+        or "full system audit" in blob
+        or "against documentation and business rules" in blob
+        or (
+            "audit" in blob
+            and "atp" in blob
+            and ("documentation" in blob or "business rules" in blob or "codebase" in blob)
+        )
+    ):
+        logger.info("agent_routing: matched agent=architecture reason=full_system_audit")
+        return AGENT_ARCHITECTURE
+
     # 1. Telegram and Alerts
     if task_type in ("telegram", "alerts", "notification"):
         logger.info("agent_routing: matched agent=telegram_alerts reason=task_type task_type=%r", task_type)
@@ -134,6 +149,19 @@ def route_task_with_reason(prepared_task: dict[str, Any]) -> tuple[str | None, s
     blob = _task_blob(prepared_task)
     task = (prepared_task or {}).get("task") or {}
     task_type = str(task.get("type") or "").strip().lower()
+
+    if (
+        "audit atp codebase" in blob
+        or "full-system audit" in blob
+        or "full system audit" in blob
+        or "against documentation and business rules" in blob
+        or (
+            "audit" in blob
+            and "atp" in blob
+            and ("documentation" in blob or "business rules" in blob or "codebase" in blob)
+        )
+    ):
+        return AGENT_ARCHITECTURE, "keyword:full-system-audit"
 
     # 1. Telegram and Alerts
     if task_type in ("telegram", "alerts", "notification"):

@@ -180,6 +180,13 @@ def run_agent_scheduler_cycle(
     )
     _log_event("scheduler_cycle_started", details={"project": project, "type_filter": type_filter, "task_id": task_id})
 
+    try:
+        from app.services.agent_queue_state import prune_anomaly_dedup
+
+        prune_anomaly_dedup()
+    except Exception as e:
+        logger.debug("agent_scheduler: prune_anomaly_dedup skipped %s", e)
+
     if not _notion_agent_scheduler_enabled():
         logger.info(
             "agent_scheduler: autonomous_mode action=autonomous reason=notion_agent_scheduler_disabled "

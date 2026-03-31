@@ -788,7 +788,7 @@ def _cursor_handoff_path(task_id: str) -> Path:
 
 def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
     """
-    Ensure ``cursor-handoff-{task_id}.md`` exists under docs/agents/cursor-handoffs.
+    Ensure ``cursor-handoff-{task_id}.md`` exists (per-task artifact tree or global handoffs).
 
     If missing, loads the task from Notion and runs ``generate_cursor_handoff`` (sections
     from sidecar when present). Does not bypass approval or bridge enabled checks (caller
@@ -799,6 +799,13 @@ def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
     tid = (task_id or "").strip()
     if not tid:
         return False, "empty task_id"
+
+    from app.services.artifact_paths import resolve_cursor_handoff_path_for_read
+
+    existing = resolve_cursor_handoff_path_for_read(tid)
+    if existing is not None:
+        logger.info("CursorBridge: handoff ready path=%s", existing)
+        return True, ""
 
     path = _cursor_handoff_path(tid)
     out_dir = path.parent
@@ -820,12 +827,8 @@ def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
         dir_writable,
     )
 
-    if path.exists():
-        logger.info("CursorBridge: handoff ready path=%s", path)
-        return True, ""
-
     logger.warning("CursorBridge: handoff missing; auto-generating task_id=%s", tid)
-    logger.info("CursorBridge: writing handoff file %s", path)
+    logger.info("CursorBridge: writing handoff (per-task tree or global) task_id=%s", tid)
 
     try:
         from app.services.notion_task_reader import get_notion_task_by_id
@@ -858,14 +861,15 @@ def ensure_handoff_file_for_bridge(task_id: str) -> tuple[bool, str]:
                 f"handoff auto-generation failed for task_id={tid} "
                 f"(generate_cursor_handoff returned success=False; detail={err_detail})"
             )
-        if not path.exists():
+        resolved = resolve_cursor_handoff_path_for_read(tid)
+        if resolved is None:
             return False, (
-                f"handoff auto-generation reported success but file missing: {path}"
+                f"handoff auto-generation reported success but file missing under task tree or global dir (task_id={tid})"
             )
 
-        logger.info("CursorBridge: handoff auto-generated path=%s", path)
-        logger.info("CursorBridge: handoff ready path=%s", path)
-        _log_event("cursor_bridge_handoff_auto_generated", task_id=tid, details={"path": str(path)})
+        logger.info("CursorBridge: handoff auto-generated path=%s", resolved)
+        logger.info("CursorBridge: handoff ready path=%s", resolved)
+        _log_event("cursor_bridge_handoff_auto_generated", task_id=tid, details={"path": str(resolved)})
         return True, ""
 
     except Exception as e:
@@ -896,10 +900,12 @@ def run_bridge_phase1(
         return {"ok": False, "error": may_err, "task_id": task_id}
 
     if prompt is None:
-        handoff_path = _cursor_handoff_path(task_id)
+        from app.services.artifact_paths import resolve_cursor_handoff_path_for_read
+
         ok_handoff, handoff_err = ensure_handoff_file_for_bridge(task_id)
-        if not ok_handoff:
-            err_msg = handoff_err or f"handoff file not found: {handoff_path}"
+        handoff_path = resolve_cursor_handoff_path_for_read(task_id)
+        if not ok_handoff or handoff_path is None:
+            err_msg = handoff_err or f"handoff file not found for task_id={task_id}"
             logger.warning(
                 "cursor_bridge: handoff missing/failed task_id=%s path=%s error=%s",
                 task_id, handoff_path, err_msg[:200],

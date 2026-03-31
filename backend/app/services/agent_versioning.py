@@ -164,6 +164,17 @@ def build_version_summary(
     }
 
 
+def resolve_proposed_version_for_release_candidate(task: dict[str, Any] | None) -> str:
+    """Infer a semver proposed_version when Notion/CLI omitted it (e.g. no Proposed Version property).
+
+    Uses the same rules as :func:`build_version_summary` but only returns the proposed string.
+    """
+    t = task or {}
+    current_version = _extract_current_version(t)
+    change_type = _infer_change_type({"task": t}, None)
+    return suggest_next_version(current_version, change_type)
+
+
 def _append_release_changelog(
     *,
     task_id: str,

@@ -61,6 +61,7 @@ def _configured_fallback_roots() -> list[Path]:
         "AGENT_ARTIFACTS_DIR",
         "AGENT_BUG_INVESTIGATIONS_DIR",
         "AGENT_CURSOR_HANDOFFS_DIR",
+        "AGENT_TASKS_DIR",
     ):
         v = (os.environ.get(key) or "").strip()
         if v:
@@ -69,6 +70,7 @@ def _configured_fallback_roots() -> list[Path]:
     roots.append(Path("/tmp/agent-artifacts").resolve())
     roots.append(Path("/tmp/agent-bug-investigations").resolve())
     roots.append(Path("/tmp/agent-cursor-handoffs").resolve())
+    roots.append(Path("/tmp/agent-tasks").resolve())
 
     extra = (os.environ.get("ATP_PATH_GUARD_EXTRA_ALLOWED_PREFIXES") or "").strip()
     if extra:

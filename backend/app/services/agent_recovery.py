@@ -720,7 +720,16 @@ def _get_artifact_paths(task_id: str) -> list[tuple[Path, Path]]:
         return []
     try:
         from app.services._paths import get_writable_dir_for_subdir
+        from app.services.artifact_paths import get_task_dir
+
         out: list[tuple[Path, Path]] = []
+        task_base = get_task_dir(task_id)
+        out.append(
+            (
+                task_base / f"notion-task-{task_id}.md",
+                task_base / f"notion-task-{task_id}.sections.json",
+            )
+        )
         for subdir, prefix in _ARTIFACT_CONFIGS:
             base = get_writable_dir_for_subdir(subdir)
             md_path = base / f"{prefix}-{task_id}.md"

@@ -18,9 +18,11 @@ Execution (execute_prepared_notion_task):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import httpx
@@ -40,6 +42,155 @@ from app.services.agent_versioning import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _priority_rank(priority: str) -> int:
+    p = (priority or "medium").strip().lower()
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    return order.get(p, order["medium"])
+
+
+def _is_anomaly_like_task(task: dict[str, Any]) -> bool:
+    title = str(task.get("task") or "").strip().lower()
+    if title.startswith("[anomaly]"):
+        return True
+    try:
+        from app.services.task_normalizer import normalize_task
+
+        return normalize_task(task).get("task_type") == "anomaly"
+    except Exception:
+        return "anomaly" in title
+
+
+def _selection_sort_key(task: dict[str, Any]) -> tuple[int, int, str, str]:
+    priority_score = int(task.get("priority_score") or 0)
+    created = str(task.get("created_time") or "")
+    tid = str(task.get("id") or "")
+    return (-priority_score, _priority_rank(str(task.get("priority") or "")), created, tid)
+
+
+def _select_task_for_preparation(tasks: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Select one task with deterministic tie-break and anomaly-flood fairness."""
+    sorted_tasks = sorted(tasks, key=_selection_sort_key)
+    top5 = sorted_tasks[:5]
+    logger.info("scheduler_queue_size total=%d", len(sorted_tasks))
+    logger.info(
+        "scheduler_top_candidates %s",
+        [
+            {
+                "id": str(t.get("id") or "")[:12],
+                "title": str(t.get("task") or "")[:50],
+                "priority": t.get("priority"),
+                "priority_score": int(t.get("priority_score") or 0),
+                "created_time": t.get("created_time"),
+                "is_anomaly": _is_anomaly_like_task(t),
+            }
+            for t in top5
+        ],
+    )
+
+    non_anomaly = [t for t in sorted_tasks if not _is_anomaly_like_task(t)]
+    if non_anomaly:
+        selected = non_anomaly[0]
+        for skipped in sorted_tasks[:5]:
+            if skipped is selected:
+                continue
+            logger.info(
+                "scheduler_candidate_not_selected task_id=%s reason=%s",
+                str(skipped.get("id") or "")[:12],
+                "anomaly_deprioritized_when_human_tasks_present" if _is_anomaly_like_task(skipped) else "lower_ranked_after_sort",
+            )
+        return selected, sorted_tasks
+
+    selected = sorted_tasks[0]
+    for skipped in sorted_tasks[1:5]:
+        logger.info(
+            "scheduler_candidate_not_selected task_id=%s reason=lower_ranked_after_sort",
+            str(skipped.get("id") or "")[:12],
+        )
+    return selected, sorted_tasks
+
+
+def _extended_lifecycle_should_use_doc_validation_not_bug_strict(
+    prepared_task: dict[str, Any],
+    task: dict[str, Any],
+) -> bool:
+    """
+    True when extended-lifecycle auto-advance should use documentation section checks
+    instead of validate_strict_mode_proof (bug/investigation code-proof gate).
+
+    Precedence matches callback routing: explicit task_normalization from the normalizer
+    wins (e.g. doc-check titles with Notion type Bug still use the docs OpenClaw path).
+    """
+    tn = (prepared_task or {}).get("task_normalization")
+    if isinstance(tn, dict) and tn.get("task_type") == "docs_investigation":
+        return True
+    notion_type = str((task or {}).get("type") or "").strip().lower()
+    if notion_type == "content":
+        return True
+    if notion_type in ("bug", "bugfix", "investigation"):
+        return False
+    try:
+        from app.services.task_normalizer import normalize_task
+
+        if normalize_task(task or {}).get("task_type") == "docs_investigation":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _load_openclaw_sections_json_for_docs_advance(task_id: str) -> dict[str, Any] | None:
+    """Load sections dict from a written .sections.json (per-task tree or flat generated-notes)."""
+    tid = (task_id or "").strip()
+    if not tid:
+        return None
+    try:
+        from app.services.artifact_paths import get_task_dir
+        from app.services._paths import get_writable_dir_for_subdir
+
+        candidates: list[Path] = [
+            get_task_dir(tid) / f"notion-task-{tid}.sections.json",
+            get_writable_dir_for_subdir("docs/agents/generated-notes") / f"notion-task-{tid}.sections.json",
+        ]
+        for p in candidates:
+            if not p.is_file():
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+            sec = data.get("sections") if isinstance(data, dict) else None
+            if isinstance(sec, dict) and sec:
+                return sec
+    except Exception:
+        return None
+    return None
+
+
+def _validate_extended_docs_artifact_for_advance(
+    prepared_task: dict[str, Any],
+    task_id: str,
+) -> tuple[bool, str]:
+    """
+    Documentation-appropriate gate for strict execution_mode on extended lifecycle.
+    Aligns with deploy sidecar expectations (required narrative sections, non-trivial text).
+    """
+    required = ("Task Summary", "Root Cause", "Recommended Fix", "Affected Files")
+    raw = (prepared_task or {}).get("_openclaw_sections")
+    sections: dict[str, Any] | None
+    if isinstance(raw, dict) and any(str(v).strip() for v in raw.values()):
+        sections = {str(k): v for k, v in raw.items()}
+    else:
+        sections = _load_openclaw_sections_json_for_docs_advance(task_id)
+    if not isinstance(sections, dict) or not sections:
+        return False, "docs advance validation: missing OpenClaw section data"
+    weak: list[str] = []
+    for k in required:
+        v = str(sections.get(k) or "").strip()
+        vl = v.lower()
+        if len(v) < 8 or vl in ("n/a", "none", "unknown", "tbd"):
+            weak.append(k)
+    if weak:
+        return False, f"docs advance validation: insufficient content in: {', '.join(weak)}"
+    return True, "ok"
 
 
 def _maybe_ensure_notion_governance_task_after_claim(*, page_id: str, task: dict[str, Any], repo_area: dict[str, Any]) -> None:
@@ -530,11 +681,11 @@ def _enrich_metadata_from_openclaw(prepared_task: dict[str, Any], task_id: str) 
 def _generate_cursor_handoff(prepared_task: dict[str, Any], task_id: str) -> None:
     """Best-effort: generate and save a Cursor implementation handoff prompt.
 
-    Only runs when OpenClaw structured sections are available on the
-    prepared_task.  Failures are logged and silently ignored.
+    Delegates to ``generate_cursor_handoff``, which can load sections from
+    ``_openclaw_sections``, from a sidecar on disk, or build a minimal prompt.
+    Failures are logged and silently ignored.
     """
-    sections = (prepared_task or {}).get("_openclaw_sections") or {}
-    if not sections or not task_id:
+    if not task_id:
         return
     try:
         from app.services.cursor_handoff import generate_cursor_handoff
@@ -662,6 +813,37 @@ def infer_repo_area_for_task(task: dict[str, Any]) -> dict[str, Any]:
             "relevant_runbooks": uniq(relevant_runbooks),
             "matched_rules": matched,
         }
+
+    # Full-system audit/investigation should stay broad (do not narrow to telegram/alerts)
+    if (
+        any(k in blob for k in ("audit atp codebase", "full-system audit", "full system audit"))
+        or (
+            "audit" in blob
+            and "atp" in blob
+            and ("documentation" in blob or "business rules" in blob or "codebase" in blob)
+        )
+    ):
+        matched.append("full-system-audit")
+        return area(
+            "ATP System-wide Audit",
+            likely_files=[
+                "backend/app/services/signal_monitor.py",
+                "backend/app/services/trading_signals.py",
+                "backend/app/services/agent_scheduler.py",
+                "backend/app/services/agent_task_executor.py",
+                "backend/app/services/telegram_commands.py",
+                "backend/app/services/telegram_notifier.py",
+            ],
+            relevant_docs=[
+                "docs/architecture/system-map.md",
+                "docs/agents/task-system.md",
+                "docs/decision-log/README.md",
+            ],
+            relevant_runbooks=[
+                "docs/runbooks/triage/README.md",
+                "docs/runbooks/deploy.md",
+            ],
+        )
 
     # Telegram / notifications
     if any(k in blob for k in ("telegram", "bot", "chat_id", "notifier")):
@@ -858,7 +1040,7 @@ def prepare_next_notion_task(
         logger.info("No pending Notion tasks found for preparation project=%r type_filter=%r", project, type_filter)
         return None
 
-    task = tasks[0]
+    task, ordered_tasks = _select_task_for_preparation(tasks)
     page_id = str(task.get("id") or "").strip()
     exec_mode = (task.get("execution_mode") or "normal").strip().lower()
     if exec_mode not in ("strict", "normal"):
@@ -892,6 +1074,11 @@ def prepare_next_notion_task(
         (task.get("type") or ""),
         (task.get("task") or ""),
     )
+    logger.info(
+        "scheduler_selected_after_fairness task_id=%s queue_size=%d",
+        page_id[:12] if page_id else "?",
+        len(ordered_tasks),
+    )
 
     repo_area = infer_repo_area_for_task(task)
     logger.info(
@@ -916,6 +1103,12 @@ def prepare_next_notion_task(
             "plan_appended": False,
         },
     }
+    try:
+        from app.services.task_normalizer import normalize_task
+
+        result["task_normalization"] = normalize_task(task)
+    except Exception:
+        pass
 
     if not page_id:
         logger.warning("Cannot claim task: missing page_id in task payload task=%r", task)
@@ -993,6 +1186,12 @@ def prepare_task_by_id(task_id: str) -> dict[str, Any] | None:
         "execution_plan": plan,
         "claim": {"attempted": True, "target_status": "in-progress", "status_updated": False, "plan_appended": False},
     }
+    try:
+        from app.services.task_normalizer import normalize_task
+
+        result["task_normalization"] = normalize_task(task)
+    except Exception:
+        pass
     status_ok = update_notion_task_status(page_id=page_id, status="in-progress")
     result["claim"]["status_updated"] = bool(status_ok)
     if not status_ok:
@@ -1599,20 +1798,20 @@ def execute_prepared_notion_task(
         if _exec_mode == "strict":
             logger.info("STRICT MODE ACTIVE at auto-advance gate task_id=%s — will validate proof", task_id)
         if isinstance(_exec_mode, str) and _exec_mode.strip().lower() == "strict":
-            try:
-                from app.services.agent_recovery import get_artifact_content_for_task
-                from app.services.openclaw_client import validate_strict_mode_proof
-                artifact_body = get_artifact_content_for_task(task_id)
-                proof_ok, proof_reason = validate_strict_mode_proof(artifact_body)
-                if not proof_ok:
+            _doc_auto_gate = _extended_lifecycle_should_use_doc_validation_not_bug_strict(prepared_task, task)
+            if _doc_auto_gate:
+                doc_advance_ok, doc_advance_reason = _validate_extended_docs_artifact_for_advance(
+                    prepared_task, task_id
+                )
+                if not doc_advance_ok:
                     logger.warning(
-                        "strict_proof_failed task_id=%s reason=%s",
+                        "docs_extended_advance_validation_failed task_id=%s reason=%s",
                         task_id[:12] if task_id else "?",
-                        proof_reason[:200] if proof_reason else "?",
+                        doc_advance_reason[:300],
                     )
                     _append_notion_page_comment(
                         task_id,
-                        f"[{executed_at}] Strict mode: proof criteria not met — staying in-progress. {proof_reason}",
+                        f"[{executed_at}] Strict mode (documentation): section validation failed — staying in-progress. {doc_advance_reason}",
                     )
                     return result(
                         True, True, apply_summary,
@@ -1620,68 +1819,109 @@ def execute_prepared_notion_task(
                         False, False, "",
                         "in-progress", False,
                     )
-                # Strict proof passed — create Cursor-ready patch task (handoff). Invariant: PATCH MUST exist.
-                logger.info("strict_proof_passed task_id=%s", task_id[:12] if task_id else "?")
-                patch_task = None
-                handoff_err = None
-                for attempt in (1, 2):  # fallback retry once
-                    try:
-                        from app.services.notion_tasks import create_patch_task_from_investigation
-                        patch_task = create_patch_task_from_investigation(
-                            investigation_task_id=task_id,
-                            investigation_title=task_title,
-                            artifact_body=artifact_body or "",
-                            sections=(prepared_task or {}).get("_openclaw_sections") or {},
-                            task=task,
-                            repo_area=(prepared_task or {}).get("repo_area") or {},
+                logger.info(
+                    "strict_mode_doc_auto_advance_gate_passed task_id=%s — skipped validate_strict_mode_proof",
+                    task_id[:12] if task_id else "?",
+                )
+            else:
+                try:
+                    from app.services.agent_recovery import get_artifact_content_for_task
+                    from app.services.openclaw_client import validate_strict_mode_proof
+                    artifact_body = get_artifact_content_for_task(task_id)
+                    proof_ok, proof_reason = validate_strict_mode_proof(artifact_body)
+                    if not proof_ok:
+                        logger.warning(
+                            "strict_proof_failed task_id=%s reason=%s",
+                            task_id[:12] if task_id else "?",
+                            proof_reason[:200] if proof_reason else "?",
                         )
-                        if patch_task:
-                            break
-                    except Exception as e:
-                        handoff_err = e
-                        if attempt == 1:
-                            logger.warning(
-                                "execute_prepared_notion_task: create_patch_task_from_investigation attempt=1 failed task_id=%s: %s — retrying",
-                                task_id, e,
+                        _append_notion_page_comment(
+                            task_id,
+                            f"[{executed_at}] Strict mode: proof criteria not met — staying in-progress. {proof_reason}",
+                        )
+                        return result(
+                            True, True, apply_summary,
+                            False, False, False, "",
+                            False, False, "",
+                            "in-progress", False,
+                        )
+                    # Strict proof passed — create Cursor-ready patch task (handoff). Invariant: PATCH MUST exist.
+                    logger.info("strict_proof_passed task_id=%s", task_id[:12] if task_id else "?")
+                    patch_task = None
+                    handoff_err = None
+                    for attempt in (1, 2):  # fallback retry once
+                        try:
+                            from app.services.notion_tasks import create_patch_task_from_investigation
+                            patch_task = create_patch_task_from_investigation(
+                                investigation_task_id=task_id,
+                                investigation_title=task_title,
+                                artifact_body=artifact_body or "",
+                                sections=(prepared_task or {}).get("_openclaw_sections") or {},
+                                task=task,
+                                repo_area=(prepared_task or {}).get("repo_area") or {},
                             )
-                        else:
-                            logger.warning(
-                                "execute_prepared_notion_task: create_patch_task_from_investigation attempt=2 failed task_id=%s: %s",
-                                task_id, e,
+                            if patch_task:
+                                break
+                        except Exception as e:
+                            handoff_err = e
+                            if attempt == 1:
+                                logger.warning(
+                                    "execute_prepared_notion_task: create_patch_task_from_investigation attempt=1 failed task_id=%s: %s — retrying",
+                                    task_id, e,
+                                )
+                            else:
+                                logger.warning(
+                                    "execute_prepared_notion_task: create_patch_task_from_investigation attempt=2 failed task_id=%s: %s",
+                                    task_id, e,
+                                )
+                    if patch_task:
+                        logger.info(
+                            "patch_task_created task_id=%s patch_id=%s",
+                            task_id[:12] if task_id else "?",
+                            (patch_task.get("id") or "")[:12] or "?",
+                        )
+                        logger.info("strict_patch_invariant_enforced task_id=%s", task_id[:12] if task_id else "?")
+                    else:
+                        # Invariant: strict + proof passed => PATCH must exist. Block advance and alert.
+                        err_msg = str(handoff_err or "create_patch_task_from_investigation returned None")[:300]
+                        logger.warning(
+                            "strict_patch_creation_failed task_id=%s reason=%s",
+                            task_id[:12] if task_id else "?",
+                            err_msg,
+                        )
+                        logger.info("strict_patch_invariant_enforced task_id=%s block_advance=patch_creation_failed", task_id[:12] if task_id else "?")
+                        try:
+                            from app.services.notion_env import set_last_pickup_status
+                            set_last_pickup_status("patch_creation_failed", err_msg)
+                        except Exception:
+                            pass
+                        try:
+                            from app.services.agent_telegram_approval import send_blocker_notification
+                            send_blocker_notification(
+                                task_id, task_title,
+                                reason=err_msg,
+                                suggested_action="Re-run investigation or fix patch task creation.",
                             )
-                if patch_task:
-                    logger.info(
-                        "patch_task_created task_id=%s patch_id=%s",
-                        task_id[:12] if task_id else "?",
-                        (patch_task.get("id") or "")[:12] or "?",
-                    )
-                    logger.info("strict_patch_invariant_enforced task_id=%s", task_id[:12] if task_id else "?")
-                else:
-                    # Invariant: strict + proof passed => PATCH must exist. Block advance and alert.
-                    err_msg = str(handoff_err or "create_patch_task_from_investigation returned None")[:300]
+                        except Exception as tg_err:
+                            logger.warning("strict_patch_creation_failed: Telegram blocker send failed: %s", tg_err)
+                        _append_notion_page_comment(
+                            task_id,
+                            f"[{executed_at}] Strict mode: PATCH task creation failed — staying in-progress. {err_msg}",
+                        )
+                        return result(
+                            True, True, apply_summary,
+                            False, False, False, "",
+                            False, False, "",
+                            "in-progress", False,
+                        )
+                except Exception as e:
                     logger.warning(
-                        "strict_patch_creation_failed task_id=%s reason=%s",
-                        task_id[:12] if task_id else "?",
-                        err_msg,
+                        "execute_prepared_notion_task: strict mode validation error task_id=%s: %s — blocking advance",
+                        task_id, e,
                     )
-                    logger.info("strict_patch_invariant_enforced task_id=%s block_advance=patch_creation_failed", task_id[:12] if task_id else "?")
-                    try:
-                        from app.services.notion_env import set_last_pickup_status
-                        set_last_pickup_status("patch_creation_failed", err_msg)
-                    except Exception:
-                        pass
-                    try:
-                        from app.services.agent_telegram_approval import send_blocker_notification
-                        send_blocker_notification(
-                            task_id, task_title,
-                            reason=err_msg,
-                            suggested_action="Re-run investigation or fix patch task creation.",
-                        )
-                    except Exception as tg_err:
-                        logger.warning("strict_patch_creation_failed: Telegram blocker send failed: %s", tg_err)
                     _append_notion_page_comment(
                         task_id,
-                        f"[{executed_at}] Strict mode: PATCH task creation failed — staying in-progress. {err_msg}",
+                        f"[{executed_at}] Strict mode: validation error — staying in-progress. {e}",
                     )
                     return result(
                         True, True, apply_summary,
@@ -1689,21 +1929,6 @@ def execute_prepared_notion_task(
                         False, False, "",
                         "in-progress", False,
                     )
-            except Exception as e:
-                logger.warning(
-                    "execute_prepared_notion_task: strict mode validation error task_id=%s: %s — blocking advance",
-                    task_id, e,
-                )
-                _append_notion_page_comment(
-                    task_id,
-                    f"[{executed_at}] Strict mode: validation error — staying in-progress. {e}",
-                )
-                return result(
-                    True, True, apply_summary,
-                    False, False, False, "",
-                    False, False, "",
-                    "in-progress", False,
-                )
         inv_ok = update_notion_task_status(task_id, "investigation-complete")
         logger.info(
             "execute_prepared_notion_task: extended lifecycle → investigation-complete "
@@ -2185,6 +2410,12 @@ def advance_ready_for_patch_task(task_id: str) -> dict[str, Any]:
         "claim": {"status_updated": True},
         "_use_extended_lifecycle": True,
     }
+    try:
+        from app.services.task_normalizer import normalize_task
+
+        prepared_task["task_normalization"] = normalize_task(task)
+    except Exception:
+        pass
 
     # --- 4. Re-select callbacks to obtain validate_fn ---
     try:

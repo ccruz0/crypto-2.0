@@ -70,6 +70,11 @@ _REQUIRED_DEPLOY_SECTIONS = ("Task Summary", "Root Cause", "Recommended Fix", "A
 _AGENT_INFO_DEDUP_KEY_PREFIX = "agent_info_dedup:investigation_complete:"
 _INVESTIGATION_INFO_DEDUP_HOURS = 24
 
+# In-process logical dedup for verbose-only messages (patch-not-applied, needs-revision), per task+kind.
+_LOGICAL_USER_TG_SENT: dict[str, float] = {}
+_LOGICAL_USER_TG_LOCK = threading.Lock()
+_LOGICAL_USER_TG_TTL_SEC = 6 * 3600
+
 # Telegram message length limit
 TELEGRAM_TEXT_LIMIT = 4096
 
@@ -82,10 +87,15 @@ MSG_PREFIX_BLOCKER = "🚫 BLOCKER"
 
 def _get_notification_mode() -> str:
     """Read TELEGRAM_NOTIFICATION_MODE env. minimal (default) = fewer messages; verbose = more status updates."""
-    raw = (os.environ.get("TELEGRAM_NOTIFICATION_MODE") or "").strip().lower()
-    if raw in ("verbose", "1", "true", "yes"):
-        return "verbose"
-    return "minimal"
+    try:
+        from app.services.agent_telegram_policy import is_verbose_notification_mode
+
+        return "verbose" if is_verbose_notification_mode() else "minimal"
+    except Exception:
+        raw = (os.environ.get("TELEGRAM_NOTIFICATION_MODE") or "").strip().lower()
+        if raw in ("verbose", "1", "true", "yes"):
+            return "verbose"
+        return "minimal"
 
 
 def _utc_now_iso() -> str:
@@ -363,6 +373,12 @@ def _format_what_will_happen(selection_reason: str, callback_selection: dict[str
         return "The agent will run the selected callback (apply/validate) for this task."
     if "bug investigation" in reason or "bug_investigation" in reason:
         return "The agent will run a bug investigation and write a structured note to docs/agents/bug-investigations (no code changes)."
+    # Must come before generic "documentation" match — normalizer reason contains "OpenClaw documentation path".
+    if "docs investigation" in reason:
+        return (
+            "The agent will write the doc investigation note, sidecar, and handoff under "
+            "docs/agents/tasks/<Notion page id>/ (per-task artifact tree)."
+        )
     if "documentation" in reason or "generated-notes" in reason:
         return "The agent will generate or update a documentation note under docs/agents/generated-notes."
     if "monitoring triage" in reason or "triage" in reason:
@@ -442,6 +458,25 @@ def send_task_approval_request(
         if is_quiet_mode():
             logger.info("send_task_approval_request: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
             return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None, "summary": "quiet mode: not sent"}
+    except Exception:
+        pass
+
+    # Minimal notification mode: Telegram only for release-candidate / blockers / critical (not intake approval)
+    try:
+        from app.services.agent_telegram_policy import is_verbose_notification_mode
+
+        if not is_verbose_notification_mode():
+            logger.info(
+                "send_task_approval_request: suppressed (minimal notification mode) task_id=%s",
+                task_id[:12] if task_id else "?",
+            )
+            return {
+                "sent": False,
+                "chat_id": target_chat,
+                "task_id": task_id,
+                "message_id": None,
+                "summary": "minimal_mode: not sent",
+            }
     except Exception:
         pass
 
@@ -1989,18 +2024,28 @@ def _load_sections_from_disk(task_id: str) -> tuple[dict[str, Any], str | None]:
     supplemented from .md. For new artifacts (source 'openclaw' or 'fallback'),
     incomplete sections are NOT supplemented — caller must block deploy.
     """
+    tid = (task_id or "").strip()
+    if not tid:
+        return {}, None
     try:
         from pathlib import Path
         from app.services._paths import workspace_root, get_writable_bug_investigations_dir
+        from app.services.artifact_paths import get_task_dir
+
         repo_root = workspace_root()
-        for d in (
-            get_writable_bug_investigations_dir(),
-            repo_root / "docs" / "agents" / "telegram-alerts",
-            repo_root / "docs" / "agents" / "execution-state",
-            repo_root / "docs" / "agents" / "generated-notes",
-            repo_root / "docs" / "runbooks" / "triage",
-        ):
-            for f in d.glob(f"*-{task_id}.sections.json"):
+        task_dir = get_task_dir(tid)
+        dir_list = [task_dir]
+        dir_list.extend(
+            (
+                get_writable_bug_investigations_dir(),
+                repo_root / "docs" / "agents" / "telegram-alerts",
+                repo_root / "docs" / "agents" / "execution-state",
+                repo_root / "docs" / "agents" / "generated-notes",
+                repo_root / "docs" / "runbooks" / "triage",
+            )
+        )
+        for d in dir_list:
+            for f in d.glob(f"*-{tid}.sections.json"):
                 data = json.loads(f.read_text(encoding="utf-8"))
                 sections = dict(data.get("sections") or {})
                 source = data.get("source") or ""
@@ -2011,7 +2056,7 @@ def _load_sections_from_disk(task_id: str) -> tuple[dict[str, Any], str | None]:
                     logger.warning(
                         "sections_json_incomplete_fallback_used task_id=%s path=%s source=%s legacy=true — "
                         "parsing .md for legacy artifact",
-                        task_id[:12] if task_id else "?", f, source,
+                        tid[:12] if tid else "?", f, source,
                     )
                     md_path = d / f.name.replace(".sections.json", ".md")
                     if md_path.exists():
@@ -2022,7 +2067,7 @@ def _load_sections_from_disk(task_id: str) -> tuple[dict[str, Any], str | None]:
                                 sections[k] = v
                 return sections, source
             for prefix in ("notion-bug", "notion-telegram", "notion-execution", "notion-task"):
-                md_path = d / f"{prefix}-{task_id}.md"
+                md_path = d / f"{prefix}-{tid}.md"
                 if md_path.exists():
                     raw = md_path.read_text(encoding="utf-8")
                     parts = raw.split("---")
@@ -2122,6 +2167,34 @@ def _should_skip_investigation_info_dedup(task_id: str) -> bool:
     return True
 
 
+def _should_skip_logical_user_telegram_duplicate(task_id: str, logical_kind: str) -> bool:
+    """Skip repeat user-visible messages for the same task + logical kind (verbose-mode safety net)."""
+    tid = (task_id or "").strip()
+    kind = (logical_kind or "").strip()
+    if not tid or not kind:
+        return False
+    key = f"{tid}:{kind}"
+    now = time.time()
+    with _LOGICAL_USER_TG_LOCK:
+        last = _LOGICAL_USER_TG_SENT.get(key)
+        if last is not None and (now - last) < _LOGICAL_USER_TG_TTL_SEC:
+            logger.info(
+                "logical_user_telegram_dedup task_id=%s kind=%s skipped_within_ttl ttl_s=%.0f",
+                tid[:12], kind, _LOGICAL_USER_TG_TTL_SEC,
+            )
+            return True
+    return False
+
+
+def _record_logical_user_telegram_sent(task_id: str, logical_kind: str) -> None:
+    tid = (task_id or "").strip()
+    kind = (logical_kind or "").strip()
+    if not tid or not kind:
+        return
+    with _LOGICAL_USER_TG_LOCK:
+        _LOGICAL_USER_TG_SENT[f"{tid}:{kind}"] = time.time()
+
+
 def send_investigation_complete_info(
     task_id: str,
     title: str,
@@ -2152,6 +2225,24 @@ def send_investigation_complete_info(
         if is_quiet_mode():
             logger.info("send_investigation_complete_info: suppressed (quiet mode) task_id=%s", task_id[:12] if task_id else "?")
             return {"sent": False, "chat_id": target_chat, "task_id": task_id, "message_id": None}
+    except Exception:
+        pass
+
+    try:
+        from app.services.agent_telegram_policy import should_send_atp_intermediate_telegram
+
+        if not should_send_atp_intermediate_telegram():
+            logger.info(
+                "send_investigation_complete_info: suppressed (minimal notification mode) task_id=%s",
+                task_id[:12] if task_id else "?",
+            )
+            return {
+                "sent": False,
+                "chat_id": target_chat,
+                "task_id": task_id,
+                "message_id": None,
+                "skipped": "minimal_mode",
+            }
     except Exception:
         pass
 
@@ -2700,8 +2791,16 @@ def _send_release_candidate_or_deploy_approval(
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
 
-    # Release-candidate: mandatory proposed_version; fail-closed when dedup check unavailable
+    # Release-candidate: proposed_version from args/Notion, else deterministic patch bump (agent_versioning).
     pv = (proposed_version or "").strip() or str((task or {}).get("proposed_version") or "").strip()
+    if use_release_candidate_format and not pv:
+        from app.services.agent_versioning import resolve_proposed_version_for_release_candidate
+
+        pv = resolve_proposed_version_for_release_candidate(task)
+        logger.info(
+            "release_candidate_proposed_version_derived task_id=%s proposed_version=%s",
+            task_id[:12] if task_id else "?", pv,
+        )
     if use_release_candidate_format:
         if not pv:
             logger.warning(
@@ -2773,7 +2872,8 @@ def _send_release_candidate_or_deploy_approval(
         msg = (
             f"<b>{MSG_PREFIX_INFO}</b> — Patch validation complete\n\n"
             f"<b>TASK</b>\n{title[:200]}\n\n"
-            "<i>No OpenClaw report/artifact cached. Check task notes or docs/agents/bug-investigations.</i>\n\n"
+            f"<i>No OpenClaw report/artifact cached. Check task notes, "
+            f"<code>docs/agents/tasks/{task_id}/</code>, or docs/agents/bug-investigations.</i>\n\n"
             f"<b>Test status:</b> {str(test_summary or 'passed')[:200]}\n\n"
             "<i>Approval deferred until valid report/artifact is available.</i>"
         )
@@ -2788,12 +2888,11 @@ def _send_release_candidate_or_deploy_approval(
 
     test_str = (test_summary or "").strip()[:500] or "(no test output)"
     if use_release_candidate_format:
-        pv = (proposed_version or "").strip() or (task or {}).get("proposed_version") or ""
         text = build_release_candidate_approval_message(
             task_id, title, test_str,
             sections, task=task, repo_area=repo_area,
             verification_unavailable_reason=verification_unavailable_reason,
-            proposed_version=pv,
+            proposed_version=str(pv),
         )
     else:
         text = build_deploy_approval_message(
@@ -3034,6 +3133,33 @@ def send_patch_not_applied_message(
     if not target_chat:
         return {"sent": False, "chat_id": "", "task_id": task_id, "message_id": None}
 
+    try:
+        from app.services.agent_telegram_policy import should_send_atp_intermediate_telegram
+
+        if not should_send_atp_intermediate_telegram():
+            logger.info(
+                "send_patch_not_applied_message: suppressed (minimal notification mode) task_id=%s",
+                task_id[:12] if task_id else "?",
+            )
+            return {
+                "sent": False,
+                "chat_id": target_chat,
+                "task_id": task_id,
+                "message_id": None,
+                "skipped": "minimal_mode",
+            }
+    except Exception:
+        pass
+
+    if _should_skip_logical_user_telegram_duplicate(task_id, "patch_not_applied"):
+        return {
+            "sent": False,
+            "chat_id": target_chat,
+            "task_id": task_id,
+            "message_id": None,
+            "skipped": "logical_dedup",
+        }
+
     text = (
         f"<b>⚠️ Patch not yet applied</b> (not an approval request)\n\n"
         f"<b>TASK</b>\n{title}\n\n"
@@ -3053,6 +3179,8 @@ def send_patch_not_applied_message(
     }
 
     sent, message_id = _send_telegram_message(target_chat, text, reply_markup, message_type="PATCH")
+    if sent:
+        _record_logical_user_telegram_sent(task_id, "patch_not_applied")
     logger.info(
         "send_patch_not_applied_message task_id=%s sent=%s message_id=%s",
         task_id, sent, message_id,
@@ -3101,6 +3229,33 @@ def send_needs_revision_reinvestigate(
     except Exception:
         pass
 
+    try:
+        from app.services.agent_telegram_policy import should_send_atp_intermediate_telegram
+
+        if not should_send_atp_intermediate_telegram():
+            logger.info(
+                "send_needs_revision_reinvestigate: suppressed (minimal notification mode) task_id=%s",
+                task_id[:12] if task_id else "?",
+            )
+            return {
+                "sent": False,
+                "chat_id": target_chat,
+                "task_id": task_id,
+                "message_id": None,
+                "skipped": "minimal_mode",
+            }
+    except Exception:
+        pass
+
+    if _should_skip_logical_user_telegram_duplicate(task_id, "needs_revision"):
+        return {
+            "sent": False,
+            "chat_id": target_chat,
+            "task_id": task_id,
+            "message_id": None,
+            "skipped": "logical_dedup",
+        }
+
     feedback_preview = (feedback or "Output does not address task requirements.")[:400]
     lines = [
         "<b>⚠️ Solution verification failed</b>",
@@ -3127,6 +3282,8 @@ def send_needs_revision_reinvestigate(
     }
 
     sent, message_id = _send_telegram_message(target_chat, text, reply_markup, message_type="PATCH")
+    if sent:
+        _record_logical_user_telegram_sent(task_id, "needs_revision")
     logger.info(
         "send_needs_revision_reinvestigate task_id=%s sent=%s message_id=%s",
         task_id, sent, message_id,
@@ -3152,13 +3309,20 @@ def get_openclaw_report_for_task(task_id: str) -> str:
     # Try sidecar files on disk (check all known output directories)
     try:
         from app.services._paths import get_writable_dir_for_subdir
-        search_dirs = [
-            get_writable_dir_for_subdir("docs/agents/bug-investigations"),
-            get_writable_dir_for_subdir("docs/agents/telegram-alerts"),
-            get_writable_dir_for_subdir("docs/agents/execution-state"),
-            get_writable_dir_for_subdir("docs/agents/generated-notes"),
-            get_writable_dir_for_subdir("docs/runbooks/triage"),
-        ]
+        from app.services.artifact_paths import get_task_dir
+
+        search_dirs: list = []
+        if task_id:
+            search_dirs.append(get_task_dir(task_id))
+        search_dirs.extend(
+            [
+                get_writable_dir_for_subdir("docs/agents/bug-investigations"),
+                get_writable_dir_for_subdir("docs/agents/telegram-alerts"),
+                get_writable_dir_for_subdir("docs/agents/execution-state"),
+                get_writable_dir_for_subdir("docs/agents/generated-notes"),
+                get_writable_dir_for_subdir("docs/runbooks/triage"),
+            ]
+        )
         for d in search_dirs:
             for pattern in (f"*-{task_id}.sections.json", f"*{task_id}*.sections.json"):
                 for f in d.glob(pattern):
@@ -3169,6 +3333,11 @@ def get_openclaw_report_for_task(task_id: str) -> str:
                             _SECTIONS_CACHE[task_id] = disk_sections
                         result = format_openclaw_summary_for_telegram(disk_sections)
                         if "(no structured report available)" not in result:
+                            logger.info(
+                                "openclaw_report_resolved_from_disk task_id=%s path=%s",
+                                task_id[:12] if task_id else "?",
+                                f,
+                            )
                             return result
                         # sections exist but empty — try _preamble (already in format)
                         # or fall through to raw .md
@@ -3186,14 +3355,19 @@ def get_openclaw_report_for_task(task_id: str) -> str:
                         else:
                             body = raw.strip()
                         if body and len(body) > 30:
+                            logger.info(
+                                "openclaw_report_resolved_from_disk task_id=%s path=%s",
+                                task_id[:12] if task_id else "?",
+                                md_path,
+                            )
                             return f"<b>Investigation:</b>\n{body[:1200]}{'…' if len(body) > 1200 else ''}"
                     except Exception as e:
                         logger.debug("get_openclaw_report_for_task: md read failed %s: %s", md_path, e)
     except Exception as e:
         logger.debug("get_openclaw_report_for_task: sidecar lookup failed task_id=%s: %s", task_id, e)
 
-    doc_path = f"docs/agents/bug-investigations/notion-bug-{task_id}.md"
+    doc_hint = f"docs/agents/tasks/{task_id}/ (per-task) or docs/agents/bug-investigations/notion-bug-{task_id}.md"
     return (
         f"<i>No OpenClaw report cached for task {task_id}.</i>\n"
-        f"Check: Notion task notes or <code>{doc_path}</code> in the repo."
+        f"Check: Notion task notes or <code>{doc_hint}</code>."
     )
