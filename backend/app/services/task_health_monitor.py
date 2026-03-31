@@ -75,6 +75,8 @@ def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return None
+    if not callable(SessionLocal):
+        return None
     db = SessionLocal()
     try:
         key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
@@ -100,6 +102,8 @@ def _set_stuck_alert_last_sent_db(task_id: str, ts: float) -> None:
         from datetime import datetime, timezone
     except Exception:
         return
+    if not callable(SessionLocal):
+        return
     db = SessionLocal()
     try:
         key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
@@ -124,6 +128,8 @@ def _get_stuck_retry_count_db(task_id: str) -> int:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return 0
+    if not callable(SessionLocal):
+        return 0
     db = SessionLocal()
     try:
         key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
@@ -146,6 +152,8 @@ def _set_stuck_retry_count_db(task_id: str, count: int) -> None:
         from app.database import SessionLocal
         from app.models.trading_settings import TradingSettings
     except Exception:
+        return
+    if not callable(SessionLocal):
         return
     db = SessionLocal()
     try:
@@ -170,6 +178,8 @@ def _clear_stuck_retry_count_db(task_id: str) -> None:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return
+    if not callable(SessionLocal):
+        return
     db = SessionLocal()
     try:
         key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
@@ -190,6 +200,8 @@ def _clear_stuck_alert_db(task_id: str) -> None:
         from app.database import SessionLocal
         from app.models.trading_settings import TradingSettings
     except Exception:
+        return
+    if not callable(SessionLocal):
         return
     db = SessionLocal()
     try:

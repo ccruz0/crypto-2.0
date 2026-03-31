@@ -1162,6 +1162,14 @@ def update_notion_task_status(
         not allow_status_regression
         and _mono_guard_env not in ("0", "false", "no", "off")
     ):
+        # Re-queue to ready-for-investigation is an operational recovery path
+        # and must not be blocked by monotonic rank checks.
+        if normalized_status == TASK_STATUS_READY_FOR_INVESTIGATION:
+            allow_status_regression = True
+    if (
+        not allow_status_regression
+        and _mono_guard_env not in ("0", "false", "no", "off")
+    ):
         try:
             from app.services.notion_task_reader import get_notion_task_by_id
 

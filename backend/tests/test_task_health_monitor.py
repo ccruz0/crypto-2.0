@@ -149,11 +149,12 @@ class TestHandleStuckTask:
         old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         t = _task(task_id="max-1", status="patching", last_edited_time=old)
         thm._retry_count["max-1"] = thm.MAX_RETRIES  # already at max
-        with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
-            with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
-                with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
-                    with patch.object(thm, "_log_event"):
-                        thm.handle_stuck_task(t, now)
+        with patch("app.services.task_decomposition.should_decompose_task", return_value=False):
+            with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
+                with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
+                    with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
+                        with patch.object(thm, "_log_event"):
+                            thm.handle_stuck_task(t, now)
         mock_update.assert_called_once()
         call_args = mock_update.call_args[0]
         assert call_args[0] == "max-1"

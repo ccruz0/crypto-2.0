@@ -321,6 +321,22 @@ def _post_one(
             return out
 
         data = resp.json()
+        envelope_status = str((data or {}).get("status") or "").strip().lower()
+        if envelope_status == "failed":
+            err_obj = (data or {}).get("error")
+            if isinstance(err_obj, dict):
+                err_msg = str(err_obj.get("message") or err_obj.get("code") or "").strip()
+            else:
+                err_msg = str(err_obj or "").strip()
+            err = f"status=failed"
+            if err_msg:
+                err = f"{err}: {err_msg}"
+            out_failed: dict[str, Any] = {"success": False, "content": "", "error": err, "raw": data}
+            usage_failed = _extract_usage(data)
+            if usage_failed:
+                out_failed["usage"] = usage_failed
+            logger.warning("openclaw_client: failed envelope model=%s task_id=%s error=%s", model, task_id, err[:200])
+            return out_failed
         content = _extract_text_from_response(data)
         out: dict[str, Any] = {"success": True, "content": content, "raw": data}
         usage = _extract_usage(data)
