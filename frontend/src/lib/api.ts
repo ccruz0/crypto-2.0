@@ -2673,11 +2673,12 @@ export interface SecretsStatusResponse {
 }
 
 export async function getSecretsStatus(adminKey: string): Promise<SecretsStatusResponse> {
+  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (adminKey.trim()) {
     headers['X-Admin-Key'] = adminKey.trim();
   }
-  const res = await fetch(`${DEFAULT_API_URL}/api/settings/secrets-status`, {
+  const res = await fetch(`${apiUrl}/settings/secrets-status`, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -2712,11 +2713,12 @@ export interface RecoveryStatusPayload {
 }
 
 export async function getRecoveryStatus(adminKey: string): Promise<RecoveryStatusPayload> {
+  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (adminKey.trim()) {
     headers['X-Admin-Key'] = adminKey.trim();
   }
-  const res = await fetch(`${DEFAULT_API_URL}/api/settings/recovery-status`, {
+  const res = await fetch(`${apiUrl}/settings/recovery-status`, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -2735,7 +2737,8 @@ export interface ApplyRecoveryResponse {
 }
 
 export async function applyBackendRecovery(adminKey: string): Promise<ApplyRecoveryResponse> {
-  const res = await fetch(`${DEFAULT_API_URL}/api/settings/apply-recovery`, {
+  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
+  const res = await fetch(`${apiUrl}/settings/apply-recovery`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2761,7 +2764,8 @@ export async function submitSecretIntake(
     'Content-Type': 'application/json',
     'X-Admin-Key': adminKey.trim(),
   };
-  const res = await fetch(`${DEFAULT_API_URL}/api/settings/secrets-intake`, {
+  const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
+  const res = await fetch(`${apiUrl}/settings/secrets-intake`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ env_var: envVar, value, persist_ssm: persistSsm }),
@@ -2776,7 +2780,8 @@ export async function submitSecretIntake(
 
 export async function testTelegram(adminKey: string): Promise<TestTelegramResponse> {
   try {
-    const response = await fetch(`${DEFAULT_API_URL}/api/admin/test-telegram`, {
+    const apiUrl = typeof window !== 'undefined' ? getApiUrl() : DEFAULT_API_URL;
+    const response = await fetch(`${apiUrl}/admin/test-telegram`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
