@@ -5,7 +5,7 @@ set -e
 
 INSTANCE_ID="i-087953603011543c5"
 REGION="ap-southeast-1"
-REPO_DIR="/home/ubuntu/automated-trading-platform"
+REPO_DIR="/home/ubuntu/crypto-2.0"
 
 if ! command -v aws &> /dev/null; then
     echo "❌ AWS CLI not found."
@@ -22,7 +22,7 @@ echo "📤 Sending redeploy command (pull, build, up, nginx restart)..."
 COMMAND_ID=$(aws ssm send-command \
     --instance-ids "$INSTANCE_ID" \
     --document-name "AWS-RunShellScript" \
-    --parameters 'commands=["set -e","cd /home/ubuntu/automated-trading-platform","git -c safe.directory=/home/ubuntu/automated-trading-platform pull origin main || true","docker compose --profile aws build --no-cache backend-aws frontend-aws","docker compose --profile aws up -d","sleep 5","sudo systemctl restart nginx || true","docker compose --profile aws ps","echo Done."]' \
+    --parameters 'commands=["set -e","cd /home/ubuntu/crypto-2.0","git -c safe.directory=/home/ubuntu/crypto-2.0 pull origin main || true","docker compose --profile aws build --no-cache backend-aws frontend-aws","docker compose --profile aws up -d","sleep 5","sudo systemctl restart nginx || true","docker compose --profile aws ps","echo Done."]' \
     --region "$REGION" \
     --timeout-seconds 600 \
     --output text \
