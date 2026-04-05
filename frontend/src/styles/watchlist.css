@@ -1,0 +1,30 @@
+/* Watchlist cell styling for recently updated values and saved feedback */
+
+.watchlist-cell-recently-updated {
+  font-weight: bold;
+  background-color: rgba(34, 197, 94, 0.1) !important; /* green-500 with opacity */
+  border-left: 2px solid rgb(34, 197, 94) !important;
+  padding-left: 4px;
+  transition: all 0.2s ease;
+}
+
+.watchlist-cell-saved {
+  background-color: rgba(59, 130, 246, 0.1) !important; /* blue-500 with opacity */
+  transition: all 0.2s ease;
+}
+
+.watchlist-cell-recently-updated:hover {
+  background-color: rgba(34, 197, 94, 0.15) !important;
+}
+
+.watchlist-cell-saved:hover {
+  background-color: rgba(59, 130, 246, 0.15) !important;
+}
+
+
+
+
+
+
+
+

@@ -72,6 +72,9 @@ env/
 htmlcov/
 lib/
 lib64/
+# Next.js app lives under frontend/src/lib — do not use root `lib/` ignore for it
+!frontend/src/lib/
+!frontend/src/lib/**
 logs/
 node_modules/
 npm-debug.log*

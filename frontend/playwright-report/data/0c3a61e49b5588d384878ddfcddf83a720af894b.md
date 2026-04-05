@@ -1,0 +1,248 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - heading "Trading Dashboard" [level=1] [ref=e5]
+      - button "⚙️ Configure Strategy" [ref=e6] [cursor=pointer]
+    - generic [ref=e7]:
+      - generic [ref=e8]:
+        - generic [ref=e9]:
+          - heading "System Health" [level=3] [ref=e10]
+          - generic "PASS" [ref=e11]
+          - generic [ref=e12]: PASS
+        - generic [ref=e13]:
+          - button "Details" [ref=e14] [cursor=pointer]
+          - generic [ref=e15]: 9:35:51 AM
+      - generic [ref=e16]:
+        - generic [ref=e19]: Market
+        - generic [ref=e22]: Updater
+        - generic [ref=e25]: Monitor
+        - generic [ref=e28]: Telegram
+        - generic [ref=e31]: Trade
+    - navigation [ref=e33]:
+      - button "Portfolio" [ref=e34] [cursor=pointer]
+      - button "Watchlist" [ref=e35] [cursor=pointer]
+      - button "Signals" [ref=e36] [cursor=pointer]
+      - button "Orders" [ref=e37] [cursor=pointer]
+      - button "Expected TP" [ref=e38] [cursor=pointer]
+      - button "Executed Orders" [ref=e39] [cursor=pointer]
+      - button "Monitoring" [active] [ref=e40] [cursor=pointer]
+      - button "Version History" [ref=e41] [cursor=pointer]
+    - generic [ref=e42]:
+      - heading "Monitoring" [level=2] [ref=e43]
+      - generic [ref=e44]:
+        - generic [ref=e45]:
+          - generic [ref=e46]: "🕐Last updated: 01/15/2026, 09:36:04 AM GMT+4"
+          - button "Refresh" [ref=e47] [cursor=pointer]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50]: Backend Health
+            - generic [ref=e51]: HEALTHY
+          - generic [ref=e52]:
+            - generic [ref=e53]: Portfolio State Duration
+            - generic [ref=e54]: 0.01s
+          - generic [ref=e55]:
+            - generic [ref=e56]: Last Sync
+            - generic [ref=e57]: 41s
+          - generic [ref=e58]:
+            - generic [ref=e59]: Active Alerts
+            - generic [ref=e60]: "0"
+          - generic [ref=e61]:
+            - generic [ref=e62]: Open Orders
+            - generic [ref=e63]: "1"
+          - generic [ref=e64]:
+            - generic [ref=e65]: Balances
+            - generic [ref=e66]: "17"
+          - generic [ref=e67]:
+            - generic [ref=e68]: Scheduler Cycles
+            - generic [ref=e69]: "0"
+          - generic [ref=e70]:
+            - generic [ref=e71]: Backend Restart
+            - generic [ref=e72]: 303m 11s
+            - button "Reiniciar Backend" [ref=e73] [cursor=pointer]
+        - generic [ref=e74]:
+          - generic [ref=e75]:
+            - generic [ref=e76]:
+              - heading "Active Alerts" [level=3] [ref=e77]
+              - generic [ref=e78]: "Last updated: Invalid Date"
+              - generic [ref=e79]: "Window: 30 min"
+              - generic [ref=e80]: "Signals calculated: 01/15/2026, 09:36:04 AM GMT+4"
+            - generic [ref=e81]:
+              - button "↻ Refresh" [ref=e82] [cursor=pointer]:
+                - generic [ref=e83]: ↻
+                - generic [ref=e84]: Refresh
+              - button "🔄 Refresh Signals" [ref=e85] [cursor=pointer]:
+                - generic [ref=e86]: 🔄
+                - generic [ref=e87]: Refresh Signals
+          - generic [ref=e88]: No active alerts
+        - generic [ref=e89]:
+          - generic [ref=e90]:
+            - generic [ref=e91]:
+              - heading "Throttle (Mensajes Enviados)" [level=3] [ref=e92]
+              - paragraph [ref=e93]: Mensajes throttled que fueron enviados a Telegram
+            - button "Refresh" [ref=e94] [cursor=pointer]
+          - table [ref=e96]:
+            - rowgroup [ref=e97]:
+              - row "Symbol Strategy Side Last Price Price Change % Reason Last Event Ago" [ref=e98]:
+                - columnheader "Symbol" [ref=e99]
+                - columnheader "Strategy" [ref=e100]
+                - columnheader "Side" [ref=e101]
+                - columnheader "Last Price" [ref=e102]
+                - columnheader "Price Change %" [ref=e103]
+                - columnheader "Reason" [ref=e104]
+                - columnheader "Last Event" [ref=e105]
+                - columnheader "Ago" [ref=e106]
+            - rowgroup [ref=e107]:
+              - row "SOL_USDT Swing / Conservative SELL $139.6900 +13869.00% TEST SIGNAL ▶ 01/13/2026, 09:24:51 AM GMT+4 48h 11m ago" [ref=e108]:
+                - cell "SOL_USDT" [ref=e109]
+                - cell "Swing / Conservative" [ref=e110]
+                - cell "SELL" [ref=e111]
+                - cell "$139.6900" [ref=e112]
+                - cell "+13869.00%" [ref=e113]
+                - cell "TEST SIGNAL ▶" [ref=e114]:
+                  - button "TEST SIGNAL ▶" [ref=e116] [cursor=pointer]:
+                    - generic [ref=e117]: TEST SIGNAL
+                    - generic [ref=e118]: ▶
+                - cell "01/13/2026, 09:24:51 AM GMT+4" [ref=e119]
+                - cell "48h 11m ago" [ref=e120]
+              - row "SOL_USDT Swing / Conservative BUY $139.6900 +13869.00% TEST SIGNAL ▶ 01/13/2026, 09:24:51 AM GMT+4 48h 11m ago" [ref=e121]:
+                - cell "SOL_USDT" [ref=e122]
+                - cell "Swing / Conservative" [ref=e123]
+                - cell "BUY" [ref=e124]
+                - cell "$139.6900" [ref=e125]
+                - cell "+13869.00%" [ref=e126]
+                - cell "TEST SIGNAL ▶" [ref=e127]:
+                  - button "TEST SIGNAL ▶" [ref=e129] [cursor=pointer]:
+                    - generic [ref=e130]: TEST SIGNAL
+                    - generic [ref=e131]: ▶
+                - cell "01/13/2026, 09:24:51 AM GMT+4" [ref=e132]
+                - cell "48h 11m ago" [ref=e133]
+              - row "SOL_USDT Swing / Conservative SELL $139.6900 +2.08% TEST SIGNAL ▶ 01/13/2026, 09:22:51 AM GMT+4 48h 13m ago" [ref=e134]:
+                - cell "SOL_USDT" [ref=e135]
+                - cell "Swing / Conservative" [ref=e136]
+                - cell "SELL" [ref=e137]
+                - cell "$139.6900" [ref=e138]
+                - cell "+2.08%" [ref=e139]
+                - cell "TEST SIGNAL ▶" [ref=e140]:
+                  - button "TEST SIGNAL ▶" [ref=e142] [cursor=pointer]:
+                    - generic [ref=e143]: TEST SIGNAL
+                    - generic [ref=e144]: ▶
+                - cell "01/13/2026, 09:22:51 AM GMT+4" [ref=e145]
+                - cell "48h 13m ago" [ref=e146]
+              - row "SOL_USDT Swing / Conservative BUY $139.6900 +2.74% TEST SIGNAL ▶ 01/13/2026, 09:22:51 AM GMT+4 48h 13m ago" [ref=e147]:
+                - cell "SOL_USDT" [ref=e148]
+                - cell "Swing / Conservative" [ref=e149]
+                - cell "BUY" [ref=e150]
+                - cell "$139.6900" [ref=e151]
+                - cell "+2.74%" [ref=e152]
+                - cell "TEST SIGNAL ▶" [ref=e153]:
+                  - button "TEST SIGNAL ▶" [ref=e155] [cursor=pointer]:
+                    - generic [ref=e156]: TEST SIGNAL
+                    - generic [ref=e157]: ▶
+                - cell "01/13/2026, 09:22:51 AM GMT+4" [ref=e158]
+                - cell "48h 13m ago" [ref=e159]
+              - row "BCH_USDT Swing / Conservative SELL $611.6500 -6.80% 💹 Price change (↑1.29%) ▶ 01/11/2026, 10:11:59 AM GMT+4 95h 24m ago" [ref=e160]:
+                - cell "BCH_USDT" [ref=e161]
+                - cell "Swing / Conservative" [ref=e162]
+                - cell "SELL" [ref=e163]
+                - cell "$611.6500" [ref=e164]
+                - cell "-6.80%" [ref=e165]
+                - cell "💹 Price change (↑1.29%) ▶" [ref=e166]:
+                  - button "💹 Price change (↑1.29%) ▶" [ref=e168] [cursor=pointer]:
+                    - generic [ref=e169]: 💹 Price change (↑1.29%)
+                    - generic [ref=e170]: ▶
+                - cell "01/11/2026, 10:11:59 AM GMT+4" [ref=e171]
+                - cell "95h 24m ago" [ref=e172]
+        - generic [ref=e173]:
+          - generic [ref=e175]:
+            - heading "Monitoring Workflows" [level=3] [ref=e176]
+            - paragraph [ref=e177]:
+              - text: Automated monitoring workflows with manual triggers
+              - generic [ref=e178]: • Updated 1s ago
+          - table [ref=e180]:
+            - rowgroup [ref=e181]:
+              - row "Name Description Schedule Status Last Run Actions Messages" [ref=e182]:
+                - columnheader "Name" [ref=e183]
+                - columnheader "Description" [ref=e184]
+                - columnheader "Schedule" [ref=e185]
+                - columnheader "Status" [ref=e186]
+                - columnheader "Last Run" [ref=e187]
+                - columnheader "Actions" [ref=e188]
+                - columnheader "Messages" [ref=e189]
+            - rowgroup [ref=e190]:
+              - row "Watchlist Consistency Check Compares backend vs watchlist for all symbols, including throttle and alert flags. Nightly at 03:00 (Bali time) unknown 14h ago Run now Open report" [ref=e191]:
+                - cell "Watchlist Consistency Check" [ref=e192]
+                - cell "Compares backend vs watchlist for all symbols, including throttle and alert flags." [ref=e193]
+                - cell "Nightly at 03:00 (Bali time)" [ref=e194]
+                - cell "unknown" [ref=e195]
+                - cell "14h ago" [ref=e196]
+                - cell "Run now Open report" [ref=e197]:
+                  - generic [ref=e198]:
+                    - button "Run now" [ref=e199] [cursor=pointer]
+                    - link "Open report" [ref=e200] [cursor=pointer]:
+                      - /url: /docs/monitoring/watchlist_consistency_report_latest.md
+                - cell [ref=e201]
+              - row "watchlist_dedup unknown Never Automated only" [ref=e202]:
+                - cell "watchlist_dedup" [ref=e203]
+                - cell [ref=e204]
+                - cell [ref=e205]
+                - cell "unknown" [ref=e206]
+                - cell "Never" [ref=e207]
+                - cell "Automated only" [ref=e208]:
+                  - generic [ref=e210]: Automated only
+                - cell [ref=e211]
+              - row "Daily Summary Envía resumen diario del portfolio y actividad de trading Diario a las 8:00 AM unknown Never Run now" [ref=e212]:
+                - cell "Daily Summary" [ref=e213]
+                - cell "Envía resumen diario del portfolio y actividad de trading" [ref=e214]
+                - cell "Diario a las 8:00 AM" [ref=e215]
+                - cell "unknown" [ref=e216]
+                - cell "Never" [ref=e217]
+                - cell "Run now" [ref=e218]:
+                  - button "Run now" [ref=e220] [cursor=pointer]
+                - cell [ref=e221]
+              - row "Sell Orders Report Reporte de órdenes de venta pendientes Diario a las 7:00 AM (Bali time) unknown Never Run now" [ref=e222]:
+                - cell "Sell Orders Report" [ref=e223]
+                - cell "Reporte de órdenes de venta pendientes" [ref=e224]
+                - cell "Diario a las 7:00 AM (Bali time)" [ref=e225]
+                - cell "unknown" [ref=e226]
+                - cell "Never" [ref=e227]
+                - cell "Run now" [ref=e228]:
+                  - button "Run now" [ref=e230] [cursor=pointer]
+                - cell [ref=e231]
+              - row "SL/TP Check Verifica posiciones sin órdenes de Stop Loss o Take Profit Diario a las 8:00 AM unknown Never Run now Open report" [ref=e232]:
+                - cell "SL/TP Check" [ref=e233]
+                - cell "Verifica posiciones sin órdenes de Stop Loss o Take Profit" [ref=e234]
+                - cell "Diario a las 8:00 AM" [ref=e235]
+                - cell "unknown" [ref=e236]
+                - cell "Never" [ref=e237]
+                - cell "Run now Open report" [ref=e238]:
+                  - generic [ref=e239]:
+                    - button "Run now" [ref=e240] [cursor=pointer]
+                    - link "Open report" [ref=e241] [cursor=pointer]:
+                      - /url: /reports/sl-tp-check
+                - cell [ref=e242]
+              - row "Telegram Commands Procesa comandos recibidos por Telegram Continuo (cada segundo) success 1m ago Automated only" [ref=e243]:
+                - cell "Telegram Commands" [ref=e244]
+                - cell "Procesa comandos recibidos por Telegram" [ref=e245]
+                - cell "Continuo (cada segundo)" [ref=e246]
+                - cell "success" [ref=e247]
+                - cell "1m ago" [ref=e248]
+                - cell "Automated only" [ref=e249]:
+                  - generic [ref=e251]: Automated only
+                - cell [ref=e252]
+              - row "Dashboard Snapshot Actualiza el snapshot del dashboard para mejorar rendimiento Cada 60 segundos success Just now Automated only" [ref=e253]:
+                - cell "Dashboard Snapshot" [ref=e254]
+                - cell "Actualiza el snapshot del dashboard para mejorar rendimiento" [ref=e255]
+                - cell "Cada 60 segundos" [ref=e256]
+                - cell "success" [ref=e257]
+                - cell "Just now" [ref=e258]
+                - cell "Automated only" [ref=e259]:
+                  - generic [ref=e261]: Automated only
+                - cell [ref=e262]
+        - button "Telegram (Mensajes Bloqueados) (0) ▼" [ref=e265] [cursor=pointer]:
+          - heading "Telegram (Mensajes Bloqueados) (0)" [level=3] [ref=e266]
+          - generic [ref=e267]: ▼
+  - alert [ref=e268]
+```

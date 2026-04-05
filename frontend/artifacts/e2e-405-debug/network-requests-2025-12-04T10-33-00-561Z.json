@@ -1,0 +1,102 @@
+[
+  {
+    "method": "PUT",
+    "url": "https://dashboard.hilovivo.com/api/watchlist/ADA_USD/alert",
+    "status": 200,
+    "statusText": "",
+    "headers": {
+      "access-control-expose-headers": "*",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "https://dashboard.hilovivo.com, *",
+      "content-length": "52",
+      "date": "Thu, 04 Dec 2025 10:32:46 GMT",
+      "content-type": "application/json",
+      "vary": "Origin",
+      "server": "nginx/1.24.0 (Ubuntu)",
+      "access-control-allow-headers": "Content-Type, Authorization"
+    },
+    "responseBody": "{\"ok\":true,\"symbol\":\"ADA_USD\",\"alert_enabled\":false}",
+    "timestamp": 1764844367952
+  },
+  {
+    "method": "PUT",
+    "url": "https://dashboard.hilovivo.com/api/watchlist/ADA_USD/sell-alert",
+    "status": 200,
+    "statusText": "",
+    "headers": {
+      "access-control-expose-headers": "*",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "https://dashboard.hilovivo.com, *",
+      "content-length": "123",
+      "date": "Thu, 04 Dec 2025 10:32:48 GMT",
+      "content-type": "application/json",
+      "vary": "Origin",
+      "server": "nginx/1.24.0 (Ubuntu)",
+      "access-control-allow-headers": "Content-Type, Authorization"
+    },
+    "responseBody": "{\"ok\":true,\"symbol\":\"ADA_USD\",\"sell_alert_enabled\":false,\"alert_enabled\":false,\"message\":\"SELL alert disabled for ADA_USD\"}",
+    "timestamp": 1764844368809
+  },
+  {
+    "method": "PUT",
+    "url": "https://dashboard.hilovivo.com/api/watchlist/ADA_USD/buy-alert",
+    "status": 200,
+    "statusText": "",
+    "headers": {
+      "access-control-expose-headers": "*",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "https://dashboard.hilovivo.com, *",
+      "content-length": "121",
+      "date": "Thu, 04 Dec 2025 10:32:48 GMT",
+      "content-type": "application/json",
+      "vary": "Origin",
+      "server": "nginx/1.24.0 (Ubuntu)",
+      "access-control-allow-headers": "Content-Type, Authorization"
+    },
+    "responseBody": "{\"ok\":true,\"symbol\":\"ADA_USD\",\"buy_alert_enabled\":false,\"alert_enabled\":false,\"message\":\"BUY alert disabled for ADA_USD\"}",
+    "timestamp": 1764844369143
+  },
+  {
+    "method": "PUT",
+    "url": "https://dashboard.hilovivo.com/api/watchlist/ADA_USD/buy-alert",
+    "status": 200,
+    "statusText": "",
+    "headers": {
+      "access-control-expose-headers": "*",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "https://dashboard.hilovivo.com, *",
+      "content-length": "118",
+      "date": "Thu, 04 Dec 2025 10:32:49 GMT",
+      "content-type": "application/json",
+      "vary": "Origin",
+      "server": "nginx/1.24.0 (Ubuntu)",
+      "access-control-allow-headers": "Content-Type, Authorization"
+    },
+    "responseBody": "{\"ok\":true,\"symbol\":\"ADA_USD\",\"buy_alert_enabled\":true,\"alert_enabled\":true,\"message\":\"BUY alert enabled for ADA_USD\"}",
+    "timestamp": 1764844370115
+  },
+  {
+    "method": "PUT",
+    "url": "https://dashboard.hilovivo.com/api/watchlist/ADA_USD/sell-alert",
+    "status": 200,
+    "statusText": "",
+    "headers": {
+      "access-control-expose-headers": "*",
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "access-control-allow-origin": "https://dashboard.hilovivo.com, *",
+      "content-length": "120",
+      "date": "Thu, 04 Dec 2025 10:32:52 GMT",
+      "content-type": "application/json",
+      "vary": "Origin",
+      "server": "nginx/1.24.0 (Ubuntu)",
+      "access-control-allow-headers": "Content-Type, Authorization"
+    },
+    "responseBody": "{\"ok\":true,\"symbol\":\"ADA_USD\",\"sell_alert_enabled\":true,\"alert_enabled\":true,\"message\":\"SELL alert enabled for ADA_USD\"}",
+    "timestamp": 1764844372604
+  }
+]
