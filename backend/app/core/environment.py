@@ -55,6 +55,12 @@ def is_aws() -> bool:
     return getRuntimeEnv() == "aws"
 
 
+def is_atp_trading_only() -> bool:
+    """True when automation/agent/deploy surfaces should be off (trading stack only)."""
+    v = (os.getenv("ATP_TRADING_ONLY") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _normalize_cors_origin(origin: str) -> str:
     """Normalize CORS origin to scheme://host:port format (no path, query, or fragment)"""
     origin = origin.strip()

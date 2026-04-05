@@ -210,6 +210,8 @@ services:
       # Single active signal monitor / trading executor (Postgres advisory lock); canary must stay false
       - RUN_SIGNAL_MONITOR=true
       - RUNTIME_ORIGIN=AWS
+      # Production default: trading-only (agent/GitHub startup checks off); override via env or secrets/runtime.env
+      - ATP_TRADING_ONLY=${ATP_TRADING_ONLY:-1}
       # Required for Crypto.com private API: allow get_account_summary / user-balance (portfolio)
       - EXECUTION_CONTEXT=AWS
       - TRADING_ENABLED=${TRADING_ENABLED:-true}
