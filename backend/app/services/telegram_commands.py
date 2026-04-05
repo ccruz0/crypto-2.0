@@ -7002,9 +7002,10 @@ def _handle_extended_approval_callback(
             extra_rows = []
             try:
                 from app.services.agent_telegram_approval import PREFIX_RUN_CURSOR_BRIDGE
-                from app.services._paths import get_writable_cursor_handoffs_dir
-                handoff_path = get_writable_cursor_handoffs_dir() / f"cursor-handoff-{task_id}.md"
-                if handoff_path.exists():
+                from app.services.artifact_paths import resolve_cursor_handoff_path_for_read
+
+                handoff_path = resolve_cursor_handoff_path_for_read(task_id)
+                if handoff_path is not None and handoff_path.exists():
                     extra_rows = [[{"text": "🛠️ Run Cursor Bridge", "callback_data": f"{PREFIX_RUN_CURSOR_BRIDGE}{task_id}"}]]
             except Exception:
                 pass
@@ -7019,9 +7020,25 @@ def _handle_extended_approval_callback(
         # Best-effort: ensure a Cursor handoff prompt exists for this task
         try:
             from app.services.cursor_handoff import generate_cursor_handoff
-            handoff = generate_cursor_handoff({"task": {"id": task_id, "task": ""}, "_openclaw_sections": {}})
+            from app.services.notion_task_reader import get_notion_task_by_id
+
+            nt = get_notion_task_by_id(task_id)
+            task_obj = dict(nt) if nt else {}
+            task_obj["id"] = task_id
+            prepared_h: dict = {"task": task_obj, "_openclaw_sections": {}}
+            try:
+                from app.services.agent_task_executor import infer_repo_area_for_task
+
+                prepared_h["repo_area"] = infer_repo_area_for_task(task_obj)
+            except Exception:
+                prepared_h["repo_area"] = {}
+            handoff = generate_cursor_handoff(prepared_h)
             if handoff.get("success"):
-                logger.info("[TG][EXT_APPROVAL] Cursor handoff ensured for task %s", task_id)
+                logger.info(
+                    "[TG][EXT_APPROVAL] Cursor handoff ensured for task %s path=%s",
+                    task_id,
+                    handoff.get("path"),
+                )
         except Exception as handoff_err:
             logger.debug("[TG][EXT_APPROVAL] Cursor handoff generation skipped: %s", handoff_err)
 
@@ -7385,6 +7402,7 @@ def _handle_extended_approval_callback(
             task_id,
             TASK_STATUS_READY_FOR_INVESTIGATION,
             append_comment=f"Re-investigate approved by {who} via Telegram. Scheduler will re-run with verification feedback.",
+            allow_status_regression=True,
         )
         if ok:
             logger.info(

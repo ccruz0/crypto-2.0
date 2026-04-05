@@ -108,3 +108,34 @@ def test_post_one_includes_max_output_tokens_when_set(
     call_kw = mock_client.post.call_args
     body = call_kw[1]["json"]
     assert body.get("max_output_tokens") == 4096
+
+
+def test_post_one_treats_openresponses_failed_envelope_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 200 with JSON status=failed must not be treated as success (defensive)."""
+    monkeypatch.setenv("OPENCLAW_API_TOKEN", "test-token")
+    monkeypatch.setenv("OPENCLAW_API_URL", "http://127.0.0.1:9")
+    from unittest.mock import MagicMock, patch
+
+    from app.services import openclaw_client as oc
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "status": "failed",
+        "model": "openai/gpt-4o-mini",
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "error": {"code": "api_error", "message": "internal error"},
+    }
+
+    with patch("httpx.Client") as client_cls:
+        mock_client = MagicMock()
+        client_cls.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value = mock_resp
+        out = oc._post_one("hi", "openai/gpt-4o-mini", task_id="t-fail")
+
+    assert out.get("success") is False
+    assert "status=failed" in (out.get("error") or "")
+    assert "internal error" in (out.get("error") or "")

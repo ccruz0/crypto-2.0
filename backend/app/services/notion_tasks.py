@@ -116,6 +116,63 @@ ALLOWED_TASK_STATUSES = (
 # Terminal statuses (cannot advance further)
 TERMINAL_STATUSES = (TASK_STATUS_DONE, TASK_STATUS_DEPLOYED, TASK_STATUS_REJECTED)
 
+# Monotonic lifecycle ordering (low → high). Used only to block accidental backward moves in
+# update_notion_task_status. Statuses not listed get no rank (transitions involving them are not
+# blocked by monotonic guard). Side-path targets (needs-revision, blocked, …) skip comparison.
+_NOTION_STATUS_MONOTONIC_ORDER: tuple[str, ...] = (
+    "planned",
+    "backlog",
+    "ready-for-investigation",
+    "in-progress",
+    "investigating",
+    "investigation-complete",
+    "ready-for-patch",
+    "patching",
+    "waiting-on-subtasks",
+    "verifying",
+    "re-iterating",
+    "testing",
+    "ready-for-deploy",
+    "awaiting-deploy-approval",
+    "release-candidate-ready",
+    "deploying",
+    "deployed",
+    "done",
+)
+
+_STATUS_MONOTONIC_BYPASS_TARGETS: frozenset[str] = frozenset(
+    {
+        TASK_STATUS_NEEDS_REVISION,
+        TASK_STATUS_REJECTED,
+        TASK_STATUS_BLOCKED,
+        TASK_STATUS_SPLIT_INTO_SUBTASKS,
+    }
+)
+
+
+def _notion_monotonic_rank(status: str) -> int | None:
+    s = (status or "").strip().lower()
+    if s in _STATUS_MONOTONIC_BYPASS_TARGETS:
+        return None
+    try:
+        return _NOTION_STATUS_MONOTONIC_ORDER.index(s)
+    except ValueError:
+        return None
+
+
+def _notion_status_would_regress(current: str, attempted: str) -> bool:
+    """True if attempted rank is strictly lower than current (both must have known ranks)."""
+    att = (attempted or "").strip().lower()
+    cur = (current or "").strip().lower()
+    if att in _STATUS_MONOTONIC_BYPASS_TARGETS:
+        return False
+    r_att = _notion_monotonic_rank(att)
+    r_cur = _notion_monotonic_rank(cur)
+    if r_att is None or r_cur is None:
+        return False
+    return r_att < r_cur
+
+
 # Extended lifecycle: ordered forward transitions
 # needs-revision is a back-loop: patching -> needs-revision (when verify fails)
 # needs-revision -> investigating (when user approves re-investigate)
@@ -1027,6 +1084,7 @@ def update_notion_task_status(
     *,
     append_comment: str | None = None,
     needs_revision_metadata: dict | None = None,
+    allow_status_regression: bool = False,
 ) -> bool:
     """
     Update the "Status" property of an existing Notion task page.
@@ -1041,6 +1099,8 @@ def update_notion_task_status(
         page_id: Notion page ID to update.
         status: Target status. Must be one of: planned, in-progress, testing, deployed.
         append_comment: Optional comment to append to the page content (best-effort).
+        allow_status_regression: If True, skip monotonic guard (operational resets / re-queue only).
+        Set NOTION_STATUS_MONOTONIC_GUARD=0 to disable the guard globally.
 
     Returns:
         True on successful status update, False otherwise. Never raises.
@@ -1096,6 +1156,43 @@ def update_notion_task_status(
             normalized_status,
         )
         return False
+
+    _mono_guard_env = (os.environ.get("NOTION_STATUS_MONOTONIC_GUARD") or "1").strip().lower()
+    if (
+        not allow_status_regression
+        and _mono_guard_env not in ("0", "false", "no", "off")
+    ):
+        # Re-queue to ready-for-investigation is an operational recovery path
+        # and must not be blocked by monotonic rank checks.
+        if normalized_status == TASK_STATUS_READY_FOR_INVESTIGATION:
+            allow_status_regression = True
+    if (
+        not allow_status_regression
+        and _mono_guard_env not in ("0", "false", "no", "off")
+    ):
+        try:
+            from app.services.notion_task_reader import get_notion_task_by_id
+
+            _cur_task = get_notion_task_by_id(normalized_page_id)
+            _cur_status = (
+                str((_cur_task or {}).get("status") or "").strip().lower()
+                if _cur_task
+                else ""
+            )
+            if _cur_task and _notion_status_would_regress(_cur_status, normalized_status):
+                logger.warning(
+                    "notion_status_regression_blocked task_id=%s current=%s attempted=%s",
+                    normalized_page_id[:12] if normalized_page_id else "?",
+                    _cur_status or "?",
+                    normalized_status,
+                )
+                return False
+        except Exception as _mono_exc:
+            logger.warning(
+                "notion_status_regression_guard_failed task_id=%s err=%s — proceeding with update",
+                normalized_page_id[:12] if normalized_page_id else "?",
+                _mono_exc,
+            )
 
     headers = {
         "Authorization": f"Bearer {api_key}",

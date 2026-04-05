@@ -4,6 +4,7 @@ Tests for task health monitor: stuck detection, recovery, retry limit, alert coo
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -52,12 +53,13 @@ class TestStuckAlertAnomalySuppression:
 
     def test_send_stuck_alert_sends_for_normal_tasks(self):
         t = _task(task_id="norm-1", title="Fix production order sync", status="in-progress")
-        with patch("app.services.claw_telegram.send_claw_message", return_value=(True, None)) as mock_send:
-            with patch(
-                "app.services.agent_telegram_policy.should_send_agent_telegram",
-                return_value=True,
-            ):
-                thm._send_stuck_alert(t, 18.0)
+        with patch.dict(os.environ, {"TELEGRAM_NOTIFICATION_MODE": "verbose"}, clear=False):
+            with patch("app.services.claw_telegram.send_claw_message", return_value=(True, None)) as mock_send:
+                with patch(
+                    "app.services.agent_telegram_policy.should_send_agent_telegram",
+                    return_value=True,
+                ):
+                    thm._send_stuck_alert(t, 18.0)
         mock_send.assert_called_once()
 
 
@@ -147,11 +149,12 @@ class TestHandleStuckTask:
         old = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         t = _task(task_id="max-1", status="patching", last_edited_time=old)
         thm._retry_count["max-1"] = thm.MAX_RETRIES  # already at max
-        with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
-            with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
-                with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
-                    with patch.object(thm, "_log_event"):
-                        thm.handle_stuck_task(t, now)
+        with patch("app.services.task_decomposition.should_decompose_task", return_value=False):
+            with patch("app.services.notion_tasks.update_notion_task_status") as mock_update:
+                with patch("app.services.notion_tasks.update_notion_task_metadata") as mock_meta:
+                    with patch.object(thm, "_send_manual_attention_alert") as mock_manual:
+                        with patch.object(thm, "_log_event"):
+                            thm.handle_stuck_task(t, now)
         mock_update.assert_called_once()
         call_args = mock_update.call_args[0]
         assert call_args[0] == "max-1"

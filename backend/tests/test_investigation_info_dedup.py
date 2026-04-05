@@ -7,6 +7,8 @@ DB-backed dedup (TradingSettings) replaces volatile JSONL/memory. Ensures:
 - Send after cooldown allowed
 - Restart-safe (DB persists; in-memory cleared)
 - Same task re-executed does not resend within cooldown
+
+Requires verbose notification mode: minimal (default) does not send investigation info to Telegram.
 """
 import os
 import pytest
@@ -58,6 +60,18 @@ def _patch_session_local():
     """Patch SessionLocal to use test DB (agent_telegram_approval imports from app.database)."""
     with patch("app.database.SessionLocal", TestingSessionLocal):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _verbose_telegram_notifications():
+    """Investigation info Telegram is suppressed in minimal mode; tests exercise verbose path."""
+    prev = os.environ.get("TELEGRAM_NOTIFICATION_MODE")
+    os.environ["TELEGRAM_NOTIFICATION_MODE"] = "verbose"
+    yield
+    if prev is None:
+        os.environ.pop("TELEGRAM_NOTIFICATION_MODE", None)
+    else:
+        os.environ["TELEGRAM_NOTIFICATION_MODE"] = prev
 
 
 @pytest.fixture

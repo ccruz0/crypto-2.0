@@ -201,6 +201,7 @@ def process_needs_revision_tasks(*, max_tasks: int = 1) -> list[dict[str, Any]]:
                 f"[{ts}] Revision attempt {revision_count + 1}/{MAX_REVISION_ATTEMPTS}: "
                 "Re-queuing for re-execution. System will analyze, re-run, and validate."
             ),
+            allow_status_regression=True,
         )
         if not move_ok:
             results.append({

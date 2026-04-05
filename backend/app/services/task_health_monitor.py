@@ -75,6 +75,8 @@ def _get_stuck_alert_last_sent_db(task_id: str) -> float | None:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return None
+    if not callable(SessionLocal):
+        return None
     db = SessionLocal()
     try:
         key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
@@ -100,6 +102,8 @@ def _set_stuck_alert_last_sent_db(task_id: str, ts: float) -> None:
         from datetime import datetime, timezone
     except Exception:
         return
+    if not callable(SessionLocal):
+        return
     db = SessionLocal()
     try:
         key = f"{_STUCK_ALERT_KEY_PREFIX}{task_id}"
@@ -124,6 +128,8 @@ def _get_stuck_retry_count_db(task_id: str) -> int:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return 0
+    if not callable(SessionLocal):
+        return 0
     db = SessionLocal()
     try:
         key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
@@ -146,6 +152,8 @@ def _set_stuck_retry_count_db(task_id: str, count: int) -> None:
         from app.database import SessionLocal
         from app.models.trading_settings import TradingSettings
     except Exception:
+        return
+    if not callable(SessionLocal):
         return
     db = SessionLocal()
     try:
@@ -170,6 +178,8 @@ def _clear_stuck_retry_count_db(task_id: str) -> None:
         from app.models.trading_settings import TradingSettings
     except Exception:
         return
+    if not callable(SessionLocal):
+        return
     db = SessionLocal()
     try:
         key = f"{_STUCK_RETRY_KEY_PREFIX}{task_id}"
@@ -190,6 +200,8 @@ def _clear_stuck_alert_db(task_id: str) -> None:
         from app.database import SessionLocal
         from app.models.trading_settings import TradingSettings
     except Exception:
+        return
+    if not callable(SessionLocal):
         return
     db = SessionLocal()
     try:
@@ -297,6 +309,17 @@ def _send_stuck_alert(task: dict[str, Any], minutes_stuck: float, *, retry_attem
     except Exception:
         pass
     try:
+        from app.services.agent_telegram_policy import should_send_atp_intermediate_telegram
+
+        if not should_send_atp_intermediate_telegram():
+            logger.info(
+                "task_health_monitor: stuck alert suppressed (minimal notification mode) task_id=%s",
+                (task.get("id") or "")[:12],
+            )
+            return
+    except Exception:
+        pass
+    try:
         from app.services.claw_telegram import send_claw_message
         from app.services.agent_telegram_approval import PREFIX_REINVESTIGATE, PREFIX_VIEW_REPORT
         task_id = (task.get("id") or "").strip()
@@ -336,6 +359,13 @@ def _send_decomposition_alert(task: dict[str, Any], *, child_count: int) -> None
     try:
         from app.services.agent_telegram_policy import should_send_agent_telegram, AGENT_MSG_IMPORTANT
         if not should_send_agent_telegram(AGENT_MSG_IMPORTANT):
+            return
+    except Exception:
+        pass
+    try:
+        from app.services.agent_telegram_policy import should_send_atp_intermediate_telegram
+
+        if not should_send_atp_intermediate_telegram():
             return
     except Exception:
         pass
@@ -547,6 +577,7 @@ def handle_stuck_task(task: dict[str, Any], now: datetime | None = None) -> None
                     f"Reason: {failure_reason}\n"
                     f"Attempt {retries + 1}/{MAX_RETRIES}. Retryable: yes. User action required: no."
                 ),
+                allow_status_regression=True,
             )
             update_notion_task_metadata(
                 task_id,
@@ -668,6 +699,7 @@ def check_parent_aggregation() -> int:
                     parent_id,
                     TASK_STATUS_READY_FOR_INVESTIGATION,
                     append_comment="All subtasks complete. Resuming parent for final aggregation.",
+                    allow_status_regression=True,
                 )
                 if ok:
                     _parent_child_map.pop(parent_id, None)

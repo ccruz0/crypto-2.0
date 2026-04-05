@@ -114,6 +114,8 @@ RUN test -d /app/scripts || (echo "ERROR: /app/scripts directory is missing in i
 RUN test -f /app/scripts/print_api_fingerprints.py || (echo "ERROR: /app/scripts/print_api_fingerprints.py is missing in image" >&2 && echo "DEBUG: Contents of /app/scripts:" >&2 && (ls -la /app/scripts >&2 || echo "/app/scripts does not exist" >&2) && exit 1)
 # Require watchlist_signal_state model (routes_dashboard imports it)
 RUN test -f /app/app/models/watchlist_signal_state.py || (echo "ERROR: watchlist_signal_state.py is missing in image" >&2 && ls -la /app/app/models/ >&2 || true && exit 1)
+# Agent queue / docs-investigation normalization (prepare_next_notion_task imports this)
+RUN test -f /app/app/services/task_normalizer.py || (echo "ERROR: task_normalizer.py is missing in image" >&2 && exit 1)
 # Compile-check diagnose_auth_issue.py to catch IndentationError/syntax regressions
 RUN python3 -m py_compile /app/scripts/diagnose_auth_issue.py || (echo "ERROR: diagnose_auth_issue.py failed to compile" >&2 && exit 1)
 # Compile-check verify_exchange_creds_runtime.py to catch syntax regressions

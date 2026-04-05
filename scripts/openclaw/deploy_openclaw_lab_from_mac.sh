@@ -19,6 +19,7 @@ OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_CONFIG_DIR/openclaw.json
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 OPENCLAW_HOME_DIR="${OPENCLAW_HOME_DIR:-/opt/openclaw/home-data}"
+OPENCLAW_AGENT_WORKSPACE="${OPENCLAW_AGENT_WORKSPACE:-/workspace}"
 ATP_REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
 OPENCLAW_TRUSTED_PROXIES="${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}"
 OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-4o-mini}"
@@ -66,16 +67,20 @@ do_deploy() {
   # Host port must match PROD nginx proxy_pass (default 8080). Config path matches docker-compose: /home/node/.openclaw/openclaw.json
   # -v /var/run/docker.sock and --group-add: tools can run docker ps/logs without sudo (see OPENCLAW_DOCKER_SOCKET.md)
   DOCKER_GID="${DOCKER_GROUP_GID:-988}"
-  run1="sudo docker run -d --restart unless-stopped -p 8080:18789 --group-add $DOCKER_GID -v /var/run/docker.sock:/var/run/docker.sock -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE"
-  run2="sudo docker run -d --restart unless-stopped -p 8080:18789 --group-add $DOCKER_GID -v /var/run/docker.sock:/var/run/docker.sock -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw $OPENCLAW_IMAGE_FALLBACK"
+  run1="sudo docker run -d --restart unless-stopped -p 8080:18789 --group-add $DOCKER_GID -v /var/run/docker.sock:/var/run/docker.sock -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER -e OPENCLAW_AGENT_WORKSPACE=$OPENCLAW_AGENT_WORKSPACE$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents -v $OPENCLAW_HOME_DIR/workspace:$OPENCLAW_AGENT_WORKSPACE --name openclaw $OPENCLAW_IMAGE"
+  run2="sudo docker run -d --restart unless-stopped -p 8080:18789 --group-add $DOCKER_GID -v /var/run/docker.sock:/var/run/docker.sock -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_IN_CONTAINER -e OPENCLAW_AGENT_WORKSPACE=$OPENCLAW_AGENT_WORKSPACE$model_env_flags -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents -v $OPENCLAW_HOME_DIR/workspace:$OPENCLAW_AGENT_WORKSPACE --name openclaw $OPENCLAW_IMAGE_FALLBACK"
+  write_auth_profiles="sudo OPENCLAW_HOME_DIR=$OPENCLAW_HOME_DIR python3 /home/ubuntu/crypto-2.0/scripts/openclaw/write_openclaw_auth_profiles.py || echo WARN: auth-profiles skipped
+  sudo chown -R 1000:1000 $OPENCLAW_HOME_DIR
+  test -f $OPENCLAW_HOME_DIR/agents/main/agent/auth-profiles.json && sudo chmod 600 $OPENCLAW_HOME_DIR/agents/main/agent/auth-profiles.json || true"
   write_env_esc=$(echo "$write_provider_env" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  write_auth_esc=$(echo "$write_auth_profiles" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ';')
   build_cfg_esc=$(echo "$build_cfg" | sed 's/\\/\\\\/g; s/"/\\"/g')
   run1_esc=$(echo "$run1" | sed 's/\\/\\\\/g; s/"/\\"/g')
   run2_esc=$(echo "$run2" | sed 's/\\/\\\\/g; s/"/\\"/g')
   pull_esc="sudo docker pull $OPENCLAW_IMAGE || sudo docker pull $OPENCLAW_IMAGE_FALLBACK"
   pull_esc=$(echo "$pull_esc" | sed 's/\\/\\\\/g; s/"/\\"/g')
   run_both_esc="${run1_esc} || ${run2_esc}"
-  params="{\"commands\":[\"set -e\",\"echo === Pulling image ===\",\"$pull_esc\",\"echo === Writing provider keys ===\",\"$write_env_esc\",\"echo === Writing OpenClaw config ===\",\"$build_cfg_esc\",\"sudo chmod -R 777 $OPENCLAW_CONFIG_DIR\",\"sudo chmod -R 777 $OPENCLAW_HOME_DIR\",\"echo === Stop/remove container ===\",\"sudo docker stop openclaw 2>/dev/null || true\",\"sudo docker rm openclaw 2>/dev/null || true\",\"echo === Start container ===\",\"$run_both_esc\",\"sleep 4\",\"sudo docker ps -a --filter name=openclaw\",\"echo === Logs ===\",\"sudo docker logs openclaw --tail 60 2>&1\"]}"
+  params="{\"commands\":[\"set -e\",\"echo === Pulling image ===\",\"$pull_esc\",\"echo === Writing provider keys ===\",\"$write_env_esc\",\"echo === Writing OpenClaw config ===\",\"$build_cfg_esc\",\"sudo mkdir -p $OPENCLAW_HOME_DIR/workspace\",\"sudo chown -R 1000:1000 $OPENCLAW_HOME_DIR/workspace\",\"sudo chmod -R 775 $OPENCLAW_HOME_DIR/workspace\",\"sudo chmod -R 777 $OPENCLAW_CONFIG_DIR\",\"sudo chmod -R 777 $OPENCLAW_HOME_DIR\",\"echo === Writing auth-profiles.json ===\",\"$write_auth_esc\",\"echo === Stop/remove container ===\",\"sudo docker stop openclaw 2>/dev/null || true\",\"sudo docker rm openclaw 2>/dev/null || true\",\"echo === Start container ===\",\"$run_both_esc\",\"sleep 4\",\"sudo docker ps -a --filter name=openclaw\",\"echo === Logs ===\",\"sudo docker logs openclaw --tail 60 2>&1\"]}"
   cmd_id=$(aws ssm send-command \
     --instance-ids "$LAB_INSTANCE_ID" \
     --region "$AWS_REGION" \

@@ -24,3 +24,21 @@ Tracks OpenClaw business-logic proposal/approval/release traceability.
   - `backend/app/services/notion_tasks.py`
   - `backend/app/services/notion_task_reader.py`
 - Validation note: Static checks and lint review on modified Python/docs files.
+## v0.1.1 - 2026-03-30
+
+- Version: `v0.1.1`
+- Date: `2026-03-30`
+- Task ID: `333b1837-03fe-8169-bb4f-fc592431920a`
+- Summary: [Anomaly] Scheduler Inactivity in Monitoring / Infrastructure; validation=OpenClaw investigation validated (5 sections, 1425 chars); deployment=not run
+- Affected files: see task proposal metadata in Notion/agent activity log.
+- Validation note: recorded in task execution summary and Notion release comment.
+
+## v0.1.1 - 2026-03-30
+
+- Version: `v0.1.1`
+- Date: `2026-03-30`
+- Task ID: `333b1837-03fe-81ae-8ed5-c101a996c7f7`
+- Summary: [Anomaly] Scheduler Inactivity in Monitoring / Infrastructure; validation=OpenClaw investigation validated (5 sections, 1425 chars); deployment=not run
+- Affected files: see task proposal metadata in Notion/agent activity log.
+- Validation note: recorded in task execution summary and Notion release comment.
+

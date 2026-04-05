@@ -141,21 +141,28 @@ class TestDeployGateAcceptsReleaseCandidateReady:
 class TestReleaseCandidateApprovalBlocked:
     """Release-candidate approval is blocked when preconditions fail."""
 
-    def test_blocked_when_proposed_version_missing(self):
-        """Missing or empty proposed_version blocks send."""
+    def test_derives_proposed_version_when_missing_docs_like_task(self):
+        """Empty proposed_version + task without Notion Proposed Version → semver derived; not missing_proposed_version."""
         from app.services.agent_telegram_approval import send_release_candidate_approval
 
-        task_id = "test-missing-pv"
-        title = "Test"
+        task_id = "test-missing-pv-docs"
+        title = "fix one sentence in docs/agents/foo.md if inaccurate"
         sections = {"Root Cause": "X", "Recommended Fix": "Y", "Task Summary": "Z", "Affected Files": "a.py"}
+        task = {"id": task_id, "task": title, "type": "Bug"}
 
-        with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+        with patch("app.services.agent_telegram_approval._get_default_chat_id", return_value="-1001"), \
+             patch("app.services.agent_telegram_approval._check_release_candidate_approval_dedup", return_value=(False, "")), \
+             patch("app.services.agent_telegram_approval._set_release_candidate_approval_sent_db", return_value=True), \
+             patch("app.services.governance_agent_bridge.governance_agent_enforce_production", return_value=False), \
+             patch("app.services.agent_telegram_approval._send_telegram_message", return_value=(True, 4242)) as mock_send:
             r = send_release_candidate_approval(
-                task_id, title, sections=sections, proposed_version="",
+                task_id, title, sections=sections, proposed_version="", task=task,
             )
-            assert r.get("sent") is False
-            assert r.get("skipped") == "missing_proposed_version"
-            mock_send.assert_not_called()
+        assert r.get("skipped") != "missing_proposed_version"
+        assert r.get("sent") is True
+        mock_send.assert_called_once()
+        _args, kwargs = mock_send.call_args
+        assert "0.1.1" in _args[1] or "VERSION" in _args[1]
 
     def test_blocked_when_dedup_check_unavailable(self):
         """DB error blocks send (fail-closed)."""
@@ -332,15 +339,108 @@ class TestSingleApprovalWorkflow:
         assert "atp.3.5" in k2
 
 
+class TestMinimalVsVerboseAtpTelegram:
+    """Default (minimal) skips intermediate ATP Telegram; verbose restores it."""
+
+    def test_investigation_info_skipped_in_minimal(self):
+        from app.services.agent_telegram_approval import send_investigation_complete_info
+
+        with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+            r = send_investigation_complete_info(
+                "task-min",
+                "T",
+                sections={"Root Cause": "x", "Recommended Fix": "y"},
+            )
+        assert r.get("skipped") == "minimal_mode"
+        mock_send.assert_not_called()
+
+    def test_patch_not_applied_skipped_in_minimal(self):
+        from app.services.agent_telegram_approval import send_patch_not_applied_message
+
+        with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+            r = send_patch_not_applied_message("task-min", "Title")
+        assert r.get("skipped") == "minimal_mode"
+        mock_send.assert_not_called()
+
+
+def _prepared_bundle_for_task_approval():
+    tid = "550e8400-e29b-41d4-a716-446655440000"
+    return {
+        "prepared_task": {
+            "task": {"id": tid, "task": "Unit test task", "priority": "normal"},
+            "repo_area": {"area_name": "backend", "likely_files": ["a.py"]},
+        },
+        "approval": {"risk_level": "medium", "required": True},
+        "approval_summary": "summary",
+        "callback_selection": {"selection_reason": "unit test callback"},
+    }
+
+
+class TestSendTaskApprovalRequestNotificationMode:
+    """send_task_approval_request: minimal suppresses; verbose sends; quiet unchanged."""
+
+    def test_minimal_does_not_send(self):
+        from app.services.agent_telegram_approval import send_task_approval_request
+
+        bundle = _prepared_bundle_for_task_approval()
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_NOTIFICATION_MODE": "", "AGENT_TELEGRAM_ONLY_DEPLOY_AND_CRITICAL": ""},
+            clear=False,
+        ):
+            with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+                r = send_task_approval_request(bundle)
+        assert r.get("summary") == "minimal_mode: not sent"
+        mock_send.assert_not_called()
+
+    def test_verbose_sends(self):
+        from app.services.agent_telegram_approval import send_task_approval_request
+
+        bundle = _prepared_bundle_for_task_approval()
+        with patch.dict(os.environ, {"TELEGRAM_NOTIFICATION_MODE": "verbose"}, clear=False):
+            with patch(
+                "app.services.governance_agent_bridge.governance_agent_enforce_production",
+                return_value=False,
+            ):
+                with patch("app.services.agent_telegram_approval._get_db_session", return_value=None):
+                    with patch(
+                        "app.services.agent_telegram_approval._send_telegram_message",
+                        return_value=(True, 4242),
+                    ) as mock_send:
+                        r = send_task_approval_request(bundle)
+        assert r.get("sent") is True
+        assert r.get("message_id") == 4242
+        mock_send.assert_called_once()
+
+    def test_quiet_still_suppressed_first(self):
+        from app.services.agent_telegram_approval import send_task_approval_request
+
+        bundle = _prepared_bundle_for_task_approval()
+        with patch.dict(
+            os.environ,
+            {
+                "AGENT_TELEGRAM_ONLY_DEPLOY_AND_CRITICAL": "1",
+                "TELEGRAM_NOTIFICATION_MODE": "verbose",
+            },
+            clear=False,
+        ):
+            with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+                r = send_task_approval_request(bundle)
+        assert r.get("summary") == "quiet mode: not sent"
+        mock_send.assert_not_called()
+
+
 class TestPatchNotAppliedNoApprovalWording:
     """send_patch_not_applied_message has no approval-style prompt."""
 
     def test_patch_not_applied_says_not_approval_request(self):
+        import os
         from app.services.agent_telegram_approval import send_patch_not_applied_message
 
-        with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
-            mock_send.return_value = (True, 1)
-            send_patch_not_applied_message("task-1", "Title")
+        with patch.dict(os.environ, {"TELEGRAM_NOTIFICATION_MODE": "verbose"}, clear=False):
+            with patch("app.services.agent_telegram_approval._send_telegram_message") as mock_send:
+                mock_send.return_value = (True, 1)
+                send_patch_not_applied_message("task-1", "Title")
             text = mock_send.call_args[0][1]
             assert "not an approval request" in text
             assert "exactly one final approval" in text or "release candidate" in text

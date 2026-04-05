@@ -16,6 +16,7 @@ BUILD_DIR="${OPENCLAW_BUILD_DIR:-/home/ubuntu/openclaw-build}"
 OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-/opt/openclaw}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_CONFIG_DIR/openclaw.json}"
 OPENCLAW_HOME_DIR="${OPENCLAW_HOME_DIR:-/opt/openclaw/home-data}"
+OPENCLAW_AGENT_WORKSPACE="${OPENCLAW_AGENT_WORKSPACE:-/workspace}"
 ATP_REPO_PATH="${ATP_REPO_PATH:-/home/ubuntu/automated-trading-platform}"
 OPENCLAW_ALLOWED_ORIGINS="${OPENCLAW_ALLOWED_ORIGINS:-https://dashboard.hilovivo.com,http://localhost:18789,http://127.0.0.1:18789}"
 OPENCLAW_TRUSTED_PROXIES="${OPENCLAW_TRUSTED_PROXIES:-172.31.32.169}"
@@ -28,7 +29,7 @@ echo ""
 # Config builder: one line so JSON params don't get control chars
 build_cfg="OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES OPENCLAW_ACP_DEFAULT_AGENT=$OPENCLAW_ACP_DEFAULT_AGENT OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH python3 -c \"import json,os,pathlib,secrets; o=[s.strip() for s in __import__('os').environ.get('OPENCLAW_ALLOWED_ORIGINS','').split(',') if s.strip()]; px=[s.strip() for s in __import__('os').environ.get('OPENCLAW_TRUSTED_PROXIES','').split(',') if s.strip()]; acp_agent=__import__('os').environ.get('OPENCLAW_ACP_DEFAULT_AGENT','codex').strip(); p=pathlib.Path(__import__('os').environ['OPENCLAW_CONFIG_PATH']); p.parent.mkdir(parents=True,exist_ok=True); cfg=json.loads(p.read_text()) if p.exists() else {}; g=cfg.setdefault('gateway',{}); g.setdefault('controlUi',{})['allowedOrigins']=o; g['trustedProxies']=px if px else g.get('trustedProxies',[]); a=g.setdefault('auth',{}); t=(a.get('token')or '').strip() or secrets.token_hex(24); a['token']=t; acp=cfg.setdefault('acp',{}); acp['defaultAgent']=acp_agent; p.write_text(json.dumps(cfg)); print('OPENCLAW_GATEWAY_TOKEN='+t)\""
 
-run_cmd="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH -v $OPENCLAW_CONFIG_DIR:$OPENCLAW_CONFIG_DIR -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents --name openclaw openclaw:local"
+run_cmd="sudo docker run -d --restart unless-stopped -p 8080:18789 -e OPENCLAW_ALLOWED_ORIGINS=$OPENCLAW_ALLOWED_ORIGINS -e OPENCLAW_TRUSTED_PROXIES=$OPENCLAW_TRUSTED_PROXIES -e OPENCLAW_CONFIG_PATH=$OPENCLAW_CONFIG_PATH -e OPENCLAW_AGENT_WORKSPACE=$OPENCLAW_AGENT_WORKSPACE -v $OPENCLAW_CONFIG_DIR:$OPENCLAW_CONFIG_DIR -v $OPENCLAW_HOME_DIR:/home/node/.openclaw -v $ATP_REPO_PATH:/home/node/.openclaw/workspace/atp:ro -v $OPENCLAW_HOME_DIR/agents:/home/node/openclaw/agents -v $OPENCLAW_HOME_DIR/workspace:$OPENCLAW_AGENT_WORKSPACE --name openclaw openclaw:local"
 
 # Escape for JSON: backslash and double-quote
 escape_json() { echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -54,6 +55,9 @@ params="{\"commands\":[
   \"sudo docker build --platform linux/amd64 -t openclaw:local .\",
   \"echo === Writing OpenClaw config ===\",
   \"$build_cfg_esc\",
+  \"sudo mkdir -p $OPENCLAW_HOME_DIR/workspace\",
+  \"sudo chown -R 1000:1000 $OPENCLAW_HOME_DIR/workspace\",
+  \"sudo chmod -R 775 $OPENCLAW_HOME_DIR/workspace\",
   \"sudo chmod -R 777 $OPENCLAW_CONFIG_DIR\",
   \"sudo chmod -R 777 $OPENCLAW_HOME_DIR\",
   \"echo === Stop/remove container ===\",

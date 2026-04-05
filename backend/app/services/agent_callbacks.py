@@ -43,6 +43,17 @@ def _note_dir_for_subdir(save_subdir: str) -> Path:
     return get_writable_dir_for_subdir(save_subdir)
 
 
+def _openclaw_note_out_dir(prepared_task: dict[str, Any], save_subdir: str, task_id: str) -> Path:
+    """Writable OpenClaw markdown/sidecar directory (per-task tree for docs_investigation)."""
+    tid = (task_id or "").strip()
+    tn = (prepared_task or {}).get("task_normalization")
+    if tid and isinstance(tn, dict) and tn.get("task_type") == "docs_investigation":
+        from app.services.artifact_paths import get_task_dir
+
+        return get_task_dir(tid)
+    return _note_dir_for_subdir(save_subdir)
+
+
 def _safe_task_id(prepared_task: dict[str, Any]) -> str:
     task = (prepared_task or {}).get("task") or {}
     return str(task.get("id") or "").strip()
@@ -331,6 +342,86 @@ def apply_documentation_task(prepared_task: dict[str, Any]) -> dict[str, Any]:
         title = _safe_task_title(prepared_task) or "Untitled"
         if not task_id:
             return {"success": False, "summary": "missing task.id"}
+
+        _tn_doc = (prepared_task or {}).get("task_normalization")
+        if isinstance(_tn_doc, dict) and _tn_doc.get("task_type") == "docs_investigation":
+            from app.services.artifact_paths import get_task_dir
+
+            tdir = get_task_dir(task_id)
+            _ensure_dir(tdir)
+            okp, err = _preflight_writable_artifact_dir(tdir, task_id)
+            if not okp:
+                return {"success": False, "summary": err}
+
+            def rel_link_td(target_repo_path: str) -> str:
+                target = (root / target_repo_path).resolve()
+                try:
+                    return os.path.relpath(target, tdir.resolve())
+                except Exception:
+                    return target_repo_path
+
+            relevant_docs = list(repo_area.get("relevant_docs") or [])
+            relevant_runbooks = list(repo_area.get("relevant_runbooks") or [])
+            likely_files = list(repo_area.get("likely_files") or [])
+            docs_links = "\n".join(
+                f"- [{p}]({rel_link_td(p)})" for p in (relevant_docs[:8] or ["docs/architecture/system-map.md"])
+            )
+            runbook_links = "\n".join(f"- [{p}]({rel_link_td(p)})" for p in relevant_runbooks[:10])
+            file_refs = "\n".join(f"- `{p}`" for p in likely_files[:12])
+            note_contents_tree = (
+                f"# Notion task note: {title}\n\n"
+                f"- **Notion page id**: `{task_id}`\n"
+                f"- **Priority**: `{(task.get('priority') or '').strip()}`\n"
+                f"- **Project**: `{(task.get('project') or '').strip()}`\n"
+                f"- **Type**: `{(task.get('type') or '').strip()}`\n"
+                f"- **Source**: `{(task.get('source') or '').strip()}`\n"
+                f"- **GitHub link**: `{(task.get('github_link') or '').strip()}`\n\n"
+                f"## Repo area (inferred)\n\n"
+                f"- **Area**: {repo_area.get('area_name')}\n"
+                f"- **Matched rules**: {', '.join(repo_area.get('matched_rules') or [])}\n\n"
+                f"## Likely files/modules\n\n"
+                f"{file_refs if file_refs else '- (none inferred)'}\n\n"
+                f"## Relevant docs\n\n"
+                f"{docs_links}\n\n"
+                f"## Relevant runbooks\n\n"
+                f"{runbook_links if runbook_links else '- (none)'}\n\n"
+                f"## Triage summary (placeholder)\n\n"
+                f"- What is the change?\n"
+                f"- Which doc/runbook needs updating?\n"
+                f"- What validation is required before marking deployed?\n"
+            )
+            note_path_tree = tdir / f"notion-task-{task_id}.md"
+            path_guard.safe_write_text(
+                note_path_tree, note_contents_tree, context="agent_callbacks:doc_tree_md",
+            )
+            sections_payload = {
+                "Task Summary": f"Documentation triage for {title} (fallback note).",
+                "Root Cause": "OpenClaw unavailable or fallback path; template documentation note generated.",
+                "Risk Level": "Low — documentation-only.",
+                "Affected Components": str(repo_area.get("area_name") or "Documentation"),
+                "Affected Files": ", ".join(likely_files[:12]) or "see markdown note",
+                "Recommended Fix": "Update referenced docs and validate relative links.",
+                "Testing Plan": "Review markdown content and link targets in the repo.",
+                "Notes": "documentation_fallback",
+            }
+            sidecar_path_tree = tdir / f"notion-task-{task_id}.sections.json"
+            path_guard.safe_write_text(
+                sidecar_path_tree,
+                json.dumps(
+                    {
+                        "task_id": task_id,
+                        "title": title,
+                        "source": "documentation_fallback",
+                        "sections": sections_payload,
+                        "sections_complete": True,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                + "\n",
+                context="agent_callbacks:doc_tree_sidecar",
+            )
+            return {"success": True, "summary": f"documentation note prepared at {note_path_tree}"}
 
         notes_dir = root / "docs" / "agents" / "generated-notes"
         _ensure_dir(notes_dir)
@@ -1048,7 +1139,7 @@ def _apply_via_openclaw(
     if sections:
         prepared_task["_openclaw_sections"] = sections
 
-    out_dir = _note_dir_for_subdir(save_subdir)
+    out_dir = _openclaw_note_out_dir(prepared_task, save_subdir, task_id)
     _ensure_dir(out_dir)
     ok, err = _preflight_writable_artifact_dir(out_dir, task_id)
     if not ok:
@@ -1481,6 +1572,24 @@ def select_default_callbacks_for_task(prepared_task: dict[str, Any]) -> dict[str
         "select_default_callbacks_for_task: task_type_raw=%r task_type_normalized=%r title=%r",
         _task_type_raw, _task_type, _task_title,
     )
+
+    # ── Task normalizer: doc-intent wins over Notion Type=Bug for routing ──
+    _tn = (prepared_task or {}).get("task_normalization")
+    if isinstance(_tn, dict) and _tn.get("task_type") == "docs_investigation":
+        from app.services.openclaw_client import build_documentation_prompt
+        return {
+            "apply_change_fn": _make_openclaw_callback(
+                build_documentation_prompt,
+                "docs/agents/generated-notes", "notion-task",
+                fallback_fn=apply_documentation_task,
+            ),
+            "validate_fn": _make_openclaw_validator("docs/agents/generated-notes", "notion-task"),
+            "verify_solution_fn": _make_openclaw_verifier("docs/agents/generated-notes", "notion-task"),
+            "deploy_fn": None,
+            "manual_only": True,
+            GOVERNANCE_ACTION_CLASS_KEY: GOV_CLASS_PATCH_PREP,
+            "selection_reason": "docs investigation (task_normalizer; OpenClaw documentation path only)",
+        }
 
     # ── Explicit Type field override (highest priority) ──────────────
     # Notion Type="bug", "investigation", or "architecture investigation" maps to the

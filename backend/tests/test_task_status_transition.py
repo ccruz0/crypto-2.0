@@ -139,3 +139,49 @@ class TestTransitionTaskStatusInvalidNeedsRevision:
         mock_update.assert_called()
         call_args = mock_update.call_args[0]
         assert call_args[1] == "ready-for-investigation"
+
+
+class TestNotionStatusMonotonicGuard:
+    """Backward lifecycle moves are blocked unless allow_status_regression is set."""
+
+    def test_would_regress_helper(self):
+        assert nt._notion_status_would_regress("patching", "planned")
+        assert nt._notion_status_would_regress("release-candidate-ready", "patching")
+        assert not nt._notion_status_would_regress("patching", "release-candidate-ready")
+        assert not nt._notion_status_would_regress("patching", "blocked")
+
+    def test_blocks_patching_to_planned_logs_and_skips_http(self, caplog):
+        caplog.set_level("WARNING")
+        page_id = "31cb1837-03fe-8045-b8a8-e27cca1198e0"
+        with patch.object(nt, "_get_config", return_value=("fake-key", "fake-db")):
+            with patch(
+                "app.services.notion_task_reader.get_notion_task_by_id",
+                return_value={"id": page_id, "status": "patching"},
+            ):
+                with patch("app.services.notion_tasks.httpx") as mock_httpx:
+                    ok = nt.update_notion_task_status(page_id, "planned")
+        assert ok is False
+        mock_httpx.Client.assert_not_called()
+        assert any(
+            "notion_status_regression_blocked" in r.message
+            and "patching" in r.message
+            and "planned" in r.message
+            for r in caplog.records
+        )
+
+    def test_allow_status_regression_permits_planned_after_patching(self):
+        page_id = "31cb1837-03fe-8045-b8a8-e27cca1198e0"
+        with patch.object(nt, "_get_config", return_value=("fake-key", "fake-db")):
+            with patch(
+                "app.services.notion_task_reader.get_notion_task_by_id",
+                return_value={"id": page_id, "status": "patching"},
+            ):
+                with patch("app.services.notion_tasks.httpx") as mock_httpx:
+                    mock_client = mock_httpx.Client.return_value.__enter__.return_value
+                    mock_client.patch.return_value = MagicMock(status_code=200, text="")
+                    ok = nt.update_notion_task_status(
+                        page_id, "planned", allow_status_regression=True
+                    )
+        assert ok is True
+        mock_client = mock_httpx.Client.return_value.__enter__.return_value
+        mock_client.patch.assert_called()

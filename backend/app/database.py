@@ -209,6 +209,96 @@ def table_has_column(db_engine, table_name: str, column_name: str) -> bool:
         return False
 
 
+def ensure_telegram_update_dedup_table(engine_to_use) -> bool:
+    """
+    Create telegram_update_dedup (+ index on created_at) if missing. Idempotent DDL.
+    Migrates legacy tables that used received_at: adds created_at and backfills when needed.
+
+    Returns True if the table exists after this call, False if engine is None or DDL failed.
+    """
+    if engine_to_use is None:
+        logger.warning("ensure_telegram_update_dedup_table: engine is None")
+        return False
+    tname = "telegram_update_dedup"
+    try:
+        if not table_exists(engine_to_use, tname):
+            logger.warning("Table %s does not exist - creating (Telegram poller)", tname)
+            with engine_to_use.begin() as conn:
+                if engine_to_use.dialect.name == "sqlite":
+                    conn.execute(
+                        text(
+                            """
+                            CREATE TABLE IF NOT EXISTS telegram_update_dedup (
+                                update_id BIGINT PRIMARY KEY,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            CREATE TABLE IF NOT EXISTS telegram_update_dedup (
+                                update_id BIGINT PRIMARY KEY,
+                                created_at TIMESTAMP DEFAULT NOW()
+                            )
+                            """
+                        )
+                    )
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_telegram_update_dedup_created_at "
+                        "ON telegram_update_dedup (created_at)"
+                    )
+                )
+            logger.info("[BOOT] Created table telegram_update_dedup")
+        else:
+            # Legacy: received_at-only schema → add created_at for consistent queries
+            if not table_has_column(engine_to_use, tname, "created_at"):
+                has_received = table_has_column(engine_to_use, tname, "received_at")
+                with engine_to_use.begin() as conn:
+                    if engine_to_use.dialect.name == "sqlite":
+                        conn.execute(
+                            text(
+                                "ALTER TABLE telegram_update_dedup ADD COLUMN created_at TIMESTAMP "
+                                "DEFAULT CURRENT_TIMESTAMP"
+                            )
+                        )
+                        if has_received:
+                            conn.execute(
+                                text(
+                                    "UPDATE telegram_update_dedup SET created_at = received_at "
+                                    "WHERE created_at IS NULL"
+                                )
+                            )
+                    else:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE telegram_update_dedup ADD COLUMN IF NOT EXISTS "
+                                "created_at TIMESTAMP DEFAULT NOW()"
+                            )
+                        )
+                        if has_received:
+                            conn.execute(
+                                text(
+                                    "UPDATE telegram_update_dedup SET created_at = received_at "
+                                    "WHERE created_at IS NULL"
+                                )
+                            )
+            with engine_to_use.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_telegram_update_dedup_created_at "
+                        "ON telegram_update_dedup (created_at)"
+                    )
+                )
+        return table_exists(engine_to_use, tname)
+    except Exception as e:
+        logger.error("ensure_telegram_update_dedup_table failed: %s", e, exc_info=True)
+        return False
+
+
 def ensure_optional_columns(db_engine=None):
     """
     Ensure optional columns exist in critical tables.
@@ -259,6 +349,17 @@ def ensure_optional_columns(db_engine=None):
                 logger.info("[BOOT] Created table %s", tname)
     except Exception as gov_err:
         logger.warning("Could not ensure governance tables: %s", gov_err)
+
+    # Telegram poller dedup (backend/migrations/add_telegram_update_dedup.sql) — missing table aborts txn on INSERT
+    try:
+        if ensure_telegram_update_dedup_table(engine_to_use):
+            logger.info("[BOOT] telegram_update_dedup table OK")
+        else:
+            logger.error(
+                "[BOOT] telegram_update_dedup missing after ensure — Telegram dedup INSERT will fail until fixed"
+            )
+    except Exception as dedup_err:
+        logger.warning("Could not ensure telegram_update_dedup table: %s", dedup_err)
 
     watchlist_table = getattr(getattr(WatchlistItem, "__table__", None), "name", None) or getattr(
         WatchlistItem, "__tablename__", "watchlist_items"

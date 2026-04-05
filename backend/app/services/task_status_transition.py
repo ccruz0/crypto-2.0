@@ -99,6 +99,7 @@ def transition_task_status(
                         f"Invalid needs-revision attempt (missing metadata). Fallback to {fallback_status}. "
                         "Original reason: " + (reason or "unknown")[:200]
                     ),
+                    allow_status_regression=True,
                 )
                 if ok:
                     _log_transition(

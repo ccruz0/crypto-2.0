@@ -149,6 +149,24 @@ def _clear_anomaly_incident(anomaly_type: str) -> None:
 ANOMALY_SOURCE = "monitoring"
 ANOMALY_STATUS = "planned"
 ANOMALY_PROJECT = "Operations"
+SCHEDULER_INACTIVITY_TITLE = "[Anomaly] Scheduler Inactivity"
+_ACTIVE_ANOMALY_STATUSES = (
+    "planned",
+    "backlog",
+    "ready-for-investigation",
+    "in-progress",
+    "investigating",
+    "blocked",
+    "ready-for-patch",
+    "patching",
+    "testing",
+    "ready-for-deploy",
+    "release-candidate-ready",
+    "awaiting-deploy-approval",
+    "deploying",
+    "verifying",
+    "re-iterating",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -185,21 +203,93 @@ def _notify_telegram(message: str) -> bool:
         return False
 
 
+def _find_active_anomaly_task_by_title(title: str) -> dict[str, Any] | None:
+    """Return first active task with exact title, or None."""
+    try:
+        from app.services.notion_task_reader import get_tasks_by_status
+
+        active = get_tasks_by_status(list(_ACTIVE_ANOMALY_STATUSES), max_results=200)
+        title_norm = str(title or "").strip()
+        return next(
+            (
+                t for t in active
+                if str(t.get("task") or "").strip() == title_norm
+            ),
+            None,
+        )
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: active anomaly lookup failed: %s", e)
+        return None
+
+
+def _close_scheduler_inactivity_incident_task() -> str | None:
+    """Mark active scheduler inactivity anomaly task as done on recovery."""
+    existing = _find_active_anomaly_task_by_title(SCHEDULER_INACTIVITY_TITLE)
+    if not existing:
+        return None
+    page_id = str(existing.get("id") or "").strip()
+    if not page_id:
+        return None
+    try:
+        from app.services.notion_tasks import TASK_STATUS_DONE, update_notion_task_status
+
+        ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        ok = update_notion_task_status(
+            page_id,
+            TASK_STATUS_DONE,
+            append_comment=(
+                "Incident resolved automatically: scheduler heartbeat recovered.\n"
+                f"resolved_at: {ts}"
+            ),
+        )
+        if ok:
+            _log_event("scheduler_inactivity_task_resolved", details={"task_id": page_id})
+            return page_id
+    except Exception as e:
+        logger.debug("agent_anomaly_detector: scheduler inactivity resolve failed: %s", e)
+    return None
+
+
 def _create_anomaly_task(
     title: str,
     anomaly_type: str,
     details: str,
     priority: Optional[str] = None,
+    *,
+    reuse_existing: bool = False,
 ) -> dict[str, Any] | None:
     """Create a Notion task for a detected anomaly and log the event."""
     try:
+        if reuse_existing:
+            existing = _find_active_anomaly_task_by_title(title)
+            if existing:
+                existing_id = str(existing.get("id") or "").strip()
+                logger.info(
+                    "anomaly_task_reused title=%r existing_task_id=%s reason=active_duplicate",
+                    title,
+                    existing_id[:12] if existing_id else "?",
+                )
+                _log_event(
+                    "anomaly_task_reused",
+                    details={
+                        "existing_task_id": existing_id,
+                        "title": title,
+                        "anomaly_type": anomaly_type,
+                    },
+                )
+                return {"id": existing_id, "reused": True, "url": existing.get("url")}
+
         from app.services.notion_tasks import create_notion_task
+        opened_at = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        details_with_trace = details
+        if reuse_existing:
+            details_with_trace = f"{details}\nincident_opened_at: {opened_at}"
         result = create_notion_task(
             title=title,
             project=ANOMALY_PROJECT,
             type=anomaly_type,
             priority=priority,
-            details=details,
+            details=details_with_trace,
             status=ANOMALY_STATUS,
             source=ANOMALY_SOURCE,
         )
@@ -496,6 +586,12 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
             result = detector_fn()
             if result is None:
                 if detector_name == "scheduler_inactivity":
+                    resolved_task_id = _close_scheduler_inactivity_incident_task()
+                    if resolved_task_id:
+                        logger.info(
+                            "scheduler_inactivity_incident_closed task_id=%s",
+                            resolved_task_id[:12],
+                        )
                     last_sent = _get_anomaly_alert_last_sent_db("scheduler_inactivity")
                     if last_sent is not None:
                         _notify_telegram(
@@ -523,6 +619,7 @@ def run_anomaly_detection_cycle() -> dict[str, Any]:
                 title=title,
                 anomaly_type=notion_type,
                 details=details,
+                reuse_existing=(anomaly_type == "scheduler_inactivity"),
             )
             if task:
                 tasks_created.append({
